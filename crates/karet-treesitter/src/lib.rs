@@ -1,20 +1,27 @@
 //! `karet-treesitter` — the shared tree-sitter parse host for the karet toolkit.
 //!
-//! Owns parser pooling, incremental edit application, tree caching and query
-//! execution so that `karet-syntax`, `karet-diff`, and (via syntax) the editor all
-//! reuse a single parse of each buffer. Tree-sitter is karet's *sole* syntax
-//! backend — there is deliberately no second backend to abstract over.
-//!
-//! This is the implementation *skeleton*: the public joints are defined; the
-//! incremental-parsing and query logic is filled in separately.
+//! Owns parser pooling, tree caching and query execution so that `karet-syntax`,
+//! `karet-diff`, and (via syntax) the editor all reuse a single parse of each
+//! buffer. Tree-sitter is karet's *sole* syntax backend — there is deliberately no
+//! second backend to abstract over. Grammars are compiled in behind `lang-*`
+//! features; [`language_id_from_path`] / [`language_name_from_path`] map a file to
+//! one (or to a plaintext fallback).
 
-use karet_core::Span;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+
+use karet_core::{BytePos, Span};
+
+mod detect;
+mod registry;
+
+pub use detect::{language_id_from_path, language_name_from_path};
 
 /// Errors produced by the parse host.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum TsError {
-    /// No grammar is registered for the requested language.
+    /// No grammar is registered (compiled in) for the requested language.
     #[error("unknown language")]
     UnknownLanguage,
     /// The parser failed to produce a tree.
@@ -29,9 +36,17 @@ pub enum TsError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LanguageId(pub u16);
 
+/// The highlights query source for `lang`, if its grammar is compiled in.
+#[must_use]
+pub fn highlights_query(lang: LanguageId) -> Option<&'static str> {
+    registry::grammar(lang).map(|g| g.highlights)
+}
+
 /// A pool of reusable tree-sitter parsers, keyed by [`LanguageId`].
 #[derive(Default)]
-pub struct ParserPool {}
+pub struct ParserPool {
+    parsers: HashMap<LanguageId, tree_sitter::Parser>,
+}
 
 impl ParserPool {
     /// Create an empty parser pool.
@@ -39,49 +54,130 @@ impl ParserPool {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Get (or lazily create) the parser for `lang`.
+    fn parser_for(&mut self, lang: LanguageId) -> Result<&mut tree_sitter::Parser, TsError> {
+        match self.parsers.entry(lang) {
+            Entry::Occupied(e) => Ok(e.into_mut()),
+            Entry::Vacant(e) => {
+                let info = registry::grammar(lang).ok_or(TsError::UnknownLanguage)?;
+                let mut parser = tree_sitter::Parser::new();
+                parser
+                    .set_language(&(info.language)())
+                    .map_err(|_| TsError::UnknownLanguage)?;
+                Ok(e.insert(parser))
+            }
+        }
+    }
 }
 
-/// A parsed, incrementally-maintainable syntax tree for one buffer.
-pub struct SyntaxTree {}
+/// A parsed syntax tree for one buffer.
+pub struct SyntaxTree {
+    tree: tree_sitter::Tree,
+    lang: LanguageId,
+}
 
 impl SyntaxTree {
     /// Parse `text` as `lang`, drawing a parser from `pool`.
     ///
     /// # Errors
-    /// Returns [`TsError::UnknownLanguage`] or [`TsError::ParseFailed`].
+    /// Returns [`TsError::UnknownLanguage`] if `lang` has no grammar compiled in, or
+    /// [`TsError::ParseFailed`] if parsing fails.
     pub fn parse(pool: &mut ParserPool, lang: LanguageId, text: &str) -> Result<Self, TsError> {
-        let _ = (pool, lang, text);
-        todo!()
+        let parser = pool.parser_for(lang)?;
+        let tree = parser
+            .parse(text.as_bytes(), None)
+            .ok_or(TsError::ParseFailed)?;
+        Ok(Self { tree, lang })
     }
 
-    /// Re-parse incrementally after the buffer changed to `text`.
+    /// Re-parse after the buffer changed to `text`.
+    ///
+    /// Without a prior edit applied to the old tree this is a full reparse; that is
+    /// acceptable for the snippet-sized inputs the MVP highlights.
     ///
     /// # Errors
     /// Returns [`TsError::ParseFailed`] if re-parsing fails.
     pub fn reparse(&mut self, pool: &mut ParserPool, text: &str) -> Result<(), TsError> {
-        let _ = (pool, text);
-        todo!()
+        let parser = pool.parser_for(self.lang)?;
+        let tree = parser
+            .parse(text.as_bytes(), Some(&self.tree))
+            .ok_or(TsError::ParseFailed)?;
+        self.tree = tree;
+        Ok(())
     }
 
     /// The byte ranges that differ between `old` and this tree.
     #[must_use]
     pub fn changed_ranges(&self, old: &SyntaxTree) -> Vec<Span> {
-        let _ = old;
-        todo!()
+        old.tree
+            .changed_ranges(&self.tree)
+            .map(|r| Span {
+                start: BytePos(r.start_byte),
+                end: BytePos(r.end_byte),
+            })
+            .collect()
+    }
+
+    /// Run `query` over this tree and collect every capture.
+    ///
+    /// `text` must be the same source this tree was parsed from. This is the seam
+    /// that keeps the streaming-iterator query API inside this crate.
+    #[must_use]
+    pub fn captures(&self, query: &Query, text: &str) -> Vec<RawCapture> {
+        use tree_sitter::StreamingIterator;
+
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut it = cursor.captures(&query.inner, self.tree.root_node(), text.as_bytes());
+        let mut out = Vec::new();
+        while let Some((m, idx)) = it.next() {
+            if let Some(cap) = m.captures.get(*idx) {
+                out.push(RawCapture {
+                    capture: cap.index,
+                    span: Span {
+                        start: BytePos(cap.node.start_byte()),
+                        end: BytePos(cap.node.end_byte()),
+                    },
+                });
+            }
+        }
+        out
     }
 }
 
+/// One capture from [`SyntaxTree::captures`]: a query capture index plus the byte
+/// [`Span`] it covers. The index resolves to a name via [`Query::capture_names`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RawCapture {
+    /// The query capture index (into [`Query::capture_names`]).
+    pub capture: u32,
+    /// The byte span the capture covers.
+    pub span: Span,
+}
+
 /// A compiled tree-sitter query (highlights, folds, locals, …).
-pub struct Query {}
+pub struct Query {
+    inner: tree_sitter::Query,
+}
 
 impl Query {
     /// Compile `source` against the grammar for `lang`.
     ///
     /// # Errors
-    /// Returns [`TsError::InvalidQuery`] if the query text is malformed.
+    /// Returns [`TsError::UnknownLanguage`] if `lang` has no grammar compiled in, or
+    /// [`TsError::InvalidQuery`] if the query text is malformed.
     pub fn compile(lang: LanguageId, source: &str) -> Result<Self, TsError> {
-        let _ = (lang, source);
-        todo!()
+        let info = registry::grammar(lang).ok_or(TsError::UnknownLanguage)?;
+        let language = (info.language)();
+        let inner = tree_sitter::Query::new(&language, source)
+            .map_err(|e| TsError::InvalidQuery(e.to_string()))?;
+        Ok(Self { inner })
+    }
+
+    /// The capture names, indexed by [`RawCapture::capture`].
+    #[must_use]
+    pub fn capture_names(&self) -> &[&str] {
+        self.inner.capture_names()
     }
 }
 
@@ -98,5 +194,39 @@ mod tests {
     #[test]
     fn error_displays() {
         assert_eq!(TsError::UnknownLanguage.to_string(), "unknown language");
+    }
+
+    #[test]
+    fn unknown_language_has_no_highlights() {
+        assert!(highlights_query(LanguageId(60000)).is_none());
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn parses_rust_and_runs_highlights() -> Result<(), TsError> {
+        let lang = language_id_from_path(std::path::Path::new("main.rs"))
+            .ok_or(TsError::UnknownLanguage)?;
+        let src = "fn main() { let x = 1; }";
+        let mut pool = ParserPool::new();
+        let tree = SyntaxTree::parse(&mut pool, lang, src)?;
+        let query_src = highlights_query(lang).ok_or(TsError::UnknownLanguage)?;
+        let query = Query::compile(lang, query_src)?;
+        let caps = tree.captures(&query, src);
+        assert!(!caps.is_empty(), "rust highlights should match something");
+        assert!(query.capture_names().contains(&"keyword"));
+        // Every capture index is within range.
+        assert!(
+            caps.iter()
+                .all(|c| (c.capture as usize) < query.capture_names().len())
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn detects_rust_by_extension_and_name() {
+        let p = std::path::Path::new("src/lib.rs");
+        assert!(language_id_from_path(p).is_some());
+        assert_eq!(language_name_from_path(p), Some("Rust"));
     }
 }

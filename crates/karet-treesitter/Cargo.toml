@@ -14,16 +14,53 @@ categories.workspace   = true
 
 [features]
 default = []
-# TODO per-language features wire a tree-sitter grammar crate each, e.g.
-#   lang-rust   = ["dep:tree-sitter-rust"]
-#   lang-python = ["dep:tree-sitter-python"]
-# Grammars are intentionally not yet pinned (ABI must match `tree-sitter`).
+# One feature per bundled grammar (each wires an optional grammar crate). Grammars
+# are ABI 14–15, compatible with tree-sitter 0.26.9 (accepts ABI 13–15).
+lang-rust       = ["dep:tree-sitter-rust"]
+lang-python     = ["dep:tree-sitter-python"]
+lang-javascript = ["dep:tree-sitter-javascript"]
+lang-typescript = ["dep:tree-sitter-typescript"]
+lang-json       = ["dep:tree-sitter-json"]
+lang-go         = ["dep:tree-sitter-go"]
+lang-c          = ["dep:tree-sitter-c"]
+lang-cpp        = ["dep:tree-sitter-cpp"]
+lang-csharp     = ["dep:tree-sitter-c-sharp"]
+lang-java       = ["dep:tree-sitter-java"]
+lang-ruby       = ["dep:tree-sitter-ruby"]
+lang-php        = ["dep:tree-sitter-php"]
+lang-bash       = ["dep:tree-sitter-bash"]
+lang-toml       = ["dep:tree-sitter-toml-ng"]
+lang-html       = ["dep:tree-sitter-html"]
+lang-css        = ["dep:tree-sitter-css"]
+lang-yaml       = ["dep:tree-sitter-yaml"]
+# Convenience bundle: every grammar above. The `karet` app enables this.
+all-languages = [
+    "lang-rust", "lang-python", "lang-javascript", "lang-typescript", "lang-json",
+    "lang-go", "lang-c", "lang-cpp", "lang-csharp", "lang-java", "lang-ruby",
+    "lang-php", "lang-bash", "lang-toml", "lang-html", "lang-css", "lang-yaml",
+]
 
 [dependencies]
 karet-core.workspace = true
 tree-sitter.workspace = true
 thiserror.workspace = true
-# TODO: tree-sitter grammar crates (tree-sitter-rust, -python, …) behind lang-* features.
+tree-sitter-rust       = { workspace = true, optional = true }
+tree-sitter-python     = { workspace = true, optional = true }
+tree-sitter-javascript = { workspace = true, optional = true }
+tree-sitter-typescript = { workspace = true, optional = true }
+tree-sitter-json       = { workspace = true, optional = true }
+tree-sitter-go         = { workspace = true, optional = true }
+tree-sitter-c          = { workspace = true, optional = true }
+tree-sitter-cpp        = { workspace = true, optional = true }
+tree-sitter-c-sharp    = { workspace = true, optional = true }
+tree-sitter-java       = { workspace = true, optional = true }
+tree-sitter-ruby       = { workspace = true, optional = true }
+tree-sitter-php        = { workspace = true, optional = true }
+tree-sitter-bash       = { workspace = true, optional = true }
+tree-sitter-toml-ng    = { workspace = true, optional = true }
+tree-sitter-html       = { workspace = true, optional = true }
+tree-sitter-css        = { workspace = true, optional = true }
+tree-sitter-yaml       = { workspace = true, optional = true }
 
 [lints]
 workspace = true
