@@ -1,0 +1,27 @@
+[package]
+name        = "karet-widgets"
+description = "Reusable ratatui widget toolkit for editors (file tree, picker, palette, status bar, dialogs, panes, …)."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+
+[features]
+default = []
+
+[dependencies]
+karet-core.workspace = true
+karet-fuzzy.workspace = true
+ratatui.workspace = true
+ignore.workspace = true
+unicode-width.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

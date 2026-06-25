@@ -22,9 +22,9 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test
-        run: cargo test --all-features
+        run: cargo test --workspace --all-features
 
   coverage:
     name: Coverage
@@ -37,7 +37,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate coverage report
-        run: cargo llvm-cov --lcov --output-path lcov.info
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
       - name: Coverage summary
         run: cargo llvm-cov report --summary-only
       - name: Upload coverage artifact

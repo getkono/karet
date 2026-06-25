@@ -1,0 +1,29 @@
+[package]
+name        = "karet-text"
+description = "Headless rope text-editing model (buffer, undo/redo, cursors & selections) for karet TUI editors."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+
+[features]
+default = []
+# Memory-mapped read backend for very large files.
+mmap = ["dep:memmap2"]
+
+[dependencies]
+karet-core.workspace = true
+ropey.workspace = true
+unicode-segmentation.workspace = true
+smallvec.workspace = true
+thiserror.workspace = true
+memmap2 = { workspace = true, optional = true }
+
+[lints]
+workspace = true

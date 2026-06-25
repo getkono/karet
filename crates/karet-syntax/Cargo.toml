@@ -1,0 +1,25 @@
+[package]
+name        = "karet-syntax"
+description = "Tree-sitter syntactic analysis (highlighting, fold regions, brackets) for karet TUI editors."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+
+[features]
+default = []
+
+[dependencies]
+karet-core.workspace = true
+karet-treesitter.workspace = true
+tree-sitter-highlight.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,34 @@
+[package]
+name        = "karet-theme"
+description = "Theme model and loaders (.tmTheme, VS Code JSON) with WCAG contrast checking for karet."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+
+[features]
+default = []
+# Load TextMate `.tmTheme` (plist XML) themes.
+tmtheme = ["dep:plist"]
+# Load VS Code JSON themes.
+vscode = ["dep:serde", "dep:serde_json"]
+# Convert resolved colors into ratatui `Style`s.
+view = ["dep:ratatui"]
+
+[dependencies]
+karet-core.workspace = true
+palette.workspace = true
+thiserror.workspace = true
+plist = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+ratatui = { workspace = true, optional = true }
+
+[lints]
+workspace = true

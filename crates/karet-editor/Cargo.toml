@@ -1,0 +1,29 @@
+[package]
+name        = "karet-editor"
+description = "The composable ratatui code-editor widget for karet (gutter, minimap, folds, visual aids, snippets)."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+
+[features]
+default = []
+
+[dependencies]
+karet-core.workspace = true
+karet-text.workspace = true
+karet-syntax.workspace = true
+karet-theme = { workspace = true, features = ["view"] }
+ratatui.workspace = true
+unicode-width.workspace = true
+unicode-segmentation.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,30 @@
+[package]
+name        = "karet-markdown"
+description = "Markdown rendering model for karet TUI editors (optional ratatui renderer, optional code highlighting)."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+
+[features]
+default = []
+# Syntax-highlight code fences via karet-syntax.
+highlight = ["dep:karet-syntax"]
+# ratatui renderer widget.
+view = ["dep:ratatui"]
+
+[dependencies]
+karet-core.workspace = true
+pulldown-cmark.workspace = true
+thiserror.workspace = true
+karet-syntax = { workspace = true, optional = true }
+ratatui = { workspace = true, optional = true }
+
+[lints]
+workspace = true

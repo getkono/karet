@@ -10,20 +10,20 @@ pkl = "latest"                 # config language hk.pkl is written in
 
 [tasks.format]
 description = "Format code with rustfmt"
-run = "cargo fmt"
+run = "cargo fmt --all"
 
 [tasks.lint]
 description = "Lint with clippy (deny warnings)"
-run = "cargo clippy --all-targets -- -D warnings"
+run = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
 
 [tasks.lint-fix]
 description = "Lint and auto-fix with clippy"
-run = "cargo clippy --fix --allow-dirty --allow-staged"
+run = "cargo clippy --workspace --all-targets --all-features --fix --allow-dirty --allow-staged"
 
 [tasks.test]
 description = "Run the test suite"
-run = "cargo test"
+run = "cargo test --workspace --all-features"
 
 [tasks.coverage]
 description = "Report line coverage with cargo-llvm-cov"
-run = "cargo llvm-cov"
+run = "cargo llvm-cov --workspace --all-features"

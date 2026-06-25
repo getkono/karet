@@ -1,0 +1,34 @@
+[package]
+name        = "karet-lsp"
+description = "Async LSP client for karet TUI editors (diagnostics, completion, hover, goto, symbols, inlay hints, …)."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+
+[features]
+default = []
+# ratatui popups (completion, hover, signature, code actions, rename).
+view = ["dep:ratatui", "dep:karet-fuzzy", "dep:karet-markdown", "karet-markdown/view"]
+
+[dependencies]
+karet-core.workspace = true
+async-lsp.workspace = true
+lsp-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "io-util", "process", "macros"] }
+thiserror.workspace = true
+tracing.workspace = true
+karet-fuzzy = { workspace = true, optional = true }
+karet-markdown = { workspace = true, optional = true }
+ratatui = { workspace = true, optional = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,29 @@
+[package]
+name        = "karet-input"
+description = "Keymap engine (modal modes, chords, context scoping, rebinding) for karet TUI editors."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+
+[features]
+default = []
+# Load/save keymaps from config files.
+config = ["dep:serde", "dep:toml"]
+# Convert crossterm key events into karet key events.
+crossterm = ["dep:crossterm"]
+
+[dependencies]
+thiserror.workspace = true
+serde = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
+crossterm = { workspace = true, optional = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,55 @@
+[package]
+name        = "karet"
+description = "A VS Code–parity TUI code editor built from the karet-* toolkit."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+publish = false                       # the demo application is not published to crates.io
+
+[[bin]]
+name = "karet"
+path = "src/main.rs"
+
+[dependencies]
+# Every karet library — the app is the composition root that wires producers to widgets.
+karet-core.workspace = true
+karet-text       = { workspace = true, features = ["mmap"] }
+karet-treesitter.workspace = true
+karet-syntax.workspace = true
+karet-theme      = { workspace = true, features = ["view", "tmtheme", "vscode"] }
+karet-diff.workspace = true
+karet-markdown   = { workspace = true, features = ["view", "highlight"] }
+karet-image      = { workspace = true, features = ["view"] }
+karet-terminal   = { workspace = true, features = ["view"] }
+karet-lsp        = { workspace = true, features = ["view"] }
+karet-dap        = { workspace = true, features = ["view"] }
+karet-vcs        = { workspace = true, features = ["view"] }
+karet-search.workspace = true
+karet-fuzzy.workspace = true
+karet-input      = { workspace = true, features = ["config", "crossterm"] }
+karet-clipboard  = { workspace = true, features = ["async"] }
+karet-widgets.workspace = true
+karet-editor.workspace = true
+# External (app-level orchestration: runtime, CLI, format-on-save, spell-check, settings/session).
+ratatui.workspace = true
+crossterm.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+color-eyre.workspace = true
+ec4rs.workspace = true
+spellbook.workspace = true
+directories.workspace = true
+
+# The application is intentionally NOT a stable-API library, so it does not inherit
+# the strict workspace library lints (`[lints] workspace = true` is omitted): it may
+# use unwrap/expect/anyhow freely. clippy's defaults still apply, enforced via
+# `-D warnings` in CI.

@@ -1,0 +1,25 @@
+[package]
+name        = "karet-diff"
+description = "Pure, syntax-aware text diffing engine (tree-sitter structural diff with line/word fallback) for karet."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+
+[features]
+default = []
+
+[dependencies]
+karet-core.workspace = true
+karet-treesitter.workspace = true
+imara-diff.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,29 @@
+[package]
+name        = "karet-treesitter"
+description = "Shared tree-sitter parse host (incremental parsing, tree cache, query running) for karet."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+
+[features]
+default = []
+# TODO per-language features wire a tree-sitter grammar crate each, e.g.
+#   lang-rust   = ["dep:tree-sitter-rust"]
+#   lang-python = ["dep:tree-sitter-python"]
+# Grammars are intentionally not yet pinned (ABI must match `tree-sitter`).
+
+[dependencies]
+karet-core.workspace = true
+tree-sitter.workspace = true
+thiserror.workspace = true
+# TODO: tree-sitter grammar crates (tree-sitter-rust, -python, …) behind lang-* features.
+
+[lints]
+workspace = true

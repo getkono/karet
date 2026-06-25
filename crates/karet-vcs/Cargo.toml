@@ -1,0 +1,30 @@
+[package]
+name        = "karet-vcs"
+description = "Editor-oriented git integration (status, blame, branches, staging) for karet TUI editors."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+
+[features]
+default = []
+# ratatui source-control panels (status, branch picker, staging, blame overlay).
+view = ["dep:ratatui", "dep:karet-diff"]
+# TODO feature `git2`: optional libgit2 staging backend (needs the git2 crate + system libgit2/cmake).
+
+[dependencies]
+karet-core.workspace = true
+gix.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+karet-diff = { workspace = true, optional = true }
+ratatui = { workspace = true, optional = true }
+
+[lints]
+workspace = true

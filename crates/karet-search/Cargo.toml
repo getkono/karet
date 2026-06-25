@@ -1,0 +1,28 @@
+[package]
+name        = "karet-search"
+description = "In-file and workspace code search & replace (gitignore-aware, streaming) for karet."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+
+[features]
+default = []
+
+[dependencies]
+ignore.workspace = true
+grep-searcher.workspace = true
+grep-regex.workspace = true
+grep-matcher.workspace = true
+regex.workspace = true
+memchr.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

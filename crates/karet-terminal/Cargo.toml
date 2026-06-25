@@ -1,0 +1,30 @@
+[package]
+name        = "karet-terminal"
+description = "Embeddable VT/ANSI terminal emulator (parser, PTY, scrollback, OSC 133) for karet."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+
+[features]
+default = []
+# ratatui terminal widget.
+view = ["dep:ratatui", "dep:karet-core"]
+
+[dependencies]
+vt100.workspace = true
+portable-pty.workspace = true
+tokio = { workspace = true, features = ["rt", "io-util", "process", "macros"] }
+thiserror.workspace = true
+tracing.workspace = true
+karet-core = { workspace = true, optional = true }
+ratatui = { workspace = true, optional = true }
+
+[lints]
+workspace = true
