@@ -2439,8 +2439,6 @@ name = "karet-diff"
 version = "0.1.0"
 dependencies = [
  "imara-diff",
- "karet-core",
- "karet-treesitter",
  "thiserror 2.0.18",
 ]
 

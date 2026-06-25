@@ -16,10 +16,10 @@ categories.workspace   = true
 default = []
 
 [dependencies]
-karet-core.workspace = true
-karet-treesitter.workspace = true
 imara-diff.workspace = true
 thiserror.workspace = true
+# NOTE: tree-sitter structural diffing (DiffStrategy::Structural) is reserved but not
+# yet implemented; karet-treesitter will be re-added as a dependency when it lands.
 
 [lints]
 workspace = true
