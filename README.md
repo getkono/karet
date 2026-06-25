@@ -57,6 +57,10 @@ LLVM-based code coverage.
 mise run coverage
 ```
 
+### MSRV
+
+Rust 1.85
+
 ## License
 
 Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option.
