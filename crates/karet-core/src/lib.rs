@@ -1,43 +1,41 @@
 //! `karet-core` — the shared vocabulary for the karet TUI editor toolkit.
 //!
 //! This crate is intentionally tiny and dependency-light (no ratatui, no async
-//! runtime): it defines the coordinate types and neutral data models that let
-//! the other `karet-*` libraries interoperate, and that keep rendering widgets
+//! runtime): it defines the coordinate types and neutral data models that let the
+//! other `karet-*` libraries interoperate, and that keep rendering widgets
 //! decoupled from the engines that produce data. Producers (`karet-lsp`,
 //! `karet-vcs`, `karet-dap`, …) *emit* these models; widgets (`karet-editor`,
-//! `karet-widgets`) *render* them; the application connects the two.
+//! `karet-widgets`) *render* them; the backend (`karet-session`) and the
+//! application connect the two.
 //!
-//! # Responsibilities (to implement)
-//! - `geometry` — `Point`, `Size`, `Rect`, offsets, and the [`clamp`] helper.
-//! - `coord` — text coordinates: `BytePos`, `CharPos`, `LineCol`, `Range`, `Span`.
-//! - `model` — neutral models: `Diagnostic`/`Severity`, `Decoration`/`DecorationKind`,
-//!   `Symbol`/`SymbolKind`, `InlayHint`, `CodeLens`.
-//! - `provider` — interop traits such as `SymbolProvider`.
-//! - `token` — semantic `TokenId` / `ThemeRole` vocabulary shared by syntax & theme.
+//! With the optional **`serde`** feature every value type derives
+//! `Serialize`/`Deserialize`, so the same models double as the wire vocabulary for
+//! a future client-server split.
+//!
+//! # Modules
+//! - [`geometry`] — `Point`, `Size`, `Rect`, offsets, and the [`clamp`] helper.
+//! - [`coord`] — text coordinates: `BytePos`, `CharPos`, `LineCol`, `Range`, `Span`.
+//! - [`model`] — neutral models: diagnostics, decorations, symbols, completion, hover, ….
+//! - [`edit`] — neutral edit/selection types (`TextEdit`, `Change`, `Selection`, `CursorState`).
+//! - [`provider`] — interop traits such as [`SymbolProvider`].
+//! - [`token`] — semantic [`TokenId`] / [`ThemeRole`] vocabulary shared by syntax & theme.
 
-// TODO: geometry  — Point/Size/Rect + offset math (clamp lives here for now).
-// TODO: coord     — byte/char/line-col coordinates, Range, Span, conversions.
-// TODO: model     — Diagnostic, Decoration, Symbol, InlayHint, CodeLens.
-// TODO: provider  — SymbolProvider and other interop traits.
-// TODO: token     — semantic TokenId / ThemeRole.
+pub mod coord;
+pub mod edit;
+pub mod error;
+pub mod geometry;
+pub mod model;
+pub mod provider;
+pub mod token;
 
-/// Clamp a value into the inclusive range `[min, max]`.
-///
-/// A foundational building block for laying out and constraining terminal UI
-/// geometry (cursor positions, viewport sizes, scroll offsets).
-#[must_use]
-pub fn clamp(value: u16, min: u16, max: u16) -> u16 {
-    value.max(min).min(max)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn clamps_within_range() {
-        assert_eq!(clamp(5, 0, 10), 5);
-        assert_eq!(clamp(15, 0, 10), 10);
-        assert_eq!(clamp(0, 3, 10), 3);
-    }
-}
+pub use coord::{BytePos, CharPos, LineCol, PositionEncoding, Range, Span};
+pub use edit::{Change, CursorState, Selection, TextEdit, WorkspaceEdit};
+pub use error::CoreError;
+pub use geometry::{Offset, Point, Rect, Size, clamp};
+pub use model::{
+    CodeAction, CodeLens, CommandId, CompletionItem, CompletionKind, Decoration, DecorationKind,
+    Diagnostic, DiagnosticTag, Hover, InlayHint, InlayHintKind, Location, Markup, MarkupKind,
+    ParamInfo, RelatedInfo, Severity, Signature, SignatureHelp, Symbol, SymbolKind, UnderlineStyle,
+};
+pub use provider::{DecorationSource, DiagnosticSource, SymbolProvider};
+pub use token::{StandardToken, ThemeRole, TokenId};

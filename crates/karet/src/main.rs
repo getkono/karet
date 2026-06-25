@@ -1,32 +1,55 @@
 //! karet — a VS Code–parity TUI code editor built from the `karet-*` toolkit.
 //!
-//! This binary is the composition root: it is the only crate that depends on
-//! every library and wires the headless *producers* (`karet-lsp`, `karet-vcs`,
-//! `karet-dap`, `karet-search`, …) to the *widgets* (`karet-editor`,
-//! `karet-widgets`) by routing the producers' `karet-core` decorations,
-//! diagnostics and symbols into the views. Engines never depend on each other
-//! across features — the cross-feature wiring lives here, in the application.
+//! This binary is the **presentation/client** half of karet and the composition
+//! root. It constructs the headless backend (`karet-session`), drives it through
+//! the `Backend` seam, and renders its `Event`s with `karet-editor` and
+//! `karet-widgets`. The business logic (document/producer orchestration,
+//! format-on-save, spell-check, settings/session-restore) lives server-side in
+//! `karet-session`, so this crate stays a thin client — and a future remote split
+//! is additive.
 //!
 //! Intended wiring (to implement):
-//! 1. Init `tracing` + `color-eyre`; parse CLI args (`clap`).
-//! 2. Load a theme (`karet-theme`) and keymaps (`karet-input`); resolve per-file
-//!    settings (editorconfig/.vscode via the `config` module).
-//! 3. Build the layout/pane tree and mount `karet-editor` + `karet-widgets`.
-//! 4. Open files into `karet-text`; highlight/fold via `karet-syntax`.
-//! 5. Spawn async producers (`karet-lsp`, `karet-dap`, `karet-vcs`, `karet-terminal`)
-//!    on the tokio runtime and forward their output as decorations/diagnostics.
-//! 6. Run the event loop (`crossterm` events → `karet-input` → actions → render).
+//! 1. Init `tracing` + `color-eyre`; parse CLI args (`clap`) into a `SessionConfig`.
+//! 2. Build the backend: `Session::new` + `karet_session::local` (in-process today;
+//!    a remote client later, behind the same `Backend` trait).
+//! 3. Set up the crossterm terminal and the pane/layout tree.
+//! 4. Run the event loop: crossterm key events → the `input` keymap → `Command`s
+//!    submitted via the `Backend`; drain the `EventRx` → render the editor (from
+//!    `session.document(..)`) and the `karet-widgets` panels/popups.
 //!
-//! App-only modules with no standalone reuse live alongside this entry point:
-//! - `format` — format-on-save via external formatters (minimal edits via `karet-diff`).
-//! - `spell` — spell-check (spellbook) emitting `karet-core` diagnostics.
-//! - `config` — settings precedence + session restore (editorconfig/.vscode, recents, multi-root).
+//! Client-side concerns merged in as modules (no standalone reuse beyond the app):
+//! - `clipboard` — OSC 52 + external clipboard fallbacks (was `karet-clipboard`).
+//! - `input` — the keymap engine (was `karet-input`).
 
-// TODO: format — external formatter invocation → minimal edits.
-// TODO: spell  — spell-check comments/strings → diagnostics.
-// TODO: config — settings precedence + session restore.
+// Skeleton: the merged `clipboard`/`input` modules and the composition wiring
+// define the client API that the (still-`todo!()`) event loop will use. Allow
+// dead_code until that loop is implemented and exercises them.
+#![allow(dead_code)]
 
-fn main() {
-    // TODO: real entry point — see the wiring walkthrough in the module docs above.
-    println!("karet — TUI code editor (skeleton; not yet implemented)");
+mod clipboard;
+mod input;
+
+use karet_session::{Session, SessionConfig, local};
+
+fn main() -> color_eyre::Result<()> {
+    color_eyre::install()?;
+    // TODO: init tracing-subscriber; parse CLI args (clap) into the SessionConfig.
+    let config = SessionConfig::default();
+    let (session, events) = Session::new(config);
+    let backend = local(session);
+    run(backend, events)
+}
+
+/// Run the TUI client: translate input into `karet_session::Command`s via the
+/// backend, and render `karet_session::Event`s drained from `events`.
+fn run(
+    backend: karet_session::LocalBackend,
+    events: karet_session::EventRx,
+) -> color_eyre::Result<()> {
+    // TODO: crossterm terminal setup; loop {
+    //   read key -> input::Keymap<Command>::resolve -> backend.send(Command);
+    //   while let Some((id, event)) = events.recv().await -> render editor + widgets;
+    // }
+    let _ = (backend, events);
+    todo!()
 }

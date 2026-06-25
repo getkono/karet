@@ -11,6 +11,7 @@ homepage.workspace     = true
 readme.workspace       = true
 keywords.workspace     = true
 categories.workspace   = true
+publish = false                       # karet-internal UI toolkit — not published to crates.io
 
 [features]
 default = []
@@ -18,7 +19,9 @@ default = []
 [dependencies]
 karet-core.workspace = true
 karet-fuzzy.workspace = true
+karet-markdown.workspace = true       # hover/doc popup rendering (relocated LSP popups)
 ratatui.workspace = true
+image.workspace = true                # merged from the former karet-image crate
 ignore.workspace = true
 unicode-width.workspace = true
 thiserror.workspace = true

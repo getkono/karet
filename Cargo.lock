@@ -2530,22 +2530,19 @@ dependencies = [
 name = "karet"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "clap",
  "color-eyre",
  "crossterm",
  "directories",
- "ec4rs",
- "karet-clipboard",
  "karet-core",
  "karet-dap",
  "karet-diff",
  "karet-editor",
  "karet-fuzzy",
- "karet-image",
- "karet-input",
- "karet-lsp",
  "karet-markdown",
  "karet-search",
+ "karet-session",
  "karet-syntax",
  "karet-terminal",
  "karet-text",
@@ -2554,19 +2551,12 @@ dependencies = [
  "karet-vcs",
  "karet-widgets",
  "ratatui",
- "spellbook",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "karet-clipboard"
-version = "0.1.0"
-dependencies = [
- "base64",
+ "serde",
  "thiserror 2.0.18",
  "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -2623,34 +2613,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "karet-image"
-version = "0.1.0"
-dependencies = [
- "image",
- "ratatui",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "karet-input"
-version = "0.1.0"
-dependencies = [
- "crossterm",
- "serde",
- "thiserror 2.0.18",
- "toml",
-]
-
-[[package]]
 name = "karet-lsp"
 version = "0.1.0"
 dependencies = [
  "async-lsp",
  "karet-core",
- "karet-fuzzy",
- "karet-markdown",
  "lsp-types 0.97.0",
- "ratatui",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -2680,6 +2648,29 @@ dependencies = [
  "memchr",
  "regex",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "karet-session"
+version = "0.1.0"
+dependencies = [
+ "directories",
+ "ec4rs",
+ "karet-core",
+ "karet-dap",
+ "karet-diff",
+ "karet-fuzzy",
+ "karet-lsp",
+ "karet-search",
+ "karet-syntax",
+ "karet-terminal",
+ "karet-text",
+ "karet-treesitter",
+ "karet-vcs",
+ "spellbook",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2756,8 +2747,10 @@ name = "karet-widgets"
 version = "0.1.0"
 dependencies = [
  "ignore",
+ "image",
  "karet-core",
  "karet-fuzzy",
+ "karet-markdown",
  "ratatui",
  "thiserror 2.0.18",
  "unicode-width",

@@ -1,0 +1,36 @@
+[package]
+name        = "karet-session"
+description = "Headless editor backend for karet: owns documents and workspace, orchestrates producers, applies commands, emits events."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+publish = false                       # karet-internal backend — pulls the whole logic tree
+
+[dependencies]
+karet-core = { workspace = true, features = ["serde"] }   # serde-ready seam models
+karet-text.workspace = true
+karet-treesitter.workspace = true
+karet-syntax.workspace = true
+karet-diff.workspace = true
+karet-lsp.workspace = true            # headless
+karet-dap.workspace = true            # headless
+karet-vcs.workspace = true            # headless
+karet-search.workspace = true
+karet-fuzzy.workspace = true
+karet-terminal.workspace = true       # PTY host is server-side business logic
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "macros", "process"] }
+tracing.workspace = true
+thiserror.workspace = true
+ec4rs.workspace = true                # settings / editorconfig precedence (migrated from the app)
+spellbook.workspace = true            # spell-check → diagnostics (migrated from the app)
+directories.workspace = true          # server-side config / session paths
+
+[lints]
+workspace = true

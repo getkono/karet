@@ -19,8 +19,18 @@ files", "render markdown") without pulling in unrelated heavy dependencies.
   `Symbol`); renderers (`karet-editor`, `karet-widgets`) consume them. Only the
   application connects a producer to a widget — no widget crate depends on a
   producer crate.
+- **Business logic vs presentation**: the headless `karet-session` backend owns the
+  documents/workspace and runs the producers, exposing a `Command`/`Event` vocabulary
+  and a `Backend` trait. The presentation half (the `karet` app, `karet-editor`,
+  `karet-widgets`) talks to it only through that seam, so the (deferred) client-server
+  split is additive rather than a rewrite.
 - A piece that has no standalone reuse is a **module inside a larger crate**, not a
-  crate of its own (avoid boilerplate crates).
+  crate of its own (avoid boilerplate crates) — e.g. terminal-image rendering, the
+  keymap engine and the clipboard are modules (in `karet-widgets`/the app), not crates.
+- **Publish conservatively**: only genuinely reusable-outside-karet libraries are
+  published to crates.io — `karet-core`, `karet-treesitter`, `karet-diff`, `karet-lsp`,
+  `karet-dap`, `karet-vcs`, `karet-search`. Everything else (widgets, editor, theme,
+  text, syntax, markdown, terminal, fuzzy, session, app) is `publish = false`.
 - **Tree-sitter is the sole syntax backend** (no multiple-backend abstraction).
 - Only the **application** is exempt from the stable-API + minimal-deps rules.
 
@@ -35,29 +45,28 @@ and `[workspace.dependencies]`.
 
 ## Crates
 
-Engines are headless; `view feat` = ratatui widget behind the `view` feature.
+Engines are headless; `view feat` = ratatui widget behind the `view` feature; **pub**
+marks crates published to crates.io (everything else is `publish = false`).
 
-| crate | role | one-line scope |
-|---|---|---|
-| `karet-core` | foundation | shared vocabulary: geometry, text coords, neutral models (Diagnostic/Decoration/Symbol), `SymbolProvider`, `TokenId` |
-| `karet-text` | engine | rope buffer, undo/redo, dirty/save, large-file mmap, **cursors & selections** (module) |
-| `karet-treesitter` | engine | shared tree-sitter parse host (parser pool, incremental trees, queries) |
-| `karet-syntax` | engine | tree-sitter highlighting, **fold regions**, bracket pairs, structural selection |
-| `karet-theme` | engine | token palette, .tmTheme + VS Code JSON loaders, contrast (`view` feat) |
-| `karet-diff` | engine | pure syntax-aware diffing (tree-sitter + line/word fallback) — no presentation |
-| `karet-markdown` | engine | markdown render model (`view` + `highlight` feats) |
-| `karet-image` | engine | terminal image rendering: halfblocks/Kitty/Sixel/iTerm2 (`view` feat) |
-| `karet-terminal` | engine | VT/PTY emulator, scrollback, OSC 133 (`view` feat) |
-| `karet-lsp` | engine | async LSP client → core models (`view` feat = popups) |
-| `karet-dap` | engine | async DAP client → breakpoint decorations (`view` feat = panels) |
-| `karet-vcs` | engine | git status/blame/branches/staging → decorations (`view` feat = SCM panels) |
-| `karet-search` | engine | in-file + workspace search/replace (ripgrep-style) |
-| `karet-fuzzy` | engine | fuzzy match + frecency + quick-open query parsing |
-| `karet-input` | engine | keymap engine: modal modes, chords, scoping, rebinding |
-| `karet-clipboard` | engine | OSC 52 + external clipboard fallbacks |
-| `karet-widgets` | widget | ratatui UI toolkit: file tree, picker/palette, outline+breadcrumbs, status bar, toasts, dialogs, dock, which-key, problems, **pane layout**, **hex view** |
-| `karet-editor` | widget | the editor widget: **gutter, minimap, scroll, visual aids, snippets** (modules) |
-| `karet` | app | composition root / demo editor (folds in **format-on-save, spell-check, settings/session**); `publish = false` |
+| crate | role | pub | one-line scope |
+|---|---|---|---|
+| `karet-core` | foundation | ✓ | shared vocabulary: geometry, text coords, neutral models (Diagnostic/Decoration/Symbol/Completion/Hover/…), neutral edits, `SymbolProvider`, `TokenId` |
+| `karet-text` | engine | — | rope buffer, undo/redo, dirty/save, large-file mmap, **cursors & selections** (module) |
+| `karet-treesitter` | engine | ✓ | shared tree-sitter parse host (parser pool, incremental trees, queries) |
+| `karet-syntax` | engine | — | tree-sitter highlighting, **fold regions**, bracket pairs, structural selection |
+| `karet-theme` | engine | — | token palette, .tmTheme + VS Code JSON loaders, contrast (`view` feat) |
+| `karet-diff` | engine | ✓ | pure syntax-aware diffing (tree-sitter + line/word fallback) — no presentation |
+| `karet-markdown` | engine | — | markdown render model (`view` + `highlight` feats) |
+| `karet-terminal` | engine | — | VT/PTY emulator, scrollback, OSC 133 (`view` feat) |
+| `karet-lsp` | engine | ✓ | async LSP client → core models (**headless**; ratatui popups live in `karet-widgets`) |
+| `karet-dap` | engine | ✓ | async DAP client → breakpoint decorations (`view` feat = panels) |
+| `karet-vcs` | engine | ✓ | git status/blame/branches/staging → decorations (`view` feat = SCM panels) |
+| `karet-search` | engine | ✓ | in-file + workspace search/replace (ripgrep-style; no karet deps) |
+| `karet-fuzzy` | engine | — | fuzzy match + frecency + quick-open query parsing |
+| `karet-session` | backend | — | **headless editor backend**: owns documents/workspace, orchestrates producers, applies `Command`s, emits `Event`s; holds **format-on-save, spell-check, settings/session** |
+| `karet-widgets` | widget | — | ratatui UI toolkit: file tree, picker/palette, outline+breadcrumbs, status bar, dialogs, dock, problems, **pane layout**, **hex view**, **terminal image**, **LSP completion/hover popups** |
+| `karet-editor` | widget | — | the editor widget: **gutter, minimap, scroll, visual aids, snippets** (modules) |
+| `karet` | app | — | composition root / TUI client (local mode); merges the **clipboard** + **input (keymap)** modules; `publish = false` |
 
 ## Quality
 
