@@ -22,9 +22,9 @@ path = "src/main.rs"
 karet-core.workspace = true
 karet-session.workspace = true
 karet-text       = { workspace = true, features = ["mmap"] }
-karet-treesitter.workspace = true
+karet-treesitter = { workspace = true, features = ["all-languages"] }
 karet-syntax.workspace = true
-karet-theme      = { workspace = true, features = ["view", "tmtheme", "vscode"] }
+karet-theme      = { workspace = true, features = ["view", "vscode"] }
 karet-diff.workspace = true
 karet-markdown   = { workspace = true, features = ["view", "highlight"] }
 karet-terminal   = { workspace = true, features = ["view"] }
