@@ -65,6 +65,27 @@ memmap2 = "0.9.11"
 # Tree-sitter (sole syntax backend)
 tree-sitter           = "0.26.9"
 tree-sitter-highlight = "0.26.9"
+# Tree-sitter grammars (generated ABI 14–15; tree-sitter 0.26.9 accepts ABI 13–15).
+# Each is an official `tree-sitter/tree-sitter-<lang>` crate that deps on
+# `tree-sitter-language` and only dev-deps `tree-sitter`, so there is no version clash.
+# Wired into `karet-treesitter` behind `lang-*` features (off by default).
+tree-sitter-rust       = "0.24.2"
+tree-sitter-python     = "0.25.0"
+tree-sitter-javascript = "0.25.0"
+tree-sitter-json       = "0.24.8"
+tree-sitter-go         = "0.25.0"
+tree-sitter-c          = "0.24.2"
+tree-sitter-toml-ng    = "0.7.0"
+tree-sitter-bash       = "0.25.1"
+tree-sitter-java       = "0.23.5"
+tree-sitter-cpp        = "0.23.4"
+tree-sitter-c-sharp    = "0.23.5"
+tree-sitter-ruby       = "0.23.1"
+tree-sitter-php        = "0.24.2"
+tree-sitter-html       = "0.23.2"
+tree-sitter-css        = "0.25.0"
+tree-sitter-yaml       = "0.7.2"
+tree-sitter-typescript = "0.23.2"
 # Diff / markdown / image
 imara-diff    = "0.2.0"
 pulldown-cmark = "0.13.4"
@@ -76,7 +97,10 @@ portable-pty = "0.9.0"
 async-lsp = "0.2.4"
 lsp-types = "0.97.0"
 # Version control
-gix = "0.85.0"
+# `status` pulls gix-status + dirwalk (untracked) + index + blob-diff; `sha1` is the
+# (mandatory, not-implied) hash backend; `max-performance-safe` is pure-Rust (no C
+# toolchain). We trim the heavy default `extras` (archive/credentials/mailmap/blame/…).
+gix = { version = "0.85.0", default-features = false, features = ["status", "max-performance-safe", "sha1"] }
 # Search
 ignore        = "0.4.26"
 grep-searcher = "0.1.16"
