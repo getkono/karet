@@ -11,6 +11,13 @@
 use karet_core::Decoration;
 use std::path::{Path, PathBuf};
 
+mod changes;
+mod repo;
+mod selection;
+
+pub use changes::FileChange;
+pub use selection::Selection;
+
 /// Errors produced by the VCS engine.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -78,18 +85,12 @@ pub struct Branch {
 }
 
 /// An editor-oriented handle to a git repository.
-pub struct Repository {}
+pub struct Repository {
+    /// The underlying `gix` repository. Note: `gix::Repository` is not `Sync`.
+    inner: gix::Repository,
+}
 
 impl Repository {
-    /// Discover the repository containing `path`.
-    ///
-    /// # Errors
-    /// Returns [`VcsError::NotARepository`] if no repository is found.
-    pub fn discover(path: &Path) -> Result<Self, VcsError> {
-        let _ = path;
-        todo!()
-    }
-
     /// The current working-tree status.
     ///
     /// # Errors
