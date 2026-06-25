@@ -19,8 +19,13 @@ default = []
 [dependencies]
 karet-core.workspace = true
 karet-treesitter.workspace = true
-tree-sitter-highlight.workspace = true
 thiserror.workspace = true
+# NOTE: highlighting runs the grammar's query through karet-treesitter's single
+# parse host (not tree-sitter-highlight), honoring the single-parse-host design.
+
+[dev-dependencies]
+# Compile in the Rust grammar so the end-to-end highlight test is self-contained.
+karet-treesitter = { workspace = true, features = ["lang-rust"] }
 
 [lints]
 workspace = true
