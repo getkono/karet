@@ -1,15 +1,21 @@
 # karet-vcs
 
-> Editor-oriented git integration (status, blame, branches, staging) for karet TUI editors.
+> Editor-oriented git integration for karet, backed by `gix`.
 
-A `gix`-backed engine for working-tree status, per-line blame, branches and staging, emitting
-change markers and blame annotations as neutral `karet-core` decorations. Headless by default.
+A `gix`-backed engine for working-tree state. It discovers the repository containing a
+path, decides whether to show **staged** (HEAD ↔ index) or **unstaged** (index ↔
+worktree, plus untracked) changes — VS Code's default — and enumerates each changed
+file's full *before*/*after* content so a consumer can diff it (e.g. with `karet-diff`),
+with binary detection and rename handling. Headless by default.
+
+Per-line blame, branch listing and interactive staging are reserved (the public joints
+are defined).
 
 Part of the [karet](https://github.com/getkono/karet) workspace.
 
 ## Features
 
-- `view` — ratatui source-control panels (status, branch picker, staging, blame overlay).
+- `view` — ratatui source-control panels (reserved).
 
 ## License
 

@@ -1,10 +1,16 @@
 # karet-diff
 
-> Pure, syntax-aware text diffing engine (tree-sitter structural diff with line/word fallback) for karet.
+> Pure, headless text diffing engine for karet.
 
-A presentation-free diff engine: parse both sides with tree-sitter and diff the structure
-(difftastic-style), falling back to line/word diffing for formats without a grammar. Produces
-hunks and a per-hunk staging model; how a diff is displayed is entirely up to the consumer.
+A presentation-free diff engine. It diffs two texts into a neutral model (files,
+hunks, lines) at line + intra-word granularity (via `imara-diff`), parses existing
+unified diffs (`git diff` output) back into the same model, aligns hunks into
+side-by-side rows, computes intra-line change segments, and reconstructs or stages
+unified-diff patches. How a diff is displayed — colors, layout, syntax highlighting —
+is entirely up to the consumer.
+
+Tree-sitter structural ("difftastic-style") diffing is reserved behind
+`DiffStrategy::Structural`; today both strategies use the line/word path.
 
 Part of the [karet](https://github.com/getkono/karet) workspace.
 
