@@ -14,12 +14,14 @@ mod align;
 mod engine;
 mod intraline;
 mod model;
+mod parse;
 mod patch;
 
 pub use align::{Cell, SideBySideRow, align_hunk};
 pub use engine::{DiffOptions, diff_files, diff_text};
 pub use intraline::{HighlightedPair, Segment, compute_highlights};
 pub use model::{Diff, DiffLine, FileDiff, FileStatus, Hunk, LineKind};
+pub use parse::parse;
 pub use patch::{Staging, format_hunk_patch};
 
 use std::path::Path;

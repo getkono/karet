@@ -52,6 +52,34 @@ pub struct Hunk {
     pub lines: Vec<DiffLine>,
 }
 
+impl Hunk {
+    /// The effective scope to show on the new (right) side: the new-side signature
+    /// when known, otherwise the old [`scope`](Self::scope).
+    #[must_use]
+    pub fn right_scope(&self) -> Option<&str> {
+        self.new_scope.as_deref().or(self.scope.as_deref())
+    }
+
+    /// The header line for the new (right) side: the same `@@ -a,b +c,d @@` range,
+    /// but with the trailing scope suffix replaced by the new signature when known.
+    /// Falls back to [`header`](Self::header) verbatim otherwise.
+    #[must_use]
+    pub fn right_header(&self) -> String {
+        let Some(new_scope) = &self.new_scope else {
+            return self.header.clone();
+        };
+        // Locate the byte just past the closing `@@`, mirroring scope extraction.
+        let prefix_end = self
+            .header
+            .strip_prefix("@@ ")
+            .and_then(|after| after.find(" @@").map(|c| "@@ ".len() + c + " @@".len()));
+        match prefix_end {
+            Some(end) => format!("{} {}", &self.header[..end], new_scope),
+            None => self.header.clone(),
+        }
+    }
+}
+
 /// The change status of a whole file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileStatus {
