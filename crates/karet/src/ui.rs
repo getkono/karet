@@ -15,7 +15,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
-use crate::app::{App, FindState};
+use crate::app::{App, FindState, TabHit};
 use crate::keymap::{Focus, SidebarPanel};
 use crate::overlay::Overlay;
 use crate::render::{self, Section};
@@ -177,8 +177,11 @@ fn sidebar_width(total: u16) -> u16 {
     30.min(cap)
 }
 
-fn draw_tabs(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
+fn draw_tabs(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+    app.tabstrip_rect = area;
+    app.tab_hits.clear();
     let mut spans = Vec::new();
+    let mut x = area.x;
     for (i, tab) in app.tabs.iter().enumerate() {
         let style = if i == app.active {
             Style::default()
@@ -187,7 +190,19 @@ fn draw_tabs(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         } else {
             Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())
         };
-        spans.push(Span::styled(format!(" {} ", tab.title), style));
+        let label = format!(" {} ", tab.title);
+        let label_w = label.chars().count() as u16;
+        let start = x;
+        spans.push(Span::styled(label, style));
+        spans.push(Span::styled("\u{00d7}", style)); // × close glyph
+        spans.push(Span::styled(" ", style));
+        let close = start + label_w;
+        x = close + 2;
+        app.tab_hits.push(TabHit {
+            start,
+            end: x,
+            close,
+        });
     }
     let bar = Style::default().bg(theme.role(ThemeRole::Background).to_ratatui());
     f.render_widget(Paragraph::new(Line::from(spans)).style(bar), area);

@@ -75,6 +75,17 @@ pub(crate) struct SearchPanel {
 /// The maximum number of matching files the workspace search panel collects.
 const SEARCH_RESULT_CAP: usize = 500;
 
+/// A clickable tab region in the tab strip, recorded during the last render.
+#[derive(Clone, Copy)]
+pub(crate) struct TabHit {
+    /// First column of the tab (inclusive).
+    pub(crate) start: u16,
+    /// One past the last column of the tab (exclusive).
+    pub(crate) end: u16,
+    /// Column of the close (×) glyph.
+    pub(crate) close: u16,
+}
+
 /// The IDE shell state.
 pub struct App {
     /// The workspace root.
@@ -113,6 +124,10 @@ pub struct App {
     pub(crate) sidebar_rect: Rect,
     /// The main content rect from the last frame.
     pub(crate) main_rect: Rect,
+    /// The tab strip rect from the last frame (mouse hit-testing).
+    pub(crate) tabstrip_rect: Rect,
+    /// Per-tab clickable regions from the last frame (mouse hit-testing).
+    pub(crate) tab_hits: Vec<TabHit>,
     /// The active Kitty image placement rect (set by the renderer), if any.
     pub(crate) image_area: Option<Rect>,
     /// The tab index whose image is currently transmitted to the terminal.
@@ -157,6 +172,8 @@ impl App {
             status: None,
             sidebar_rect: Rect::default(),
             main_rect: Rect::default(),
+            tabstrip_rect: Rect::default(),
+            tab_hits: Vec::new(),
             image_area: None,
             shown_image: None,
             should_quit: false,
@@ -817,10 +834,49 @@ impl App {
         }
     }
 
-    /// Handle a mouse event: wheel scrolls (the sidebar or the active tab) and a
-    /// left click moves focus to the clicked region.
+    /// The tab at column `x` and whether `x` is on its close glyph.
+    fn tab_at(&self, x: u16) -> Option<(usize, bool)> {
+        self.tab_hits
+            .iter()
+            .enumerate()
+            .find_map(|(i, h)| (x >= h.start && x < h.end).then_some((i, x == h.close)))
+    }
+
+    /// Handle a mouse event over the tab strip (click to switch / close, wheel to
+    /// cycle). Returns `true` when the event was consumed.
+    fn handle_tabstrip_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if !rect_contains(self.tabstrip_rect, (mouse.column, mouse.row)) {
+            return false;
+        }
+        match mouse.kind {
+            MouseEventKind::ScrollDown => self.next_tab(),
+            MouseEventKind::ScrollUp => self.prev_tab(),
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some((i, on_close)) = self.tab_at(mouse.column) {
+                    if on_close {
+                        self.close_tab_at(i);
+                    } else {
+                        self.select_tab(i);
+                    }
+                }
+            }
+            MouseEventKind::Down(MouseButton::Middle) => {
+                if let Some((i, _)) = self.tab_at(mouse.column) {
+                    self.close_tab_at(i);
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// Handle a mouse event: the tab strip (switch / close / cycle), wheel scrolls
+    /// (the sidebar or the active tab), and a left click moves focus.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         if self.overlay.is_some() {
+            return;
+        }
+        if self.handle_tabstrip_mouse(mouse) {
             return;
         }
         let point = (mouse.column, mouse.row);
@@ -1146,6 +1202,28 @@ mod tests {
         assert_eq!(app.active, 1);
         app.move_active_tab(1); // already last: clamped, no change
         assert_eq!(app.active, 1);
+    }
+
+    #[test]
+    fn tab_at_maps_columns_to_tabs_and_close() {
+        let mut app = app();
+        app.tab_hits = vec![
+            TabHit {
+                start: 0,
+                end: 10,
+                close: 8,
+            },
+            TabHit {
+                start: 10,
+                end: 20,
+                close: 18,
+            },
+        ];
+        assert_eq!(app.tab_at(3), Some((0, false)));
+        assert_eq!(app.tab_at(8), Some((0, true)));
+        assert_eq!(app.tab_at(12), Some((1, false)));
+        assert_eq!(app.tab_at(18), Some((1, true)));
+        assert_eq!(app.tab_at(25), None);
     }
 
     #[test]
