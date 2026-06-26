@@ -23,6 +23,7 @@ karet-markdown.workspace = true       # hover/doc popup rendering (relocated LSP
 karet-theme = { workspace = true, features = ["view"] }  # role colors for the widgets
 ratatui.workspace = true
 image.workspace = true                # merged from the former karet-image crate
+base64.workspace = true               # Kitty graphics protocol payload encoding
 ignore.workspace = true
 unicode-width.workspace = true
 thiserror.workspace = true

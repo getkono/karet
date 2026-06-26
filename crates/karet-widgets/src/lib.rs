@@ -16,6 +16,7 @@ use karet_fuzzy::Matcher;
 
 pub mod file_tree;
 pub mod hex;
+pub mod image;
 pub mod viewer;
 
 pub use file_tree::{FileTree, FileTreeRow, FileTreeState, IconSet};
@@ -84,37 +85,6 @@ pub mod hover {
     pub struct HoverPopup<'a> {
         /// The markup payload to render.
         pub markup: &'a Markup,
-    }
-}
-
-/// Terminal image rendering (merged from the former `karet-image` crate).
-pub mod image {
-    /// Errors decoding or rendering an image.
-    #[derive(Debug, thiserror::Error)]
-    #[non_exhaustive]
-    pub enum ImageError {
-        /// The image bytes could not be decoded.
-        #[error("failed to decode image")]
-        Decode,
-    }
-
-    /// A decoded, scalable image.
-    pub struct Image {}
-
-    /// Decode image bytes into an [`Image`].
-    ///
-    /// # Errors
-    /// Returns [`ImageError::Decode`] if the bytes are not a supported format.
-    pub fn decode(bytes: &[u8]) -> Result<Image, ImageError> {
-        let _ = bytes;
-        todo!()
-    }
-
-    /// A ratatui widget that renders an [`Image`] using terminal graphics
-    /// (halfblocks / Kitty / Sixel / iTerm2).
-    pub struct ImageWidget<'a> {
-        /// The image to render.
-        pub image: &'a Image,
     }
 }
 
