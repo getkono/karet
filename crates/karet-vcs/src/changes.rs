@@ -321,14 +321,22 @@ fn pathspec_patterns(repo: &gix::Repository, pathspec: Option<&Path>) -> Vec<gix
         .collect()
 }
 
-/// Make `path` repo-relative: strip the worktree prefix if absolute, else use it as-is.
+/// Make `path` repo-relative by stripping the worktree prefix.
+///
+/// `path` comes from the CLI, so a *relative* path is relative to the process's
+/// current directory — not the repository root. Both `path` and the worktree are
+/// canonicalized (resolving `.`, `..`, and symlinks) before the strip, so a
+/// current-directory-relative path that points at or inside the worktree maps
+/// correctly. Returns `None` — treated by the callers as "no filter" — when `path`
+/// lies outside the worktree or cannot be resolved.
 fn repo_relative(repo: &gix::Repository, path: &Path) -> Option<PathBuf> {
-    if path.is_absolute() {
-        let workdir = repo.workdir()?;
-        path.strip_prefix(workdir).ok().map(Path::to_path_buf)
-    } else {
-        Some(path.to_path_buf())
-    }
+    let workdir = repo.workdir()?;
+    let abs_path = std::fs::canonicalize(path).ok()?;
+    let abs_workdir = std::fs::canonicalize(workdir).ok()?;
+    abs_path
+        .strip_prefix(&abs_workdir)
+        .ok()
+        .map(Path::to_path_buf)
 }
 
 #[cfg(test)]
@@ -336,9 +344,21 @@ mod tests {
     use crate::{Repository, Selection, StatusKind, VcsError};
     use std::path::{Path, PathBuf};
     use std::process::Command;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
+    /// Serializes the tests that mutate the process-wide current directory.
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Restores the working directory on drop, so a panic can't leak the change.
+    struct CwdGuard(PathBuf);
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
 
     /// A temp directory removed on drop.
     struct TempRepo {
@@ -505,6 +525,36 @@ mod tests {
         // Passing the repo root as the pathspec yields an empty relative pattern,
         // which must be treated as "no filter" rather than erroring.
         let changes = r.changes(Selection::Unstaged, Some(&repo.path))?;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, PathBuf::from("a.txt"));
+        Ok(())
+    }
+
+    #[test]
+    fn cwd_relative_pathspec_resolves_against_current_dir() -> Result<(), VcsError> {
+        // Mirrors `karet ../chat`: a relative pathspec is relative to the process's
+        // current directory, not the repo root. Pointing it at the repo root itself
+        // must reduce to an empty (no-op) filter, so the change is still reported.
+        let repo = init_repo()?;
+        write(&repo.path, "a.txt", b"hi\n")?;
+        let parent = repo
+            .path
+            .parent()
+            .ok_or_else(|| VcsError::Git("temp repo has no parent".into()))?
+            .to_path_buf();
+        let name = repo
+            .path
+            .file_name()
+            .ok_or_else(|| VcsError::Git("temp repo has no name".into()))?
+            .to_owned();
+
+        let _lock = CWD_LOCK.lock().map_err(|e| VcsError::Git(e.to_string()))?;
+        let original = std::env::current_dir().map_err(|e| VcsError::Git(e.to_string()))?;
+        let _restore = CwdGuard(original);
+        std::env::set_current_dir(&parent).map_err(|e| VcsError::Git(e.to_string()))?;
+
+        let r = Repository::discover(Path::new(&name))?;
+        let changes = r.changes(Selection::Unstaged, Some(Path::new(&name)))?;
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].path, PathBuf::from("a.txt"));
         Ok(())
