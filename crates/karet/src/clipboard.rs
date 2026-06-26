@@ -8,6 +8,9 @@ pub enum ClipboardError {
     /// No clipboard mechanism (OSC 52 or external tool) was available.
     #[error("no clipboard available")]
     Unavailable,
+    /// Writing the OSC 52 escape sequence to the terminal failed.
+    #[error("clipboard write failed: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 /// A clipboard that writes via OSC 52 (works over SSH/tmux) and falls back to
@@ -21,10 +24,14 @@ impl Clipboard {
         Self::default()
     }
 
-    /// Set the system clipboard to `text`.
+    /// Set the system clipboard to `text` by emitting an OSC 52 escape sequence to
+    /// stdout, which most modern terminals honour (and which works over SSH/tmux).
     pub fn set(&self, text: &str) -> Result<(), ClipboardError> {
-        let _ = text;
-        todo!()
+        use std::io::Write as _;
+        let mut out = std::io::stdout();
+        out.write_all(osc52_set_sequence(text).as_bytes())?;
+        out.flush()?;
+        Ok(())
     }
 
     /// Read the system clipboard.

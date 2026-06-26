@@ -345,6 +345,61 @@ fn merge_line_spans(
     out
 }
 
+/// Overlay the selection background `bg` on the selected character columns of
+/// `lines[start.0..=end.0]`. `start.1` is the first selected column on the first
+/// line and `end.1` the exclusive end column on the last line; the lines between
+/// are fully covered. Columns are character (not byte) offsets and clamp per line.
+pub fn apply_selection(
+    lines: &mut [Line<'static>],
+    start: (usize, usize),
+    end: (usize, usize),
+    bg: Rgba,
+) {
+    let bg = bg.to_ratatui();
+    for line_idx in start.0..=end.0 {
+        let Some(line) = lines.get_mut(line_idx) else {
+            break;
+        };
+        let from = if line_idx == start.0 { start.1 } else { 0 };
+        let to = if line_idx == end.0 { end.1 } else { usize::MAX };
+        if from < to {
+            highlight_columns(line, from, to, bg);
+        }
+    }
+}
+
+/// Re-span `line` so the characters in `[from, to)` carry background `bg`, leaving
+/// every other style untouched.
+fn highlight_columns(line: &mut Line<'static>, from: usize, to: usize, bg: ratatui::style::Color) {
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(line.spans.len() + 2);
+    let mut col = 0usize;
+    for span in line.spans.drain(..) {
+        let style = span.style;
+        let chars: Vec<char> = span.content.chars().collect();
+        let (span_start, span_end) = (col, col + chars.len());
+        col = span_end;
+
+        let sel_start = from.max(span_start);
+        let sel_end = to.min(span_end);
+        if sel_start >= sel_end {
+            out.push(Span::styled(span.content.into_owned(), style));
+            continue;
+        }
+        let (lo, hi) = (sel_start - span_start, sel_end - span_start);
+        if lo > 0 {
+            out.push(Span::styled(chars[..lo].iter().collect::<String>(), style));
+        }
+        out.push(Span::styled(
+            chars[lo..hi].iter().collect::<String>(),
+            style.bg(bg),
+        ));
+        if hi < chars.len() {
+            out.push(Span::styled(chars[hi..].iter().collect::<String>(), style));
+        }
+    }
+    line.spans = out;
+}
+
 /// Whether byte `pos` falls inside a changed [`Segment`].
 fn byte_changed(segments: &[Segment], pos: usize) -> bool {
     let mut start = 0usize;
@@ -488,6 +543,26 @@ mod tests {
         let (left, right) = side_by_side_lines(&fv, &Theme::dark());
         assert_eq!(left.len(), right.len());
         assert!(!left.is_empty());
+    }
+
+    #[test]
+    fn apply_selection_sets_background_on_selected_columns() {
+        let theme = Theme::dark();
+        let bg = theme.role(karet_core::ThemeRole::Selection);
+        // Two spans so the selection straddles a span boundary.
+        let mut lines = vec![Line::from(vec![Span::raw("abc"), Span::raw("def")])];
+        apply_selection(&mut lines, (0, 1), (0, 4), bg);
+
+        let want = bg.to_ratatui();
+        let selected: String = lines[0]
+            .spans
+            .iter()
+            .filter(|s| s.style.bg == Some(want))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(selected, "bcd");
+        // The untouched text is still all there.
+        assert_eq!(rendered_text(&lines), "abcdef");
     }
 
     #[test]

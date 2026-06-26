@@ -10,7 +10,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-use crate::app::{App, Section, ViewMode};
+use crate::app::{App, Pane, Section, ViewMode};
 use crate::render;
 
 /// Draw one frame: file list (left), diff (right), status bar (bottom).
@@ -19,18 +19,25 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(f.area());
     let cols = Layout::horizontal([Constraint::Percentage(22), Constraint::Min(0)]).split(rows[0]);
 
+    // Retain the laid-out regions so the next mouse event can hit-test against them.
+    app.regions.file_list = cols[0];
+    app.regions.diff = cols[1];
+    app.regions.status = rows[1];
+
     draw_file_list(f, app, &theme, cols[0]);
     draw_diff(f, app, &theme, cols[1]);
     draw_status(f, app, &theme, rows[1]);
 }
 
-fn draw_file_list(f: &mut Frame, app: &App, theme: &Theme, area: ratatui::layout::Rect) {
+fn draw_file_list(f: &mut Frame, app: &mut App, theme: &Theme, area: ratatui::layout::Rect) {
     let staged = app.staged_count();
     let working = app.files.len() - staged;
 
     // Build the list with a header before each non-empty group, tracking which display
-    // row holds the focused file (headers are not entries in `app.files`).
+    // row holds the focused file (headers are not entries in `app.files`). `rows` maps
+    // each display row to its file index (or `None` for a group header) for click hit-tests.
     let mut items: Vec<ListItem> = Vec::new();
+    let mut rows: Vec<Option<usize>> = Vec::new();
     let mut selected_row = 0usize;
     let mut last: Option<Section> = None;
     for (i, fv) in app.files.iter().enumerate() {
@@ -40,11 +47,13 @@ fn draw_file_list(f: &mut Frame, app: &App, theme: &Theme, area: ratatui::layout
                 Section::Working => ("CHANGES", working),
             };
             items.push(section_header(label, count, theme));
+            rows.push(None);
             last = Some(fv.section);
         }
         if i == app.current {
             selected_row = items.len();
         }
+        rows.push(Some(i));
         let (glyph, role) = status_glyph(fv.change.status);
         items.push(ListItem::new(Line::from(vec![
             Span::styled(format!(" {glyph} "), fg(theme.role(role))),
@@ -62,6 +71,8 @@ fn draw_file_list(f: &mut Frame, app: &App, theme: &Theme, area: ratatui::layout
                 .add_modifier(Modifier::BOLD),
         );
     f.render_stateful_widget(list, area, &mut state);
+    app.regions.list_offset = state.offset();
+    app.regions.list_rows = rows;
 }
 
 /// A bold, dimmed group header row ("STAGED CHANGES (2)") for the file list.
@@ -75,12 +86,18 @@ fn section_header(label: &str, count: usize, theme: &Theme) -> ListItem<'static>
 }
 
 fn draw_diff(f: &mut Frame, app: &mut App, theme: &Theme, area: ratatui::layout::Rect) {
+    let sel = app.selection_span();
+    let sel_bg = theme.role(ThemeRole::Selection);
+    app.regions.sbs = None; // default; the side-by-side arm overwrites it
     let Some(file) = app.files.get(app.current) else {
         return;
     };
     match app.view {
         ViewMode::Unified => {
-            let lines = render::unified_lines(file, theme);
+            let mut lines = render::unified_lines(file, theme);
+            if let Some((Pane::Unified, start, end)) = sel {
+                render::apply_selection(&mut lines, start, end, sel_bg);
+            }
             let max = u16::try_from(lines.len())
                 .unwrap_or(u16::MAX)
                 .saturating_sub(area.height);
@@ -88,7 +105,16 @@ fn draw_diff(f: &mut Frame, app: &mut App, theme: &Theme, area: ratatui::layout:
             f.render_widget(Paragraph::new(lines).scroll((app.scroll, 0)), area);
         }
         ViewMode::SideBySide => {
-            let (left, right) = render::side_by_side_lines(file, theme);
+            let (mut left, mut right) = render::side_by_side_lines(file, theme);
+            match sel {
+                Some((Pane::Left, start, end)) => {
+                    render::apply_selection(&mut left, start, end, sel_bg);
+                }
+                Some((Pane::Right, start, end)) => {
+                    render::apply_selection(&mut right, start, end, sel_bg);
+                }
+                _ => {}
+            }
             let height = left.len().max(right.len());
             let max = u16::try_from(height)
                 .unwrap_or(u16::MAX)
@@ -100,6 +126,7 @@ fn draw_diff(f: &mut Frame, app: &mut App, theme: &Theme, area: ratatui::layout:
                 Constraint::Min(0),
             ])
             .split(area);
+            app.regions.sbs = Some((panes[0], panes[2]));
             f.render_widget(Paragraph::new(left).scroll((app.scroll, 0)), panes[0]);
             f.render_widget(Block::new().borders(Borders::LEFT), panes[1]);
             f.render_widget(Paragraph::new(right).scroll((app.scroll, 0)), panes[2]);
