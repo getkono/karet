@@ -3,9 +3,11 @@
 use std::io;
 use std::time::Duration;
 
+use color_eyre::eyre::eyre;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use karet_theme::Theme;
 use karet_vcs::FileChange;
@@ -379,13 +381,49 @@ fn selection_text(lines: &[Line<'static>], start: (usize, usize), end: (usize, u
     out
 }
 
-/// Run the viewer: set up the terminal (with mouse capture), loop until quit, then
-/// restore it.
+/// Pops the kitty keyboard-enhancement flags on drop, so they are cleared even if
+/// the event loop panics (ratatui's panic hook restores the rest of the terminal).
+struct KeyboardEnhancementGuard;
+
+impl Drop for KeyboardEnhancementGuard {
+    fn drop(&mut self) {
+        let _ = crossterm::execute!(io::stdout(), PopKeyboardEnhancementFlags);
+    }
+}
+
+/// Run the viewer: require the kitty keyboard protocol, set up the terminal (mouse
+/// capture + keyboard enhancement), loop until quit, then restore it.
+///
+/// karet targets modern terminals, so a terminal without kitty keyboard support is
+/// a hard error rather than a degraded fallback.
 pub fn run(mut app: App) -> color_eyre::Result<()> {
+    if !matches!(
+        crossterm::terminal::supports_keyboard_enhancement(),
+        Ok(true)
+    ) {
+        return Err(eyre!(
+            "karet requires a terminal with kitty keyboard protocol support \
+             (kitty, ghostty, WezTerm, foot, …)"
+        ));
+    }
+
     let mut terminal = ratatui::init();
-    crossterm::execute!(io::stdout(), EnableMouseCapture)?;
+    let _keyboard = {
+        let _ = crossterm::execute!(
+            io::stdout(),
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+            )
+        );
+        KeyboardEnhancementGuard
+    };
+    let _ = crossterm::execute!(io::stdout(), EnableMouseCapture);
+
     let result = event_loop(&mut terminal, &mut app);
+
     let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
+    drop(_keyboard);
     ratatui::restore();
     result
 }
