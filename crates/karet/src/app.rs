@@ -2,7 +2,7 @@
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use karet_theme::Theme;
-use karet_vcs::{FileChange, Selection};
+use karet_vcs::FileChange;
 
 use crate::render::FileView;
 use crate::ui;
@@ -16,9 +16,18 @@ pub enum ViewMode {
     SideBySide,
 }
 
+/// Which Source-Control group a changed file belongs to, mirroring VS Code.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Section {
+    /// `HEAD` vs the index: the staged changes.
+    Staged,
+    /// The index vs the worktree (and untracked files): the working-tree changes.
+    Working,
+}
+
 /// The running viewer state.
 pub struct App {
-    /// One entry per changed file.
+    /// One entry per changed file, the staged group first then the working group.
     pub files: Vec<FileView>,
     /// Index of the focused file.
     pub current: usize,
@@ -28,16 +37,20 @@ pub struct App {
     pub scroll: u16,
     /// The active color theme.
     pub theme: Theme,
-    /// Which diff (staged/unstaged) is being shown.
-    pub selection: Selection,
 }
 
 impl App {
-    /// Build the viewer state, diffing and highlighting each change.
-    pub fn new(changes: Vec<FileChange>, selection: Selection, syntax: bool) -> Self {
-        let files = changes
+    /// Build the viewer state from the `staged` and `working` change groups, diffing
+    /// and highlighting each file.
+    pub fn new(staged: Vec<FileChange>, working: Vec<FileChange>, syntax: bool) -> Self {
+        let files = staged
             .into_iter()
-            .map(|change| FileView::new(change, syntax))
+            .map(|change| FileView::new(change, Section::Staged, syntax))
+            .chain(
+                working
+                    .into_iter()
+                    .map(|change| FileView::new(change, Section::Working, syntax)),
+            )
             .collect();
         Self {
             files,
@@ -45,8 +58,16 @@ impl App {
             view: ViewMode::Unified,
             scroll: 0,
             theme: Theme::dark(),
-            selection,
         }
+    }
+
+    /// The number of files in the staged group (the working group is the remainder).
+    #[must_use]
+    pub fn staged_count(&self) -> usize {
+        self.files
+            .iter()
+            .filter(|fv| fv.section == Section::Staged)
+            .count()
     }
 
     /// Handle one key press. Returns `true` when the app should quit.

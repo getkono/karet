@@ -3,14 +3,14 @@
 
 use karet_core::ThemeRole;
 use karet_theme::{Rgba, Theme};
-use karet_vcs::{Selection, StatusKind};
+use karet_vcs::StatusKind;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-use crate::app::{App, ViewMode};
+use crate::app::{App, Section, ViewMode};
 use crate::render;
 
 /// Draw one frame: file list (left), diff (right), status bar (bottom).
@@ -25,27 +25,53 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 fn draw_file_list(f: &mut Frame, app: &App, theme: &Theme, area: ratatui::layout::Rect) {
-    let items: Vec<ListItem> = app
-        .files
-        .iter()
-        .map(|fv| {
-            let (glyph, role) = status_glyph(fv.change.status);
-            ListItem::new(Line::from(vec![
-                Span::styled(format!(" {glyph} "), fg(theme.role(role))),
-                Span::raw(fv.change.path.to_string_lossy().into_owned()),
-            ]))
-        })
-        .collect();
+    let staged = app.staged_count();
+    let working = app.files.len() - staged;
+
+    // Build the list with a header before each non-empty group, tracking which display
+    // row holds the focused file (headers are not entries in `app.files`).
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut selected_row = 0usize;
+    let mut last: Option<Section> = None;
+    for (i, fv) in app.files.iter().enumerate() {
+        if last != Some(fv.section) {
+            let (label, count) = match fv.section {
+                Section::Staged => ("STAGED CHANGES", staged),
+                Section::Working => ("CHANGES", working),
+            };
+            items.push(section_header(label, count, theme));
+            last = Some(fv.section);
+        }
+        if i == app.current {
+            selected_row = items.len();
+        }
+        let (glyph, role) = status_glyph(fv.change.status);
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled(format!(" {glyph} "), fg(theme.role(role))),
+            Span::raw(fv.change.path.to_string_lossy().into_owned()),
+        ])));
+    }
+
     let mut state = ListState::default();
-    state.select(Some(app.current));
+    state.select(Some(selected_row));
     let list = List::new(items)
-        .block(Block::new().borders(Borders::RIGHT).title("Changes"))
+        .block(Block::new().borders(Borders::RIGHT))
         .highlight_style(
             Style::default()
                 .bg(theme.role(ThemeRole::Selection).to_ratatui())
                 .add_modifier(Modifier::BOLD),
         );
     f.render_stateful_widget(list, area, &mut state);
+}
+
+/// A bold, dimmed group header row ("STAGED CHANGES (2)") for the file list.
+fn section_header(label: &str, count: usize, theme: &Theme) -> ListItem<'static> {
+    ListItem::new(Line::from(Span::styled(
+        format!(" {label} ({count})"),
+        Style::default()
+            .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+            .add_modifier(Modifier::BOLD),
+    )))
 }
 
 fn draw_diff(f: &mut Frame, app: &mut App, theme: &Theme, area: ratatui::layout::Rect) {
@@ -82,17 +108,14 @@ fn draw_diff(f: &mut Frame, app: &mut App, theme: &Theme, area: ratatui::layout:
 }
 
 fn draw_status(f: &mut Frame, app: &App, theme: &Theme, area: ratatui::layout::Rect) {
-    let selection = match app.selection {
-        Selection::Staged => "staged",
-        Selection::Unstaged => "unstaged",
-        _ => "changes",
-    };
+    let staged = app.staged_count();
+    let working = app.files.len() - staged;
     let view = match app.view {
         ViewMode::Unified => "unified",
         ViewMode::SideBySide => "side-by-side",
     };
     let left = format!(
-        " {selection}  {}/{}  {view}   q quit · Tab layout · j/k scroll · h/l file ",
+        " {staged} staged · {working} changes  {}/{}  {view}   q quit · Tab layout · j/k scroll · h/l file ",
         app.current + 1,
         app.files.len()
     );

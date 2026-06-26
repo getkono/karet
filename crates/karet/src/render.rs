@@ -20,6 +20,8 @@ use karet_vcs::FileChange;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use crate::app::Section;
+
 /// A syntax token run within a single line: a byte range and its color class.
 struct LineToken {
     start: usize,
@@ -31,6 +33,8 @@ struct LineToken {
 pub struct FileView {
     /// The originating VCS change (path, status, binary flag).
     pub change: FileChange,
+    /// The Source-Control group this file belongs to.
+    pub section: Section,
     /// The display language name (e.g. `"Rust"`, or `"plaintext"`).
     pub language: &'static str,
     diff: FileDiff,
@@ -39,8 +43,8 @@ pub struct FileView {
 }
 
 impl FileView {
-    /// Diff and (optionally) highlight `change`.
-    pub fn new(change: FileChange, syntax: bool) -> Self {
+    /// Diff and (optionally) highlight `change`, tagging it with its `section`.
+    pub fn new(change: FileChange, section: Section, syntax: bool) -> Self {
         let language = language_name_from_path(&change.path).unwrap_or("plaintext");
         let diff = diff_text(
             &change.old,
@@ -59,6 +63,7 @@ impl FileView {
         let new_tokens = line_tokens(&change.new, lang);
         Self {
             change,
+            section,
             language,
             diff,
             old_tokens,
@@ -435,7 +440,11 @@ mod tests {
 
     #[test]
     fn rust_file_is_highlighted_and_rendered() {
-        let fv = FileView::new(change("src/main.rs", "fn a() {}\n", "fn b() {}\n"), true);
+        let fv = FileView::new(
+            change("src/main.rs", "fn a() {}\n", "fn b() {}\n"),
+            Section::Working,
+            true,
+        );
         assert_eq!(fv.language, "Rust");
         let lines = unified_lines(&fv, &Theme::dark());
         let text = rendered_text(&lines);
@@ -447,7 +456,11 @@ mod tests {
 
     #[test]
     fn unknown_extension_falls_back_to_plaintext() {
-        let fv = FileView::new(change("notes.unknownext", "alpha\n", "beta\n"), true);
+        let fv = FileView::new(
+            change("notes.unknownext", "alpha\n", "beta\n"),
+            Section::Working,
+            true,
+        );
         assert_eq!(fv.language, "plaintext");
         assert!(fv.old_tokens.is_empty() && fv.new_tokens.is_empty());
         let text = rendered_text(&unified_lines(&fv, &Theme::dark()));
@@ -456,14 +469,22 @@ mod tests {
 
     #[test]
     fn syntax_disabled_produces_no_tokens() {
-        let fv = FileView::new(change("src/main.rs", "fn a() {}\n", "fn b() {}\n"), false);
+        let fv = FileView::new(
+            change("src/main.rs", "fn a() {}\n", "fn b() {}\n"),
+            Section::Working,
+            false,
+        );
         assert_eq!(fv.language, "Rust"); // label still shown
         assert!(fv.old_tokens.is_empty() && fv.new_tokens.is_empty());
     }
 
     #[test]
     fn side_by_side_columns_stay_aligned() {
-        let fv = FileView::new(change("x.rs", "a\nb\nc\n", "a\nB\nc\n"), true);
+        let fv = FileView::new(
+            change("x.rs", "a\nb\nc\n", "a\nB\nc\n"),
+            Section::Working,
+            true,
+        );
         let (left, right) = side_by_side_lines(&fv, &Theme::dark());
         assert_eq!(left.len(), right.len());
         assert!(!left.is_empty());
@@ -473,7 +494,10 @@ mod tests {
     fn binary_change_shows_placeholder() {
         let mut c = change("img.png", "", "");
         c.is_binary = true;
-        let text = rendered_text(&unified_lines(&FileView::new(c, true), &Theme::dark()));
+        let text = rendered_text(&unified_lines(
+            &FileView::new(c, Section::Working, true),
+            &Theme::dark(),
+        ));
         assert!(text.contains("binary"));
     }
 }
