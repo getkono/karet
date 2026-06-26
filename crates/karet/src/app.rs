@@ -128,6 +128,8 @@ pub struct App {
     pub(crate) tabstrip_rect: Rect,
     /// Per-tab clickable regions from the last frame (mouse hit-testing).
     pub(crate) tab_hits: Vec<TabHit>,
+    /// Whether the active tab is being dragged to a new position.
+    pub(crate) tab_dragging: bool,
     /// The active Kitty image placement rect (set by the renderer), if any.
     pub(crate) image_area: Option<Rect>,
     /// The tab index whose image is currently transmitted to the terminal.
@@ -174,6 +176,7 @@ impl App {
             main_rect: Rect::default(),
             tabstrip_rect: Rect::default(),
             tab_hits: Vec::new(),
+            tab_dragging: false,
             image_area: None,
             shown_image: None,
             should_quit: false,
@@ -644,6 +647,25 @@ impl App {
         self.select_tab(index);
     }
 
+    /// Move the tab at `from` to position `to`, making it active.
+    fn move_tab(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.tabs.len() || to >= self.tabs.len() {
+            return;
+        }
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        self.active = to;
+    }
+
+    /// While dragging, move the active tab under column `x`.
+    fn drag_tab_to(&mut self, x: u16) {
+        if let Some((target, _)) = self.tab_at(x)
+            && target != self.active
+        {
+            self.move_tab(self.active, target);
+        }
+    }
+
     /// Move the active tab one slot left (`-1`) or right (`+1`), clamped (no wrap).
     fn move_active_tab(&mut self, delta: i32) {
         let n = self.tabs.len() as i64;
@@ -857,6 +879,7 @@ impl App {
                         self.close_tab_at(i);
                     } else {
                         self.select_tab(i);
+                        self.tab_dragging = true;
                     }
                 }
             }
@@ -874,6 +897,15 @@ impl App {
     /// (the sidebar or the active tab), and a left click moves focus.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         if self.overlay.is_some() {
+            return;
+        }
+        // An in-progress tab drag captures motion until the button is released.
+        if self.tab_dragging {
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left) => self.drag_tab_to(mouse.column),
+                MouseEventKind::Up(MouseButton::Left) => self.tab_dragging = false,
+                _ => {}
+            }
             return;
         }
         if self.handle_tabstrip_mouse(mouse) {
@@ -1224,6 +1256,37 @@ mod tests {
         assert_eq!(app.tab_at(12), Some((1, false)));
         assert_eq!(app.tab_at(18), Some((1, true)));
         assert_eq!(app.tab_at(25), None);
+    }
+
+    #[test]
+    fn dragging_moves_the_active_tab() {
+        let mut app = app();
+        app.push_tab(code_tab("a.rs"));
+        app.push_tab(code_tab("b.rs"));
+        app.push_tab(code_tab("c.rs"));
+        app.tab_hits = vec![
+            TabHit {
+                start: 0,
+                end: 8,
+                close: 6,
+            },
+            TabHit {
+                start: 8,
+                end: 16,
+                close: 14,
+            },
+            TabHit {
+                start: 16,
+                end: 24,
+                close: 22,
+            },
+        ];
+        app.active = 0;
+        app.tab_dragging = true;
+        app.drag_tab_to(20); // over the third tab
+        let titles: Vec<_> = app.tabs.iter().map(|t| t.title.clone()).collect();
+        assert_eq!(titles, vec!["b.rs", "c.rs", "a.rs"]);
+        assert_eq!(app.active, 2);
     }
 
     #[test]
