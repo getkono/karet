@@ -1,6 +1,12 @@
 //! Application state and the crossterm event loop.
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use std::io;
+use std::time::Duration;
+
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseEvent, MouseEventKind,
+};
 use karet_theme::Theme;
 use karet_vcs::FileChange;
 
@@ -94,6 +100,15 @@ impl App {
         false
     }
 
+    /// Handle one mouse event: the wheel scrolls the diff a few rows at a time.
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        match mouse.kind {
+            MouseEventKind::ScrollDown => self.scroll = self.scroll.saturating_add(3),
+            MouseEventKind::ScrollUp => self.scroll = self.scroll.saturating_sub(3),
+            _ => {}
+        }
+    }
+
     fn next_file(&mut self) {
         if !self.files.is_empty() {
             self.current = (self.current + 1) % self.files.len();
@@ -110,10 +125,13 @@ impl App {
     }
 }
 
-/// Run the viewer: set up the terminal, loop until quit, then restore it.
+/// Run the viewer: set up the terminal (with mouse capture), loop until quit, then
+/// restore it.
 pub fn run(mut app: App) -> color_eyre::Result<()> {
     let mut terminal = ratatui::init();
+    crossterm::execute!(io::stdout(), EnableMouseCapture)?;
     let result = event_loop(&mut terminal, &mut app);
+    let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }
@@ -121,11 +139,27 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
 fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> color_eyre::Result<()> {
     loop {
         terminal.draw(|f| ui::draw(f, app))?;
-        if let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-            && app.handle_key(key)
-        {
+        // Block for the next event, then drain any already-queued events before the next
+        // redraw so a burst of mouse-wheel ticks collapses into one frame (no scroll lag).
+        if handle_event(app, event::read()?) {
             return Ok(());
         }
+        while event::poll(Duration::ZERO)? {
+            if handle_event(app, event::read()?) {
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// Dispatch one input event, returning `true` when the app should quit.
+fn handle_event(app: &mut App, event: Event) -> bool {
+    match event {
+        Event::Key(key) => key.kind == KeyEventKind::Press && app.handle_key(key),
+        Event::Mouse(mouse) => {
+            app.handle_mouse(mouse);
+            false
+        }
+        _ => false,
     }
 }
