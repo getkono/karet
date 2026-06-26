@@ -58,6 +58,22 @@ pub enum Command {
     SidebarCollapse,
     /// Toggle expansion of the selected directory.
     SidebarToggleExpand,
+    /// Move the caret up one line.
+    CaretUp,
+    /// Move the caret down one line.
+    CaretDown,
+    /// Move the caret left one column.
+    CaretLeft,
+    /// Move the caret right one column.
+    CaretRight,
+    /// Extend the selection up one line.
+    SelectUp,
+    /// Extend the selection down one line.
+    SelectDown,
+    /// Extend the selection left one column.
+    SelectLeft,
+    /// Extend the selection right one column.
+    SelectRight,
     /// Scroll the active tab up one line.
     ScrollUp,
     /// Scroll the active tab down one line.
@@ -109,6 +125,14 @@ impl Command {
             Self::SidebarActivate => "Sidebar: Open Selected",
             Self::SidebarCollapse => "Sidebar: Collapse",
             Self::SidebarToggleExpand => "Sidebar: Toggle Expand",
+            Self::CaretUp => "Cursor Up",
+            Self::CaretDown => "Cursor Down",
+            Self::CaretLeft => "Cursor Left",
+            Self::CaretRight => "Cursor Right",
+            Self::SelectUp => "Select Up",
+            Self::SelectDown => "Select Down",
+            Self::SelectLeft => "Select Left",
+            Self::SelectRight => "Select Right",
             Self::ScrollUp => "Scroll Up",
             Self::ScrollDown => "Scroll Down",
             Self::PageUp => "Scroll Page Up",

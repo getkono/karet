@@ -4,7 +4,7 @@
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use color_eyre::eyre::eyre;
 use crossterm::event::{
@@ -13,7 +13,9 @@ use crossterm::event::{
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use karet_core::{BytePos, Decoration, DecorationKind, LineCol, Range, ThemeRole};
+use karet_editor::EditorState;
 use karet_search::{FileHit, SearchQuery, WorkspaceSearch, search_in_file};
+use karet_text::TextBuffer;
 use karet_theme::Theme;
 use karet_vcs::FileChange;
 use karet_widgets::FileTreeState;
@@ -142,6 +144,14 @@ pub struct App {
     pub(crate) search_results_rect: Rect,
     /// The search-results list scroll offset from the last frame.
     pub(crate) search_offset: usize,
+    /// The active code tab's editor content area from the last frame.
+    pub(crate) editor_rect: Rect,
+    /// Whether a mouse text-selection drag is in progress in the editor.
+    pub(crate) editor_selecting: bool,
+    /// The last left-click `(time, column, row)`, for multi-click detection.
+    last_click: Option<(Instant, u16, u16)>,
+    /// The current multi-click streak (1 = single, 2 = double, 3 = triple).
+    click_streak: u8,
     /// The active Kitty image placement rect (set by the renderer), if any.
     pub(crate) image_area: Option<Rect>,
     /// The tab index whose image is currently transmitted to the terminal.
@@ -195,6 +205,10 @@ impl App {
             scm_offset: 0,
             search_results_rect: Rect::default(),
             search_offset: 0,
+            editor_rect: Rect::default(),
+            editor_selecting: false,
+            last_click: None,
+            click_streak: 0,
             image_area: None,
             shown_image: None,
             should_quit: false,
@@ -513,6 +527,14 @@ impl App {
             Command::SidebarActivate => self.sidebar_activate(),
             Command::SidebarCollapse => self.sidebar_collapse(),
             Command::SidebarToggleExpand => self.sidebar_toggle_expand(),
+            Command::CaretUp => self.caret_motion(false, EditorState::move_up),
+            Command::CaretDown => self.caret_motion(false, EditorState::move_down),
+            Command::CaretLeft => self.caret_motion(false, EditorState::move_left),
+            Command::CaretRight => self.caret_motion(false, EditorState::move_right),
+            Command::SelectUp => self.caret_motion(true, EditorState::move_up),
+            Command::SelectDown => self.caret_motion(true, EditorState::move_down),
+            Command::SelectLeft => self.caret_motion(true, EditorState::move_left),
+            Command::SelectRight => self.caret_motion(true, EditorState::move_right),
             Command::ScrollUp => self.scroll_lines(-1),
             Command::ScrollDown => self.scroll_lines(1),
             Command::PageUp => self.scroll_lines(-i32::from(self.main_rect.height.max(1))),
@@ -926,6 +948,17 @@ impl App {
             }
             return;
         }
+        // An in-progress text selection captures motion until the button is released.
+        if self.editor_selecting {
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    self.drag_select_to(mouse.column, mouse.row);
+                }
+                MouseEventKind::Up(MouseButton::Left) => self.editor_selecting = false,
+                _ => {}
+            }
+            return;
+        }
         if self.handle_tabstrip_mouse(mouse) {
             return;
         }
@@ -940,7 +973,7 @@ impl App {
                 if in_sidebar {
                     self.handle_sidebar_click(mouse.column, mouse.row);
                 } else {
-                    self.focus = Focus::Editor;
+                    self.handle_editor_click(mouse);
                 }
             }
             _ => {}
@@ -1004,6 +1037,86 @@ impl App {
         }
     }
 
+    /// Apply a caret `motion` to the active code tab, extending the selection when
+    /// `extend` is set and clearing it otherwise.
+    fn caret_motion(&mut self, extend: bool, motion: impl Fn(&mut EditorState, &TextBuffer)) {
+        if let Some(Tab {
+            kind: TabKind::Code { buffer, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            if extend {
+                editor.ensure_anchor();
+            } else {
+                editor.clear_selection();
+            }
+            motion(editor, buffer);
+        }
+    }
+
+    /// Update and return the multi-click streak for a click at `(col, row)`.
+    fn click_streak(&mut self, col: u16, row: u16) -> u8 {
+        let now = Instant::now();
+        let streak = match self.last_click {
+            Some((t, c, r))
+                if c == col && r == row && now.duration_since(t) < Duration::from_millis(400) =>
+            {
+                self.click_streak % 3 + 1
+            }
+            _ => 1,
+        };
+        self.last_click = Some((now, col, row));
+        self.click_streak = streak;
+        streak
+    }
+
+    /// Handle a left click in the editor: focus it and place the caret (single
+    /// click), select the word (double) or the line (triple).
+    fn handle_editor_click(&mut self, mouse: MouseEvent) {
+        self.focus = Focus::Editor;
+        if !rect_contains(self.editor_rect, (mouse.column, mouse.row)) {
+            return;
+        }
+        let area = self.editor_rect;
+        let streak = self.click_streak(mouse.column, mouse.row);
+        if let Some(Tab {
+            kind: TabKind::Code { buffer, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            let pos = editor.pos_at(area, buffer, mouse.column, mouse.row);
+            match streak {
+                2 => {
+                    let (anchor, head) = word_at(buffer, pos);
+                    editor.set_selection(buffer, anchor, head);
+                }
+                3 => {
+                    let (anchor, head) = line_span(buffer, pos.line);
+                    editor.set_selection(buffer, anchor, head);
+                }
+                _ => editor.set_caret(buffer, pos),
+            }
+        }
+        // Only a single click starts a drag-select; word/line clicks are atomic.
+        self.editor_selecting = streak == 1;
+    }
+
+    /// Extend the editor selection to the cell under `(col, row)` while dragging.
+    fn drag_select_to(&mut self, col: u16, row: u16) {
+        let area = self.editor_rect;
+        if let Some(Tab {
+            kind: TabKind::Code { buffer, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            let pos = editor.pos_at(area, buffer, col, row);
+            editor.extend_to(buffer, pos);
+        }
+    }
+
     /// Transmit or clear the active tab's Kitty image after a frame is drawn.
     fn flush_graphics(&mut self) {
         if self.graphics != GraphicsProtocol::Kitty {
@@ -1037,6 +1150,40 @@ impl App {
 /// Whether the screen point `(x, y)` lies inside `r`.
 fn rect_contains(r: Rect, (x, y): (u16, u16)) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
+}
+
+/// The (anchor, head) span of the word under `pos`, or the single character there
+/// when the cursor is not on a word character.
+fn word_at(buffer: &TextBuffer, pos: LineCol) -> (LineCol, LineCol) {
+    let line = buffer.line(pos.line as usize).unwrap_or_default();
+    let chars: Vec<char> = line.chars().collect();
+    let n = chars.len() as u32;
+    let col = pos.col.min(n);
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut start = col;
+    while start > 0 && is_word(chars[start as usize - 1]) {
+        start -= 1;
+    }
+    let mut end = col;
+    while end < n && is_word(chars[end as usize]) {
+        end += 1;
+    }
+    if start == end {
+        (
+            LineCol::new(pos.line, col),
+            LineCol::new(pos.line, (col + 1).min(n)),
+        )
+    } else {
+        (LineCol::new(pos.line, start), LineCol::new(pos.line, end))
+    }
+}
+
+/// The (anchor, head) span covering all of `line`.
+fn line_span(buffer: &TextBuffer, line: u32) -> (LineCol, LineCol) {
+    let len = buffer
+        .line(line as usize)
+        .map_or(0, |s| s.chars().count() as u32);
+    (LineCol::new(line, 0), LineCol::new(line, len))
 }
 
 /// Pops the kitty keyboard-enhancement flags on drop, so they are cleared even if
@@ -1309,6 +1456,69 @@ mod tests {
         assert_eq!(app.active, 1);
         app.move_active_tab(1); // already last: clamped, no change
         assert_eq!(app.active, 1);
+    }
+
+    fn text_tab(name: &str, text: &str) -> Tab {
+        use karet_syntax::Highlights;
+        use karet_text::TextBuffer;
+        Tab::new(
+            name,
+            TabKind::Code {
+                path: PathBuf::from(name),
+                language: "Rust",
+                buffer: TextBuffer::from_text(text),
+                text: text.to_string(),
+                highlights: Highlights::default(),
+                decos: Vec::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn double_click_selects_the_word() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "foo bar baz"));
+        app.editor_rect = Rect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 5,
+        };
+        // Two quick clicks over the 'a' of "bar" (buffer col 5 -> screen col 8).
+        let click = |col| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.handle_editor_click(click(8));
+        app.handle_editor_click(click(8));
+        let sel = app.tabs[app.active].editor.selection_range();
+        assert_eq!(
+            sel,
+            Some(Range {
+                start: LineCol::new(0, 4),
+                end: LineCol::new(0, 7),
+            })
+        );
+    }
+
+    #[test]
+    fn shift_arrow_extends_then_plain_arrow_clears() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "hello"));
+        app.focus = Focus::Editor;
+        app.dispatch(Command::SelectRight);
+        app.dispatch(Command::SelectRight);
+        assert_eq!(
+            app.tabs[app.active].editor.selection_range(),
+            Some(Range {
+                start: LineCol::new(0, 0),
+                end: LineCol::new(0, 2),
+            })
+        );
+        app.dispatch(Command::CaretLeft);
+        assert_eq!(app.tabs[app.active].editor.selection_range(), None);
     }
 
     #[test]

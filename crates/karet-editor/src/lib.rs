@@ -16,7 +16,7 @@ use karet_text::TextBuffer;
 use karet_theme::{Rgba, Theme};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::StatefulWidget;
 
@@ -32,6 +32,9 @@ pub struct EditorState {
     pub scroll_col: u32,
     /// The cursor position.
     pub cursor: LineCol,
+    /// The fixed end of the selection, if a selection is active. The moving end is
+    /// the [`cursor`](Self::cursor).
+    pub selection_anchor: Option<LineCol>,
     /// The viewport height captured at the last render.
     last_height: u16,
 }
@@ -122,6 +125,73 @@ impl EditorState {
         self.scroll_to(self.cursor);
     }
 
+    /// Clear any active selection (leaving the cursor where it is).
+    pub fn clear_selection(&mut self) {
+        self.selection_anchor = None;
+    }
+
+    /// Start a selection at the cursor if none is active (for shift-extension).
+    pub fn ensure_anchor(&mut self) {
+        if self.selection_anchor.is_none() {
+            self.selection_anchor = Some(self.cursor);
+        }
+    }
+
+    /// The active selection as a normalized range, or `None` when empty.
+    #[must_use]
+    pub fn selection_range(&self) -> Option<Range> {
+        let anchor = self.selection_anchor?;
+        if anchor == self.cursor {
+            return None;
+        }
+        let (start, end) = if (anchor.line, anchor.col) <= (self.cursor.line, self.cursor.col) {
+            (anchor, self.cursor)
+        } else {
+            (self.cursor, anchor)
+        };
+        Some(Range { start, end })
+    }
+
+    /// Place the caret at `pos` (clamped), clearing any selection.
+    pub fn set_caret(&mut self, buffer: &TextBuffer, pos: LineCol) {
+        self.clear_selection();
+        self.goto(buffer, pos);
+    }
+
+    /// Extend the selection so its moving end is `pos`, anchoring at the current
+    /// cursor if no selection is active yet.
+    pub fn extend_to(&mut self, buffer: &TextBuffer, pos: LineCol) {
+        self.ensure_anchor();
+        self.goto(buffer, pos);
+    }
+
+    /// Set the selection to span `anchor`..`head` (both clamped), placing the
+    /// caret at `head`.
+    pub fn set_selection(&mut self, buffer: &TextBuffer, anchor: LineCol, head: LineCol) {
+        let anchor = LineCol::new(
+            anchor.line.min(last_line(buffer)),
+            anchor
+                .col
+                .min(line_len(buffer, anchor.line.min(last_line(buffer)))),
+        );
+        self.selection_anchor = Some(anchor);
+        self.goto(buffer, head);
+    }
+
+    /// The buffer position under the screen cell `(col, row)`, given the editor's
+    /// render `area`. Accounts for the gutter width and the scroll offsets.
+    #[must_use]
+    pub fn pos_at(&self, area: Rect, buffer: &TextBuffer, col: u16, row: u16) -> LineCol {
+        let line_count = buffer.line_count().max(1) as u32;
+        let rel_row = u32::from(row.saturating_sub(area.y));
+        let line = (self.scroll_line + rel_row).min(line_count - 1);
+        let gutter = 1 + digit_count(line_count) as u16 + 1;
+        let content_x = area.x.saturating_add(gutter);
+        let rel_col = u32::from(col.saturating_sub(content_x));
+        let want = self.scroll_col + rel_col;
+        LineCol::new(line, want.min(line_len(buffer, line)))
+    }
+
     /// Clamp the cursor column to the current line's length.
     fn clamp_col(&mut self, buffer: &TextBuffer) {
         self.cursor.col = self.cursor.col.min(line_len(buffer, self.cursor.line));
@@ -141,6 +211,8 @@ pub struct Editor<'a> {
     diagnostics: &'a [Diagnostic],
     inlay_hints: &'a [InlayHint],
     folds: Option<&'a FoldRegions>,
+    selection: Option<Range>,
+    focused: bool,
 }
 
 impl<'a> Editor<'a> {
@@ -155,7 +227,23 @@ impl<'a> Editor<'a> {
             diagnostics: &[],
             inlay_hints: &[],
             folds: None,
+            selection: None,
+            focused: false,
         }
+    }
+
+    /// Supply the active selection range to paint.
+    #[must_use]
+    pub fn selection(mut self, selection: Option<Range>) -> Self {
+        self.selection = selection;
+        self
+    }
+
+    /// Mark the editor focused, so the caret cell is drawn.
+    #[must_use]
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
     }
 
     /// Supply syntax highlight spans.
@@ -232,6 +320,11 @@ impl Editor<'_> {
         None
     }
 
+    /// Whether the cell at line `l`, column `col` lies within the active selection.
+    fn in_selection(&self, l: u32, col: u32) -> bool {
+        self.selection.is_some_and(|r| col_in_range(l, col, r))
+    }
+
     /// Append the syntax-colored content spans for line `l`, honoring horizontal
     /// scroll and text-background decorations.
     fn push_content_spans(
@@ -261,7 +354,12 @@ impl Editor<'_> {
             }
             let fg = fg_for(line_start + boff, hl, theme, default_fg);
             let mut style = Style::default().fg(fg.to_ratatui());
-            if let Some(bg) = self.decoration_bg(l, col, theme) {
+            let bg = if self.in_selection(l, col) {
+                Some(theme.role(ThemeRole::Selection))
+            } else {
+                self.decoration_bg(l, col, theme)
+            };
+            if let Some(bg) = bg {
                 style = style.bg(bg.to_ratatui());
             }
             if run_style == Some(style) {
@@ -352,6 +450,33 @@ impl StatefulWidget for Editor<'_> {
             ];
             self.push_content_spans(&mut spans, l, theme, default_fg, state.scroll_col);
             buf.set_line(area.x, y, &Line::from(spans), area.width);
+        }
+
+        // Draw the caret as a reversed cell when the editor is focused.
+        if self.focused {
+            let cl = state.cursor.line;
+            let top = state.scroll_line;
+            if cl >= top
+                && cl < top + u32::from(area.height)
+                && state.cursor.col >= state.scroll_col
+            {
+                let gutter = 1 + digits as u16 + 1;
+                let cx = area.x
+                    + gutter
+                    + u16::try_from(state.cursor.col - state.scroll_col).unwrap_or(u16::MAX);
+                let cy = area.y + u16::try_from(cl - top).unwrap_or(0);
+                if cx < area.right() && cy < area.bottom() {
+                    buf.set_style(
+                        Rect {
+                            x: cx,
+                            y: cy,
+                            width: 1,
+                            height: 1,
+                        },
+                        Style::default().add_modifier(Modifier::REVERSED),
+                    );
+                }
+            }
         }
     }
 }
@@ -456,6 +581,54 @@ mod tests {
         assert_eq!(state.cursor.line, 2);
         state.goto(&buffer, LineCol::new(1, 99)); // col clamps to the line length
         assert_eq!(state.cursor, LineCol::new(1, 3));
+    }
+
+    #[test]
+    fn pos_at_accounts_for_gutter_and_scroll() {
+        let buffer = TextBuffer::from_text("alpha\nbeta\ngamma");
+        let mut state = EditorState::new();
+        state.last_height = 3;
+        let area = Rect::new(0, 0, 20, 3);
+        // gutter = marker(1) + 1 digit + space = 3; column 5 -> content col 2.
+        assert_eq!(state.pos_at(area, &buffer, 5, 0), LineCol::new(0, 2));
+        // A click past the line end clamps to the line length.
+        assert_eq!(state.pos_at(area, &buffer, 100, 0), LineCol::new(0, 5));
+        // Vertical scroll shifts the mapped line.
+        state.scroll_line = 1;
+        assert_eq!(state.pos_at(area, &buffer, 3, 0), LineCol::new(1, 0));
+    }
+
+    #[test]
+    fn selection_range_normalizes_and_clears() {
+        let buffer = TextBuffer::from_text("alpha\nbeta\ngamma");
+        let mut state = EditorState::new();
+        state.last_height = 3;
+        assert_eq!(state.selection_range(), None);
+        state.set_caret(&buffer, LineCol::new(0, 2));
+        assert_eq!(
+            state.selection_range(),
+            None,
+            "a bare caret is not a selection"
+        );
+        state.extend_to(&buffer, LineCol::new(1, 1));
+        assert_eq!(
+            state.selection_range(),
+            Some(Range {
+                start: LineCol::new(0, 2),
+                end: LineCol::new(1, 1),
+            })
+        );
+        // Dragging back above the anchor normalizes start <= end.
+        state.extend_to(&buffer, LineCol::new(0, 0));
+        assert_eq!(
+            state.selection_range(),
+            Some(Range {
+                start: LineCol::new(0, 0),
+                end: LineCol::new(0, 2),
+            })
+        );
+        state.clear_selection();
+        assert_eq!(state.selection_range(), None);
     }
 
     #[test]

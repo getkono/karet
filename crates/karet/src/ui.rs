@@ -404,8 +404,16 @@ fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
 
 fn draw_main(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     app.image_area = None;
+    app.editor_rect = Rect::default();
     let active = app.active;
     let graphics = app.graphics;
+    let focused = app.focus == Focus::Editor;
+    if matches!(
+        app.tabs.get(active).map(|t| &t.kind),
+        Some(TabKind::Code { .. })
+    ) {
+        app.editor_rect = area;
+    }
     let Some(tab) = app.tabs.get_mut(active) else {
         return;
     };
@@ -417,10 +425,13 @@ fn draw_main(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             decos,
             ..
         } => {
+            let selection = tab.editor.selection_range();
             let editor = Editor::new(buffer)
                 .highlights(highlights)
                 .theme(theme)
-                .decorations(decos);
+                .decorations(decos)
+                .selection(selection)
+                .focused(focused);
             f.render_stateful_widget(editor, area, &mut tab.editor);
         }
         TabKind::Diff { file, view, scroll } => draw_diff(f, theme, area, file, *view, scroll),

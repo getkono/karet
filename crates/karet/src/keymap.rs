@@ -134,13 +134,19 @@ static BINDINGS: &[Binding] = &[
     b(Sidebar, false, false, false, Left,      Command::SidebarCollapse),
     b(Sidebar, false, false, false, Char(' '), Command::SidebarToggleExpand),
 
-    // Editor focus.
+    // Editor focus. Arrows move the caret (VS Code); j/k/space/b scroll (vim).
     b(Editor, false, false, false, Char('q'), Command::Quit),
     b(Editor, false, false, false, Esc,       Command::ToggleFocus),
+    b(Editor, false, false, false, Down,      Command::CaretDown),
+    b(Editor, false, false, false, Up,        Command::CaretUp),
+    b(Editor, false, false, false, Left,      Command::CaretLeft),
+    b(Editor, false, false, false, Right,     Command::CaretRight),
+    b(Editor, false, true,  false, Down,      Command::SelectDown),
+    b(Editor, false, true,  false, Up,        Command::SelectUp),
+    b(Editor, false, true,  false, Left,      Command::SelectLeft),
+    b(Editor, false, true,  false, Right,     Command::SelectRight),
     b(Editor, false, false, false, Char('j'), Command::ScrollDown),
-    b(Editor, false, false, false, Down,      Command::ScrollDown),
     b(Editor, false, false, false, Char('k'), Command::ScrollUp),
-    b(Editor, false, false, false, Up,        Command::ScrollUp),
     b(Editor, false, false, false, Char(' '), Command::PageDown),
     b(Editor, false, false, false, PageDown,  Command::PageDown),
     b(Editor, false, false, false, Char('b'), Command::PageUp),
