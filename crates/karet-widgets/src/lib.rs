@@ -15,9 +15,11 @@ use karet_core::{Diagnostic, LineCol, SymbolProvider};
 use karet_fuzzy::Matcher;
 
 pub mod file_tree;
+pub mod hex;
 pub mod viewer;
 
 pub use file_tree::{FileTree, FileTreeRow, FileTreeState, IconSet};
+pub use hex::HexView;
 
 /// A symbol outline tree over a [`SymbolProvider`].
 pub struct Outline<'a> {
