@@ -1,11 +1,19 @@
-//! The pragmatic keymap: a pure function from key events to [`Action`]s, keyed by
-//! the current [`Focus`] (and whether the active tab is a diff). Overlays consume
-//! their own keys, so the resolver is only consulted when no overlay is open.
+//! The keymap: a single [`BINDINGS`] table is the source of truth for both the
+//! resolver ([`resolve`]) and the palette's shortcut hints ([`hint_for`]), so a
+//! binding and its displayed hint can never drift.
 //!
-//! This is intentionally a direct match rather than the general `input::Keymap`
-//! chord engine; it is a clean later migration target.
+//! Each binding is gated by a [`When`] context (the current [`Focus`], and whether
+//! the active tab is a diff). Overlays consume their own keys, so the resolver is
+//! only consulted when no overlay is open.
+//!
+//! Matching mirrors how terminals encode keys under the kitty protocol: for a
+//! letter with `Ctrl`/`Alt` the case is irrelevant and `Shift` is a separate flag
+//! (so `Ctrl+Shift+P` is distinguishable from `Ctrl+P`); for a bare letter the
+//! `Shift` is folded into the character case (`g` vs `G`).
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::command::Command;
 
 /// Which area currently has keyboard focus.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -29,136 +37,204 @@ pub enum SidebarPanel {
     SourceControl,
 }
 
-/// A high-level editor action produced by the keymap and applied by the app.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Action {
-    /// Quit the application.
-    Quit,
-    /// Show or hide the sidebar.
-    ToggleSidebar,
-    /// Move focus between the sidebar and the editor.
-    ToggleFocus,
-    /// Select a sidebar panel.
-    SelectPanel(SidebarPanel),
-    /// Open the quick-open (go-to-file) overlay.
-    OpenQuickOpen,
-    /// Open the command palette overlay.
-    OpenCommandPalette,
-    /// Open the find-in-file bar.
-    OpenFind,
-    /// Focus the Search panel and start a query.
-    OpenGlobalSearch,
-    /// Close the active tab.
-    CloseTab,
-    /// Move the sidebar selection up.
-    SidebarUp,
-    /// Move the sidebar selection down.
-    SidebarDown,
-    /// Activate the selected sidebar row (open / expand).
-    SidebarActivate,
-    /// Collapse the selected directory / go to parent.
-    SidebarCollapse,
-    /// Toggle expansion of the selected directory.
-    SidebarToggleExpand,
-    /// Scroll the active tab up one line.
-    ScrollUp,
-    /// Scroll the active tab down one line.
-    ScrollDown,
-    /// Scroll the active tab up one page.
-    PageUp,
-    /// Scroll the active tab down one page.
-    PageDown,
-    /// Jump to the top of the active tab.
-    Top,
-    /// Jump to the bottom of the active tab.
-    Bottom,
-    /// Toggle a diff tab between unified and side-by-side.
-    ToggleDiffLayout,
-    /// Move to the next changed file (diff tab).
-    NextChangedFile,
-    /// Move to the previous changed file (diff tab).
-    PrevChangedFile,
+/// The context in which a binding is active.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum When {
+    /// Active regardless of focus.
+    Global,
+    /// Active when the sidebar has focus.
+    Sidebar,
+    /// Active when the editor has focus.
+    Editor,
+    /// Active when the editor has focus and the active tab is a diff.
+    DiffEditor,
 }
 
-/// Resolve a key press into an [`Action`], given the focus and whether the active
-/// tab is a diff. Returns `None` for keys with no binding.
-#[must_use]
-pub fn resolve(focus: Focus, active_is_diff: bool, key: KeyEvent) -> Option<Action> {
+/// One key binding: a chord (key code + modifier flags) bound to a [`Command`] in
+/// a [`When`] context.
+struct Binding {
+    when: When,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    code: KeyCode,
+    command: Command,
+}
+
+/// A terse constructor for a [`Binding`].
+const fn b(
+    when: When,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    code: KeyCode,
+    command: Command,
+) -> Binding {
+    Binding {
+        when,
+        ctrl,
+        shift,
+        alt,
+        code,
+        command,
+    }
+}
+
+use KeyCode::{Char, Down, End, Enter, Esc, Home, Left, PageDown, PageUp, Right, Tab, Up};
+use When::{DiffEditor, Editor, Global, Sidebar};
+
+/// The single source of truth for key bindings. Order matters: the first matching
+/// binding wins, and [`hint_for`] returns the first binding for a command (so list
+/// the preferred chord first).
+#[rustfmt::skip]
+static BINDINGS: &[Binding] = &[
+    // Global (any focus).
+    b(Global, true,  false, false, Char('q'), Command::Quit),
+    b(Global, true,  false, false, Char('c'), Command::Quit),
+    b(Global, true,  false, false, Char('p'), Command::OpenQuickOpen),
+    b(Global, true,  true,  false, Char('p'), Command::OpenCommandPalette),
+    b(Global, true,  false, false, Char('f'), Command::OpenFind),
+    b(Global, true,  true,  false, Char('f'), Command::OpenGlobalSearch),
+    b(Global, true,  false, false, Char('b'), Command::ToggleSidebar),
+    b(Global, true,  false, false, Char('w'), Command::CloseTab),
+    b(Global, true,  false, false, Char('1'), Command::SelectPanel(SidebarPanel::Explorer)),
+    b(Global, true,  false, false, Char('2'), Command::SelectPanel(SidebarPanel::Search)),
+    b(Global, true,  false, false, Char('3'), Command::SelectPanel(SidebarPanel::SourceControl)),
+    b(Global, false, false, false, Tab,       Command::ToggleFocus),
+
+    // Sidebar focus.
+    b(Sidebar, false, false, false, Char('q'), Command::Quit),
+    b(Sidebar, false, false, false, Esc,       Command::Quit),
+    b(Sidebar, false, false, false, Char('j'), Command::SidebarDown),
+    b(Sidebar, false, false, false, Down,      Command::SidebarDown),
+    b(Sidebar, false, false, false, Char('k'), Command::SidebarUp),
+    b(Sidebar, false, false, false, Up,        Command::SidebarUp),
+    b(Sidebar, false, false, false, Enter,     Command::SidebarActivate),
+    b(Sidebar, false, false, false, Char('l'), Command::SidebarActivate),
+    b(Sidebar, false, false, false, Right,     Command::SidebarActivate),
+    b(Sidebar, false, false, false, Char('h'), Command::SidebarCollapse),
+    b(Sidebar, false, false, false, Left,      Command::SidebarCollapse),
+    b(Sidebar, false, false, false, Char(' '), Command::SidebarToggleExpand),
+
+    // Editor focus.
+    b(Editor, false, false, false, Char('q'), Command::Quit),
+    b(Editor, false, false, false, Esc,       Command::ToggleFocus),
+    b(Editor, false, false, false, Char('j'), Command::ScrollDown),
+    b(Editor, false, false, false, Down,      Command::ScrollDown),
+    b(Editor, false, false, false, Char('k'), Command::ScrollUp),
+    b(Editor, false, false, false, Up,        Command::ScrollUp),
+    b(Editor, false, false, false, Char(' '), Command::PageDown),
+    b(Editor, false, false, false, PageDown,  Command::PageDown),
+    b(Editor, false, false, false, Char('b'), Command::PageUp),
+    b(Editor, false, false, false, PageUp,    Command::PageUp),
+    b(Editor, false, false, false, Char('g'), Command::Top),
+    b(Editor, false, false, false, Home,      Command::Top),
+    b(Editor, false, true,  false, Char('G'), Command::Bottom),
+    b(Editor, false, false, false, End,       Command::Bottom),
+
+    // Editor focus, diff tab only.
+    b(DiffEditor, false, false, false, Char('\\'), Command::ToggleDiffLayout),
+    b(DiffEditor, false, false, false, Char(']'),  Command::NextChangedFile),
+    b(DiffEditor, false, false, false, Char('['),  Command::PrevChangedFile),
+];
+
+/// Whether `when` is active for the given focus and diff state.
+fn when_active(when: When, focus: Focus, is_diff: bool) -> bool {
+    match when {
+        Global => true,
+        Sidebar => focus == Focus::Sidebar,
+        Editor => focus == Focus::Editor,
+        DiffEditor => focus == Focus::Editor && is_diff,
+    }
+}
+
+/// Whether `key` matches binding `bind`.
+fn chord_matches(bind: &Binding, key: KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
 
-    // Global bindings (any focus).
-    if let Some(action) = resolve_global(ctrl, shift, key.code) {
-        return Some(action);
+    match (bind.code, key.code) {
+        (KeyCode::Char(bc), KeyCode::Char(kc)) if bind.ctrl || bind.alt => {
+            // With Ctrl/Alt the case is irrelevant; Shift is a distinct flag.
+            bind.ctrl == ctrl
+                && bind.alt == alt
+                && bind.shift == shift
+                && bc.eq_ignore_ascii_case(&kc)
+        }
+        (KeyCode::Char(bc), KeyCode::Char(kc)) => {
+            // A bare letter: case carries Shift, so compare exactly and ignore the
+            // Shift flag (but still reject Ctrl/Alt chords).
+            !ctrl && !alt && bc == kc
+        }
+        (bcode, kcode) => {
+            bcode == kcode && bind.ctrl == ctrl && bind.alt == alt && bind.shift == shift
+        }
     }
-    match focus {
-        Focus::Sidebar => resolve_sidebar(key.code),
-        Focus::Editor => resolve_editor(active_is_diff, key.code),
-    }
+}
+
+/// Resolve a key press into a [`Command`], given the focus and whether the active
+/// tab is a diff. Returns `None` for keys with no binding.
+#[must_use]
+pub fn resolve(focus: Focus, is_diff: bool, key: KeyEvent) -> Option<Command> {
+    BINDINGS
+        .iter()
+        .find(|bind| when_active(bind.when, focus, is_diff) && chord_matches(bind, key))
+        .map(|bind| bind.command)
 }
 
 /// Resolve only the global bindings (used by panels that capture text input, like
 /// the Search panel, which still want Ctrl-chords and Tab to work).
 #[must_use]
-pub fn global(key: KeyEvent) -> Option<Action> {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-    resolve_global(ctrl, shift, key.code)
+pub fn global(key: KeyEvent) -> Option<Command> {
+    BINDINGS
+        .iter()
+        .find(|bind| bind.when == Global && chord_matches(bind, key))
+        .map(|bind| bind.command)
 }
 
-/// Global bindings available regardless of focus.
-fn resolve_global(ctrl: bool, shift: bool, code: KeyCode) -> Option<Action> {
-    match code {
-        KeyCode::Char('c' | 'q') if ctrl => Some(Action::Quit),
-        KeyCode::Char(c) if ctrl && c.eq_ignore_ascii_case(&'p') => Some(if shift {
-            Action::OpenCommandPalette
-        } else {
-            Action::OpenQuickOpen
-        }),
-        KeyCode::Char(c) if ctrl && c.eq_ignore_ascii_case(&'f') => Some(if shift {
-            Action::OpenGlobalSearch
-        } else {
-            Action::OpenFind
-        }),
-        KeyCode::Char('b') if ctrl => Some(Action::ToggleSidebar),
-        KeyCode::Char('w') if ctrl => Some(Action::CloseTab),
-        KeyCode::Char('1') if ctrl => Some(Action::SelectPanel(SidebarPanel::Explorer)),
-        KeyCode::Char('2') if ctrl => Some(Action::SelectPanel(SidebarPanel::Search)),
-        KeyCode::Char('3') if ctrl => Some(Action::SelectPanel(SidebarPanel::SourceControl)),
-        KeyCode::Tab => Some(Action::ToggleFocus),
-        _ => None,
+/// The display hint (e.g. `"Ctrl+W"`) for `command`'s first binding, if any.
+#[must_use]
+pub fn hint_for(command: Command) -> Option<String> {
+    BINDINGS
+        .iter()
+        .find(|bind| bind.command == command)
+        .map(format_chord)
+}
+
+/// Format a binding as a human-readable chord like `"Ctrl+Shift+P"`.
+fn format_chord(bind: &Binding) -> String {
+    let mut s = String::new();
+    if bind.ctrl {
+        s.push_str("Ctrl+");
     }
-}
-
-/// Bindings active when the sidebar has focus.
-fn resolve_sidebar(code: KeyCode) -> Option<Action> {
-    match code {
-        KeyCode::Char('q') => Some(Action::Quit),
-        KeyCode::Esc => Some(Action::Quit),
-        KeyCode::Char('j') | KeyCode::Down => Some(Action::SidebarDown),
-        KeyCode::Char('k') | KeyCode::Up => Some(Action::SidebarUp),
-        KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => Some(Action::SidebarActivate),
-        KeyCode::Char('h') | KeyCode::Left => Some(Action::SidebarCollapse),
-        KeyCode::Char(' ') => Some(Action::SidebarToggleExpand),
-        _ => None,
+    if bind.alt {
+        s.push_str("Alt+");
     }
+    if bind.shift {
+        s.push_str("Shift+");
+    }
+    s.push_str(&format_code(bind.code));
+    s
 }
 
-/// Bindings active when the editor has focus.
-fn resolve_editor(active_is_diff: bool, code: KeyCode) -> Option<Action> {
+/// Format a single key code for display.
+fn format_code(code: KeyCode) -> String {
     match code {
-        KeyCode::Char('q') => Some(Action::Quit),
-        KeyCode::Esc => Some(Action::ToggleFocus),
-        KeyCode::Char('j') | KeyCode::Down => Some(Action::ScrollDown),
-        KeyCode::Char('k') | KeyCode::Up => Some(Action::ScrollUp),
-        KeyCode::Char(' ') | KeyCode::PageDown => Some(Action::PageDown),
-        KeyCode::Char('b') | KeyCode::PageUp => Some(Action::PageUp),
-        KeyCode::Char('g') | KeyCode::Home => Some(Action::Top),
-        KeyCode::Char('G') | KeyCode::End => Some(Action::Bottom),
-        KeyCode::Char('\\') if active_is_diff => Some(Action::ToggleDiffLayout),
-        KeyCode::Char(']') if active_is_diff => Some(Action::NextChangedFile),
-        KeyCode::Char('[') if active_is_diff => Some(Action::PrevChangedFile),
-        _ => None,
+        KeyCode::Char(' ') => "Space".to_string(),
+        KeyCode::Char(c) => c.to_ascii_uppercase().to_string(),
+        KeyCode::Tab => "Tab".to_string(),
+        KeyCode::Enter => "Enter".to_string(),
+        KeyCode::Esc => "Esc".to_string(),
+        KeyCode::Up => "Up".to_string(),
+        KeyCode::Down => "Down".to_string(),
+        KeyCode::Left => "Left".to_string(),
+        KeyCode::Right => "Right".to_string(),
+        KeyCode::Home => "Home".to_string(),
+        KeyCode::End => "End".to_string(),
+        KeyCode::PageUp => "PgUp".to_string(),
+        KeyCode::PageDown => "PgDn".to_string(),
+        other => format!("{other:?}"),
     }
 }
 
@@ -178,18 +254,18 @@ mod tests {
                 false,
                 key(KeyCode::Char('p'), KeyModifiers::CONTROL)
             ),
-            Some(Action::OpenQuickOpen)
+            Some(Command::OpenQuickOpen)
         );
         assert_eq!(
             resolve(
                 Focus::Sidebar,
                 false,
                 key(
-                    KeyCode::Char('p'),
+                    KeyCode::Char('P'),
                     KeyModifiers::CONTROL | KeyModifiers::SHIFT
                 )
             ),
-            Some(Action::OpenCommandPalette)
+            Some(Command::OpenCommandPalette)
         );
     }
 
@@ -202,7 +278,7 @@ mod tests {
                 false,
                 key(KeyCode::Char('j'), KeyModifiers::NONE)
             ),
-            Some(Action::ScrollDown)
+            Some(Command::ScrollDown)
         );
         assert_eq!(
             resolve(
@@ -210,7 +286,7 @@ mod tests {
                 false,
                 key(KeyCode::Char('j'), KeyModifiers::NONE)
             ),
-            Some(Action::SidebarDown)
+            Some(Command::SidebarDown)
         );
     }
 
@@ -223,7 +299,7 @@ mod tests {
                 true,
                 key(KeyCode::Char('\\'), KeyModifiers::NONE)
             ),
-            Some(Action::ToggleDiffLayout)
+            Some(Command::ToggleDiffLayout)
         );
         assert_eq!(
             resolve(
@@ -236,6 +312,26 @@ mod tests {
     }
 
     #[test]
+    fn top_and_bottom_distinguish_case() {
+        assert_eq!(
+            resolve(
+                Focus::Editor,
+                false,
+                key(KeyCode::Char('g'), KeyModifiers::NONE)
+            ),
+            Some(Command::Top)
+        );
+        assert_eq!(
+            resolve(
+                Focus::Editor,
+                false,
+                key(KeyCode::Char('G'), KeyModifiers::SHIFT)
+            ),
+            Some(Command::Bottom)
+        );
+    }
+
+    #[test]
     fn panel_selection_and_quit() {
         assert_eq!(
             resolve(
@@ -243,7 +339,7 @@ mod tests {
                 false,
                 key(KeyCode::Char('2'), KeyModifiers::CONTROL)
             ),
-            Some(Action::SelectPanel(SidebarPanel::Search))
+            Some(Command::SelectPanel(SidebarPanel::Search))
         );
         assert_eq!(
             resolve(
@@ -251,7 +347,27 @@ mod tests {
                 false,
                 key(KeyCode::Char('q'), KeyModifiers::CONTROL)
             ),
-            Some(Action::Quit)
+            Some(Command::Quit)
         );
+    }
+
+    #[test]
+    fn global_only_ignores_context_keys() {
+        // A bare 'j' is not global, but Ctrl+B is.
+        assert_eq!(global(key(KeyCode::Char('j'), KeyModifiers::NONE)), None);
+        assert_eq!(
+            global(key(KeyCode::Char('b'), KeyModifiers::CONTROL)),
+            Some(Command::ToggleSidebar)
+        );
+    }
+
+    #[test]
+    fn hint_for_formats_chords() {
+        assert_eq!(hint_for(Command::CloseTab).as_deref(), Some("Ctrl+W"));
+        assert_eq!(
+            hint_for(Command::OpenCommandPalette).as_deref(),
+            Some("Ctrl+Shift+P")
+        );
+        assert_eq!(hint_for(Command::ToggleFocus).as_deref(), Some("Tab"));
     }
 }

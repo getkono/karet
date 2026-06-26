@@ -125,14 +125,29 @@ fn draw_overlay(f: &mut Frame, overlay: &Overlay, theme: &Theme, area: Rect) {
     );
 
     let labels = overlay.rows();
+    let hints = overlay.row_hints();
     let selected = overlay.selected();
     let list_h = rows[1].height as usize;
+    let width = rows[1].width as usize;
     let offset = selected.saturating_sub(list_h.saturating_sub(1));
+    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
     let items: Vec<ListItem> = labels
         .iter()
+        .zip(hints.iter())
         .skip(offset)
         .take(list_h.max(1))
-        .map(|l| ListItem::new(Line::raw((*l).to_string())))
+        .map(|(label, hint)| match hint {
+            Some(h) => {
+                let used = label.chars().count() + h.chars().count();
+                let pad = width.saturating_sub(used).max(1);
+                ListItem::new(Line::from(vec![
+                    Span::raw((*label).to_string()),
+                    Span::raw(" ".repeat(pad)),
+                    Span::styled(h.clone(), dim),
+                ]))
+            }
+            None => ListItem::new(Line::raw((*label).to_string())),
+        })
         .collect();
     let mut state = ListState::default();
     state.select(Some(selected.saturating_sub(offset)));

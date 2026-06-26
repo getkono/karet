@@ -16,6 +16,7 @@
 mod app;
 mod cli;
 mod clipboard;
+mod command;
 mod input;
 mod keymap;
 mod overlay;

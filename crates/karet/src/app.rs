@@ -1,6 +1,6 @@
 //! The IDE shell: application state, the keymap-driven event loop, and terminal
 //! setup. The shell composes the engine/widget crates — it owns the open tabs and
-//! the sidebar, and applies [`Action`]s resolved from key events.
+//! the sidebar, and applies [`Command`]s resolved from key events.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -20,8 +20,9 @@ use karet_widgets::FileTreeState;
 use karet_widgets::image::{self, GraphicsProtocol};
 use ratatui::layout::Rect;
 
-use crate::keymap::{self, Action, Focus, SidebarPanel};
-use crate::overlay::{Overlay, OverlayEvent, PaletteCommand};
+use crate::command::Command;
+use crate::keymap::{self, Focus, SidebarPanel};
+use crate::overlay::{Overlay, OverlayEvent};
 use crate::render::{FileView, Section};
 use crate::tab::{Tab, TabKind, ViewMode};
 use crate::{ui, workspace};
@@ -183,15 +184,15 @@ impl App {
         }
         // The Search panel captures text input, so globals run first, then its own keys.
         if self.focus == Focus::Sidebar && self.sidebar_panel == SidebarPanel::Search {
-            if let Some(action) = keymap::global(key) {
-                self.dispatch(action);
+            if let Some(command) = keymap::global(key) {
+                self.dispatch(command);
             } else {
                 self.handle_search_key(key);
             }
             return;
         }
-        if let Some(action) = keymap::resolve(self.focus, self.active_is_diff(), key) {
-            self.dispatch(action);
+        if let Some(command) = keymap::resolve(self.focus, self.active_is_diff(), key) {
+            self.dispatch(command);
         }
     }
 
@@ -210,7 +211,7 @@ impl App {
             }
             OverlayEvent::AcceptCommand(cmd) => {
                 self.overlay = None;
-                self.run_palette_command(cmd);
+                self.dispatch(cmd);
             }
         }
     }
@@ -219,25 +220,6 @@ impl App {
     fn open_quick_open(&mut self) {
         let files = workspace::list_files(&self.root, 2000);
         self.overlay = Some(Overlay::quick_open(files));
-    }
-
-    /// Apply a command chosen from the command palette.
-    fn run_palette_command(&mut self, cmd: PaletteCommand) {
-        match cmd {
-            PaletteCommand::ToggleSidebar => self.dispatch(Action::ToggleSidebar),
-            PaletteCommand::ShowExplorer => {
-                self.dispatch(Action::SelectPanel(SidebarPanel::Explorer));
-            }
-            PaletteCommand::ShowSearch => self.dispatch(Action::SelectPanel(SidebarPanel::Search)),
-            PaletteCommand::ShowSourceControl => {
-                self.dispatch(Action::SelectPanel(SidebarPanel::SourceControl));
-            }
-            PaletteCommand::QuickOpen => self.open_quick_open(),
-            PaletteCommand::Find => self.dispatch(Action::OpenFind),
-            PaletteCommand::GlobalSearch => self.dispatch(Action::OpenGlobalSearch),
-            PaletteCommand::CloseTab => self.dispatch(Action::CloseTab),
-            PaletteCommand::Quit => self.should_quit = true,
-        }
     }
 
     /// Open the find-in-file bar (only over a text/code tab).
@@ -460,36 +442,36 @@ impl App {
         }
     }
 
-    /// Apply a resolved [`Action`].
-    fn dispatch(&mut self, action: Action) {
-        match action {
-            Action::Quit => self.should_quit = true,
-            Action::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
-            Action::ToggleFocus => self.toggle_focus(),
-            Action::SelectPanel(panel) => {
+    /// Apply a resolved [`Command`].
+    fn dispatch(&mut self, command: Command) {
+        match command {
+            Command::Quit => self.should_quit = true,
+            Command::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
+            Command::ToggleFocus => self.toggle_focus(),
+            Command::SelectPanel(panel) => {
                 self.sidebar_panel = panel;
                 self.sidebar_visible = true;
                 self.focus = Focus::Sidebar;
             }
-            Action::OpenQuickOpen => self.open_quick_open(),
-            Action::OpenCommandPalette => self.overlay = Some(Overlay::command_palette()),
-            Action::OpenFind => self.open_find(),
-            Action::OpenGlobalSearch => self.start_global_search(),
-            Action::CloseTab => self.close_tab(),
-            Action::SidebarUp => self.sidebar_step(-1),
-            Action::SidebarDown => self.sidebar_step(1),
-            Action::SidebarActivate => self.sidebar_activate(),
-            Action::SidebarCollapse => self.sidebar_collapse(),
-            Action::SidebarToggleExpand => self.sidebar_toggle_expand(),
-            Action::ScrollUp => self.scroll_lines(-1),
-            Action::ScrollDown => self.scroll_lines(1),
-            Action::PageUp => self.scroll_lines(-i32::from(self.main_rect.height.max(1))),
-            Action::PageDown => self.scroll_lines(i32::from(self.main_rect.height.max(1))),
-            Action::Top => self.scroll_edge(true),
-            Action::Bottom => self.scroll_edge(false),
-            Action::ToggleDiffLayout => self.toggle_diff_layout(),
-            Action::NextChangedFile => self.step_changed_file(1),
-            Action::PrevChangedFile => self.step_changed_file(-1),
+            Command::OpenQuickOpen => self.open_quick_open(),
+            Command::OpenCommandPalette => self.overlay = Some(Overlay::command_palette()),
+            Command::OpenFind => self.open_find(),
+            Command::OpenGlobalSearch => self.start_global_search(),
+            Command::CloseTab => self.close_tab(),
+            Command::SidebarUp => self.sidebar_step(-1),
+            Command::SidebarDown => self.sidebar_step(1),
+            Command::SidebarActivate => self.sidebar_activate(),
+            Command::SidebarCollapse => self.sidebar_collapse(),
+            Command::SidebarToggleExpand => self.sidebar_toggle_expand(),
+            Command::ScrollUp => self.scroll_lines(-1),
+            Command::ScrollDown => self.scroll_lines(1),
+            Command::PageUp => self.scroll_lines(-i32::from(self.main_rect.height.max(1))),
+            Command::PageDown => self.scroll_lines(i32::from(self.main_rect.height.max(1))),
+            Command::Top => self.scroll_edge(true),
+            Command::Bottom => self.scroll_edge(false),
+            Command::ToggleDiffLayout => self.toggle_diff_layout(),
+            Command::NextChangedFile => self.step_changed_file(1),
+            Command::PrevChangedFile => self.step_changed_file(-1),
         }
     }
 
@@ -888,7 +870,7 @@ mod tests {
     fn opening_a_diff_replaces_welcome_and_focuses_editor() {
         let mut app = app();
         app.sidebar_panel = SidebarPanel::SourceControl;
-        app.dispatch(Action::SidebarActivate);
+        app.dispatch(Command::SidebarActivate);
         assert!(app.active_is_diff());
         assert_eq!(app.focus, Focus::Editor);
         assert_eq!(app.tabs.len(), 1, "welcome tab is replaced, not appended");
@@ -898,10 +880,10 @@ mod tests {
     fn stepping_changed_files_walks_the_scm_list() {
         let mut app = app();
         app.sidebar_panel = SidebarPanel::SourceControl;
-        app.dispatch(Action::SidebarActivate); // opens a.rs (index 0)
-        app.dispatch(Action::NextChangedFile);
+        app.dispatch(Command::SidebarActivate); // opens a.rs (index 0)
+        app.dispatch(Command::NextChangedFile);
         assert_eq!(app.scm.selected, 1);
-        app.dispatch(Action::PrevChangedFile);
+        app.dispatch(Command::PrevChangedFile);
         assert_eq!(app.scm.selected, 0);
     }
 
@@ -909,7 +891,7 @@ mod tests {
     fn toggle_diff_layout_flips_view() {
         let mut app = app();
         app.sidebar_panel = SidebarPanel::SourceControl;
-        app.dispatch(Action::SidebarActivate);
+        app.dispatch(Command::SidebarActivate);
         let before = matches!(
             app.tabs[app.active].kind,
             TabKind::Diff {
@@ -917,7 +899,7 @@ mod tests {
                 ..
             }
         );
-        app.dispatch(Action::ToggleDiffLayout);
+        app.dispatch(Command::ToggleDiffLayout);
         let after = matches!(
             app.tabs[app.active].kind,
             TabKind::Diff {
@@ -931,9 +913,9 @@ mod tests {
     #[test]
     fn toggle_sidebar_and_focus() {
         let mut app = app();
-        app.dispatch(Action::ToggleSidebar);
+        app.dispatch(Command::ToggleSidebar);
         assert!(!app.sidebar_visible);
-        app.dispatch(Action::ToggleFocus);
+        app.dispatch(Command::ToggleFocus);
         assert_eq!(app.focus, Focus::Editor);
     }
 
@@ -954,7 +936,7 @@ mod tests {
                 decos: Vec::new(),
             },
         ));
-        app.dispatch(Action::OpenFind);
+        app.dispatch(Command::OpenFind);
         if let Some(find) = app.find.as_mut() {
             find.query = "foo".to_string();
         }

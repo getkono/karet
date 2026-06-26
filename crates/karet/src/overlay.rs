@@ -8,48 +8,8 @@ use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-/// A command runnable from the command palette.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PaletteCommand {
-    /// Toggle the sidebar.
-    ToggleSidebar,
-    /// Show the explorer panel.
-    ShowExplorer,
-    /// Show the search panel.
-    ShowSearch,
-    /// Show the source-control panel.
-    ShowSourceControl,
-    /// Open the quick-open overlay.
-    QuickOpen,
-    /// Find in the current file.
-    Find,
-    /// Search the workspace.
-    GlobalSearch,
-    /// Close the active tab.
-    CloseTab,
-    /// Quit karet.
-    Quit,
-}
-
-impl PaletteCommand {
-    /// The full set of palette commands with their labels.
-    fn all() -> Vec<(String, Self)> {
-        [
-            ("Toggle Sidebar", Self::ToggleSidebar),
-            ("View: Explorer", Self::ShowExplorer),
-            ("View: Search", Self::ShowSearch),
-            ("View: Source Control", Self::ShowSourceControl),
-            ("Go to File…", Self::QuickOpen),
-            ("Find in File…", Self::Find),
-            ("Search in Workspace…", Self::GlobalSearch),
-            ("Close Tab", Self::CloseTab),
-            ("Quit", Self::Quit),
-        ]
-        .into_iter()
-        .map(|(label, cmd)| (label.to_string(), cmd))
-        .collect()
-    }
-}
+use crate::command::{self, Command};
+use crate::keymap;
 
 /// What an overlay key press resulted in.
 pub enum OverlayEvent {
@@ -60,7 +20,7 @@ pub enum OverlayEvent {
     /// Open the chosen file.
     AcceptFile(PathBuf),
     /// Run the chosen command.
-    AcceptCommand(PaletteCommand),
+    AcceptCommand(Command),
 }
 
 /// An incremental picker over labeled items of type `T`.
@@ -104,6 +64,11 @@ impl<T> Picker<T> {
             .iter()
             .map(|&i| self.items[i].0.as_str())
             .collect()
+    }
+
+    /// The visible (filtered) row values, in order.
+    fn values(&self) -> Vec<&T> {
+        self.filtered.iter().map(|&i| &self.items[i].1).collect()
     }
 
     /// The selected row index within the filtered list.
@@ -173,7 +138,7 @@ pub enum Overlay {
     /// Quick-open: pick a file to open.
     QuickOpen(Picker<PathBuf>),
     /// Command palette: pick a command to run.
-    CommandPalette(Picker<PaletteCommand>),
+    CommandPalette(Picker<Command>),
 }
 
 impl Overlay {
@@ -186,7 +151,11 @@ impl Overlay {
     /// Build the command palette.
     #[must_use]
     pub fn command_palette() -> Self {
-        Self::CommandPalette(Picker::new("Command Palette", PaletteCommand::all()))
+        let items = command::palette()
+            .into_iter()
+            .map(|cmd| (cmd.label().to_string(), cmd))
+            .collect();
+        Self::CommandPalette(Picker::new("Command Palette", items))
     }
 
     /// The overlay title.
@@ -213,6 +182,20 @@ impl Overlay {
         match self {
             Self::QuickOpen(p) => p.rows(),
             Self::CommandPalette(p) => p.rows(),
+        }
+    }
+
+    /// The per-row right-aligned hints (key chords), aligned with [`rows`](Self::rows).
+    /// Quick-open rows have no hint.
+    #[must_use]
+    pub fn row_hints(&self) -> Vec<Option<String>> {
+        match self {
+            Self::QuickOpen(p) => p.rows().iter().map(|_| None).collect(),
+            Self::CommandPalette(p) => p
+                .values()
+                .into_iter()
+                .map(|cmd| keymap::hint_for(*cmd))
+                .collect(),
         }
     }
 
@@ -306,8 +289,21 @@ mod tests {
             let _ = overlay.handle_key(key(KeyCode::Char(c)));
         }
         match overlay.handle_key(key(KeyCode::Enter)) {
-            OverlayEvent::AcceptCommand(cmd) => assert_eq!(cmd, PaletteCommand::Quit),
+            OverlayEvent::AcceptCommand(cmd) => assert_eq!(cmd, Command::Quit),
             _ => unreachable!("enter accepts the filtered command"),
         }
+    }
+
+    #[test]
+    fn palette_rows_have_aligned_hints() {
+        let overlay = Overlay::command_palette();
+        assert_eq!(overlay.rows().len(), overlay.row_hints().len());
+        // The Quit row carries its Ctrl+Q hint.
+        let quit = overlay
+            .rows()
+            .iter()
+            .position(|r| *r == Command::Quit.label())
+            .expect("quit row present");
+        assert_eq!(overlay.row_hints()[quit].as_deref(), Some("Ctrl+Q"));
     }
 }
