@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use color_eyre::eyre::eyre;
-use karet_vcs::{Repository, Selection, StatusKind, VcsError};
+use karet_vcs::{Repository, Selection, VcsError};
 
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
@@ -42,11 +42,10 @@ fn main() -> color_eyre::Result<()> {
     let staged = repo
         .changes(Selection::Staged, pathspec)
         .map_err(|e| eyre!("{e}"))?;
-    let mut working = repo
+    // The unstaged group already includes untracked files (VS Code's "Changes").
+    let working = repo
         .changes(Selection::Unstaged, pathspec)
         .map_err(|e| eyre!("{e}"))?;
-    // Untracked files are added in a follow-up commit; show tracked changes only here.
-    working.retain(|fc| fc.status != StatusKind::Untracked);
     if staged.is_empty() && working.is_empty() {
         println!("karet: no changes");
         return Ok(());

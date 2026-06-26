@@ -23,7 +23,7 @@ pub enum ViewMode {
 }
 
 /// Which Source-Control group a changed file belongs to, mirroring VS Code.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
     /// `HEAD` vs the index: the staged changes.
     Staged,
@@ -161,5 +161,42 @@ fn handle_event(app: &mut App, event: Event) -> bool {
             false
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use karet_vcs::StatusKind;
+    use std::path::PathBuf;
+
+    fn change(path: &str, status: StatusKind, new: &str) -> FileChange {
+        FileChange {
+            path: PathBuf::from(path),
+            old_path: None,
+            status,
+            is_binary: false,
+            old: String::new(),
+            new: new.to_string(),
+        }
+    }
+
+    #[test]
+    fn groups_files_with_untracked_in_the_working_section() {
+        let staged = vec![change("a.txt", StatusKind::Modified, "a\n")];
+        let working = vec![
+            change("b.txt", StatusKind::Modified, "b\n"),
+            change("new.txt", StatusKind::Untracked, "n\n"),
+        ];
+        let app = App::new(staged, working, false);
+
+        assert_eq!(app.files.len(), 3);
+        // Staged files come first, then the working group.
+        assert_eq!(app.staged_count(), 1);
+        assert_eq!(app.files[0].section, Section::Staged);
+        assert_eq!(app.files[1].section, Section::Working);
+        // The untracked file lands in the working ("Changes") group, like VS Code.
+        assert_eq!(app.files[2].section, Section::Working);
+        assert_eq!(app.files[2].change.status, StatusKind::Untracked);
     }
 }

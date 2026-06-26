@@ -147,11 +147,22 @@ fn status_glyph(kind: StatusKind) -> (char, ThemeRole) {
         StatusKind::Modified => ('M', ThemeRole::DiagnosticWarning),
         StatusKind::Deleted => ('D', ThemeRole::DiagnosticError),
         StatusKind::Renamed => ('R', ThemeRole::DiagnosticInfo),
-        StatusKind::Untracked => ('?', ThemeRole::LineNumberActive),
+        StatusKind::Untracked => ('U', ThemeRole::DiffAdded),
         _ => ('•', ThemeRole::Foreground),
     }
 }
 
 fn fg(c: Rgba) -> Style {
     Style::default().fg(c.to_ratatui())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn untracked_uses_vscode_u_badge() {
+        let (glyph, _) = status_glyph(StatusKind::Untracked);
+        assert_eq!(glyph, 'U');
+    }
 }
