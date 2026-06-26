@@ -22,6 +22,7 @@ use karet_widgets::FileTreeState;
 use karet_widgets::image::{self, GraphicsProtocol};
 use ratatui::layout::Rect;
 
+use crate::clipboard::Clipboard;
 use crate::command::Command;
 use crate::keymap::{self, Focus, SidebarPanel};
 use crate::overlay::{Overlay, OverlayEvent};
@@ -152,6 +153,8 @@ pub struct App {
     last_click: Option<(Instant, u16, u16)>,
     /// The current multi-click streak (1 = single, 2 = double, 3 = triple).
     click_streak: u8,
+    /// The system clipboard (OSC 52).
+    clipboard: Clipboard,
     /// The active Kitty image placement rect (set by the renderer), if any.
     pub(crate) image_area: Option<Rect>,
     /// The tab index whose image is currently transmitted to the terminal.
@@ -209,6 +212,7 @@ impl App {
             editor_selecting: false,
             last_click: None,
             click_streak: 0,
+            clipboard: Clipboard::new(),
             image_area: None,
             shown_image: None,
             should_quit: false,
@@ -522,6 +526,9 @@ impl App {
             Command::CloseTabsToRight => self.close_tabs_to_right(),
             Command::CloseAllTabs => self.close_all_tabs(),
             Command::ReopenClosedTab => self.reopen_closed_tab(),
+            Command::Copy => self.copy_selection(),
+            Command::CopyPath => self.copy_path(false),
+            Command::CopyRelativePath => self.copy_path(true),
             Command::SidebarUp => self.sidebar_step(-1),
             Command::SidebarDown => self.sidebar_step(1),
             Command::SidebarActivate => self.sidebar_activate(),
@@ -1037,6 +1044,53 @@ impl App {
         }
     }
 
+    /// Copy `text` to the clipboard, reporting the outcome in the status bar.
+    fn copy_to_clipboard(&mut self, text: String, what: &str) {
+        self.status = Some(match self.clipboard.set(&text) {
+            Ok(()) => format!("copied {what}"),
+            Err(e) => format!("copy failed: {e}"),
+        });
+    }
+
+    /// Copy the active code tab's selection, or its cursor line when nothing is
+    /// selected (VS Code behavior).
+    fn copy_selection(&mut self) {
+        let text = match self.tabs.get(self.active) {
+            Some(Tab {
+                kind: TabKind::Code { buffer, text, .. },
+                editor,
+                ..
+            }) => editor.selection_range().map_or_else(
+                || {
+                    buffer
+                        .line(editor.cursor.line as usize)
+                        .map(|l| format!("{l}\n"))
+                },
+                |range| selection_text(buffer, text, range),
+            ),
+            _ => None,
+        };
+        match text {
+            Some(text) => self.copy_to_clipboard(text, "selection"),
+            None => self.status = Some("copy: open a text file".to_string()),
+        }
+    }
+
+    /// Copy the active file's path (absolute or workspace-relative) to the clipboard.
+    fn copy_path(&mut self, relative: bool) {
+        let Some(path) = self.tabs.get(self.active).and_then(Tab::path) else {
+            self.status = Some("copy path: no file".to_string());
+            return;
+        };
+        let path = if relative {
+            path.strip_prefix(&self.root).unwrap_or(path)
+        } else {
+            path
+        };
+        let text = path.to_string_lossy().into_owned();
+        self.copy_to_clipboard(text, "path");
+    }
+
     /// Apply a caret `motion` to the active code tab, extending the selection when
     /// `extend` is set and clearing it otherwise.
     fn caret_motion(&mut self, extend: bool, motion: impl Fn(&mut EditorState, &TextBuffer)) {
@@ -1176,6 +1230,14 @@ fn word_at(buffer: &TextBuffer, pos: LineCol) -> (LineCol, LineCol) {
     } else {
         (LineCol::new(pos.line, start), LineCol::new(pos.line, end))
     }
+}
+
+/// The text within `range`, sliced from the tab's `source` using byte offsets
+/// derived from `buffer`. Returns `None` if the range cannot be resolved.
+fn selection_text(buffer: &TextBuffer, source: &str, range: Range) -> Option<String> {
+    let start = buffer.line_col_to_byte(range.start).ok()?.0;
+    let end = buffer.line_col_to_byte(range.end).ok()?.0;
+    source.get(start..end).map(str::to_string)
 }
 
 /// The (anchor, head) span covering all of `line`.
@@ -1472,6 +1534,31 @@ mod tests {
                 decos: Vec::new(),
             },
         )
+    }
+
+    #[test]
+    fn selection_text_slices_the_source() {
+        use karet_text::TextBuffer;
+        let src = "foo bar\nbaz";
+        let buffer = TextBuffer::from_text(src);
+        let range = Range {
+            start: LineCol::new(0, 4),
+            end: LineCol::new(1, 3),
+        };
+        assert_eq!(
+            selection_text(&buffer, src, range).as_deref(),
+            Some("bar\nbaz")
+        );
+    }
+
+    #[test]
+    fn copy_reports_status() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "hello world"));
+        app.focus = Focus::Editor;
+        app.dispatch(Command::SelectRight);
+        app.dispatch(Command::Copy);
+        assert_eq!(app.status.as_deref(), Some("copied selection"));
     }
 
     #[test]

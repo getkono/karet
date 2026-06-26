@@ -514,7 +514,8 @@ fn draw_welcome(f: &mut Frame, theme: &Theme, area: Rect) {
         Line::styled("  Ctrl+B        toggle sidebar", dim),
         Line::styled("  Ctrl+1/2/3    explorer · search · source control", dim),
         Line::styled("  Ctrl+Shift+F  search the workspace", dim),
-        Line::styled("  Tab switch focus     q quit", dim),
+        Line::styled("  Ctrl+C        copy selection", dim),
+        Line::styled("  Tab switch focus     Ctrl+Q quit", dim),
     ];
     f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), area);
 }
@@ -527,7 +528,7 @@ fn draw_status(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let left = if let Some(msg) = &app.status {
         format!(" {focus}  {msg} ")
     } else {
-        format!(" {focus}   ^P open · ^F find · ^B sidebar · q quit ")
+        format!(" {focus}   ^P open · ^F find · ^C copy · ^Q quit ")
     };
     let language = app.tabs.get(app.active).map_or("", Tab::language);
     let right = format!(" {language} ");

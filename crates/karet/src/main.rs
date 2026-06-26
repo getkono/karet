@@ -9,8 +9,8 @@
 //! Routing through the headless `karet-session` backend is a deferred step; for now
 //! the shell calls the engines directly.
 
-// `clipboard`/`input` are scaffolding for future editing work and are not yet wired
-// into the read-only shell.
+// `input` (the configurable chord engine) is scaffolding for future editing work
+// and is not yet wired into the shell; the clipboard's read path is likewise unused.
 #![allow(dead_code)]
 
 mod app;

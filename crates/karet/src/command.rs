@@ -48,6 +48,12 @@ pub enum Command {
     CloseAllTabs,
     /// Reopen the most recently closed file tab.
     ReopenClosedTab,
+    /// Copy the selection (or the cursor line) to the clipboard.
+    Copy,
+    /// Copy the active file's absolute path to the clipboard.
+    CopyPath,
+    /// Copy the active file's workspace-relative path to the clipboard.
+    CopyRelativePath,
     /// Move the sidebar selection up.
     SidebarUp,
     /// Move the sidebar selection down.
@@ -120,6 +126,9 @@ impl Command {
             Self::CloseTabsToRight => "View: Close Editors to the Right",
             Self::CloseAllTabs => "View: Close All Editors",
             Self::ReopenClosedTab => "View: Reopen Closed Editor",
+            Self::Copy => "Copy",
+            Self::CopyPath => "Copy Path of Active File",
+            Self::CopyRelativePath => "Copy Relative Path of Active File",
             Self::SidebarUp => "Sidebar: Select Previous",
             Self::SidebarDown => "Sidebar: Select Next",
             Self::SidebarActivate => "Sidebar: Open Selected",
@@ -166,6 +175,9 @@ impl Command {
                 | Self::CloseTabsToRight
                 | Self::CloseAllTabs
                 | Self::ReopenClosedTab
+                | Self::Copy
+                | Self::CopyPath
+                | Self::CopyRelativePath
                 | Self::ToggleDiffLayout
         )
     }
@@ -183,6 +195,9 @@ pub fn palette() -> Vec<Command> {
         Command::ToggleFocus,
         Command::OpenFind,
         Command::OpenGlobalSearch,
+        Command::Copy,
+        Command::CopyPath,
+        Command::CopyRelativePath,
         Command::NextTab,
         Command::PrevTab,
         Command::MoveTabLeft,

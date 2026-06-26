@@ -90,7 +90,7 @@ use When::{DiffEditor, Editor, Global, Sidebar};
 static BINDINGS: &[Binding] = &[
     // Global (any focus).
     b(Global, true,  false, false, Char('q'), Command::Quit),
-    b(Global, true,  false, false, Char('c'), Command::Quit),
+    b(Global, true,  false, false, Char('c'), Command::Copy),
     b(Global, true,  false, false, Char('p'), Command::OpenQuickOpen),
     b(Global, true,  true,  false, Char('p'), Command::OpenCommandPalette),
     b(Global, true,  false, false, Char('f'), Command::OpenFind),
@@ -151,6 +151,7 @@ static BINDINGS: &[Binding] = &[
     b(Editor, false, false, false, PageDown,  Command::PageDown),
     b(Editor, false, false, false, Char('b'), Command::PageUp),
     b(Editor, false, false, false, PageUp,    Command::PageUp),
+    b(Editor, false, false, false, Char('y'), Command::Copy),
     b(Editor, false, false, false, Char('g'), Command::Top),
     b(Editor, false, false, false, Home,      Command::Top),
     b(Editor, false, true,  false, Char('G'), Command::Bottom),
@@ -387,6 +388,35 @@ mod tests {
         assert_eq!(
             global(key(KeyCode::Char('b'), KeyModifiers::CONTROL)),
             Some(Command::ToggleSidebar)
+        );
+    }
+
+    #[test]
+    fn ctrl_c_copies_and_y_copies_in_editor() {
+        assert_eq!(
+            resolve(
+                Focus::Editor,
+                false,
+                key(KeyCode::Char('c'), KeyModifiers::CONTROL)
+            ),
+            Some(Command::Copy)
+        );
+        assert_eq!(
+            resolve(
+                Focus::Editor,
+                false,
+                key(KeyCode::Char('y'), KeyModifiers::NONE)
+            ),
+            Some(Command::Copy)
+        );
+        // Quit is Ctrl+Q only now.
+        assert_eq!(
+            resolve(
+                Focus::Editor,
+                false,
+                key(KeyCode::Char('q'), KeyModifiers::CONTROL)
+            ),
+            Some(Command::Quit)
         );
     }
 
