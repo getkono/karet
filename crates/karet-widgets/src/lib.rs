@@ -11,11 +11,13 @@
 //! inputs it renders) is defined as a builder struct; the ratatui `Widget` render
 //! impls are filled in separately.
 
-use karet_core::{Decoration, Diagnostic, LineCol, SymbolProvider};
+use karet_core::{Diagnostic, LineCol, SymbolProvider};
 use karet_fuzzy::Matcher;
-use std::path::Path;
 
+pub mod file_tree;
 pub mod viewer;
+
+pub use file_tree::{FileTree, FileTreeRow, FileTreeState, IconSet};
 
 /// A symbol outline tree over a [`SymbolProvider`].
 pub struct Outline<'a> {
@@ -35,14 +37,6 @@ pub struct Breadcrumbs<'a> {
 pub struct Problems<'a> {
     /// The diagnostics to list.
     pub diagnostics: &'a [Diagnostic],
-}
-
-/// A gitignore-aware file tree with a git-status overlay.
-pub struct FileTree<'a> {
-    /// The workspace root.
-    pub root: &'a Path,
-    /// Per-path status decorations (git markers, etc.).
-    pub decorations: &'a [Decoration],
 }
 
 /// A fuzzy quick-open / command-palette picker over arbitrary items.
