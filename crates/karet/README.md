@@ -31,7 +31,7 @@ and each opens as a diff tab.
 │   ▾ karet     │     (the active tab)                  │     (code / diff /
 │     app.rs  M │                                       │      image / hex /
 ├──────────────┴──────────────────────────────────────┤      placeholder)
-│ SIDEBAR   ^P open · ^F find · ^B sidebar · q quit  rs│  ← status bar
+│ SIDEBAR   ^P open · ^F find · ^C copy · ^Q quit    rs│  ← status bar
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -57,21 +57,35 @@ renderer — everything unsupported fails gracefully:
 
 **Global:** `Ctrl+P` quick-open · `Ctrl+Shift+P` command palette · `Ctrl+F` find
 in file · `Ctrl+Shift+F` workspace search · `Ctrl+B` toggle sidebar ·
-`Ctrl+1/2/3` Explorer/Search/Source Control · `Ctrl+W` close tab ·
-`Tab` switch focus · `Ctrl+Q`/`q` quit.
+`Ctrl+1/2/3` Explorer/Search/Source Control · `Ctrl+C` copy · `Tab` switch focus ·
+`Ctrl+Q` quit (`q` also quits in a viewer).
+
+**Tabs:** `Ctrl+Tab` / `Ctrl+Shift+Tab` (or `Ctrl+PageDown`/`Ctrl+PageUp`) next /
+previous · `Ctrl+Shift+PageUp`/`PageDown` move left / right · `Alt+1`…`9` go to tab
+(`9` = last) · `Ctrl+W` close · `Ctrl+Shift+T` reopen closed. Close Others / Close
+to the Right / Close All live in the command palette.
 
 **Sidebar:** `j`/`k`+arrows move · `Enter`/`l`/`→` open or expand · `h`/`←`
 collapse · `Space` toggle a directory.
 
-**Editor:** `j`/`k` scroll · `Space`/`PageDown`, `b`/`PageUp` page · `g`/`G`
-top/bottom · `Esc` back to the sidebar. In a **diff** tab: `\` toggles
-unified/side-by-side, `[` / `]` walk changed files.
+**Editor:** arrows move the caret (`Shift`+arrows extend the selection) · `j`/`k`
+scroll · `Space`/`PageDown`, `b`/`PageUp` page · `g`/`G` top/bottom · `Ctrl+C`/`y`
+copy the selection (or the cursor line) · `Esc` back to the sidebar. In a **diff**
+tab: `\` toggles unified/side-by-side, `[` / `]` walk changed files.
 
 **Overlays / find:** type to filter, `↑`/`↓` (or `Ctrl+N`/`Ctrl+P`) move, `Enter`
-accept, `Esc` dismiss; find adds `Ctrl+G` / `Ctrl+Shift+G` for next/previous.
+accept, `Esc` dismiss; find adds `Ctrl+G` / `Ctrl+Shift+G` for next/previous. The
+command palette shows each command's shortcut on the right.
 
-The keymap is a pure, unit-tested resolver (`keymap.rs`) — a clean later migration
-onto the `input::Keymap` chord engine.
+**Mouse** (every element is interactive): click a tab to switch, its `×` (or
+middle-click) to close, drag to reorder; click explorer rows to open files /
+toggle folders and the header `1 2 3` to switch panels; click SCM / search rows to
+open them; click to place the caret and drag to select text (double / triple-click
+select word / line); the wheel scrolls; click a status-bar segment to run it.
+
+The keymap is a single unit-tested binding table (`keymap.rs`) that drives both the
+resolver and the palette's shortcut hints; all named operations are `Command`s
+(`command.rs`).
 
 ## Architecture notes
 
@@ -84,8 +98,9 @@ onto the `input::Keymap` chord engine.
 ## Deferred (documented TODOs)
 
 - **Editing** (insert/delete/undo/save) — the code window is read-only; needs
-  `karet-text` edits + history + `karet-session`.
-- **Diff mouse drag-select & clipboard copy** — keyboard-first for now.
+  `karet-text` edits + history + `karet-session`. Text selection + copy already
+  work (read-only), via mouse drag / `Shift`+arrows and `Ctrl+C`.
+- **Diff drag-select & copy** — code tabs support it; diff tabs are keyboard-first.
 - **Kitty image lifecycle** across scroll/resize — minimal active-tab transmit.
 - **Rich markdown preview** (`karet-markdown`), **PDF rasterization**.
 - **Parallel workspace search** and **replace**; **explorer git-status overlay**.
