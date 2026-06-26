@@ -30,6 +30,24 @@ pub enum Command {
     OpenGlobalSearch,
     /// Close the active tab.
     CloseTab,
+    /// Switch to the next tab.
+    NextTab,
+    /// Switch to the previous tab.
+    PrevTab,
+    /// Move the active tab one position towards the start.
+    MoveTabLeft,
+    /// Move the active tab one position towards the end.
+    MoveTabRight,
+    /// Switch to the tab at the given 1-based position (9 means "last").
+    GoToTab(u8),
+    /// Close every tab except the active one.
+    CloseOtherTabs,
+    /// Close every tab to the right of the active one.
+    CloseTabsToRight,
+    /// Close all tabs.
+    CloseAllTabs,
+    /// Reopen the most recently closed file tab.
+    ReopenClosedTab,
     /// Move the sidebar selection up.
     SidebarUp,
     /// Move the sidebar selection down.
@@ -77,6 +95,15 @@ impl Command {
             Self::OpenFind => "Find in File…",
             Self::OpenGlobalSearch => "Search: Find in Files…",
             Self::CloseTab => "View: Close Editor",
+            Self::NextTab => "View: Open Next Editor",
+            Self::PrevTab => "View: Open Previous Editor",
+            Self::MoveTabLeft => "View: Move Editor Left",
+            Self::MoveTabRight => "View: Move Editor Right",
+            Self::GoToTab(_) => "View: Go to Tab",
+            Self::CloseOtherTabs => "View: Close Other Editors",
+            Self::CloseTabsToRight => "View: Close Editors to the Right",
+            Self::CloseAllTabs => "View: Close All Editors",
+            Self::ReopenClosedTab => "View: Reopen Closed Editor",
             Self::SidebarUp => "Sidebar: Select Previous",
             Self::SidebarDown => "Sidebar: Select Next",
             Self::SidebarActivate => "Sidebar: Open Selected",
@@ -107,6 +134,14 @@ impl Command {
                 | Self::OpenFind
                 | Self::OpenGlobalSearch
                 | Self::CloseTab
+                | Self::NextTab
+                | Self::PrevTab
+                | Self::MoveTabLeft
+                | Self::MoveTabRight
+                | Self::CloseOtherTabs
+                | Self::CloseTabsToRight
+                | Self::CloseAllTabs
+                | Self::ReopenClosedTab
                 | Self::ToggleDiffLayout
         )
     }
@@ -124,7 +159,15 @@ pub fn palette() -> Vec<Command> {
         Command::ToggleFocus,
         Command::OpenFind,
         Command::OpenGlobalSearch,
+        Command::NextTab,
+        Command::PrevTab,
+        Command::MoveTabLeft,
+        Command::MoveTabRight,
         Command::CloseTab,
+        Command::CloseOtherTabs,
+        Command::CloseTabsToRight,
+        Command::CloseAllTabs,
+        Command::ReopenClosedTab,
         Command::ToggleDiffLayout,
         Command::Quit,
     ]

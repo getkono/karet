@@ -99,6 +99,8 @@ pub struct App {
     pub(crate) tabs: Vec<Tab>,
     /// The active tab index.
     pub(crate) active: usize,
+    /// Paths of recently-closed file tabs, for "reopen closed editor" (newest last).
+    pub(crate) closed: Vec<PathBuf>,
     /// The open modal overlay (quick-open / command palette), if any.
     pub(crate) overlay: Option<Overlay>,
     /// The find-in-file bar, if open.
@@ -148,6 +150,7 @@ impl App {
             },
             tabs: vec![Tab::welcome()],
             active: 0,
+            closed: Vec::new(),
             overlay: None,
             find: None,
             search: SearchPanel::default(),
@@ -458,6 +461,15 @@ impl App {
             Command::OpenFind => self.open_find(),
             Command::OpenGlobalSearch => self.start_global_search(),
             Command::CloseTab => self.close_tab(),
+            Command::NextTab => self.next_tab(),
+            Command::PrevTab => self.prev_tab(),
+            Command::MoveTabLeft => self.move_active_tab(-1),
+            Command::MoveTabRight => self.move_active_tab(1),
+            Command::GoToTab(n) => self.go_to_tab(n),
+            Command::CloseOtherTabs => self.close_other_tabs(),
+            Command::CloseTabsToRight => self.close_tabs_to_right(),
+            Command::CloseAllTabs => self.close_all_tabs(),
+            Command::ReopenClosedTab => self.reopen_closed_tab(),
             Command::SidebarUp => self.sidebar_step(-1),
             Command::SidebarDown => self.sidebar_step(1),
             Command::SidebarActivate => self.sidebar_activate(),
@@ -580,17 +592,132 @@ impl App {
         self.focus = Focus::Editor;
     }
 
-    /// Close the active tab, falling back to a Welcome tab when the last closes.
+    /// Switch to the tab at `index`, focusing the editor.
+    fn select_tab(&mut self, index: usize) {
+        if index < self.tabs.len() {
+            self.active = index;
+            self.focus = Focus::Editor;
+        }
+    }
+
+    /// Switch to the next tab (wrapping).
+    fn next_tab(&mut self) {
+        let n = self.tabs.len();
+        if n > 1 {
+            self.select_tab((self.active + 1) % n);
+        }
+    }
+
+    /// Switch to the previous tab (wrapping).
+    fn prev_tab(&mut self) {
+        let n = self.tabs.len();
+        if n > 1 {
+            self.select_tab((self.active + n - 1) % n);
+        }
+    }
+
+    /// Go to the 1-based tab `n` (9 selects the last tab, VS Code-style).
+    fn go_to_tab(&mut self, n: u8) {
+        let n = n as usize;
+        let index = if n >= 9 {
+            self.tabs.len().saturating_sub(1)
+        } else {
+            n.saturating_sub(1)
+        };
+        self.select_tab(index);
+    }
+
+    /// Move the active tab one slot left (`-1`) or right (`+1`), clamped (no wrap).
+    fn move_active_tab(&mut self, delta: i32) {
+        let n = self.tabs.len() as i64;
+        if n < 2 {
+            return;
+        }
+        let target = (self.active as i64 + i64::from(delta)).clamp(0, n - 1) as usize;
+        if target != self.active {
+            self.tabs.swap(self.active, target);
+            self.active = target;
+        }
+    }
+
+    /// Record a closed file tab's path so it can be reopened later.
+    fn remember_closed(&mut self, index: usize) {
+        if let Some(tab) = self.tabs.get(index)
+            && !tab.is_diff()
+            && let Some(path) = tab.path()
+        {
+            let path = path.to_path_buf();
+            self.closed.retain(|p| p != &path);
+            self.closed.push(path);
+        }
+    }
+
+    /// Close the active tab.
     fn close_tab(&mut self) {
-        if self.tabs.len() <= 1 {
+        self.close_tab_at(self.active);
+    }
+
+    /// Close the tab at `index`, falling back to a Welcome tab when the last closes.
+    fn close_tab_at(&mut self, index: usize) {
+        if index >= self.tabs.len() {
+            return;
+        }
+        self.remember_closed(index);
+        if self.tabs.len() == 1 {
             self.tabs = vec![Tab::welcome()];
             self.active = 0;
             self.focus = Focus::Sidebar;
             return;
         }
-        self.tabs.remove(self.active);
+        self.tabs.remove(index);
+        if index < self.active {
+            self.active -= 1;
+        }
         if self.active >= self.tabs.len() {
             self.active = self.tabs.len() - 1;
+        }
+    }
+
+    /// Close every tab except the active one.
+    fn close_other_tabs(&mut self) {
+        if self.tabs.len() <= 1 {
+            return;
+        }
+        for i in (0..self.tabs.len()).rev() {
+            if i != self.active {
+                self.remember_closed(i);
+            }
+        }
+        self.tabs = vec![self.tabs.remove(self.active)];
+        self.active = 0;
+    }
+
+    /// Close every tab to the right of the active one.
+    fn close_tabs_to_right(&mut self) {
+        for i in (self.active + 1..self.tabs.len()).rev() {
+            self.remember_closed(i);
+        }
+        self.tabs.truncate(self.active + 1);
+    }
+
+    /// Close all tabs, leaving a Welcome tab.
+    fn close_all_tabs(&mut self) {
+        for i in (0..self.tabs.len()).rev() {
+            self.remember_closed(i);
+        }
+        self.tabs = vec![Tab::welcome()];
+        self.active = 0;
+        self.focus = Focus::Sidebar;
+    }
+
+    /// Reopen the most recently closed file tab whose file still exists.
+    fn reopen_closed_tab(&mut self) {
+        while let Some(path) = self.closed.pop() {
+            if path.is_file() {
+                let tab = workspace::open_file(&path, self.syntax);
+                self.push_tab(tab);
+                return;
+            }
         }
     }
 
@@ -971,6 +1098,84 @@ mod tests {
         app.run_global_search();
         assert_eq!(app.search.results.len(), 1);
         assert!(app.search.results[0].path.ends_with("a.txt"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn code_tab(name: &str) -> Tab {
+        use karet_syntax::Highlights;
+        use karet_text::TextBuffer;
+        Tab::new(
+            name,
+            TabKind::Code {
+                path: PathBuf::from(name),
+                language: "Rust",
+                buffer: TextBuffer::from_text("x\n"),
+                text: "x\n".to_string(),
+                highlights: Highlights::default(),
+                decos: Vec::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn tab_navigation_wraps_and_jumps() {
+        let mut app = app();
+        app.push_tab(code_tab("a.rs"));
+        app.push_tab(code_tab("b.rs"));
+        app.push_tab(code_tab("c.rs"));
+        assert_eq!(app.active, 2);
+        app.next_tab();
+        assert_eq!(app.active, 0, "next wraps to the first tab");
+        app.prev_tab();
+        assert_eq!(app.active, 2, "prev wraps to the last tab");
+        app.go_to_tab(1);
+        assert_eq!(app.active, 0);
+        app.go_to_tab(9);
+        assert_eq!(app.active, 2, "9 selects the last tab");
+    }
+
+    #[test]
+    fn move_active_tab_reorders_and_clamps() {
+        let mut app = app();
+        app.push_tab(code_tab("a.rs"));
+        app.push_tab(code_tab("b.rs"));
+        app.active = 0;
+        app.move_active_tab(1);
+        assert_eq!(app.tabs[1].title, "a.rs");
+        assert_eq!(app.active, 1);
+        app.move_active_tab(1); // already last: clamped, no change
+        assert_eq!(app.active, 1);
+    }
+
+    #[test]
+    fn close_other_tabs_keeps_the_active_one() {
+        let mut app = app();
+        app.push_tab(code_tab("a.rs"));
+        app.push_tab(code_tab("b.rs"));
+        app.push_tab(code_tab("c.rs"));
+        app.active = 1;
+        app.close_other_tabs();
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.tabs[0].title, "b.rs");
+        assert_eq!(app.active, 0);
+    }
+
+    #[test]
+    fn closing_remembers_path_and_reopen_restores_it() {
+        let dir = std::env::temp_dir().join(format!("karet-reopen-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("a.rs");
+        let _ = std::fs::write(&file, "fn main() {}\n");
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.push_tab(workspace::open_file(&file, false));
+        app.push_tab(code_tab("scratch"));
+        app.active = 0;
+        app.close_tab_at(0);
+        assert_eq!(app.closed.last(), Some(&file));
+        app.reopen_closed_tab();
+        assert!(app.tabs.iter().any(|t| t.path() == Some(file.as_path())));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

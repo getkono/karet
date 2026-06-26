@@ -102,6 +102,24 @@ static BINDINGS: &[Binding] = &[
     b(Global, true,  false, false, Char('3'), Command::SelectPanel(SidebarPanel::SourceControl)),
     b(Global, false, false, false, Tab,       Command::ToggleFocus),
 
+    // Tab navigation & reordering (global).
+    b(Global, true,  false, false, Tab,       Command::NextTab),
+    b(Global, true,  true,  false, Tab,       Command::PrevTab),
+    b(Global, true,  false, false, PageDown,  Command::NextTab),
+    b(Global, true,  false, false, PageUp,    Command::PrevTab),
+    b(Global, true,  true,  false, PageDown,  Command::MoveTabRight),
+    b(Global, true,  true,  false, PageUp,    Command::MoveTabLeft),
+    b(Global, true,  true,  false, Char('t'), Command::ReopenClosedTab),
+    b(Global, false, false, true,  Char('1'), Command::GoToTab(1)),
+    b(Global, false, false, true,  Char('2'), Command::GoToTab(2)),
+    b(Global, false, false, true,  Char('3'), Command::GoToTab(3)),
+    b(Global, false, false, true,  Char('4'), Command::GoToTab(4)),
+    b(Global, false, false, true,  Char('5'), Command::GoToTab(5)),
+    b(Global, false, false, true,  Char('6'), Command::GoToTab(6)),
+    b(Global, false, false, true,  Char('7'), Command::GoToTab(7)),
+    b(Global, false, false, true,  Char('8'), Command::GoToTab(8)),
+    b(Global, false, false, true,  Char('9'), Command::GoToTab(9)),
+
     // Sidebar focus.
     b(Sidebar, false, false, false, Char('q'), Command::Quit),
     b(Sidebar, false, false, false, Esc,       Command::Quit),
@@ -151,10 +169,15 @@ fn when_active(when: When, focus: Focus, is_diff: bool) -> bool {
 /// Whether `key` matches binding `bind`.
 fn chord_matches(bind: &Binding, key: KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
+    // Some terminals report Shift+Tab as `BackTab` with the Shift folded into the
+    // code; normalize it back to `Tab` + Shift so bindings can stay uniform.
+    let (code, shift) = match key.code {
+        KeyCode::BackTab => (KeyCode::Tab, true),
+        other => (other, key.modifiers.contains(KeyModifiers::SHIFT)),
+    };
 
-    match (bind.code, key.code) {
+    match (bind.code, code) {
         (KeyCode::Char(bc), KeyCode::Char(kc)) if bind.ctrl || bind.alt => {
             // With Ctrl/Alt the case is irrelevant; Shift is a distinct flag.
             bind.ctrl == ctrl
