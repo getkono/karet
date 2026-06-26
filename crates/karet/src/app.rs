@@ -19,6 +19,7 @@ use karet_widgets::image::{self, GraphicsProtocol};
 use ratatui::layout::Rect;
 
 use crate::keymap::{self, Action, Focus, SidebarPanel};
+use crate::overlay::{Overlay, OverlayEvent, PaletteCommand};
 use crate::render::{FileView, Section};
 use crate::tab::{Tab, TabKind, ViewMode};
 use crate::{ui, workspace};
@@ -68,6 +69,8 @@ pub struct App {
     pub(crate) tabs: Vec<Tab>,
     /// The active tab index.
     pub(crate) active: usize,
+    /// The open modal overlay (quick-open / command palette), if any.
+    pub(crate) overlay: Option<Overlay>,
     /// A transient status message.
     pub(crate) status: Option<String>,
     /// The sidebar rect from the last frame (mouse hit-testing).
@@ -111,6 +114,7 @@ impl App {
             },
             tabs: vec![Tab::welcome()],
             active: 0,
+            overlay: None,
             status: None,
             sidebar_rect: Rect::default(),
             main_rect: Rect::default(),
@@ -131,11 +135,60 @@ impl App {
         self.tabs.get(self.active).is_some_and(Tab::is_diff)
     }
 
-    /// Handle a key press by resolving and applying an [`Action`].
+    /// Handle a key press: route to the open overlay, else resolve via the keymap.
     fn handle_key(&mut self, key: KeyEvent) {
         self.status = None;
+        if self.overlay.is_some() {
+            self.handle_overlay_key(key);
+            return;
+        }
         if let Some(action) = keymap::resolve(self.focus, self.active_is_diff(), key) {
             self.dispatch(action);
+        }
+    }
+
+    /// Route a key to the open overlay and act on its outcome.
+    fn handle_overlay_key(&mut self, key: KeyEvent) {
+        let Some(overlay) = self.overlay.as_mut() else {
+            return;
+        };
+        match overlay.handle_key(key) {
+            OverlayEvent::Consumed => {}
+            OverlayEvent::Close => self.overlay = None,
+            OverlayEvent::AcceptFile(path) => {
+                self.overlay = None;
+                let tab = workspace::open_file(&path, self.syntax);
+                self.push_tab(tab);
+            }
+            OverlayEvent::AcceptCommand(cmd) => {
+                self.overlay = None;
+                self.run_palette_command(cmd);
+            }
+        }
+    }
+
+    /// Open the quick-open (go-to-file) overlay.
+    fn open_quick_open(&mut self) {
+        let files = workspace::list_files(&self.root, 2000);
+        self.overlay = Some(Overlay::quick_open(files));
+    }
+
+    /// Apply a command chosen from the command palette.
+    fn run_palette_command(&mut self, cmd: PaletteCommand) {
+        match cmd {
+            PaletteCommand::ToggleSidebar => self.dispatch(Action::ToggleSidebar),
+            PaletteCommand::ShowExplorer => {
+                self.dispatch(Action::SelectPanel(SidebarPanel::Explorer));
+            }
+            PaletteCommand::ShowSearch => self.dispatch(Action::SelectPanel(SidebarPanel::Search)),
+            PaletteCommand::ShowSourceControl => {
+                self.dispatch(Action::SelectPanel(SidebarPanel::SourceControl));
+            }
+            PaletteCommand::QuickOpen => self.open_quick_open(),
+            PaletteCommand::Find => self.dispatch(Action::OpenFind),
+            PaletteCommand::GlobalSearch => self.dispatch(Action::OpenGlobalSearch),
+            PaletteCommand::CloseTab => self.dispatch(Action::CloseTab),
+            PaletteCommand::Quit => self.should_quit = true,
         }
     }
 
@@ -150,11 +203,10 @@ impl App {
                 self.sidebar_visible = true;
                 self.focus = Focus::Sidebar;
             }
-            // Overlays and the global search panel are wired in later commits.
-            Action::OpenQuickOpen
-            | Action::OpenCommandPalette
-            | Action::OpenFind
-            | Action::OpenGlobalSearch => {
+            Action::OpenQuickOpen => self.open_quick_open(),
+            Action::OpenCommandPalette => self.overlay = Some(Overlay::command_palette()),
+            // The find bar and global search panel are wired in later commits.
+            Action::OpenFind | Action::OpenGlobalSearch => {
                 self.status = Some("not yet available".to_string());
             }
             Action::CloseTab => self.close_tab(),
@@ -393,6 +445,9 @@ impl App {
     /// Handle a mouse event: wheel scrolls (the sidebar or the active tab) and a
     /// left click moves focus to the clicked region.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if self.overlay.is_some() {
+            return;
+        }
         let point = (mouse.column, mouse.row);
         let in_sidebar = self.sidebar_visible && rect_contains(self.sidebar_rect, point);
         match mouse.kind {

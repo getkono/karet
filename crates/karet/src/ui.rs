@@ -13,10 +13,11 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::app::App;
 use crate::keymap::{Focus, SidebarPanel};
+use crate::overlay::Overlay;
 use crate::render::{self, Section};
 use crate::tab::{Tab, TabKind, ViewMode};
 
@@ -58,6 +59,69 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let main = app.main_rect;
     draw_main(f, app, &theme, main);
     draw_status(f, app, &theme, rows[3]);
+
+    if let Some(overlay) = &app.overlay {
+        draw_overlay(f, overlay, &theme, area);
+    }
+}
+
+/// Draw a centered modal overlay (quick-open / command palette).
+fn draw_overlay(f: &mut Frame, overlay: &Overlay, theme: &Theme, area: Rect) {
+    let width = (u32::from(area.width) * 7 / 10).clamp(20, 80) as u16;
+    let height = (u32::from(area.height) * 6 / 10).clamp(6, 18) as u16;
+    let rect = centered(area, width, height);
+    f.render_widget(Clear, rect);
+
+    let style = Style::default()
+        .bg(theme.role(ThemeRole::Background).to_ratatui())
+        .fg(theme.role(ThemeRole::Foreground).to_ratatui());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(overlay.title().to_string())
+        .style(style);
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    if inner.height < 2 {
+        return;
+    }
+
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
+    let query = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
+    f.render_widget(
+        Paragraph::new(Line::styled(format!("› {}", overlay.query()), query)),
+        rows[0],
+    );
+
+    let labels = overlay.rows();
+    let selected = overlay.selected();
+    let list_h = rows[1].height as usize;
+    let offset = selected.saturating_sub(list_h.saturating_sub(1));
+    let items: Vec<ListItem> = labels
+        .iter()
+        .skip(offset)
+        .take(list_h.max(1))
+        .map(|l| ListItem::new(Line::raw((*l).to_string())))
+        .collect();
+    let mut state = ListState::default();
+    state.select(Some(selected.saturating_sub(offset)));
+    let list = List::new(items).highlight_style(
+        Style::default()
+            .bg(theme.role(ThemeRole::Selection).to_ratatui())
+            .add_modifier(Modifier::BOLD),
+    );
+    f.render_stateful_widget(list, rows[1], &mut state);
+}
+
+/// A `width`×`height` rect centered within `area`.
+fn centered(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    }
 }
 
 /// The sidebar width: 30 columns, capped at ~40% of a narrow terminal.

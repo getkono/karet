@@ -18,6 +18,7 @@ mod cli;
 mod clipboard;
 mod input;
 mod keymap;
+mod overlay;
 mod render;
 mod tab;
 mod ui;
