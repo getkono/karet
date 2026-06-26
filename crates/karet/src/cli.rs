@@ -4,14 +4,14 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-/// karet — a fast terminal viewer for your git diff.
+/// karet — a terminal IDE: file explorer, code window, and search.
 ///
-/// Shows your staged changes and working-tree changes together, like VS Code's Source
-/// Control panel.
+/// Opens an Explorer-first shell rooted at the given path. A file opens directly; a
+/// git repository's changes appear in the Source Control panel.
 #[derive(Debug, Parser)]
 #[command(name = "karet", version, about)]
 pub struct Cli {
-    /// File or directory to inspect (defaults to the current directory).
+    /// File or directory to open (defaults to the current directory).
     pub path: Option<PathBuf>,
 
     /// Disable syntax highlighting (also respects the NO_COLOR environment variable).

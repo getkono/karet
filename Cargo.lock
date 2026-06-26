@@ -2389,6 +2389,7 @@ dependencies = [
  "color-eyre",
  "crossterm",
  "directories",
+ "ignore",
  "karet-core",
  "karet-dap",
  "karet-diff",
@@ -2614,11 +2615,13 @@ dependencies = [
 name = "karet-widgets"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "ignore",
  "image",
  "karet-core",
  "karet-fuzzy",
  "karet-markdown",
+ "karet-theme",
  "ratatui",
  "thiserror 2.0.18",
  "unicode-width",

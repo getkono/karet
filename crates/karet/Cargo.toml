@@ -43,6 +43,7 @@ tracing-subscriber.workspace = true
 clap.workspace = true
 color-eyre.workspace = true
 directories.workspace = true
+ignore.workspace = true              # quick-open file listing (gitignore-aware)
 thiserror.workspace = true           # error types for the merged clipboard/input modules
 base64.workspace = true              # `clipboard` module (OSC 52), merged from karet-clipboard
 toml.workspace = true                # `input` module keymap config, merged from karet-input

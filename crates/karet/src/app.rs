@@ -1,338 +1,442 @@
-//! Application state and the crossterm event loop.
+//! The IDE shell: application state, the keymap-driven event loop, and terminal
+//! setup. The shell composes the engine/widget crates — it owns the open tabs and
+//! the sidebar, and applies [`Action`]s resolved from key events.
 
-use std::io;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use color_eyre::eyre::eyre;
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEvent, KeyEventKind,
+    KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use karet_theme::Theme;
 use karet_vcs::FileChange;
+use karet_widgets::FileTreeState;
+use karet_widgets::image::{self, GraphicsProtocol};
 use ratatui::layout::Rect;
-use ratatui::text::Line;
 
-use crate::clipboard::Clipboard;
-use crate::render::{self, FileView};
-use crate::ui;
+use crate::keymap::{self, Action, Focus, SidebarPanel};
+use crate::render::{FileView, Section};
+use crate::tab::{Tab, TabKind, ViewMode};
+use crate::{ui, workspace};
 
-/// How the diff is laid out.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum ViewMode {
-    /// One column: removals then additions.
-    Unified,
-    /// Two columns: old on the left, new on the right.
-    SideBySide,
+/// The Source-Control panel state: the changed files (staged first) and selection.
+pub(crate) struct Scm {
+    /// Changed files: the staged group first, then the working group.
+    pub(crate) changes: Vec<FileChange>,
+    /// The number of staged files at the front of `changes`.
+    pub(crate) staged_count: usize,
+    /// The selected entry (index into `changes`).
+    pub(crate) selected: usize,
 }
 
-/// Which Source-Control group a changed file belongs to, mirroring VS Code.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Section {
-    /// `HEAD` vs the index: the staged changes.
-    Staged,
-    /// The index vs the worktree (and untracked files): the working-tree changes.
-    Working,
-}
-
-/// Which diff pane a selection lives in.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Pane {
-    /// The single column of the unified view.
-    Unified,
-    /// The old (left) column of the side-by-side view.
-    Left,
-    /// The new (right) column of the side-by-side view.
-    Right,
-}
-
-/// A caret position in a diff pane: a document line index (independent of scroll)
-/// and a character column within that rendered line.
-#[derive(Clone, Copy)]
-struct Pos {
-    line: usize,
-    col: usize,
-}
-
-/// A normalized selection: the pane plus its `(line, col)` start and end, with
-/// `start <= end`.
-pub(crate) type SelectionSpan = (Pane, (usize, usize), (usize, usize));
-
-/// An in-progress or completed text selection within one diff pane.
-struct Selection {
-    pane: Pane,
-    anchor: Pos,
-    head: Pos,
-}
-
-impl Selection {
-    /// The selection's endpoints ordered so the first precedes the second.
-    fn ordered(&self) -> (Pos, Pos) {
-        if (self.anchor.line, self.anchor.col) <= (self.head.line, self.head.col) {
-            (self.anchor, self.head)
+impl Scm {
+    /// The Source-Control [`Section`] for the entry at `index`.
+    fn section(&self, index: usize) -> Section {
+        if index < self.staged_count {
+            Section::Staged
         } else {
-            (self.head, self.anchor)
+            Section::Working
         }
     }
 }
 
-/// The rendered layout of the last frame, retained so mouse events can hit-test.
-#[derive(Default)]
-pub(crate) struct Regions {
-    /// The file-list panel (left column).
-    pub(crate) file_list: Rect,
-    /// The list's first visible row, so clicks map through a possible scroll.
-    pub(crate) list_offset: usize,
-    /// One entry per list display row: `None` for a group header, `Some(i)` for file `i`.
-    pub(crate) list_rows: Vec<Option<usize>>,
-    /// The diff content area (the whole right column in unified view).
-    pub(crate) diff: Rect,
-    /// The old/new pane rects when laid out side-by-side.
-    pub(crate) sbs: Option<(Rect, Rect)>,
-    /// The status bar.
-    pub(crate) status: Rect,
-}
-
-/// The running viewer state.
+/// The IDE shell state.
 pub struct App {
-    /// One entry per changed file, the staged group first then the working group.
-    pub files: Vec<FileView>,
-    /// Index of the focused file.
-    pub current: usize,
-    /// The current layout.
-    pub view: ViewMode,
-    /// Vertical scroll offset (in display rows).
-    pub scroll: u16,
+    /// The workspace root.
+    pub(crate) root: PathBuf,
     /// The active color theme.
-    pub theme: Theme,
-    /// The active diff text selection, if any.
-    selection: Option<Selection>,
-    /// Whether a drag-select is currently in progress.
-    dragging: bool,
-    /// The rendered layout of the last frame, for mouse hit-testing.
-    pub(crate) regions: Regions,
-    /// The system clipboard (OSC 52).
-    clipboard: Clipboard,
+    pub(crate) theme: Theme,
+    /// Whether syntax highlighting is enabled.
+    pub(crate) syntax: bool,
+    /// The detected terminal graphics protocol.
+    pub(crate) graphics: GraphicsProtocol,
+    /// Which area has keyboard focus.
+    pub(crate) focus: Focus,
+    /// The active sidebar panel.
+    pub(crate) sidebar_panel: SidebarPanel,
+    /// Whether the sidebar is shown.
+    pub(crate) sidebar_visible: bool,
+    /// The file-explorer tree state.
+    pub(crate) explorer: FileTreeState,
+    /// The Source-Control panel state.
+    pub(crate) scm: Scm,
+    /// The open tabs.
+    pub(crate) tabs: Vec<Tab>,
+    /// The active tab index.
+    pub(crate) active: usize,
+    /// A transient status message.
+    pub(crate) status: Option<String>,
+    /// The sidebar rect from the last frame (mouse hit-testing).
+    pub(crate) sidebar_rect: Rect,
+    /// The main content rect from the last frame.
+    pub(crate) main_rect: Rect,
+    /// The active Kitty image placement rect (set by the renderer), if any.
+    pub(crate) image_area: Option<Rect>,
+    /// The tab index whose image is currently transmitted to the terminal.
+    shown_image: Option<usize>,
+    /// Whether the app should quit.
+    should_quit: bool,
 }
 
 impl App {
-    /// Build the viewer state from the `staged` and `working` change groups, diffing
-    /// and highlighting each file.
-    pub fn new(staged: Vec<FileChange>, working: Vec<FileChange>, syntax: bool) -> Self {
-        let files = staged
-            .into_iter()
-            .map(|change| FileView::new(change, Section::Staged, syntax))
-            .chain(
-                working
-                    .into_iter()
-                    .map(|change| FileView::new(change, Section::Working, syntax)),
-            )
-            .collect();
-        Self {
-            files,
-            current: 0,
-            view: ViewMode::Unified,
-            scroll: 0,
-            theme: Theme::dark(),
-            selection: None,
-            dragging: false,
-            regions: Regions::default(),
-            clipboard: Clipboard::new(),
-        }
-    }
-
-    /// The number of files in the staged group (the working group is the remainder).
+    /// Build the shell rooted at `root`, with the staged/working change groups for
+    /// the Source-Control panel.
     #[must_use]
-    pub fn staged_count(&self) -> usize {
-        self.files
-            .iter()
-            .filter(|fv| fv.section == Section::Staged)
-            .count()
-    }
-
-    /// Handle one key press. Returns `true` when the app should quit.
-    fn handle_key(&mut self, key: KeyEvent) -> bool {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => return true,
-            KeyCode::Char('c') if ctrl => return true,
-            KeyCode::Tab => self.toggle_view(),
-            KeyCode::Char('j') | KeyCode::Down => self.scroll = self.scroll.saturating_add(1),
-            KeyCode::Char('k') | KeyCode::Up => self.scroll = self.scroll.saturating_sub(1),
-            KeyCode::Char(' ') | KeyCode::PageDown => self.scroll = self.scroll.saturating_add(20),
-            KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(20),
-            KeyCode::Char('g') | KeyCode::Home => self.scroll = 0,
-            KeyCode::Char('l') | KeyCode::Char(']') | KeyCode::Right => self.next_file(),
-            KeyCode::Char('h') | KeyCode::Char('[') | KeyCode::Left => self.prev_file(),
-            _ => {}
+    pub fn new(
+        root: PathBuf,
+        staged: Vec<FileChange>,
+        working: Vec<FileChange>,
+        syntax: bool,
+    ) -> Self {
+        let staged_count = staged.len();
+        let mut changes = staged;
+        changes.extend(working);
+        Self {
+            root,
+            theme: Theme::dark(),
+            syntax,
+            graphics: image::detect_protocol(),
+            focus: Focus::Sidebar,
+            sidebar_panel: SidebarPanel::Explorer,
+            sidebar_visible: true,
+            explorer: FileTreeState::new(),
+            scm: Scm {
+                changes,
+                staged_count,
+                selected: 0,
+            },
+            tabs: vec![Tab::welcome()],
+            active: 0,
+            status: None,
+            sidebar_rect: Rect::default(),
+            main_rect: Rect::default(),
+            image_area: None,
+            shown_image: None,
+            should_quit: false,
         }
-        false
     }
 
-    /// Handle one mouse event. The wheel scrolls the diff (or walks the file list
-    /// when the pointer is over it); the left button selects files, toggles the
-    /// layout, and drag-selects diff text.
-    fn handle_mouse(&mut self, mouse: MouseEvent) {
-        let p = (mouse.column, mouse.row);
-        match mouse.kind {
-            MouseEventKind::ScrollDown if rect_contains(self.regions.file_list, p) => {
-                self.next_file();
+    /// Open `path` as the initial tab at startup (used when `karet <file>` is run).
+    pub fn open_initial(&mut self, path: &Path) {
+        let tab = workspace::open_file(path, self.syntax);
+        self.push_tab(tab);
+    }
+
+    /// Whether the active tab is a diff (enables diff-specific keys).
+    fn active_is_diff(&self) -> bool {
+        self.tabs.get(self.active).is_some_and(Tab::is_diff)
+    }
+
+    /// Handle a key press by resolving and applying an [`Action`].
+    fn handle_key(&mut self, key: KeyEvent) {
+        self.status = None;
+        if let Some(action) = keymap::resolve(self.focus, self.active_is_diff(), key) {
+            self.dispatch(action);
+        }
+    }
+
+    /// Apply a resolved [`Action`].
+    fn dispatch(&mut self, action: Action) {
+        match action {
+            Action::Quit => self.should_quit = true,
+            Action::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
+            Action::ToggleFocus => self.toggle_focus(),
+            Action::SelectPanel(panel) => {
+                self.sidebar_panel = panel;
+                self.sidebar_visible = true;
+                self.focus = Focus::Sidebar;
             }
-            MouseEventKind::ScrollUp if rect_contains(self.regions.file_list, p) => {
-                self.prev_file();
+            // Overlays and the global search panel are wired in later commits.
+            Action::OpenQuickOpen
+            | Action::OpenCommandPalette
+            | Action::OpenFind
+            | Action::OpenGlobalSearch => {
+                self.status = Some("not yet available".to_string());
             }
-            MouseEventKind::ScrollDown => self.scroll = self.scroll.saturating_add(3),
-            MouseEventKind::ScrollUp => self.scroll = self.scroll.saturating_sub(3),
-            MouseEventKind::Down(MouseButton::Left) => self.on_press(p),
-            MouseEventKind::Drag(MouseButton::Left) => self.on_drag(p),
-            MouseEventKind::Up(MouseButton::Left) => self.on_release(),
-            _ => {}
+            Action::CloseTab => self.close_tab(),
+            Action::SidebarUp => self.sidebar_step(-1),
+            Action::SidebarDown => self.sidebar_step(1),
+            Action::SidebarActivate => self.sidebar_activate(),
+            Action::SidebarCollapse => self.sidebar_collapse(),
+            Action::SidebarToggleExpand => self.sidebar_toggle_expand(),
+            Action::ScrollUp => self.scroll_lines(-1),
+            Action::ScrollDown => self.scroll_lines(1),
+            Action::PageUp => self.scroll_lines(-i32::from(self.main_rect.height.max(1))),
+            Action::PageDown => self.scroll_lines(i32::from(self.main_rect.height.max(1))),
+            Action::Top => self.scroll_edge(true),
+            Action::Bottom => self.scroll_edge(false),
+            Action::ToggleDiffLayout => self.toggle_diff_layout(),
+            Action::NextChangedFile => self.step_changed_file(1),
+            Action::PrevChangedFile => self.step_changed_file(-1),
         }
     }
 
-    /// Left-button press: select a file, toggle the layout, or begin a selection.
-    fn on_press(&mut self, p: (u16, u16)) {
-        if rect_contains(self.regions.file_list, p) {
-            if let Some(idx) = self.file_at(p) {
-                self.current = idx;
-                self.scroll = 0;
-                self.selection = None;
-            }
-        } else if rect_contains(self.regions.status, p) {
-            self.toggle_view();
-        } else if let Some((pane, rect)) = self.diff_pane_at(p) {
-            let pos = pos_in(rect, p, self.scroll);
-            self.selection = Some(Selection {
-                pane,
-                anchor: pos,
-                head: pos,
-            });
-            self.dragging = true;
-        }
-    }
-
-    /// Left-button drag: extend the active selection, auto-scrolling at the edges.
-    fn on_drag(&mut self, p: (u16, u16)) {
-        if !self.dragging {
-            return;
-        }
-        let Some(pane) = self.selection.as_ref().map(|s| s.pane) else {
-            return;
+    /// Move focus between the sidebar and the editor.
+    fn toggle_focus(&mut self) {
+        self.focus = match self.focus {
+            Focus::Sidebar => Focus::Editor,
+            Focus::Editor => Focus::Sidebar,
         };
-        let Some(rect) = self.pane_rect(pane) else {
-            return;
-        };
-        // Drag past the top or bottom edge nudges the scroll so the selection grows.
-        if p.1 < rect.y {
-            self.scroll = self.scroll.saturating_sub(1);
-        } else if p.1 >= rect.bottom() {
-            self.scroll = self.scroll.saturating_add(1);
-        }
-        let cx = p.0.clamp(rect.x, rect.right().saturating_sub(1));
-        let cy = p.1.clamp(rect.y, rect.bottom().saturating_sub(1));
-        let pos = pos_in(rect, (cx, cy), self.scroll);
-        if let Some(sel) = self.selection.as_mut() {
-            sel.head = pos;
-        }
     }
 
-    /// Left-button release: finish a drag and copy the selected text.
-    fn on_release(&mut self) {
-        if !self.dragging {
-            return;
-        }
-        self.dragging = false;
-        self.copy_selection();
-    }
-
-    /// Copy the current selection's visible text to the system clipboard.
-    fn copy_selection(&self) {
-        let Some((pane, start, end)) = self.selection_span() else {
-            return;
-        };
-        let Some(file) = self.files.get(self.current) else {
-            return;
-        };
-        let lines = match pane {
-            Pane::Unified => render::unified_lines(file, &self.theme),
-            Pane::Left => render::side_by_side_lines(file, &self.theme).0,
-            Pane::Right => render::side_by_side_lines(file, &self.theme).1,
-        };
-        let text = selection_text(&lines, start, end);
-        if !text.is_empty() {
-            let _ = self.clipboard.set(&text);
-        }
-    }
-
-    /// The normalized selection as `(pane, start, end)` in `(line, col)` document
-    /// coords with `start <= end`, or `None` when nothing is selected.
-    pub(crate) fn selection_span(&self) -> Option<SelectionSpan> {
-        let sel = self.selection.as_ref()?;
-        let (s, e) = sel.ordered();
-        Some((sel.pane, (s.line, s.col), (e.line, e.col)))
-    }
-
-    /// The file index under a point in the file-list panel, if any (`None` over a
-    /// group header or empty row).
-    fn file_at(&self, (_, row): (u16, u16)) -> Option<usize> {
-        let rel = usize::from(row.checked_sub(self.regions.file_list.y)?);
-        let idx = rel + self.regions.list_offset;
-        self.regions.list_rows.get(idx).copied().flatten()
-    }
-
-    /// The diff pane (and its rect) under a point, if the point is over diff content.
-    fn diff_pane_at(&self, p: (u16, u16)) -> Option<(Pane, Rect)> {
-        match self.view {
-            ViewMode::Unified => {
-                rect_contains(self.regions.diff, p).then_some((Pane::Unified, self.regions.diff))
-            }
-            ViewMode::SideBySide => {
-                let (left, right) = self.regions.sbs?;
-                if rect_contains(left, p) {
-                    Some((Pane::Left, left))
-                } else if rect_contains(right, p) {
-                    Some((Pane::Right, right))
+    /// Move the sidebar selection within the active panel.
+    fn sidebar_step(&mut self, delta: i32) {
+        match self.sidebar_panel {
+            SidebarPanel::Explorer => {
+                self.explorer.ensure_built(&self.root);
+                if delta > 0 {
+                    self.explorer.select_next();
                 } else {
-                    None
+                    self.explorer.select_prev();
                 }
             }
+            SidebarPanel::SourceControl => {
+                let len = self.scm.changes.len();
+                if len > 0 {
+                    let next =
+                        (self.scm.selected as i64 + i64::from(delta)).clamp(0, len as i64 - 1);
+                    self.scm.selected = next as usize;
+                }
+            }
+            SidebarPanel::Search => {}
         }
     }
 
-    /// The rect of `pane` in the current layout, if it is on screen.
-    fn pane_rect(&self, pane: Pane) -> Option<Rect> {
-        match pane {
-            Pane::Unified => Some(self.regions.diff),
-            Pane::Left => self.regions.sbs.map(|(l, _)| l),
-            Pane::Right => self.regions.sbs.map(|(_, r)| r),
+    /// Activate the selected sidebar row (open a file, expand a dir, open a diff).
+    fn sidebar_activate(&mut self) {
+        match self.sidebar_panel {
+            SidebarPanel::Explorer => {
+                self.explorer.ensure_built(&self.root);
+                if let Some(row) = self.explorer.selected() {
+                    let path = row.path.clone();
+                    if row.is_dir {
+                        self.explorer.toggle(&path);
+                    } else {
+                        let tab = workspace::open_file(&path, self.syntax);
+                        self.push_tab(tab);
+                    }
+                }
+            }
+            SidebarPanel::SourceControl => self.open_selected_diff(),
+            SidebarPanel::Search => {}
         }
     }
 
-    /// Switch between the unified and side-by-side layouts, dropping any selection
-    /// (its coordinates are pane-specific).
-    fn toggle_view(&mut self) {
-        self.view = match self.view {
-            ViewMode::Unified => ViewMode::SideBySide,
-            ViewMode::SideBySide => ViewMode::Unified,
+    /// Collapse the selected directory (explorer only).
+    fn sidebar_collapse(&mut self) {
+        if self.sidebar_panel == SidebarPanel::Explorer
+            && let Some(row) = self.explorer.selected()
+            && row.is_dir
+        {
+            let path = row.path.clone();
+            self.explorer.collapse(&path);
+        }
+    }
+
+    /// Toggle expansion of the selected directory (explorer only).
+    fn sidebar_toggle_expand(&mut self) {
+        if self.sidebar_panel == SidebarPanel::Explorer {
+            self.explorer.toggle_selected();
+        }
+    }
+
+    /// Open a diff tab for the selected Source-Control entry.
+    fn open_selected_diff(&mut self) {
+        let Some(change) = self.scm.changes.get(self.scm.selected) else {
+            return;
         };
-        self.selection = None;
+        let section = self.scm.section(self.scm.selected);
+        let title = change
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("diff")
+            .to_string();
+        let file = FileView::new(change.clone(), section, self.syntax);
+        let tab = Tab::new(
+            title,
+            TabKind::Diff {
+                file: Box::new(file),
+                view: ViewMode::Unified,
+                scroll: 0,
+            },
+        );
+        self.push_tab(tab);
     }
 
-    fn next_file(&mut self) {
-        if !self.files.is_empty() {
-            self.current = (self.current + 1) % self.files.len();
-            self.scroll = 0;
-            self.selection = None;
+    /// Add a tab, replacing a lone Welcome tab, and focus the editor.
+    fn push_tab(&mut self, tab: Tab) {
+        if self.tabs.len() == 1 && matches!(self.tabs[0].kind, TabKind::Welcome) {
+            self.tabs[0] = tab;
+            self.active = 0;
+        } else {
+            self.tabs.push(tab);
+            self.active = self.tabs.len() - 1;
+        }
+        self.focus = Focus::Editor;
+    }
+
+    /// Close the active tab, falling back to a Welcome tab when the last closes.
+    fn close_tab(&mut self) {
+        if self.tabs.len() <= 1 {
+            self.tabs = vec![Tab::welcome()];
+            self.active = 0;
+            self.focus = Focus::Sidebar;
+            return;
+        }
+        self.tabs.remove(self.active);
+        if self.active >= self.tabs.len() {
+            self.active = self.tabs.len() - 1;
         }
     }
 
-    fn prev_file(&mut self) {
-        let len = self.files.len();
-        if len != 0 {
-            self.current = (self.current + len - 1) % len;
-            self.scroll = 0;
-            self.selection = None;
+    /// Scroll the active tab by `delta` lines/rows (clamped to its content).
+    fn scroll_lines(&mut self, delta: i32) {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        match &mut tab.kind {
+            TabKind::Code { buffer, .. } => {
+                let max = buffer.line_count().saturating_sub(1) as i64;
+                let next = (i64::from(tab.editor.scroll_line) + i64::from(delta)).clamp(0, max);
+                tab.editor.scroll_line = next as u32;
+            }
+            TabKind::Diff { scroll, .. } => {
+                let next = (i64::from(*scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
+                *scroll = next as u16;
+            }
+            TabKind::Hex { bytes, scroll, .. } => {
+                let max = bytes.len().div_ceil(16).saturating_sub(1) as i64;
+                let next = (*scroll as i64 + i64::from(delta)).clamp(0, max);
+                *scroll = next as usize;
+            }
+            _ => {}
+        }
+    }
+
+    /// Jump to the top or bottom of the active tab.
+    fn scroll_edge(&mut self, top: bool) {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        match &mut tab.kind {
+            TabKind::Code { buffer, .. } => {
+                tab.editor.scroll_line = if top {
+                    0
+                } else {
+                    buffer.line_count().saturating_sub(1) as u32
+                };
+            }
+            TabKind::Diff { scroll, .. } => *scroll = if top { 0 } else { u16::MAX },
+            TabKind::Hex { bytes, scroll, .. } => {
+                *scroll = if top {
+                    0
+                } else {
+                    bytes.len().div_ceil(16).saturating_sub(1)
+                };
+            }
+            _ => {}
+        }
+    }
+
+    /// Toggle the active diff tab between unified and side-by-side.
+    fn toggle_diff_layout(&mut self) {
+        if let Some(tab) = self.tabs.get_mut(self.active)
+            && let TabKind::Diff { view, scroll, .. } = &mut tab.kind
+        {
+            *view = match *view {
+                ViewMode::Unified => ViewMode::SideBySide,
+                ViewMode::SideBySide => ViewMode::Unified,
+            };
+            *scroll = 0;
+        }
+    }
+
+    /// Replace the active diff tab with the next/previous changed file.
+    fn step_changed_file(&mut self, delta: i32) {
+        if !self.active_is_diff() {
+            return;
+        }
+        let len = self.scm.changes.len();
+        if len == 0 {
+            return;
+        }
+        let next = (self.scm.selected as i64 + i64::from(delta)).clamp(0, len as i64 - 1) as usize;
+        self.scm.selected = next;
+        let view = match &self.tabs[self.active].kind {
+            TabKind::Diff { view, .. } => *view,
+            _ => ViewMode::Unified,
+        };
+        let change = self.scm.changes[next].clone();
+        let section = self.scm.section(next);
+        let title = change
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("diff")
+            .to_string();
+        let file = FileView::new(change, section, self.syntax);
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.title = title;
+            tab.kind = TabKind::Diff {
+                file: Box::new(file),
+                view,
+                scroll: 0,
+            };
+        }
+    }
+
+    /// Handle a mouse event: wheel scrolls (the sidebar or the active tab) and a
+    /// left click moves focus to the clicked region.
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        let point = (mouse.column, mouse.row);
+        let in_sidebar = self.sidebar_visible && rect_contains(self.sidebar_rect, point);
+        match mouse.kind {
+            MouseEventKind::ScrollDown if in_sidebar => self.sidebar_step(1),
+            MouseEventKind::ScrollUp if in_sidebar => self.sidebar_step(-1),
+            MouseEventKind::ScrollDown => self.scroll_lines(3),
+            MouseEventKind::ScrollUp => self.scroll_lines(-3),
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.focus = if in_sidebar {
+                    Focus::Sidebar
+                } else {
+                    Focus::Editor
+                };
+            }
+            _ => {}
+        }
+    }
+
+    /// Transmit or clear the active tab's Kitty image after a frame is drawn.
+    fn flush_graphics(&mut self) {
+        if self.graphics != GraphicsProtocol::Kitty {
+            return;
+        }
+        let mut stdout = io::stdout();
+        match self.image_area {
+            Some(area) if self.shown_image != Some(self.active) => {
+                let _ = write!(stdout, "{}", image::kitty_delete_all());
+                let _ = write!(stdout, "\x1b[{};{}H", area.y + 1, area.x + 1);
+                if let Some(Tab {
+                    kind: TabKind::Image { image, .. },
+                    ..
+                }) = self.tabs.get(self.active)
+                {
+                    let _ = write!(stdout, "{}", image.kitty_escape(area.width, area.height));
+                }
+                let _ = stdout.flush();
+                self.shown_image = Some(self.active);
+            }
+            None if self.shown_image.is_some() => {
+                let _ = write!(stdout, "{}", image::kitty_delete_all());
+                let _ = stdout.flush();
+                self.shown_image = None;
+            }
+            _ => {}
         }
     }
 }
@@ -340,45 +444,6 @@ impl App {
 /// Whether the screen point `(x, y)` lies inside `r`.
 fn rect_contains(r: Rect, (x, y): (u16, u16)) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
-}
-
-/// Map a screen point inside `rect` to a document position, accounting for `scroll`.
-fn pos_in(rect: Rect, (x, y): (u16, u16), scroll: u16) -> Pos {
-    Pos {
-        line: usize::from(scroll) + usize::from(y.saturating_sub(rect.y)),
-        col: usize::from(x.saturating_sub(rect.x)),
-    }
-}
-
-/// The visible text of `lines` between document positions `start` and `end`
-/// (inclusive of `start`, exclusive of `end`), joined with newlines. Columns are
-/// character offsets and clamp to each line.
-fn selection_text(lines: &[Line<'static>], start: (usize, usize), end: (usize, usize)) -> String {
-    let mut out = String::new();
-    for line_idx in start.0..=end.0 {
-        let Some(line) = lines.get(line_idx) else {
-            break;
-        };
-        let chars: Vec<char> = line.spans.iter().flat_map(|s| s.content.chars()).collect();
-        let len = chars.len();
-        let from = if line_idx == start.0 {
-            start.1.min(len)
-        } else {
-            0
-        };
-        let to = if line_idx == end.0 {
-            end.1.min(len)
-        } else {
-            len
-        };
-        if from < to {
-            out.extend(chars[from..to].iter());
-        }
-        if line_idx != end.0 {
-            out.push('\n');
-        }
-    }
-    out
 }
 
 /// Pops the kitty keyboard-enhancement flags on drop, so they are cleared even if
@@ -391,8 +456,8 @@ impl Drop for KeyboardEnhancementGuard {
     }
 }
 
-/// Run the viewer: require the kitty keyboard protocol, set up the terminal (mouse
-/// capture + keyboard enhancement), loop until quit, then restore it.
+/// Run the IDE shell: require the kitty keyboard protocol, set up the terminal,
+/// loop until quit, then restore it.
 ///
 /// karet targets modern terminals, so a terminal without kitty keyboard support is
 /// a hard error rather than a degraded fallback.
@@ -422,6 +487,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
 
     let result = event_loop(&mut terminal, &mut app);
 
+    let _ = write!(io::stdout(), "{}", image::kitty_delete_all());
     let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
     drop(_keyboard);
     ratatui::restore();
@@ -431,23 +497,30 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
 fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> color_eyre::Result<()> {
     loop {
         terminal.draw(|f| ui::draw(f, app))?;
-        // Block for the next event, then drain any already-queued events before the next
-        // redraw so a burst of mouse-wheel ticks collapses into one frame (no scroll lag).
-        if handle_event(app, event::read()?) {
-            return Ok(());
-        }
-        while event::poll(Duration::ZERO)? {
-            if handle_event(app, event::read()?) {
-                return Ok(());
+        app.flush_graphics();
+        if !handle_event(app, event::read()?) {
+            // Drain queued events so a burst (e.g. wheel ticks) collapses into one frame.
+            while event::poll(Duration::ZERO)? {
+                handle_event(app, event::read()?);
+                if app.should_quit {
+                    break;
+                }
             }
+        }
+        if app.should_quit {
+            return Ok(());
         }
     }
 }
 
-/// Dispatch one input event, returning `true` when the app should quit.
+/// Dispatch one input event. Returns `true` when a redraw should happen immediately
+/// (a key was handled) so the drain loop knows to continue.
 fn handle_event(app: &mut App, event: Event) -> bool {
     match event {
-        Event::Key(key) => key.kind == KeyEventKind::Press && app.handle_key(key),
+        Event::Key(key) if key.kind == KeyEventKind::Press => {
+            app.handle_key(key);
+            true
+        }
         Event::Mouse(mouse) => {
             app.handle_mouse(mouse);
             false
@@ -459,148 +532,87 @@ fn handle_event(app: &mut App, event: Event) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keymap::SidebarPanel;
     use karet_vcs::StatusKind;
-    use std::path::PathBuf;
 
-    fn change(path: &str, status: StatusKind, new: &str) -> FileChange {
+    fn change(path: &str, status: StatusKind) -> FileChange {
         FileChange {
             path: PathBuf::from(path),
             old_path: None,
             status,
             is_binary: false,
             old: String::new(),
-            new: new.to_string(),
+            new: "x\n".to_string(),
         }
     }
 
-    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
-        MouseEvent {
-            kind,
-            column,
-            row,
-            modifiers: KeyModifiers::NONE,
-        }
-    }
-
-    /// A three-file app (1 staged, 2 working) with the file list laid out at the
-    /// origin and the diff to its right.
-    fn three_file_app() -> App {
-        let staged = vec![change("a.txt", StatusKind::Modified, "a\n")];
-        let working = vec![
-            change("b.txt", StatusKind::Modified, "b\n"),
-            change("c.txt", StatusKind::Modified, "c\n"),
-        ];
-        let mut app = App::new(staged, working, false);
-        app.regions.file_list = Rect::new(0, 0, 20, 20);
-        app.regions.diff = Rect::new(20, 0, 60, 20);
-        // Display rows: [STAGED hdr, a, CHANGES hdr, b, c].
-        app.regions.list_rows = vec![None, Some(0), None, Some(1), Some(2)];
-        app.regions.list_offset = 0;
-        app
+    fn app() -> App {
+        App::new(
+            PathBuf::from("."),
+            vec![change("a.rs", StatusKind::Modified)],
+            vec![change("b.rs", StatusKind::Modified)],
+            false,
+        )
     }
 
     #[test]
-    fn click_in_file_list_selects_that_file() {
-        let mut app = three_file_app();
-        // Row 4 is file c (index 2); a group-header row selects nothing.
-        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 4));
-        assert_eq!(app.current, 2);
-        app.scroll = 9;
-        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 0)); // header row
-        assert_eq!(app.current, 2, "clicking a header keeps the selection");
-        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 1)); // file a
-        assert_eq!(app.current, 0);
-        assert_eq!(app.scroll, 0, "selecting a file resets the scroll");
+    fn starts_explorer_focused_with_welcome_tab() {
+        let app = app();
+        assert_eq!(app.focus, Focus::Sidebar);
+        assert_eq!(app.sidebar_panel, SidebarPanel::Explorer);
+        assert!(matches!(app.tabs[0].kind, TabKind::Welcome));
     }
 
     #[test]
-    fn file_list_click_respects_scroll_offset() {
-        let mut app = three_file_app();
-        app.regions.list_offset = 2; // first two display rows scrolled off
-        // Screen row 1 maps to list row 1 + offset 2 = 3 -> Some(1).
-        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 1));
-        assert_eq!(app.current, 1);
+    fn opening_a_diff_replaces_welcome_and_focuses_editor() {
+        let mut app = app();
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        app.dispatch(Action::SidebarActivate);
+        assert!(app.active_is_diff());
+        assert_eq!(app.focus, Focus::Editor);
+        assert_eq!(app.tabs.len(), 1, "welcome tab is replaced, not appended");
     }
 
     #[test]
-    fn wheel_navigates_the_list_but_scrolls_the_diff() {
-        let mut app = three_file_app();
-        // Over the file list, the wheel walks files.
-        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 3));
-        assert_eq!(app.current, 1);
-        app.handle_mouse(mouse(MouseEventKind::ScrollUp, 5, 3));
-        assert_eq!(app.current, 0);
-        // Over the diff, the wheel scrolls.
-        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 40, 3));
-        assert_eq!(app.scroll, 3);
+    fn stepping_changed_files_walks_the_scm_list() {
+        let mut app = app();
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        app.dispatch(Action::SidebarActivate); // opens a.rs (index 0)
+        app.dispatch(Action::NextChangedFile);
+        assert_eq!(app.scm.selected, 1);
+        app.dispatch(Action::PrevChangedFile);
+        assert_eq!(app.scm.selected, 0);
     }
 
     #[test]
-    fn clicking_the_status_bar_toggles_the_layout() {
-        let mut app = three_file_app();
-        app.regions.status = Rect::new(0, 20, 80, 1);
-        assert!(matches!(app.view, ViewMode::Unified));
-        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 20));
-        assert!(matches!(app.view, ViewMode::SideBySide));
-        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 20));
-        assert!(matches!(app.view, ViewMode::Unified));
+    fn toggle_diff_layout_flips_view() {
+        let mut app = app();
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        app.dispatch(Action::SidebarActivate);
+        let before = matches!(
+            app.tabs[app.active].kind,
+            TabKind::Diff {
+                view: ViewMode::Unified,
+                ..
+            }
+        );
+        app.dispatch(Action::ToggleDiffLayout);
+        let after = matches!(
+            app.tabs[app.active].kind,
+            TabKind::Diff {
+                view: ViewMode::SideBySide,
+                ..
+            }
+        );
+        assert!(before && after);
     }
 
     #[test]
-    fn dragging_in_the_diff_builds_a_selection() {
-        let mut app = three_file_app();
-        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 22, 1));
-        assert!(app.dragging);
-        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 26, 1));
-        let (pane, start, end) = app.selection_span().expect("a selection exists");
-        assert!(matches!(pane, Pane::Unified));
-        // diff rect is at x=20, y=0; scroll is 0.
-        assert_eq!(start, (1, 2));
-        assert_eq!(end, (1, 6));
-    }
-
-    #[test]
-    fn releasing_ends_the_drag() {
-        let mut app = three_file_app();
-        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 22, 1));
-        assert!(app.dragging);
-        // Release without moving: the selection is empty, so nothing is copied.
-        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 22, 1));
-        assert!(!app.dragging);
-    }
-
-    #[test]
-    fn selection_text_slices_across_lines() {
-        use ratatui::text::Span;
-        let lines = vec![
-            Line::from(vec![Span::raw("abc"), Span::raw("def")]),
-            Line::from(vec![Span::raw("ghijkl")]),
-            Line::from(vec![Span::raw("mnopqr")]),
-        ];
-        // Multi-line: from line 0 col 2 through line 2 col 3.
-        assert_eq!(selection_text(&lines, (0, 2), (2, 3)), "cdef\nghijkl\nmno");
-        // Single line.
-        assert_eq!(selection_text(&lines, (1, 1), (1, 4)), "hij");
-        // Out-of-range columns clamp to the line.
-        assert_eq!(selection_text(&lines, (0, 4), (0, 100)), "ef");
-    }
-
-    #[test]
-    fn groups_files_with_untracked_in_the_working_section() {
-        let staged = vec![change("a.txt", StatusKind::Modified, "a\n")];
-        let working = vec![
-            change("b.txt", StatusKind::Modified, "b\n"),
-            change("new.txt", StatusKind::Untracked, "n\n"),
-        ];
-        let app = App::new(staged, working, false);
-
-        assert_eq!(app.files.len(), 3);
-        // Staged files come first, then the working group.
-        assert_eq!(app.staged_count(), 1);
-        assert_eq!(app.files[0].section, Section::Staged);
-        assert_eq!(app.files[1].section, Section::Working);
-        // The untracked file lands in the working ("Changes") group, like VS Code.
-        assert_eq!(app.files[2].section, Section::Working);
-        assert_eq!(app.files[2].change.status, StatusKind::Untracked);
+    fn toggle_sidebar_and_focus() {
+        let mut app = app();
+        app.dispatch(Action::ToggleSidebar);
+        assert!(!app.sidebar_visible);
+        app.dispatch(Action::ToggleFocus);
+        assert_eq!(app.focus, Focus::Editor);
     }
 }

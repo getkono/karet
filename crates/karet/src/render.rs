@@ -20,7 +20,14 @@ use karet_vcs::FileChange;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::app::Section;
+/// Which Source-Control group a changed file belongs to, mirroring VS Code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Section {
+    /// `HEAD` vs the index: the staged changes.
+    Staged,
+    /// The index vs the worktree (and untracked files): the working-tree changes.
+    Working,
+}
 
 /// A syntax token run within a single line: a byte range and its color class.
 struct LineToken {
