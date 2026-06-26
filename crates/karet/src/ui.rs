@@ -207,7 +207,7 @@ fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             );
         }
         SidebarPanel::SourceControl => draw_scm(f, app, theme, rows[1]),
-        SidebarPanel::Search => draw_search_panel(f, theme, rows[1]),
+        SidebarPanel::Search => draw_search_panel(f, app, theme, rows[1]),
     }
 }
 
@@ -278,15 +278,65 @@ fn draw_scm(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_search_panel(f: &mut Frame, theme: &Theme, area: Rect) {
-    let hint = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+fn draw_search_panel(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    let search = &app.search;
+
+    // Query line: prefixed with a caret, highlighted while the input is active.
+    let cursor = if search.input { "_" } else { "" };
+    let query_style = if search.input {
+        Style::default()
+            .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui())
+    };
     f.render_widget(
-        Paragraph::new(vec![
-            Line::raw(""),
-            Line::styled("  Press Ctrl+Shift+F to search", hint),
-        ]),
-        area,
+        Paragraph::new(Line::styled(
+            format!(" › {}{cursor}", search.query),
+            query_style,
+        )),
+        rows[0],
     );
+
+    if search.results.is_empty() {
+        let hint = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+        let msg = if search.query.is_empty() {
+            "  type a query, Enter to search"
+        } else {
+            "  no results"
+        };
+        f.render_widget(Paragraph::new(Line::styled(msg, hint)), rows[1]);
+        return;
+    }
+
+    let items: Vec<ListItem> = search
+        .results
+        .iter()
+        .map(|hit| {
+            let name = hit
+                .path
+                .strip_prefix(&app.root)
+                .unwrap_or(&hit.path)
+                .to_string_lossy()
+                .into_owned();
+            ListItem::new(Line::from(vec![
+                Span::raw(format!(" {name} ")),
+                Span::styled(
+                    format!("({})", hit.matches.len()),
+                    Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
+                ),
+            ]))
+        })
+        .collect();
+    let mut state = ListState::default();
+    state.select(Some(search.selected));
+    let list = List::new(items).highlight_style(
+        Style::default()
+            .bg(theme.role(ThemeRole::Selection).to_ratatui())
+            .add_modifier(Modifier::BOLD),
+    );
+    f.render_stateful_widget(list, rows[1], &mut state);
 }
 
 fn draw_main(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {

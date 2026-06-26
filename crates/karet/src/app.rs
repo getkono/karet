@@ -12,8 +12,8 @@ use crossterm::event::{
     KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
-use karet_core::{BytePos, Decoration, DecorationKind, Range, ThemeRole};
-use karet_search::{SearchQuery, search_in_file};
+use karet_core::{BytePos, Decoration, DecorationKind, LineCol, Range, ThemeRole};
+use karet_search::{FileHit, SearchQuery, WorkspaceSearch, search_in_file};
 use karet_theme::Theme;
 use karet_vcs::FileChange;
 use karet_widgets::FileTreeState;
@@ -58,6 +58,22 @@ pub(crate) struct FindState {
     pub(crate) current: usize,
 }
 
+/// The workspace-search panel state.
+#[derive(Default)]
+pub(crate) struct SearchPanel {
+    /// The query being typed/run.
+    pub(crate) query: String,
+    /// The streamed results (one entry per matching file).
+    pub(crate) results: Vec<FileHit>,
+    /// The selected result.
+    pub(crate) selected: usize,
+    /// Whether the query input is active (vs. browsing results).
+    pub(crate) input: bool,
+}
+
+/// The maximum number of matching files the workspace search panel collects.
+const SEARCH_RESULT_CAP: usize = 500;
+
 /// The IDE shell state.
 pub struct App {
     /// The workspace root.
@@ -86,6 +102,8 @@ pub struct App {
     pub(crate) overlay: Option<Overlay>,
     /// The find-in-file bar, if open.
     pub(crate) find: Option<FindState>,
+    /// The workspace-search panel state.
+    pub(crate) search: SearchPanel,
     /// A transient status message.
     pub(crate) status: Option<String>,
     /// The sidebar rect from the last frame (mouse hit-testing).
@@ -131,6 +149,7 @@ impl App {
             active: 0,
             overlay: None,
             find: None,
+            search: SearchPanel::default(),
             status: None,
             sidebar_rect: Rect::default(),
             main_rect: Rect::default(),
@@ -160,6 +179,15 @@ impl App {
         }
         if self.find.is_some() {
             self.handle_find_key(key);
+            return;
+        }
+        // The Search panel captures text input, so globals run first, then its own keys.
+        if self.focus == Focus::Sidebar && self.sidebar_panel == SidebarPanel::Search {
+            if let Some(action) = keymap::global(key) {
+                self.dispatch(action);
+            } else {
+                self.handle_search_key(key);
+            }
             return;
         }
         if let Some(action) = keymap::resolve(self.focus, self.active_is_diff(), key) {
@@ -339,6 +367,99 @@ impl App {
         }
     }
 
+    /// Focus the Search panel and (re)start the query input.
+    fn start_global_search(&mut self) {
+        self.sidebar_panel = SidebarPanel::Search;
+        self.sidebar_visible = true;
+        self.focus = Focus::Sidebar;
+        self.search.input = true;
+    }
+
+    /// Handle a key while the Search panel has focus.
+    fn handle_search_key(&mut self, key: KeyEvent) {
+        let plain = !key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Esc => {
+                if self.search.input {
+                    self.search.input = false;
+                } else {
+                    self.should_quit = true;
+                }
+            }
+            KeyCode::Enter => {
+                if self.search.input {
+                    self.run_global_search();
+                    self.search.input = false;
+                } else {
+                    self.open_selected_result();
+                }
+            }
+            KeyCode::Down => self.search_select(1),
+            KeyCode::Up => self.search_select(-1),
+            KeyCode::Char('/') if !self.search.input => self.search.input = true,
+            KeyCode::Char('j') if !self.search.input => self.search_select(1),
+            KeyCode::Char('k') if !self.search.input => self.search_select(-1),
+            KeyCode::Backspace if self.search.input => {
+                self.search.query.pop();
+            }
+            KeyCode::Char(c) if self.search.input && plain => self.search.query.push(c),
+            _ => {}
+        }
+    }
+
+    /// Run the workspace search for the current query, collecting up to the cap.
+    fn run_global_search(&mut self) {
+        self.search.results.clear();
+        self.search.selected = 0;
+        if self.search.query.is_empty() {
+            return;
+        }
+        let query = SearchQuery {
+            pattern: self.search.query.clone(),
+            case_sensitive: false,
+            ..Default::default()
+        };
+        let mut results = Vec::new();
+        let _ = WorkspaceSearch::new().run(&self.root, &query, |hit| {
+            if results.len() < SEARCH_RESULT_CAP {
+                results.push(hit);
+            }
+        });
+        self.search.results = results;
+    }
+
+    /// Move the selection within the search results.
+    fn search_select(&mut self, delta: i32) {
+        let len = self.search.results.len();
+        if len > 0 {
+            let next = (self.search.selected as i64 + i64::from(delta)).clamp(0, len as i64 - 1);
+            self.search.selected = next as usize;
+        }
+    }
+
+    /// Open the selected result, scrolling to its first match.
+    fn open_selected_result(&mut self) {
+        let Some(hit) = self.search.results.get(self.search.selected) else {
+            return;
+        };
+        let path = hit.path.clone();
+        let line = hit.matches.first().map(|m| m.line);
+        let tab = workspace::open_file(&path, self.syntax);
+        self.push_tab(tab);
+        if let (
+            Some(line),
+            Some(Tab {
+                kind: TabKind::Code { buffer, .. },
+                editor,
+                ..
+            }),
+        ) = (line, self.tabs.get_mut(self.active))
+        {
+            editor.goto(buffer, LineCol::new(line, 0));
+        }
+    }
+
     /// Apply a resolved [`Action`].
     fn dispatch(&mut self, action: Action) {
         match action {
@@ -353,8 +474,7 @@ impl App {
             Action::OpenQuickOpen => self.open_quick_open(),
             Action::OpenCommandPalette => self.overlay = Some(Overlay::command_palette()),
             Action::OpenFind => self.open_find(),
-            // The global search panel is wired in the next commit.
-            Action::OpenGlobalSearch => self.status = Some("not yet available".to_string()),
+            Action::OpenGlobalSearch => self.start_global_search(),
             Action::CloseTab => self.close_tab(),
             Action::SidebarUp => self.sidebar_step(-1),
             Action::SidebarDown => self.sidebar_step(1),
@@ -400,7 +520,7 @@ impl App {
                     self.scm.selected = next as usize;
                 }
             }
-            SidebarPanel::Search => {}
+            SidebarPanel::Search => self.search_select(delta),
         }
     }
 
@@ -850,5 +970,26 @@ mod tests {
         if let TabKind::Code { decos, .. } = &app.tabs[app.active].kind {
             assert!(decos.is_empty());
         }
+    }
+
+    #[test]
+    fn global_search_collects_matching_files() {
+        let n = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "karet-app-{}-{}",
+            std::process::id(),
+            n.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("a.txt"), "needle here\n");
+        let _ = std::fs::write(dir.join("b.txt"), "nothing\n");
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.search.query = "needle".to_string();
+        app.run_global_search();
+        assert_eq!(app.search.results.len(), 1);
+        assert!(app.search.results[0].path.ends_with("a.txt"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

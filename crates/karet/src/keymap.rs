@@ -97,6 +97,15 @@ pub fn resolve(focus: Focus, active_is_diff: bool, key: KeyEvent) -> Option<Acti
     }
 }
 
+/// Resolve only the global bindings (used by panels that capture text input, like
+/// the Search panel, which still want Ctrl-chords and Tab to work).
+#[must_use]
+pub fn global(key: KeyEvent) -> Option<Action> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    resolve_global(ctrl, shift, key.code)
+}
+
 /// Global bindings available regardless of focus.
 fn resolve_global(ctrl: bool, shift: bool, code: KeyCode) -> Option<Action> {
     match code {
