@@ -145,6 +145,10 @@ pub struct App {
     pub(crate) search_results_rect: Rect,
     /// The search-results list scroll offset from the last frame.
     pub(crate) search_offset: usize,
+    /// The status bar rect from the last frame (mouse hit-testing).
+    pub(crate) status_rect: Rect,
+    /// Clickable status-bar segments `(start, end, command)` from the last frame.
+    pub(crate) status_hits: Vec<(u16, u16, Command)>,
     /// The active code tab's editor content area from the last frame.
     pub(crate) editor_rect: Rect,
     /// Whether a mouse text-selection drag is in progress in the editor.
@@ -208,6 +212,8 @@ impl App {
             scm_offset: 0,
             search_results_rect: Rect::default(),
             search_offset: 0,
+            status_rect: Rect::default(),
+            status_hits: Vec::new(),
             editor_rect: Rect::default(),
             editor_selecting: false,
             last_click: None,
@@ -940,6 +946,26 @@ impl App {
         true
     }
 
+    /// The command bound to the status-bar segment at column `x`, if any.
+    fn status_command_at(&self, x: u16) -> Option<Command> {
+        self.status_hits
+            .iter()
+            .find_map(|&(start, end, cmd)| (x >= start && x < end).then_some(cmd))
+    }
+
+    /// Handle a left click on a status-bar segment. Returns `true` when consumed.
+    fn handle_status_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if !rect_contains(self.status_rect, (mouse.column, mouse.row)) {
+            return false;
+        }
+        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind
+            && let Some(cmd) = self.status_command_at(mouse.column)
+        {
+            self.dispatch(cmd);
+        }
+        true
+    }
+
     /// Handle a mouse event: the tab strip (switch / close / cycle), wheel scrolls
     /// (the sidebar or the active tab), and a left click moves focus.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
@@ -967,6 +993,9 @@ impl App {
             return;
         }
         if self.handle_tabstrip_mouse(mouse) {
+            return;
+        }
+        if self.handle_status_mouse(mouse) {
             return;
         }
         let point = (mouse.column, mouse.row);
@@ -1628,6 +1657,33 @@ mod tests {
         assert_eq!(app.tab_at(12), Some((1, false)));
         assert_eq!(app.tab_at(18), Some((1, true)));
         assert_eq!(app.tab_at(25), None);
+    }
+
+    #[test]
+    fn status_segment_click_dispatches_its_command() {
+        let mut app = app();
+        app.status_rect = Rect {
+            x: 0,
+            y: 9,
+            width: 80,
+            height: 1,
+        };
+        app.status_hits = vec![
+            (0, 9, Command::ToggleFocus),
+            (12, 19, Command::OpenQuickOpen),
+        ];
+        assert_eq!(app.status_command_at(3), Some(Command::ToggleFocus));
+        assert_eq!(app.status_command_at(15), Some(Command::OpenQuickOpen));
+        assert_eq!(app.status_command_at(40), None);
+        // Clicking the focus segment toggles focus.
+        let before = app.focus;
+        app.handle_status_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 3,
+            row: 9,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_ne!(app.focus, before);
     }
 
     #[test]

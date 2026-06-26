@@ -16,6 +16,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::app::{App, FindState, TabHit};
+use crate::command::Command;
 use crate::keymap::{Focus, SidebarPanel};
 use crate::overlay::Overlay;
 use crate::render::{self, Section};
@@ -520,28 +521,58 @@ fn draw_welcome(f: &mut Frame, theme: &Theme, area: Rect) {
     f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), area);
 }
 
-fn draw_status(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
+fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+    app.status_rect = area;
+    app.status_hits.clear();
+
     let focus = match app.focus {
         Focus::Sidebar => "SIDEBAR",
         Focus::Editor => "EDITOR",
     };
-    let left = if let Some(msg) = &app.status {
-        format!(" {focus}  {msg} ")
-    } else {
-        format!(" {focus}   ^P open · ^F find · ^C copy · ^Q quit ")
-    };
-    let language = app.tabs.get(app.active).map_or("", Tab::language);
-    let right = format!(" {language} ");
-
     let bar = Style::default()
         .bg(theme.role(ThemeRole::StatusBarBackground).to_ratatui())
         .fg(theme.role(ThemeRole::StatusBarForeground).to_ratatui());
+
+    // Build the left side as discrete, clickable segments, tracking columns.
+    let mut spans = Vec::new();
+    let mut x = area.x;
+    let focus_text = format!(" {focus} ");
+    let fw = focus_text.chars().count() as u16;
+    spans.push(Span::styled(focus_text, bar.add_modifier(Modifier::BOLD)));
+    app.status_hits.push((x, x + fw, Command::ToggleFocus));
+    x += fw;
+
+    if let Some(msg) = &app.status {
+        spans.push(Span::styled(format!("  {msg} "), bar));
+    } else {
+        let segments = [
+            ("^P open", Command::OpenQuickOpen),
+            ("^F find", Command::OpenFind),
+            ("^C copy", Command::Copy),
+            ("^Q quit", Command::Quit),
+        ];
+        spans.push(Span::styled("   ".to_string(), bar));
+        x += 3;
+        for (i, (label, cmd)) in segments.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::styled(" · ".to_string(), bar));
+                x += 3;
+            }
+            let w = label.chars().count() as u16;
+            spans.push(Span::styled((*label).to_string(), bar));
+            app.status_hits.push((x, x + w, *cmd));
+            x += w;
+        }
+    }
+
+    let language = app.tabs.get(app.active).map_or("", Tab::language);
+    let right = format!(" {language} ");
     let cols = Layout::horizontal([
         Constraint::Min(0),
         Constraint::Length(u16::try_from(right.len()).unwrap_or(0)),
     ])
     .split(area);
-    f.render_widget(Paragraph::new(left).style(bar), cols[0]);
+    f.render_widget(Paragraph::new(Line::from(spans)).style(bar), cols[0]);
     f.render_widget(
         Paragraph::new(right).style(bar).alignment(Alignment::Right),
         cols[1],
