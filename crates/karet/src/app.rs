@@ -8,10 +8,12 @@ use std::time::Duration;
 
 use color_eyre::eyre::eyre;
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEvent, KeyEventKind,
-    KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
+use karet_core::{BytePos, Decoration, DecorationKind, Range, ThemeRole};
+use karet_search::{SearchQuery, search_in_file};
 use karet_theme::Theme;
 use karet_vcs::FileChange;
 use karet_widgets::FileTreeState;
@@ -45,6 +47,17 @@ impl Scm {
     }
 }
 
+/// The find-in-file bar state: the query and the match cursor.
+#[derive(Default)]
+pub(crate) struct FindState {
+    /// The search query.
+    pub(crate) query: String,
+    /// The number of matches.
+    pub(crate) count: usize,
+    /// The current match (0-based).
+    pub(crate) current: usize,
+}
+
 /// The IDE shell state.
 pub struct App {
     /// The workspace root.
@@ -71,6 +84,8 @@ pub struct App {
     pub(crate) active: usize,
     /// The open modal overlay (quick-open / command palette), if any.
     pub(crate) overlay: Option<Overlay>,
+    /// The find-in-file bar, if open.
+    pub(crate) find: Option<FindState>,
     /// A transient status message.
     pub(crate) status: Option<String>,
     /// The sidebar rect from the last frame (mouse hit-testing).
@@ -115,6 +130,7 @@ impl App {
             tabs: vec![Tab::welcome()],
             active: 0,
             overlay: None,
+            find: None,
             status: None,
             sidebar_rect: Rect::default(),
             main_rect: Rect::default(),
@@ -140,6 +156,10 @@ impl App {
         self.status = None;
         if self.overlay.is_some() {
             self.handle_overlay_key(key);
+            return;
+        }
+        if self.find.is_some() {
+            self.handle_find_key(key);
             return;
         }
         if let Some(action) = keymap::resolve(self.focus, self.active_is_diff(), key) {
@@ -192,6 +212,133 @@ impl App {
         }
     }
 
+    /// Open the find-in-file bar (only over a text/code tab).
+    fn open_find(&mut self) {
+        if matches!(
+            self.tabs.get(self.active).map(|t| &t.kind),
+            Some(TabKind::Code { .. })
+        ) {
+            self.find = Some(FindState::default());
+            self.focus = Focus::Editor;
+        } else {
+            self.status = Some("find: open a text file first".to_string());
+        }
+    }
+
+    /// Close the find bar and clear the active tab's match highlights.
+    fn close_find(&mut self) {
+        self.find = None;
+        if let Some(Tab {
+            kind: TabKind::Code { decos, .. },
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            decos.clear();
+        }
+    }
+
+    /// Handle a key while the find bar is open.
+    fn handle_find_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        match key.code {
+            KeyCode::Esc => self.close_find(),
+            KeyCode::Enter | KeyCode::Down => self.find_step(1),
+            KeyCode::Up => self.find_step(-1),
+            KeyCode::Char('g') if ctrl => self.find_step(if shift { -1 } else { 1 }),
+            KeyCode::Backspace => {
+                if let Some(find) = self.find.as_mut() {
+                    find.query.pop();
+                }
+                self.run_find();
+            }
+            KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
+                if let Some(find) = self.find.as_mut() {
+                    find.query.push(c);
+                }
+                self.run_find();
+            }
+            _ => {}
+        }
+    }
+
+    /// Re-run the in-file search and rebuild the active tab's match decorations.
+    fn run_find(&mut self) {
+        let query = match &self.find {
+            Some(find) => find.query.clone(),
+            None => return,
+        };
+        let mut count = 0;
+        if let Some(Tab {
+            kind:
+                TabKind::Code {
+                    buffer,
+                    text,
+                    decos,
+                    ..
+                },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            if query.is_empty() {
+                decos.clear();
+            } else {
+                let q = SearchQuery {
+                    pattern: query,
+                    case_sensitive: false,
+                    ..Default::default()
+                };
+                let matches = search_in_file(text, &q).unwrap_or_default();
+                *decos = matches
+                    .iter()
+                    .map(|m| Decoration {
+                        range: Range {
+                            start: buffer.byte_to_line_col(BytePos(m.start)),
+                            end: buffer.byte_to_line_col(BytePos(m.end)),
+                        },
+                        kind: DecorationKind::TextBackground,
+                        role: Some(ThemeRole::SearchMatch),
+                    })
+                    .collect();
+                count = decos.len();
+                if let Some(first) = decos.first() {
+                    let pos = first.range.start;
+                    editor.goto(buffer, pos);
+                }
+            }
+        }
+        if let Some(find) = self.find.as_mut() {
+            find.count = count;
+            find.current = 0;
+        }
+    }
+
+    /// Move to the next/previous match (wrapping) and scroll it into view.
+    fn find_step(&mut self, delta: i32) {
+        let (count, current) = match &self.find {
+            Some(find) => (find.count, find.current),
+            None => return,
+        };
+        if count == 0 {
+            return;
+        }
+        let next = (current as i64 + i64::from(delta)).rem_euclid(count as i64) as usize;
+        if let Some(find) = self.find.as_mut() {
+            find.current = next;
+        }
+        if let Some(Tab {
+            kind: TabKind::Code { buffer, decos, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+            && let Some(deco) = decos.get(next)
+        {
+            let pos = deco.range.start;
+            editor.goto(buffer, pos);
+        }
+    }
+
     /// Apply a resolved [`Action`].
     fn dispatch(&mut self, action: Action) {
         match action {
@@ -205,10 +352,9 @@ impl App {
             }
             Action::OpenQuickOpen => self.open_quick_open(),
             Action::OpenCommandPalette => self.overlay = Some(Overlay::command_palette()),
-            // The find bar and global search panel are wired in later commits.
-            Action::OpenFind | Action::OpenGlobalSearch => {
-                self.status = Some("not yet available".to_string());
-            }
+            Action::OpenFind => self.open_find(),
+            // The global search panel is wired in the next commit.
+            Action::OpenGlobalSearch => self.status = Some("not yet available".to_string()),
             Action::CloseTab => self.close_tab(),
             Action::SidebarUp => self.sidebar_step(-1),
             Action::SidebarDown => self.sidebar_step(1),
@@ -669,5 +815,40 @@ mod tests {
         assert!(!app.sidebar_visible);
         app.dispatch(Action::ToggleFocus);
         assert_eq!(app.focus, Focus::Editor);
+    }
+
+    #[test]
+    fn find_highlights_matches_in_a_code_tab() {
+        use karet_syntax::Highlights;
+        use karet_text::TextBuffer;
+
+        let mut app = app();
+        app.push_tab(Tab::new(
+            "t.rs",
+            TabKind::Code {
+                path: PathBuf::from("t.rs"),
+                language: "Rust",
+                buffer: TextBuffer::from_text("foo bar foo"),
+                text: "foo bar foo".to_string(),
+                highlights: Highlights::default(),
+                decos: Vec::new(),
+            },
+        ));
+        app.dispatch(Action::OpenFind);
+        if let Some(find) = app.find.as_mut() {
+            find.query = "foo".to_string();
+        }
+        app.run_find();
+        assert_eq!(app.find.as_ref().map(|f| f.count), Some(2));
+        if let TabKind::Code { decos, .. } = &app.tabs[app.active].kind {
+            assert_eq!(decos.len(), 2);
+        } else {
+            unreachable!("active tab is a code tab");
+        }
+        // Closing find clears the highlights.
+        app.close_find();
+        if let TabKind::Code { decos, .. } = &app.tabs[app.active].kind {
+            assert!(decos.is_empty());
+        }
     }
 }

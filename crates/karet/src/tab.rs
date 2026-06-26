@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
+use karet_core::Decoration;
 use karet_editor::EditorState;
 use karet_syntax::Highlights;
 use karet_text::TextBuffer;
@@ -35,8 +36,12 @@ pub enum TabKind {
         language: &'static str,
         /// The loaded buffer.
         buffer: TextBuffer,
+        /// The source text (kept for in-file search).
+        text: String,
         /// Syntax highlight spans (empty when no grammar / disabled).
         highlights: Highlights,
+        /// Find-in-file match decorations (empty when not searching).
+        decos: Vec<Decoration>,
     },
     /// A raster image.
     Image {
@@ -155,7 +160,9 @@ mod tests {
                 path: PathBuf::from("/x/a.rs"),
                 language: "Rust",
                 buffer: TextBuffer::from_text("fn main() {}"),
+                text: "fn main() {}".to_string(),
                 highlights: Highlights::default(),
+                decos: Vec::new(),
             },
         );
         assert_eq!(tab.path(), Some(Path::new("/x/a.rs")));

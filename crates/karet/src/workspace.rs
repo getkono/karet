@@ -59,13 +59,16 @@ fn open_text(path: &Path, bytes: &[u8], syntax: bool) -> Tab {
     } else {
         Highlights::default()
     };
+    let buffer = TextBuffer::from_text(&text);
     Tab::new(
         title(path),
         TabKind::Code {
             path: path.to_path_buf(),
             language,
-            buffer: TextBuffer::from_text(&text),
+            buffer,
+            text,
             highlights,
+            decos: Vec::new(),
         },
     )
 }

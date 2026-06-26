@@ -15,7 +15,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
-use crate::app::App;
+use crate::app::{App, FindState};
 use crate::keymap::{Focus, SidebarPanel};
 use crate::overlay::Overlay;
 use crate::render::{self, Section};
@@ -56,13 +56,45 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if let Some(rect) = sidebar {
         draw_sidebar(f, app, &theme, rect);
     }
-    let main = app.main_rect;
+    let mut main = app.main_rect;
+    if let Some(find) = &app.find {
+        let bar = Rect {
+            height: 1.min(main.height),
+            ..main
+        };
+        draw_find_bar(f, find, &theme, bar);
+        main = Rect {
+            y: main.y.saturating_add(1),
+            height: main.height.saturating_sub(1),
+            ..main
+        };
+    }
     draw_main(f, app, &theme, main);
     draw_status(f, app, &theme, rows[3]);
 
     if let Some(overlay) = &app.overlay {
         draw_overlay(f, overlay, &theme, area);
     }
+}
+
+/// Draw the one-line find-in-file bar.
+fn draw_find_bar(f: &mut Frame, find: &FindState, theme: &Theme, area: Rect) {
+    let style = Style::default()
+        .bg(theme.role(ThemeRole::StatusBarBackground).to_ratatui())
+        .fg(theme.role(ThemeRole::StatusBarForeground).to_ratatui());
+    let label = if find.query.is_empty() {
+        " Find: ".to_string()
+    } else if find.count == 0 {
+        format!(" Find: {}   no results ", find.query)
+    } else {
+        format!(
+            " Find: {}   {}/{}   (Enter/Ctrl+G next · Esc close) ",
+            find.query,
+            find.current + 1,
+            find.count
+        )
+    };
+    f.render_widget(Paragraph::new(label).style(style), area);
 }
 
 /// Draw a centered modal overlay (quick-open / command palette).
@@ -267,9 +299,15 @@ fn draw_main(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     match &mut tab.kind {
         TabKind::Welcome => draw_welcome(f, theme, area),
         TabKind::Code {
-            buffer, highlights, ..
+            buffer,
+            highlights,
+            decos,
+            ..
         } => {
-            let editor = Editor::new(buffer).highlights(highlights).theme(theme);
+            let editor = Editor::new(buffer)
+                .highlights(highlights)
+                .theme(theme)
+                .decorations(decos);
             f.render_stateful_widget(editor, area, &mut tab.editor);
         }
         TabKind::Diff { file, view, scroll } => draw_diff(f, theme, area, file, *view, scroll),
