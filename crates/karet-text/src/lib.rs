@@ -8,12 +8,12 @@
 //! This is the implementation *skeleton*: the public joints are defined; the
 //! editing/undo/conversion logic is filled in separately.
 
-use karet_core::{BytePos, Change, LineCol};
+use karet_core::{BytePos, Change, LineCol, Span};
 use std::io::Read;
 use std::path::Path;
 
 /// Errors produced by [`TextBuffer`] operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum TextError {
     /// An I/O error while reading or saving a buffer.
@@ -60,8 +60,12 @@ impl TextBuffer {
     /// # Errors
     /// Returns [`TextError::Io`] if reading fails.
     pub fn from_reader<R: Read>(reader: R) -> Result<Self, TextError> {
-        let _ = reader;
-        todo!()
+        let rope = ropey::Rope::from_reader(reader).map_err(|e| TextError::Io(e.to_string()))?;
+        Ok(Self {
+            rope,
+            version: 0,
+            dirty: false,
+        })
     }
 
     /// The total length of the buffer in bytes.
@@ -110,19 +114,66 @@ impl TextBuffer {
     }
 
     /// Convert an absolute byte offset to a line/column position.
+    ///
+    /// The column is counted in Unicode scalar values (`char`s), matching karet's
+    /// internal [`PositionEncoding::Utf32`](karet_core::PositionEncoding). An offset
+    /// past the end of the buffer is clamped to the buffer end.
     #[must_use]
     pub fn byte_to_line_col(&self, byte: BytePos) -> LineCol {
-        let _ = byte;
-        todo!()
+        let b = byte.0.min(self.rope.len_bytes());
+        let line = self.rope.byte_to_line(b);
+        let line_start_char = self.rope.line_to_char(line);
+        let char_idx = self.rope.byte_to_char(b);
+        LineCol {
+            line: line as u32,
+            col: (char_idx - line_start_char) as u32,
+        }
     }
 
     /// Convert a line/column position to an absolute byte offset.
     ///
+    /// `col` is interpreted in `char`s and clamped to the line's content length
+    /// (excluding the trailing line break).
+    ///
     /// # Errors
-    /// Returns [`TextError::OutOfBounds`] if the position is past the buffer end.
+    /// Returns [`TextError::OutOfBounds`] if the line is past the buffer end.
     pub fn line_col_to_byte(&self, pos: LineCol) -> Result<BytePos, TextError> {
-        let _ = pos;
-        todo!()
+        let line = pos.line as usize;
+        if line >= self.rope.len_lines() {
+            return Err(TextError::OutOfBounds);
+        }
+        let line_start_char = self.rope.line_to_char(line);
+        let content_chars = line_content_chars(self.rope.line(line));
+        let col = (pos.col as usize).min(content_chars);
+        Ok(BytePos(self.rope.char_to_byte(line_start_char + col)))
+    }
+
+    /// The text of line `idx` (zero-based) without its trailing line break, or
+    /// `None` when `idx` is past the last line.
+    #[must_use]
+    pub fn line(&self, idx: usize) -> Option<String> {
+        if idx >= self.rope.len_lines() {
+            return None;
+        }
+        let line = self.rope.line(idx);
+        let end = line_content_chars(line);
+        Some(line.slice(..end).to_string())
+    }
+
+    /// The byte [`Span`] of line `idx`'s content — `[line_start, content_end)`,
+    /// excluding the trailing line break — or `None` when `idx` is past the last
+    /// line. Suitable for indexing highlight spans line by line.
+    #[must_use]
+    pub fn line_to_byte_range(&self, idx: usize) -> Option<Span> {
+        if idx >= self.rope.len_lines() {
+            return None;
+        }
+        let start_char = self.rope.line_to_char(idx);
+        let content_chars = line_content_chars(self.rope.line(idx));
+        Some(Span {
+            start: BytePos(self.rope.char_to_byte(start_char)),
+            end: BytePos(self.rope.char_to_byte(start_char + content_chars)),
+        })
     }
 
     /// Save the buffer to `path`, clearing the dirty flag on success.
@@ -133,6 +184,18 @@ impl TextBuffer {
         let _ = path;
         todo!()
     }
+}
+
+/// The number of `char`s in `line`, excluding a trailing `\n` or `\r\n`.
+fn line_content_chars(line: ropey::RopeSlice<'_>) -> usize {
+    let mut end = line.len_chars();
+    if end > 0 && line.char(end - 1) == '\n' {
+        end -= 1;
+        if end > 0 && line.char(end - 1) == '\r' {
+            end -= 1;
+        }
+    }
+    end
 }
 
 /// Cursor and selection behavior built on the neutral [`karet_core::edit`] types.
@@ -199,5 +262,76 @@ mod tests {
     #[test]
     fn error_displays() {
         assert_eq!(TextError::OutOfBounds.to_string(), "position out of bounds");
+    }
+
+    #[test]
+    fn from_reader_reads_utf8() {
+        let result = TextBuffer::from_reader(std::io::Cursor::new("abc\ndéf"));
+        assert!(result.is_ok());
+        let b = result.unwrap_or_default();
+        assert_eq!(b.line_count(), 2);
+        assert_eq!(b.line(0).as_deref(), Some("abc"));
+        assert_eq!(b.line(1).as_deref(), Some("déf"));
+    }
+
+    #[test]
+    fn coord_roundtrip_multibyte() {
+        // "héllo\nwörld": 'é' and 'ö' are two bytes each; columns count chars.
+        let b = TextBuffer::from_text("héllo\nwörld");
+        // The 'o' ending line 0 is char 4, byte 5 (h=1, é=2, l=1, l=1).
+        assert_eq!(b.line_col_to_byte(LineCol::new(0, 4)), Ok(BytePos(5)));
+        assert_eq!(b.byte_to_line_col(BytePos(5)), LineCol::new(0, 4));
+        // Start of line 1 is byte 7 ("héllo\n" = 6 + 1).
+        assert_eq!(b.line_col_to_byte(LineCol::new(1, 0)), Ok(BytePos(7)));
+        assert_eq!(b.byte_to_line_col(BytePos(7)), LineCol::new(1, 0));
+        // 'r' is char 2 on line 1 → byte 10 (w=1, ö=2 from byte 7).
+        assert_eq!(b.byte_to_line_col(BytePos(10)), LineCol::new(1, 2));
+    }
+
+    #[test]
+    fn line_col_to_byte_clamps_and_bounds() {
+        let b = TextBuffer::from_text("héllo\nwörld");
+        // Column past the line end clamps to the content end (char 5 → byte 6).
+        assert_eq!(b.line_col_to_byte(LineCol::new(0, 99)), Ok(BytePos(6)));
+        // A line past the end is out of bounds.
+        assert_eq!(
+            b.line_col_to_byte(LineCol::new(9, 0)),
+            Err(TextError::OutOfBounds)
+        );
+        // A byte past the end clamps to the buffer end.
+        assert_eq!(b.byte_to_line_col(BytePos(999)), LineCol::new(1, 5));
+    }
+
+    #[test]
+    fn line_and_range_accessors() {
+        let b = TextBuffer::from_text("héllo\nwörld");
+        assert_eq!(b.line(0).as_deref(), Some("héllo"));
+        assert_eq!(b.line(1).as_deref(), Some("wörld"));
+        assert_eq!(b.line(2), None);
+        // Content ranges exclude the trailing newline.
+        assert_eq!(
+            b.line_to_byte_range(0),
+            Some(Span {
+                start: BytePos(0),
+                end: BytePos(6),
+            })
+        );
+        assert_eq!(
+            b.line_to_byte_range(1),
+            Some(Span {
+                start: BytePos(7),
+                end: BytePos(13),
+            })
+        );
+        assert_eq!(b.line_to_byte_range(2), None);
+    }
+
+    #[test]
+    fn trailing_newline_yields_empty_last_line() {
+        // A trailing "\n" produces an empty final line (rope line semantics).
+        let b = TextBuffer::from_text("a\nb\n");
+        assert_eq!(b.line_count(), 3);
+        assert_eq!(b.line(2).as_deref(), Some(""));
+        assert_eq!(b.line(3), None);
     }
 }

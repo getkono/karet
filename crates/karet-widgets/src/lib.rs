@@ -11,9 +11,16 @@
 //! inputs it renders) is defined as a builder struct; the ratatui `Widget` render
 //! impls are filled in separately.
 
-use karet_core::{Decoration, Diagnostic, LineCol, SymbolProvider};
+use karet_core::{Diagnostic, LineCol, SymbolProvider};
 use karet_fuzzy::Matcher;
-use std::path::Path;
+
+pub mod file_tree;
+pub mod hex;
+pub mod image;
+pub mod viewer;
+
+pub use file_tree::{FileTree, FileTreeRow, FileTreeState, IconSet};
+pub use hex::HexView;
 
 /// A symbol outline tree over a [`SymbolProvider`].
 pub struct Outline<'a> {
@@ -33,14 +40,6 @@ pub struct Breadcrumbs<'a> {
 pub struct Problems<'a> {
     /// The diagnostics to list.
     pub diagnostics: &'a [Diagnostic],
-}
-
-/// A gitignore-aware file tree with a git-status overlay.
-pub struct FileTree<'a> {
-    /// The workspace root.
-    pub root: &'a Path,
-    /// Per-path status decorations (git markers, etc.).
-    pub decorations: &'a [Decoration],
 }
 
 /// A fuzzy quick-open / command-palette picker over arbitrary items.
@@ -86,37 +85,6 @@ pub mod hover {
     pub struct HoverPopup<'a> {
         /// The markup payload to render.
         pub markup: &'a Markup,
-    }
-}
-
-/// Terminal image rendering (merged from the former `karet-image` crate).
-pub mod image {
-    /// Errors decoding or rendering an image.
-    #[derive(Debug, thiserror::Error)]
-    #[non_exhaustive]
-    pub enum ImageError {
-        /// The image bytes could not be decoded.
-        #[error("failed to decode image")]
-        Decode,
-    }
-
-    /// A decoded, scalable image.
-    pub struct Image {}
-
-    /// Decode image bytes into an [`Image`].
-    ///
-    /// # Errors
-    /// Returns [`ImageError::Decode`] if the bytes are not a supported format.
-    pub fn decode(bytes: &[u8]) -> Result<Image, ImageError> {
-        let _ = bytes;
-        todo!()
-    }
-
-    /// A ratatui widget that renders an [`Image`] using terminal graphics
-    /// (halfblocks / Kitty / Sixel / iTerm2).
-    pub struct ImageWidget<'a> {
-        /// The image to render.
-        pub image: &'a Image,
     }
 }
 
