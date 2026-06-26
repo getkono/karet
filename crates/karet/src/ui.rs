@@ -226,6 +226,7 @@ fn draw_breadcrumb(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
 
 fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    app.sidebar_content_rect = rows[1];
     draw_sidebar_header(f, app, theme, rows[0]);
     match app.sidebar_panel {
         SidebarPanel::Explorer => {
@@ -241,7 +242,7 @@ fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     }
 }
 
-fn draw_sidebar_header(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
+fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let name = match app.sidebar_panel {
         SidebarPanel::Explorer => "EXPLORER",
         SidebarPanel::Search => "SEARCH",
@@ -255,12 +256,35 @@ fn draw_sidebar_header(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         Paragraph::new(Line::styled(format!(" {name}"), title)),
         cols[0],
     );
+
+    // The "1 2 3" panel switcher: each digit occupies its cell + the space after.
+    let switch = cols[1];
+    let active = app.sidebar_panel;
+    app.panel_hits = vec![
+        (switch.x, switch.x + 2, SidebarPanel::Explorer),
+        (switch.x + 2, switch.x + 4, SidebarPanel::Search),
+        (switch.x + 4, switch.x + 6, SidebarPanel::SourceControl),
+    ];
     let hint = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
-    f.render_widget(Paragraph::new(Line::styled("1 2 3 ", hint)), cols[1]);
+    let on = Style::default()
+        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+        .add_modifier(Modifier::BOLD);
+    let digit = |d: &str, panel: SidebarPanel| {
+        Span::styled(format!("{d} "), if active == panel { on } else { hint })
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            digit("1", SidebarPanel::Explorer),
+            digit("2", SidebarPanel::Search),
+            digit("3", SidebarPanel::SourceControl),
+        ])),
+        switch,
+    );
 }
 
-fn draw_scm(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
+fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let mut items: Vec<ListItem> = Vec::new();
+    let mut row_map: Vec<Option<usize>> = Vec::new();
     let mut selected_row = 0;
     let mut last: Option<Section> = None;
     for (i, change) in app.scm.changes.iter().enumerate() {
@@ -280,6 +304,7 @@ fn draw_scm(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
                     .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
                     .add_modifier(Modifier::BOLD),
             )));
+            row_map.push(None);
             last = Some(section);
         }
         if i == app.scm.selected {
@@ -293,8 +318,11 @@ fn draw_scm(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
             ),
             Span::raw(change.path.to_string_lossy().into_owned()),
         ])));
+        row_map.push(Some(i));
     }
     if items.is_empty() {
+        app.scm_row_map = Vec::new();
+        app.scm_offset = 0;
         f.render_widget(Paragraph::new(Line::raw(" no changes")), area);
         return;
     }
@@ -306,10 +334,14 @@ fn draw_scm(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
             .add_modifier(Modifier::BOLD),
     );
     f.render_stateful_widget(list, area, &mut state);
+    app.scm_row_map = row_map;
+    app.scm_offset = state.offset();
 }
 
-fn draw_search_panel(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
+fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    app.search_results_rect = rows[1];
+    app.search_offset = 0;
     let search = &app.search;
 
     // Query line: prefixed with a caret, highlighted while the input is active.
@@ -367,6 +399,7 @@ fn draw_search_panel(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
             .add_modifier(Modifier::BOLD),
     );
     f.render_stateful_widget(list, rows[1], &mut state);
+    app.search_offset = state.offset();
 }
 
 fn draw_main(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {

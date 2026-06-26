@@ -124,6 +124,21 @@ impl FileTreeState {
         self.rows.get(self.selected)
     }
 
+    /// The first visible row (vertical scroll offset) from the last render.
+    #[must_use]
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    /// Select the row currently shown at `viewport_row` (0 = top of the viewport),
+    /// clamped to the last row. A no-op when the tree is empty.
+    pub fn select_visible(&mut self, viewport_row: usize) {
+        if self.rows.is_empty() {
+            return;
+        }
+        self.selected = (self.offset + viewport_row).min(self.rows.len() - 1);
+    }
+
     /// The path of the selected row, if any.
     #[must_use]
     pub fn selected_path(&self) -> Option<&Path> {
@@ -473,6 +488,21 @@ mod tests {
             state.selected_path(),
             Some(dir.path.join("a.txt").as_path())
         );
+    }
+
+    #[test]
+    fn select_visible_maps_viewport_rows_via_offset() {
+        let dir = temp_dir();
+        write(&dir.path, "a.txt", b"a");
+        write(&dir.path, "b.txt", b"b");
+        write(&dir.path, "c.txt", b"c");
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+        assert_eq!(state.offset(), 0);
+        state.select_visible(2);
+        assert_eq!(state.selected, 2);
+        state.select_visible(99); // clamps to the last row
+        assert_eq!(state.selected, state.rows().len() - 1);
     }
 
     #[test]

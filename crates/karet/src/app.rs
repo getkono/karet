@@ -130,6 +130,18 @@ pub struct App {
     pub(crate) tab_hits: Vec<TabHit>,
     /// Whether the active tab is being dragged to a new position.
     pub(crate) tab_dragging: bool,
+    /// The sidebar's content area (below the header) from the last frame.
+    pub(crate) sidebar_content_rect: Rect,
+    /// The header panel-switcher cells (`1 2 3`) from the last frame.
+    pub(crate) panel_hits: Vec<(u16, u16, SidebarPanel)>,
+    /// Source-Control display-row → change-index map from the last frame.
+    pub(crate) scm_row_map: Vec<Option<usize>>,
+    /// The Source-Control list scroll offset from the last frame.
+    pub(crate) scm_offset: usize,
+    /// The search-results area from the last frame.
+    pub(crate) search_results_rect: Rect,
+    /// The search-results list scroll offset from the last frame.
+    pub(crate) search_offset: usize,
     /// The active Kitty image placement rect (set by the renderer), if any.
     pub(crate) image_area: Option<Rect>,
     /// The tab index whose image is currently transmitted to the terminal.
@@ -177,6 +189,12 @@ impl App {
             tabstrip_rect: Rect::default(),
             tab_hits: Vec::new(),
             tab_dragging: false,
+            sidebar_content_rect: Rect::default(),
+            panel_hits: Vec::new(),
+            scm_row_map: Vec::new(),
+            scm_offset: 0,
+            search_results_rect: Rect::default(),
+            search_offset: 0,
             image_area: None,
             shown_image: None,
             should_quit: false,
@@ -919,13 +937,70 @@ impl App {
             MouseEventKind::ScrollDown => self.scroll_lines(3),
             MouseEventKind::ScrollUp => self.scroll_lines(-3),
             MouseEventKind::Down(MouseButton::Left) => {
-                self.focus = if in_sidebar {
-                    Focus::Sidebar
+                if in_sidebar {
+                    self.handle_sidebar_click(mouse.column, mouse.row);
                 } else {
-                    Focus::Editor
-                };
+                    self.focus = Focus::Editor;
+                }
             }
             _ => {}
+        }
+    }
+
+    /// The sidebar panel whose header switcher cell is at `(col, row_y)`, if any.
+    fn panel_at(&self, col: u16, row_y: u16) -> Option<SidebarPanel> {
+        if row_y != self.sidebar_rect.y {
+            return None;
+        }
+        self.panel_hits
+            .iter()
+            .find_map(|&(start, end, panel)| (col >= start && col < end).then_some(panel))
+    }
+
+    /// Handle a left click inside the sidebar: switch panels via the header, or
+    /// select and activate the clicked row.
+    fn handle_sidebar_click(&mut self, col: u16, row_y: u16) {
+        self.focus = Focus::Sidebar;
+        if let Some(panel) = self.panel_at(col, row_y) {
+            self.dispatch(Command::SelectPanel(panel));
+            return;
+        }
+        match self.sidebar_panel {
+            SidebarPanel::Explorer => {
+                if !rect_contains(self.sidebar_content_rect, (col, row_y)) {
+                    return;
+                }
+                let view_row = (row_y - self.sidebar_content_rect.y) as usize;
+                let root = self.root.clone();
+                self.explorer.ensure_built(&root);
+                self.explorer.select_visible(view_row);
+                self.sidebar_activate();
+            }
+            SidebarPanel::SourceControl => {
+                if !rect_contains(self.sidebar_content_rect, (col, row_y)) {
+                    return;
+                }
+                let display = self.scm_offset + (row_y - self.sidebar_content_rect.y) as usize;
+                if let Some(Some(idx)) = self.scm_row_map.get(display).copied() {
+                    self.scm.selected = idx;
+                    self.open_selected_diff();
+                }
+            }
+            SidebarPanel::Search => {
+                // The query line sits just above the results; click it to type.
+                if row_y == self.sidebar_content_rect.y {
+                    self.search.input = true;
+                    return;
+                }
+                if !rect_contains(self.search_results_rect, (col, row_y)) {
+                    return;
+                }
+                let idx = self.search_offset + (row_y - self.search_results_rect.y) as usize;
+                if idx < self.search.results.len() {
+                    self.search.selected = idx;
+                    self.open_selected_result();
+                }
+            }
         }
     }
 
@@ -1256,6 +1331,48 @@ mod tests {
         assert_eq!(app.tab_at(12), Some((1, false)));
         assert_eq!(app.tab_at(18), Some((1, true)));
         assert_eq!(app.tab_at(25), None);
+    }
+
+    #[test]
+    fn sidebar_header_click_switches_panel() {
+        let mut app = app();
+        app.sidebar_rect = Rect {
+            x: 0,
+            y: 1,
+            width: 30,
+            height: 10,
+        };
+        app.panel_hits = vec![
+            (23, 25, SidebarPanel::Explorer),
+            (25, 27, SidebarPanel::Search),
+            (27, 29, SidebarPanel::SourceControl),
+        ];
+        app.handle_sidebar_click(25, 1); // header row, the "2" cell
+        assert_eq!(app.sidebar_panel, SidebarPanel::Search);
+    }
+
+    #[test]
+    fn sidebar_click_selects_and_opens_scm_change() {
+        let mut app = app(); // staged a.rs, working b.rs
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        app.sidebar_rect = Rect {
+            x: 0,
+            y: 1,
+            width: 30,
+            height: 10,
+        };
+        app.sidebar_content_rect = Rect {
+            x: 0,
+            y: 2,
+            width: 30,
+            height: 8,
+        };
+        app.scm_offset = 0;
+        // Display rows: 0 header, 1 a.rs(0), 2 header, 3 b.rs(1).
+        app.scm_row_map = vec![None, Some(0), None, Some(1)];
+        app.handle_sidebar_click(2, 5); // content row 3 -> change index 1
+        assert_eq!(app.scm.selected, 1);
+        assert!(app.active_is_diff());
     }
 
     #[test]
