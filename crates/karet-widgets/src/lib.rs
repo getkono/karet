@@ -15,6 +15,8 @@ use karet_core::{Decoration, Diagnostic, LineCol, SymbolProvider};
 use karet_fuzzy::Matcher;
 use std::path::Path;
 
+pub mod viewer;
+
 /// A symbol outline tree over a [`SymbolProvider`].
 pub struct Outline<'a> {
     /// The symbols to display.
