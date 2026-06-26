@@ -1,13 +1,20 @@
 //! `karet-theme` — color tokens, theme loading and contrast checking for karet.
 //!
 //! Maps the semantic [`TokenId`]/[`ThemeRole`] vocabulary (from `karet-core`) to
-//! concrete [`Rgba`] colors, independent of any renderer. Enable the `view`
-//! feature to convert resolved colors into ratatui `Style`s.
-//!
-//! This is the implementation *skeleton*: the public joints are defined; the
-//! loaders, detection and contrast logic are filled in separately.
+//! concrete [`Rgba`] colors, independent of any renderer. Ships a built-in dark
+//! theme ([`Theme::dark`], also [`Theme::default`]); the `vscode` feature loads VS
+//! Code JSON themes. Enable `view` to convert colors into ratatui values.
 
 use karet_core::{ThemeRole, TokenId};
+
+mod default;
+#[cfg(feature = "vscode")]
+mod load_vscode;
+
+/// Number of [`StandardToken`](karet_core::StandardToken) classes (token id space).
+pub(crate) const TOKEN_COUNT: usize = 22;
+/// Number of [`ThemeRole`] variants.
+pub(crate) const ROLE_COUNT: usize = 20;
 
 /// Errors produced while loading a theme.
 #[derive(Debug, thiserror::Error)]
@@ -34,73 +41,151 @@ pub struct Rgba {
     pub a: u8,
 }
 
+impl Rgba {
+    /// Create an opaque color from `r`/`g`/`b` (alpha 255).
+    #[must_use]
+    pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b, a: 255 }
+    }
+
+    /// Parse a `#rgb`, `#rrggbb`, or `#rrggbbaa` hex string (the `#` is optional).
+    #[must_use]
+    pub fn from_hex(s: &str) -> Option<Self> {
+        let hex = s.strip_prefix('#').unwrap_or(s);
+        let byte = |i: usize| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok();
+        let nibble = |i: usize| {
+            u8::from_str_radix(hex.get(i..i + 1)?, 16)
+                .ok()
+                .map(|v| v * 17)
+        };
+        match hex.len() {
+            3 => Some(Self {
+                r: nibble(0)?,
+                g: nibble(1)?,
+                b: nibble(2)?,
+                a: 255,
+            }),
+            6 => Some(Self {
+                r: byte(0)?,
+                g: byte(2)?,
+                b: byte(4)?,
+                a: 255,
+            }),
+            8 => Some(Self {
+                r: byte(0)?,
+                g: byte(2)?,
+                b: byte(4)?,
+                a: byte(6)?,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Convert to a ratatui truecolor value (alpha dropped — terminals are opaque).
+    #[cfg(feature = "view")]
+    #[must_use]
+    pub fn to_ratatui(self) -> ratatui::style::Color {
+        ratatui::style::Color::Rgb(self.r, self.g, self.b)
+    }
+}
+
 /// A resolved color theme: maps token classes and UI roles to colors.
-#[derive(Clone, Debug, Default)]
-pub struct Theme {}
+#[derive(Clone, Debug)]
+pub struct Theme {
+    tokens: [Rgba; TOKEN_COUNT],
+    fallback_fg: Rgba,
+    roles: [Rgba; ROLE_COUNT],
+    dark: bool,
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self::dark()
+    }
+}
 
 impl Theme {
+    /// The built-in dark theme.
+    #[must_use]
+    pub fn dark() -> Self {
+        default::dark()
+    }
+
     /// Load a TextMate `.tmTheme` (plist XML) theme.
     ///
     /// # Errors
-    /// Returns [`ThemeError::Parse`] if the data is malformed.
+    /// Currently always returns [`ThemeError::Unsupported`] — tmTheme loading is
+    /// reserved; the built-in [`Theme::dark`] is used meanwhile.
     pub fn load_tmtheme(bytes: &[u8]) -> Result<Self, ThemeError> {
         let _ = bytes;
-        todo!()
+        Err(ThemeError::Unsupported)
     }
 
-    /// Load a VS Code JSON theme.
+    /// Load a VS Code JSON theme (requires the `vscode` feature).
+    ///
+    /// Unknown keys fall back to the built-in dark theme's values.
     ///
     /// # Errors
-    /// Returns [`ThemeError::Parse`] if the JSON is malformed.
+    /// Returns [`ThemeError::Parse`] if the JSON is malformed, or
+    /// [`ThemeError::Unsupported`] if the `vscode` feature is disabled.
     pub fn load_vscode(json: &str) -> Result<Self, ThemeError> {
-        let _ = json;
-        todo!()
+        #[cfg(feature = "vscode")]
+        {
+            load_vscode::load(json)
+        }
+        #[cfg(not(feature = "vscode"))]
+        {
+            let _ = json;
+            Err(ThemeError::Unsupported)
+        }
     }
 
-    /// The color for a semantic token class.
+    /// The color for a semantic token class (the fallback foreground if unmapped).
     #[must_use]
     pub fn color(&self, token: TokenId) -> Rgba {
-        let _ = token;
-        todo!()
+        self.tokens
+            .get(token.0 as usize)
+            .copied()
+            .unwrap_or(self.fallback_fg)
     }
 
-    /// The color for a UI role.
+    /// The color for a UI role (the fallback foreground if unmapped).
     #[must_use]
     pub fn role(&self, role: ThemeRole) -> Rgba {
-        let _ = role;
-        todo!()
+        self.roles
+            .get(role as usize)
+            .copied()
+            .unwrap_or(self.fallback_fg)
     }
 
     /// Whether this is a dark theme (background luminance below the midpoint).
     #[must_use]
     pub fn is_dark(&self) -> bool {
-        todo!()
+        self.dark
     }
 }
 
-/// The WCAG contrast ratio between two colors (1.0 – 21.0).
+/// The WCAG 2.1 contrast ratio between two colors (1.0 – 21.0).
 #[must_use]
 pub fn contrast_ratio(fg: Rgba, bg: Rgba) -> f32 {
-    let _ = (fg, bg);
-    todo!()
+    use palette::Srgb;
+    use palette::color_difference::Wcag21RelativeContrast;
+
+    let f = Srgb::new(fg.r, fg.g, fg.b).into_format::<f32>();
+    let b = Srgb::new(bg.r, bg.g, bg.b).into_format::<f32>();
+    f.relative_contrast(b)
+}
+
+/// Whether `c` is a dark color (Rec. 601 luma below the midpoint).
+pub(crate) fn is_dark_color(c: Rgba) -> bool {
+    let luma = 0.299 * f32::from(c.r) + 0.587 * f32::from(c.g) + 0.114 * f32::from(c.b);
+    luma < 128.0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rgba_defaults_transparent_black() {
-        assert_eq!(
-            Rgba::default(),
-            Rgba {
-                r: 0,
-                g: 0,
-                b: 0,
-                a: 0
-            }
-        );
-    }
+    use karet_core::StandardToken;
 
     #[test]
     fn error_displays() {
@@ -108,5 +193,46 @@ mod tests {
             ThemeError::Unsupported.to_string(),
             "unsupported theme format"
         );
+    }
+
+    #[test]
+    fn rgba_from_hex() {
+        assert_eq!(Rgba::from_hex("#1a1b26"), Some(Rgba::rgb(0x1a, 0x1b, 0x26)));
+        assert_eq!(Rgba::from_hex("fff"), Some(Rgba::rgb(255, 255, 255)));
+        assert_eq!(
+            Rgba::from_hex("#11223344"),
+            Some(Rgba {
+                r: 0x11,
+                g: 0x22,
+                b: 0x33,
+                a: 0x44
+            })
+        );
+        assert_eq!(Rgba::from_hex("#xyz"), None);
+        assert_eq!(Rgba::from_hex("#12345"), None);
+    }
+
+    #[test]
+    fn dark_theme_resolves_colors() {
+        let t = Theme::dark();
+        assert!(t.is_dark());
+        // Background is dark, foreground is light.
+        assert!(is_dark_color(t.role(ThemeRole::Background)));
+        assert!(!is_dark_color(t.role(ThemeRole::Foreground)));
+        // Keyword has a non-default color, distinct from a string.
+        assert_ne!(
+            t.color(StandardToken::Keyword.id()),
+            t.color(StandardToken::String.id())
+        );
+        // Unmapped token id falls back to foreground.
+        assert_eq!(t.color(TokenId(60000)), t.role(ThemeRole::Foreground));
+    }
+
+    #[test]
+    fn foreground_on_background_is_readable() {
+        let t = Theme::dark();
+        let ratio = contrast_ratio(t.role(ThemeRole::Foreground), t.role(ThemeRole::Background));
+        // WCAG AA for normal text is 4.5; a code theme's default fg should clear it.
+        assert!(ratio > 4.5, "contrast ratio was {ratio}");
     }
 }

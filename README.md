@@ -1,6 +1,26 @@
 # karet
 
-Primitives for TUI dev tools.
+A Cargo workspace of reusable primitives ("engines") for building TUI code editors,
+plus the `karet` application that composes them.
+
+## `karet` — terminal git-diff viewer
+
+The `karet` binary is a fast terminal viewer for your git diff:
+
+```bash
+karet [PATH]        # diff the repo containing PATH (default: current directory)
+karet --staged      # force the staged diff (HEAD vs index)
+karet src/main.rs   # scope the diff to a single path
+```
+
+With no flags it shows the staged changes if any are staged, otherwise the unstaged
+(working-tree) changes — like VS Code's default. It prints a message and exits if
+`PATH` isn't in a git repository or there's nothing to show. In the viewer: `j`/`k`
+scroll, `h`/`l` switch file, `Tab` toggles unified / side-by-side, `q` quits. Syntax
+highlighting is tree-sitter-based (Rust, Python, JS/TS, Go, Java, C/C++, C#, Ruby, PHP,
+HTML, CSS, YAML, JSON, TOML, Bash); the detected language is shown in the status bar,
+and unknown/unsupported languages render as plaintext. `--no-syntax` (or `NO_COLOR`)
+disables highlighting.
 
 ## Prerequisites
 
@@ -59,7 +79,7 @@ mise run coverage
 
 ### MSRV
 
-Rust 1.85
+Rust 1.90
 
 ## License
 

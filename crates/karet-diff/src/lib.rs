@@ -1,93 +1,72 @@
-//! `karet-diff` — a pure, syntax-aware diffing engine.
+//! `karet-diff` — a pure, headless text diffing engine.
 //!
-//! Parses both sides with tree-sitter and diffs the structure (difftastic-style),
-//! falling back to line/word diffing for formats without a grammar. It produces
-//! [`Hunk`]s and a [`Staging`] model and does **no** presentation — how a diff is
-//! displayed is left to whichever consumer integrates it.
+//! Produces a neutral diff model ([`FileDiff`] / [`Hunk`] / [`DiffLine`]) from
+//! either two in-memory texts ([`diff_text`]) or an existing unified diff
+//! ([`parse`]), plus the building blocks a viewer needs: side-by-side alignment
+//! ([`align_hunk`]), intra-line change highlighting ([`compute_highlights`]), and
+//! patch reconstruction / per-hunk staging ([`format_hunk_patch`], [`Staging`]).
 //!
-//! This is the implementation *skeleton*: the public joints are defined; the
-//! diffing logic is filled in separately.
+//! It does **no** presentation — colors, layout and syntax highlighting are the
+//! consumer's job. Diffing is line- and word-level today; tree-sitter structural
+//! diffing is reserved behind [`DiffStrategy::Structural`].
 
-use karet_core::Range;
+mod align;
+mod engine;
+mod intraline;
+mod model;
+mod parse;
+mod patch;
+
+pub use align::{Cell, SideBySideRow, align_hunk};
+pub use engine::{DiffOptions, diff_files, diff_text};
+pub use intraline::{HighlightedPair, Segment, compute_highlights};
+pub use model::{Diff, DiffLine, FileDiff, FileStatus, Hunk, LineKind};
+pub use parse::parse;
+pub use patch::{Staging, format_hunk_patch};
+
 use std::path::Path;
 
-/// Errors produced while diffing.
+/// Errors produced while diffing or parsing.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum DiffError {
-    /// The diff could not be computed.
-    #[error("diff failed")]
-    Failed,
+    /// Reading an input file failed.
+    #[error("i/o error: {0}")]
+    Io(String),
+    /// Parsing a unified diff failed.
+    #[error("failed to parse diff: {0}")]
+    Parse(String),
 }
 
 /// The strategy used to diff two texts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiffStrategy {
-    /// Tree-sitter structural diff (syntax-aware).
+    /// Tree-sitter structural diff (syntax-aware). Reserved; currently behaves like
+    /// [`DiffStrategy::Line`] until the structural engine lands.
     Structural,
-    /// Line/word diff (the format-agnostic fallback).
+    /// Line + intra-word diff (the format-agnostic default).
     Line,
 }
 
-/// The kind of change a [`Hunk`] represents.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HunkKind {
-    /// Lines added.
-    Added,
-    /// Lines removed.
-    Removed,
-    /// Lines modified.
-    Modified,
-}
-
-/// A contiguous change between the old and new texts.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Hunk {
-    /// The affected range in the old text.
-    pub old: Range,
-    /// The affected range in the new text.
-    pub new: Range,
-    /// The kind of change.
-    pub kind: HunkKind,
-}
-
-/// The result of diffing two texts.
-#[derive(Clone, Debug, Default)]
-pub struct Diff {
-    /// The change hunks, in order.
-    pub hunks: Vec<Hunk>,
-}
-
-/// Diff `old` against `new` using `strategy`.
+/// Diff `old` against `new`, returning a single-file diff.
+///
+/// `strategy` selects the framing only: both variants produce the line + intra-word
+/// diff today. Tree-sitter structural diffing is reserved for
+/// [`DiffStrategy::Structural`].
 #[must_use]
-pub fn diff(old: &str, new: &str, strategy: DiffStrategy) -> Diff {
-    let _ = (old, new, strategy);
-    todo!()
+pub fn diff(old: &str, new: &str, strategy: DiffStrategy) -> FileDiff {
+    let _ = strategy;
+    diff_text(old, new, &DiffOptions::default())
 }
 
-/// Choose a [`DiffStrategy`] based on the file at `path` (extension/grammar).
+/// Choose a [`DiffStrategy`] for the file at `path`.
+///
+/// Structural diffing is not yet implemented, so this currently always returns
+/// [`DiffStrategy::Line`]; the signature is kept for forward compatibility.
 #[must_use]
 pub fn detect_strategy(path: &Path) -> DiffStrategy {
     let _ = path;
-    todo!()
-}
-
-/// Per-hunk staging state for building partial commits.
-#[derive(Clone, Debug, Default)]
-pub struct Staging {}
-
-impl Staging {
-    /// Mark `hunk` as staged.
-    pub fn stage(&mut self, hunk: &Hunk) {
-        let _ = hunk;
-        todo!()
-    }
-
-    /// The unified patch text for the currently-staged hunks.
-    #[must_use]
-    pub fn staged_patch(&self) -> String {
-        todo!()
-    }
+    DiffStrategy::Line
 }
 
 #[cfg(test)]
@@ -95,13 +74,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hunk_kinds_compare() {
-        assert_eq!(HunkKind::Added, HunkKind::Added);
-        assert_ne!(HunkKind::Added, HunkKind::Removed);
+    fn error_displays() {
+        assert_eq!(DiffError::Io("boom".into()).to_string(), "i/o error: boom");
+        assert_eq!(
+            DiffError::Parse("bad".into()).to_string(),
+            "failed to parse diff: bad"
+        );
     }
 
     #[test]
-    fn error_displays() {
-        assert_eq!(DiffError::Failed.to_string(), "diff failed");
+    fn strategy_variants_differ() {
+        assert_ne!(DiffStrategy::Structural, DiffStrategy::Line);
+    }
+
+    #[test]
+    fn diff_wrapper_produces_single_file_diff() {
+        let f = diff("a\n", "b\n", DiffStrategy::Line);
+        assert_eq!(f.hunks.len(), 1);
+        assert_eq!(detect_strategy(Path::new("x.rs")), DiffStrategy::Line);
     }
 }
