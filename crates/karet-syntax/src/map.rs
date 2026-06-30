@@ -32,6 +32,12 @@ fn alias(name: &str) -> Option<StandardToken> {
         "escape" => StandardToken::StringEscape,
         "constructor" => StandardToken::Type,
         "field" | "variable.member" => StandardToken::Property,
+        // Markdown (tree-sitter-md block grammar) captures with no standard
+        // analogue: headings stand out as keywords, code spans/fences as strings,
+        // and links/refs as constants.
+        "text.title" => StandardToken::Keyword,
+        "text.literal" => StandardToken::String,
+        "text.uri" | "text.reference" => StandardToken::Constant,
         _ => return None,
     })
 }
@@ -72,6 +78,14 @@ mod tests {
         );
         assert_eq!(map_capture("constructor"), Some(TokenId::TYPE));
         assert_eq!(map_capture("field"), Some(StandardToken::Property.id()));
+    }
+
+    #[test]
+    fn markdown_captures_map_to_standard_tokens() {
+        assert_eq!(map_capture("text.title"), Some(TokenId::KEYWORD));
+        assert_eq!(map_capture("text.literal"), Some(TokenId::STRING));
+        assert_eq!(map_capture("text.uri"), Some(TokenId::CONSTANT));
+        assert_eq!(map_capture("text.reference"), Some(TokenId::CONSTANT));
     }
 
     #[test]

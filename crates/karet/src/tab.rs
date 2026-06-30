@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use karet_core::Decoration;
 use karet_editor::EditorState;
-use karet_session::DocumentId;
+use karet_session::{DocumentId, ViewId};
 use karet_syntax::Highlights;
 use karet_text::TextBuffer;
 use karet_widgets::image::Image;
@@ -93,6 +93,11 @@ pub enum TabKind {
 }
 
 /// An open tab: a title, its content, and per-view editor state.
+///
+/// A tab *is* a view onto its content; [`view`](Tab::view) is its identity, which a
+/// future tiled/split layout uses to let several views share one document (whose
+/// edit log lives once in the session). It is `ViewId(0)` until [`App`] assigns a
+/// real id when the tab is opened.
 pub struct Tab {
     /// The tab title (usually a file name).
     pub title: String,
@@ -100,6 +105,8 @@ pub struct Tab {
     pub kind: TabKind,
     /// Code-tab scroll/cursor state.
     pub editor: EditorState,
+    /// This view's identity (assigned by the app on open).
+    pub view: ViewId,
 }
 
 impl Tab {
@@ -110,6 +117,7 @@ impl Tab {
             title: title.into(),
             kind,
             editor: EditorState::new(),
+            view: ViewId(0),
         }
     }
 

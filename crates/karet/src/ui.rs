@@ -8,7 +8,7 @@ use karet_theme::Theme;
 use karet_vcs::StatusKind;
 use karet_widgets::image::{GraphicsProtocol, ImageWidget};
 use karet_widgets::viewer::Placeholder;
-use karet_widgets::{FileTree, HexView};
+use karet_widgets::{FileTree, HexView, UiIcon};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -232,8 +232,9 @@ fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     match app.sidebar_panel {
         SidebarPanel::Explorer => {
             let root = app.root.clone();
+            let icon_style = app.icon_style;
             f.render_stateful_widget(
-                FileTree::new(&root).theme(theme),
+                FileTree::new(&root).theme(theme).icons(icon_style),
                 rows[1],
                 &mut app.explorer,
             );
@@ -258,9 +259,11 @@ fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
         cols[0],
     );
 
-    // The "1 2 3" panel switcher: each digit occupies its cell + the space after.
+    // The activity-bar switcher: an icon per panel. Each glyph occupies one cell
+    // plus the space after it (2 cells), so the hit regions march in twos.
     let switch = cols[1];
     let active = app.sidebar_panel;
+    let icon_style = app.icon_style;
     app.panel_hits = vec![
         (switch.x, switch.x + 2, SidebarPanel::Explorer),
         (switch.x + 2, switch.x + 4, SidebarPanel::Search),
@@ -270,14 +273,17 @@ fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
     let on = Style::default()
         .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
         .add_modifier(Modifier::BOLD);
-    let digit = |d: &str, panel: SidebarPanel| {
-        Span::styled(format!("{d} "), if active == panel { on } else { hint })
+    let icon = |ui: UiIcon, panel: SidebarPanel| {
+        Span::styled(
+            format!("{} ", ui.glyph(icon_style)),
+            if active == panel { on } else { hint },
+        )
     };
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            digit("1", SidebarPanel::Explorer),
-            digit("2", SidebarPanel::Search),
-            digit("3", SidebarPanel::SourceControl),
+            icon(UiIcon::Explorer, SidebarPanel::Explorer),
+            icon(UiIcon::Search, SidebarPanel::Search),
+            icon(UiIcon::SourceControl, SidebarPanel::SourceControl),
         ])),
         switch,
     );

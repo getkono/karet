@@ -2433,6 +2433,7 @@ dependencies = [
  "karet-dap",
  "karet-diff",
  "karet-editor",
+ "karet-filetype",
  "karet-fuzzy",
  "karet-markdown",
  "karet-search",
@@ -2495,6 +2496,10 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
 ]
+
+[[package]]
+name = "karet-filetype"
+version = "0.1.0"
 
 [[package]]
 name = "karet-fuzzy"
@@ -2621,6 +2626,7 @@ name = "karet-treesitter"
 version = "0.1.0"
 dependencies = [
  "karet-core",
+ "karet-filetype",
  "thiserror 2.0.18",
  "tree-sitter",
  "tree-sitter-bash",
@@ -2633,6 +2639,7 @@ dependencies = [
  "tree-sitter-java",
  "tree-sitter-javascript",
  "tree-sitter-json",
+ "tree-sitter-md",
  "tree-sitter-php",
  "tree-sitter-python",
  "tree-sitter-ruby",
@@ -2673,6 +2680,7 @@ dependencies = [
  "ignore",
  "image",
  "karet-core",
+ "karet-filetype",
  "karet-fuzzy",
  "karet-markdown",
  "karet-theme",
@@ -4719,6 +4727,16 @@ name = "tree-sitter-language"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
+
+[[package]]
+name = "tree-sitter-md"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2efd398be546456c814598ee56c0f51769a77241511b4a58077815d120afa882"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
 
 [[package]]
 name = "tree-sitter-php"

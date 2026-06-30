@@ -65,7 +65,7 @@ fn main() -> color_eyre::Result<()> {
         Err(e) => return Err(eyre!("{e}")),
     };
 
-    let mut app = app::App::new(root, staged, working, syntax);
+    let mut app = app::App::new(root, staged, working, syntax).with_icons(cli.icon_style());
     if let Some(file) = initial_file {
         app.open_initial(&file);
     }

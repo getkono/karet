@@ -21,51 +21,27 @@ pub fn language_id_from_path(path: &Path) -> Option<LanguageId> {
         .map(|g| g.id)
 }
 
-/// A human-readable language name for `path`'s extension, for UI labels.
+/// A human-readable language name for `path`, for UI labels.
 ///
-/// Prefers a bundled grammar's name; otherwise falls back to a table of common
-/// languages that may not be compiled in. `None` for unknown extensions (the
-/// caller should show "plaintext").
+/// Prefers a bundled grammar's name; otherwise defers to the shared
+/// [`karet_filetype`] catalogue (so the display-name table lives in one place).
+/// `None` for unrecognized files (the caller should show "plaintext").
 #[must_use]
 pub fn language_name_from_path(path: &Path) -> Option<&'static str> {
-    let ext = extension(path)?;
-    if let Some(g) = registry::all()
-        .iter()
-        .find(|g| g.extensions.contains(&ext.as_str()))
+    if let Some(ext) = extension(path)
+        && let Some(g) = registry::all()
+            .iter()
+            .find(|g| g.extensions.contains(&ext.as_str()))
     {
         return Some(g.name);
     }
-    extra_name(&ext)
+    let ft = karet_filetype::file_type_for_path(path);
+    ft.is_recognized().then_some(ft.name())
 }
 
 /// Lowercased extension of `path`, without the dot.
 fn extension(path: &Path) -> Option<String> {
     path.extension()?.to_str().map(str::to_ascii_lowercase)
-}
-
-/// Display names for common languages that may not have a bundled grammar.
-fn extra_name(ext: &str) -> Option<&'static str> {
-    Some(match ext {
-        "kt" | "kts" => "Kotlin",
-        "swift" => "Swift",
-        "scala" | "sbt" | "sc" => "Scala",
-        "md" | "markdown" => "Markdown",
-        "xml" => "XML",
-        "sql" => "SQL",
-        "lua" => "Lua",
-        "hs" => "Haskell",
-        "ml" | "mli" => "OCaml",
-        "ex" | "exs" => "Elixir",
-        "dart" => "Dart",
-        "r" => "R",
-        "zig" => "Zig",
-        "vim" => "Vim script",
-        "pl" | "pm" => "Perl",
-        "clj" | "cljs" | "cljc" => "Clojure",
-        "el" => "Emacs Lisp",
-        "txt" => "Plain Text",
-        _ => return None,
-    })
 }
 
 #[cfg(test)]

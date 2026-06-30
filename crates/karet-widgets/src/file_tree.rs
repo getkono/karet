@@ -1,16 +1,22 @@
-//! A lazy, gitignore-aware file-tree widget with a git-status overlay.
+//! A lazy, gitignore-aware file-tree widget with per-file-type icons, VS Code–style
+//! folder compaction, and a git-status overlay.
 //!
 //! [`FileTreeState`] owns the expansion set, selection, and a flattened cache of
-//! the currently-visible rows; it reads only the root and each expanded directory
-//! (never recursing into collapsed ones). The [`FileTree`] builder supplies
-//! presentation: an [`IconSet`], an optional theme, and a path-keyed status
-//! overlay (the application maps `karet-vcs` statuses to `karet-core`
-//! [`Decoration`]s).
+//! the currently-visible rows. The [`FileTree`] builder supplies presentation: an
+//! [`IconStyle`] (file icons resolved from the [`karet_filetype`] registry), an
+//! optional theme, and a path-keyed status overlay (the application maps
+//! `karet-vcs` statuses to `karet-core` [`Decoration`]s).
+//!
+//! **Folder compaction:** a directory whose only entry is another directory is
+//! merged into a single `a/b/c` row (like VS Code's "compact folders"). The row's
+//! [`path`](FileTreeRow::path) is the *deepest* directory — expansion, selection,
+//! and opening all act on it; toggling expands/collapses the whole chain.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use karet_core::{Decoration, DecorationKind, ThemeRole};
+use karet_filetype::{IconStyle, chevron, directory_icon, icon_for_path};
 use karet_theme::Theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -18,51 +24,15 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::StatefulWidget;
 
-/// The glyph set used to draw the tree.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum IconSet {
-    /// ASCII-only (`+`/`-`) — maximally portable.
-    Ascii,
-    /// Unicode triangles (`▸`/`▾`) — the default for modern terminals.
-    #[default]
-    Unicode,
-    /// Nerd Font folder/file glyphs.
-    NerdFont,
-}
-
-impl IconSet {
-    /// The glyph for a collapsed directory.
-    fn dir_closed(self) -> char {
-        match self {
-            Self::Ascii => '+',
-            Self::Unicode => '▸',
-            Self::NerdFont => '\u{f07b}',
-        }
-    }
-
-    /// The glyph for an expanded directory.
-    fn dir_open(self) -> char {
-        match self {
-            Self::Ascii => '-',
-            Self::Unicode => '▾',
-            Self::NerdFont => '\u{f07c}',
-        }
-    }
-
-    /// The glyph for a file (a leading space keeps files aligned under dirs).
-    fn file(self) -> char {
-        match self {
-            Self::Ascii | Self::Unicode => ' ',
-            Self::NerdFont => '\u{f15b}',
-        }
-    }
-}
-
 /// One flattened, visible row of the tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileTreeRow {
-    /// The absolute path of the entry.
+    /// The absolute path of the entry. For a compacted directory chain this is the
+    /// *deepest* directory (the one expansion and selection act on).
     pub path: PathBuf,
+    /// The text to display: a file/directory name, or a `a/b/c` chain for a
+    /// compacted directory.
+    pub label: String,
     /// The nesting depth (0 for top-level entries).
     pub depth: u16,
     /// Whether the entry is a directory.
@@ -201,7 +171,8 @@ impl FileTreeState {
     pub fn rebuild(&mut self, root: &Path) {
         self.root = root.to_path_buf();
         let mut rows = Vec::new();
-        self.push_dir(root, 0, &mut rows);
+        let children = read_dir_sorted(root, self.show_hidden, self.respect_gitignore);
+        self.push_entries(children, 0, &mut rows);
         self.rows = rows;
         if self.selected >= self.rows.len() {
             self.selected = self.rows.len().saturating_sub(1);
@@ -209,21 +180,66 @@ impl FileTreeState {
         self.needs_rebuild = false;
     }
 
-    /// Append `dir`'s entries (and expanded descendants) to `rows`.
-    fn push_dir(&self, dir: &Path, depth: u16, rows: &mut Vec<FileTreeRow>) {
-        for (path, is_dir) in read_dir_sorted(dir, self.show_hidden, self.respect_gitignore) {
-            let expanded = is_dir && self.expanded.contains(&path);
-            rows.push(FileTreeRow {
-                path: path.clone(),
-                depth,
-                is_dir,
-                expanded,
-            });
-            if expanded {
-                self.push_dir(&path, depth + 1, rows);
+    /// Append pre-read `children` (files and compacted directory chains) to `rows`.
+    fn push_entries(
+        &self,
+        children: Vec<(PathBuf, bool)>,
+        depth: u16,
+        rows: &mut Vec<FileTreeRow>,
+    ) {
+        for (path, is_dir) in children {
+            if is_dir {
+                self.push_compacted_dir(path, depth, rows);
+            } else {
+                rows.push(FileTreeRow {
+                    label: file_label(&path),
+                    path,
+                    depth,
+                    is_dir: false,
+                    expanded: false,
+                });
             }
         }
     }
+
+    /// Push a directory row, compacting a single-child directory chain into one
+    /// `a/b/c` row, and recursing into the chain's tip when it is expanded.
+    fn push_compacted_dir(&self, first: PathBuf, depth: u16, rows: &mut Vec<FileTreeRow>) {
+        let mut label = file_label(&first);
+        let mut tip = first;
+        // Descend while the current directory's *only* entry is another directory.
+        let children = loop {
+            let entries = read_dir_sorted(&tip, self.show_hidden, self.respect_gitignore);
+            match entries.as_slice() {
+                [(child, true)] => {
+                    let child = child.clone();
+                    label.push('/');
+                    label.push_str(&file_label(&child));
+                    tip = child;
+                }
+                _ => break entries,
+            }
+        };
+        let expanded = self.expanded.contains(&tip);
+        rows.push(FileTreeRow {
+            path: tip,
+            label,
+            depth,
+            is_dir: true,
+            expanded,
+        });
+        if expanded {
+            self.push_entries(children, depth + 1, rows);
+        }
+    }
+}
+
+/// The display label for a path: its file name, or `?` if it has none.
+fn file_label(path: &Path) -> String {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("?")
+        .to_string()
 }
 
 /// Read the immediate entries of `dir`, dirs first then case-insensitive name.
@@ -259,11 +275,11 @@ fn name_key(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
-/// A gitignore-aware file tree with a git-status overlay.
+/// A gitignore-aware file tree with per-file-type icons and a git-status overlay.
 pub struct FileTree<'a> {
     root: &'a Path,
     status: &'a [(PathBuf, Decoration)],
-    icons: IconSet,
+    icons: IconStyle,
     theme: Option<&'a Theme>,
 }
 
@@ -274,7 +290,7 @@ impl<'a> FileTree<'a> {
         Self {
             root,
             status: &[],
-            icons: IconSet::default(),
+            icons: IconStyle::default(),
             theme: None,
         }
     }
@@ -286,9 +302,9 @@ impl<'a> FileTree<'a> {
         self
     }
 
-    /// Choose the glyph set.
+    /// Choose the icon style (Nerd Font / Unicode / ASCII).
     #[must_use]
-    pub fn icons(mut self, icons: IconSet) -> Self {
+    pub fn icons(mut self, icons: IconStyle) -> Self {
         self.icons = icons;
         self
     }
@@ -355,24 +371,28 @@ impl StatefulWidget for FileTree<'_> {
                 );
             }
 
-            let glyph = if row.is_dir {
-                if row.expanded {
-                    self.icons.dir_open()
-                } else {
-                    self.icons.dir_closed()
-                }
+            // Layout: indent, an expand chevron (directories only), then the
+            // type icon (folder / per-file-type), then the label. Files leave the
+            // chevron column blank so names stay aligned under directories.
+            let chev = if row.is_dir {
+                chevron(row.expanded, self.icons)
             } else {
-                self.icons.file()
+                ' '
             };
-            let name = row.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            let icon = if row.is_dir {
+                directory_icon(row.expanded, self.icons).unwrap_or(' ')
+            } else {
+                icon_for_path(&row.path, self.icons)
+            };
 
             let mut spans = vec![
                 Span::styled(
                     "  ".repeat(row.depth as usize),
                     Style::default().fg(guide.to_ratatui()),
                 ),
-                Span::styled(format!("{glyph} "), Style::default().fg(guide.to_ratatui())),
-                Span::styled(name.to_string(), Style::default().fg(fg.to_ratatui())),
+                Span::styled(format!("{chev} "), Style::default().fg(guide.to_ratatui())),
+                Span::styled(format!("{icon} "), Style::default().fg(fg.to_ratatui())),
+                Span::styled(row.label.clone(), Style::default().fg(fg.to_ratatui())),
             ];
             if let Some(dec) = self.status_for(&row.path)
                 && let DecorationKind::GutterMarker { glyph } = &dec.kind
@@ -427,6 +447,10 @@ mod tests {
         state.rows().iter().map(|r| name_key(&r.path)).collect()
     }
 
+    fn labels(state: &FileTreeState) -> Vec<String> {
+        state.rows().iter().map(|r| r.label.clone()).collect()
+    }
+
     #[test]
     fn rebuild_lists_top_level_dirs_first() {
         let dir = temp_dir();
@@ -434,7 +458,7 @@ mod tests {
         write(&dir.path, "sub/b.txt", b"b");
         let mut state = FileTreeState::new();
         state.ensure_built(&dir.path);
-        // "sub" (dir) before "a.txt" (file); the subdir's child is hidden.
+        // "sub" (dir, single *file* child → not compacted) before "a.txt" (file).
         assert_eq!(names(&state), vec!["sub", "a.txt"]);
     }
 
@@ -447,6 +471,33 @@ mod tests {
         state.toggle(&dir.path.join("sub"));
         state.ensure_built(&dir.path);
         assert_eq!(names(&state), vec!["sub", "b.txt"]);
+    }
+
+    #[test]
+    fn compacts_single_child_directory_chains() {
+        let dir = temp_dir();
+        // a → b → c, with the leaf file under c: the chain a/b/c collapses to one row.
+        write(&dir.path, "a/b/c/leaf.txt", b"x");
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+        assert_eq!(labels(&state), vec!["a/b/c"]);
+        // The row's path is the *deepest* directory.
+        assert_eq!(state.rows()[0].path, dir.path.join("a/b/c"));
+        // Toggling the chain expands the tip and reveals its child.
+        state.toggle_selected();
+        state.ensure_built(&dir.path);
+        assert_eq!(labels(&state), vec!["a/b/c", "leaf.txt"]);
+    }
+
+    #[test]
+    fn does_not_compact_when_directory_has_a_file_sibling() {
+        let dir = temp_dir();
+        write(&dir.path, "a/b/c.txt", b"x");
+        write(&dir.path, "a/note.txt", b"y");
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+        // "a" has two entries (dir b + file note.txt) → not compacted.
+        assert_eq!(labels(&state), vec!["a"]);
     }
 
     #[test]

@@ -47,6 +47,8 @@ pub fn open_file(path: &Path, syntax: bool) -> Tab {
             },
         ),
         FileKind::Pdf | FileKind::TooLarge { .. } => placeholder(path, kind, &bytes, len),
+        // `FileKind` is `#[non_exhaustive]`; route any future kind to a placeholder.
+        _ => placeholder(path, kind, &bytes, len),
     }
 }
 

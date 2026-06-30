@@ -2,7 +2,7 @@
 //! setup. The shell composes the engine/widget crates — it owns the open tabs and
 //! the sidebar, and applies [`Command`]s resolved from key events.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,10 +16,11 @@ use crossterm::event::{
 };
 use karet_core::{BytePos, Decoration, DecorationKind, LineCol, Range, ThemeRole};
 use karet_editor::EditorState;
+use karet_filetype::IconStyle;
 use karet_search::{FileHit, SearchQuery, WorkspaceSearch, search_in_file};
 use karet_session::{
     Backend, Command as SessionCommand, DocSnapshot, DocumentId, Event as SessionEvent, EventRx,
-    RequestId, Session, SessionConfig, SnapshotRx, local,
+    RequestId, Session, SessionConfig, SnapshotRx, ViewId, local,
 };
 use karet_text::TextBuffer;
 use karet_theme::Theme;
@@ -105,6 +106,8 @@ pub struct App {
     pub(crate) theme: Theme,
     /// Whether syntax highlighting is enabled.
     pub(crate) syntax: bool,
+    /// The icon style for the explorer and activity bar.
+    pub(crate) icon_style: IconStyle,
     /// The detected terminal graphics protocol.
     pub(crate) graphics: GraphicsProtocol,
     /// Which area has keyboard focus.
@@ -178,6 +181,13 @@ pub struct App {
     backend: Option<Arc<dyn Backend>>,
     /// Open requests awaiting their `Opened` event, mapping request id → file path.
     pending_open: HashMap<RequestId, PathBuf>,
+    /// Session documents the app has opened, so closing the last tab for a document
+    /// can release it (the session ref-counts; the app must balance opens/closes).
+    open_docs: HashSet<DocumentId>,
+    /// Allocator for per-tab [`ViewId`]s. A view is a window onto a document; this
+    /// is the seam future tiled/split panes build on — multiple views can share one
+    /// document, whose edit log already lives once in the session.
+    next_view: u64,
 }
 
 impl App {
@@ -197,6 +207,7 @@ impl App {
             root,
             theme: Theme::dark(),
             syntax,
+            icon_style: IconStyle::default(),
             graphics: image::detect_protocol(),
             focus: Focus::Sidebar,
             sidebar_panel: SidebarPanel::Explorer,
@@ -237,13 +248,21 @@ impl App {
             should_quit: false,
             backend: None,
             pending_open: HashMap::new(),
+            open_docs: HashSet::new(),
+            next_view: 1,
         }
+    }
+
+    /// Set the icon style (builder-style; chains off [`App::new`]).
+    #[must_use]
+    pub fn with_icons(mut self, style: IconStyle) -> Self {
+        self.icon_style = style;
+        self
     }
 
     /// Open `path` as the initial tab at startup (used when `karet <file>` is run).
     pub fn open_initial(&mut self, path: &Path) {
-        let tab = workspace::open_file(path, self.syntax);
-        self.push_tab(tab);
+        self.open_path(path);
     }
 
     /// Whether the active tab is a diff (enables diff-specific keys).
@@ -295,8 +314,7 @@ impl App {
             OverlayEvent::Close => self.overlay = None,
             OverlayEvent::AcceptFile(path) => {
                 self.overlay = None;
-                let tab = workspace::open_file(&path, self.syntax);
-                self.push_tab(tab);
+                self.open_path(&path);
             }
             OverlayEvent::AcceptCommand(cmd) => {
                 self.overlay = None;
@@ -516,8 +534,7 @@ impl App {
         };
         let path = hit.path.clone();
         let line = hit.matches.first().map(|m| m.line);
-        let tab = workspace::open_file(&path, self.syntax);
-        self.push_tab(tab);
+        self.open_path(&path);
         if let (
             Some(line),
             Some(Tab {
@@ -649,8 +666,7 @@ impl App {
                     if row.is_dir {
                         self.explorer.toggle(&path);
                     } else {
-                        let tab = workspace::open_file(&path, self.syntax);
-                        self.push_tab(tab);
+                        self.open_path(&path);
                     }
                 }
             }
@@ -701,8 +717,28 @@ impl App {
         self.push_tab(tab);
     }
 
+    /// Open `path`, focusing an existing tab for the same file instead of opening a
+    /// duplicate. This is the single entry point for every "open a file" flow
+    /// (explorer, quick-open, search result, startup, reopen-closed).
+    fn open_path(&mut self, path: &Path) {
+        let target = canonical(path);
+        // Focus an existing editor view for this file, but not a diff tab — a diff
+        // is a distinct view of the same path, so opening the file still opens it.
+        if let Some(idx) = self
+            .tabs
+            .iter()
+            .position(|t| !t.is_diff() && t.path().is_some_and(|p| canonical(p) == target))
+        {
+            self.select_tab(idx);
+            return;
+        }
+        let tab = workspace::open_file(path, self.syntax);
+        self.push_tab(tab);
+    }
+
     /// Add a tab, replacing a lone Welcome tab, and focus the editor.
-    fn push_tab(&mut self, tab: Tab) {
+    fn push_tab(&mut self, mut tab: Tab) {
+        tab.view = self.alloc_view();
         if self.tabs.len() == 1 && matches!(self.tabs[0].kind, TabKind::Welcome) {
             self.tabs[0] = tab;
             self.active = 0;
@@ -712,6 +748,35 @@ impl App {
         }
         self.focus = Focus::Editor;
         self.register_doc(self.active);
+    }
+
+    /// Allocate a fresh [`ViewId`] for a newly-opened view.
+    fn alloc_view(&mut self) -> ViewId {
+        let view = ViewId(self.next_view);
+        self.next_view += 1;
+        view
+    }
+
+    /// The session document backing `tab`, if it is a registered code tab.
+    fn tab_doc(tab: &Tab) -> Option<DocumentId> {
+        match &tab.kind {
+            TabKind::Code { doc, .. } => *doc,
+            _ => None,
+        }
+    }
+
+    /// Release any session documents no longer shown in a tab (the session
+    /// ref-counts opens; the app balances them). Call after closing tabs.
+    fn reconcile_open_docs(&mut self) {
+        let live: HashSet<DocumentId> = self.tabs.iter().filter_map(Self::tab_doc).collect();
+        let stale: Vec<DocumentId> = self.open_docs.difference(&live).copied().collect();
+        for doc in stale {
+            self.open_docs.remove(&doc);
+            if let Some(backend) = &self.backend {
+                let id = backend.next_id();
+                let _ = backend.send(id, SessionCommand::CloseDocument { doc });
+            }
+        }
     }
 
     /// Switch to the tab at `index`, focusing the editor.
@@ -808,15 +873,16 @@ impl App {
             self.tabs = vec![Tab::welcome()];
             self.active = 0;
             self.focus = Focus::Sidebar;
-            return;
+        } else {
+            self.tabs.remove(index);
+            if index < self.active {
+                self.active -= 1;
+            }
+            if self.active >= self.tabs.len() {
+                self.active = self.tabs.len() - 1;
+            }
         }
-        self.tabs.remove(index);
-        if index < self.active {
-            self.active -= 1;
-        }
-        if self.active >= self.tabs.len() {
-            self.active = self.tabs.len() - 1;
-        }
+        self.reconcile_open_docs();
     }
 
     /// Close every tab except the active one.
@@ -831,6 +897,7 @@ impl App {
         }
         self.tabs = vec![self.tabs.remove(self.active)];
         self.active = 0;
+        self.reconcile_open_docs();
     }
 
     /// Close every tab to the right of the active one.
@@ -839,6 +906,7 @@ impl App {
             self.remember_closed(i);
         }
         self.tabs.truncate(self.active + 1);
+        self.reconcile_open_docs();
     }
 
     /// Close all tabs, leaving a Welcome tab.
@@ -849,14 +917,14 @@ impl App {
         self.tabs = vec![Tab::welcome()];
         self.active = 0;
         self.focus = Focus::Sidebar;
+        self.reconcile_open_docs();
     }
 
     /// Reopen the most recently closed file tab whose file still exists.
     fn reopen_closed_tab(&mut self) {
         while let Some(path) = self.closed.pop() {
             if path.is_file() {
-                let tab = workspace::open_file(&path, self.syntax);
-                self.push_tab(tab);
+                self.open_path(&path);
                 return;
             }
         }
@@ -1447,6 +1515,7 @@ impl App {
     fn on_backend_event(&mut self, id: Option<RequestId>, event: SessionEvent) {
         match event {
             SessionEvent::Opened { doc, .. } => {
+                self.open_docs.insert(doc);
                 if let Some(req) = id
                     && let Some(path) = self.pending_open.remove(&req)
                 {
@@ -1501,6 +1570,12 @@ impl App {
 /// Whether the screen point `(x, y)` lies inside `r`.
 fn rect_contains(r: Rect, (x, y): (u16, u16)) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
+}
+
+/// The canonical form of `path` for tab de-duplication, falling back to the path
+/// as given when it cannot be resolved (e.g. it no longer exists).
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// The (anchor, head) span of the word under `pos`, or the single character there
@@ -1759,6 +1834,39 @@ mod tests {
         assert!(!app.sidebar_visible);
         app.dispatch(Command::ToggleFocus);
         assert_eq!(app.focus, Focus::Editor);
+    }
+
+    #[test]
+    fn opening_same_file_focuses_existing_tab() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "karet-open-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let a = dir.join("a.rs");
+        let b = dir.join("b.rs");
+        let _ = std::fs::write(&a, "fn a() {}\n");
+        let _ = std::fs::write(&b, "fn b() {}\n");
+
+        let mut app = app();
+        app.open_path(&a);
+        assert_eq!(app.tabs.len(), 1, "first open replaces the welcome tab");
+        app.open_path(&a);
+        assert_eq!(
+            app.tabs.len(),
+            1,
+            "re-opening the same file focuses, not duplicates"
+        );
+        app.open_path(&b);
+        assert_eq!(app.tabs.len(), 2);
+        app.open_path(&a); // focuses a's existing tab rather than appending
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active, 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

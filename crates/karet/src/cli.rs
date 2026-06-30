@@ -2,7 +2,8 @@
 
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+use karet_filetype::IconStyle;
 
 /// Full multi-line text shown by `karet -V` / `--version`, assembled at compile
 /// time from the build-script env vars (see `build.rs`). clap prefixes it with the
@@ -37,4 +38,47 @@ pub struct Cli {
     /// Disable syntax highlighting (also respects the NO_COLOR environment variable).
     #[arg(long)]
     pub no_syntax: bool,
+
+    /// File-tree / activity-bar icon style. Defaults to Nerd Font (needs a patched
+    /// font); falls back to the `KARET_ICONS` env var, then Nerd Font. Use
+    /// `--icons unicode` or `--icons ascii` if your font lacks Nerd Font glyphs.
+    #[arg(long, value_enum)]
+    pub icons: Option<IconChoice>,
+}
+
+/// The `--icons` choices, mirroring [`IconStyle`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum IconChoice {
+    /// Rich Nerd Font glyphs (the default).
+    Nerd,
+    /// 1-cell Unicode geometric glyphs.
+    Unicode,
+    /// Plain ASCII (maximally portable).
+    Ascii,
+}
+
+impl From<IconChoice> for IconStyle {
+    fn from(choice: IconChoice) -> Self {
+        match choice {
+            IconChoice::Nerd => Self::NerdFont,
+            IconChoice::Unicode => Self::Unicode,
+            IconChoice::Ascii => Self::Ascii,
+        }
+    }
+}
+
+impl Cli {
+    /// Resolve the icon style: an explicit `--icons` flag wins, then the
+    /// `KARET_ICONS` env var, else the default (Nerd Font).
+    #[must_use]
+    pub fn icon_style(&self) -> IconStyle {
+        self.icons
+            .map(IconStyle::from)
+            .or_else(|| {
+                std::env::var("KARET_ICONS")
+                    .ok()
+                    .and_then(|v| IconStyle::from_name(&v))
+            })
+            .unwrap_or_default()
+    }
 }

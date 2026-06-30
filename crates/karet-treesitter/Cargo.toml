@@ -33,15 +33,18 @@ lang-toml       = ["dep:tree-sitter-toml-ng"]
 lang-html       = ["dep:tree-sitter-html"]
 lang-css        = ["dep:tree-sitter-css"]
 lang-yaml       = ["dep:tree-sitter-yaml"]
+lang-markdown   = ["dep:tree-sitter-md"]
 # Convenience bundle: every grammar above. The `karet` app enables this.
 all-languages = [
     "lang-rust", "lang-python", "lang-javascript", "lang-typescript", "lang-json",
     "lang-go", "lang-c", "lang-cpp", "lang-csharp", "lang-java", "lang-ruby",
     "lang-php", "lang-bash", "lang-toml", "lang-html", "lang-css", "lang-yaml",
+    "lang-markdown",
 ]
 
 [dependencies]
 karet-core.workspace = true
+karet-filetype.workspace = true   # shared display-name catalogue for non-grammar languages
 tree-sitter.workspace = true
 thiserror.workspace = true
 tree-sitter-rust       = { workspace = true, optional = true }
@@ -61,6 +64,7 @@ tree-sitter-toml-ng    = { workspace = true, optional = true }
 tree-sitter-html       = { workspace = true, optional = true }
 tree-sitter-css        = { workspace = true, optional = true }
 tree-sitter-yaml       = { workspace = true, optional = true }
+tree-sitter-md         = { workspace = true, optional = true }
 
 [lints]
 workspace = true

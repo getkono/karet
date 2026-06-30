@@ -18,6 +18,7 @@ default = []
 
 [dependencies]
 karet-core.workspace = true
+karet-filetype.workspace = true       # file-type icons + classification (FileKind)
 karet-fuzzy.workspace = true
 karet-markdown.workspace = true       # hover/doc popup rendering (relocated LSP popups)
 karet-theme = { workspace = true, features = ["view"] }  # role colors for the widgets

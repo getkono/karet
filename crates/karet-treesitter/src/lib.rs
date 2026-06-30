@@ -325,6 +325,26 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "lang-markdown")]
+    #[test]
+    fn parses_markdown_and_compiles_block_query() -> Result<(), TsError> {
+        let lang = language_id_from_path(std::path::Path::new("README.md"))
+            .ok_or(TsError::UnknownLanguage)?;
+        let src = "# Title\n\nSome `code` and a [link](http://x).\n";
+        let mut pool = ParserPool::new();
+        let tree = SyntaxTree::parse(&mut pool, lang, src)?;
+        let query_src = highlights_query(lang).ok_or(TsError::UnknownLanguage)?;
+        let query = Query::compile(lang, query_src)?;
+        // The block grammar should at least capture the heading text.
+        let caps = tree.captures(&query, src);
+        assert!(query.capture_names().contains(&"text.title"));
+        assert!(
+            caps.iter()
+                .all(|c| (c.capture as usize) < query.capture_names().len())
+        );
+        Ok(())
+    }
+
     #[cfg(feature = "lang-rust")]
     #[test]
     fn detects_rust_by_extension_and_name() {

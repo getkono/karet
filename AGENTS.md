@@ -24,9 +24,9 @@ pulling in unrelated heavy deps. Only the **app** is exempt from these rules.
   client-server split additive rather than a rewrite.
 - A piece with no standalone reuse is a **module inside a larger crate**, not its
   own crate — e.g. terminal-image rendering, the keymap engine, the clipboard.
-- **Published to crates.io**: `karet-core`, `karet-treesitter`, `karet-diff`,
-  `karet-lsp`, `karet-dap`, `karet-vcs`, `karet-search`. Everything else is
-  `publish = false`.
+- **Published to crates.io**: `karet-core`, `karet-filetype`, `karet-treesitter`,
+  `karet-diff`, `karet-lsp`, `karet-dap`, `karet-vcs`, `karet-search`. Everything
+  else is `publish = false`.
 
 ## Versioning
 
@@ -44,6 +44,7 @@ published to crates.io (everything else is `publish = false`).
 | crate | role | pub | one-line scope |
 |---|---|---|---|
 | `karet-core` | foundation | ✓ | shared vocabulary: geometry, text coords, neutral models (Diagnostic/Decoration/Symbol/Completion/Hover/…), neutral edits, `SymbolProvider`, `TokenId` |
+| `karet-filetype` | engine | ✓ | single registry: path → file type (name, category, per-`IconStyle` icon) + renderer routing (`FileKind`/`classify`); dependency-free |
 | `karet-text` | engine | — | rope buffer, undo/redo, dirty/save, large-file mmap, cursors & selections (module) |
 | `karet-treesitter` | engine | ✓ | shared tree-sitter parse host (parser pool, incremental trees, queries) |
 | `karet-syntax` | engine | — | tree-sitter highlighting, fold regions, bracket pairs, structural selection |

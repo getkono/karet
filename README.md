@@ -38,6 +38,11 @@ hk install          # activate git hooks
 cargo build
 ```
 
+Run the editor with `cargo run -- <path>`. Icons default to Nerd Font glyphs;
+pass `--icons unicode` or `--icons ascii` (or set `KARET_ICONS`) if your terminal
+font lacks them. See [docs/file-formats.md](docs/file-formats.md) for the catalogue
+of recognized file types, icons, and syntax-highlighting support.
+
 ## Development
 
 | Command             | Description          |

@@ -60,6 +60,8 @@ pub(crate) const HTML: LanguageId = LanguageId(16);
 pub(crate) const CSS: LanguageId = LanguageId(17);
 #[cfg(feature = "lang-yaml")]
 pub(crate) const YAML: LanguageId = LanguageId(18);
+#[cfg(feature = "lang-markdown")]
+pub(crate) const MARKDOWN: LanguageId = LanguageId(19);
 
 /// All grammars compiled into this build, in id order.
 // The pushes are `#[cfg]`-gated per grammar, which `vec![]` cannot express.
@@ -213,6 +215,17 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             extensions: &["yml", "yaml"],
             language: || tree_sitter_yaml::LANGUAGE.into(),
             highlights: tree_sitter_yaml::HIGHLIGHTS_QUERY,
+        });
+        // Markdown uses tree-sitter-md's *block* grammar + its block highlights
+        // query (headings, code fences, list markers, …). The companion inline
+        // grammar (emphasis/links via injection) is a future refinement.
+        #[cfg(feature = "lang-markdown")]
+        v.push(GrammarInfo {
+            id: MARKDOWN,
+            name: "Markdown",
+            extensions: &["md", "markdown", "mdown", "mkd"],
+            language: || tree_sitter_md::LANGUAGE.into(),
+            highlights: tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
         });
 
         v

@@ -21,6 +21,7 @@ path = "src/main.rs"
 [dependencies]
 # Presentation/client half + the headless backend it drives through the Command/Event seam.
 karet-core.workspace = true
+karet-filetype.workspace = true       # icon-style choice (`--icons`) shared with the widgets
 karet-session.workspace = true
 karet-text       = { workspace = true, features = ["mmap"] }
 karet-treesitter = { workspace = true, features = ["all-languages"] }

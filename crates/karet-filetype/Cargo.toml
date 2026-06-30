@@ -1,0 +1,24 @@
+[package]
+name        = "karet-filetype"
+description = "File-type classification and presentation metadata (display name, icon glyphs, category, renderer routing) for the karet editor toolkit."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme = "README.md"
+keywords.workspace     = true
+categories.workspace   = true
+
+[features]
+default = []
+
+# Intentionally dependency-free (only `std`): this crate is a static-data registry
+# so a consumer can resolve "what is this file" — name, icon, category, renderer
+# kind — without pulling in karet-core, ratatui, or tree-sitter.
+[dependencies]
+
+[lints]
+workspace = true

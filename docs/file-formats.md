@@ -1,0 +1,100 @@
+# Supported file formats
+
+This is the catalogue of file formats karet recognizes. It is backed by a single
+crate, [`karet-filetype`](../crates/karet-filetype), which every other crate
+consumes:
+
+- **Identity & icons** — `karet-filetype` resolves any path to a `FileType`
+  (display name, `Category`, and an icon per `IconStyle`). The explorer and
+  activity bar render those glyphs.
+- **Renderer routing** — `karet-filetype::classify` returns a `FileKind` that
+  decides which widget opens a file (editor / image / hex / placeholder).
+- **Syntax highlighting** — tree-sitter grammars live in
+  [`karet-treesitter`](../crates/karet-treesitter), gated behind `lang-*`
+  features; `karet-filetype` supplies display names for languages without a
+  bundled grammar.
+
+To add or change a format, edit the `REGISTRY` table in
+`crates/karet-filetype/src/registry.rs` (one line per type) and, if it should be
+highlighted, add a grammar in `crates/karet-treesitter`.
+
+## Icon styles
+
+Chosen with `--icons <nerd|unicode|ascii>` (or the `KARET_ICONS` env var);
+the default is **Nerd Font**.
+
+| Style | Files | Directories | Notes |
+|---|---|---|---|
+| `nerd` (default) | per-file-type glyph | chevron + folder glyph | needs a [Nerd Font](https://www.nerdfonts.com/) |
+| `unicode` | per-category geometric glyph | chevron only | 1-cell BMP symbols, widely supported |
+| `ascii` | blank | `>` / `v` chevron | maximally portable |
+
+## Syntax highlighting (bundled tree-sitter grammars)
+
+These extensions highlight via a compiled-in grammar (the `karet` app enables the
+`all-languages` feature):
+
+| Language | Extensions |
+|---|---|
+| Rust | `rs` |
+| Python | `py`, `pyi` |
+| JavaScript | `js`, `mjs`, `cjs`, `jsx` |
+| TypeScript / TSX | `ts`, `mts`, `cts`, `tsx` |
+| JSON | `json`, `jsonc` |
+| Go | `go` |
+| C | `c`, `h` |
+| C++ | `cc`, `cpp`, `cxx`, `hpp`, `hh`, `hxx` |
+| C# | `cs` |
+| Java | `java` |
+| Ruby | `rb` |
+| PHP | `php` |
+| Bash | `sh`, `bash` |
+| TOML | `toml` |
+| HTML | `html`, `htm` |
+| CSS | `css` |
+| YAML | `yml`, `yaml` |
+| Markdown | `md`, `markdown`, `mdown`, `mkd` — *block grammar only* (headings, code fences, lists); inline emphasis/links are not yet highlighted |
+
+## Recognized for icons / labels (no bundled grammar)
+
+These get an icon, a display name, and renderer routing, but open as plain
+(un-highlighted) text. Highlighting can be added later by wiring a grammar.
+
+- **Languages:** Kotlin, Swift, Scala, Lua, Haskell, OCaml, Elixir, Erlang, Dart,
+  R, Zig, Perl, Clojure, Emacs Lisp, Vim script, SQL, GraphQL, Protobuf,
+  PowerShell, Batch.
+- **Config / data:** **Pkl** (no published Rust tree-sitter binding yet — see
+  below), INI/cfg/conf, `.properties`, XML, SVG, CSV/TSV, lockfiles,
+  `Dockerfile`/`Containerfile`, `Makefile`/`GNUmakefile`/`CMakeLists.txt`, git
+  config dotfiles, `.editorconfig`, `.env`.
+- **Web:** Less, Vue, Svelte.
+- **Prose / docs:** reStructuredText, AsciiDoc, TeX, plain text, `LICENSE` /
+  `README` / `AUTHORS`.
+
+## Non-text renderers
+
+`classify` routes these away from the editor (by extension, confirmed by magic
+bytes so a mislabeled file still routes sensibly):
+
+| Kind | Handling | Extensions / detection |
+|---|---|---|
+| Image | inline image widget (or a placeholder if it can't decode) | `png`, `jpg`, `jpeg`, `gif`, `webp`, `bmp`, `ico`, `tiff`, `tif` + magic bytes |
+| PDF | placeholder (no inline preview yet) | `pdf` + `%PDF-` magic |
+| Binary | hex view | NUL byte / invalid UTF-8 in the sampled head |
+| Too large | placeholder | larger than 10 MiB |
+
+Documents (`doc`/`xlsx`/…), archives (`zip`/`tar`/…), fonts, audio, and video are
+given icons and labels but currently open as a binary hex view or placeholder.
+
+## Planned / not yet supported
+
+- **Pkl highlighting** — pkl is recognized (icon + label) but there is no
+  published `tree-sitter-pkl` Rust crate; once one exists, add a `lang-pkl`
+  feature + registry entry in `karet-treesitter`.
+- **Inline Markdown highlighting** — only `tree-sitter-md`'s block grammar is
+  wired; the inline grammar (emphasis, links) needs the multi-grammar injection
+  path.
+- **Rich rendered Markdown** — the `karet-markdown` render model is still a
+  skeleton; Markdown opens as highlighted source for now.
+- **Per-segment clicks on compacted folders** — a compacted `a/b/c` row toggles
+  as a unit; clicking an individual segment is a future refinement.

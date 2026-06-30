@@ -26,6 +26,7 @@ categories   = ["text-editors", "command-line-utilities"]
 [workspace.dependencies]
 # --- internal crates: path + version → publishable AND version-synced ---
 karet-core       = { path = "crates/karet-core",       version = "0.1.0" }
+karet-filetype   = { path = "crates/karet-filetype",   version = "0.1.0" }
 karet-text       = { path = "crates/karet-text",       version = "0.1.0" }
 karet-treesitter = { path = "crates/karet-treesitter", version = "0.1.0" }
 karet-syntax     = { path = "crates/karet-syntax",     version = "0.1.0" }
@@ -88,6 +89,7 @@ tree-sitter-html       = "0.23.2"
 tree-sitter-css        = "0.25.0"
 tree-sitter-yaml       = "0.7.2"
 tree-sitter-typescript = "0.23.2"
+tree-sitter-md         = "0.5.3"
 # Diff / markdown / image
 imara-diff    = "0.2.0"
 pulldown-cmark = "0.13.4"
