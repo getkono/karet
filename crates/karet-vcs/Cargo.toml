@@ -16,7 +16,9 @@ categories.workspace   = true
 default = []
 # ratatui source-control panels (status, branch picker, staging, blame overlay).
 view = ["dep:ratatui", "dep:karet-diff"]
-# TODO feature `git2`: optional libgit2 staging backend (needs the git2 crate + system libgit2/cmake).
+# Optional libgit2 write backend for staging/discard/commit (needs the git2 crate
+# + a C toolchain to build vendored libgit2). Off by default; status/diff use gix.
+git2 = ["dep:git2"]
 
 [dependencies]
 karet-core.workspace = true
@@ -25,6 +27,7 @@ thiserror.workspace = true
 tracing.workspace = true
 karet-diff = { workspace = true, optional = true }
 ratatui = { workspace = true, optional = true }
+git2 = { workspace = true, optional = true }
 
 [lints]
 workspace = true

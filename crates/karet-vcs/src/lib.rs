@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 mod changes;
 mod repo;
 mod selection;
+#[cfg(feature = "git2")]
+mod write;
 
 pub use changes::FileChange;
 pub use selection::Selection;
@@ -28,6 +30,9 @@ pub enum VcsError {
     /// A git operation failed.
     #[error("git error: {0}")]
     Git(String),
+    /// A write action was requested but the `git2` feature is not enabled.
+    #[error("staging requires the `git2` feature")]
+    FeatureDisabled,
 }
 
 /// The change state of a file in the working tree.
@@ -88,8 +93,14 @@ pub struct Branch {
 
 /// An editor-oriented handle to a git repository.
 pub struct Repository {
-    /// The underlying `gix` repository. Note: `gix::Repository` is not `Sync`.
+    /// The underlying `gix` repository (status and diff reads). Note:
+    /// `gix::Repository` is not `Sync`.
     inner: gix::Repository,
+    /// The `libgit2` handle backing the write actions (stage/discard/commit).
+    /// Opened from the same path as `inner`, so it resolves the same (possibly
+    /// linked-worktree) repository.
+    #[cfg(feature = "git2")]
+    git2: git2::Repository,
 }
 
 impl Repository {
@@ -132,22 +143,109 @@ impl Repository {
         todo!()
     }
 
-    /// Stage `path` (add it to the index).
+    /// Stage `paths` (add their current worktree state to the index). A path that
+    /// no longer exists in the worktree is staged as a deletion.
     ///
     /// # Errors
-    /// Returns [`VcsError::Git`] on failure.
-    pub fn stage(&self, path: &Path) -> Result<(), VcsError> {
-        let _ = path;
-        todo!()
+    /// Returns [`VcsError::FeatureDisabled`] if the `git2` feature is off, or
+    /// [`VcsError::Git`] on failure.
+    pub fn stage(&self, paths: &[PathBuf]) -> Result<(), VcsError> {
+        #[cfg(feature = "git2")]
+        {
+            self.git2_stage(paths)
+        }
+        #[cfg(not(feature = "git2"))]
+        {
+            let _ = paths;
+            Err(VcsError::FeatureDisabled)
+        }
     }
 
-    /// Unstage `path` (remove it from the index).
+    /// Unstage `paths` (reset their index entries to `HEAD`, or remove them when
+    /// there is no commit yet).
     ///
     /// # Errors
-    /// Returns [`VcsError::Git`] on failure.
-    pub fn unstage(&self, path: &Path) -> Result<(), VcsError> {
-        let _ = path;
-        todo!()
+    /// Returns [`VcsError::FeatureDisabled`] if the `git2` feature is off, or
+    /// [`VcsError::Git`] on failure.
+    pub fn unstage(&self, paths: &[PathBuf]) -> Result<(), VcsError> {
+        #[cfg(feature = "git2")]
+        {
+            self.git2_unstage(paths)
+        }
+        #[cfg(not(feature = "git2"))]
+        {
+            let _ = paths;
+            Err(VcsError::FeatureDisabled)
+        }
+    }
+
+    /// Discard the working-tree changes to `paths`: tracked files are restored to
+    /// `HEAD`, staged-new files are un-added and removed, and untracked files are
+    /// deleted. This is destructive and cannot be undone.
+    ///
+    /// # Errors
+    /// Returns [`VcsError::FeatureDisabled`] if the `git2` feature is off, or
+    /// [`VcsError::Git`] on failure.
+    pub fn discard(&self, paths: &[PathBuf]) -> Result<(), VcsError> {
+        #[cfg(feature = "git2")]
+        {
+            self.git2_discard(paths)
+        }
+        #[cfg(not(feature = "git2"))]
+        {
+            let _ = paths;
+            Err(VcsError::FeatureDisabled)
+        }
+    }
+
+    /// Stage every change in the worktree (new, modified, and deleted files).
+    ///
+    /// # Errors
+    /// Returns [`VcsError::FeatureDisabled`] if the `git2` feature is off, or
+    /// [`VcsError::Git`] on failure.
+    pub fn stage_all(&self) -> Result<(), VcsError> {
+        #[cfg(feature = "git2")]
+        {
+            self.git2_stage_all()
+        }
+        #[cfg(not(feature = "git2"))]
+        {
+            Err(VcsError::FeatureDisabled)
+        }
+    }
+
+    /// Unstage every staged change (reset the whole index to `HEAD`).
+    ///
+    /// # Errors
+    /// Returns [`VcsError::FeatureDisabled`] if the `git2` feature is off, or
+    /// [`VcsError::Git`] on failure.
+    pub fn unstage_all(&self) -> Result<(), VcsError> {
+        #[cfg(feature = "git2")]
+        {
+            self.git2_unstage_all()
+        }
+        #[cfg(not(feature = "git2"))]
+        {
+            Err(VcsError::FeatureDisabled)
+        }
+    }
+
+    /// Commit the staged changes with `message`, returning the new commit's hex id.
+    ///
+    /// # Errors
+    /// Returns [`VcsError::FeatureDisabled`] if the `git2` feature is off, or
+    /// [`VcsError::Git`] on failure (including unresolved conflicts or a missing
+    /// `user.name`/`user.email` identity).
+    pub fn commit(&self, message: &str) -> Result<String, VcsError> {
+        #[cfg(feature = "git2")]
+        {
+            self.git2_commit(message)
+        }
+        #[cfg(not(feature = "git2"))]
+        {
+            let _ = message;
+            Err(VcsError::FeatureDisabled)
+        }
     }
 }
 
