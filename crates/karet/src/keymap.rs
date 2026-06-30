@@ -44,6 +44,8 @@ enum When {
     Global,
     /// Active when the sidebar has focus.
     Sidebar,
+    /// Active when the sidebar has focus and the Source-Control panel is active.
+    SourceControl,
     /// Active when the editor has focus.
     Editor,
     /// Active when the editor has focus and the active tab is a diff.
@@ -83,7 +85,7 @@ const fn b(
 use KeyCode::{
     Backspace, Char, Delete, Down, End, Enter, Esc, Home, Left, PageDown, PageUp, Right, Tab, Up,
 };
-use When::{DiffEditor, Editor, Global, Sidebar};
+use When::{DiffEditor, Editor, Global, Sidebar, SourceControl};
 
 /// The single source of truth for key bindings. Order matters: the first matching
 /// binding wins, and [`hint_for`] returns the first binding for a command (so list
@@ -121,6 +123,19 @@ static BINDINGS: &[Binding] = &[
     b(Global, false, false, true,  Char('7'), Command::GoToTab(7)),
     b(Global, false, false, true,  Char('8'), Command::GoToTab(8)),
     b(Global, false, false, true,  Char('9'), Command::GoToTab(9)),
+
+    // Source-Control panel (sidebar focus, SCM panel active). Listed before the
+    // generic sidebar bindings so its keys win when both would match.
+    b(SourceControl, false, true,  false, Down,      Command::ScmSelectDown),
+    b(SourceControl, false, true,  false, Up,        Command::ScmSelectUp),
+    b(SourceControl, false, false, false, Char(' '), Command::ScmToggleStage),
+    b(SourceControl, false, false, false, Char('s'), Command::ScmStage),
+    b(SourceControl, false, false, false, Char('u'), Command::ScmUnstage),
+    b(SourceControl, false, false, false, Char('S'), Command::ScmStageAll),
+    b(SourceControl, false, false, false, Char('U'), Command::ScmUnstageAll),
+    b(SourceControl, false, false, false, Char('c'), Command::ScmCommit),
+    b(SourceControl, false, false, false, Char('d'), Command::ScmDiscard),
+    b(SourceControl, false, false, false, Char('r'), Command::ScmRefresh),
 
     // Sidebar focus.
     b(Sidebar, false, false, false, Char('q'), Command::Quit),
@@ -169,11 +184,12 @@ static BINDINGS: &[Binding] = &[
     b(DiffEditor, false, false, false, Char('['),  Command::PrevChangedFile),
 ];
 
-/// Whether `when` is active for the given focus and diff state.
-fn when_active(when: When, focus: Focus, is_diff: bool) -> bool {
+/// Whether `when` is active for the given focus, sidebar panel, and diff state.
+fn when_active(when: When, focus: Focus, panel: SidebarPanel, is_diff: bool) -> bool {
     match when {
         Global => true,
         Sidebar => focus == Focus::Sidebar,
+        SourceControl => focus == Focus::Sidebar && panel == SidebarPanel::SourceControl,
         Editor => focus == Focus::Editor,
         DiffEditor => focus == Focus::Editor && is_diff,
     }
@@ -209,13 +225,14 @@ fn chord_matches(bind: &Binding, key: KeyEvent) -> bool {
     }
 }
 
-/// Resolve a key press into a [`Command`], given the focus and whether the active
-/// tab is a diff. Returns `None` for keys with no binding.
+/// Resolve a key press into a [`Command`], given the focus, the active sidebar
+/// panel, and whether the active tab is a diff. Returns `None` for keys with no
+/// binding.
 #[must_use]
-pub fn resolve(focus: Focus, is_diff: bool, key: KeyEvent) -> Option<Command> {
+pub fn resolve(focus: Focus, panel: SidebarPanel, is_diff: bool, key: KeyEvent) -> Option<Command> {
     BINDINGS
         .iter()
-        .find(|bind| when_active(bind.when, focus, is_diff) && chord_matches(bind, key))
+        .find(|bind| when_active(bind.when, focus, panel, is_diff) && chord_matches(bind, key))
         .map(|bind| bind.command)
 }
 
@@ -282,10 +299,15 @@ mod tests {
         KeyEvent::new(code, mods)
     }
 
+    /// Resolve with the Explorer panel active (the default for non-SCM tests).
+    fn res(focus: Focus, is_diff: bool, key: KeyEvent) -> Option<Command> {
+        resolve(focus, SidebarPanel::Explorer, is_diff, key)
+    }
+
     #[test]
     fn ctrl_p_variants() {
         assert_eq!(
-            resolve(
+            res(
                 Focus::Sidebar,
                 false,
                 key(KeyCode::Char('p'), KeyModifiers::CONTROL)
@@ -293,7 +315,7 @@ mod tests {
             Some(Command::OpenQuickOpen)
         );
         assert_eq!(
-            resolve(
+            res(
                 Focus::Sidebar,
                 false,
                 key(
@@ -310,7 +332,7 @@ mod tests {
         // A bare 'j' is text in the editor (unbound → typed) but moves the
         // selection in the sidebar.
         assert_eq!(
-            resolve(
+            res(
                 Focus::Editor,
                 false,
                 key(KeyCode::Char('j'), KeyModifiers::NONE)
@@ -318,7 +340,7 @@ mod tests {
             None
         );
         assert_eq!(
-            resolve(
+            res(
                 Focus::Sidebar,
                 false,
                 key(KeyCode::Char('j'), KeyModifiers::NONE)
@@ -331,7 +353,7 @@ mod tests {
     fn diff_only_bindings() {
         // Backslash toggles layout only on a diff tab.
         assert_eq!(
-            resolve(
+            res(
                 Focus::Editor,
                 true,
                 key(KeyCode::Char('\\'), KeyModifiers::NONE)
@@ -339,7 +361,7 @@ mod tests {
             Some(Command::ToggleDiffLayout)
         );
         assert_eq!(
-            resolve(
+            res(
                 Focus::Editor,
                 false,
                 key(KeyCode::Char('\\'), KeyModifiers::NONE)
@@ -351,11 +373,11 @@ mod tests {
     #[test]
     fn home_and_end_jump_to_edges() {
         assert_eq!(
-            resolve(Focus::Editor, false, key(KeyCode::Home, KeyModifiers::NONE)),
+            res(Focus::Editor, false, key(KeyCode::Home, KeyModifiers::NONE)),
             Some(Command::Top)
         );
         assert_eq!(
-            resolve(Focus::Editor, false, key(KeyCode::End, KeyModifiers::NONE)),
+            res(Focus::Editor, false, key(KeyCode::End, KeyModifiers::NONE)),
             Some(Command::Bottom)
         );
     }
@@ -363,7 +385,7 @@ mod tests {
     #[test]
     fn panel_selection_and_quit() {
         assert_eq!(
-            resolve(
+            res(
                 Focus::Sidebar,
                 false,
                 key(KeyCode::Char('2'), KeyModifiers::CONTROL)
@@ -371,12 +393,65 @@ mod tests {
             Some(Command::SelectPanel(SidebarPanel::Search))
         );
         assert_eq!(
-            resolve(
+            res(
                 Focus::Editor,
                 false,
                 key(KeyCode::Char('q'), KeyModifiers::CONTROL)
             ),
             Some(Command::Quit)
+        );
+    }
+
+    #[test]
+    fn source_control_bindings_are_panel_scoped() {
+        // In the SCM panel, bare 's' stages and Space toggles staging.
+        assert_eq!(
+            resolve(
+                Focus::Sidebar,
+                SidebarPanel::SourceControl,
+                false,
+                key(KeyCode::Char('s'), KeyModifiers::NONE)
+            ),
+            Some(Command::ScmStage)
+        );
+        assert_eq!(
+            resolve(
+                Focus::Sidebar,
+                SidebarPanel::SourceControl,
+                false,
+                key(KeyCode::Char(' '), KeyModifiers::NONE)
+            ),
+            Some(Command::ScmToggleStage)
+        );
+        // Shift+Down extends the SCM selection.
+        assert_eq!(
+            resolve(
+                Focus::Sidebar,
+                SidebarPanel::SourceControl,
+                false,
+                key(KeyCode::Down, KeyModifiers::SHIFT)
+            ),
+            Some(Command::ScmSelectDown)
+        );
+        // The same 's' in the Explorer panel is not an SCM command.
+        assert_eq!(
+            resolve(
+                Focus::Sidebar,
+                SidebarPanel::Explorer,
+                false,
+                key(KeyCode::Char('s'), KeyModifiers::NONE)
+            ),
+            None
+        );
+        // Space in the Explorer toggles expansion, not staging.
+        assert_eq!(
+            resolve(
+                Focus::Sidebar,
+                SidebarPanel::Explorer,
+                false,
+                key(KeyCode::Char(' '), KeyModifiers::NONE)
+            ),
+            Some(Command::SidebarToggleExpand)
         );
     }
 
@@ -393,7 +468,7 @@ mod tests {
     #[test]
     fn editor_editing_chords() {
         assert_eq!(
-            resolve(
+            res(
                 Focus::Editor,
                 false,
                 key(KeyCode::Char('c'), KeyModifiers::CONTROL)
@@ -401,7 +476,7 @@ mod tests {
             Some(Command::Copy)
         );
         assert_eq!(
-            resolve(
+            res(
                 Focus::Editor,
                 false,
                 key(KeyCode::Char('s'), KeyModifiers::CONTROL)
@@ -409,7 +484,7 @@ mod tests {
             Some(Command::Save)
         );
         assert_eq!(
-            resolve(
+            res(
                 Focus::Editor,
                 false,
                 key(KeyCode::Char('z'), KeyModifiers::CONTROL)
@@ -418,7 +493,7 @@ mod tests {
         );
         // A bare letter is no longer a command in the editor (it is typed instead).
         assert_eq!(
-            resolve(
+            res(
                 Focus::Editor,
                 false,
                 key(KeyCode::Char('y'), KeyModifiers::NONE)
@@ -427,7 +502,7 @@ mod tests {
         );
         // Quit is Ctrl+Q.
         assert_eq!(
-            resolve(
+            res(
                 Focus::Editor,
                 false,
                 key(KeyCode::Char('q'), KeyModifiers::CONTROL)

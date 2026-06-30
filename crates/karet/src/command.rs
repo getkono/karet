@@ -120,6 +120,26 @@ pub enum Command {
     Cut,
     /// Paste the clipboard at the caret.
     Paste,
+    /// Extend the Source-Control selection up one row.
+    ScmSelectUp,
+    /// Extend the Source-Control selection down one row.
+    ScmSelectDown,
+    /// Stage the selected Source-Control file(s).
+    ScmStage,
+    /// Unstage the selected Source-Control file(s).
+    ScmUnstage,
+    /// Stage or unstage the selected file(s), depending on their current section.
+    ScmToggleStage,
+    /// Stage every change in the worktree.
+    ScmStageAll,
+    /// Unstage every staged change.
+    ScmUnstageAll,
+    /// Discard the working-tree changes to the selected file(s).
+    ScmDiscard,
+    /// Open the commit-message input.
+    ScmCommit,
+    /// Recompute the Source-Control status.
+    ScmRefresh,
 }
 
 impl Command {
@@ -184,6 +204,16 @@ impl Command {
             Self::Save => "Save",
             Self::Cut => "Cut",
             Self::Paste => "Paste",
+            Self::ScmSelectUp => "Source Control: Extend Selection Up",
+            Self::ScmSelectDown => "Source Control: Extend Selection Down",
+            Self::ScmStage => "Source Control: Stage Selected",
+            Self::ScmUnstage => "Source Control: Unstage Selected",
+            Self::ScmToggleStage => "Source Control: Stage / Unstage Selected",
+            Self::ScmStageAll => "Source Control: Stage All Changes",
+            Self::ScmUnstageAll => "Source Control: Unstage All Changes",
+            Self::ScmDiscard => "Source Control: Discard Selected Changes",
+            Self::ScmCommit => "Source Control: Commit…",
+            Self::ScmRefresh => "Source Control: Refresh",
         }
     }
 
@@ -217,6 +247,10 @@ impl Command {
                 | Self::Save
                 | Self::Cut
                 | Self::Paste
+                | Self::ScmStageAll
+                | Self::ScmUnstageAll
+                | Self::ScmCommit
+                | Self::ScmRefresh
         )
     }
 }
@@ -251,6 +285,10 @@ pub fn palette() -> Vec<Command> {
         Command::Cut,
         Command::Paste,
         Command::ToggleDiffLayout,
+        Command::ScmStageAll,
+        Command::ScmUnstageAll,
+        Command::ScmCommit,
+        Command::ScmRefresh,
         Command::Quit,
     ]
     .into_iter()

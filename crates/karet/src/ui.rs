@@ -290,6 +290,17 @@ fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
 }
 
 fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+    // Reserve a top row for the commit-message input while it is open.
+    let list_area = if app.commit_input.is_some() {
+        let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+        draw_commit_input(f, app, theme, rows[0]);
+        rows[1]
+    } else {
+        area
+    };
+
+    let selection_bg = theme.role(ThemeRole::Selection).to_ratatui();
+    let (lo, hi) = app.scm.selected_range();
     let mut items: Vec<ListItem> = Vec::new();
     let mut row_map: Vec<Option<usize>> = Vec::new();
     let mut selected_row = 0;
@@ -318,31 +329,53 @@ fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             selected_row = items.len();
         }
         let (glyph, role) = status_glyph(change.status);
-        items.push(ListItem::new(Line::from(vec![
+        let mut item = ListItem::new(Line::from(vec![
             Span::styled(
                 format!(" {glyph} "),
                 Style::default().fg(theme.role(role).to_ratatui()),
             ),
             Span::raw(change.path.to_string_lossy().into_owned()),
-        ])));
+        ]));
+        // Every row in the selected range gets the selection background; the cursor
+        // row additionally gets the bold highlight below.
+        if (lo..=hi).contains(&i) {
+            item = item.style(Style::default().bg(selection_bg));
+        }
+        items.push(item);
         row_map.push(Some(i));
     }
     if items.is_empty() {
         app.scm_row_map = Vec::new();
         app.scm_offset = 0;
-        f.render_widget(Paragraph::new(Line::raw(" no changes")), area);
+        f.render_widget(Paragraph::new(Line::raw(" no changes")), list_area);
         return;
     }
     let mut state = ListState::default();
     state.select(Some(selected_row));
     let list = List::new(items).highlight_style(
         Style::default()
-            .bg(theme.role(ThemeRole::Selection).to_ratatui())
+            .bg(selection_bg)
             .add_modifier(Modifier::BOLD),
     );
-    f.render_stateful_widget(list, area, &mut state);
+    f.render_stateful_widget(list, list_area, &mut state);
     app.scm_row_map = row_map;
     app.scm_offset = state.offset();
+}
+
+/// Draw the one-line commit-message input shown above the change list.
+fn draw_commit_input(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
+    let message = app.commit_input.as_deref().unwrap_or("");
+    let line = Line::from(vec![
+        Span::styled(
+            " commit ",
+            Style::default()
+                .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(message.to_string()),
+        Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
+    ]);
+    f.render_widget(Paragraph::new(line), area);
 }
 
 fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
@@ -593,6 +626,7 @@ fn status_glyph(kind: StatusKind) -> (char, ThemeRole) {
         StatusKind::Deleted => ('D', ThemeRole::DiagnosticError),
         StatusKind::Renamed => ('R', ThemeRole::DiagnosticInfo),
         StatusKind::Untracked => ('U', ThemeRole::DiffAdded),
+        StatusKind::Conflicted => ('!', ThemeRole::DiagnosticError),
         _ => ('•', ThemeRole::Foreground),
     }
 }

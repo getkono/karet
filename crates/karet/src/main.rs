@@ -29,8 +29,6 @@ mod workspace;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use color_eyre::eyre::eyre;
-use karet_vcs::{Repository, Selection, VcsError};
 
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
@@ -49,23 +47,10 @@ fn main() -> color_eyre::Result<()> {
         (path.clone(), None)
     };
 
-    // Collect VCS changes when inside a repository; the shell still opens otherwise.
-    let (staged, working) = match Repository::discover(&path) {
-        Ok(repo) => {
-            let pathspec = (path != Path::new(".")).then_some(path.as_path());
-            let staged = repo
-                .changes(Selection::Staged, pathspec)
-                .map_err(|e| eyre!("{e}"))?;
-            let working = repo
-                .changes(Selection::Unstaged, pathspec)
-                .map_err(|e| eyre!("{e}"))?;
-            (staged, working)
-        }
-        Err(VcsError::NotARepository) => (Vec::new(), Vec::new()),
-        Err(e) => return Err(eyre!("{e}")),
-    };
-
-    let mut app = app::App::new(root, staged, working, syntax).with_icons(cli.icon_style());
+    // The Source-Control panel is populated by the session's `VcsStatus` event
+    // (seeded on startup and refreshed on filesystem changes), so the shell starts
+    // with an empty panel rather than computing status here.
+    let mut app = app::App::new(root, Vec::new(), Vec::new(), syntax).with_icons(cli.icon_style());
     if let Some(file) = initial_file {
         app.open_initial(&file);
     }
