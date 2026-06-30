@@ -6,12 +6,23 @@
 //! a non-ratatui UI. (The ratatui completion/hover popups live in `karet-widgets`,
 //! which renders these models, so this crate stays free of UI dependencies.)
 //!
-//! This is the implementation *skeleton*: the public joints are defined; the
-//! async-lsp transport and feature logic are filled in separately.
+//! This is the implementation *skeleton*, but the **contract is complete**: every
+//! method karet will ever call — lifecycle, the full document-sync set
+//! (`did_open`/`did_change`/`did_save`/`did_close`), and every request — has its
+//! final signature, so wiring the `async-lsp` transport later is pure body fill-in,
+//! never an API change. Two seams are deliberately pinned now so nothing downstream
+//! has to be retrofitted:
+//!
+//! - **`did_change` is driven by the same [`TextEdit`]s the editor applies**, so the
+//!   session forwards an incremental change at its single apply site.
+//! - **Position encoding is translated at the edge.** karet is internally UTF-32;
+//!   LSP defaults to UTF-16. The conversions live on `karet_text::TextBuffer`
+//!   (`line_col_to_utf16` / `utf16_to_line_col`); this client applies them when the
+//!   negotiated encoding is not `utf-8`.
 
 use karet_core::{
-    CompletionItem, Diagnostic, Hover, InlayHint, LineCol, Location, Range, Symbol, SymbolProvider,
-    WorkspaceEdit,
+    CodeAction, CompletionItem, Diagnostic, Hover, InlayHint, LineCol, Location, Range,
+    SignatureHelp, Symbol, SymbolProvider, TextEdit, WorkspaceEdit,
 };
 use std::path::{Path, PathBuf};
 use tokio::sync::broadcast;
@@ -52,6 +63,66 @@ impl LspClient {
     /// Returns [`LspError::Spawn`] if the process cannot start.
     pub async fn spawn(spec: LspSpec, root: &Path) -> Result<Self, LspError> {
         let _ = (spec, root);
+        todo!()
+    }
+
+    /// Shut the server down (`shutdown` request + `exit` notification) and await the
+    /// process.
+    ///
+    /// # Errors
+    /// Returns [`LspError::Server`] if the shutdown handshake fails.
+    pub async fn shutdown(self) -> Result<(), LspError> {
+        todo!()
+    }
+
+    // --- document sync (the seam the editing path drives) -----------------
+
+    /// Notify the server that `doc` opened, with its `language_id`, `version` and
+    /// full `text`.
+    ///
+    /// # Errors
+    /// Returns [`LspError::Server`] if the notification cannot be sent.
+    pub async fn did_open(
+        &self,
+        doc: &Path,
+        language_id: &str,
+        version: i32,
+        text: &str,
+    ) -> Result<(), LspError> {
+        let _ = (doc, language_id, version, text);
+        todo!()
+    }
+
+    /// Notify the server of an incremental change to `doc`, derived from the same
+    /// [`TextEdit`]s the editor just applied (translated to the negotiated encoding).
+    ///
+    /// # Errors
+    /// Returns [`LspError::Server`] if the notification cannot be sent.
+    pub async fn did_change(
+        &self,
+        doc: &Path,
+        version: i32,
+        edits: &[TextEdit],
+    ) -> Result<(), LspError> {
+        let _ = (doc, version, edits);
+        todo!()
+    }
+
+    /// Notify the server that `doc` was saved (optionally including its text).
+    ///
+    /// # Errors
+    /// Returns [`LspError::Server`] if the notification cannot be sent.
+    pub async fn did_save(&self, doc: &Path, text: Option<&str>) -> Result<(), LspError> {
+        let _ = (doc, text);
+        todo!()
+    }
+
+    /// Notify the server that `doc` was closed.
+    ///
+    /// # Errors
+    /// Returns [`LspError::Server`] if the notification cannot be sent.
+    pub async fn did_close(&self, doc: &Path) -> Result<(), LspError> {
+        let _ = doc;
         todo!()
     }
 
@@ -124,6 +195,50 @@ impl LspClient {
         new_name: &str,
     ) -> Result<WorkspaceEdit, LspError> {
         let _ = (doc, pos, new_name);
+        todo!()
+    }
+
+    /// Request signature help at `pos` in `doc`.
+    ///
+    /// # Errors
+    /// Returns [`LspError::Server`] or [`LspError::Timeout`].
+    pub async fn signature_help(
+        &self,
+        doc: &Path,
+        pos: LineCol,
+    ) -> Result<Option<SignatureHelp>, LspError> {
+        let _ = (doc, pos);
+        todo!()
+    }
+
+    /// Request code actions available for `range` in `doc`.
+    ///
+    /// # Errors
+    /// Returns [`LspError::Server`] or [`LspError::Timeout`].
+    pub async fn code_action(&self, doc: &Path, range: Range) -> Result<Vec<CodeAction>, LspError> {
+        let _ = (doc, range);
+        todo!()
+    }
+
+    /// Request whole-document formatting edits for `doc`.
+    ///
+    /// # Errors
+    /// Returns [`LspError::Server`] or [`LspError::Timeout`].
+    pub async fn formatting(&self, doc: &Path) -> Result<Vec<TextEdit>, LspError> {
+        let _ = doc;
+        todo!()
+    }
+
+    /// Request formatting edits for `range` in `doc`.
+    ///
+    /// # Errors
+    /// Returns [`LspError::Server`] or [`LspError::Timeout`].
+    pub async fn range_formatting(
+        &self,
+        doc: &Path,
+        range: Range,
+    ) -> Result<Vec<TextEdit>, LspError> {
+        let _ = (doc, range);
         todo!()
     }
 

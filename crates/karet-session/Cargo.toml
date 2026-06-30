@@ -25,12 +25,16 @@ karet-vcs.workspace = true            # headless
 karet-search.workspace = true
 karet-fuzzy.workspace = true
 karet-terminal.workspace = true       # PTY host is server-side business logic
+karet-watch.workspace = true          # centralized filesystem watching
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "macros", "process"] }
 tracing.workspace = true
 thiserror.workspace = true
 ec4rs.workspace = true                # settings / editorconfig precedence (migrated from the app)
 spellbook.workspace = true            # spell-check → diagnostics (migrated from the app)
 directories.workspace = true          # server-side config / session paths
+
+[dev-dependencies]
+tempfile.workspace = true             # temp files for open/save flow tests
 
 [lints]
 workspace = true

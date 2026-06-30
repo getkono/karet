@@ -98,6 +98,28 @@ pub enum Command {
     NextChangedFile,
     /// Move to the previous changed file (diff tab).
     PrevChangedFile,
+    /// Insert a printable character at the caret (replacing any selection).
+    InsertChar(char),
+    /// Insert a newline with leading-whitespace auto-indent.
+    InsertNewline,
+    /// Delete the selection, or the character before the caret.
+    DeleteBackward,
+    /// Delete the selection, or the character after the caret.
+    DeleteForward,
+    /// Indent the caret line (or every selected line) by one level.
+    Indent,
+    /// Dedent the caret line by one level.
+    Dedent,
+    /// Undo the last edit group.
+    Undo,
+    /// Redo the last undone edit group.
+    Redo,
+    /// Save the active document to disk.
+    Save,
+    /// Cut the selection to the clipboard.
+    Cut,
+    /// Paste the clipboard at the caret.
+    Paste,
 }
 
 impl Command {
@@ -151,6 +173,17 @@ impl Command {
             Self::ToggleDiffLayout => "Diff: Toggle Inline / Side-by-Side",
             Self::NextChangedFile => "Diff: Next Changed File",
             Self::PrevChangedFile => "Diff: Previous Changed File",
+            Self::InsertChar(_) => "Insert Character",
+            Self::InsertNewline => "Insert Newline",
+            Self::DeleteBackward => "Delete Backward",
+            Self::DeleteForward => "Delete Forward",
+            Self::Indent => "Indent Line",
+            Self::Dedent => "Dedent Line",
+            Self::Undo => "Undo",
+            Self::Redo => "Redo",
+            Self::Save => "Save",
+            Self::Cut => "Cut",
+            Self::Paste => "Paste",
         }
     }
 
@@ -179,6 +212,11 @@ impl Command {
                 | Self::CopyPath
                 | Self::CopyRelativePath
                 | Self::ToggleDiffLayout
+                | Self::Undo
+                | Self::Redo
+                | Self::Save
+                | Self::Cut
+                | Self::Paste
         )
     }
 }
@@ -207,6 +245,11 @@ pub fn palette() -> Vec<Command> {
         Command::CloseTabsToRight,
         Command::CloseAllTabs,
         Command::ReopenClosedTab,
+        Command::Save,
+        Command::Undo,
+        Command::Redo,
+        Command::Cut,
+        Command::Paste,
         Command::ToggleDiffLayout,
         Command::Quit,
     ]

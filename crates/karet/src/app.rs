@@ -2,28 +2,36 @@
 //! setup. The shell composes the engine/widget crates — it owns the open tabs and
 //! the sidebar, and applies [`Command`]s resolved from key events.
 
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use color_eyre::eyre::eyre;
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton,
+    MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use karet_core::{BytePos, Decoration, DecorationKind, LineCol, Range, ThemeRole};
 use karet_editor::EditorState;
 use karet_search::{FileHit, SearchQuery, WorkspaceSearch, search_in_file};
+use karet_session::{
+    Backend, Command as SessionCommand, DocSnapshot, DocumentId, Event as SessionEvent, EventRx,
+    RequestId, Session, SessionConfig, SnapshotRx, local,
+};
 use karet_text::TextBuffer;
 use karet_theme::Theme;
 use karet_vcs::FileChange;
 use karet_widgets::FileTreeState;
 use karet_widgets::image::{self, GraphicsProtocol};
 use ratatui::layout::Rect;
+use tokio::sync::mpsc;
 
 use crate::clipboard::Clipboard;
 use crate::command::Command;
+use crate::editing;
 use crate::keymap::{self, Focus, SidebarPanel};
 use crate::overlay::{Overlay, OverlayEvent};
 use crate::render::{FileView, Section};
@@ -165,6 +173,11 @@ pub struct App {
     shown_image: Option<usize>,
     /// Whether the app should quit.
     should_quit: bool,
+    /// The headless editor backend; edits route through it. `None` in unit tests,
+    /// where editing commands are inert.
+    backend: Option<Arc<dyn Backend>>,
+    /// Open requests awaiting their `Opened` event, mapping request id → file path.
+    pending_open: HashMap<RequestId, PathBuf>,
 }
 
 impl App {
@@ -222,6 +235,8 @@ impl App {
             image_area: None,
             shown_image: None,
             should_quit: false,
+            backend: None,
+            pending_open: HashMap::new(),
         }
     }
 
@@ -258,6 +273,15 @@ impl App {
         }
         if let Some(command) = keymap::resolve(self.focus, self.active_is_diff(), key) {
             self.dispatch(command);
+        } else if self.focus == Focus::Editor
+            && self.active_code_doc().is_some()
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && let KeyCode::Char(c) = key.code
+        {
+            // An unbound printable in the editor is text input.
+            self.dispatch(Command::InsertChar(c));
         }
     }
 
@@ -557,6 +581,30 @@ impl App {
             Command::ToggleDiffLayout => self.toggle_diff_layout(),
             Command::NextChangedFile => self.step_changed_file(1),
             Command::PrevChangedFile => self.step_changed_file(-1),
+            Command::InsertChar(c) => {
+                let s = c.to_string();
+                self.submit_edit(move |caret, sel, _b, base| {
+                    Some(editing::insert(caret, sel, base, &s))
+                });
+            }
+            Command::InsertNewline => {
+                self.submit_edit(|caret, sel, buf, base| {
+                    Some(editing::newline(caret, sel, buf, base))
+                });
+            }
+            Command::DeleteBackward => self.submit_edit(editing::backspace),
+            Command::DeleteForward => self.submit_edit(editing::delete_forward),
+            Command::Indent => {
+                self.submit_edit(|caret, sel, _b, base| Some(editing::indent(caret, sel, base)));
+            }
+            Command::Dedent => {
+                self.submit_edit(|caret, _sel, buf, base| editing::dedent(caret, buf, base));
+            }
+            Command::Undo => self.send_doc_command(|doc| SessionCommand::Undo { doc }),
+            Command::Redo => self.send_doc_command(|doc| SessionCommand::Redo { doc }),
+            Command::Save => self.save_active(),
+            Command::Cut => self.cut(),
+            Command::Paste => self.paste_from_clipboard(),
         }
     }
 
@@ -663,6 +711,7 @@ impl App {
             self.active = self.tabs.len() - 1;
         }
         self.focus = Focus::Editor;
+        self.register_doc(self.active);
     }
 
     /// Switch to the tab at `index`, focusing the editor.
@@ -1230,6 +1279,225 @@ impl App {
     }
 }
 
+/// Editing: route edits through the headless session backend and reflect its
+/// snapshots back into the active code tab.
+impl App {
+    /// Register every already-open code tab with the session (called once the
+    /// backend is attached at startup).
+    fn register_open_tabs(&mut self) {
+        for idx in 0..self.tabs.len() {
+            self.register_doc(idx);
+        }
+    }
+
+    /// Register the code tab at `idx` with the session so it can be edited, if it is
+    /// an as-yet-unregistered code tab and a backend is attached.
+    fn register_doc(&mut self, idx: usize) {
+        let path = match self.tabs.get(idx) {
+            Some(Tab {
+                kind: TabKind::Code {
+                    path, doc: None, ..
+                },
+                ..
+            }) => path.clone(),
+            _ => return,
+        };
+        let Some(backend) = &self.backend else {
+            return;
+        };
+        let id = backend.next_id();
+        let _ = backend.send(
+            id,
+            SessionCommand::OpenDocument {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        self.pending_open.insert(id, path);
+    }
+
+    /// Build an edit from the active code tab's caret/selection via `build` and
+    /// submit it through the session, moving the caret optimistically.
+    fn submit_edit<F>(&mut self, build: F)
+    where
+        F: FnOnce(LineCol, Option<Range>, &TextBuffer, u64) -> Option<editing::Edit>,
+    {
+        if self.backend.is_none() {
+            return;
+        }
+        let idx = self.active;
+        let (doc, edit) = match self.tabs.get(idx) {
+            Some(Tab {
+                kind:
+                    TabKind::Code {
+                        doc: Some(doc),
+                        buffer,
+                        next_version,
+                        ..
+                    },
+                editor,
+                ..
+            }) => (
+                *doc,
+                build(
+                    editor.cursor,
+                    editor.selection_range(),
+                    buffer,
+                    *next_version,
+                ),
+            ),
+            _ => return,
+        };
+        let Some(edit) = edit else {
+            return;
+        };
+        if let Some(backend) = &self.backend {
+            let id = backend.next_id();
+            let _ = backend.send(
+                id,
+                SessionCommand::ApplyChange {
+                    doc,
+                    change: edit.change,
+                },
+            );
+        }
+        if let Some(Tab {
+            kind: TabKind::Code { next_version, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(idx)
+        {
+            *next_version += 1;
+            editor.cursor = edit.caret;
+            editor.selection_anchor = None;
+            editor.scroll_to(edit.caret);
+        }
+    }
+
+    /// The active tab's session document, if it is a registered code tab.
+    fn active_code_doc(&self) -> Option<DocumentId> {
+        match self.tabs.get(self.active) {
+            Some(Tab {
+                kind: TabKind::Code { doc: Some(doc), .. },
+                ..
+            }) => Some(*doc),
+            _ => None,
+        }
+    }
+
+    /// Send a document command for the active code tab, if any.
+    fn send_doc_command(&mut self, make: impl FnOnce(DocumentId) -> SessionCommand) {
+        let Some(doc) = self.active_code_doc() else {
+            return;
+        };
+        if let Some(backend) = &self.backend {
+            let id = backend.next_id();
+            let _ = backend.send(id, make(doc));
+        }
+    }
+
+    /// Save the active document, or report that there is no file to save.
+    fn save_active(&mut self) {
+        match self.active_code_doc() {
+            Some(doc) => {
+                if let Some(backend) = &self.backend {
+                    let id = backend.next_id();
+                    let _ = backend.send(id, SessionCommand::Save { doc });
+                }
+            }
+            None => self.status = Some("save: open a text file".to_string()),
+        }
+    }
+
+    /// Cut the current selection (copy then delete); a no-op without a selection.
+    fn cut(&mut self) {
+        let has_selection = matches!(
+            self.tabs.get(self.active),
+            Some(Tab { kind: TabKind::Code { .. }, editor, .. })
+                if editor.selection_range().is_some_and(|r| !r.is_empty())
+        );
+        if !has_selection {
+            return;
+        }
+        self.copy_selection();
+        self.submit_edit(editing::backspace);
+    }
+
+    /// Paste the system clipboard at the caret.
+    fn paste_from_clipboard(&mut self) {
+        match self.clipboard.get() {
+            Ok(text) => self.handle_paste(text),
+            Err(_) => self.status = Some("paste: clipboard unavailable".to_string()),
+        }
+    }
+
+    /// Insert pasted text as a single edit (one undo group). Shared by the paste
+    /// command and bracketed paste, so pasted text is never interpreted as keys.
+    fn handle_paste(&mut self, text: String) {
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        if normalized.is_empty() {
+            return;
+        }
+        self.submit_edit(move |caret, sel, _b, base| {
+            Some(editing::insert(caret, sel, base, &normalized))
+        });
+    }
+
+    /// Handle a backend event: correlate opens to tabs, surface save/progress status.
+    fn on_backend_event(&mut self, id: Option<RequestId>, event: SessionEvent) {
+        match event {
+            SessionEvent::Opened { doc, .. } => {
+                if let Some(req) = id
+                    && let Some(path) = self.pending_open.remove(&req)
+                {
+                    for tab in &mut self.tabs {
+                        if let TabKind::Code {
+                            path: p, doc: d, ..
+                        } = &mut tab.kind
+                            && d.is_none()
+                            && *p == path
+                        {
+                            *d = Some(doc);
+                        }
+                    }
+                }
+            }
+            SessionEvent::Saved { .. } => self.status = Some("saved".to_string()),
+            // The fresh content arrives via the snapshot stream; just note it.
+            SessionEvent::Reloaded { .. } => {
+                self.status = Some("reloaded from disk".to_string());
+            }
+            SessionEvent::ExternalConflict { .. } => {
+                self.status = Some("⚠ file changed on disk — you have unsaved changes".to_string());
+            }
+            SessionEvent::Progress { message, .. } => self.status = Some(message),
+            _ => {}
+        }
+    }
+
+    /// Apply a document snapshot to the matching code tab(s): the snapshot is the
+    /// render source of truth (buffer, highlights, and the search text).
+    fn on_snapshot(&mut self, doc: DocumentId, snap: &DocSnapshot) {
+        for tab in &mut self.tabs {
+            if let TabKind::Code {
+                doc: Some(d),
+                buffer,
+                highlights,
+                text,
+                next_version,
+                ..
+            } = &mut tab.kind
+                && *d == doc
+            {
+                *buffer = snap.buffer.clone();
+                *highlights = (*snap.highlights).clone();
+                *text = snap.buffer.text();
+                *next_version = (*next_version).max(snap.version);
+            }
+        }
+    }
+}
+
 /// Whether the screen point `(x, y)` lies inside `r`.
 fn rect_contains(r: Rect, (x, y): (u16, u16)) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
@@ -1303,6 +1571,14 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
         ));
     }
 
+    // The session backend runs on its own Tokio runtime; the UI task selects over
+    // terminal input, backend events, and document snapshots so it never blocks.
+    let runtime = tokio::runtime::Runtime::new().map_err(|e| eyre!("tokio runtime: {e}"))?;
+    let (session, events, snaps) = Session::new(SessionConfig {
+        roots: vec![app.root.clone()],
+        ..SessionConfig::default()
+    });
+
     let mut terminal = ratatui::init();
     let _keyboard = {
         let _ = crossterm::execute!(
@@ -1314,49 +1590,87 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
         );
         KeyboardEnhancementGuard
     };
-    let _ = crossterm::execute!(io::stdout(), EnableMouseCapture);
+    // Bracketed paste makes a multi-line paste arrive as one `Event::Paste`, never a
+    // storm of keystrokes the keymap would misinterpret.
+    let _ = crossterm::execute!(io::stdout(), EnableMouseCapture, EnableBracketedPaste);
 
-    let result = event_loop(&mut terminal, &mut app);
+    let result = runtime.block_on(async move {
+        let backend: Arc<dyn Backend> = Arc::new(local(session));
+        app.backend = Some(backend);
+        app.register_open_tabs();
+        event_loop(&mut terminal, &mut app, events, snaps).await
+    });
 
     let _ = write!(io::stdout(), "{}", image::kitty_delete_all());
-    let _ = crossterm::execute!(io::stdout(), DisableMouseCapture);
+    let _ = crossterm::execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
     drop(_keyboard);
     ratatui::restore();
     result
 }
 
-fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> color_eyre::Result<()> {
+/// The async UI loop: render, then wake on terminal input, a backend event, or a
+/// document snapshot — coalescing each burst into a single repaint.
+async fn event_loop(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut App,
+    mut events: EventRx,
+    mut snaps: SnapshotRx,
+) -> color_eyre::Result<()> {
+    // A dedicated thread turns the blocking `event::read` into an async stream.
+    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Event>();
+    std::thread::spawn(move || {
+        while let Ok(event) = event::read() {
+            if input_tx.send(event).is_err() {
+                break;
+            }
+        }
+    });
+
     loop {
         terminal.draw(|f| ui::draw(f, app))?;
         app.flush_graphics();
-        if !handle_event(app, event::read()?) {
-            // Drain queued events so a burst (e.g. wheel ticks) collapses into one frame.
-            while event::poll(Duration::ZERO)? {
-                handle_event(app, event::read()?);
-                if app.should_quit {
-                    break;
-                }
+
+        tokio::select! {
+            biased;
+            input = input_rx.recv() => match input {
+                Some(event) => handle_terminal_event(app, event),
+                None => app.should_quit = true,
+            },
+            event = events.recv() => if let Some((id, ev)) = event {
+                app.on_backend_event(id, ev);
+            },
+            snap = snaps.recv() => if let Some((doc, snap)) = snap {
+                app.on_snapshot(doc, &snap);
+            },
+        }
+
+        // Drain everything else that is ready so a burst collapses into one frame.
+        while let Ok(event) = input_rx.try_recv() {
+            handle_terminal_event(app, event);
+            if app.should_quit {
+                break;
             }
         }
+        while let Some((id, ev)) = events.try_recv() {
+            app.on_backend_event(id, ev);
+        }
+        while let Some((doc, snap)) = snaps.try_recv() {
+            app.on_snapshot(doc, &snap);
+        }
+
         if app.should_quit {
             return Ok(());
         }
     }
 }
 
-/// Dispatch one input event. Returns `true` when a redraw should happen immediately
-/// (a key was handled) so the drain loop knows to continue.
-fn handle_event(app: &mut App, event: Event) -> bool {
+/// Dispatch one terminal event to the app.
+fn handle_terminal_event(app: &mut App, event: Event) {
     match event {
-        Event::Key(key) if key.kind == KeyEventKind::Press => {
-            app.handle_key(key);
-            true
-        }
-        Event::Mouse(mouse) => {
-            app.handle_mouse(mouse);
-            false
-        }
-        _ => false,
+        Event::Key(key) if key.kind == KeyEventKind::Press => app.handle_key(key),
+        Event::Mouse(mouse) => app.handle_mouse(mouse),
+        Event::Paste(text) => app.handle_paste(text),
+        _ => {}
     }
 }
 
@@ -1458,6 +1772,8 @@ mod tests {
             TabKind::Code {
                 path: PathBuf::from("t.rs"),
                 language: "Rust",
+                doc: None,
+                next_version: 0,
                 buffer: TextBuffer::from_text("foo bar foo"),
                 text: "foo bar foo".to_string(),
                 highlights: Highlights::default(),
@@ -1511,6 +1827,8 @@ mod tests {
             TabKind::Code {
                 path: PathBuf::from(name),
                 language: "Rust",
+                doc: None,
+                next_version: 0,
                 buffer: TextBuffer::from_text("x\n"),
                 text: "x\n".to_string(),
                 highlights: Highlights::default(),
@@ -1557,6 +1875,8 @@ mod tests {
             TabKind::Code {
                 path: PathBuf::from(name),
                 language: "Rust",
+                doc: None,
+                next_version: 0,
                 buffer: TextBuffer::from_text(text),
                 text: text.to_string(),
                 highlights: Highlights::default(),

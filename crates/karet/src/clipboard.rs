@@ -34,11 +34,33 @@ impl Clipboard {
         Ok(())
     }
 
-    /// Read the system clipboard.
+    /// Read the system clipboard by shelling out to the first available tool.
+    ///
+    /// OSC 52 *reads* are widely unsupported (and often disabled for security), so
+    /// the read path uses external tools rather than the terminal.
     pub fn get(&self) -> Result<String, ClipboardError> {
-        todo!()
+        for (cmd, args) in CLIPBOARD_PASTE_COMMANDS {
+            if let Ok(output) = std::process::Command::new(cmd).args(*args).output()
+                && output.status.success()
+            {
+                return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+            }
+        }
+        Err(ClipboardError::Unavailable)
     }
 }
+
+/// Clipboard read commands, tried in order (Wayland, X11, macOS, Windows/WSL).
+const CLIPBOARD_PASTE_COMMANDS: &[(&str, &[&str])] = &[
+    ("wl-paste", &["--no-newline"]),
+    ("xclip", &["-selection", "clipboard", "-o"]),
+    ("xsel", &["-b", "-o"]),
+    ("pbpaste", &[]),
+    (
+        "powershell.exe",
+        &["-NoProfile", "-Command", "Get-Clipboard"],
+    ),
+];
 
 /// Build an OSC 52 escape sequence that sets the clipboard to `text`.
 pub fn osc52_set_sequence(text: &str) -> String {

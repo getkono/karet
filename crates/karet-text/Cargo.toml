@@ -21,8 +21,10 @@ mmap = ["dep:memmap2"]
 [dependencies]
 karet-core.workspace = true
 ropey.workspace = true
-unicode-segmentation.workspace = true
-smallvec.workspace = true
+memchr.workspace = true                # fast line-ending scanning (load/save, EOL detection)
+tempfile.workspace = true              # atomic crash-safe save (temp + fsync + rename)
+unicode-segmentation.workspace = true  # reserved for cursor word/grapheme motions
+smallvec.workspace = true              # reserved for multi-cursor selection storage
 thiserror.workspace = true
 memmap2 = { workspace = true, optional = true }
 

@@ -1,0 +1,52 @@
+//! Local-mode renderable snapshots and the snapshot stream.
+//!
+//! In local mode the UI renders from owned [`DocSnapshot`]s the session pushes on
+//! the snapshot stream, rather than borrowing a [`DocumentView`](crate::session::DocumentView)
+//! across the actor task boundary. A snapshot is cheap to produce — the buffer
+//! clone shares the rope (O(1) structural sharing) and highlights/decorations are
+//! `Arc`-shared — so a snapshot can be minted on every applied edit.
+//!
+//! Snapshots ride a dedicated local channel rather than [`Event`](crate::api::Event)
+//! so the neutral protocol in [`api`](crate::api) stays serialization-friendly for a
+//! future remote split (a remote client reconstructs its own replica from the
+//! `Change`-bearing events instead).
+
+use crate::api::DocumentId;
+use karet_core::Decoration;
+use karet_syntax::Highlights;
+use karet_text::TextBuffer;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+
+/// An owned, render-only snapshot of a document at a particular version.
+#[derive(Clone)]
+pub struct DocSnapshot {
+    /// The document version this snapshot reflects.
+    pub version: u64,
+    /// A render-only buffer clone (shares the rope; carries no history).
+    pub buffer: TextBuffer,
+    /// Syntax highlights for this version.
+    pub highlights: Arc<Highlights>,
+    /// Decorations merged across producers (empty until producers attach).
+    pub decorations: Arc<Vec<Decoration>>,
+    /// The display language name, if detected.
+    pub language: Option<&'static str>,
+    /// Whether the buffer has unsaved changes.
+    pub dirty: bool,
+}
+
+/// The receiving half of the local snapshot stream (one entry per renderable
+/// change, coalescable last-per-document by the UI).
+pub struct SnapshotRx(pub(crate) mpsc::UnboundedReceiver<(DocumentId, Arc<DocSnapshot>)>);
+
+impl SnapshotRx {
+    /// Await the next snapshot, or `None` once the session has shut down.
+    pub async fn recv(&mut self) -> Option<(DocumentId, Arc<DocSnapshot>)> {
+        self.0.recv().await
+    }
+
+    /// Take the next ready snapshot without awaiting, or `None` if none is queued.
+    pub fn try_recv(&mut self) -> Option<(DocumentId, Arc<DocSnapshot>)> {
+        self.0.try_recv().ok()
+    }
+}

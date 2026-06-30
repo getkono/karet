@@ -65,6 +65,8 @@ fn open_text(path: &Path, bytes: &[u8], syntax: bool) -> Tab {
         TabKind::Code {
             path: path.to_path_buf(),
             language,
+            doc: None,
+            next_version: 0,
             buffer,
             text,
             highlights,

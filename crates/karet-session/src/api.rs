@@ -67,6 +67,16 @@ pub enum Command {
         /// The document to save.
         doc: DocumentId,
     },
+    /// Undo the most recent edit group on a document.
+    Undo {
+        /// The target document.
+        doc: DocumentId,
+    },
+    /// Redo the most recently undone edit group on a document.
+    Redo {
+        /// The target document.
+        doc: DocumentId,
+    },
     /// Request completions at a position.
     Completion {
         /// The target document.
@@ -155,6 +165,20 @@ pub enum Event {
     /// A document was closed.
     Closed {
         /// The closed document.
+        doc: DocumentId,
+    },
+    /// A clean document was reloaded from disk after an external change. The new
+    /// content arrives on the snapshot stream; this event carries the new version.
+    Reloaded {
+        /// The reloaded document.
+        doc: DocumentId,
+        /// The version after reloading.
+        version: u64,
+    },
+    /// A document changed on disk while it had unsaved edits. The client should
+    /// prompt the user (keep mine / reload theirs / view diff).
+    ExternalConflict {
+        /// The document with the conflict.
         doc: DocumentId,
     },
     /// New diagnostics were published for a document.

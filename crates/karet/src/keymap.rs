@@ -80,7 +80,9 @@ const fn b(
     }
 }
 
-use KeyCode::{Char, Down, End, Enter, Esc, Home, Left, PageDown, PageUp, Right, Tab, Up};
+use KeyCode::{
+    Backspace, Char, Delete, Down, End, Enter, Esc, Home, Left, PageDown, PageUp, Right, Tab, Up,
+};
 use When::{DiffEditor, Editor, Global, Sidebar};
 
 /// The single source of truth for key bindings. Order matters: the first matching
@@ -134,8 +136,9 @@ static BINDINGS: &[Binding] = &[
     b(Sidebar, false, false, false, Left,      Command::SidebarCollapse),
     b(Sidebar, false, false, false, Char(' '), Command::SidebarToggleExpand),
 
-    // Editor focus. Arrows move the caret (VS Code); j/k/space/b scroll (vim).
-    b(Editor, false, false, false, Char('q'), Command::Quit),
+    // Editor focus. The editor is non-modal: arrows/Home/End/PageUp-Down navigate,
+    // and any unbound printable is text input (the shell inserts it after the keymap
+    // declines). Bare-letter motions are intentionally gone so letters can be typed.
     b(Editor, false, false, false, Esc,       Command::ToggleFocus),
     b(Editor, false, false, false, Down,      Command::CaretDown),
     b(Editor, false, false, false, Up,        Command::CaretUp),
@@ -145,17 +148,20 @@ static BINDINGS: &[Binding] = &[
     b(Editor, false, true,  false, Up,        Command::SelectUp),
     b(Editor, false, true,  false, Left,      Command::SelectLeft),
     b(Editor, false, true,  false, Right,     Command::SelectRight),
-    b(Editor, false, false, false, Char('j'), Command::ScrollDown),
-    b(Editor, false, false, false, Char('k'), Command::ScrollUp),
-    b(Editor, false, false, false, Char(' '), Command::PageDown),
     b(Editor, false, false, false, PageDown,  Command::PageDown),
-    b(Editor, false, false, false, Char('b'), Command::PageUp),
     b(Editor, false, false, false, PageUp,    Command::PageUp),
-    b(Editor, false, false, false, Char('y'), Command::Copy),
-    b(Editor, false, false, false, Char('g'), Command::Top),
     b(Editor, false, false, false, Home,      Command::Top),
-    b(Editor, false, true,  false, Char('G'), Command::Bottom),
     b(Editor, false, false, false, End,       Command::Bottom),
+    // Editing.
+    b(Editor, false, false, false, Enter,     Command::InsertNewline),
+    b(Editor, false, false, false, Backspace, Command::DeleteBackward),
+    b(Editor, false, false, false, Delete,    Command::DeleteForward),
+    b(Editor, true,  false, false, Char('s'), Command::Save),
+    b(Editor, true,  false, false, Char('z'), Command::Undo),
+    b(Editor, true,  false, false, Char('y'), Command::Redo),
+    b(Editor, true,  true,  false, Char('z'), Command::Redo),
+    b(Editor, true,  false, false, Char('x'), Command::Cut),
+    b(Editor, true,  false, false, Char('v'), Command::Paste),
 
     // Editor focus, diff tab only.
     b(DiffEditor, false, false, false, Char('\\'), Command::ToggleDiffLayout),
@@ -301,14 +307,15 @@ mod tests {
 
     #[test]
     fn focus_routes_navigation() {
-        // 'j' scrolls in the editor but moves the selection in the sidebar.
+        // A bare 'j' is text in the editor (unbound → typed) but moves the
+        // selection in the sidebar.
         assert_eq!(
             resolve(
                 Focus::Editor,
                 false,
                 key(KeyCode::Char('j'), KeyModifiers::NONE)
             ),
-            Some(Command::ScrollDown)
+            None
         );
         assert_eq!(
             resolve(
@@ -342,21 +349,13 @@ mod tests {
     }
 
     #[test]
-    fn top_and_bottom_distinguish_case() {
+    fn home_and_end_jump_to_edges() {
         assert_eq!(
-            resolve(
-                Focus::Editor,
-                false,
-                key(KeyCode::Char('g'), KeyModifiers::NONE)
-            ),
+            resolve(Focus::Editor, false, key(KeyCode::Home, KeyModifiers::NONE)),
             Some(Command::Top)
         );
         assert_eq!(
-            resolve(
-                Focus::Editor,
-                false,
-                key(KeyCode::Char('G'), KeyModifiers::SHIFT)
-            ),
+            resolve(Focus::Editor, false, key(KeyCode::End, KeyModifiers::NONE)),
             Some(Command::Bottom)
         );
     }
@@ -392,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_copies_and_y_copies_in_editor() {
+    fn editor_editing_chords() {
         assert_eq!(
             resolve(
                 Focus::Editor,
@@ -405,11 +404,28 @@ mod tests {
             resolve(
                 Focus::Editor,
                 false,
+                key(KeyCode::Char('s'), KeyModifiers::CONTROL)
+            ),
+            Some(Command::Save)
+        );
+        assert_eq!(
+            resolve(
+                Focus::Editor,
+                false,
+                key(KeyCode::Char('z'), KeyModifiers::CONTROL)
+            ),
+            Some(Command::Undo)
+        );
+        // A bare letter is no longer a command in the editor (it is typed instead).
+        assert_eq!(
+            resolve(
+                Focus::Editor,
+                false,
                 key(KeyCode::Char('y'), KeyModifiers::NONE)
             ),
-            Some(Command::Copy)
+            None
         );
-        // Quit is Ctrl+Q only now.
+        // Quit is Ctrl+Q.
         assert_eq!(
             resolve(
                 Focus::Editor,

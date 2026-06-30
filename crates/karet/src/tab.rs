@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use karet_core::Decoration;
 use karet_editor::EditorState;
+use karet_session::DocumentId;
 use karet_syntax::Highlights;
 use karet_text::TextBuffer;
 use karet_widgets::image::Image;
@@ -25,18 +26,28 @@ pub enum ViewMode {
 }
 
 /// The content of a tab and how to render it.
+// The `Code` variant is intentionally the heavy one (it carries the buffer and its
+// derived render state); there are only ever a handful of tabs, so boxing every
+// field to equalize variant sizes would add indirection for no real benefit.
+#[allow(clippy::large_enum_variant)]
 pub enum TabKind {
     /// The landing page shown when nothing is open.
     Welcome,
-    /// A read-only code/text view.
+    /// An editable code/text view.
     Code {
         /// The file path.
         path: PathBuf,
         /// The display language name.
         language: &'static str,
-        /// The loaded buffer.
+        /// The session document backing this view, once registered. Editing routes
+        /// through the session; the fields below are the latest snapshot for render.
+        doc: Option<DocumentId>,
+        /// The base version for the next edit (predicted ahead of snapshot echoes so
+        /// rapid typing isn't rejected as stale).
+        next_version: u64,
+        /// The latest snapshot's buffer (a cheap rope-sharing clone).
         buffer: TextBuffer,
-        /// The source text (kept for in-file search).
+        /// The source text (kept in sync with `buffer` for in-file search).
         text: String,
         /// Syntax highlight spans (empty when no grammar / disabled).
         highlights: Highlights,
@@ -159,6 +170,8 @@ mod tests {
             TabKind::Code {
                 path: PathBuf::from("/x/a.rs"),
                 language: "Rust",
+                doc: None,
+                next_version: 0,
                 buffer: TextBuffer::from_text("fn main() {}"),
                 text: "fn main() {}".to_string(),
                 highlights: Highlights::default(),

@@ -3,14 +3,30 @@
 //! A rope-backed [`TextBuffer`] with editing history plus a cursor/selection model
 //! (the [`cursor`] module), usable by any editor backend (TUI or otherwise)
 //! without pulling in rendering dependencies. It is the one place that converts
-//! between byte offsets and line/column positions, since that requires the rope.
+//! between byte offsets and line/column positions, since that requires the rope —
+//! including the UTF-16 conversions LSP needs at its edge.
 //!
-//! This is the implementation *skeleton*: the public joints are defined; the
-//! editing/undo/conversion logic is filled in separately.
+//! The mutation surface ([`apply`](TextBuffer::apply) / [`undo`](TextBuffer::undo)
+//! / [`redo`](TextBuffer::redo)) records an in-memory edit [`history`] and reports
+//! each applied edit back as an [`AppliedEdit`] (with tree-sitter-shaped points) so
+//! a parse host can reparse incrementally. Loading ([`load`](TextBuffer::load)) is
+//! strict UTF-8 with line-ending/BOM detection; saving ([`save`](TextBuffer::save))
+//! is atomic and round-trips the detected encoding.
 
-use karet_core::{BytePos, Change, LineCol, Span};
+use karet_core::{BytePos, LineCol, Span};
 use std::io::Read;
-use std::path::Path;
+
+mod apply;
+mod history;
+mod load;
+mod save;
+
+pub use apply::{Applied, AppliedEdit};
+pub use history::{EditCause, EditContext};
+pub use load::{Encoding, Eol, LoadError};
+pub use save::SavedState;
+
+use history::History;
 
 /// Errors produced by [`TextBuffer`] operations.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -25,17 +41,27 @@ pub enum TextError {
     /// A change was applied against a stale document version.
     #[error("change applied against a stale buffer version")]
     StaleVersion,
+    /// A change's edits overlap; an atomic batch must be non-overlapping.
+    #[error("overlapping edits in a single change")]
+    OverlappingEdits,
 }
 
 /// A headless, editable text buffer backed by a rope.
 ///
 /// Tracks a monotonically increasing edit `version` (used to validate
-/// [`Change`]s) and a dirty flag for unsaved edits.
+/// [`Change`](karet_core::Change)s under optimistic concurrency), an in-memory
+/// undo/redo [`History`], and the detected line-ending / encoding so a save
+/// round-trips the on-disk form. The dirty state is derived from the history
+/// relative to the last save point, so undoing back to a saved state clears it.
 #[derive(Clone, Default)]
 pub struct TextBuffer {
     rope: ropey::Rope,
     version: u64,
-    dirty: bool,
+    history: History,
+    eol: Eol,
+    encoding: Encoding,
+    mixed_eol: bool,
+    saved_state: Option<SavedState>,
 }
 
 impl TextBuffer {
@@ -45,17 +71,19 @@ impl TextBuffer {
         Self::default()
     }
 
-    /// Create a buffer from in-memory text.
+    /// Create a buffer from in-memory text (assumed already LF-normalized UTF-8).
     #[must_use]
     pub fn from_text(text: &str) -> Self {
         Self {
             rope: ropey::Rope::from_str(text),
-            version: 0,
-            dirty: false,
+            ..Self::default()
         }
     }
 
-    /// Create a buffer by reading all of `reader`.
+    /// Create a buffer by reading all of `reader` as UTF-8.
+    ///
+    /// This is the low-level reader path (no line-ending/BOM detection); prefer
+    /// [`TextBuffer::load`] / [`TextBuffer::from_bytes`] for files on disk.
     ///
     /// # Errors
     /// Returns [`TextError::Io`] if reading fails.
@@ -63,8 +91,7 @@ impl TextBuffer {
         let rope = ropey::Rope::from_reader(reader).map_err(|e| TextError::Io(e.to_string()))?;
         Ok(Self {
             rope,
-            version: 0,
-            dirty: false,
+            ..Self::default()
         })
     }
 
@@ -80,37 +107,118 @@ impl TextBuffer {
         self.rope.len_lines()
     }
 
-    /// The current edit version (incremented on every applied change).
+    /// The current edit version (incremented on every applied change, undo or redo).
     #[must_use]
     pub fn version(&self) -> u64 {
         self.version
     }
 
-    /// Whether the buffer has unsaved changes.
+    /// Whether the buffer has unsaved changes relative to the last save point.
     #[must_use]
     pub fn is_dirty(&self) -> bool {
-        self.dirty
+        self.history.is_dirty()
     }
 
-    /// Apply an atomic [`Change`], bumping the version and dirty flag.
+    /// The detected line ending used when saving.
+    #[must_use]
+    pub fn eol(&self) -> Eol {
+        self.eol
+    }
+
+    /// Override the line ending used when saving (an undoable user choice is the
+    /// caller's concern; this only sets the serialization target).
+    pub fn set_eol(&mut self, eol: Eol) {
+        self.eol = eol;
+    }
+
+    /// The detected encoding (plain UTF-8 vs UTF-8 with a BOM).
+    #[must_use]
+    pub fn encoding(&self) -> Encoding {
+        self.encoding
+    }
+
+    /// Whether the file mixed `\n` and `\r\n` on load (normalized to LF in memory).
+    #[must_use]
+    pub fn has_mixed_eol(&self) -> bool {
+        self.mixed_eol
+    }
+
+    /// The fingerprint of the last on-disk state (from load or save), used by a
+    /// file-watcher to distinguish the editor's own writes from external edits.
+    #[must_use]
+    pub fn saved_state(&self) -> Option<&SavedState> {
+        self.saved_state.as_ref()
+    }
+
+    /// The full text as an owned `String` (LF-normalized; allocates the whole
+    /// buffer — prefer line/slice accessors or [`rope`](Self::rope) on hot paths).
+    #[must_use]
+    pub fn text(&self) -> String {
+        self.rope.to_string()
+    }
+
+    /// Borrow the underlying rope (read-only) for chunk-wise consumers such as an
+    /// incremental parse host.
+    #[must_use]
+    pub fn rope(&self) -> &ropey::Rope {
+        &self.rope
+    }
+
+    /// The buffer bytes starting at `byte`, as one contiguous rope chunk, or an
+    /// empty slice at/after the end.
     ///
-    /// # Errors
-    /// Returns [`TextError::StaleVersion`] if `change.base_version` does not match
-    /// the current [`version`](Self::version), or [`TextError::OutOfBounds`] for an
-    /// out-of-range edit.
-    pub fn apply(&mut self, change: &Change) -> Result<(), TextError> {
-        let _ = change;
-        todo!()
+    /// This is the reader an incremental parser is fed with: call it repeatedly
+    /// with advancing offsets to stream the whole buffer without ever allocating it
+    /// as a single `String`.
+    #[must_use]
+    pub fn byte_chunk(&self, byte: usize) -> &[u8] {
+        if byte >= self.rope.len_bytes() {
+            return &[];
+        }
+        let (chunk, chunk_byte_start, _, _) = self.rope.chunk_at_byte(byte);
+        &chunk.as_bytes()[byte - chunk_byte_start..]
     }
 
-    /// Undo the most recent change, returning the change that was reverted.
-    pub fn undo(&mut self) -> Option<Change> {
-        todo!()
+    /// A cheap, render-only clone: shares the rope (O(1) structural sharing) but
+    /// carries no edit history. The result is read-only — its
+    /// [`is_dirty`](Self::is_dirty) is meaningless; read dirtiness from the source.
+    #[must_use]
+    pub fn content_snapshot(&self) -> Self {
+        Self {
+            rope: self.rope.clone(),
+            version: self.version,
+            history: History::default(),
+            eol: self.eol,
+            encoding: self.encoding,
+            mixed_eol: self.mixed_eol,
+            saved_state: self.saved_state.clone(),
+        }
     }
 
-    /// Redo the most recently undone change.
-    pub fn redo(&mut self) -> Option<Change> {
-        todo!()
+    /// Discard all undo/redo history and reset the save point to "clean".
+    ///
+    /// The session calls this after replacing the buffer's content with a fresh
+    /// on-disk read (an accepted external reload): the recorded inverse edits no
+    /// longer match the new content, so they must be dropped.
+    pub fn reset_history(&mut self) {
+        self.history = History::default();
+    }
+
+    /// Replace this buffer's content (and line-ending/encoding/on-disk fingerprint)
+    /// with `content` from a fresh on-disk read, **bumping the version** and
+    /// **dropping history**.
+    ///
+    /// Used for an external reload: the version stays monotonic (so an optimistic
+    /// client's version tracking still lines up), but the recorded inverse edits are
+    /// discarded because they no longer match the new content.
+    pub fn adopt_content(&mut self, content: Self) {
+        self.rope = content.rope;
+        self.eol = content.eol;
+        self.encoding = content.encoding;
+        self.mixed_eol = content.mixed_eol;
+        self.saved_state = content.saved_state;
+        self.version += 1;
+        self.history = History::default();
     }
 
     /// Convert an absolute byte offset to a line/column position.
@@ -148,6 +256,50 @@ impl TextBuffer {
         Ok(BytePos(self.rope.char_to_byte(line_start_char + col)))
     }
 
+    /// Convert an internal [`LineCol`] (UTF-32 column) to its UTF-16 column, for
+    /// the LSP edge. The line is unchanged; the returned value is the column in
+    /// UTF-16 code units, clamped to the line's content length.
+    #[must_use]
+    pub fn line_col_to_utf16(&self, pos: LineCol) -> u32 {
+        let line_idx = pos.line as usize;
+        if line_idx >= self.rope.len_lines() {
+            return 0;
+        }
+        let line = self.rope.line(line_idx);
+        let max = line_content_chars(line);
+        let col = (pos.col as usize).min(max);
+        let mut units = 0u32;
+        for c in line.chars().take(col) {
+            units += c.len_utf16() as u32;
+        }
+        units
+    }
+
+    /// Convert a UTF-16 `(line, column)` (as LSP speaks) to an internal [`LineCol`]
+    /// with a UTF-32 (`char`) column. A column landing inside a surrogate pair is
+    /// rounded down to the start of that `char`.
+    #[must_use]
+    pub fn utf16_to_line_col(&self, line: u32, utf16_col: u32) -> LineCol {
+        let line_idx = line as usize;
+        if line_idx >= self.rope.len_lines() {
+            return LineCol::new(line, 0);
+        }
+        let lslice = self.rope.line(line_idx);
+        let mut units = 0u32;
+        let mut col = 0u32;
+        for c in lslice.chars() {
+            let width = c.len_utf16() as u32;
+            // Stop before any char we cannot fully include, so an offset landing
+            // inside a surrogate pair rounds down to that char's start.
+            if units + width > utf16_col {
+                break;
+            }
+            units += width;
+            col += 1;
+        }
+        LineCol::new(line, col)
+    }
+
     /// The text of line `idx` (zero-based) without its trailing line break, or
     /// `None` when `idx` is past the last line.
     #[must_use]
@@ -176,13 +328,16 @@ impl TextBuffer {
         })
     }
 
-    /// Save the buffer to `path`, clearing the dirty flag on success.
+    /// The tree-sitter `(row, column-in-bytes)` point for an absolute byte offset.
     ///
-    /// # Errors
-    /// Returns [`TextError::Io`] if writing fails.
-    pub fn save(&mut self, path: &Path) -> Result<(), TextError> {
-        let _ = path;
-        todo!()
+    /// Tree-sitter columns are byte offsets from the line start — **not** the
+    /// `char` columns of [`LineCol`] — so this is the conversion the parse edit
+    /// path must use.
+    pub(crate) fn byte_to_point(&self, byte: usize) -> (usize, usize) {
+        let b = byte.min(self.rope.len_bytes());
+        let row = self.rope.byte_to_line(b);
+        let line_start = self.rope.line_to_byte(row);
+        (row, b - line_start)
     }
 }
 
@@ -333,5 +488,39 @@ mod tests {
         assert_eq!(b.line_count(), 3);
         assert_eq!(b.line(2).as_deref(), Some(""));
         assert_eq!(b.line(3), None);
+    }
+
+    #[test]
+    fn utf16_conversions_handle_astral() {
+        // "a😀b": 'a' (1 utf16), '😀' (2 utf16 — a surrogate pair), 'b' (1 utf16).
+        let b = TextBuffer::from_text("a😀b");
+        assert_eq!(b.line_col_to_utf16(LineCol::new(0, 0)), 0);
+        assert_eq!(b.line_col_to_utf16(LineCol::new(0, 1)), 1); // before emoji
+        assert_eq!(b.line_col_to_utf16(LineCol::new(0, 2)), 3); // after emoji (1 + 2)
+        assert_eq!(b.line_col_to_utf16(LineCol::new(0, 3)), 4); // after 'b'
+        // Round-trip: utf16 col 3 → char col 2.
+        assert_eq!(b.utf16_to_line_col(0, 3), LineCol::new(0, 2));
+        // A column landing mid-surrogate (1) rounds down to the emoji start.
+        assert_eq!(b.utf16_to_line_col(0, 2), LineCol::new(0, 1));
+    }
+
+    #[test]
+    fn adopt_content_bumps_version_and_clears_dirty() {
+        let mut b = TextBuffer::from_text("old"); // version 0
+        let fresh = TextBuffer::from_bytes(b"new\n").unwrap_or_default();
+        b.adopt_content(fresh);
+        assert_eq!(b.version(), 1, "reload keeps the version monotonic");
+        assert_eq!(b.line(0).as_deref(), Some("new"));
+        assert!(!b.is_dirty(), "a reloaded buffer matches disk");
+        assert!(b.undo().is_none(), "reload drops undo history");
+    }
+
+    #[test]
+    fn byte_to_point_uses_byte_columns() {
+        // 'é' is two bytes, so the byte column after it is 2 even though it is one char.
+        let b = TextBuffer::from_text("é=1\nx");
+        assert_eq!(b.byte_to_point(0), (0, 0));
+        assert_eq!(b.byte_to_point(2), (0, 2)); // after 'é' — byte column 2, char column 1
+        assert_eq!(b.byte_to_point(5), (1, 0)); // start of line 1 ("é=1\n" = 5 bytes)
     }
 }

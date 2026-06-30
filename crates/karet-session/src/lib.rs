@@ -12,14 +12,18 @@
 //! split is *additive*: lift [`api`] into a `karet-protocol` crate, add a remote
 //! `Backend` implementation, and the UI code is unchanged.
 //!
-//! This is the implementation *skeleton*: the public joints are defined; the
-//! document/producer orchestration (plus the migrated format-on-save, spell-check
-//! and settings/session-restore logic) is filled in separately.
+//! The document store, the editing fast paths (open / apply / save / undo / redo)
+//! and incremental tree-sitter highlighting are live; the producer engines
+//! (file-watching, LSP, format-on-save, spell-check) attach in later milestones.
+//! In local mode the UI renders from the [`DocSnapshot`]s pushed on the snapshot
+//! stream (`local`), not by borrowing a [`DocumentView`] across the actor boundary.
 
 pub mod api;
 pub mod backend;
+pub mod local;
 pub mod session;
 
 pub use api::{Command, DecorationLayer, DocumentId, Event, RequestId, ViewId};
 pub use backend::{Backend, BackendError, LocalBackend, local};
+pub use local::{DocSnapshot, SnapshotRx};
 pub use session::{DocumentView, EventRx, Session, SessionConfig, SessionError};

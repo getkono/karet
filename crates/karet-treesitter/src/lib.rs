@@ -71,6 +71,27 @@ impl ParserPool {
     }
 }
 
+/// A neutral edit descriptor mirroring tree-sitter's `InputEdit`.
+///
+/// Points are `(row, column-in-bytes)` — tree-sitter columns are byte offsets from
+/// the line start, **not** `char` columns. `karet-text` produces these from each
+/// applied edit; feed them to [`SyntaxTree::edit`] before reparsing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Edit {
+    /// Byte offset where the edit starts.
+    pub start_byte: usize,
+    /// Byte offset of the end of the replaced region in the old text.
+    pub old_end_byte: usize,
+    /// Byte offset of the end of the inserted text in the new text.
+    pub new_end_byte: usize,
+    /// `(row, byte-column)` of `start_byte`.
+    pub start_point: (usize, usize),
+    /// `(row, byte-column)` of `old_end_byte`.
+    pub old_end_point: (usize, usize),
+    /// `(row, byte-column)` of `new_end_byte`.
+    pub new_end_point: (usize, usize),
+}
+
 /// A parsed syntax tree for one buffer.
 pub struct SyntaxTree {
     tree: tree_sitter::Tree,
@@ -94,7 +115,9 @@ impl SyntaxTree {
     /// Re-parse after the buffer changed to `text`.
     ///
     /// Without a prior edit applied to the old tree this is a full reparse; that is
-    /// acceptable for the snippet-sized inputs the MVP highlights.
+    /// acceptable for the snippet-sized inputs the MVP highlights. Prefer
+    /// [`edit`](Self::edit) + [`reparse_with`](Self::reparse_with) for genuine
+    /// incremental reparsing.
     ///
     /// # Errors
     /// Returns [`TsError::ParseFailed`] if re-parsing fails.
@@ -102,6 +125,47 @@ impl SyntaxTree {
         let parser = pool.parser_for(self.lang)?;
         let tree = parser
             .parse(text.as_bytes(), Some(&self.tree))
+            .ok_or(TsError::ParseFailed)?;
+        self.tree = tree;
+        Ok(())
+    }
+
+    /// Mark an [`Edit`] on the tree so the next reparse can reuse unaffected
+    /// subtrees.
+    ///
+    /// Apply edits in **descending start-byte order** with original-frame
+    /// coordinates (matching `karet-text`'s applied edits), so each edit's
+    /// coordinates remain valid against the tree's evolving state.
+    pub fn edit(&mut self, edit: &Edit) {
+        self.tree.edit(&tree_sitter::InputEdit {
+            start_byte: edit.start_byte,
+            old_end_byte: edit.old_end_byte,
+            new_end_byte: edit.new_end_byte,
+            start_position: to_point(edit.start_point),
+            old_end_position: to_point(edit.old_end_point),
+            new_end_position: to_point(edit.new_end_point),
+        });
+    }
+
+    /// Incrementally re-parse the edited tree, reading the new text through `read`
+    /// (a byte-offset → byte-slice callback), reusing subtrees the prior
+    /// [`edit`](Self::edit) calls left untouched.
+    ///
+    /// `read(byte)` must return the buffer bytes starting at `byte` (e.g. a rope
+    /// chunk), or an empty slice at/after the end — so the parser is fed without
+    /// ever materializing the whole file as one `String`.
+    ///
+    /// # Errors
+    /// Returns [`TsError::ParseFailed`] if re-parsing fails.
+    pub fn reparse_with<T, F>(&mut self, pool: &mut ParserPool, mut read: F) -> Result<(), TsError>
+    where
+        T: AsRef<[u8]>,
+        F: FnMut(usize) -> T,
+    {
+        let parser = pool.parser_for(self.lang)?;
+        let mut callback = |byte: usize, _: tree_sitter::Point| read(byte);
+        let tree = parser
+            .parse_with_options(&mut callback, Some(&self.tree), None)
             .ok_or(TsError::ParseFailed)?;
         self.tree = tree;
         Ok(())
@@ -181,6 +245,11 @@ impl Query {
     }
 }
 
+/// Convert a neutral `(row, byte-column)` point to a tree-sitter `Point`.
+fn to_point((row, column): (usize, usize)) -> tree_sitter::Point {
+    tree_sitter::Point { row, column }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,6 +287,40 @@ mod tests {
         assert!(
             caps.iter()
                 .all(|c| (c.capture as usize) < query.capture_names().len())
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn incremental_reparse_matches_full() -> Result<(), TsError> {
+        // Insert "let z=1;" before the closing brace and reparse incrementally;
+        // the captures must be identical to a fresh full parse of the new text.
+        let Some(lang) = language_id_from_path(std::path::Path::new("x.rs")) else {
+            return Ok(());
+        };
+        let old = "fn main() {}";
+        let new = "fn main() {let z=1;}";
+        let mut pool = ParserPool::new();
+        let mut tree = SyntaxTree::parse(&mut pool, lang, old)?;
+        // The insertion happens at byte 11 (before '}'), 8 bytes long, same line.
+        tree.edit(&Edit {
+            start_byte: 11,
+            old_end_byte: 11,
+            new_end_byte: 19,
+            start_point: (0, 11),
+            old_end_point: (0, 11),
+            new_end_point: (0, 19),
+        });
+        tree.reparse_with(&mut pool, |byte| new.as_bytes().get(byte..).unwrap_or(&[]))?;
+
+        let full = SyntaxTree::parse(&mut pool, lang, new)?;
+        let query_src = highlights_query(lang).ok_or(TsError::UnknownLanguage)?;
+        let query = Query::compile(lang, query_src)?;
+        assert_eq!(
+            tree.captures(&query, new),
+            full.captures(&query, new),
+            "incremental reparse must match a full parse"
         );
         Ok(())
     }

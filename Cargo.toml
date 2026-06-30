@@ -41,6 +41,7 @@ karet-fuzzy      = { path = "crates/karet-fuzzy",      version = "0.1.0" }
 karet-widgets    = { path = "crates/karet-widgets",    version = "0.1.0" }
 karet-editor     = { path = "crates/karet-editor",     version = "0.1.0" }
 karet-session    = { path = "crates/karet-session",    version = "0.1.0" }
+karet-watch      = { path = "crates/karet-watch",      version = "0.1.0" }
 
 # --- shared external dependencies (versions verified via `cargo add`) ---
 # Foundational
@@ -60,8 +61,9 @@ crossterm = "0.29.0"
 unicode-width = "0.2.2"
 unicode-segmentation = "1.13.3"
 # Text / rope
-ropey   = "1.6.1"
-memmap2 = "0.9.11"
+ropey    = "1.6.1"
+memmap2  = "0.9.11"
+tempfile = "3.27"                      # atomic crash-safe file saves (karet-text)
 # Tree-sitter (sole syntax backend)
 tree-sitter           = "0.26.9"
 tree-sitter-highlight = "0.26.9"
@@ -101,6 +103,9 @@ lsp-types = "0.97.0"
 # (mandatory, not-implied) hash backend; `max-performance-safe` is pure-Rust (no C
 # toolchain). We trim the heavy default `extras` (archive/credentials/mailmap/blame/…).
 gix = { version = "0.85.0", default-features = false, features = ["status", "max-performance-safe", "sha1"] }
+# Filesystem watching (karet-watch)
+notify                 = "8.2"
+notify-debouncer-full  = "0.7"
 # Search
 ignore        = "0.4.26"
 grep-searcher = "0.1.16"
