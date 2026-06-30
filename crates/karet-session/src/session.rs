@@ -96,7 +96,7 @@ impl Session {
         let (watcher, fs_rx) = if config.roots.is_empty() {
             (None, None)
         } else {
-            match Watcher::spawn(&config.roots) {
+            match Watcher::spawn(&config.roots, &[]) {
                 Ok((w, rx)) => (Some(w), Some(rx)),
                 Err(_) => (None, None),
             }
