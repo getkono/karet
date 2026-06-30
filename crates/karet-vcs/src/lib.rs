@@ -44,6 +44,8 @@ pub enum StatusKind {
     Renamed,
     /// An untracked file.
     Untracked,
+    /// A file with unresolved merge conflicts.
+    Conflicted,
 }
 
 /// One file's working-tree status.

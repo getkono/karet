@@ -95,9 +95,7 @@ impl Repository {
         let mut out = Vec::new();
         for item in iter {
             let item = item.map_err(to_git)?;
-            if let Some(fc) = self.unstaged_item(item)? {
-                out.push(fc);
-            }
+            out.extend(self.unstaged_item(item)?);
         }
         Ok(out)
     }
@@ -182,11 +180,14 @@ impl Repository {
         Ok(Some(fc))
     }
 
-    /// Convert one index vs worktree status item into a [`FileChange`] (or `None`).
+    /// Convert one index vs worktree status item into zero or more [`FileChange`]s.
+    ///
+    /// Most items yield a single change; an untracked *directory* expands to one
+    /// change per regular file it contains (see [`Self::untracked_dir_changes`]).
     fn unstaged_item(
         &self,
         item: gix::status::index_worktree::Item,
-    ) -> Result<Option<FileChange>, VcsError> {
+    ) -> Result<Vec<FileChange>, VcsError> {
         use gix::dir::entry::{Kind, Status as DirStatus};
         use gix::status::index_worktree::Item as I;
         use gix::status::plumbing::index_as_worktree::{Change as WtChange, EntryStatus};
@@ -236,32 +237,96 @@ impl Repository {
                             new,
                         }
                     }
-                    // Submodule changes, conflicts, and bookkeeping updates are skipped.
-                    _ => return Ok(None),
+                    // An unresolved merge conflict: show the worktree file (with its
+                    // conflict markers) as the "after" side.
+                    EntryStatus::Conflict { .. } => {
+                        let (bin, new) = self.read_worktree_text(rela_path.as_ref())?;
+                        let (is_binary, old, new) = finalize(bin, String::new(), new);
+                        FileChange {
+                            path,
+                            old_path: None,
+                            status: StatusKind::Conflicted,
+                            is_binary,
+                            old,
+                            new,
+                        }
+                    }
+                    // Submodule changes and bookkeeping updates are skipped.
+                    _ => return Ok(Vec::new()),
                 };
-                Ok(Some(fc))
+                Ok(vec![fc])
             }
-            I::DirectoryContents { entry, .. } => {
-                if entry.status == DirStatus::Untracked
-                    && matches!(entry.disk_kind, Some(Kind::File | Kind::Symlink))
-                {
+            I::DirectoryContents { entry, .. } => match (entry.status, entry.disk_kind) {
+                (DirStatus::Untracked, Some(Kind::File | Kind::Symlink)) => {
                     let (bin, new) = self.read_worktree_text(entry.rela_path.as_ref())?;
                     let (is_binary, old, new) = finalize(bin, String::new(), new);
-                    Ok(Some(FileChange {
+                    Ok(vec![FileChange {
                         path: bstr_to_path(entry.rela_path.as_ref()),
                         old_path: None,
                         status: StatusKind::Untracked,
                         is_binary,
                         old,
                         new,
-                    }))
+                    }])
+                }
+                // gix collapses a wholly-untracked directory into a single entry
+                // (rather than emitting its files); recurse so each file is listed.
+                // It only collapses when it did *not* emit the inner files, so this
+                // cannot produce duplicates.
+                (DirStatus::Untracked, Some(Kind::Directory)) => {
+                    self.untracked_dir_changes(&bstr_to_path(entry.rela_path.as_ref()))
+                }
+                _ => Ok(Vec::new()),
+            },
+            // Rewrite items don't fire while index-worktree rename tracking is disabled.
+            I::Rewrite { .. } => Ok(Vec::new()),
+        }
+    }
+
+    /// List every regular file inside the untracked directory at repo-relative
+    /// `dir`, as one [`StatusKind::Untracked`] [`FileChange`] each. Symlinked
+    /// subdirectories are skipped to avoid cycles.
+    fn untracked_dir_changes(&self, dir: &Path) -> Result<Vec<FileChange>, VcsError> {
+        let Some(root) = self.inner.workdir() else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        // (repo-relative path, absolute path) pairs still to visit.
+        let mut stack = vec![(dir.to_path_buf(), root.join(dir))];
+        while let Some((rel, abs)) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&abs) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let child_rel = rel.join(&name);
+                let child_abs = abs.join(&name);
+                // `file_type` follows no symlink, so a symlinked dir reports as a
+                // symlink and is treated as a file (never recursed into).
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if file_type.is_dir() {
+                    stack.push((child_rel, child_abs));
                 } else {
-                    Ok(None)
+                    let (bin, new) = match std::fs::read(&child_abs) {
+                        Ok(data) => classify(&data),
+                        Err(_) => (true, String::new()),
+                    };
+                    let (is_binary, old, new) = finalize(bin, String::new(), new);
+                    out.push(FileChange {
+                        path: child_rel,
+                        old_path: None,
+                        status: StatusKind::Untracked,
+                        is_binary,
+                        old,
+                        new,
+                    });
                 }
             }
-            // Rewrite items don't fire while index-worktree rename tracking is disabled.
-            I::Rewrite { .. } => Ok(None),
         }
+        out.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(out)
     }
 
     /// Read object `id` as text, returning `(is_binary, text)`; `text` is empty when binary.
@@ -557,6 +622,54 @@ mod tests {
         let changes = r.changes(Selection::Unstaged, Some(Path::new(&name)))?;
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].path, PathBuf::from("a.txt"));
+        Ok(())
+    }
+
+    #[test]
+    fn untracked_files_in_new_dir_are_listed() -> Result<(), VcsError> {
+        // A brand-new, wholly-untracked directory tree: every file inside it must
+        // surface, not just the top-level ones.
+        let repo = init_repo()?;
+        write(&repo.path, "newdir/a.txt", b"aaa\n")?;
+        write(&repo.path, "newdir/sub/b.txt", b"bbb\n")?;
+        let r = Repository::discover(&repo.path)?;
+
+        let changes = r.changes(Selection::Unstaged, None)?;
+        let paths: Vec<PathBuf> = changes.iter().map(|c| c.path.clone()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("newdir/a.txt"),
+                PathBuf::from("newdir/sub/b.txt"),
+            ]
+        );
+        assert!(changes.iter().all(|c| c.status == StatusKind::Untracked));
+        Ok(())
+    }
+
+    #[test]
+    fn conflicted_file_is_reported() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        write(&repo.path, "a.txt", b"base\n")?;
+        git(&repo.path, &["add", "a.txt"])?;
+        git(&repo.path, &["commit", "-q", "-m", "base"])?;
+        // Diverge the same line on a feature branch and on the original branch.
+        git(&repo.path, &["checkout", "-q", "-b", "feature"])?;
+        write(&repo.path, "a.txt", b"feature\n")?;
+        git(&repo.path, &["commit", "-q", "-am", "feature"])?;
+        git(&repo.path, &["checkout", "-q", "-"])?;
+        write(&repo.path, "a.txt", b"main\n")?;
+        git(&repo.path, &["commit", "-q", "-am", "main"])?;
+        // The merge conflicts; `git merge` exits non-zero, which is expected here.
+        let _ = git(&repo.path, &["merge", "--no-edit", "feature"]);
+        let r = Repository::discover(&repo.path)?;
+
+        let changes = r.changes(Selection::Unstaged, None)?;
+        let fc = changes
+            .iter()
+            .find(|c| c.path.as_path() == Path::new("a.txt"))
+            .ok_or_else(|| VcsError::Git("conflicted file not reported".into()))?;
+        assert_eq!(fc.status, StatusKind::Conflicted);
         Ok(())
     }
 }
