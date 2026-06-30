@@ -2389,6 +2389,7 @@ dependencies = [
  "color-eyre",
  "crossterm",
  "directories",
+ "gix",
  "ignore",
  "karet-core",
  "karet-dap",

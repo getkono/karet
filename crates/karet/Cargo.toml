@@ -12,6 +12,7 @@ readme = "README.md"
 keywords.workspace     = true
 categories.workspace   = true
 publish = false                       # the demo application is not published to crates.io
+build   = "build.rs"                  # embeds build provenance into `karet -V` (see build.rs)
 
 [[bin]]
 name = "karet"
@@ -48,6 +49,12 @@ thiserror.workspace = true           # error types for the merged clipboard/inpu
 base64.workspace = true              # `clipboard` module (OSC 52), merged from karet-clipboard
 toml.workspace = true                # `input` module keymap config, merged from karet-input
 serde.workspace = true               # `input` module keymap config
+
+# Build-time only: reuse the existing pure-Rust `gix` (already pinned with `status`)
+# to read the commit / dirty / commit-time provenance baked into `karet -V`. No new
+# dependency and no external `git` binary — see build.rs.
+[build-dependencies]
+gix.workspace = true
 
 # The application is intentionally NOT a stable-API library, so it does not inherit
 # the strict workspace library lints (`[lints] workspace = true` is omitted): it may
