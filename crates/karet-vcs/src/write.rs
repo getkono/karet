@@ -242,4 +242,32 @@ mod tests {
         assert!(r.changes(Selection::Unstaged, None)?.is_empty());
         Ok(())
     }
+
+    #[test]
+    fn staging_in_a_linked_worktree_uses_the_worktree_index() -> Result<(), VcsError> {
+        let main = init_repo()?;
+        write(&main.0, "a.txt", b"base\n")?;
+        git(&main.0, &["add", "a.txt"])?;
+        git(&main.0, &["commit", "-q", "-m", "init"])?;
+        // Create a linked worktree (its index/HEAD live in .git/worktrees/wt).
+        git(&main.0, &["worktree", "add", "-q", "-b", "feature", "wt"])?;
+        let wt = main.0.join("wt");
+
+        // Modify and stage the file *in the worktree* via karet-vcs.
+        write(&wt, "a.txt", b"changed\n")?;
+        let r = Repository::discover(&wt)?;
+        r.stage(&[PathBuf::from("a.txt")])?;
+
+        // The worktree's index shows the staged modification...
+        let staged = r.changes(Selection::Staged, None)?;
+        assert!(
+            staged
+                .iter()
+                .any(|c| c.path.as_path() == Path::new("a.txt") && c.status == StatusKind::Modified)
+        );
+        // ...while the main worktree's index is untouched.
+        let main_repo = Repository::discover(&main.0)?;
+        assert!(main_repo.changes(Selection::Staged, None)?.is_empty());
+        Ok(())
+    }
 }

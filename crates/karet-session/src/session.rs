@@ -933,4 +933,36 @@ mod tests {
                 .any(|c| c.path == file && c.status == karet_vcs::StatusKind::Added)
         );
     }
+
+    #[test]
+    fn filesystem_event_refreshes_vcs_status() {
+        let Some((_dir, root, _file)) = init_temp_repo() else {
+            return;
+        };
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root.clone()],
+            ..SessionConfig::default()
+        });
+        // Initial status: just the seeded `a.txt`.
+        let Some((_staged, working)) = latest_vcs_status(&mut events) else {
+            return;
+        };
+        assert_eq!(working.len(), 1);
+
+        // A new file appears on disk; the debounced watcher would deliver this event.
+        if std::fs::write(root.join("b.txt"), "hi\n").is_err() {
+            return;
+        }
+        session.handle_fs_event(karet_watch::FsEvent {
+            kind: karet_watch::FsEventKind::Created,
+            paths: vec![root.join("b.txt")],
+        });
+
+        // The recompute re-emits a status that now lists both untracked files.
+        let refreshed = latest_vcs_status(&mut events);
+        assert!(refreshed.is_some(), "fs event should refresh the status");
+        if let Some((_staged, working)) = refreshed {
+            assert_eq!(working.len(), 2);
+        }
+    }
 }
