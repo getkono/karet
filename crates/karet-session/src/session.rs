@@ -14,6 +14,7 @@ use karet_text::{AppliedEdit, EditCause, EditContext, TextBuffer};
 use karet_treesitter::{
     LanguageId, ParserPool, SyntaxTree, language_id_from_path, language_name_from_path,
 };
+use karet_vcs::{FileChange, Repository, Selection as VcsSelection, VcsError};
 use karet_watch::{FsEvent, Watcher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -83,6 +84,12 @@ pub struct Session {
     watcher: Option<Watcher>,
     /// The watcher's event stream, taken by [`crate::backend::local`] for the actor.
     fs_rx: Option<mpsc::UnboundedReceiver<FsEvent>>,
+    /// The source-control repository for the first workspace root, if any.
+    vcs: Option<Repository>,
+    /// The last emitted `(staged, working)` status. Spontaneous recomputes (from
+    /// filesystem events) emit only when this changes, which absorbs the feedback
+    /// from the session's own index writes.
+    last_vcs: Option<(Vec<FileChange>, Vec<FileChange>)>,
 }
 
 impl Session {
@@ -91,17 +98,28 @@ impl Session {
     pub fn new(config: SessionConfig) -> (Self, EventRx, SnapshotRx) {
         let (events, erx) = mpsc::unbounded_channel();
         let (snapshots, srx) = mpsc::unbounded_channel();
+        // Discover the source-control repository (from the first root) before the
+        // watcher, so its git-metadata directories can be watched for index/HEAD/refs
+        // changes — that is what keeps the status fresh after external `git` commands.
+        let vcs = config
+            .roots
+            .first()
+            .and_then(|root| Repository::discover(root).ok());
+        let git_dirs = vcs
+            .as_ref()
+            .map(Repository::metadata_dirs)
+            .unwrap_or_default();
         // Best-effort: a watcher failure (or no roots) just disables external-change
         // detection; editing still works.
         let (watcher, fs_rx) = if config.roots.is_empty() {
             (None, None)
         } else {
-            match Watcher::spawn(&config.roots, &[]) {
+            match Watcher::spawn(&config.roots, &git_dirs) {
                 Ok((w, rx)) => (Some(w), Some(rx)),
                 Err(_) => (None, None),
             }
         };
-        let session = Self {
+        let mut session = Self {
             config,
             events,
             snapshots,
@@ -114,7 +132,11 @@ impl Session {
             clock: Instant::now(),
             watcher,
             fs_rx,
+            vcs,
+            last_vcs: None,
         };
+        // Seed the client with the initial status; it buffers until the UI reads it.
+        session.emit_vcs_status(None);
         (session, EventRx(erx), SnapshotRx(srx))
     }
 
@@ -131,8 +153,92 @@ impl Session {
             // The caret is UI-local; `SetCursor` becomes meaningful when producers
             // (LSP at a position, multi-view sync) need it.
             Command::SetCursor { .. } => {}
+            Command::Stage { paths } => self.vcs_write(id, |repo| repo.stage(&paths)),
+            Command::Unstage { paths } => self.vcs_write(id, |repo| repo.unstage(&paths)),
+            Command::Discard { paths } => self.vcs_write(id, |repo| repo.discard(&paths)),
+            Command::StageAll => self.vcs_write(id, Repository::stage_all),
+            Command::UnstageAll => self.vcs_write(id, Repository::unstage_all),
+            Command::Commit { message } => self.commit(id, &message),
+            Command::RefreshVcs => self.emit_vcs_status(Some(id)),
             // Language-intelligence and search commands are wired in later milestones.
             _ => {}
+        }
+    }
+
+    // --- source control ---------------------------------------------------
+
+    /// Compute the current `(staged, working)` change sets, or `None` when there is
+    /// no repository. A read failure yields empty sets rather than erroring.
+    fn compute_vcs(&self) -> Option<(Vec<FileChange>, Vec<FileChange>)> {
+        let repo = self.vcs.as_ref()?;
+        let staged = repo.changes(VcsSelection::Staged, None).unwrap_or_default();
+        let working = repo
+            .changes(VcsSelection::Unstaged, None)
+            .unwrap_or_default();
+        Some((staged, working))
+    }
+
+    /// Recompute the source-control status and emit it. A requested refresh (`id`
+    /// set) always emits; a spontaneous one (from a filesystem event) emits only
+    /// when the status changed, collapsing event bursts and absorbing the feedback
+    /// from the session's own index writes.
+    fn emit_vcs_status(&mut self, id: Option<RequestId>) {
+        let Some(status) = self.compute_vcs() else {
+            return;
+        };
+        if id.is_none() && self.last_vcs.as_ref() == Some(&status) {
+            return;
+        }
+        let (staged, working) = status.clone();
+        self.last_vcs = Some(status);
+        self.emit(id, Event::VcsStatus { staged, working });
+    }
+
+    /// Run a write action against the repository, then force a fresh status (so the
+    /// user always sees the result of their action). Failures surface as a
+    /// [`Event::Progress`] message.
+    fn vcs_write(
+        &mut self,
+        id: RequestId,
+        action: impl FnOnce(&Repository) -> Result<(), VcsError>,
+    ) {
+        let Some(repo) = self.vcs.as_ref() else {
+            return;
+        };
+        match action(repo) {
+            Ok(()) => {
+                self.last_vcs = None;
+                self.emit_vcs_status(Some(id));
+            }
+            Err(e) => self.emit(
+                Some(id),
+                Event::Progress {
+                    message: e.to_string(),
+                    percent: None,
+                },
+            ),
+        }
+    }
+
+    /// Commit the staged changes, emitting [`Event::Committed`] then a fresh status,
+    /// or a [`Event::Progress`] message on failure (e.g. conflicts or no identity).
+    fn commit(&mut self, id: RequestId, message: &str) {
+        let Some(repo) = self.vcs.as_ref() else {
+            return;
+        };
+        match repo.commit(message) {
+            Ok(oid) => {
+                self.emit(Some(id), Event::Committed { oid });
+                self.last_vcs = None;
+                self.emit_vcs_status(Some(id));
+            }
+            Err(e) => self.emit(
+                Some(id),
+                Event::Progress {
+                    message: e.to_string(),
+                    percent: None,
+                },
+            ),
         }
     }
 
@@ -160,6 +266,10 @@ impl Session {
                 self.on_external_change(doc_id, path);
             }
         }
+        // Any worktree edit or watched git-metadata change can alter status. The
+        // event is already debounced and the emit is change-gated, so a burst (and
+        // the session's own index writes) collapse to at most one update.
+        self.emit_vcs_status(None);
     }
 
     /// Borrow a read-only view of a document for local-mode rendering or tests.
@@ -752,5 +862,75 @@ mod tests {
         assert!(session.document(doc).is_some());
         session.handle(RequestId(4), Command::CloseDocument { doc });
         assert!(session.document(doc).is_none());
+    }
+
+    /// Initialize a temp git repository with one untracked `a.txt`, returning the
+    /// temp dir, its root path, and the repo-relative file path. `None` if `git`
+    /// isn't available.
+    fn init_temp_repo() -> Option<(tempfile::TempDir, PathBuf, PathBuf)> {
+        let dir = tempfile::tempdir().ok()?;
+        let root = dir.path().to_path_buf();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .status()
+                .ok()
+                .filter(std::process::ExitStatus::success)
+        };
+        run(&["init", "-q"])?;
+        run(&["config", "user.email", "test@example.com"])?;
+        run(&["config", "user.name", "karet test"])?;
+        std::fs::write(root.join("a.txt"), "hello\n").ok()?;
+        Some((dir, root, PathBuf::from("a.txt")))
+    }
+
+    /// Drain the queued events and return the most recent [`Event::VcsStatus`].
+    fn latest_vcs_status(events: &mut EventRx) -> Option<(Vec<FileChange>, Vec<FileChange>)> {
+        let mut found = None;
+        while let Some((_, ev)) = events.try_recv() {
+            if let Event::VcsStatus { staged, working } = ev {
+                found = Some((staged, working));
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn staging_through_the_session_updates_status() {
+        let Some((_dir, root, file)) = init_temp_repo() else {
+            return;
+        };
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root],
+            ..SessionConfig::default()
+        });
+
+        // The session seeds an initial status: the file is untracked in `working`.
+        let Some((staged, working)) = latest_vcs_status(&mut events) else {
+            return;
+        };
+        assert!(staged.is_empty());
+        assert!(
+            working
+                .iter()
+                .any(|c| c.path == file && c.status == karet_vcs::StatusKind::Untracked)
+        );
+
+        // Stage it → a fresh status with the file staged as Added.
+        session.handle(
+            RequestId(1),
+            Command::Stage {
+                paths: vec![file.clone()],
+            },
+        );
+        let Some((staged, _working)) = latest_vcs_status(&mut events) else {
+            return;
+        };
+        assert!(
+            staged
+                .iter()
+                .any(|c| c.path == file && c.status == karet_vcs::StatusKind::Added)
+        );
     }
 }
