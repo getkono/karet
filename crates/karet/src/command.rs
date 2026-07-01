@@ -6,6 +6,11 @@
 //! the palette shows for it can never drift. Positional, non-nameable interactions
 //! (close tab *N*, reorder tabs, place the caret at a pixel) are *not* commands —
 //! they call [`crate::app::App`] methods directly from the mouse handler.
+//!
+//! The trailing group of *modal-scoped* commands (overlay / find / search / commit
+//! / discard navigation) is resolved only while the matching
+//! [`crate::keymap::Modal`] context is active and is excluded from the palette
+//! (see [`Command::in_palette`]).
 
 use crate::keymap::SidebarPanel;
 
@@ -148,6 +153,43 @@ pub enum Command {
     ShowBlame,
     /// Open a semantic-blame view narrowed to the function under the caret.
     BlameFunction,
+
+    // Modal-scoped commands. These are resolved only while a modal context is
+    // active (see [`crate::keymap::Modal`]) and never appear in the command palette.
+    /// Move the overlay selection up.
+    OverlayUp,
+    /// Move the overlay selection down.
+    OverlayDown,
+    /// Accept the highlighted overlay row.
+    OverlayAccept,
+    /// Dismiss the overlay.
+    OverlayCancel,
+    /// Jump to the next in-file find match.
+    FindNext,
+    /// Jump to the previous in-file find match.
+    FindPrev,
+    /// Close the find bar.
+    FindCancel,
+    /// Submit the commit message.
+    CommitSubmit,
+    /// Cancel the commit input.
+    CommitCancel,
+    /// Confirm the pending discard.
+    ConfirmDiscard,
+    /// Move the Search results selection up.
+    SearchSelectUp,
+    /// Move the Search results selection down.
+    SearchSelectDown,
+    /// Open the selected Search result.
+    SearchOpen,
+    /// Begin editing the Search query.
+    SearchBeginInput,
+    /// Leave the Search panel (from the results list).
+    SearchQuit,
+    /// Run the Search query and show its results.
+    SearchRun,
+    /// Stop editing the Search query without leaving the panel.
+    SearchEndInput,
 }
 
 impl Command {
@@ -226,6 +268,23 @@ impl Command {
             Self::ScmRefresh => "Source Control: Refresh",
             Self::ShowBlame => "Source Control: Show Blame",
             Self::BlameFunction => "Source Control: Blame This Function",
+            Self::OverlayUp => "Overlay: Select Previous",
+            Self::OverlayDown => "Overlay: Select Next",
+            Self::OverlayAccept => "Overlay: Accept",
+            Self::OverlayCancel => "Overlay: Cancel",
+            Self::FindNext => "Find: Next Match",
+            Self::FindPrev => "Find: Previous Match",
+            Self::FindCancel => "Find: Close",
+            Self::CommitSubmit => "Commit: Submit",
+            Self::CommitCancel => "Commit: Cancel",
+            Self::ConfirmDiscard => "Source Control: Confirm Discard",
+            Self::SearchSelectUp => "Search: Select Previous",
+            Self::SearchSelectDown => "Search: Select Next",
+            Self::SearchOpen => "Search: Open Selected Result",
+            Self::SearchBeginInput => "Search: Edit Query",
+            Self::SearchQuit => "Search: Leave Panel",
+            Self::SearchRun => "Search: Run Query",
+            Self::SearchEndInput => "Search: Stop Editing Query",
         }
     }
 

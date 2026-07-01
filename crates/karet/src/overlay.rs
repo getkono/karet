@@ -6,19 +6,13 @@
 
 use std::path::PathBuf;
 
-use crossterm::event::KeyCode;
-use crossterm::event::KeyEvent;
-use crossterm::event::KeyModifiers;
-
 use crate::command::Command;
 use crate::command::{self};
 use crate::keymap;
 
-/// What an overlay key press resulted in.
+/// The outcome of accepting the highlighted overlay row.
 pub enum OverlayEvent {
-    /// The key was consumed; keep the overlay open.
-    Consumed,
-    /// Dismiss the overlay.
+    /// Nothing was highlighted; dismiss the overlay.
     Close,
     /// Open the chosen file.
     AcceptFile(PathBuf),
@@ -98,42 +92,29 @@ impl<T> Picker<T> {
         self.filtered.get(self.selected).map(|&i| &self.items[i].1)
     }
 
-    /// Handle a key; returns whether the picker was closed or accepted a row.
-    fn handle_key(&mut self, key: KeyEvent) -> PickerEvent {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        match key.code {
-            KeyCode::Esc => return PickerEvent::Close,
-            KeyCode::Enter => return PickerEvent::Accept,
-            KeyCode::Backspace => {
-                self.query.pop();
-                self.refilter();
-            },
-            KeyCode::Up => self.selected = self.selected.saturating_sub(1),
-            KeyCode::Char('p') if ctrl => self.selected = self.selected.saturating_sub(1),
-            KeyCode::Down => self.move_down(),
-            KeyCode::Char('n') if ctrl => self.move_down(),
-            KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
-                self.query.push(c);
-                self.refilter();
-            },
-            _ => {},
-        }
-        PickerEvent::Consumed
+    /// Move the selection up.
+    fn select_up(&mut self) {
+        self.selected = self.selected.saturating_sub(1);
     }
 
     /// Move the selection down, clamped to the filtered list.
-    fn move_down(&mut self) {
+    fn select_down(&mut self) {
         if !self.filtered.is_empty() {
             self.selected = (self.selected + 1).min(self.filtered.len() - 1);
         }
     }
-}
 
-/// The internal outcome of a [`Picker`] key press.
-enum PickerEvent {
-    Consumed,
-    Close,
-    Accept,
+    /// Append a character to the query and refilter.
+    fn push_char(&mut self, c: char) {
+        self.query.push(c);
+        self.refilter();
+    }
+
+    /// Remove the last query character and refilter.
+    fn pop_char(&mut self) {
+        self.query.pop();
+        self.refilter();
+    }
 }
 
 /// A modal overlay.
@@ -211,25 +192,51 @@ impl Overlay {
         }
     }
 
-    /// Handle a key, producing an [`OverlayEvent`] the app acts on.
-    pub fn handle_key(&mut self, key: KeyEvent) -> OverlayEvent {
+    /// Move the selection up.
+    pub fn select_up(&mut self) {
         match self {
-            Self::QuickOpen(p) => match p.handle_key(key) {
-                PickerEvent::Consumed => OverlayEvent::Consumed,
-                PickerEvent::Close => OverlayEvent::Close,
-                PickerEvent::Accept => p
-                    .accepted()
-                    .cloned()
-                    .map_or(OverlayEvent::Close, OverlayEvent::AcceptFile),
-            },
-            Self::CommandPalette(p) => match p.handle_key(key) {
-                PickerEvent::Consumed => OverlayEvent::Consumed,
-                PickerEvent::Close => OverlayEvent::Close,
-                PickerEvent::Accept => p
-                    .accepted()
-                    .copied()
-                    .map_or(OverlayEvent::Close, OverlayEvent::AcceptCommand),
-            },
+            Self::QuickOpen(p) => p.select_up(),
+            Self::CommandPalette(p) => p.select_up(),
+        }
+    }
+
+    /// Move the selection down.
+    pub fn select_down(&mut self) {
+        match self {
+            Self::QuickOpen(p) => p.select_down(),
+            Self::CommandPalette(p) => p.select_down(),
+        }
+    }
+
+    /// Append a character to the query.
+    pub fn push_char(&mut self, c: char) {
+        match self {
+            Self::QuickOpen(p) => p.push_char(c),
+            Self::CommandPalette(p) => p.push_char(c),
+        }
+    }
+
+    /// Remove the last query character.
+    pub fn pop_char(&mut self) {
+        match self {
+            Self::QuickOpen(p) => p.pop_char(),
+            Self::CommandPalette(p) => p.pop_char(),
+        }
+    }
+
+    /// The outcome of accepting the highlighted row (open a file / run a command),
+    /// or [`OverlayEvent::Close`] when nothing is highlighted.
+    #[must_use]
+    pub fn accept(&self) -> OverlayEvent {
+        match self {
+            Self::QuickOpen(p) => p
+                .accepted()
+                .cloned()
+                .map_or(OverlayEvent::Close, OverlayEvent::AcceptFile),
+            Self::CommandPalette(p) => p
+                .accepted()
+                .copied()
+                .map_or(OverlayEvent::Close, OverlayEvent::AcceptCommand),
         }
     }
 }
@@ -244,10 +251,6 @@ fn subsequence(needle: &str, hay: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
-
     #[test]
     fn subsequence_matches_in_order() {
         assert!(subsequence("ap", "app.rs"));
@@ -256,32 +259,20 @@ mod tests {
     }
 
     #[test]
-    fn typing_filters_and_enter_accepts() {
+    fn typing_filters_and_accept_opens() {
         let files = vec![
             ("app.rs".to_string(), PathBuf::from("/x/app.rs")),
             ("main.rs".to_string(), PathBuf::from("/x/main.rs")),
         ];
         let mut overlay = Overlay::quick_open(files);
         // Type "ma" -> only main.rs remains.
-        assert!(matches!(
-            overlay.handle_key(key(KeyCode::Char('m'))),
-            OverlayEvent::Consumed
-        ));
-        let _ = overlay.handle_key(key(KeyCode::Char('a')));
+        overlay.push_char('m');
+        overlay.push_char('a');
         assert_eq!(overlay.rows(), vec!["main.rs"]);
-        match overlay.handle_key(key(KeyCode::Enter)) {
+        match overlay.accept() {
             OverlayEvent::AcceptFile(p) => assert_eq!(p, PathBuf::from("/x/main.rs")),
-            _ => unreachable!("enter accepts the single match"),
+            _ => unreachable!("accept opens the single match"),
         }
-    }
-
-    #[test]
-    fn esc_closes() {
-        let mut overlay = Overlay::command_palette();
-        assert!(matches!(
-            overlay.handle_key(key(KeyCode::Esc)),
-            OverlayEvent::Close
-        ));
     }
 
     #[test]
@@ -289,11 +280,11 @@ mod tests {
         let mut overlay = Overlay::command_palette();
         // "quit" filters to the Quit command.
         for c in "quit".chars() {
-            let _ = overlay.handle_key(key(KeyCode::Char(c)));
+            overlay.push_char(c);
         }
-        match overlay.handle_key(key(KeyCode::Enter)) {
+        match overlay.accept() {
             OverlayEvent::AcceptCommand(cmd) => assert_eq!(cmd, Command::Quit),
-            _ => unreachable!("enter accepts the filtered command"),
+            _ => unreachable!("accept runs the filtered command"),
         }
     }
 

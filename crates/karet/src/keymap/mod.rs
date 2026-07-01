@@ -16,10 +16,11 @@ pub use chord::ChordStyle;
 pub use chord::KeyChord;
 use chord::chord;
 use crossterm::event::KeyCode;
-use crossterm::event::KeyEvent;
+pub use layer::Context;
 pub use layer::Focus;
 pub use layer::FocusTarget;
 use layer::Layer;
+pub use layer::Modal;
 pub use layer::SidebarPanel;
 use layer::active_layers;
 
@@ -84,9 +85,15 @@ use KeyCode::PageUp;
 use KeyCode::Right;
 use KeyCode::Tab;
 use KeyCode::Up;
+use Layer::CommitInput;
 use Layer::DiffEditor;
+use Layer::DiscardConfirm;
 use Layer::Editor;
+use Layer::Find;
 use Layer::Global;
+use Layer::Overlay;
+use Layer::SearchInput;
+use Layer::SearchList;
 use Layer::Sidebar;
 use Layer::SourceControl;
 
@@ -197,15 +204,49 @@ static BINDINGS: &[Binding] = &[
     b(DiffEditor, false, false, false, Char('\\'), Command::ToggleDiffLayout),
     b(DiffEditor, false, false, false, Char(']'),  Command::NextChangedFile),
     b(DiffEditor, false, false, false, Char('['),  Command::PrevChangedFile),
+
+    // Modal contexts. Each is exclusive (see `active_layers`); any key with no
+    // binding here falls through to the modal's text input.
+    // Quick-open / command palette.
+    b(Overlay, false, false, false, Esc,       Command::OverlayCancel),
+    b(Overlay, false, false, false, Enter,     Command::OverlayAccept),
+    b(Overlay, false, false, false, Up,        Command::OverlayUp),
+    b(Overlay, true,  false, false, Char('p'), Command::OverlayUp),
+    b(Overlay, false, false, false, Down,      Command::OverlayDown),
+    b(Overlay, true,  false, false, Char('n'), Command::OverlayDown),
+    // In-file find bar.
+    b(Find, false, false, false, Esc,       Command::FindCancel),
+    b(Find, false, false, false, Enter,     Command::FindNext),
+    b(Find, false, false, false, Down,      Command::FindNext),
+    b(Find, false, false, false, Up,        Command::FindPrev),
+    b(Find, true,  false, false, Char('g'), Command::FindNext),
+    b(Find, true,  true,  false, Char('g'), Command::FindPrev),
+    // Commit-message input.
+    b(CommitInput, false, false, false, Esc,   Command::CommitCancel),
+    b(CommitInput, false, false, false, Enter, Command::CommitSubmit),
+    // Discard confirmation: only the confirm keys are bound; anything else cancels.
+    b(DiscardConfirm, false, false, false, Enter,     Command::ConfirmDiscard),
+    b(DiscardConfirm, false, false, false, Char('y'), Command::ConfirmDiscard),
+    b(DiscardConfirm, false, false, false, Char('Y'), Command::ConfirmDiscard),
+    // Workspace Search: navigating the results list.
+    b(SearchList, false, false, false, Esc,       Command::SearchQuit),
+    b(SearchList, false, false, false, Enter,     Command::SearchOpen),
+    b(SearchList, false, false, false, Down,      Command::SearchSelectDown),
+    b(SearchList, false, false, false, Char('j'), Command::SearchSelectDown),
+    b(SearchList, false, false, false, Up,        Command::SearchSelectUp),
+    b(SearchList, false, false, false, Char('k'), Command::SearchSelectUp),
+    b(SearchList, false, false, false, Char('/'), Command::SearchBeginInput),
+    // Workspace Search: editing the query.
+    b(SearchInput, false, false, false, Esc,   Command::SearchEndInput),
+    b(SearchInput, false, false, false, Enter, Command::SearchRun),
 ];
 
 /// Resolve a key press into a [`Command`], given the focus, the active sidebar
 /// panel, and whether the active tab is a diff. Returns `None` for keys with no
 /// binding.
 #[must_use]
-pub fn resolve(focus: Focus, panel: SidebarPanel, is_diff: bool, pending: &[KeyChord]) -> Resolved {
-    let target = FocusTarget::from(focus, panel, is_diff);
-    resolve_in(active_layers(target), pending)
+pub fn resolve(ctx: Context, pending: &[KeyChord]) -> Resolved {
+    resolve_in(active_layers(ctx), pending)
 }
 
 /// The outcome of resolving a (possibly partial) chord sequence.
@@ -236,18 +277,6 @@ fn resolve_in(layers: &[Layer], pending: &[KeyChord]) -> Resolved {
         Resolved::Pending
     } else {
         Resolved::None
-    }
-}
-
-/// Resolve a single key against only the global bindings (used by panels that
-/// capture text input, like the Search panel, which still want Ctrl-chords and Tab
-/// to work). Global bindings are all single-chord, so no pending state is needed.
-#[must_use]
-pub fn global(key: KeyEvent) -> Option<Command> {
-    let chord = KeyChord::from_event(key);
-    match resolve_in(&[Global], &[chord]) {
-        Resolved::Command(command) => Some(command),
-        _ => None,
     }
 }
 
@@ -312,6 +341,7 @@ impl Binding {
 
 #[cfg(test)]
 mod tests {
+    use crossterm::event::KeyEvent;
     use crossterm::event::KeyModifiers;
 
     use super::*;
@@ -334,9 +364,10 @@ mod tests {
         }
     }
 
-    /// Resolve a single key press to its command (ignoring pending sequences).
+    /// Resolve a single key press in a focus context to its command.
     fn res_in(focus: Focus, panel: SidebarPanel, is_diff: bool, key: KeyEvent) -> Option<Command> {
-        match resolve(focus, panel, is_diff, &[KeyChord::from_event(key)]) {
+        let ctx = Context::focus(FocusTarget::from(focus, panel, is_diff));
+        match resolve(ctx, &[KeyChord::from_event(key)]) {
             Resolved::Command(c) => Some(c),
             _ => None,
         }
@@ -543,12 +574,31 @@ mod tests {
     }
 
     #[test]
-    fn global_only_ignores_context_keys() {
-        // A bare 'j' is not global, but Ctrl+B is.
-        assert_eq!(global(key(KeyCode::Char('j'), KeyModifiers::NONE)), None);
+    fn search_modal_still_resolves_global_chords() {
+        // The Search modals layer their own keys over Global, so Ctrl+B still toggles
+        // the sidebar while a bare 'j' navigates the results rather than typing.
+        let list = Context::modal(Modal::SearchList, FocusTarget::Search);
         assert_eq!(
-            global(key(KeyCode::Char('b'), KeyModifiers::CONTROL)),
-            Some(Command::ToggleSidebar)
+            resolve(
+                list,
+                &[KeyChord::from_event(key(
+                    KeyCode::Char('b'),
+                    KeyModifiers::CONTROL
+                ))]
+            ),
+            Resolved::Command(Command::ToggleSidebar)
+        );
+        // A plain overlay is exclusive: Ctrl+B does not leak through to Global.
+        let overlay = Context::modal(Modal::Overlay, FocusTarget::Editor);
+        assert_eq!(
+            resolve(
+                overlay,
+                &[KeyChord::from_event(key(
+                    KeyCode::Char('b'),
+                    KeyModifiers::CONTROL
+                ))]
+            ),
+            Resolved::None
         );
     }
 
@@ -633,20 +683,20 @@ mod tests {
         let ctrl_w = KeyChord::from_event(key(KeyCode::Char('w'), KeyModifiers::CONTROL));
         let w = KeyChord::from_event(key(KeyCode::Char('w'), KeyModifiers::NONE));
         let esc = KeyChord::from_event(key(KeyCode::Esc, KeyModifiers::NONE));
-        let (f, p, d) = (Focus::Editor, SidebarPanel::Explorer, false);
+        let ed = Context::focus(FocusTarget::Editor);
         // Ctrl+K alone is a prefix of a longer binding — the resolver waits.
-        assert_eq!(resolve(f, p, d, &[ctrl_k]), Resolved::Pending);
+        assert_eq!(resolve(ed, &[ctrl_k]), Resolved::Pending);
         // Completing the sequence fires the command; the second chord disambiguates.
         assert_eq!(
-            resolve(f, p, d, &[ctrl_k, ctrl_w]),
+            resolve(ed, &[ctrl_k, ctrl_w]),
             Resolved::Command(Command::CloseAllTabs)
         );
         assert_eq!(
-            resolve(f, p, d, &[ctrl_k, w]),
+            resolve(ed, &[ctrl_k, w]),
             Resolved::Command(Command::CloseOtherTabs)
         );
         // A key that continues nothing breaks the sequence.
-        assert_eq!(resolve(f, p, d, &[ctrl_k, esc]), Resolved::None);
+        assert_eq!(resolve(ed, &[ctrl_k, esc]), Resolved::None);
     }
 
     #[test]
