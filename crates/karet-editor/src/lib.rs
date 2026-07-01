@@ -77,6 +77,28 @@ impl EditorState {
         }
     }
 
+    /// Scroll so `line` sits at the vertical center of the viewport. Handy for a
+    /// read-only viewer centering a search match. The scroll is clamped to the
+    /// buffer at render time.
+    pub fn center_on(&mut self, line: u32) {
+        let height = u32::from(self.last_height.max(1));
+        self.scroll_line = line.saturating_sub(height / 2);
+    }
+
+    /// Scroll the viewport down one page **without moving the cursor** — read-only
+    /// paging for a pager/viewer. The scroll is clamped to the buffer at render
+    /// time.
+    pub fn scroll_page_down(&mut self) {
+        let height = u32::from(self.last_height.max(1));
+        self.scroll_line = self.scroll_line.saturating_add(height);
+    }
+
+    /// Scroll the viewport up one page without moving the cursor (read-only paging).
+    pub fn scroll_page_up(&mut self) {
+        let height = u32::from(self.last_height.max(1));
+        self.scroll_line = self.scroll_line.saturating_sub(height);
+    }
+
     /// Move the cursor down one line, clamping to the buffer and keeping it in view.
     pub fn move_down(&mut self, buffer: &TextBuffer) {
         self.cursor.line = (self.cursor.line + 1).min(last_line(buffer));
@@ -224,6 +246,7 @@ pub struct Editor<'a> {
     folds: Option<&'a FoldRegions>,
     selection: Option<Range>,
     focused: bool,
+    read_only: bool,
 }
 
 impl<'a> Editor<'a> {
@@ -240,6 +263,7 @@ impl<'a> Editor<'a> {
             folds: None,
             selection: None,
             focused: false,
+            read_only: false,
         }
     }
 
@@ -254,6 +278,16 @@ impl<'a> Editor<'a> {
     #[must_use]
     pub fn focused(mut self, focused: bool) -> Self {
         self.focused = focused;
+        self
+    }
+
+    /// Render in read-only (pager) mode: never draw the caret and don't highlight
+    /// the cursor's line, even when [`focused`](Self::focused). Pair with
+    /// [`EditorState::scroll_page_down`]/[`center_on`](EditorState::center_on) to
+    /// page through a document without an editable cursor.
+    #[must_use]
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
         self
     }
 
@@ -425,7 +459,8 @@ impl StatefulWidget for Editor<'_> {
                 break;
             }
             let y = area.y + row;
-            let is_cursor = l == state.cursor.line;
+            // In read-only (pager) mode there is no active cursor line to emphasize.
+            let is_cursor = !self.read_only && l == state.cursor.line;
             let row_bg = if is_cursor {
                 cursor_line_bg
             } else {
@@ -463,8 +498,8 @@ impl StatefulWidget for Editor<'_> {
             buf.set_line(area.x, y, &Line::from(spans), area.width);
         }
 
-        // Draw the caret as a reversed cell when the editor is focused.
-        if self.focused {
+        // Draw the caret as a reversed cell when the editor is focused and editable.
+        if self.focused && !self.read_only {
             let cl = state.cursor.line;
             let top = state.scroll_line;
             if cl >= top
@@ -671,5 +706,48 @@ mod tests {
             buf[(0, 0)].bg,
             theme.role(ThemeRole::Background).to_ratatui()
         );
+    }
+
+    #[test]
+    fn read_only_suppresses_cursor_line_and_caret() {
+        let buffer = TextBuffer::from_text("alpha\nbeta\ngamma");
+        let theme = Theme::dark();
+        let mut state = EditorState::new();
+        state.cursor = LineCol::new(1, 0);
+        let area = Rect::new(0, 0, 20, 3);
+        let mut buf = Buffer::empty(area);
+        Editor::new(&buffer)
+            .theme(&theme)
+            .focused(true) // focused, but read-only must still hide the caret
+            .read_only(true)
+            .render(area, &mut buf, &mut state);
+
+        // The cursor's line carries the plain background, not the cursor-line color.
+        assert_eq!(
+            buf[(0, 1)].bg,
+            theme.role(ThemeRole::Background).to_ratatui(),
+            "read-only mode must not highlight the cursor line"
+        );
+        // No caret cell is drawn anywhere.
+        let any_caret = (0..area.width)
+            .any(|x| (0..area.height).any(|y| buf[(x, y)].modifier.contains(Modifier::REVERSED)));
+        assert!(!any_caret, "read-only mode must not draw a caret");
+    }
+
+    #[test]
+    fn center_on_and_scroll_paging_move_viewport_only() {
+        let mut state = EditorState::new();
+        state.last_height = 10;
+        state.center_on(50);
+        assert_eq!(state.scroll_line, 45, "line centered in a 10-row viewport");
+        // Scroll-only paging moves the viewport without touching the cursor.
+        state.scroll_page_up();
+        assert_eq!(state.scroll_line, 35);
+        state.scroll_page_down();
+        assert_eq!(state.scroll_line, 45);
+        assert_eq!(state.cursor.line, 0, "paging never moves the cursor");
+        // Centering near the top saturates at 0.
+        state.center_on(2);
+        assert_eq!(state.scroll_line, 0);
     }
 }
