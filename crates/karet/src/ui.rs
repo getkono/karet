@@ -111,8 +111,11 @@ fn draw_find_bar(f: &mut Frame, find: &FindState, theme: &Theme, area: Rect) {
     } else if find.count == 0 {
         format!(" Find: {}   no results ", find.query)
     } else {
+        // The next/close chords are derived from the keymap's Find layer.
+        let next = keymap::hint_for(Command::FindNext, ChordStyle::Verbose).unwrap_or_default();
+        let close = keymap::hint_for(Command::FindCancel, ChordStyle::Verbose).unwrap_or_default();
         format!(
-            " Find: {}   {}/{}   (Enter/Ctrl+G next · Esc close) ",
+            " Find: {}   {}/{}   ({next} next · {close} close) ",
             find.query,
             find.current + 1,
             find.count
@@ -618,22 +621,29 @@ fn draw_blame(
     f.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), area);
 }
 
+/// The commands shown on the empty-editor welcome screen, with descriptions. As in
+/// the footer, only this selection and the prose are presentation — each chord is
+/// derived from the keymap so the cheat-sheet can't drift from a rebinding.
+const WELCOME_HINTS: &[(Command, &str)] = &[
+    (Command::OpenQuickOpen, "go to file"),
+    (Command::OpenCommandPalette, "command palette"),
+    (Command::ToggleSidebar, "toggle sidebar"),
+    (Command::OpenGlobalSearch, "search the workspace"),
+    (Command::Copy, "copy selection"),
+    (Command::ToggleFocus, "switch focus"),
+    (Command::Quit, "quit"),
+];
+
 fn draw_welcome(f: &mut Frame, theme: &Theme, area: Rect) {
     let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
     let title = Style::default()
         .fg(theme.role(ThemeRole::Foreground).to_ratatui())
         .add_modifier(Modifier::BOLD);
-    let text = vec![
-        Line::raw(""),
-        Line::styled("  karet", title),
-        Line::raw(""),
-        Line::styled("  Ctrl+P        go to file", dim),
-        Line::styled("  Ctrl+B        toggle sidebar", dim),
-        Line::styled("  Ctrl+1/2/3    explorer · search · source control", dim),
-        Line::styled("  Ctrl+Shift+F  search the workspace", dim),
-        Line::styled("  Ctrl+C        copy selection", dim),
-        Line::styled("  Tab switch focus     Ctrl+Q quit", dim),
-    ];
+    let mut text = vec![Line::raw(""), Line::styled("  karet", title), Line::raw("")];
+    for &(cmd, desc) in WELCOME_HINTS {
+        let chord = keymap::hint_for(cmd, ChordStyle::Verbose).unwrap_or_default();
+        text.push(Line::styled(format!("  {chord:<14}{desc}"), dim));
+    }
     f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), area);
 }
 
@@ -725,14 +735,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn footer_hints_are_all_bound() {
-        // Every advertised footer command must resolve a chord from the keymap;
-        // otherwise the footer would silently drop it. This is the anti-drift guard
-        // that keeps the status bar honest when a binding changes.
+    fn advertised_hints_are_all_bound() {
+        // Every advertised command (footer + welcome) must resolve a chord from the
+        // keymap; otherwise the surface would silently drop it. This is the
+        // anti-drift guard that keeps the cheat-sheets honest when a binding changes.
         for &(cmd, _) in FOOTER_HINTS {
             assert!(
                 keymap::hint_for(cmd, ChordStyle::Caret).is_some(),
                 "footer command {cmd:?} has no keymap binding"
+            );
+        }
+        for &(cmd, _) in WELCOME_HINTS {
+            assert!(
+                keymap::hint_for(cmd, ChordStyle::Verbose).is_some(),
+                "welcome command {cmd:?} has no keymap binding"
             );
         }
     }
