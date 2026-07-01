@@ -1,1 +1,17 @@
 edition = "2024"
+
+# --- Diff/merge resilience -------------------------------------------------
+# Goal: independent branches that add or remove imports touch *distinct* lines,
+# so git's `ort` merge resolves them without conflicts.
+#
+# `imports_granularity = "Item"` keeps every import on its own line (never brace-
+# merged), and `group_imports = "StdExternalCrate"` fixes each import in a
+# deterministic std / external / local block. Both are nightly-only rustfmt
+# features, so formatting runs under `cargo +nightly fmt` (build/clippy/test stay
+# on the stable toolchain pinned in rust-toolchain.toml).
+imports_granularity = "Item"
+group_imports = "StdExternalCrate"
+
+# Trailing comma after block-bodied match arms, so inserting a new arm never
+# rewrites the neighbouring arm's line. Stable option.
+match_block_trailing_comma = true

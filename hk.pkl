@@ -11,7 +11,8 @@ hooks {
         steps {
             ["cargo-fmt"] {
                 glob = "*.rs"
-                fix = "cargo fmt"
+                // nightly: rustfmt.toml enables unstable import options (see rustfmt.toml)
+                fix = "cargo +nightly fmt"
             }
             ["cargo-clippy"] {
                 glob = "*.rs"
@@ -25,7 +26,8 @@ hooks {
         steps {
             ["cargo-fmt-check"] {
                 glob = "*.rs"
-                check = "cargo fmt -- --check"
+                // nightly: rustfmt.toml enables unstable import options (see rustfmt.toml)
+                check = "cargo +nightly fmt -- --check"
             }
             ["cargo-clippy-check"] {
                 glob = "*.rs"

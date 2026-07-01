@@ -9,8 +9,8 @@ pkl = "latest"                 # config language hk.pkl is written in
 "cargo:cargo-llvm-cov" = "latest"  # code coverage
 
 [tasks.format]
-description = "Format code with rustfmt"
-run = "cargo fmt --all"
+description = "Format code with rustfmt (nightly: rustfmt.toml uses unstable import opts)"
+run = "cargo +nightly fmt --all"
 
 [tasks.lint]
 description = "Lint with clippy (deny warnings)"
