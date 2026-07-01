@@ -655,8 +655,10 @@ impl App {
             Command::Save => self.save_active(),
             Command::Cut => self.cut(),
             Command::Paste => self.paste_from_clipboard(),
-            Command::ScmSelectUp => self.scm_extend(-1),
-            Command::ScmSelectDown => self.scm_extend(1),
+            Command::SelectExtendUp => self.sidebar_select_extend(-1),
+            Command::SelectExtendDown => self.sidebar_select_extend(1),
+            Command::SelectToggle => self.sidebar_select_toggle(),
+            Command::SelectAll => self.sidebar_select_all(),
             Command::ScmStage => self.scm_send_paths(|paths| SessionCommand::Stage { paths }),
             Command::ScmUnstage => self.scm_send_paths(|paths| SessionCommand::Unstage { paths }),
             Command::ScmToggleStage => self.scm_toggle_stage(),
@@ -802,9 +804,40 @@ impl App {
         }
     }
 
-    /// Extend the Source-Control range selection by `delta` rows.
-    fn scm_extend(&mut self, delta: i32) {
-        self.scm.selection.extend_by(delta);
+    /// Extend the focused list panel's range selection by `delta` rows.
+    fn sidebar_select_extend(&mut self, delta: i32) {
+        match self.sidebar_panel {
+            SidebarPanel::Explorer => {
+                self.explorer.ensure_built(&self.root);
+                self.explorer.select_extend(delta);
+            }
+            SidebarPanel::SourceControl => self.scm.selection.extend_by(delta),
+            SidebarPanel::Search => {}
+        }
+    }
+
+    /// Toggle the cursor row in the focused list panel's selection.
+    fn sidebar_select_toggle(&mut self) {
+        match self.sidebar_panel {
+            SidebarPanel::Explorer => {
+                self.explorer.ensure_built(&self.root);
+                self.explorer.mark_toggle();
+            }
+            SidebarPanel::SourceControl => self.scm.selection.toggle_cursor(),
+            SidebarPanel::Search => {}
+        }
+    }
+
+    /// Select every row in the focused list panel.
+    fn sidebar_select_all(&mut self) {
+        match self.sidebar_panel {
+            SidebarPanel::Explorer => {
+                self.explorer.ensure_built(&self.root);
+                self.explorer.select_all();
+            }
+            SidebarPanel::SourceControl => self.scm.selection.select_all(),
+            SidebarPanel::Search => {}
+        }
     }
 
     /// Open the commit-message input, if there is something staged to commit.
@@ -1295,7 +1328,7 @@ impl App {
             MouseEventKind::ScrollUp => self.scroll_lines(-3),
             MouseEventKind::Down(MouseButton::Left) => {
                 if in_sidebar {
-                    self.handle_sidebar_click(mouse.column, mouse.row);
+                    self.handle_sidebar_click(mouse.column, mouse.row, mouse.modifiers);
                 } else {
                     self.handle_editor_click(mouse);
                 }
@@ -1315,13 +1348,17 @@ impl App {
     }
 
     /// Handle a left click inside the sidebar: switch panels via the header, or
-    /// select and activate the clicked row.
-    fn handle_sidebar_click(&mut self, col: u16, row_y: u16) {
+    /// select the clicked row. A plain click moves the cursor and activates the
+    /// row; Ctrl toggles it in the selection and Shift extends a range to it
+    /// (neither activates).
+    fn handle_sidebar_click(&mut self, col: u16, row_y: u16, modifiers: KeyModifiers) {
         self.focus = Focus::Sidebar;
         if let Some(panel) = self.panel_at(col, row_y) {
             self.dispatch(Command::SelectPanel(panel));
             return;
         }
+        let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+        let shift = modifiers.contains(KeyModifiers::SHIFT);
         match self.sidebar_panel {
             SidebarPanel::Explorer => {
                 if !rect_contains(self.sidebar_content_rect, (col, row_y)) {
@@ -1330,8 +1367,14 @@ impl App {
                 let view_row = (row_y - self.sidebar_content_rect.y) as usize;
                 let root = self.root.clone();
                 self.explorer.ensure_built(&root);
-                self.explorer.select_visible(view_row);
-                self.sidebar_activate();
+                if ctrl {
+                    self.explorer.toggle_visible(view_row);
+                } else if shift {
+                    self.explorer.extend_visible(view_row);
+                } else {
+                    self.explorer.select_visible(view_row);
+                    self.sidebar_activate();
+                }
             }
             SidebarPanel::SourceControl => {
                 if !rect_contains(self.sidebar_content_rect, (col, row_y)) {
@@ -1339,8 +1382,14 @@ impl App {
                 }
                 let display = self.scm_offset + (row_y - self.sidebar_content_rect.y) as usize;
                 if let Some(Some(idx)) = self.scm_row_map.get(display).copied() {
-                    self.scm.selection.move_to(idx);
-                    self.open_selected_diff();
+                    if ctrl {
+                        self.scm.selection.toggle(idx);
+                    } else if shift {
+                        self.scm.selection.extend_to(idx);
+                    } else {
+                        self.scm.selection.move_to(idx);
+                        self.open_selected_diff();
+                    }
                 }
             }
             SidebarPanel::Search => {
@@ -1974,7 +2023,8 @@ mod tests {
     fn scm_range_selection_collects_both_paths() {
         // `app()` seeds one staged (a.rs) and one working (b.rs) change.
         let mut app = app();
-        app.dispatch(Command::ScmSelectDown);
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        app.dispatch(Command::SelectExtendDown);
         assert_eq!(app.scm.selection.selected_indices(), vec![0, 1]);
         assert_eq!(app.scm.selected_paths().len(), 2);
     }
@@ -1983,7 +2033,7 @@ mod tests {
     fn scm_plain_move_collapses_range() {
         let mut app = app();
         app.sidebar_panel = SidebarPanel::SourceControl;
-        app.dispatch(Command::ScmSelectDown);
+        app.dispatch(Command::SelectExtendDown);
         assert!(app.scm.selection.anchor().is_some());
         // A non-extending move in the SCM panel clears the range.
         app.dispatch(Command::SidebarDown);
@@ -2372,7 +2422,7 @@ mod tests {
             (25, 27, SidebarPanel::Search),
             (27, 29, SidebarPanel::SourceControl),
         ];
-        app.handle_sidebar_click(25, 1); // header row, the "2" cell
+        app.handle_sidebar_click(25, 1, KeyModifiers::NONE); // header row, the "2" cell
         assert_eq!(app.sidebar_panel, SidebarPanel::Search);
     }
 
@@ -2395,9 +2445,13 @@ mod tests {
         app.scm_offset = 0;
         // Display rows: 0 header, 1 a.rs(0), 2 header, 3 b.rs(1).
         app.scm_row_map = vec![None, Some(0), None, Some(1)];
-        app.handle_sidebar_click(2, 5); // content row 3 -> change index 1
+        app.handle_sidebar_click(2, 5, KeyModifiers::NONE); // content row 3 -> change index 1
         assert_eq!(app.scm.selection.cursor(), 1);
         assert!(app.active_is_diff());
+
+        // Ctrl-click a second row adds it to the selection without opening a diff.
+        app.handle_sidebar_click(2, 3, KeyModifiers::CONTROL); // content row 1 -> index 0
+        assert_eq!(app.scm.selection.selected_indices(), vec![0, 1]);
     }
 
     #[test]

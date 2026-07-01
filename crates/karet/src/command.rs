@@ -120,10 +120,14 @@ pub enum Command {
     Cut,
     /// Paste the clipboard at the caret.
     Paste,
-    /// Extend the Source-Control selection up one row.
-    ScmSelectUp,
-    /// Extend the Source-Control selection down one row.
-    ScmSelectDown,
+    /// Extend the focused list pane's range selection up one row.
+    SelectExtendUp,
+    /// Extend the focused list pane's range selection down one row.
+    SelectExtendDown,
+    /// Toggle the cursor row in the focused list pane's selection.
+    SelectToggle,
+    /// Select every row in the focused list pane.
+    SelectAll,
     /// Stage the selected Source-Control file(s).
     ScmStage,
     /// Unstage the selected Source-Control file(s).
@@ -204,8 +208,10 @@ impl Command {
             Self::Save => "Save",
             Self::Cut => "Cut",
             Self::Paste => "Paste",
-            Self::ScmSelectUp => "Source Control: Extend Selection Up",
-            Self::ScmSelectDown => "Source Control: Extend Selection Down",
+            Self::SelectExtendUp => "Selection: Extend Up",
+            Self::SelectExtendDown => "Selection: Extend Down",
+            Self::SelectToggle => "Selection: Toggle Row",
+            Self::SelectAll => "Selection: Select All",
             Self::ScmStage => "Source Control: Stage Selected",
             Self::ScmUnstage => "Source Control: Unstage Selected",
             Self::ScmToggleStage => "Source Control: Stage / Unstage Selected",

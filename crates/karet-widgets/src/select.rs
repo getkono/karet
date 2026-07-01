@@ -180,8 +180,10 @@ impl ListSelection {
 
     /// Toggle row `i` in the selection and make it the cursor.
     ///
-    /// Any live range is first committed into the toggle-set (so an
-    /// extend-then-toggle gesture keeps the extended rows), then `i` is flipped.
+    /// The current effective selection is committed into the toggle-set first —
+    /// an active range, or (when nothing explicit is selected) the fallback cursor
+    /// row — so that toggling a *new* row keeps whatever was already selected
+    /// (Ctrl-clicking a second row unions it with the first). Then `i` is flipped.
     pub fn toggle(&mut self, i: usize) {
         if self.len == 0 {
             return;
@@ -192,6 +194,10 @@ impl ListSelection {
             for j in lo..=hi {
                 self.marked.insert(j);
             }
+        } else if self.marked.is_empty() {
+            // Promote the implicit single-row (fallback) selection to an explicit
+            // mark so it survives this toggle.
+            self.marked.insert(self.cursor);
         }
         if !self.marked.remove(&i) {
             self.marked.insert(i);
@@ -301,12 +307,14 @@ mod tests {
     }
 
     #[test]
-    fn toggle_can_deselect_including_the_cursor_row() {
+    fn toggle_preserves_the_prior_single_selection() {
+        // Plain-select row 1, then toggle row 3: Ctrl-clicking a second row unions
+        // it with the first rather than dropping it.
         let mut sel = ListSelection::new(5);
-        sel.toggle(1); // {1}
-        sel.toggle(3); // {1,3}
+        sel.move_to(1);
+        sel.toggle(3);
         assert_eq!(sel.selected_indices(), vec![1, 3]);
-        // Toggling the cursor row off leaves the other marks; cursor excluded.
+        // Toggling the cursor row off leaves the other mark; cursor excluded.
         sel.toggle(3);
         assert_eq!(sel.cursor(), 3);
         assert!(!sel.is_selected(3));
@@ -314,9 +322,11 @@ mod tests {
     }
 
     #[test]
-    fn toggling_the_last_mark_falls_back_to_the_cursor() {
+    fn toggling_off_the_only_selected_row_falls_back_to_the_cursor() {
         let mut sel = ListSelection::new(5);
-        sel.toggle(2); // {2}
+        sel.move_to(2); // single {2}
+        sel.toggle(4); // {2,4}
+        sel.toggle(4); // {2}
         sel.toggle(2); // removed → empty union → fallback to cursor (2)
         assert_eq!(sel.cursor(), 2);
         assert_eq!(sel.selected_indices(), vec![2]);
@@ -334,7 +344,7 @@ mod tests {
     #[test]
     fn set_len_reconciles_cursor_marks_and_anchor() {
         let mut sel = ListSelection::new(10);
-        sel.toggle(2); // {2}, cursor 2
+        sel.move_to(2); // single {2}
         sel.toggle(7); // {2,7}, cursor 7
         sel.toggle(9); // {2,7,9}, cursor 9
         sel.set_len(5); // drop marks >= 5, clamp cursor 9 → 4

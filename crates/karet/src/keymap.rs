@@ -178,8 +178,6 @@ static BINDINGS: &[Binding] = &[
 
     // Source-Control panel (sidebar focus, SCM panel active). Listed before the
     // generic sidebar bindings so its keys win when both would match.
-    b(SourceControl, false, true,  false, Down,      Command::ScmSelectDown),
-    b(SourceControl, false, true,  false, Up,        Command::ScmSelectUp),
     b(SourceControl, false, false, false, Char(' '), Command::ScmToggleStage),
     b(SourceControl, false, false, false, Char('s'), Command::ScmStage),
     b(SourceControl, false, false, false, Char('u'), Command::ScmUnstage),
@@ -189,7 +187,12 @@ static BINDINGS: &[Binding] = &[
     b(SourceControl, false, false, false, Char('d'), Command::ScmDiscard),
     b(SourceControl, false, false, false, Char('r'), Command::ScmRefresh),
 
-    // Sidebar focus.
+    // Sidebar focus. Selection verbs are shared across every list panel (explorer
+    // and source control) — they route to the focused panel's selection in dispatch.
+    b(Sidebar, false, true,  false, Down,      Command::SelectExtendDown),
+    b(Sidebar, false, true,  false, Up,        Command::SelectExtendUp),
+    b(Sidebar, false, false, false, Char('x'), Command::SelectToggle),
+    b(Sidebar, true,  false, false, Char('a'), Command::SelectAll),
     b(Sidebar, false, false, false, Char('q'), Command::Quit),
     b(Sidebar, false, false, false, Esc,       Command::Quit),
     b(Sidebar, false, false, false, Char('j'), Command::SidebarDown),
@@ -489,7 +492,8 @@ mod tests {
             ),
             Some(Command::ScmToggleStage)
         );
-        // Shift+Down extends the SCM selection.
+        // Shift+Down extends the selection — a shared Sidebar-layer verb that is
+        // active in the SCM panel too (it is not shadowed by an SCM binding).
         assert_eq!(
             resolve(
                 Focus::Sidebar,
@@ -497,7 +501,26 @@ mod tests {
                 false,
                 key(KeyCode::Down, KeyModifiers::SHIFT)
             ),
-            Some(Command::ScmSelectDown)
+            Some(Command::SelectExtendDown)
+        );
+        // `x` toggles the cursor row into the selection in both list panels.
+        assert_eq!(
+            resolve(
+                Focus::Sidebar,
+                SidebarPanel::SourceControl,
+                false,
+                key(KeyCode::Char('x'), KeyModifiers::NONE)
+            ),
+            Some(Command::SelectToggle)
+        );
+        assert_eq!(
+            resolve(
+                Focus::Sidebar,
+                SidebarPanel::Explorer,
+                false,
+                key(KeyCode::Down, KeyModifiers::SHIFT)
+            ),
+            Some(Command::SelectExtendDown)
         );
         // The same 's' in the Explorer panel is not an SCM command.
         assert_eq!(
