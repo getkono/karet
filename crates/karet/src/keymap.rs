@@ -37,19 +37,71 @@ pub enum SidebarPanel {
     SourceControl,
 }
 
+/// The single pane that currently holds keyboard focus.
+///
+/// This is the one value that decides which keybinding layer is live. It is a
+/// *derived* view of the stored `(Focus, SidebarPanel, is_diff)` state (see
+/// [`FocusTarget::from`]) rather than a second source of truth — the sidebar
+/// always has an active panel for rendering independent of who holds focus, so
+/// the two stored fields stay orthogonal and this collapses them for dispatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FocusTarget {
+    /// A code editor tab.
+    Editor,
+    /// A diff editor tab.
+    DiffEditor,
+    /// The file explorer panel.
+    Explorer,
+    /// The workspace search panel.
+    Search,
+    /// The source-control panel.
+    SourceControl,
+}
+
+impl FocusTarget {
+    /// Derive the focused pane from the stored focus, the active sidebar panel,
+    /// and whether the active editor tab is a diff.
+    #[must_use]
+    pub fn from(focus: Focus, panel: SidebarPanel, is_diff: bool) -> Self {
+        match focus {
+            Focus::Editor if is_diff => FocusTarget::DiffEditor,
+            Focus::Editor => FocusTarget::Editor,
+            Focus::Sidebar => match panel {
+                SidebarPanel::Explorer => FocusTarget::Explorer,
+                SidebarPanel::Search => FocusTarget::Search,
+                SidebarPanel::SourceControl => FocusTarget::SourceControl,
+            },
+        }
+    }
+}
+
 /// The context in which a binding is active.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum When {
     /// Active regardless of focus.
     Global,
-    /// Active when the sidebar has focus.
+    /// Active when any sidebar panel has focus.
     Sidebar,
-    /// Active when the sidebar has focus and the Source-Control panel is active.
+    /// Active when the Source-Control panel has focus.
     SourceControl,
-    /// Active when the editor has focus.
+    /// Active when a code or diff editor tab has focus.
     Editor,
-    /// Active when the editor has focus and the active tab is a diff.
+    /// Active when a diff editor tab has focus.
     DiffEditor,
+}
+
+impl When {
+    /// Whether this context is active for the focused pane.
+    fn matches(self, target: FocusTarget) -> bool {
+        use FocusTarget as T;
+        match self {
+            When::Global => true,
+            When::Sidebar => matches!(target, T::Explorer | T::Search | T::SourceControl),
+            When::SourceControl => target == T::SourceControl,
+            When::Editor => matches!(target, T::Editor | T::DiffEditor),
+            When::DiffEditor => target == T::DiffEditor,
+        }
+    }
 }
 
 /// One key binding: a chord (key code + modifier flags) bound to a [`Command`] in
@@ -184,17 +236,6 @@ static BINDINGS: &[Binding] = &[
     b(DiffEditor, false, false, false, Char('['),  Command::PrevChangedFile),
 ];
 
-/// Whether `when` is active for the given focus, sidebar panel, and diff state.
-fn when_active(when: When, focus: Focus, panel: SidebarPanel, is_diff: bool) -> bool {
-    match when {
-        Global => true,
-        Sidebar => focus == Focus::Sidebar,
-        SourceControl => focus == Focus::Sidebar && panel == SidebarPanel::SourceControl,
-        Editor => focus == Focus::Editor,
-        DiffEditor => focus == Focus::Editor && is_diff,
-    }
-}
-
 /// Whether `key` matches binding `bind`.
 fn chord_matches(bind: &Binding, key: KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -230,9 +271,10 @@ fn chord_matches(bind: &Binding, key: KeyEvent) -> bool {
 /// binding.
 #[must_use]
 pub fn resolve(focus: Focus, panel: SidebarPanel, is_diff: bool, key: KeyEvent) -> Option<Command> {
+    let target = FocusTarget::from(focus, panel, is_diff);
     BINDINGS
         .iter()
-        .find(|bind| when_active(bind.when, focus, panel, is_diff) && chord_matches(bind, key))
+        .find(|bind| bind.when.matches(target) && chord_matches(bind, key))
         .map(|bind| bind.command)
 }
 
@@ -399,6 +441,30 @@ mod tests {
                 key(KeyCode::Char('q'), KeyModifiers::CONTROL)
             ),
             Some(Command::Quit)
+        );
+    }
+
+    #[test]
+    fn focus_target_derivation() {
+        assert_eq!(
+            FocusTarget::from(Focus::Sidebar, SidebarPanel::SourceControl, false),
+            FocusTarget::SourceControl
+        );
+        assert_eq!(
+            FocusTarget::from(Focus::Sidebar, SidebarPanel::Explorer, false),
+            FocusTarget::Explorer
+        );
+        // Opening a diff moves focus to the editor: the active layer becomes
+        // DiffEditor, NOT SourceControl, even while the SCM panel is still the
+        // underlying sidebar panel. This is the fact behind the "SCM keys do
+        // nothing after previewing a diff" bug.
+        assert_eq!(
+            FocusTarget::from(Focus::Editor, SidebarPanel::SourceControl, true),
+            FocusTarget::DiffEditor
+        );
+        assert_eq!(
+            FocusTarget::from(Focus::Editor, SidebarPanel::Explorer, false),
+            FocusTarget::Editor
         );
     }
 

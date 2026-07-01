@@ -33,7 +33,7 @@ use tokio::sync::mpsc;
 use crate::clipboard::Clipboard;
 use crate::command::Command;
 use crate::editing;
-use crate::keymap::{self, Focus, SidebarPanel};
+use crate::keymap::{self, Focus, FocusTarget, SidebarPanel};
 use crate::overlay::{Overlay, OverlayEvent};
 use crate::render::{FileView, Section};
 use crate::tab::{Tab, TabKind, ViewMode};
@@ -296,6 +296,12 @@ impl App {
     /// Whether the active tab is a diff (enables diff-specific keys).
     fn active_is_diff(&self) -> bool {
         self.tabs.get(self.active).is_some_and(Tab::is_diff)
+    }
+
+    /// The pane that currently holds keyboard focus — the single value that
+    /// determines which keybinding layer is live.
+    pub(crate) fn focus_target(&self) -> FocusTarget {
+        FocusTarget::from(self.focus, self.sidebar_panel, self.active_is_diff())
     }
 
     /// Handle a key press: route to the open overlay, else resolve via the keymap.
@@ -1966,6 +1972,16 @@ mod tests {
         assert_eq!(app.focus, Focus::Sidebar);
         assert_eq!(app.sidebar_panel, SidebarPanel::Explorer);
         assert!(matches!(app.tabs[0].kind, TabKind::Welcome));
+    }
+
+    #[test]
+    fn focus_target_tracks_focus_and_panel() {
+        let mut app = app();
+        assert_eq!(app.focus_target(), FocusTarget::Explorer);
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        assert_eq!(app.focus_target(), FocusTarget::SourceControl);
+        app.focus = Focus::Editor;
+        assert_eq!(app.focus_target(), FocusTarget::Editor);
     }
 
     #[test]
