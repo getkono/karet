@@ -66,8 +66,12 @@ use tokio::sync::mpsc;
 use crate::clipboard::Clipboard;
 use crate::command::Command;
 use crate::editing;
+use crate::keymap::Context;
 use crate::keymap::Focus;
 use crate::keymap::FocusTarget;
+use crate::keymap::KeyChord;
+use crate::keymap::Modal;
+use crate::keymap::Resolved;
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
 use crate::overlay::Overlay;
@@ -186,6 +190,8 @@ pub struct App {
     /// Paths awaiting a discard confirmation (set after pressing discard; cleared
     /// when the user confirms or cancels).
     pub(crate) pending_discard: Option<Vec<PathBuf>>,
+    /// Chords typed so far toward a multi-key binding (empty when not mid-sequence).
+    pub(crate) pending: Vec<KeyChord>,
     /// The workspace-search panel state.
     pub(crate) search: SearchPanel,
     /// A transient status message.
@@ -281,6 +287,7 @@ impl App {
             find: None,
             commit_input: None,
             pending_discard: None,
+            pending: Vec::new(),
             search: SearchPanel::default(),
             status: None,
             sidebar_rect: Rect::default(),
@@ -334,66 +341,124 @@ impl App {
         FocusTarget::from(self.focus, self.sidebar_panel, self.active_is_diff())
     }
 
-    /// Handle a key press: route to the open overlay, else resolve via the keymap.
+    /// Handle a key press: resolve it against the layered keymap for the current
+    /// [input context](Self::input_context) and dispatch, or fall through to the
+    /// active modal's text input when nothing is bound.
     fn handle_key(&mut self, key: KeyEvent) {
         self.status = None;
-        if self.overlay.is_some() {
-            self.handle_overlay_key(key);
-            return;
-        }
-        if self.commit_input.is_some() {
-            self.handle_commit_key(key);
-            return;
-        }
-        if self.pending_discard.is_some() {
-            self.handle_discard_confirm_key(key);
-            return;
-        }
-        if self.find.is_some() {
-            self.handle_find_key(key);
-            return;
-        }
-        // The Search panel captures text input, so globals run first, then its own keys.
-        if self.focus == Focus::Sidebar && self.sidebar_panel == SidebarPanel::Search {
-            if let Some(command) = keymap::global(key) {
-                self.dispatch(command);
-            } else {
-                self.handle_search_key(key);
-            }
-            return;
-        }
-        if let Some(command) =
-            keymap::resolve(self.focus, self.sidebar_panel, self.active_is_diff(), key)
-        {
-            self.dispatch(command);
-        } else if self.focus == Focus::Editor
-            && self.active_code_doc().is_some()
-            && !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-            && let KeyCode::Char(c) = key.code
-        {
-            // An unbound printable in the editor is text input.
-            self.dispatch(Command::InsertChar(c));
+        let ctx = self.input_context();
+        match ctx.modal {
+            Some(modal) => match keymap::resolve(ctx, &[KeyChord::from_event(key)]) {
+                Resolved::Command(command) => self.dispatch(command),
+                Resolved::Pending | Resolved::None => self.modal_text(modal, key),
+            },
+            None => self.resolve_key(key),
         }
     }
 
-    /// Route a key to the open overlay and act on its outcome.
-    fn handle_overlay_key(&mut self, key: KeyEvent) {
+    /// The current input context: the active modal (if any) over the focused pane.
+    /// The precedence mirrors how the shell stacks these overlays. Also drives the
+    /// context-aware status hints bar ([`crate::ui`]).
+    pub(crate) fn input_context(&self) -> Context {
+        let modal = if self.overlay.is_some() {
+            Some(Modal::Overlay)
+        } else if self.commit_input.is_some() {
+            Some(Modal::CommitInput)
+        } else if self.pending_discard.is_some() {
+            Some(Modal::DiscardConfirm)
+        } else if self.find.is_some() {
+            Some(Modal::Find)
+        } else if self.focus == Focus::Sidebar && self.sidebar_panel == SidebarPanel::Search {
+            Some(if self.search.input {
+                Modal::SearchInput
+            } else {
+                Modal::SearchList
+            })
+        } else {
+            None
+        };
+        Context {
+            modal,
+            target: self.focus_target(),
+        }
+    }
+
+    /// Resolve a focus-context key against the layered keymap, accumulating
+    /// multi-key chord sequences. An unbound printable in the editor becomes text
+    /// input; a broken sequence is dropped.
+    fn resolve_key(&mut self, key: KeyEvent) {
+        self.pending.push(KeyChord::from_event(key));
+        let ctx = Context::focus(self.focus_target());
+        match keymap::resolve(ctx, &self.pending) {
+            Resolved::Command(command) => {
+                self.pending.clear();
+                self.dispatch(command);
+            },
+            Resolved::Pending => {
+                // A prefix of a longer binding: keep waiting. The status bar reads
+                // `self.pending` directly to surface the typed chord and its
+                // available completions (see `crate::ui::draw_status`).
+            },
+            Resolved::None => {
+                let mid_sequence = self.pending.len() > 1;
+                self.pending.clear();
+                if !mid_sequence
+                    && self.focus == Focus::Editor
+                    && self.active_code_doc().is_some()
+                    && !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && let KeyCode::Char(c) = key.code
+                {
+                    self.dispatch(Command::InsertChar(c));
+                }
+            },
+        }
+    }
+
+    /// Feed a key with no modal binding to the active modal's text input — the
+    /// documented fall-through. The results list captures no text (unbound keys do
+    /// nothing); an unbound key at the discard prompt cancels it.
+    fn modal_text(&mut self, modal: Modal, key: KeyEvent) {
+        match modal {
+            Modal::Overlay => self.overlay_input(key),
+            Modal::Find => self.find_input(key),
+            Modal::CommitInput => self.commit_edit(key),
+            Modal::SearchInput => self.search_edit(key),
+            Modal::SearchList => {},
+            Modal::DiscardConfirm => self.resolve_discard(false),
+        }
+    }
+
+    /// Accept the highlighted overlay row (open a file / run a command), then close.
+    fn overlay_accept(&mut self) {
+        let event = match self.overlay.as_ref() {
+            Some(overlay) => overlay.accept(),
+            None => return,
+        };
+        self.overlay = None;
+        match event {
+            OverlayEvent::Close => {},
+            OverlayEvent::AcceptFile(path) => self.open_path(&path),
+            OverlayEvent::AcceptCommand(cmd) => self.dispatch(cmd),
+        }
+    }
+
+    /// Edit the overlay query with an unbound key (backspace / printable).
+    fn overlay_input(&mut self, key: KeyEvent) {
         let Some(overlay) = self.overlay.as_mut() else {
             return;
         };
-        match overlay.handle_key(key) {
-            OverlayEvent::Consumed => {},
-            OverlayEvent::Close => self.overlay = None,
-            OverlayEvent::AcceptFile(path) => {
-                self.overlay = None;
-                self.open_path(&path);
+        match key.code {
+            KeyCode::Backspace => overlay.pop_char(),
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                overlay.push_char(c);
             },
-            OverlayEvent::AcceptCommand(cmd) => {
-                self.overlay = None;
-                self.dispatch(cmd);
-            },
+            _ => {},
         }
     }
 
@@ -428,22 +493,22 @@ impl App {
         }
     }
 
-    /// Handle a key while the find bar is open.
-    fn handle_find_key(&mut self, key: KeyEvent) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    /// Edit the find query with an unbound key (backspace / printable), re-running
+    /// the search. Command keys (Esc / Enter / Ctrl+G / arrows) resolve via the
+    /// keymap's `Find` layer instead.
+    fn find_input(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc => self.close_find(),
-            KeyCode::Enter | KeyCode::Down => self.find_step(1),
-            KeyCode::Up => self.find_step(-1),
-            KeyCode::Char('g') if ctrl => self.find_step(if shift { -1 } else { 1 }),
             KeyCode::Backspace => {
                 if let Some(find) = self.find.as_mut() {
                     find.query.pop();
                 }
                 self.run_find();
             },
-            KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
                 if let Some(find) = self.find.as_mut() {
                     find.query.push(c);
                 }
@@ -538,37 +603,29 @@ impl App {
         self.search.input = true;
     }
 
-    /// Handle a key while the Search panel has focus.
-    fn handle_search_key(&mut self, key: KeyEvent) {
-        let plain = !key.modifiers.contains(KeyModifiers::CONTROL)
-            && !key.modifiers.contains(KeyModifiers::ALT);
+    /// Edit the Search query with an unbound key (backspace / printable) while the
+    /// `SearchInput` modal is active. Navigation and mode keys resolve via the
+    /// keymap's `SearchInput` / `SearchList` layers instead.
+    fn search_edit(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc => {
-                if self.search.input {
-                    self.search.input = false;
-                } else {
-                    self.should_quit = true;
-                }
-            },
-            KeyCode::Enter => {
-                if self.search.input {
-                    self.run_global_search();
-                    self.search.input = false;
-                } else {
-                    self.open_selected_result();
-                }
-            },
-            KeyCode::Down => self.search_select(1),
-            KeyCode::Up => self.search_select(-1),
-            KeyCode::Char('/') if !self.search.input => self.search.input = true,
-            KeyCode::Char('j') if !self.search.input => self.search_select(1),
-            KeyCode::Char('k') if !self.search.input => self.search_select(-1),
-            KeyCode::Backspace if self.search.input => {
+            KeyCode::Backspace => {
                 self.search.query.pop();
             },
-            KeyCode::Char(c) if self.search.input && plain => self.search.query.push(c),
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.search.query.push(c);
+            },
             _ => {},
         }
+    }
+
+    /// Run the Search query and return to the results list.
+    fn run_search_query(&mut self) {
+        self.run_global_search();
+        self.search.input = false;
     }
 
     /// Run the workspace search for the current query, collecting up to the cap.
@@ -710,6 +767,33 @@ impl App {
             Command::ScmRefresh => self.send_vcs(SessionCommand::RefreshVcs),
             Command::ShowBlame => self.open_blame(false),
             Command::BlameFunction => self.open_blame(true),
+
+            // Modal-scoped commands (resolved only while a modal context is active).
+            Command::OverlayUp => {
+                if let Some(overlay) = self.overlay.as_mut() {
+                    overlay.select_up();
+                }
+            },
+            Command::OverlayDown => {
+                if let Some(overlay) = self.overlay.as_mut() {
+                    overlay.select_down();
+                }
+            },
+            Command::OverlayAccept => self.overlay_accept(),
+            Command::OverlayCancel => self.overlay = None,
+            Command::FindNext => self.find_step(1),
+            Command::FindPrev => self.find_step(-1),
+            Command::FindCancel => self.close_find(),
+            Command::CommitSubmit => self.commit_submit(),
+            Command::CommitCancel => self.commit_cancel(),
+            Command::ConfirmDiscard => self.resolve_discard(true),
+            Command::SearchSelectUp => self.search_select(-1),
+            Command::SearchSelectDown => self.search_select(1),
+            Command::SearchOpen => self.open_selected_result(),
+            Command::SearchBeginInput => self.search.input = true,
+            Command::SearchQuit => self.should_quit = true,
+            Command::SearchRun => self.run_search_query(),
+            Command::SearchEndInput => self.search.input = false,
         }
     }
 
@@ -905,31 +989,37 @@ impl App {
         self.pending_discard = Some(paths);
     }
 
-    /// Handle a key while the commit-message input is open.
-    fn handle_commit_key(&mut self, key: KeyEvent) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let alt = key.modifiers.contains(KeyModifiers::ALT);
+    /// Cancel the commit input.
+    fn commit_cancel(&mut self) {
+        self.commit_input = None;
+        self.status = Some("commit cancelled".to_string());
+    }
+
+    /// Submit the commit message (or report that one is required).
+    fn commit_submit(&mut self) {
+        let message = self.commit_input.take().unwrap_or_default();
+        let message = message.trim().to_string();
+        if message.is_empty() {
+            self.commit_input = Some(String::new());
+            self.status = Some("commit: message required".to_string());
+        } else {
+            self.send_vcs(SessionCommand::Commit { message });
+        }
+    }
+
+    /// Edit the commit message with an unbound key (backspace / printable).
+    fn commit_edit(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc => {
-                self.commit_input = None;
-                self.status = Some("commit cancelled".to_string());
-            },
-            KeyCode::Enter => {
-                let message = self.commit_input.take().unwrap_or_default();
-                let message = message.trim().to_string();
-                if message.is_empty() {
-                    self.commit_input = Some(String::new());
-                    self.status = Some("commit: message required".to_string());
-                } else {
-                    self.send_vcs(SessionCommand::Commit { message });
-                }
-            },
             KeyCode::Backspace => {
                 if let Some(message) = self.commit_input.as_mut() {
                     message.pop();
                 }
             },
-            KeyCode::Char(c) if !ctrl && !alt => {
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
                 if let Some(message) = self.commit_input.as_mut() {
                     message.push(c);
                 }
@@ -938,9 +1028,9 @@ impl App {
         }
     }
 
-    /// Handle a key while a discard confirmation is pending.
-    fn handle_discard_confirm_key(&mut self, key: KeyEvent) {
-        let confirmed = matches!(key.code, KeyCode::Char('y' | 'Y') | KeyCode::Enter);
+    /// Resolve a pending discard: `confirmed` discards the armed paths, otherwise
+    /// the prompt is cancelled. Any key without a `DiscardConfirm` binding cancels.
+    fn resolve_discard(&mut self, confirmed: bool) {
         let paths = self.pending_discard.take();
         if confirmed {
             if let Some(paths) = paths {
@@ -2119,6 +2209,56 @@ mod tests {
         assert_eq!(app.focus_target(), FocusTarget::SourceControl);
         app.focus = Focus::Editor;
         assert_eq!(app.focus_target(), FocusTarget::Editor);
+    }
+
+    fn send_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+        app.handle_key(KeyEvent::new(code, mods));
+    }
+
+    #[test]
+    fn command_palette_keys_route_through_the_overlay_layer() {
+        let mut app = app();
+        app.dispatch(Command::OpenCommandPalette);
+        assert!(app.overlay.is_some());
+        // A printable is a fall-through into the query; Esc resolves to
+        // OverlayCancel via the Overlay layer and dismisses the overlay.
+        send_key(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(app.overlay.is_some());
+        send_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn search_modal_switches_between_input_and_list() {
+        let mut app = app();
+        app.dispatch(Command::OpenGlobalSearch);
+        assert!(app.search.input, "global search starts in query input");
+        // Esc in the input modal stops editing (SearchEndInput), it does not quit.
+        send_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!app.search.input);
+        assert!(!app.should_quit);
+        // `/` from the results list re-enters input (SearchBeginInput).
+        send_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+        assert!(app.search.input);
+        // A Ctrl-chord still resolves globally while in the Search modal.
+        send_key(&mut app, KeyCode::Char('b'), KeyModifiers::CONTROL);
+        assert!(
+            !app.sidebar_visible,
+            "Ctrl+B toggled the sidebar from Search"
+        );
+    }
+
+    #[test]
+    fn discard_prompt_confirms_and_cancels_through_the_keymap() {
+        let mut app = app();
+        // A bound confirm key (Enter) resolves to ConfirmDiscard and clears the arm.
+        app.pending_discard = Some(vec![PathBuf::from("a.rs")]);
+        send_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.pending_discard.is_none());
+        // Any unbound key at the prompt cancels (the documented fall-through).
+        app.pending_discard = Some(vec![PathBuf::from("a.rs")]);
+        send_key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
+        assert!(app.pending_discard.is_none());
     }
 
     #[test]
