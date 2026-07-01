@@ -11,9 +11,12 @@
 //! (so `Ctrl+Shift+P` is distinguishable from `Ctrl+P`); for a bare letter the
 //! `Shift` is folded into the character case (`g` vs `G`).
 
+mod chord;
+
+pub use chord::KeyChord;
+use chord::chord;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
-use crossterm::event::KeyModifiers;
 
 use crate::command::Command;
 
@@ -106,18 +109,16 @@ impl When {
     }
 }
 
-/// One key binding: a chord (key code + modifier flags) bound to a [`Command`] in
-/// a [`When`] context.
+/// One key binding: a [`KeyChord`] bound to a [`Command`] in a [`When`] context.
 struct Binding {
     when: When,
-    ctrl: bool,
-    shift: bool,
-    alt: bool,
-    code: KeyCode,
+    chord: KeyChord,
     command: Command,
 }
 
-/// A terse constructor for a [`Binding`].
+/// A terse constructor for a [`Binding`]. Chords are authored in canonical form
+/// (see [`chord`]): a `Ctrl`/`Alt` letter lower-cased, a bare letter with
+/// `shift = false`.
 const fn b(
     when: When,
     ctrl: bool,
@@ -128,10 +129,7 @@ const fn b(
 ) -> Binding {
     Binding {
         when,
-        ctrl,
-        shift,
-        alt,
-        code,
+        chord: chord(ctrl, shift, alt, code),
         command,
     }
 }
@@ -260,36 +258,6 @@ static BINDINGS: &[Binding] = &[
     b(DiffEditor, false, false, false, Char('['),  Command::PrevChangedFile),
 ];
 
-/// Whether `key` matches binding `bind`.
-fn chord_matches(bind: &Binding, key: KeyEvent) -> bool {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
-    // Some terminals report Shift+Tab as `BackTab` with the Shift folded into the
-    // code; normalize it back to `Tab` + Shift so bindings can stay uniform.
-    let (code, shift) = match key.code {
-        KeyCode::BackTab => (KeyCode::Tab, true),
-        other => (other, key.modifiers.contains(KeyModifiers::SHIFT)),
-    };
-
-    match (bind.code, code) {
-        (KeyCode::Char(bc), KeyCode::Char(kc)) if bind.ctrl || bind.alt => {
-            // With Ctrl/Alt the case is irrelevant; Shift is a distinct flag.
-            bind.ctrl == ctrl
-                && bind.alt == alt
-                && bind.shift == shift
-                && bc.eq_ignore_ascii_case(&kc)
-        },
-        (KeyCode::Char(bc), KeyCode::Char(kc)) => {
-            // A bare letter: case carries Shift, so compare exactly and ignore the
-            // Shift flag (but still reject Ctrl/Alt chords).
-            !ctrl && !alt && bc == kc
-        },
-        (bcode, kcode) => {
-            bcode == kcode && bind.ctrl == ctrl && bind.alt == alt && bind.shift == shift
-        },
-    }
-}
-
 /// Resolve a key press into a [`Command`], given the focus, the active sidebar
 /// panel, and whether the active tab is a diff. Returns `None` for keys with no
 /// binding.
@@ -298,7 +266,7 @@ pub fn resolve(focus: Focus, panel: SidebarPanel, is_diff: bool, key: KeyEvent) 
     let target = FocusTarget::from(focus, panel, is_diff);
     BINDINGS
         .iter()
-        .find(|bind| bind.when.matches(target) && chord_matches(bind, key))
+        .find(|bind| bind.when.matches(target) && bind.chord.matches(key))
         .map(|bind| bind.command)
 }
 
@@ -308,7 +276,7 @@ pub fn resolve(focus: Focus, panel: SidebarPanel, is_diff: bool, key: KeyEvent) 
 pub fn global(key: KeyEvent) -> Option<Command> {
     BINDINGS
         .iter()
-        .find(|bind| bind.when == Global && chord_matches(bind, key))
+        .find(|bind| bind.when == Global && bind.chord.matches(key))
         .map(|bind| bind.command)
 }
 
@@ -318,22 +286,22 @@ pub fn hint_for(command: Command) -> Option<String> {
     BINDINGS
         .iter()
         .find(|bind| bind.command == command)
-        .map(format_chord)
+        .map(|bind| format_chord(bind.chord))
 }
 
-/// Format a binding as a human-readable chord like `"Ctrl+Shift+P"`.
-fn format_chord(bind: &Binding) -> String {
+/// Format a chord as a human-readable label like `"Ctrl+Shift+P"`.
+fn format_chord(c: KeyChord) -> String {
     let mut s = String::new();
-    if bind.ctrl {
+    if c.mods.ctrl {
         s.push_str("Ctrl+");
     }
-    if bind.alt {
+    if c.mods.alt {
         s.push_str("Alt+");
     }
-    if bind.shift {
+    if c.mods.shift {
         s.push_str("Shift+");
     }
-    s.push_str(&format_code(bind.code));
+    s.push_str(&format_code(c.code));
     s
 }
 
@@ -359,10 +327,26 @@ fn format_code(code: KeyCode) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crossterm::event::KeyModifiers;
+
     use super::*;
 
     fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, mods)
+    }
+
+    #[test]
+    fn bindings_are_authored_in_canonical_form() {
+        // Every binding chord must equal its canonical form, so `Binding::chord`
+        // compares equal to a `KeyChord::from_event` of the intended key press.
+        for bind in BINDINGS {
+            assert_eq!(
+                bind.chord,
+                bind.chord.canonical(),
+                "non-canonical chord for {:?}",
+                bind.command
+            );
+        }
     }
 
     /// Resolve with the Explorer panel active (the default for non-SCM tests).
