@@ -12,107 +12,24 @@
 //! `Shift` is folded into the character case (`g` vs `G`).
 
 mod chord;
+mod layer;
 
 pub use chord::ChordStyle;
 pub use chord::KeyChord;
 use chord::chord;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
+pub use layer::Focus;
+pub use layer::FocusTarget;
+use layer::Layer;
+pub use layer::SidebarPanel;
+use layer::active_layers;
 
 use crate::command::Command;
 
-/// Which area currently has keyboard focus.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Focus {
-    /// The sidebar panel (explorer / search / source-control).
-    #[default]
-    Sidebar,
-    /// The active editor tab.
-    Editor,
-}
-
-/// The sidebar's active panel.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SidebarPanel {
-    /// The file explorer.
-    #[default]
-    Explorer,
-    /// Workspace search results.
-    Search,
-    /// Source control (changed files).
-    SourceControl,
-}
-
-/// The single pane that currently holds keyboard focus.
-///
-/// This is the one value that decides which keybinding layer is live. It is a
-/// *derived* view of the stored `(Focus, SidebarPanel, is_diff)` state (see
-/// [`FocusTarget::from`]) rather than a second source of truth — the sidebar
-/// always has an active panel for rendering independent of who holds focus, so
-/// the two stored fields stay orthogonal and this collapses them for dispatch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FocusTarget {
-    /// A code editor tab.
-    Editor,
-    /// A diff editor tab.
-    DiffEditor,
-    /// The file explorer panel.
-    Explorer,
-    /// The workspace search panel.
-    Search,
-    /// The source-control panel.
-    SourceControl,
-}
-
-impl FocusTarget {
-    /// Derive the focused pane from the stored focus, the active sidebar panel,
-    /// and whether the active editor tab is a diff.
-    #[must_use]
-    pub fn from(focus: Focus, panel: SidebarPanel, is_diff: bool) -> Self {
-        match focus {
-            Focus::Editor if is_diff => FocusTarget::DiffEditor,
-            Focus::Editor => FocusTarget::Editor,
-            Focus::Sidebar => match panel {
-                SidebarPanel::Explorer => FocusTarget::Explorer,
-                SidebarPanel::Search => FocusTarget::Search,
-                SidebarPanel::SourceControl => FocusTarget::SourceControl,
-            },
-        }
-    }
-}
-
-/// The context in which a binding is active.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum When {
-    /// Active regardless of focus.
-    Global,
-    /// Active when any sidebar panel has focus.
-    Sidebar,
-    /// Active when the Source-Control panel has focus.
-    SourceControl,
-    /// Active when a code or diff editor tab has focus.
-    Editor,
-    /// Active when a diff editor tab has focus.
-    DiffEditor,
-}
-
-impl When {
-    /// Whether this context is active for the focused pane.
-    fn matches(self, target: FocusTarget) -> bool {
-        use FocusTarget as T;
-        match self {
-            When::Global => true,
-            When::Sidebar => matches!(target, T::Explorer | T::Search | T::SourceControl),
-            When::SourceControl => target == T::SourceControl,
-            When::Editor => matches!(target, T::Editor | T::DiffEditor),
-            When::DiffEditor => target == T::DiffEditor,
-        }
-    }
-}
-
-/// One key binding: a [`KeyChord`] bound to a [`Command`] in a [`When`] context.
+/// One key binding: a [`KeyChord`] bound to a [`Command`] in a [`Layer`].
 struct Binding {
-    when: When,
+    layer: Layer,
     chord: KeyChord,
     command: Command,
 }
@@ -121,7 +38,7 @@ struct Binding {
 /// (see [`chord`]): a `Ctrl`/`Alt` letter lower-cased, a bare letter with
 /// `shift = false`.
 const fn b(
-    when: When,
+    layer: Layer,
     ctrl: bool,
     shift: bool,
     alt: bool,
@@ -129,7 +46,7 @@ const fn b(
     command: Command,
 ) -> Binding {
     Binding {
-        when,
+        layer,
         chord: chord(ctrl, shift, alt, code),
         command,
     }
@@ -149,15 +66,16 @@ use KeyCode::PageUp;
 use KeyCode::Right;
 use KeyCode::Tab;
 use KeyCode::Up;
-use When::DiffEditor;
-use When::Editor;
-use When::Global;
-use When::Sidebar;
-use When::SourceControl;
+use Layer::DiffEditor;
+use Layer::Editor;
+use Layer::Global;
+use Layer::Sidebar;
+use Layer::SourceControl;
 
-/// The single source of truth for key bindings. Order matters: the first matching
-/// binding wins, and [`hint_for`] returns the first binding for a command (so list
-/// the preferred chord first).
+/// The single source of truth for key bindings. Within a [`Layer`] the first
+/// matching binding wins (and [`hint_for`] returns the first binding for a command,
+/// so list the preferred chord first); precedence *across* layers is decided by
+/// [`active_layers`], not by table order.
 #[rustfmt::skip]
 static BINDINGS: &[Binding] = &[
     // Global (any focus).
@@ -265,9 +183,16 @@ static BINDINGS: &[Binding] = &[
 #[must_use]
 pub fn resolve(focus: Focus, panel: SidebarPanel, is_diff: bool, key: KeyEvent) -> Option<Command> {
     let target = FocusTarget::from(focus, panel, is_diff);
+    active_layers(target)
+        .iter()
+        .find_map(|&layer| layer_command(layer, key))
+}
+
+/// The first binding in `layer` whose chord matches `key`.
+fn layer_command(layer: Layer, key: KeyEvent) -> Option<Command> {
     BINDINGS
         .iter()
-        .find(|bind| bind.when.matches(target) && bind.chord.matches(key))
+        .find(|bind| bind.layer == layer && bind.chord.matches(key))
         .map(|bind| bind.command)
 }
 
@@ -275,10 +200,7 @@ pub fn resolve(focus: Focus, panel: SidebarPanel, is_diff: bool, key: KeyEvent) 
 /// the Search panel, which still want Ctrl-chords and Tab to work).
 #[must_use]
 pub fn global(key: KeyEvent) -> Option<Command> {
-    BINDINGS
-        .iter()
-        .find(|bind| bind.when == Global && bind.chord.matches(key))
-        .map(|bind| bind.command)
+    layer_command(Global, key)
 }
 
 /// The display hint (e.g. `"Ctrl+W"`) for `command`'s first binding, rendered in
