@@ -288,6 +288,111 @@ impl Command {
         }
     }
 
+    /// The terse verb shown after the chord in the status hints bar, or `None` to
+    /// omit the command entirely. `None` covers the self-evident keys — cursor and
+    /// scroll motion, selection extension, and raw text editing — that need no
+    /// advertising, plus positional tab juggling the palette already covers. The
+    /// match is exhaustive, so a new command must declare its hints-bar treatment.
+    #[must_use]
+    pub fn hint_verb(self) -> Option<&'static str> {
+        Some(match self {
+            // Global.
+            Self::Quit => "quit",
+            Self::ToggleSidebar => "sidebar",
+            Self::ToggleFocus => "focus",
+            Self::SelectPanel(SidebarPanel::Explorer) => "explorer",
+            Self::SelectPanel(SidebarPanel::Search) => "search",
+            Self::SelectPanel(SidebarPanel::SourceControl) => "git",
+            Self::OpenQuickOpen => "open",
+            Self::OpenCommandPalette => "commands",
+            Self::OpenFind => "find",
+            Self::OpenGlobalSearch => "find in files",
+            Self::CloseTab => "close",
+            Self::NextTab => "next tab",
+            Self::PrevTab => "prev tab",
+            Self::CloseOtherTabs => "close others",
+            Self::CloseAllTabs => "close all",
+            Self::ReopenClosedTab => "reopen",
+            Self::Copy => "copy",
+            // Sidebar.
+            Self::SidebarActivate => "open",
+            Self::SidebarCollapse => "collapse",
+            Self::SidebarToggleExpand => "expand",
+            Self::SelectToggle => "select",
+            Self::SelectAll => "select all",
+            // Editor.
+            Self::Undo => "undo",
+            Self::Redo => "redo",
+            Self::Save => "save",
+            Self::Cut => "cut",
+            Self::Paste => "paste",
+            Self::ShowBlame => "blame",
+            Self::BlameFunction => "blame fn",
+            // Diff.
+            Self::ToggleDiffLayout => "layout",
+            Self::NextChangedFile => "next change",
+            Self::PrevChangedFile => "prev change",
+            // Source control.
+            Self::ScmStage => "stage",
+            Self::ScmUnstage => "unstage",
+            Self::ScmToggleStage => "toggle",
+            Self::ScmStageAll => "stage all",
+            Self::ScmUnstageAll => "unstage all",
+            Self::ScmDiscard => "discard",
+            Self::ScmCommit => "commit",
+            Self::ScmRefresh => "refresh",
+            // Modal-scoped.
+            Self::OverlayAccept => "accept",
+            Self::OverlayCancel => "cancel",
+            Self::FindNext => "next",
+            Self::FindPrev => "prev",
+            Self::FindCancel => "close",
+            Self::CommitSubmit => "submit",
+            Self::CommitCancel => "cancel",
+            Self::ConfirmDiscard => "confirm",
+            Self::SearchOpen => "open",
+            Self::SearchBeginInput => "edit",
+            Self::SearchQuit => "close",
+            Self::SearchRun => "run",
+            Self::SearchEndInput => "done",
+            // Self-evident motion, selection, and editing — no hint.
+            Self::MoveTabLeft
+            | Self::MoveTabRight
+            | Self::GoToTab(_)
+            | Self::CloseTabsToRight
+            | Self::CopyPath
+            | Self::CopyRelativePath
+            | Self::SidebarUp
+            | Self::SidebarDown
+            | Self::CaretUp
+            | Self::CaretDown
+            | Self::CaretLeft
+            | Self::CaretRight
+            | Self::SelectUp
+            | Self::SelectDown
+            | Self::SelectLeft
+            | Self::SelectRight
+            | Self::ScrollUp
+            | Self::ScrollDown
+            | Self::PageUp
+            | Self::PageDown
+            | Self::Top
+            | Self::Bottom
+            | Self::InsertChar(_)
+            | Self::InsertNewline
+            | Self::DeleteBackward
+            | Self::DeleteForward
+            | Self::Indent
+            | Self::Dedent
+            | Self::SelectExtendUp
+            | Self::SelectExtendDown
+            | Self::OverlayUp
+            | Self::OverlayDown
+            | Self::SearchSelectUp
+            | Self::SearchSelectDown => return None,
+        })
+    }
+
     /// Whether this command appears in the command palette.
     #[must_use]
     pub fn in_palette(self) -> bool {
@@ -386,5 +491,35 @@ mod tests {
     #[test]
     fn command_palette_itself_is_not_listed() {
         assert!(!palette().contains(&Command::OpenCommandPalette));
+    }
+
+    #[test]
+    fn hint_verbs_are_terse_and_gate_motion_keys() {
+        // Advertised commands carry a non-empty terse verb…
+        for cmd in [
+            Command::Save,
+            Command::Copy,
+            Command::ScmStage,
+            Command::FindNext,
+            Command::CloseAllTabs,
+        ] {
+            assert!(
+                cmd.hint_verb().is_some_and(|v| !v.is_empty()),
+                "{cmd:?} should advertise a terse verb"
+            );
+        }
+        // …while self-evident motion and text-editing keys are gated out of the bar.
+        for cmd in [
+            Command::CaretDown,
+            Command::PageUp,
+            Command::DeleteBackward,
+            Command::InsertNewline,
+            Command::SelectExtendDown,
+        ] {
+            assert!(
+                cmd.hint_verb().is_none(),
+                "{cmd:?} should not be advertised"
+            );
+        }
     }
 }

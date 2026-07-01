@@ -297,6 +297,73 @@ pub fn hint_for(command: Command, style: ChordStyle) -> Option<String> {
         .map(|bind| bind.hint(style))
 }
 
+/// One advertisable binding for the status hints bar: its rendered chord sequence,
+/// the [`Command`] it fires (kept so a click can dispatch it), and the terse verb
+/// to label it with.
+pub struct Hint {
+    /// The trigger chord(s) rendered in the requested style (e.g. `"^S"`, `"^K ^W"`).
+    pub chord: String,
+    /// The command this binding fires.
+    pub command: Command,
+    /// The terse verb shown after the chord (from [`Command::hint_verb`]).
+    pub verb: &'static str,
+}
+
+/// Every advertisable binding live in `ctx`, ordered most-specific layer first and
+/// deduped by command (the first binding wins, matching [`hint_for`]). Only commands
+/// with a terse verb ([`Command::hint_verb`]) are included, so self-evident motion
+/// and text-editing keys are omitted. This is the forward counterpart to `hint_for`
+/// that drives the context-aware status hints bar.
+#[must_use]
+pub fn hints_for(ctx: Context, style: ChordStyle) -> Vec<Hint> {
+    let mut hints = Vec::new();
+    let mut seen: Vec<Command> = Vec::new();
+    for &layer in active_layers(ctx) {
+        for bind in BINDINGS.iter().filter(|bind| bind.layer == layer) {
+            let Some(verb) = bind.command.hint_verb() else {
+                continue;
+            };
+            if seen.contains(&bind.command) {
+                continue;
+            }
+            seen.push(bind.command);
+            hints.push(Hint {
+                chord: bind.hint(style),
+                command: bind.command,
+                verb,
+            });
+        }
+    }
+    hints
+}
+
+/// The completions of an in-progress chord: every binding live in `ctx` whose
+/// trigger has `pending` as a strict prefix, with only the *remaining* chords
+/// rendered (e.g. after `^K`, `^W` for "close all" and `W` for "close others").
+/// Deduped by command, most-specific layer first. Powers the pending-chord hint bar.
+#[must_use]
+pub fn completions_for(ctx: Context, pending: &[KeyChord], style: ChordStyle) -> Vec<Hint> {
+    let mut hints = Vec::new();
+    let mut seen: Vec<Command> = Vec::new();
+    for &layer in active_layers(ctx) {
+        for bind in BINDINGS.iter().filter(|bind| bind.layer == layer) {
+            if !matches!(bind.match_seq(pending), SeqMatch::Prefix) {
+                continue;
+            }
+            if seen.contains(&bind.command) {
+                continue;
+            }
+            seen.push(bind.command);
+            hints.push(Hint {
+                chord: bind.hint_from(style, pending.len()),
+                command: bind.command,
+                verb: bind.command.hint_verb().unwrap_or(""),
+            });
+        }
+    }
+    hints
+}
+
 /// How a pending chord sequence relates to a binding's trigger sequence.
 enum SeqMatch {
     /// `pending` equals the full trigger sequence.
@@ -337,10 +404,19 @@ impl Binding {
 
     /// This binding's trigger rendered as a hint (chords space-separated).
     fn hint(&self, style: ChordStyle) -> String {
-        let mut s = self.chord.display(style);
-        for c in self.rest {
-            s.push(' ');
-            s.push_str(&c.display(style));
+        self.hint_from(style, 0)
+    }
+
+    /// This binding's trigger rendered as a hint, skipping the first `skip` chords —
+    /// so an already-typed prefix isn't repeated in a completion hint. `skip == 0`
+    /// is equivalent to [`Binding::hint`].
+    fn hint_from(&self, style: ChordStyle, skip: usize) -> String {
+        let mut s = String::new();
+        for i in skip..self.seq_len() {
+            if !s.is_empty() {
+                s.push(' ');
+            }
+            s.push_str(&self.chord_at(i).display(style));
         }
         s
     }
@@ -682,6 +758,67 @@ mod tests {
             hint_for(Command::CloseAllTabs, ChordStyle::Verbose).as_deref(),
             Some("Ctrl+K Ctrl+W")
         );
+    }
+
+    #[test]
+    fn hints_for_is_context_aware_and_deduped() {
+        let editor = hints_for(Context::focus(FocusTarget::Editor), ChordStyle::Caret);
+        let cmds: Vec<Command> = editor.iter().map(|h| h.command).collect();
+        // Editor-context commands are advertised…
+        assert!(cmds.contains(&Command::Save));
+        assert!(cmds.contains(&Command::Undo));
+        assert!(cmds.contains(&Command::Cut));
+        assert!(cmds.contains(&Command::Copy));
+        assert!(cmds.contains(&Command::OpenFind));
+        // …while self-evident motion and text-editing keys are omitted.
+        assert!(!cmds.contains(&Command::CaretDown));
+        assert!(!cmds.contains(&Command::PageDown));
+        assert!(!cmds.contains(&Command::DeleteBackward));
+        // Every command appears at most once (dedup across layers).
+        for &cmd in &cmds {
+            assert_eq!(cmds.iter().filter(|c| **c == cmd).count(), 1);
+        }
+        // The most-specific layer wins ordering: an Editor-layer verb (Save) precedes
+        // a Global one (Quit).
+        let save = cmds.iter().position(|c| *c == Command::Save);
+        let quit = cmds.iter().position(|c| *c == Command::Quit);
+        assert!(save < quit);
+    }
+
+    #[test]
+    fn hints_for_reflects_the_active_modal() {
+        let find = hints_for(
+            Context::modal(Modal::Find, FocusTarget::Editor),
+            ChordStyle::Caret,
+        );
+        let cmds: Vec<Command> = find.iter().map(|h| h.command).collect();
+        assert!(cmds.contains(&Command::FindNext));
+        assert!(cmds.contains(&Command::FindPrev));
+        assert!(cmds.contains(&Command::FindCancel));
+        // The Find modal is exclusive, so editor commands don't leak into the bar.
+        assert!(!cmds.contains(&Command::Save));
+    }
+
+    #[test]
+    fn completions_for_renders_only_the_remaining_chord() {
+        let ctrl_k = KeyChord::from_event(key(KeyCode::Char('k'), KeyModifiers::CONTROL));
+        let comps = completions_for(
+            Context::focus(FocusTarget::Editor),
+            &[ctrl_k],
+            ChordStyle::Caret,
+        );
+        let by_cmd = |cmd| comps.iter().find(|h| h.command == cmd);
+        // Only the chord AFTER the pending `^K` prefix is rendered.
+        assert_eq!(
+            by_cmd(Command::CloseAllTabs).map(|h| h.chord.as_str()),
+            Some("^W")
+        );
+        assert_eq!(
+            by_cmd(Command::CloseOtherTabs).map(|h| h.chord.as_str()),
+            Some("W")
+        );
+        // Each completion carries a verb so the pending-chord bar is self-explanatory.
+        assert!(by_cmd(Command::CloseAllTabs).is_some_and(|h| !h.verb.is_empty()));
     }
 
     #[test]

@@ -35,6 +35,7 @@ use crate::app::FindState;
 use crate::app::TabHit;
 use crate::command::Command;
 use crate::keymap::ChordStyle;
+use crate::keymap::Context;
 use crate::keymap::Focus;
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
@@ -647,15 +648,82 @@ fn draw_welcome(f: &mut Frame, theme: &Theme, area: Rect) {
     f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), area);
 }
 
-/// The commands advertised in the status-bar footer, with their terse verbs. Only
-/// this selection and the verbs live here; the chord shown for each is derived from
-/// the keymap ([`keymap::hint_for`]), so the footer can never drift from a rebinding.
-const FOOTER_HINTS: &[(Command, &str)] = &[
-    (Command::OpenQuickOpen, "open"),
-    (Command::OpenFind, "find"),
-    (Command::Copy, "copy"),
-    (Command::Quit, "quit"),
-];
+/// The separator drawn between adjacent hints in the status bar.
+const HINT_SEP: &str = " · ";
+
+/// A single hint's segment text (`"^S save"`), used for both measuring and drawing.
+fn hint_segment(hint: &keymap::Hint) -> String {
+    format!("{} {}", hint.chord, hint.verb)
+}
+
+/// The terminal-cell width of `s` (display width, wide/combining aware — unlike a
+/// raw `chars().count()`), via ratatui's own measurement so no extra dependency is
+/// pulled in.
+fn cell_width(s: &str) -> u16 {
+    u16::try_from(Span::raw(s).width()).unwrap_or(u16::MAX)
+}
+
+/// How many leading `hints` fit in `avail` columns when joined by [`HINT_SEP`].
+/// When some don't fit, room is reserved for a trailing ` +N` overflow marker (a
+/// hint is dropped if the marker wouldn't otherwise fit). Pure, so it is unit-tested.
+fn pack_hints(hints: &[keymap::Hint], avail: u16) -> usize {
+    let sep = cell_width(HINT_SEP);
+    let mut used = 0u16;
+    let mut shown = 0usize;
+    for (i, hint) in hints.iter().enumerate() {
+        let seg = cell_width(&hint_segment(hint)) + if i == 0 { 0 } else { sep };
+        if used + seg > avail {
+            break;
+        }
+        used += seg;
+        shown += 1;
+    }
+    // Reserve room for the ` +N` marker by dropping trailing hints until it fits.
+    while shown < hints.len() && shown > 0 {
+        let marker = cell_width(&format!(" +{}", hints.len() - shown));
+        if used + marker <= avail {
+            break;
+        }
+        shown -= 1;
+        let seg = cell_width(&hint_segment(&hints[shown]));
+        used -= seg + if shown == 0 { 0 } else { sep };
+    }
+    shown
+}
+
+/// Render `hints` into `spans` starting at column `*x`, packing what fits in `avail`
+/// and appending a clickable ` +N` marker (opens the palette) for the rest. Each
+/// shown hint records a clickable `(start, end, command)` region in `hits`.
+fn render_hints(
+    hints: &[keymap::Hint],
+    spans: &mut Vec<Span<'static>>,
+    hits: &mut Vec<(u16, u16, Command)>,
+    x: &mut u16,
+    avail: u16,
+    bar: Style,
+    key: Style,
+) {
+    let shown = pack_hints(hints, avail);
+    for (i, hint) in hints.iter().take(shown).enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(HINT_SEP.to_string(), bar));
+            *x += cell_width(HINT_SEP);
+        }
+        let start = *x;
+        spans.push(Span::styled(hint.chord.clone(), key));
+        spans.push(Span::styled(format!(" {}", hint.verb), bar));
+        *x += cell_width(&hint.chord) + 1 + cell_width(hint.verb);
+        hits.push((start, *x, hint.command));
+    }
+    if shown < hints.len() {
+        let marker = format!(" +{}", hints.len() - shown);
+        let start = *x;
+        *x += cell_width(&marker);
+        spans.push(Span::styled(marker, bar));
+        // The overflow marker opens the palette, so the hidden commands stay reachable.
+        hits.push((start, *x, Command::OpenCommandPalette));
+    }
+}
 
 fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     app.status_rect = area;
@@ -668,49 +736,68 @@ fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let bar = Style::default()
         .bg(theme.role(ThemeRole::StatusBarBackground).to_ratatui())
         .fg(theme.role(ThemeRole::StatusBarForeground).to_ratatui());
+    let key = bar.add_modifier(Modifier::BOLD);
 
-    // Build the left side as discrete, clickable segments, tracking columns.
-    let mut spans = Vec::new();
-    let mut x = area.x;
-    let focus_text = format!(" {focus} ");
-    let fw = focus_text.chars().count() as u16;
-    spans.push(Span::styled(focus_text, bar.add_modifier(Modifier::BOLD)));
-    app.status_hits.push((x, x + fw, Command::ToggleFocus));
-    x += fw;
-
-    if let Some(msg) = &app.status {
-        spans.push(Span::styled(format!("  {msg} "), bar));
-    } else {
-        // The chord is single-sourced from the keymap (so it can't drift); only the
-        // curated set of advertised commands and their terse verbs live here.
-        spans.push(Span::styled("   ".to_string(), bar));
-        x += 3;
-        let mut first = true;
-        for &(cmd, verb) in FOOTER_HINTS {
-            let Some(chord) = keymap::hint_for(cmd, ChordStyle::Caret) else {
-                continue;
-            };
-            if !first {
-                spans.push(Span::styled(" · ".to_string(), bar));
-                x += 3;
-            }
-            first = false;
-            let label = format!("{chord} {verb}");
-            let w = label.chars().count() as u16;
-            spans.push(Span::styled(label, bar));
-            app.status_hits.push((x, x + w, cmd));
-            x += w;
-        }
-    }
-
+    // The language label is a fixed-width right column; the hints get everything else.
     let language = app.tabs.get(app.active).map_or("", Tab::language);
     let right = format!(" {language} ");
-    let cols = Layout::horizontal([
-        Constraint::Min(0),
-        Constraint::Length(u16::try_from(right.len()).unwrap_or(0)),
-    ])
-    .split(area);
-    f.render_widget(Paragraph::new(Line::from(spans)).style(bar), cols[0]);
+    let cols = Layout::horizontal([Constraint::Min(0), Constraint::Length(cell_width(&right))])
+        .split(area);
+    let left = cols[0];
+
+    // The focus chip, then a gutter, then the responsive hint region.
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut x = left.x;
+    let focus_text = format!(" {focus} ");
+    let fw = cell_width(&focus_text);
+    spans.push(Span::styled(focus_text, key));
+    app.status_hits.push((x, x + fw, Command::ToggleFocus));
+    x += fw;
+    let gutter = "   ";
+    spans.push(Span::styled(gutter.to_string(), bar));
+    x += cell_width(gutter);
+    let avail = left.width.saturating_sub(x - left.x);
+
+    // Priority for the remaining space: an in-progress chord's completions, then any
+    // transient message, then the active context's key hints — all keymap-derived.
+    if !app.pending.is_empty() {
+        let ctx = Context::focus(app.focus_target());
+        let prefix = app
+            .pending
+            .iter()
+            .map(|c| c.display(ChordStyle::Caret))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let comps = keymap::completions_for(ctx, &app.pending, ChordStyle::Caret);
+        spans.push(Span::styled(prefix.clone(), key));
+        spans.push(Span::styled(" → ".to_string(), bar));
+        x += cell_width(&prefix) + cell_width(" → ");
+        let rest = avail.saturating_sub(cell_width(&prefix) + cell_width(" → "));
+        render_hints(
+            &comps,
+            &mut spans,
+            &mut app.status_hits,
+            &mut x,
+            rest,
+            bar,
+            key,
+        );
+    } else if let Some(msg) = app.status.clone() {
+        spans.push(Span::styled(format!("{msg} "), bar));
+    } else {
+        let hints = keymap::hints_for(app.input_context(), ChordStyle::Caret);
+        render_hints(
+            &hints,
+            &mut spans,
+            &mut app.status_hits,
+            &mut x,
+            avail,
+            bar,
+            key,
+        );
+    }
+
+    f.render_widget(Paragraph::new(Line::from(spans)).style(bar), left);
     f.render_widget(
         Paragraph::new(right).style(bar).alignment(Alignment::Right),
         cols[1],
@@ -735,21 +822,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn advertised_hints_are_all_bound() {
-        // Every advertised command (footer + welcome) must resolve a chord from the
-        // keymap; otherwise the surface would silently drop it. This is the
-        // anti-drift guard that keeps the cheat-sheets honest when a binding changes.
-        for &(cmd, _) in FOOTER_HINTS {
-            assert!(
-                keymap::hint_for(cmd, ChordStyle::Caret).is_some(),
-                "footer command {cmd:?} has no keymap binding"
-            );
-        }
+    fn welcome_hints_are_all_bound() {
+        // Every welcome-screen command must resolve a chord from the keymap;
+        // otherwise the cheat-sheet would silently drop it. The status bar's hints
+        // are now enumerated from the keymap directly, so they can't drift.
         for &(cmd, _) in WELCOME_HINTS {
             assert!(
                 keymap::hint_for(cmd, ChordStyle::Verbose).is_some(),
                 "welcome command {cmd:?} has no keymap binding"
             );
         }
+    }
+
+    #[test]
+    fn hint_bar_is_context_aware() {
+        use crate::keymap::FocusTarget;
+        let cmds = |ctx| {
+            keymap::hints_for(ctx, ChordStyle::Caret)
+                .iter()
+                .map(|h| h.command)
+                .collect::<Vec<_>>()
+        };
+        let editor = cmds(Context::focus(FocusTarget::Editor));
+        let scm = cmds(Context::focus(FocusTarget::SourceControl));
+        // The bar's command set follows the focused pane.
+        assert!(editor.contains(&Command::Save));
+        assert!(!editor.contains(&Command::ScmStage));
+        assert!(scm.contains(&Command::ScmStage));
+        assert!(!scm.contains(&Command::Save));
+    }
+
+    #[test]
+    fn pack_hints_respects_width() {
+        let hint = |chord: &str, command, verb| keymap::Hint {
+            chord: chord.to_string(),
+            command,
+            verb,
+        };
+        let hints = vec![
+            hint("^S", Command::Save, "save"),
+            hint("^Z", Command::Undo, "undo"),
+            hint("^C", Command::Copy, "copy"),
+        ];
+        // A wide bar shows everything; a zero-width bar shows nothing.
+        assert_eq!(pack_hints(&hints, 100), 3);
+        assert_eq!(pack_hints(&hints, 0), 0);
+        // A narrow bar drops trailing hints (leaving room for the ` +N` marker).
+        assert!(pack_hints(&hints, 12) < hints.len());
     }
 }

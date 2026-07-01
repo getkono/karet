@@ -357,8 +357,9 @@ impl App {
     }
 
     /// The current input context: the active modal (if any) over the focused pane.
-    /// The precedence mirrors how the shell stacks these overlays.
-    fn input_context(&self) -> Context {
+    /// The precedence mirrors how the shell stacks these overlays. Also drives the
+    /// context-aware status hints bar ([`crate::ui`]).
+    pub(crate) fn input_context(&self) -> Context {
         let modal = if self.overlay.is_some() {
             Some(Modal::Overlay)
         } else if self.commit_input.is_some() {
@@ -394,9 +395,9 @@ impl App {
                 self.dispatch(command);
             },
             Resolved::Pending => {
-                // A prefix of a longer binding: keep waiting, and surface the chord
-                // typed so far so the sequence is discoverable.
-                self.status = Some(self.pending_hint());
+                // A prefix of a longer binding: keep waiting. The status bar reads
+                // `self.pending` directly to surface the typed chord and its
+                // available completions (see `crate::ui::draw_status`).
             },
             Resolved::None => {
                 let mid_sequence = self.pending.len() > 1;
@@ -413,16 +414,6 @@ impl App {
                 }
             },
         }
-    }
-
-    /// The in-progress chord sequence rendered compactly (e.g. `"^K…"`).
-    fn pending_hint(&self) -> String {
-        let chords: Vec<String> = self
-            .pending
-            .iter()
-            .map(|c| c.display(keymap::ChordStyle::Caret))
-            .collect();
-        format!("{}…", chords.join(" "))
     }
 
     /// Feed a key with no modal binding to the active modal's text input — the
