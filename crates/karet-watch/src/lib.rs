@@ -14,12 +14,19 @@
 //! caller-supplied git directories *is* surfaced, so source-control status can stay
 //! fresh without drowning in `.git/objects` churn.
 
-use notify::event::ModifyKind;
-use notify::{EventKind, RecursiveMode};
-use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
-use tokio::sync::mpsc::{self, UnboundedReceiver};
+
+use notify::EventKind;
+use notify::RecursiveMode;
+use notify::event::ModifyKind;
+use notify_debouncer_full::DebounceEventResult;
+use notify_debouncer_full::Debouncer;
+use notify_debouncer_full::RecommendedCache;
+use notify_debouncer_full::new_debouncer;
+use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::{self};
 
 /// The debounce window: filesystem event bursts within this interval coalesce.
 const DEBOUNCE: Duration = Duration::from_millis(200);

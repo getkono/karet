@@ -51,10 +51,10 @@ pub fn classify(path: &Path, head: &[u8], len: u64) -> FileKind {
         match ext {
             "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "tiff" | "tif" => {
                 return FileKind::Image;
-            }
+            },
             "pdf" => return FileKind::Pdf,
             "md" | "markdown" | "mdown" | "mkd" => return FileKind::Markdown,
-            _ => {}
+            _ => {},
         }
     }
     if is_pdf(head) {

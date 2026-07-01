@@ -120,14 +120,14 @@ pub fn chevron(open: bool, style: IconStyle) -> char {
             } else {
                 '>'
             }
-        }
+        },
         IconStyle::Unicode | IconStyle::NerdFont => {
             if open {
                 '\u{25be}' // ▾
             } else {
                 '\u{25b8}' // ▸
             }
-        }
+        },
     }
 }
 

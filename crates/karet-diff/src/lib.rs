@@ -17,14 +17,26 @@ mod model;
 mod parse;
 mod patch;
 
-pub use align::{Cell, SideBySideRow, align_hunk};
-pub use engine::{DiffOptions, diff_files, diff_text};
-pub use intraline::{HighlightedPair, Segment, compute_highlights};
-pub use model::{Diff, DiffLine, FileDiff, FileStatus, Hunk, LineKind};
-pub use parse::parse;
-pub use patch::{Staging, format_hunk_patch};
-
 use std::path::Path;
+
+pub use align::Cell;
+pub use align::SideBySideRow;
+pub use align::align_hunk;
+pub use engine::DiffOptions;
+pub use engine::diff_files;
+pub use engine::diff_text;
+pub use intraline::HighlightedPair;
+pub use intraline::Segment;
+pub use intraline::compute_highlights;
+pub use model::Diff;
+pub use model::DiffLine;
+pub use model::FileDiff;
+pub use model::FileStatus;
+pub use model::Hunk;
+pub use model::LineKind;
+pub use parse::parse;
+pub use patch::Staging;
+pub use patch::format_hunk_patch;
 
 /// Errors produced while diffing or parsing.
 #[derive(Debug, thiserror::Error)]

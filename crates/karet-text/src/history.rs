@@ -11,7 +11,9 @@
 //! the session calls after an accepted external reload (the recorded inverse edits
 //! no longer match the new on-disk content).
 
-use karet_core::{Change, CursorState, LineCol};
+use karet_core::Change;
+use karet_core::CursorState;
+use karet_core::LineCol;
 
 /// Coalesce consecutive typing within this many milliseconds into one undo step.
 const COALESCE_WINDOW_MS: u64 = 500;
@@ -184,8 +186,12 @@ fn is_single_char_insert(change: &Change) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use karet_core::LineCol;
+    use karet_core::Range;
+    use karet_core::Selection;
+    use karet_core::TextEdit;
+
     use super::*;
-    use karet_core::{LineCol, Range, Selection, TextEdit};
 
     fn insert(line: u32, col: u32, text: &str) -> Change {
         Change::new(

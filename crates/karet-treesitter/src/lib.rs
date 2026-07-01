@@ -10,12 +10,14 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
-use karet_core::{BytePos, Span};
+use karet_core::BytePos;
+use karet_core::Span;
 
 mod detect;
 mod registry;
 
-pub use detect::{language_id_from_path, language_name_from_path};
+pub use detect::language_id_from_path;
+pub use detect::language_name_from_path;
 
 /// Errors produced by the parse host.
 #[derive(Debug, thiserror::Error)]
@@ -66,7 +68,7 @@ impl ParserPool {
                     .set_language(&(info.language)())
                     .map_err(|_| TsError::UnknownLanguage)?;
                 Ok(e.insert(parser))
-            }
+            },
         }
     }
 }

@@ -5,7 +5,8 @@ use karet_theme::Theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
+use ratatui::text::Span;
 use ratatui::widgets::Widget;
 
 /// Bytes shown per row.
@@ -62,7 +63,7 @@ impl Widget for HexView<'_> {
             None => {
                 fallback = Theme::dark();
                 &fallback
-            }
+            },
         };
         let offset_style = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
         let byte_style = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
@@ -103,11 +104,11 @@ fn format_row(bytes: &[u8], offset: usize) -> (String, String) {
                 } else {
                     ascii.push('.');
                 }
-            }
+            },
             None => {
                 hex.push_str("   ");
                 ascii.push(' ');
-            }
+            },
         }
     }
     (hex, ascii)

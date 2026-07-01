@@ -10,7 +10,8 @@
 
 use std::path::Path;
 
-use crate::icon::{Category, IconStyle};
+use crate::icon::Category;
+use crate::icon::IconStyle;
 
 /// Static presentation metadata for one recognized file type.
 ///
@@ -84,7 +85,15 @@ const fn ft(
     }
 }
 
-use Category::{Archive, Binary, Code, Config, Data, Document, Image, Markup, Shell};
+use Category::Archive;
+use Category::Binary;
+use Category::Code;
+use Category::Config;
+use Category::Data;
+use Category::Document;
+use Category::Image;
+use Category::Markup;
+use Category::Shell;
 
 /// The recognized file types. Filenames win over extensions; first match wins, so
 /// keep entries unambiguous (no two entries should claim the same extension).

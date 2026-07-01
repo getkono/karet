@@ -2,7 +2,8 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
+use clap::ValueEnum;
 use karet_filetype::IconStyle;
 
 /// Full multi-line text shown by `karet -V` / `--version`, assembled at compile

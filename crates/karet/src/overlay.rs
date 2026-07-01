@@ -6,9 +6,12 @@
 
 use std::path::PathBuf;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
 
-use crate::command::{self, Command};
+use crate::command::Command;
+use crate::command::{self};
 use crate::keymap;
 
 /// What an overlay key press resulted in.
@@ -104,7 +107,7 @@ impl<T> Picker<T> {
             KeyCode::Backspace => {
                 self.query.pop();
                 self.refilter();
-            }
+            },
             KeyCode::Up => self.selected = self.selected.saturating_sub(1),
             KeyCode::Char('p') if ctrl => self.selected = self.selected.saturating_sub(1),
             KeyCode::Down => self.move_down(),
@@ -112,8 +115,8 @@ impl<T> Picker<T> {
             KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
                 self.query.push(c);
                 self.refilter();
-            }
-            _ => {}
+            },
+            _ => {},
         }
         PickerEvent::Consumed
     }

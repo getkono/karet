@@ -19,6 +19,13 @@ mod classify;
 mod icon;
 mod registry;
 
-pub use classify::{FileKind, SIZE_GUARD, classify};
-pub use icon::{Category, IconStyle, chevron, directory_icon};
-pub use registry::{FileType, file_type_for_path, icon_for_path};
+pub use classify::FileKind;
+pub use classify::SIZE_GUARD;
+pub use classify::classify;
+pub use icon::Category;
+pub use icon::IconStyle;
+pub use icon::chevron;
+pub use icon::directory_icon;
+pub use registry::FileType;
+pub use registry::file_type_for_path;
+pub use registry::icon_for_path;

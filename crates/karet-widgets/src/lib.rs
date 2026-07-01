@@ -11,7 +11,9 @@
 //! inputs it renders) is defined as a builder struct; the ratatui `Widget` render
 //! impls are filled in separately.
 
-use karet_core::{Diagnostic, LineCol, SymbolProvider};
+use karet_core::Diagnostic;
+use karet_core::LineCol;
+use karet_core::SymbolProvider;
 use karet_fuzzy::Matcher;
 
 pub mod file_tree;
@@ -21,7 +23,9 @@ pub mod image;
 pub mod select;
 pub mod viewer;
 
-pub use file_tree::{FileTree, FileTreeRow, FileTreeState};
+pub use file_tree::FileTree;
+pub use file_tree::FileTreeRow;
+pub use file_tree::FileTreeState;
 pub use glyph::UiIcon;
 pub use hex::HexView;
 pub use karet_filetype::IconStyle;
@@ -95,8 +99,9 @@ pub mod hover {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use karet_core::Symbol;
+
+    use super::*;
 
     #[test]
     fn outline_consumes_a_provider() {

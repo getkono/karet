@@ -15,12 +15,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Formatting runs on nightly (rustfmt.toml uses unstable import options for
+      # merge resilience); build, clippy and tests stay on the pinned stable
+      # toolchain, which is installed last so it becomes the default.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Format check
-        run: cargo fmt --all -- --check
+        run: cargo +nightly fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test

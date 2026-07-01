@@ -10,12 +10,18 @@
 
 use std::path::Path;
 
+pub use karet_filetype::FileKind;
+pub use karet_filetype::SIZE_GUARD;
+pub use karet_filetype::classify;
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Alignment, Rect};
-use ratatui::text::{Line, Text};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget};
-
-pub use karet_filetype::{FileKind, SIZE_GUARD, classify};
+use ratatui::layout::Alignment;
+use ratatui::layout::Rect;
+use ratatui::text::Line;
+use ratatui::text::Text;
+use ratatui::widgets::Block;
+use ratatui::widgets::Borders;
+use ratatui::widgets::Paragraph;
+use ratatui::widgets::Widget;
 
 /// A centered placeholder describing a file that is not rendered inline.
 #[derive(Clone, Debug)]

@@ -2,7 +2,10 @@
 
 use std::collections::BTreeSet;
 
-use crate::model::{FileDiff, FileStatus, Hunk, LineKind};
+use crate::model::FileDiff;
+use crate::model::FileStatus;
+use crate::model::Hunk;
+use crate::model::LineKind;
 
 /// The `diff --git` + `---`/`+++` header lines for `file`.
 fn file_header(file: &FileDiff) -> String {
@@ -13,15 +16,15 @@ fn file_header(file: &FileDiff) -> String {
         FileStatus::Added => {
             out.push_str("--- /dev/null\n");
             out.push_str(&format!("+++ b/{new_path}\n"));
-        }
+        },
         FileStatus::Removed => {
             out.push_str(&format!("--- a/{old_path}\n"));
             out.push_str("+++ /dev/null\n");
-        }
+        },
         _ => {
             out.push_str(&format!("--- a/{old_path}\n"));
             out.push_str(&format!("+++ b/{new_path}\n"));
-        }
+        },
     }
     out
 }
@@ -121,8 +124,10 @@ impl Staging {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{DiffLine, Hunk};
-    use crate::{DiffOptions, diff_text};
+    use crate::DiffOptions;
+    use crate::diff_text;
+    use crate::model::DiffLine;
+    use crate::model::Hunk;
 
     #[test]
     fn modified_file_patch() {

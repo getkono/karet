@@ -2,42 +2,83 @@
 //! setup. The shell composes the engine/widget crates — it owns the open tabs and
 //! the sidebar, and applies [`Command`]s resolved from key events.
 
-use std::collections::{HashMap, HashSet};
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::io::Write;
+use std::io::{self};
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
 
 use color_eyre::eyre::eyre;
-use crossterm::event::{
-    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton,
-    MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-};
-use karet_core::{BytePos, Decoration, DecorationKind, LineCol, Range, ThemeRole};
+use crossterm::event::DisableBracketedPaste;
+use crossterm::event::DisableMouseCapture;
+use crossterm::event::EnableBracketedPaste;
+use crossterm::event::EnableMouseCapture;
+use crossterm::event::Event;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyEventKind;
+use crossterm::event::KeyModifiers;
+use crossterm::event::KeyboardEnhancementFlags;
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
+use crossterm::event::PopKeyboardEnhancementFlags;
+use crossterm::event::PushKeyboardEnhancementFlags;
+use crossterm::event::{self};
+use karet_core::BytePos;
+use karet_core::Decoration;
+use karet_core::DecorationKind;
+use karet_core::LineCol;
+use karet_core::Range;
+use karet_core::ThemeRole;
 use karet_editor::EditorState;
 use karet_filetype::IconStyle;
-use karet_search::{FileHit, SearchQuery, WorkspaceSearch, search_in_file};
-use karet_session::{
-    Backend, Command as SessionCommand, DocSnapshot, DocumentId, Event as SessionEvent, EventRx,
-    RequestId, Session, SessionConfig, SnapshotRx, ViewId, local,
-};
+use karet_search::FileHit;
+use karet_search::SearchQuery;
+use karet_search::WorkspaceSearch;
+use karet_search::search_in_file;
+use karet_session::Backend;
+use karet_session::Command as SessionCommand;
+use karet_session::DocSnapshot;
+use karet_session::DocumentId;
+use karet_session::Event as SessionEvent;
+use karet_session::EventRx;
+use karet_session::RequestId;
+use karet_session::Session;
+use karet_session::SessionConfig;
+use karet_session::SnapshotRx;
+use karet_session::ViewId;
+use karet_session::local;
 use karet_text::TextBuffer;
 use karet_theme::Theme;
 use karet_vcs::FileChange;
-use karet_widgets::image::{self, GraphicsProtocol};
-use karet_widgets::{FileTreeState, ListSelection};
+use karet_widgets::FileTreeState;
+use karet_widgets::ListSelection;
+use karet_widgets::image::GraphicsProtocol;
+use karet_widgets::image::{self};
 use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 
 use crate::clipboard::Clipboard;
 use crate::command::Command;
 use crate::editing;
-use crate::keymap::{self, Focus, FocusTarget, SidebarPanel};
-use crate::overlay::{Overlay, OverlayEvent};
-use crate::render::{FileView, Section};
-use crate::tab::{Tab, TabKind, ViewMode};
-use crate::{ui, workspace};
+use crate::keymap::Focus;
+use crate::keymap::FocusTarget;
+use crate::keymap::SidebarPanel;
+use crate::keymap::{self};
+use crate::overlay::Overlay;
+use crate::overlay::OverlayEvent;
+use crate::render::FileView;
+use crate::render::Section;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::tab::ViewMode;
+use crate::ui;
+use crate::workspace;
 
 /// The Source-Control panel state: the changed files (staged first) and selection.
 pub(crate) struct Scm {
@@ -343,16 +384,16 @@ impl App {
             return;
         };
         match overlay.handle_key(key) {
-            OverlayEvent::Consumed => {}
+            OverlayEvent::Consumed => {},
             OverlayEvent::Close => self.overlay = None,
             OverlayEvent::AcceptFile(path) => {
                 self.overlay = None;
                 self.open_path(&path);
-            }
+            },
             OverlayEvent::AcceptCommand(cmd) => {
                 self.overlay = None;
                 self.dispatch(cmd);
-            }
+            },
         }
     }
 
@@ -401,14 +442,14 @@ impl App {
                     find.query.pop();
                 }
                 self.run_find();
-            }
+            },
             KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
                 if let Some(find) = self.find.as_mut() {
                     find.query.push(c);
                 }
                 self.run_find();
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 
@@ -508,7 +549,7 @@ impl App {
                 } else {
                     self.should_quit = true;
                 }
-            }
+            },
             KeyCode::Enter => {
                 if self.search.input {
                     self.run_global_search();
@@ -516,7 +557,7 @@ impl App {
                 } else {
                     self.open_selected_result();
                 }
-            }
+            },
             KeyCode::Down => self.search_select(1),
             KeyCode::Up => self.search_select(-1),
             KeyCode::Char('/') if !self.search.input => self.search.input = true,
@@ -524,9 +565,9 @@ impl App {
             KeyCode::Char('k') if !self.search.input => self.search_select(-1),
             KeyCode::Backspace if self.search.input => {
                 self.search.query.pop();
-            }
+            },
             KeyCode::Char(c) if self.search.input && plain => self.search.query.push(c),
-            _ => {}
+            _ => {},
         }
     }
 
@@ -591,7 +632,7 @@ impl App {
                 self.sidebar_panel = panel;
                 self.sidebar_visible = true;
                 self.focus = Focus::Sidebar;
-            }
+            },
             Command::OpenQuickOpen => self.open_quick_open(),
             Command::OpenCommandPalette => self.overlay = Some(Overlay::command_palette()),
             Command::OpenFind => self.open_find(),
@@ -636,20 +677,20 @@ impl App {
                 self.submit_edit(move |caret, sel, _b, base| {
                     Some(editing::insert(caret, sel, base, &s))
                 });
-            }
+            },
             Command::InsertNewline => {
                 self.submit_edit(|caret, sel, buf, base| {
                     Some(editing::newline(caret, sel, buf, base))
                 });
-            }
+            },
             Command::DeleteBackward => self.submit_edit(editing::backspace),
             Command::DeleteForward => self.submit_edit(editing::delete_forward),
             Command::Indent => {
                 self.submit_edit(|caret, sel, _b, base| Some(editing::indent(caret, sel, base)));
-            }
+            },
             Command::Dedent => {
                 self.submit_edit(|caret, _sel, buf, base| editing::dedent(caret, buf, base));
-            }
+            },
             Command::Undo => self.send_doc_command(|doc| SessionCommand::Undo { doc }),
             Command::Redo => self.send_doc_command(|doc| SessionCommand::Redo { doc }),
             Command::Save => self.save_active(),
@@ -667,6 +708,8 @@ impl App {
             Command::ScmDiscard => self.scm_arm_discard(),
             Command::ScmCommit => self.scm_open_commit_input(),
             Command::ScmRefresh => self.send_vcs(SessionCommand::RefreshVcs),
+            Command::ShowBlame => self.open_blame(false),
+            Command::BlameFunction => self.open_blame(true),
         }
     }
 
@@ -688,7 +731,7 @@ impl App {
                 } else {
                     self.explorer.select_prev();
                 }
-            }
+            },
             // A plain move collapses any range or multi-selection.
             SidebarPanel::SourceControl => self.scm.selection.move_by(delta),
             SidebarPanel::Search => self.search_select(delta),
@@ -708,9 +751,9 @@ impl App {
                         self.open_path(&path);
                     }
                 }
-            }
+            },
             SidebarPanel::SourceControl => self.open_selected_diff(),
-            SidebarPanel::Search => {}
+            SidebarPanel::Search => {},
         }
     }
 
@@ -810,9 +853,9 @@ impl App {
             SidebarPanel::Explorer => {
                 self.explorer.ensure_built(&self.root);
                 self.explorer.select_extend(delta);
-            }
+            },
             SidebarPanel::SourceControl => self.scm.selection.extend_by(delta),
-            SidebarPanel::Search => {}
+            SidebarPanel::Search => {},
         }
     }
 
@@ -822,9 +865,9 @@ impl App {
             SidebarPanel::Explorer => {
                 self.explorer.ensure_built(&self.root);
                 self.explorer.mark_toggle();
-            }
+            },
             SidebarPanel::SourceControl => self.scm.selection.toggle_cursor(),
-            SidebarPanel::Search => {}
+            SidebarPanel::Search => {},
         }
     }
 
@@ -834,9 +877,9 @@ impl App {
             SidebarPanel::Explorer => {
                 self.explorer.ensure_built(&self.root);
                 self.explorer.select_all();
-            }
+            },
             SidebarPanel::SourceControl => self.scm.selection.select_all(),
-            SidebarPanel::Search => {}
+            SidebarPanel::Search => {},
         }
     }
 
@@ -870,7 +913,7 @@ impl App {
             KeyCode::Esc => {
                 self.commit_input = None;
                 self.status = Some("commit cancelled".to_string());
-            }
+            },
             KeyCode::Enter => {
                 let message = self.commit_input.take().unwrap_or_default();
                 let message = message.trim().to_string();
@@ -880,18 +923,18 @@ impl App {
                 } else {
                     self.send_vcs(SessionCommand::Commit { message });
                 }
-            }
+            },
             KeyCode::Backspace => {
                 if let Some(message) = self.commit_input.as_mut() {
                     message.pop();
                 }
-            }
+            },
             KeyCode::Char(c) if !ctrl && !alt => {
                 if let Some(message) = self.commit_input.as_mut() {
                     message.push(c);
                 }
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 
@@ -980,6 +1023,62 @@ impl App {
                 let _ = backend.send(id, SessionCommand::CloseDocument { doc });
             }
         }
+    }
+
+    /// Open a semantic-blame view (`blameline`) for the active code tab.
+    ///
+    /// With `function_scope`, blame is narrowed to the function enclosing the caret;
+    /// otherwise the whole file is blamed. Computed synchronously on demand (like
+    /// find), so the original file tab stays open alongside the new Blame tab.
+    fn open_blame(&mut self, function_scope: bool) {
+        // Snapshot the inputs and release the borrow before mutating `self`.
+        let input = self.tabs.get(self.active).and_then(|t| match &t.kind {
+            TabKind::Code { path, text, .. } => {
+                Some((path.clone(), text.clone(), t.editor.cursor.line))
+            },
+            _ => None,
+        });
+        let Some((path, text, line)) = input else {
+            self.status = Some("blame: open a text file first".to_string());
+            return;
+        };
+
+        // Absolutize first so blameline resolves the path against the worktree root
+        // rather than doubling a relative path onto its own parent directory.
+        let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
+        let repo_root = abs.parent().unwrap_or(abs.as_path());
+        let result = if function_scope {
+            blameline::blame_function(repo_root, &abs, &text, line)
+        } else {
+            blameline::blame_file(repo_root, &abs)
+        };
+        let groups = match result {
+            Ok(groups) if !groups.is_empty() => groups,
+            Ok(_) => {
+                self.status = Some("blame: no commits touch this file".to_string());
+                return;
+            },
+            Err(e) => {
+                self.status = Some(format!("blame: {e}"));
+                return;
+            },
+        };
+
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+        let title = if function_scope {
+            format!("Blame ❯ {name}")
+        } else {
+            format!("Blame: {name}")
+        };
+        let tab = Tab::new(
+            title,
+            TabKind::Blame {
+                path,
+                groups,
+                scroll: 0,
+            },
+        );
+        self.push_tab(tab);
     }
 
     /// Switch to the tab at `index`, focusing the editor.
@@ -1143,17 +1242,17 @@ impl App {
                 let max = buffer.line_count().saturating_sub(1) as i64;
                 let next = (i64::from(tab.editor.scroll_line) + i64::from(delta)).clamp(0, max);
                 tab.editor.scroll_line = next as u32;
-            }
-            TabKind::Diff { scroll, .. } => {
+            },
+            TabKind::Diff { scroll, .. } | TabKind::Blame { scroll, .. } => {
                 let next = (i64::from(*scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
                 *scroll = next as u16;
-            }
+            },
             TabKind::Hex { bytes, scroll, .. } => {
                 let max = bytes.len().div_ceil(16).saturating_sub(1) as i64;
                 let next = (*scroll as i64 + i64::from(delta)).clamp(0, max);
                 *scroll = next as usize;
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 
@@ -1169,16 +1268,18 @@ impl App {
                 } else {
                     buffer.line_count().saturating_sub(1) as u32
                 };
-            }
-            TabKind::Diff { scroll, .. } => *scroll = if top { 0 } else { u16::MAX },
+            },
+            TabKind::Diff { scroll, .. } | TabKind::Blame { scroll, .. } => {
+                *scroll = if top { 0 } else { u16::MAX };
+            },
             TabKind::Hex { bytes, scroll, .. } => {
                 *scroll = if top {
                     0
                 } else {
                     bytes.len().div_ceil(16).saturating_sub(1)
                 };
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 
@@ -1256,13 +1357,13 @@ impl App {
                         self.tab_dragging = true;
                     }
                 }
-            }
+            },
             MouseEventKind::Down(MouseButton::Middle) => {
                 if let Some((i, _)) = self.tab_at(mouse.column) {
                     self.close_tab_at(i);
                 }
-            }
-            _ => {}
+            },
+            _ => {},
         }
         true
     }
@@ -1298,7 +1399,7 @@ impl App {
             match mouse.kind {
                 MouseEventKind::Drag(MouseButton::Left) => self.drag_tab_to(mouse.column),
                 MouseEventKind::Up(MouseButton::Left) => self.tab_dragging = false,
-                _ => {}
+                _ => {},
             }
             return;
         }
@@ -1307,9 +1408,9 @@ impl App {
             match mouse.kind {
                 MouseEventKind::Drag(MouseButton::Left) => {
                     self.drag_select_to(mouse.column, mouse.row);
-                }
+                },
                 MouseEventKind::Up(MouseButton::Left) => self.editor_selecting = false,
-                _ => {}
+                _ => {},
             }
             return;
         }
@@ -1332,8 +1433,8 @@ impl App {
                 } else {
                     self.handle_editor_click(mouse);
                 }
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 
@@ -1375,7 +1476,7 @@ impl App {
                     self.explorer.select_visible(view_row);
                     self.sidebar_activate();
                 }
-            }
+            },
             SidebarPanel::SourceControl => {
                 if !rect_contains(self.sidebar_content_rect, (col, row_y)) {
                     return;
@@ -1391,7 +1492,7 @@ impl App {
                         self.open_selected_diff();
                     }
                 }
-            }
+            },
             SidebarPanel::Search => {
                 // The query line sits just above the results; click it to type.
                 if row_y == self.sidebar_content_rect.y {
@@ -1406,7 +1507,7 @@ impl App {
                     self.search.selected = idx;
                     self.open_selected_result();
                 }
-            }
+            },
         }
     }
 
@@ -1483,7 +1584,7 @@ impl App {
                 if c == col && r == row && now.duration_since(t) < Duration::from_millis(400) =>
             {
                 self.click_streak % 3 + 1
-            }
+            },
             _ => 1,
         };
         self.last_click = Some((now, col, row));
@@ -1511,11 +1612,11 @@ impl App {
                 2 => {
                     let (anchor, head) = word_at(buffer, pos);
                     editor.set_selection(buffer, anchor, head);
-                }
+                },
                 3 => {
                     let (anchor, head) = line_span(buffer, pos.line);
                     editor.set_selection(buffer, anchor, head);
-                }
+                },
                 _ => editor.set_caret(buffer, pos),
             }
         }
@@ -1556,13 +1657,13 @@ impl App {
                 }
                 let _ = stdout.flush();
                 self.shown_image = Some(self.active);
-            }
+            },
             None if self.shown_image.is_some() => {
                 let _ = write!(stdout, "{}", image::kitty_delete_all());
                 let _ = stdout.flush();
                 self.shown_image = None;
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 }
@@ -1692,7 +1793,7 @@ impl App {
                     let id = backend.next_id();
                     let _ = backend.send(id, SessionCommand::Save { doc });
                 }
-            }
+            },
             None => self.status = Some("save: open a text file".to_string()),
         }
     }
@@ -1750,23 +1851,23 @@ impl App {
                         }
                     }
                 }
-            }
+            },
             SessionEvent::Saved { .. } => self.status = Some("saved".to_string()),
             // The fresh content arrives via the snapshot stream; just note it.
             SessionEvent::Reloaded { .. } => {
                 self.status = Some("reloaded from disk".to_string());
-            }
+            },
             SessionEvent::ExternalConflict { .. } => {
                 self.status = Some("⚠ file changed on disk — you have unsaved changes".to_string());
-            }
+            },
             SessionEvent::Progress { message, .. } => self.status = Some(message),
             SessionEvent::VcsStatus { staged, working } => self.apply_vcs_status(staged, working),
             SessionEvent::Committed { oid } => {
                 self.commit_input = None;
                 let short: String = oid.chars().take(7).collect();
                 self.status = Some(format!("committed {short}"));
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 
@@ -1971,15 +2072,16 @@ fn handle_terminal_event(app: &mut App, event: Event) {
         Event::Key(key) if key.kind == KeyEventKind::Press => app.handle_key(key),
         Event::Mouse(mouse) => app.handle_mouse(mouse),
         Event::Paste(text) => app.handle_paste(text),
-        _ => {}
+        _ => {},
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use karet_vcs::StatusKind;
+
     use super::*;
     use crate::keymap::SidebarPanel;
-    use karet_vcs::StatusKind;
 
     fn change(path: &str, status: StatusKind) -> FileChange {
         FileChange {
@@ -2132,7 +2234,8 @@ mod tests {
 
     #[test]
     fn opening_same_file_focuses_existing_tab() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
         static N: AtomicUsize = AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "karet-open-{}-{}",
@@ -2217,6 +2320,58 @@ mod tests {
         app.run_global_search();
         assert_eq!(app.search.results.len(), 1);
         assert!(app.search.results[0].path.ends_with("a.txt"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn blame_without_a_code_tab_reports_status() {
+        let mut app = app();
+        // The Welcome tab is active — there is nothing to blame.
+        app.dispatch(Command::ShowBlame);
+        assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
+        assert_eq!(app.status.as_deref(), Some("blame: open a text file first"));
+    }
+
+    #[test]
+    fn blame_outside_a_repo_surfaces_an_error() {
+        use karet_syntax::Highlights;
+        use karet_text::TextBuffer;
+
+        // A scratch directory that is not a git repository.
+        let n = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "karet-blame-{}-{}",
+            std::process::id(),
+            n.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("orphan.rs");
+        let _ = std::fs::write(&file, "fn main() {}\n");
+
+        let mut app = app();
+        app.push_tab(Tab::new(
+            "orphan.rs",
+            TabKind::Code {
+                path: file,
+                language: "Rust",
+                doc: None,
+                next_version: 0,
+                buffer: TextBuffer::from_text("fn main() {}\n"),
+                text: "fn main() {}\n".to_string(),
+                highlights: Highlights::default(),
+                decos: Vec::new(),
+            },
+        ));
+        app.dispatch(Command::ShowBlame);
+
+        // No Blame tab is created; the failure is surfaced in the status bar.
+        assert!(!matches!(app.tabs[app.active].kind, TabKind::Blame { .. }));
+        assert!(
+            app.status
+                .as_deref()
+                .is_some_and(|s| s.starts_with("blame:"))
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2547,7 +2702,8 @@ mod tests {
     /// A git repo in a fresh temp dir holding a single untracked file, or `None`
     /// when `git` is unavailable (so the test skips rather than fails).
     fn init_test_repo() -> Option<TempRepo> {
-        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
         static N: AtomicUsize = AtomicUsize::new(0);
         let path = std::env::temp_dir().join(format!(
             "karet-scm-{}-{}",

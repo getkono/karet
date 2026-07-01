@@ -13,18 +13,25 @@
 //! and opening all act on it; toggling expands/collapses the whole chain.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
-use karet_core::{Decoration, DecorationKind, ThemeRole};
-use karet_filetype::{IconStyle, chevron, directory_icon, icon_for_path};
+use karet_core::Decoration;
+use karet_core::DecorationKind;
+use karet_core::ThemeRole;
+use karet_filetype::IconStyle;
+use karet_filetype::chevron;
+use karet_filetype::directory_icon;
+use karet_filetype::icon_for_path;
 use karet_theme::Theme;
-
-use crate::ListSelection;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
+use ratatui::text::Span;
 use ratatui::widgets::StatefulWidget;
+
+use crate::ListSelection;
 
 /// One flattened, visible row of the tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -242,7 +249,7 @@ impl FileTreeState {
                     label.push('/');
                     label.push_str(&file_label(&child));
                     tip = child;
-                }
+                },
                 _ => break entries,
             }
         };
@@ -372,7 +379,7 @@ impl StatefulWidget for FileTree<'_> {
             None => {
                 fallback = Theme::dark();
                 &fallback
-            }
+            },
         };
         let fg = theme.role(ThemeRole::Foreground);
         let guide = theme.role(ThemeRole::IndentGuide);
@@ -439,9 +446,13 @@ impl StatefulWidget for FileTree<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    use karet_core::LineCol;
+    use karet_core::Range;
+
     use super::*;
-    use karet_core::{LineCol, Range};
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 

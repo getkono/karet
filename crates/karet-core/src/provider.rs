@@ -6,7 +6,9 @@
 //! Blanket impls on `Vec<T>` and `[T]` let callers pass slices directly.
 
 use crate::coord::LineCol;
-use crate::model::{Decoration, Diagnostic, Symbol};
+use crate::model::Decoration;
+use crate::model::Diagnostic;
+use crate::model::Symbol;
 
 /// A snapshot source of document/workspace symbols.
 pub trait SymbolProvider {
@@ -78,7 +80,8 @@ impl DecorationSource for Vec<Decoration> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coord::{LineCol, Range};
+    use crate::coord::LineCol;
+    use crate::coord::Range;
     use crate::model::SymbolKind;
 
     fn sym(name: &str, start: (u32, u32), end: (u32, u32), children: Vec<Symbol>) -> Symbol {

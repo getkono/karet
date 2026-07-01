@@ -4,8 +4,10 @@
 //! independent of the rope. `karet-text` applies them; the presentation layer and
 //! the client-server seam exchange them.
 
-use crate::coord::{LineCol, Range};
 use std::path::PathBuf;
+
+use crate::coord::LineCol;
+use crate::coord::Range;
 
 /// A single replacement of `range` with `new_text` (LSP-shaped).
 #[derive(Clone, Debug, PartialEq, Eq)]

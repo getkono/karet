@@ -4,9 +4,15 @@
 //! *new* content of each changed file and hand both sides to the caller, who can run
 //! whatever diff they like (e.g. `karet-diff`).
 
-use crate::{Repository, StatusKind, VcsError, repo::to_git, selection::Selection};
 use std::ops::ControlFlow;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
+
+use crate::Repository;
+use crate::StatusKind;
+use crate::VcsError;
+use crate::repo::to_git;
+use crate::selection::Selection;
 
 /// One changed file with full before/after text, ready for `karet-diff`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -131,7 +137,7 @@ impl Repository {
                     old,
                     new,
                 }
-            }
+            },
             C::Deletion { location, id, .. } => {
                 let (bin, old) = self.read_object_text(id.into_owned())?;
                 let (is_binary, old, new) = finalize(bin, old, String::new());
@@ -143,7 +149,7 @@ impl Repository {
                     old,
                     new,
                 }
-            }
+            },
             C::Modification {
                 location,
                 previous_id,
@@ -161,7 +167,7 @@ impl Repository {
                     old,
                     new,
                 }
-            }
+            },
             C::Rewrite {
                 source_location,
                 source_id,
@@ -180,7 +186,7 @@ impl Repository {
                     old,
                     new,
                 }
-            }
+            },
         };
         Ok(Some(fc))
     }
@@ -193,9 +199,11 @@ impl Repository {
         &self,
         item: gix::status::index_worktree::Item,
     ) -> Result<Vec<FileChange>, VcsError> {
-        use gix::dir::entry::{Kind, Status as DirStatus};
+        use gix::dir::entry::Kind;
+        use gix::dir::entry::Status as DirStatus;
         use gix::status::index_worktree::Item as I;
-        use gix::status::plumbing::index_as_worktree::{Change as WtChange, EntryStatus};
+        use gix::status::plumbing::index_as_worktree::Change as WtChange;
+        use gix::status::plumbing::index_as_worktree::EntryStatus;
         match item {
             I::Modification {
                 entry,
@@ -216,7 +224,7 @@ impl Repository {
                             old,
                             new,
                         }
-                    }
+                    },
                     EntryStatus::Change(WtChange::Modification { .. } | WtChange::Type { .. }) => {
                         let (b1, old) = self.read_object_text(entry.id)?;
                         let (b2, new) = self.read_worktree_text(rela_path.as_ref())?;
@@ -229,7 +237,7 @@ impl Repository {
                             old,
                             new,
                         }
-                    }
+                    },
                     EntryStatus::IntentToAdd => {
                         let (bin, new) = self.read_worktree_text(rela_path.as_ref())?;
                         let (is_binary, old, new) = finalize(bin, String::new(), new);
@@ -241,7 +249,7 @@ impl Repository {
                             old,
                             new,
                         }
-                    }
+                    },
                     // An unresolved merge conflict: show the worktree file (with its
                     // conflict markers) as the "after" side.
                     EntryStatus::Conflict { .. } => {
@@ -255,12 +263,12 @@ impl Repository {
                             old,
                             new,
                         }
-                    }
+                    },
                     // Submodule changes and bookkeeping updates are skipped.
                     _ => return Ok(Vec::new()),
                 };
                 Ok(vec![fc])
-            }
+            },
             I::DirectoryContents { entry, .. } => match (entry.status, entry.disk_kind) {
                 (DirStatus::Untracked, Some(Kind::File | Kind::Symlink)) => {
                     let (bin, new) = self.read_worktree_text(entry.rela_path.as_ref())?;
@@ -273,14 +281,14 @@ impl Repository {
                         old,
                         new,
                     }])
-                }
+                },
                 // gix collapses a wholly-untracked directory into a single entry
                 // (rather than emitting its files); recurse so each file is listed.
                 // It only collapses when it did *not* emit the inner files, so this
                 // cannot produce duplicates.
                 (DirStatus::Untracked, Some(Kind::Directory)) => {
                     self.untracked_dir_changes(&bstr_to_path(entry.rela_path.as_ref()))
-                }
+                },
                 _ => Ok(Vec::new()),
             },
             // Rewrite items don't fire while index-worktree rename tracking is disabled.
@@ -411,11 +419,17 @@ fn repo_relative(repo: &gix::Repository, path: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Repository, Selection, StatusKind, VcsError};
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
+    use std::path::PathBuf;
     use std::process::Command;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::Ordering;
+
+    use crate::Repository;
+    use crate::Selection;
+    use crate::StatusKind;
+    use crate::VcsError;
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     /// Serializes the tests that mutate the process-wide current directory.

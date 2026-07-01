@@ -144,6 +144,10 @@ pub enum Command {
     ScmCommit,
     /// Recompute the Source-Control status.
     ScmRefresh,
+    /// Open a semantic-blame view (blameline) for the active file.
+    ShowBlame,
+    /// Open a semantic-blame view narrowed to the function under the caret.
+    BlameFunction,
 }
 
 impl Command {
@@ -220,6 +224,8 @@ impl Command {
             Self::ScmDiscard => "Source Control: Discard Selected Changes",
             Self::ScmCommit => "Source Control: Commit…",
             Self::ScmRefresh => "Source Control: Refresh",
+            Self::ShowBlame => "Source Control: Show Blame",
+            Self::BlameFunction => "Source Control: Blame This Function",
         }
     }
 
@@ -257,6 +263,8 @@ impl Command {
                 | Self::ScmUnstageAll
                 | Self::ScmCommit
                 | Self::ScmRefresh
+                | Self::ShowBlame
+                | Self::BlameFunction
         )
     }
 }
@@ -273,6 +281,8 @@ pub fn palette() -> Vec<Command> {
         Command::ToggleFocus,
         Command::OpenFind,
         Command::OpenGlobalSearch,
+        Command::ShowBlame,
+        Command::BlameFunction,
         Command::Copy,
         Command::CopyPath,
         Command::CopyRelativePath,

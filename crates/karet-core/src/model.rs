@@ -6,10 +6,13 @@
 //! serialize across the client-server seam. The structs are intentionally *not*
 //! `#[non_exhaustive]` so producers can construct them with literal syntax.
 
-use crate::coord::{LineCol, Range};
-use crate::edit::{TextEdit, WorkspaceEdit};
-use crate::token::ThemeRole;
 use std::path::PathBuf;
+
+use crate::coord::LineCol;
+use crate::coord::Range;
+use crate::edit::TextEdit;
+use crate::edit::WorkspaceEdit;
+use crate::token::ThemeRole;
 
 /// Severity of a [`Diagnostic`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

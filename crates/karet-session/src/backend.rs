@@ -1,11 +1,15 @@
 //! The [`Backend`] seam: the single interface the presentation layer talks to,
 //! identical in local mode today and (additively) in a future remote mode.
 
-use crate::api::{Command, RequestId};
-use crate::session::Session;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+
 use karet_watch::FsEvent;
-use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc;
+
+use crate::api::Command;
+use crate::api::RequestId;
+use crate::session::Session;
 
 /// Errors produced when submitting to a [`Backend`].
 #[derive(Debug, thiserror::Error)]
@@ -119,7 +123,8 @@ mod tests {
     #[tokio::test]
     async fn local_backend_drives_open() {
         use crate::api::Event;
-        use crate::session::{Session, SessionConfig};
+        use crate::session::Session;
+        use crate::session::SessionConfig;
 
         let Ok(dir) = tempfile::tempdir() else {
             return;

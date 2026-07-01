@@ -7,10 +7,12 @@
 //! (`\n` vs `\r\n`, or mixed) and the buffer is normalized to LF in memory, with
 //! the detected ending preserved for a round-tripping save.
 
-use crate::TextBuffer;
-use crate::save::{SavedState, hash_bytes};
 use std::path::Path;
 use std::time::SystemTime;
+
+use crate::TextBuffer;
+use crate::save::SavedState;
+use crate::save::hash_bytes;
 
 /// The line ending a buffer was loaded with and is saved with.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -6,12 +6,16 @@
 //! renamed over the target. A fingerprint of the bytes written is returned so a
 //! file-watcher can recognize the editor's own write.
 
-use crate::load::{Encoding, Eol};
-use crate::{TextBuffer, TextError};
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::io::Write;
 use std::path::Path;
 use std::time::SystemTime;
+
+use crate::TextBuffer;
+use crate::TextError;
+use crate::load::Encoding;
+use crate::load::Eol;
 
 /// A fingerprint of a file's on-disk state at the moment karet last read or wrote
 /// it. A file-watcher compares this against a fresh `stat` to tell the editor's own
@@ -67,7 +71,7 @@ impl TextBuffer {
                 for chunk in self.rope.chunks() {
                     out.extend_from_slice(chunk.as_bytes());
                 }
-            }
+            },
             Eol::Crlf => {
                 for chunk in self.rope.chunks() {
                     let b = chunk.as_bytes();
@@ -79,7 +83,7 @@ impl TextBuffer {
                     }
                     out.extend_from_slice(&b[last..]);
                 }
-            }
+            },
         }
         out
     }
@@ -116,8 +120,12 @@ pub(crate) fn hash_bytes(bytes: &[u8]) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use karet_core::Change;
+    use karet_core::LineCol;
+    use karet_core::Range;
+    use karet_core::TextEdit;
+
     use super::*;
-    use karet_core::{Change, LineCol, Range, TextEdit};
 
     /// Save `bytes` (parsed via `from_bytes`) to a fresh temp file and return the
     /// raw bytes read back, or `None` if the environment lacks a temp dir.

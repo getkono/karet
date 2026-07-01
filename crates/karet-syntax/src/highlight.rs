@@ -1,11 +1,17 @@
 //! The tree-sitter highlighter: run a grammar's highlights query and flatten the
 //! (overlapping) captures into ordered, non-overlapping [`HighlightSpan`]s.
 
-use karet_core::{BytePos, Span, TokenId};
-use karet_treesitter::{LanguageId, Query, SyntaxTree};
+use karet_core::BytePos;
+use karet_core::Span;
+use karet_core::TokenId;
+use karet_treesitter::LanguageId;
+use karet_treesitter::Query;
+use karet_treesitter::SyntaxTree;
 
+use crate::HighlightSpan;
+use crate::Highlights;
+use crate::SyntaxError;
 use crate::map::map_capture;
-use crate::{HighlightSpan, Highlights, SyntaxError};
 
 /// Computes [`Highlights`] from a [`SyntaxTree`] using a grammar's highlights query.
 pub struct Highlighter {

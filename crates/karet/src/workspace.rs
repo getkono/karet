@@ -5,15 +5,22 @@
 //! `karet-syntax`, `karet-widgets`). Routing through `karet-session` is a deferred
 //! step; its `Command`/`Event` variants already map onto this flow.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
-use karet_syntax::{Highlighter, Highlights};
+use karet_syntax::Highlighter;
+use karet_syntax::Highlights;
 use karet_text::TextBuffer;
-use karet_treesitter::{ParserPool, SyntaxTree, language_id_from_path, language_name_from_path};
+use karet_treesitter::ParserPool;
+use karet_treesitter::SyntaxTree;
+use karet_treesitter::language_id_from_path;
+use karet_treesitter::language_name_from_path;
 use karet_widgets::image;
-use karet_widgets::viewer::{self, FileKind};
+use karet_widgets::viewer::FileKind;
+use karet_widgets::viewer::{self};
 
-use crate::tab::{Tab, TabKind};
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// How many leading bytes to sample for file-type classification.
 const HEAD_BYTES: usize = 8192;
@@ -149,9 +156,11 @@ pub fn list_files(root: &Path, limit: usize) -> Vec<(String, PathBuf)> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
     use super::*;
     use crate::tab::TabKind;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 

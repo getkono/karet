@@ -7,8 +7,9 @@
 //! This is the implementation *skeleton*: the public joints are defined; the DAP
 //! protocol/session logic is filled in separately.
 
-use karet_core::Decoration;
 use std::path::Path;
+
+use karet_core::Decoration;
 use tokio::sync::broadcast;
 
 /// Errors produced by the DAP client.
