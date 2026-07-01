@@ -1,0 +1,18 @@
+# release-plz configuration — https://release-plz.dev/docs/config
+#
+# Versioning is lockstep *by construction*: every `karet-*` crate inherits
+# `version.workspace = true`, so there is a single shared version field in the
+# root Cargo.toml. release-plz bumps that one `[workspace.package] version`, so
+# the whole set always moves together. `blameline` carries its own `version`
+# and is therefore versioned/released independently on its own SemVer line.
+#
+# Crates with `publish = false` are skipped automatically (never published to
+# crates.io); release-plz still keeps their inherited version in sync.
+#
+# CHANGELOGs are generated per published crate (release-plz's default), next to
+# each crate's Cargo.toml. Publishing to crates.io uses Trusted Publishing
+# (OIDC) configured in .github/workflows/release.yml — no registry token.
+
+[workspace]
+# Cut a GitHub Release (and its git tag) for every published version bump.
+git_release_enable = true

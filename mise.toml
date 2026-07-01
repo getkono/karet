@@ -7,6 +7,7 @@
 hk = "latest"                  # git hooks manager (reads hk.pkl)
 pkl = "latest"                 # config language hk.pkl is written in
 "cargo:cargo-llvm-cov" = "latest"  # code coverage
+"cargo:convco" = "latest"          # conventional-commit validation (commit-msg hook + CI)
 
 [tasks.format]
 description = "Format code with rustfmt (nightly: rustfmt.toml uses unstable import opts)"

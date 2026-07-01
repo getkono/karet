@@ -66,7 +66,9 @@ of recognized file types, icons, and syntax-highlighting support.
 
 This project uses [hk](https://hk.jdx.dev). The pre-commit hook auto-fixes formatting
 and lint on staged Rust files; the pre-push hook runs format checks, Clippy, the test
-suite, and a coverage report.
+suite, and a coverage report. The commit-msg hook validates the message against
+[Conventional Commits](https://www.conventionalcommits.org) with
+[convco](https://convco.github.io) — merge/revert-in-progress commits are exempt.
 
 ## CI/CD
 
@@ -85,6 +87,24 @@ mise run coverage
 ### MSRV
 
 Rust 1.90
+
+## Versioning
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org) (enforced by
+[convco](https://convco.github.io) in the commit-msg hook and in CI on pull requests).
+Version bumps, CHANGELOGs, git tags, and crates.io publishing are automated by
+[release-plz](https://release-plz.dev); publishing uses crates.io
+[Trusted Publishing](https://crates.io/docs/trusted-publishing) (OIDC) — no long-lived tokens.
+
+Two release lines coexist:
+
+- **The `karet-*` crates release in lockstep** under one synchronized workspace version
+  (`version.workspace = true`). Eight of them are published to crates.io — `karet-core`,
+  `karet-filetype`, `karet-treesitter`, `karet-diff`, `karet-lsp`, `karet-dap`, `karet-vcs`,
+  `karet-search` — and the rest are `publish = false`. See the crate table in
+  [`AGENTS.md`](AGENTS.md) for the full breakdown.
+- **[`blameline`](crates/blameline) is a standalone library on its own SemVer line** (from
+  `1.0.0`), published on an independent cadence; see [its README](crates/blameline/README.md).
 
 ## License
 

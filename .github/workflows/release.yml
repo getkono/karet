@@ -1,0 +1,62 @@
+name: Release-plz
+
+# Automates version bumps, CHANGELOGs, git tags, GitHub Releases, and crates.io
+# publishing. On every push to master:
+#   * release-plz-pr     opens/updates a "release" PR (version bumps + CHANGELOG)
+#   * release-plz-release publishes crates whose version isn't on crates.io yet
+#
+# ONE-TIME BOOTSTRAP required before the release job can publish (see issue #6):
+#   1. Publish each crate once from a local CLI (`cargo publish`) — Trusted
+#      Publishing cannot create a crate that has never been published.
+#   2. Configure a Trusted Publisher for each crate on crates.io, pointing at
+#      this repo + workflow (`release.yml`). Then no registry token is needed.
+#   3. (Recommended) add a RELEASE_PLZ_TOKEN secret (fine-grained PAT or GitHub
+#      App token, Contents + Pull-requests: write) so the release PR triggers CI.
+#      Without it the workflow falls back to GITHUB_TOKEN (release PR won't run CI).
+
+on:
+  push:
+    branches: [master]
+
+permissions: {}
+
+jobs:
+  release-plz-pr:
+    name: Release PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          # Prefer a PAT/App token (so the release PR runs CI); fall back to the
+          # built-in token so the workflow still works before the secret exists.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+
+  release-plz-release:
+    name: Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+      id-token: write # crates.io Trusted Publishing (OIDC) — no CARGO_REGISTRY_TOKEN
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

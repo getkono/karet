@@ -5,6 +5,17 @@ import "package://github.com/jdx/hk/releases/download/v1.48.0/hk@1.48.0#/Builtin
 // the results. cargo fmt / clippy operate on the whole workspace (they have no
 // reliable per-file mode), so the glob only triggers the step when *.rs changes.
 hooks {
+    // Validate the commit message against Conventional Commits with convco.
+    // The step delegates to scripts/lint-commit-msg.sh so it can exempt
+    // merge/revert-in-progress commits (git's default messages aren't
+    // conventional and must not block conflict resolution).
+    ["commit-msg"] {
+        steps {
+            ["convco"] {
+                check = "sh scripts/lint-commit-msg.sh {{commit_msg_file}}"
+            }
+        }
+    }
     ["pre-commit"] {
         fix = true
         stage = true

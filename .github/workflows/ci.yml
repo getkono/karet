@@ -10,6 +10,24 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Validate that every commit in a PR follows Conventional Commits. convco
+  # skips merge commits by default, so conflict-resolution merges don't trip it.
+  commits:
+    name: Conventional Commits
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: convco
+      - name: Check PR commits
+        run: >-
+          convco check --ignore-reverts
+          ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
+
   check:
     name: Format, Lint & Test
     runs-on: ubuntu-latest
