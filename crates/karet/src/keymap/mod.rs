@@ -8,6 +8,13 @@
 //! `Ctrl+K Ctrl+W` resolves the same way a single chord does — the resolver reports
 //! [`Resolved::Pending`] while such a sequence is still being typed. Chord matching
 //! (kitty-protocol case/shift rules) lives in the [`chord`] submodule.
+//!
+//! Extending the keymap is additive (these are the seams the retired generic
+//! `input` scaffolding sketched, now grounded in the live table): multi-key
+//! sequences already resolve; user rebinding would parse a config file into the same
+//! [`Binding`] shape and layer it over the defaults; and a modal-editing mode (vi
+//! Normal/Insert) would just be another [`Layer`] in the [`active_layers`] stack —
+//! no separate engine required.
 
 mod chord;
 mod layer;

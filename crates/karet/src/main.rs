@@ -9,8 +9,9 @@
 //! Routing through the headless `karet-session` backend is a deferred step; for now
 //! the shell calls the engines directly.
 
-// `input` (the configurable chord engine) is scaffolding for future editing work
-// and is not yet wired into the shell; the clipboard's read path is likewise unused.
+// Some scaffolding is intentionally not wired into the shell yet: a handful of
+// planned commands (scroll/indent), symmetry helpers exercised only by tests, the
+// clipboard's read path, and render helpers.
 #![allow(dead_code)]
 
 mod app;
@@ -18,7 +19,6 @@ mod cli;
 mod clipboard;
 mod command;
 mod editing;
-mod input;
 mod keymap;
 mod overlay;
 mod render;
