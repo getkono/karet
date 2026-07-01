@@ -476,6 +476,7 @@ fn draw_main(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             f.render_stateful_widget(editor, area, &mut tab.editor);
         }
         TabKind::Diff { file, view, scroll } => draw_diff(f, theme, area, file, *view, scroll),
+        TabKind::Blame { groups, scroll, .. } => draw_blame(f, theme, area, groups, scroll),
         TabKind::Hex { bytes, scroll, .. } => {
             let rows = bytes.len().div_ceil(16);
             *scroll = (*scroll).min(rows.saturating_sub(1));
@@ -540,6 +541,58 @@ fn draw_diff(
             f.render_widget(Paragraph::new(right).scroll((*scroll, 0)), panes[2]);
         }
     }
+}
+
+/// Render the semantic-blame view: each commit group as a header (line range, short
+/// hash, author, date) followed by its full commit message — the "why".
+fn draw_blame(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    groups: &[blameline::BlameGroup],
+    scroll: &mut u16,
+) {
+    let accent = Style::default().fg(theme.role(ThemeRole::DiffModified).to_ratatui());
+    let range_style = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
+    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let body = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
+    let subject = body.add_modifier(Modifier::BOLD);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for group in groups {
+        let range = if group.lines.start == group.lines.end {
+            format!("line {}", group.lines.start)
+        } else {
+            format!("lines {}\u{2013}{}", group.lines.start, group.lines.end)
+        };
+        let date = group
+            .date
+            .split('T')
+            .next()
+            .unwrap_or(&group.date)
+            .to_string();
+        lines.push(Line::from(vec![
+            Span::styled("\u{258c} ", accent),
+            Span::styled(format!("{range:<13}"), range_style),
+            Span::styled(format!("{}  ", group.short_hash()), accent),
+            Span::styled(format!("{}  ", group.author), body),
+            Span::styled(date, dim),
+        ]));
+        for (i, message_line) in group.message.lines().enumerate() {
+            let style = if i == 0 { subject } else { dim };
+            lines.push(Line::from(vec![
+                Span::styled("\u{258c}   ", accent),
+                Span::styled(message_line.to_string(), style),
+            ]));
+        }
+        lines.push(Line::from(""));
+    }
+
+    let max = u16::try_from(lines.len())
+        .unwrap_or(u16::MAX)
+        .saturating_sub(area.height);
+    *scroll = (*scroll).min(max);
+    f.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), area);
 }
 
 fn draw_welcome(f: &mut Frame, theme: &Theme, area: Rect) {

@@ -233,6 +233,10 @@ static BINDINGS: &[Binding] = &[
     b(Editor, true,  false, false, Char('x'), Command::Cut),
     b(Editor, true,  false, false, Char('v'), Command::Paste),
 
+    // Semantic blame (blameline): whole file, or the function under the caret.
+    b(Editor, true,  true,  false, Char('b'), Command::ShowBlame),
+    b(Editor, false, false, true,  Char('b'), Command::BlameFunction),
+
     // Editor focus, diff tab only.
     b(DiffEditor, false, false, false, Char('\\'), Command::ToggleDiffLayout),
     b(DiffEditor, false, false, false, Char(']'),  Command::NextChangedFile),

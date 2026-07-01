@@ -667,6 +667,8 @@ impl App {
             Command::ScmDiscard => self.scm_arm_discard(),
             Command::ScmCommit => self.scm_open_commit_input(),
             Command::ScmRefresh => self.send_vcs(SessionCommand::RefreshVcs),
+            Command::ShowBlame => self.open_blame(false),
+            Command::BlameFunction => self.open_blame(true),
         }
     }
 
@@ -982,6 +984,62 @@ impl App {
         }
     }
 
+    /// Open a semantic-blame view (`blameline`) for the active code tab.
+    ///
+    /// With `function_scope`, blame is narrowed to the function enclosing the caret;
+    /// otherwise the whole file is blamed. Computed synchronously on demand (like
+    /// find), so the original file tab stays open alongside the new Blame tab.
+    fn open_blame(&mut self, function_scope: bool) {
+        // Snapshot the inputs and release the borrow before mutating `self`.
+        let input = self.tabs.get(self.active).and_then(|t| match &t.kind {
+            TabKind::Code { path, text, .. } => {
+                Some((path.clone(), text.clone(), t.editor.cursor.line))
+            }
+            _ => None,
+        });
+        let Some((path, text, line)) = input else {
+            self.status = Some("blame: open a text file first".to_string());
+            return;
+        };
+
+        // Absolutize first so blameline resolves the path against the worktree root
+        // rather than doubling a relative path onto its own parent directory.
+        let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
+        let repo_root = abs.parent().unwrap_or(abs.as_path());
+        let result = if function_scope {
+            blameline::blame_function(repo_root, &abs, &text, line)
+        } else {
+            blameline::blame_file(repo_root, &abs)
+        };
+        let groups = match result {
+            Ok(groups) if !groups.is_empty() => groups,
+            Ok(_) => {
+                self.status = Some("blame: no commits touch this file".to_string());
+                return;
+            }
+            Err(e) => {
+                self.status = Some(format!("blame: {e}"));
+                return;
+            }
+        };
+
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+        let title = if function_scope {
+            format!("Blame ❯ {name}")
+        } else {
+            format!("Blame: {name}")
+        };
+        let tab = Tab::new(
+            title,
+            TabKind::Blame {
+                path,
+                groups,
+                scroll: 0,
+            },
+        );
+        self.push_tab(tab);
+    }
+
     /// Switch to the tab at `index`, focusing the editor.
     fn select_tab(&mut self, index: usize) {
         if index < self.tabs.len() {
@@ -1144,7 +1202,7 @@ impl App {
                 let next = (i64::from(tab.editor.scroll_line) + i64::from(delta)).clamp(0, max);
                 tab.editor.scroll_line = next as u32;
             }
-            TabKind::Diff { scroll, .. } => {
+            TabKind::Diff { scroll, .. } | TabKind::Blame { scroll, .. } => {
                 let next = (i64::from(*scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
                 *scroll = next as u16;
             }
@@ -1170,7 +1228,9 @@ impl App {
                     buffer.line_count().saturating_sub(1) as u32
                 };
             }
-            TabKind::Diff { scroll, .. } => *scroll = if top { 0 } else { u16::MAX },
+            TabKind::Diff { scroll, .. } | TabKind::Blame { scroll, .. } => {
+                *scroll = if top { 0 } else { u16::MAX };
+            }
             TabKind::Hex { bytes, scroll, .. } => {
                 *scroll = if top {
                     0
@@ -2217,6 +2277,56 @@ mod tests {
         app.run_global_search();
         assert_eq!(app.search.results.len(), 1);
         assert!(app.search.results[0].path.ends_with("a.txt"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn blame_without_a_code_tab_reports_status() {
+        let mut app = app();
+        // The Welcome tab is active — there is nothing to blame.
+        app.dispatch(Command::ShowBlame);
+        assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
+        assert_eq!(app.status.as_deref(), Some("blame: open a text file first"));
+    }
+
+    #[test]
+    fn blame_outside_a_repo_surfaces_an_error() {
+        use karet_syntax::Highlights;
+        use karet_text::TextBuffer;
+
+        // A scratch directory that is not a git repository.
+        let n = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "karet-blame-{}-{}",
+            std::process::id(),
+            n.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("orphan.rs");
+        let _ = std::fs::write(&file, "fn main() {}\n");
+
+        let mut app = app();
+        app.push_tab(Tab::new(
+            "orphan.rs",
+            TabKind::Code {
+                path: file,
+                language: "Rust",
+                buffer: TextBuffer::from_text("fn main() {}\n"),
+                text: "fn main() {}\n".to_string(),
+                highlights: Highlights::default(),
+                decos: Vec::new(),
+            },
+        ));
+        app.dispatch(Command::ShowBlame);
+
+        // No Blame tab is created; the failure is surfaced in the status bar.
+        assert!(!matches!(app.tabs[app.active].kind, TabKind::Blame { .. }));
+        assert!(
+            app.status
+                .as_deref()
+                .is_some_and(|s| s.starts_with("blame:"))
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
