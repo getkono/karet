@@ -68,6 +68,8 @@ use crate::command::Command;
 use crate::editing;
 use crate::keymap::Focus;
 use crate::keymap::FocusTarget;
+use crate::keymap::KeyChord;
+use crate::keymap::Resolved;
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
 use crate::overlay::Overlay;
@@ -186,6 +188,8 @@ pub struct App {
     /// Paths awaiting a discard confirmation (set after pressing discard; cleared
     /// when the user confirms or cancels).
     pub(crate) pending_discard: Option<Vec<PathBuf>>,
+    /// Chords typed so far toward a multi-key binding (empty when not mid-sequence).
+    pub(crate) pending: Vec<KeyChord>,
     /// The workspace-search panel state.
     pub(crate) search: SearchPanel,
     /// A transient status message.
@@ -281,6 +285,7 @@ impl App {
             find: None,
             commit_input: None,
             pending_discard: None,
+            pending: Vec::new(),
             search: SearchPanel::default(),
             status: None,
             sidebar_rect: Rect::default(),
@@ -362,20 +367,54 @@ impl App {
             }
             return;
         }
-        if let Some(command) =
-            keymap::resolve(self.focus, self.sidebar_panel, self.active_is_diff(), key)
-        {
-            self.dispatch(command);
-        } else if self.focus == Focus::Editor
-            && self.active_code_doc().is_some()
-            && !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-            && let KeyCode::Char(c) = key.code
-        {
-            // An unbound printable in the editor is text input.
-            self.dispatch(Command::InsertChar(c));
+        self.resolve_key(key);
+    }
+
+    /// Resolve a key against the layered keymap, accumulating multi-key chord
+    /// sequences. An unbound printable in the editor becomes text input; a broken
+    /// sequence is dropped.
+    fn resolve_key(&mut self, key: KeyEvent) {
+        self.pending.push(KeyChord::from_event(key));
+        match keymap::resolve(
+            self.focus,
+            self.sidebar_panel,
+            self.active_is_diff(),
+            &self.pending,
+        ) {
+            Resolved::Command(command) => {
+                self.pending.clear();
+                self.dispatch(command);
+            },
+            Resolved::Pending => {
+                // A prefix of a longer binding: keep waiting, and surface the chord
+                // typed so far so the sequence is discoverable.
+                self.status = Some(self.pending_hint());
+            },
+            Resolved::None => {
+                let mid_sequence = self.pending.len() > 1;
+                self.pending.clear();
+                if !mid_sequence
+                    && self.focus == Focus::Editor
+                    && self.active_code_doc().is_some()
+                    && !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && let KeyCode::Char(c) = key.code
+                {
+                    self.dispatch(Command::InsertChar(c));
+                }
+            },
         }
+    }
+
+    /// The in-progress chord sequence rendered compactly (e.g. `"^K…"`).
+    fn pending_hint(&self) -> String {
+        let chords: Vec<String> = self
+            .pending
+            .iter()
+            .map(|c| c.display(keymap::ChordStyle::Caret))
+            .collect();
+        format!("{}…", chords.join(" "))
     }
 
     /// Route a key to the open overlay and act on its outcome.

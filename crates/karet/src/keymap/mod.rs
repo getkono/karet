@@ -2,14 +2,12 @@
 //! resolver ([`resolve`]) and the palette's shortcut hints ([`hint_for`]), so a
 //! binding and its displayed hint can never drift.
 //!
-//! Each binding is gated by a [`When`] context (the current [`Focus`], and whether
-//! the active tab is a diff). Overlays consume their own keys, so the resolver is
-//! only consulted when no overlay is open.
-//!
-//! Matching mirrors how terminals encode keys under the kitty protocol: for a
-//! letter with `Ctrl`/`Alt` the case is irrelevant and `Shift` is a separate flag
-//! (so `Ctrl+Shift+P` is distinguishable from `Ctrl+P`); for a bare letter the
-//! `Shift` is folded into the character case (`g` vs `G`).
+//! Each binding lives in a [`Layer`]; the [`active_layers`] stack for the focused
+//! pane decides which layers are live and in what precedence. A binding's trigger
+//! is a *sequence* of one or more [`KeyChord`]s, so a multi-key chord like
+//! `Ctrl+K Ctrl+W` resolves the same way a single chord does — the resolver reports
+//! [`Resolved::Pending`] while such a sequence is still being typed. Chord matching
+//! (kitty-protocol case/shift rules) lives in the [`chord`] submodule.
 
 mod chord;
 mod layer;
@@ -27,16 +25,18 @@ use layer::active_layers;
 
 use crate::command::Command;
 
-/// One key binding: a [`KeyChord`] bound to a [`Command`] in a [`Layer`].
+/// One key binding: a [`KeyChord`] *sequence* — `chord` then `rest` — bound to a
+/// [`Command`] in a [`Layer`]. `rest` is empty for the common single-chord binding.
 struct Binding {
     layer: Layer,
     chord: KeyChord,
+    rest: &'static [KeyChord],
     command: Command,
 }
 
-/// A terse constructor for a [`Binding`]. Chords are authored in canonical form
-/// (see [`chord`]): a `Ctrl`/`Alt` letter lower-cased, a bare letter with
-/// `shift = false`.
+/// A terse constructor for a single-chord [`Binding`]. Chords are authored in
+/// canonical form (see [`chord`]): a `Ctrl`/`Alt` letter lower-cased, a bare letter
+/// with `shift = false`.
 const fn b(
     layer: Layer,
     ctrl: bool,
@@ -48,6 +48,24 @@ const fn b(
     Binding {
         layer,
         chord: chord(ctrl, shift, alt, code),
+        rest: &[],
+        command,
+    }
+}
+
+/// A constructor for a multi-chord [`Binding`]: `first` followed by `rest` (e.g.
+/// `Ctrl+K` then `Ctrl+W`). No terminal binding may also be a prefix of a longer
+/// one (enforced by a test), so resolution stays deterministic without timers.
+const fn seq(
+    layer: Layer,
+    first: KeyChord,
+    rest: &'static [KeyChord],
+    command: Command,
+) -> Binding {
+    Binding {
+        layer,
+        chord: first,
+        rest,
         command,
     }
 }
@@ -109,6 +127,10 @@ static BINDINGS: &[Binding] = &[
     b(Global, false, false, true,  Char('7'), Command::GoToTab(7)),
     b(Global, false, false, true,  Char('8'), Command::GoToTab(8)),
     b(Global, false, false, true,  Char('9'), Command::GoToTab(9)),
+
+    // Multi-key tab-management chords: a `Ctrl+K` prefix, then the action key.
+    seq(Global, chord(true, false, false, Char('k')), &[chord(true,  false, false, Char('w'))], Command::CloseAllTabs),
+    seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('w'))], Command::CloseOtherTabs),
 
     // Source-Control panel (sidebar focus, SCM panel active). Listed before the
     // generic sidebar bindings so its keys win when both would match.
@@ -181,36 +203,111 @@ static BINDINGS: &[Binding] = &[
 /// panel, and whether the active tab is a diff. Returns `None` for keys with no
 /// binding.
 #[must_use]
-pub fn resolve(focus: Focus, panel: SidebarPanel, is_diff: bool, key: KeyEvent) -> Option<Command> {
+pub fn resolve(focus: Focus, panel: SidebarPanel, is_diff: bool, pending: &[KeyChord]) -> Resolved {
     let target = FocusTarget::from(focus, panel, is_diff);
-    active_layers(target)
-        .iter()
-        .find_map(|&layer| layer_command(layer, key))
+    resolve_in(active_layers(target), pending)
 }
 
-/// The first binding in `layer` whose chord matches `key`.
-fn layer_command(layer: Layer, key: KeyEvent) -> Option<Command> {
-    BINDINGS
-        .iter()
-        .find(|bind| bind.layer == layer && bind.chord.matches(key))
-        .map(|bind| bind.command)
+/// The outcome of resolving a (possibly partial) chord sequence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Resolved {
+    /// The sequence is a complete binding for this command.
+    Command(Command),
+    /// The sequence is a prefix of at least one longer binding; await more keys.
+    Pending,
+    /// The sequence matches no binding.
+    None,
 }
 
-/// Resolve only the global bindings (used by panels that capture text input, like
-/// the Search panel, which still want Ctrl-chords and Tab to work).
+/// Walk `layers` most-specific-first: a complete match in any layer wins; failing
+/// that, report [`Resolved::Pending`] if `pending` is a prefix of some binding.
+fn resolve_in(layers: &[Layer], pending: &[KeyChord]) -> Resolved {
+    let mut prefix = false;
+    for &layer in layers {
+        for bind in BINDINGS.iter().filter(|bind| bind.layer == layer) {
+            match bind.match_seq(pending) {
+                SeqMatch::Full => return Resolved::Command(bind.command),
+                SeqMatch::Prefix => prefix = true,
+                SeqMatch::No => {},
+            }
+        }
+    }
+    if prefix {
+        Resolved::Pending
+    } else {
+        Resolved::None
+    }
+}
+
+/// Resolve a single key against only the global bindings (used by panels that
+/// capture text input, like the Search panel, which still want Ctrl-chords and Tab
+/// to work). Global bindings are all single-chord, so no pending state is needed.
 #[must_use]
 pub fn global(key: KeyEvent) -> Option<Command> {
-    layer_command(Global, key)
+    let chord = KeyChord::from_event(key);
+    match resolve_in(&[Global], &[chord]) {
+        Resolved::Command(command) => Some(command),
+        _ => None,
+    }
 }
 
-/// The display hint (e.g. `"Ctrl+W"`) for `command`'s first binding, rendered in
-/// `style`, if the command is bound.
+/// The display hint (e.g. `"Ctrl+W"`, `"Ctrl+K Ctrl+W"`) for `command`'s first
+/// binding, rendered in `style`, if the command is bound.
 #[must_use]
 pub fn hint_for(command: Command, style: ChordStyle) -> Option<String> {
     BINDINGS
         .iter()
         .find(|bind| bind.command == command)
-        .map(|bind| bind.chord.display(style))
+        .map(|bind| bind.hint(style))
+}
+
+/// How a pending chord sequence relates to a binding's trigger sequence.
+enum SeqMatch {
+    /// `pending` equals the full trigger sequence.
+    Full,
+    /// `pending` is a strict prefix of the trigger sequence.
+    Prefix,
+    /// `pending` diverges from the trigger sequence.
+    No,
+}
+
+impl Binding {
+    /// The `i`-th chord of this binding's trigger sequence.
+    fn chord_at(&self, i: usize) -> KeyChord {
+        if i == 0 { self.chord } else { self.rest[i - 1] }
+    }
+
+    /// The number of chords in this binding's trigger sequence.
+    fn seq_len(&self) -> usize {
+        1 + self.rest.len()
+    }
+
+    /// How `pending` relates to this binding's trigger sequence.
+    fn match_seq(&self, pending: &[KeyChord]) -> SeqMatch {
+        if pending.is_empty() || pending.len() > self.seq_len() {
+            return SeqMatch::No;
+        }
+        for (i, &pc) in pending.iter().enumerate() {
+            if self.chord_at(i).canonical() != pc {
+                return SeqMatch::No;
+            }
+        }
+        if pending.len() == self.seq_len() {
+            SeqMatch::Full
+        } else {
+            SeqMatch::Prefix
+        }
+    }
+
+    /// This binding's trigger rendered as a hint (chords space-separated).
+    fn hint(&self, style: ChordStyle) -> String {
+        let mut s = self.chord.display(style);
+        for c in self.rest {
+            s.push(' ');
+            s.push_str(&c.display(style));
+        }
+        s
+    }
 }
 
 #[cfg(test)]
@@ -237,9 +334,17 @@ mod tests {
         }
     }
 
+    /// Resolve a single key press to its command (ignoring pending sequences).
+    fn res_in(focus: Focus, panel: SidebarPanel, is_diff: bool, key: KeyEvent) -> Option<Command> {
+        match resolve(focus, panel, is_diff, &[KeyChord::from_event(key)]) {
+            Resolved::Command(c) => Some(c),
+            _ => None,
+        }
+    }
+
     /// Resolve with the Explorer panel active (the default for non-SCM tests).
     fn res(focus: Focus, is_diff: bool, key: KeyEvent) -> Option<Command> {
-        resolve(focus, SidebarPanel::Explorer, is_diff, key)
+        res_in(focus, SidebarPanel::Explorer, is_diff, key)
     }
 
     #[test]
@@ -368,7 +473,7 @@ mod tests {
     fn source_control_bindings_are_panel_scoped() {
         // In the SCM panel, bare 's' stages and Space toggles staging.
         assert_eq!(
-            resolve(
+            res_in(
                 Focus::Sidebar,
                 SidebarPanel::SourceControl,
                 false,
@@ -377,7 +482,7 @@ mod tests {
             Some(Command::ScmStage)
         );
         assert_eq!(
-            resolve(
+            res_in(
                 Focus::Sidebar,
                 SidebarPanel::SourceControl,
                 false,
@@ -388,7 +493,7 @@ mod tests {
         // Shift+Down extends the selection — a shared Sidebar-layer verb that is
         // active in the SCM panel too (it is not shadowed by an SCM binding).
         assert_eq!(
-            resolve(
+            res_in(
                 Focus::Sidebar,
                 SidebarPanel::SourceControl,
                 false,
@@ -398,7 +503,7 @@ mod tests {
         );
         // `x` toggles the cursor row into the selection in both list panels.
         assert_eq!(
-            resolve(
+            res_in(
                 Focus::Sidebar,
                 SidebarPanel::SourceControl,
                 false,
@@ -407,7 +512,7 @@ mod tests {
             Some(Command::SelectToggle)
         );
         assert_eq!(
-            resolve(
+            res_in(
                 Focus::Sidebar,
                 SidebarPanel::Explorer,
                 false,
@@ -417,7 +522,7 @@ mod tests {
         );
         // The same 's' in the Explorer panel is not an SCM command.
         assert_eq!(
-            resolve(
+            res_in(
                 Focus::Sidebar,
                 SidebarPanel::Explorer,
                 false,
@@ -427,7 +532,7 @@ mod tests {
         );
         // Space in the Explorer toggles expansion, not staging.
         assert_eq!(
-            resolve(
+            res_in(
                 Focus::Sidebar,
                 SidebarPanel::Explorer,
                 false,
@@ -512,5 +617,55 @@ mod tests {
             hint_for(Command::CloseTab, ChordStyle::Caret).as_deref(),
             Some("^W")
         );
+    }
+
+    #[test]
+    fn hint_renders_multi_key_sequence() {
+        assert_eq!(
+            hint_for(Command::CloseAllTabs, ChordStyle::Verbose).as_deref(),
+            Some("Ctrl+K Ctrl+W")
+        );
+    }
+
+    #[test]
+    fn chord_sequences_resolve_through_a_pending_prefix() {
+        let ctrl_k = KeyChord::from_event(key(KeyCode::Char('k'), KeyModifiers::CONTROL));
+        let ctrl_w = KeyChord::from_event(key(KeyCode::Char('w'), KeyModifiers::CONTROL));
+        let w = KeyChord::from_event(key(KeyCode::Char('w'), KeyModifiers::NONE));
+        let esc = KeyChord::from_event(key(KeyCode::Esc, KeyModifiers::NONE));
+        let (f, p, d) = (Focus::Editor, SidebarPanel::Explorer, false);
+        // Ctrl+K alone is a prefix of a longer binding — the resolver waits.
+        assert_eq!(resolve(f, p, d, &[ctrl_k]), Resolved::Pending);
+        // Completing the sequence fires the command; the second chord disambiguates.
+        assert_eq!(
+            resolve(f, p, d, &[ctrl_k, ctrl_w]),
+            Resolved::Command(Command::CloseAllTabs)
+        );
+        assert_eq!(
+            resolve(f, p, d, &[ctrl_k, w]),
+            Resolved::Command(Command::CloseOtherTabs)
+        );
+        // A key that continues nothing breaks the sequence.
+        assert_eq!(resolve(f, p, d, &[ctrl_k, esc]), Resolved::None);
+    }
+
+    #[test]
+    fn no_terminal_binding_is_a_prefix_of_another() {
+        // The resolver commits on the first full match, so a binding must never also
+        // be a strict prefix of a longer one (which it would shadow). This invariant
+        // is what lets resolution stay deterministic without a timeout.
+        for a in BINDINGS {
+            for b in BINDINGS {
+                if a.seq_len() >= b.seq_len() {
+                    continue;
+                }
+                let a_prefixes_b = (0..a.seq_len()).all(|i| a.chord_at(i) == b.chord_at(i));
+                assert!(
+                    !a_prefixes_b,
+                    "{:?} is a prefix of {:?}",
+                    a.command, b.command
+                );
+            }
+        }
     }
 }
