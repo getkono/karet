@@ -59,7 +59,12 @@ impl Repository {
                 &head,
                 &index,
                 None,
-                gix::status::tree_index::TrackRenames::AsConfigured,
+                // Force rename detection on regardless of the user's `diff.renames`
+                // config, so a staged rename always shows as `R` (matching how a
+                // graphical SCM view detects renames for display). `AsConfigured`
+                // would honour an explicit `diff.renames=false` and degrade the
+                // rename to an add + delete pair.
+                gix::status::tree_index::TrackRenames::Given(gix::diff::Rewrites::default()),
                 |change, _, _| {
                     raw.push(change.into_owned());
                     Ok::<_, std::convert::Infallible>(ControlFlow::Continue(()))
@@ -644,6 +649,55 @@ mod tests {
             ]
         );
         assert!(changes.iter().all(|c| c.status == StatusKind::Untracked));
+        Ok(())
+    }
+
+    #[test]
+    fn staged_rename_is_detected_even_when_config_disables_renames() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        // Explicitly turn rename detection off in config; the SCM view forces it on.
+        git(&repo.path, &["config", "diff.renames", "false"])?;
+        write(&repo.path, "old.txt", b"one\ntwo\nthree\nfour\nfive\n")?;
+        git(&repo.path, &["add", "old.txt"])?;
+        git(&repo.path, &["commit", "-q", "-m", "init"])?;
+        // `git mv` stages the rename (updates the index).
+        git(&repo.path, &["mv", "old.txt", "new.txt"])?;
+        let r = Repository::discover(&repo.path)?;
+
+        let changes = r.changes(Selection::Staged, None)?;
+        let fc = changes
+            .iter()
+            .find(|c| c.path.as_path() == Path::new("new.txt"))
+            .ok_or_else(|| VcsError::Git("renamed file not reported".into()))?;
+        assert_eq!(fc.status, StatusKind::Renamed);
+        assert_eq!(fc.old_path.as_deref(), Some(Path::new("old.txt")));
+        Ok(())
+    }
+
+    #[test]
+    fn staged_changes_during_a_merge_do_not_error() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        write(&repo.path, "a.txt", b"base\n")?;
+        git(&repo.path, &["add", "a.txt"])?;
+        git(&repo.path, &["commit", "-q", "-m", "base"])?;
+        git(&repo.path, &["checkout", "-q", "-b", "feature"])?;
+        write(&repo.path, "a.txt", b"feature\n")?;
+        git(&repo.path, &["commit", "-q", "-am", "feature"])?;
+        git(&repo.path, &["checkout", "-q", "-"])?;
+        write(&repo.path, "a.txt", b"main\n")?;
+        git(&repo.path, &["commit", "-q", "-am", "main"])?;
+        // The merge conflicts, leaving unmerged (stage 1/2/3) entries in the index.
+        let _ = git(&repo.path, &["merge", "--no-edit", "feature"]);
+        let r = Repository::discover(&repo.path)?;
+
+        // The staged (HEAD↔index) read must succeed over an unmerged index rather
+        // than error — otherwise `Session::compute_vcs` swallows it into an empty
+        // staged section, and status "breaks" during a merge. (It may legitimately
+        // be empty; the point is that the `?` below does not propagate an error.)
+        r.changes(Selection::Staged, None)?;
+        // The conflict is still surfaced on the unstaged side.
+        let unstaged = r.changes(Selection::Unstaged, None)?;
+        assert!(unstaged.iter().any(|c| c.status == StatusKind::Conflicted));
         Ok(())
     }
 
