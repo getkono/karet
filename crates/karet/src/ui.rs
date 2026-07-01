@@ -34,8 +34,10 @@ use crate::app::App;
 use crate::app::FindState;
 use crate::app::TabHit;
 use crate::command::Command;
+use crate::keymap::ChordStyle;
 use crate::keymap::Focus;
 use crate::keymap::SidebarPanel;
+use crate::keymap::{self};
 use crate::overlay::Overlay;
 use crate::render::Section;
 use crate::render::{self};
@@ -635,6 +637,16 @@ fn draw_welcome(f: &mut Frame, theme: &Theme, area: Rect) {
     f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), area);
 }
 
+/// The commands advertised in the status-bar footer, with their terse verbs. Only
+/// this selection and the verbs live here; the chord shown for each is derived from
+/// the keymap ([`keymap::hint_for`]), so the footer can never drift from a rebinding.
+const FOOTER_HINTS: &[(Command, &str)] = &[
+    (Command::OpenQuickOpen, "open"),
+    (Command::OpenFind, "find"),
+    (Command::Copy, "copy"),
+    (Command::Quit, "quit"),
+];
+
 fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     app.status_rect = area;
     app.status_hits.clear();
@@ -659,22 +671,24 @@ fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     if let Some(msg) = &app.status {
         spans.push(Span::styled(format!("  {msg} "), bar));
     } else {
-        let segments = [
-            ("^P open", Command::OpenQuickOpen),
-            ("^F find", Command::OpenFind),
-            ("^C copy", Command::Copy),
-            ("^Q quit", Command::Quit),
-        ];
+        // The chord is single-sourced from the keymap (so it can't drift); only the
+        // curated set of advertised commands and their terse verbs live here.
         spans.push(Span::styled("   ".to_string(), bar));
         x += 3;
-        for (i, (label, cmd)) in segments.iter().enumerate() {
-            if i > 0 {
+        let mut first = true;
+        for &(cmd, verb) in FOOTER_HINTS {
+            let Some(chord) = keymap::hint_for(cmd, ChordStyle::Caret) else {
+                continue;
+            };
+            if !first {
                 spans.push(Span::styled(" · ".to_string(), bar));
                 x += 3;
             }
+            first = false;
+            let label = format!("{chord} {verb}");
             let w = label.chars().count() as u16;
-            spans.push(Span::styled((*label).to_string(), bar));
-            app.status_hits.push((x, x + w, *cmd));
+            spans.push(Span::styled(label, bar));
+            app.status_hits.push((x, x + w, cmd));
             x += w;
         }
     }
@@ -703,5 +717,23 @@ fn status_glyph(kind: StatusKind) -> (char, ThemeRole) {
         StatusKind::Untracked => ('U', ThemeRole::DiffAdded),
         StatusKind::Conflicted => ('!', ThemeRole::DiagnosticError),
         _ => ('•', ThemeRole::Foreground),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn footer_hints_are_all_bound() {
+        // Every advertised footer command must resolve a chord from the keymap;
+        // otherwise the footer would silently drop it. This is the anti-drift guard
+        // that keeps the status bar honest when a binding changes.
+        for &(cmd, _) in FOOTER_HINTS {
+            assert!(
+                keymap::hint_for(cmd, ChordStyle::Caret).is_some(),
+                "footer command {cmd:?} has no keymap binding"
+            );
+        }
     }
 }
