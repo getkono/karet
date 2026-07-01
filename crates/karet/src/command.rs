@@ -98,6 +98,10 @@ pub enum Command {
     NextChangedFile,
     /// Move to the previous changed file (diff tab).
     PrevChangedFile,
+    /// Open a semantic-blame view (blameline) for the active file.
+    ShowBlame,
+    /// Open a semantic-blame view narrowed to the function under the caret.
+    BlameFunction,
 }
 
 impl Command {
@@ -151,6 +155,8 @@ impl Command {
             Self::ToggleDiffLayout => "Diff: Toggle Inline / Side-by-Side",
             Self::NextChangedFile => "Diff: Next Changed File",
             Self::PrevChangedFile => "Diff: Previous Changed File",
+            Self::ShowBlame => "Source Control: Show Blame",
+            Self::BlameFunction => "Source Control: Blame This Function",
         }
     }
 
@@ -179,6 +185,8 @@ impl Command {
                 | Self::CopyPath
                 | Self::CopyRelativePath
                 | Self::ToggleDiffLayout
+                | Self::ShowBlame
+                | Self::BlameFunction
         )
     }
 }
@@ -195,6 +203,8 @@ pub fn palette() -> Vec<Command> {
         Command::ToggleFocus,
         Command::OpenFind,
         Command::OpenGlobalSearch,
+        Command::ShowBlame,
+        Command::BlameFunction,
         Command::Copy,
         Command::CopyPath,
         Command::CopyRelativePath,

@@ -41,6 +41,9 @@ karet-fuzzy      = { path = "crates/karet-fuzzy",      version = "0.1.0" }
 karet-widgets    = { path = "crates/karet-widgets",    version = "0.1.0" }
 karet-editor     = { path = "crates/karet-editor",     version = "0.1.0" }
 karet-session    = { path = "crates/karet-session",    version = "0.1.0" }
+# blameline is a standalone library on its OWN SemVer line (NOT the workspace lockstep);
+# pin its independent version here. See crates/blameline/README.md.
+blameline        = { path = "crates/blameline",         version = "1.0.0" }
 
 # --- shared external dependencies (versions verified via `cargo add`) ---
 # Foundational
@@ -99,7 +102,9 @@ lsp-types = "0.97.0"
 # Version control
 # `status` pulls gix-status + dirwalk (untracked) + index + blob-diff; `sha1` is the
 # (mandatory, not-implied) hash backend; `max-performance-safe` is pure-Rust (no C
-# toolchain). We trim the heavy default `extras` (archive/credentials/mailmap/blame/…).
+# toolchain). We trim the heavy default `extras` (archive/credentials/mailmap/…).
+# NOTE: the `blameline` crate enables gix's `blame` feature; feature unification means
+# the workspace build compiles gix's blame module even though it's not listed here.
 gix = { version = "0.85.0", default-features = false, features = ["status", "max-performance-safe", "sha1"] }
 # Search
 ignore        = "0.4.26"

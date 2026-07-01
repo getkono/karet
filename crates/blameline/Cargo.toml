@@ -1,0 +1,54 @@
+[package]
+name        = "blameline"
+description  = "Semantic git blame: grouped, full-message, tree-sitter-filtered blame with structured (JSON) output"
+# INDEPENDENT versioning — blameline is a standalone library and is deliberately NOT
+# pinned to the karet workspace's lockstep `version.workspace`. It follows its own
+# SemVer line starting at 1.0.0 and releases on its own cadence. See `README.md`.
+version      = "1.0.0"
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme       = "README.md"
+keywords     = ["git", "blame", "tree-sitter", "vcs"]
+categories   = ["development-tools", "command-line-utilities"]
+# (no `publish = false`: this is a published, externally-reusable library)
+
+[dependencies]
+# gix's `blame` feature is trimmed from the workspace default for weight; blameline
+# opts back into it (feature unification re-enables the gix blame module workspace-wide).
+gix              = { workspace = true, features = ["blame"] }
+karet-treesitter = { workspace = true }   # shared tree-sitter parse host (function detection)
+karet-core       = { workspace = true }   # BytePos/Span coordinate types
+serde            = { workspace = true }    # derive(Serialize/Deserialize) on the output models
+serde_json       = { workspace = true }    # `to_json` convenience helper
+thiserror        = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+# Pass-through to the parse host so the function filter only compiles in the grammars
+# a consumer wants. Default to the common set; the `karet` app drives its own grammar set.
+default = ["lang-rust", "lang-python", "lang-javascript", "lang-typescript", "lang-go", "lang-c"]
+lang-rust       = ["karet-treesitter/lang-rust"]
+lang-python     = ["karet-treesitter/lang-python"]
+lang-javascript = ["karet-treesitter/lang-javascript"]
+lang-typescript = ["karet-treesitter/lang-typescript"]
+lang-go         = ["karet-treesitter/lang-go"]
+lang-c          = ["karet-treesitter/lang-c"]
+lang-cpp        = ["karet-treesitter/lang-cpp"]
+lang-java       = ["karet-treesitter/lang-java"]
+lang-ruby       = ["karet-treesitter/lang-ruby"]
+lang-csharp     = ["karet-treesitter/lang-csharp"]
+lang-php        = ["karet-treesitter/lang-php"]
+lang-bash       = ["karet-treesitter/lang-bash"]
+all-languages = [
+    "lang-rust", "lang-python", "lang-javascript", "lang-typescript", "lang-go",
+    "lang-c", "lang-cpp", "lang-java", "lang-ruby", "lang-csharp", "lang-php", "lang-bash",
+]
+
+[lints]
+workspace = true

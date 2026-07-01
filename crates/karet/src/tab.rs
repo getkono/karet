@@ -79,6 +79,16 @@ pub enum TabKind {
         /// Vertical scroll offset (display rows).
         scroll: u16,
     },
+    /// A read-only semantic-blame view (`blameline`): consecutive lines grouped by
+    /// the commit that introduced them, with full commit messages.
+    Blame {
+        /// The file the blame is for.
+        path: PathBuf,
+        /// The grouped blame entries, in line order.
+        groups: Vec<blameline::BlameGroup>,
+        /// Vertical scroll offset (display rows).
+        scroll: u16,
+    },
 }
 
 /// An open tab: a title, its content, and per-view editor state.
@@ -115,7 +125,8 @@ impl Tab {
             TabKind::Code { path, .. }
             | TabKind::Image { path, .. }
             | TabKind::Hex { path, .. }
-            | TabKind::Placeholder { path, .. } => Some(path),
+            | TabKind::Placeholder { path, .. }
+            | TabKind::Blame { path, .. } => Some(path),
             TabKind::Diff { file, .. } => Some(&file.change.path),
             TabKind::Welcome => None,
         }
@@ -136,6 +147,7 @@ impl Tab {
             TabKind::Hex { .. } => "binary",
             TabKind::Placeholder { .. } => "preview",
             TabKind::Diff { file, .. } => file.language,
+            TabKind::Blame { .. } => "blame",
             TabKind::Welcome => "",
         }
     }
