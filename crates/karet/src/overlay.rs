@@ -197,7 +197,7 @@ impl Overlay {
             Self::CommandPalette(p) => p
                 .values()
                 .into_iter()
-                .map(|cmd| keymap::hint_for(*cmd))
+                .map(|cmd| keymap::hint_for(*cmd, keymap::ChordStyle::Verbose))
                 .collect(),
         }
     }

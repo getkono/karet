@@ -88,6 +88,67 @@ impl KeyChord {
     pub fn matches(self, ev: KeyEvent) -> bool {
         self.canonical() == Self::from_event(ev)
     }
+
+    /// Render this chord for humans in the requested [`ChordStyle`].
+    #[must_use]
+    pub fn display(self, style: ChordStyle) -> String {
+        let mut s = String::new();
+        match style {
+            ChordStyle::Verbose => {
+                if self.mods.ctrl {
+                    s.push_str("Ctrl+");
+                }
+                if self.mods.alt {
+                    s.push_str("Alt+");
+                }
+                if self.mods.shift {
+                    s.push_str("Shift+");
+                }
+            },
+            ChordStyle::Caret => {
+                if self.mods.ctrl {
+                    s.push('^');
+                }
+                if self.mods.alt {
+                    s.push('⌥');
+                }
+                if self.mods.shift {
+                    s.push('⇧');
+                }
+            },
+        }
+        s.push_str(&format_code(self.code));
+        s
+    }
+}
+
+/// How a [`KeyChord`] is rendered for humans.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChordStyle {
+    /// Verbose, plus-separated: `"Ctrl+Shift+P"`. Command palette, welcome, help.
+    Verbose,
+    /// Compact caret/symbol notation: `"^P"`, `"⇧^P"`, `"⌥1"`. The tight status bar.
+    Caret,
+}
+
+/// Format a single key code for display (shared by every [`ChordStyle`]).
+fn format_code(code: KeyCode) -> String {
+    match code {
+        KeyCode::Char(' ') => "Space".to_string(),
+        KeyCode::Char(c) => c.to_ascii_uppercase().to_string(),
+        KeyCode::Tab => "Tab".to_string(),
+        KeyCode::Enter => "Enter".to_string(),
+        KeyCode::Esc => "Esc".to_string(),
+        KeyCode::Up => "Up".to_string(),
+        KeyCode::Down => "Down".to_string(),
+        KeyCode::Left => "Left".to_string(),
+        KeyCode::Right => "Right".to_string(),
+        KeyCode::Home => "Home".to_string(),
+        KeyCode::End => "End".to_string(),
+        KeyCode::PageUp => "PgUp".to_string(),
+        KeyCode::PageDown => "PgDn".to_string(),
+        other => format!("{other:?}"),
+    }
 }
 
 #[cfg(test)]
@@ -139,5 +200,16 @@ mod tests {
         let shift_down = chord(false, true, false, KeyCode::Down);
         assert!(shift_down.matches(ev(KeyCode::Down, KeyModifiers::SHIFT)));
         assert!(!shift_down.matches(ev(KeyCode::Down, KeyModifiers::NONE)));
+    }
+
+    #[test]
+    fn display_renders_each_style() {
+        let ctrl_shift_p = chord(true, true, false, KeyCode::Char('p'));
+        assert_eq!(ctrl_shift_p.display(ChordStyle::Verbose), "Ctrl+Shift+P");
+        assert_eq!(ctrl_shift_p.display(ChordStyle::Caret), "^⇧P");
+        let ctrl_p = chord(true, false, false, KeyCode::Char('p'));
+        assert_eq!(ctrl_p.display(ChordStyle::Caret), "^P");
+        let tab = chord(false, false, false, KeyCode::Tab);
+        assert_eq!(tab.display(ChordStyle::Verbose), "Tab");
     }
 }

@@ -13,6 +13,7 @@
 
 mod chord;
 
+pub use chord::ChordStyle;
 pub use chord::KeyChord;
 use chord::chord;
 use crossterm::event::KeyCode;
@@ -280,49 +281,14 @@ pub fn global(key: KeyEvent) -> Option<Command> {
         .map(|bind| bind.command)
 }
 
-/// The display hint (e.g. `"Ctrl+W"`) for `command`'s first binding, if any.
+/// The display hint (e.g. `"Ctrl+W"`) for `command`'s first binding, rendered in
+/// `style`, if the command is bound.
 #[must_use]
-pub fn hint_for(command: Command) -> Option<String> {
+pub fn hint_for(command: Command, style: ChordStyle) -> Option<String> {
     BINDINGS
         .iter()
         .find(|bind| bind.command == command)
-        .map(|bind| format_chord(bind.chord))
-}
-
-/// Format a chord as a human-readable label like `"Ctrl+Shift+P"`.
-fn format_chord(c: KeyChord) -> String {
-    let mut s = String::new();
-    if c.mods.ctrl {
-        s.push_str("Ctrl+");
-    }
-    if c.mods.alt {
-        s.push_str("Alt+");
-    }
-    if c.mods.shift {
-        s.push_str("Shift+");
-    }
-    s.push_str(&format_code(c.code));
-    s
-}
-
-/// Format a single key code for display.
-fn format_code(code: KeyCode) -> String {
-    match code {
-        KeyCode::Char(' ') => "Space".to_string(),
-        KeyCode::Char(c) => c.to_ascii_uppercase().to_string(),
-        KeyCode::Tab => "Tab".to_string(),
-        KeyCode::Enter => "Enter".to_string(),
-        KeyCode::Esc => "Esc".to_string(),
-        KeyCode::Up => "Up".to_string(),
-        KeyCode::Down => "Down".to_string(),
-        KeyCode::Left => "Left".to_string(),
-        KeyCode::Right => "Right".to_string(),
-        KeyCode::Home => "Home".to_string(),
-        KeyCode::End => "End".to_string(),
-        KeyCode::PageUp => "PgUp".to_string(),
-        KeyCode::PageDown => "PgDn".to_string(),
-        other => format!("{other:?}"),
-    }
+        .map(|bind| bind.chord.display(style))
 }
 
 #[cfg(test)]
@@ -607,11 +573,22 @@ mod tests {
 
     #[test]
     fn hint_for_formats_chords() {
-        assert_eq!(hint_for(Command::CloseTab).as_deref(), Some("Ctrl+W"));
         assert_eq!(
-            hint_for(Command::OpenCommandPalette).as_deref(),
+            hint_for(Command::CloseTab, ChordStyle::Verbose).as_deref(),
+            Some("Ctrl+W")
+        );
+        assert_eq!(
+            hint_for(Command::OpenCommandPalette, ChordStyle::Verbose).as_deref(),
             Some("Ctrl+Shift+P")
         );
-        assert_eq!(hint_for(Command::ToggleFocus).as_deref(), Some("Tab"));
+        assert_eq!(
+            hint_for(Command::ToggleFocus, ChordStyle::Verbose).as_deref(),
+            Some("Tab")
+        );
+        // The same binding renders compactly for the status bar.
+        assert_eq!(
+            hint_for(Command::CloseTab, ChordStyle::Caret).as_deref(),
+            Some("^W")
+        );
     }
 }
