@@ -37,6 +37,7 @@ karet-search.workspace = true
 karet-fuzzy.workspace = true
 karet-widgets.workspace = true
 karet-editor.workspace = true
+karet-fileview.workspace = true       # read-only "render any file" primitives (hex/image/placeholder)
 # External (app-level orchestration: runtime, CLI, plus the merged clipboard/input modules).
 ratatui.workspace = true
 crossterm.workspace = true

@@ -8,6 +8,9 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+use karet_fileview::image;
+use karet_fileview::viewer::FileKind;
+use karet_fileview::viewer::{self};
 use karet_syntax::Highlighter;
 use karet_syntax::Highlights;
 use karet_text::TextBuffer;
@@ -15,9 +18,6 @@ use karet_treesitter::ParserPool;
 use karet_treesitter::SyntaxTree;
 use karet_treesitter::language_id_from_path;
 use karet_treesitter::language_name_from_path;
-use karet_widgets::image;
-use karet_widgets::viewer::FileKind;
-use karet_widgets::viewer::{self};
 
 use crate::tab::Tab;
 use crate::tab::TabKind;
