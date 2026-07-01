@@ -2355,6 +2355,8 @@ mod tests {
             TabKind::Code {
                 path: file,
                 language: "Rust",
+                doc: None,
+                next_version: 0,
                 buffer: TextBuffer::from_text("fn main() {}\n"),
                 text: "fn main() {}\n".to_string(),
                 highlights: Highlights::default(),
