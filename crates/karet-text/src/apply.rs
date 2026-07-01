@@ -8,9 +8,15 @@
 //! `InputEdit` shape — also descending — so a parse host can call `tree.edit` in
 //! that order without per-edit delta bookkeeping.
 
+use karet_core::BytePos;
+use karet_core::Change;
+use karet_core::CursorState;
+use karet_core::Range;
+use karet_core::TextEdit;
+
+use crate::TextBuffer;
+use crate::TextError;
 use crate::history::EditContext;
-use crate::{TextBuffer, TextError};
-use karet_core::{BytePos, Change, CursorState, Range, TextEdit};
 
 /// One edit as applied to the rope, in tree-sitter `InputEdit` shape. Points are
 /// `(row, column-in-bytes)` — byte columns, **not** the `char` columns of
@@ -230,15 +236,16 @@ fn point_after_insert(start: (usize, usize), new_text: &str) -> (usize, usize) {
         Some(last_nl) => {
             let nlines = memchr::memchr_iter(b'\n', bytes).count();
             (start.0 + nlines, bytes.len() - last_nl - 1)
-        }
+        },
         None => (start.0, start.1 + bytes.len()),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use karet_core::LineCol;
+
+    use super::*;
 
     fn ins(version: u64, line: u32, col: u32, text: &str) -> Change {
         Change::new(

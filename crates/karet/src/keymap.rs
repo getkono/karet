@@ -11,7 +11,9 @@
 //! (so `Ctrl+Shift+P` is distinguishable from `Ctrl+P`); for a bare letter the
 //! `Shift` is folded into the character case (`g` vs `G`).
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
 
 use crate::command::Command;
 
@@ -134,10 +136,25 @@ const fn b(
     }
 }
 
-use KeyCode::{
-    Backspace, Char, Delete, Down, End, Enter, Esc, Home, Left, PageDown, PageUp, Right, Tab, Up,
-};
-use When::{DiffEditor, Editor, Global, Sidebar, SourceControl};
+use KeyCode::Backspace;
+use KeyCode::Char;
+use KeyCode::Delete;
+use KeyCode::Down;
+use KeyCode::End;
+use KeyCode::Enter;
+use KeyCode::Esc;
+use KeyCode::Home;
+use KeyCode::Left;
+use KeyCode::PageDown;
+use KeyCode::PageUp;
+use KeyCode::Right;
+use KeyCode::Tab;
+use KeyCode::Up;
+use When::DiffEditor;
+use When::Editor;
+use When::Global;
+use When::Sidebar;
+use When::SourceControl;
 
 /// The single source of truth for key bindings. Order matters: the first matching
 /// binding wins, and [`hint_for`] returns the first binding for a command (so list
@@ -261,15 +278,15 @@ fn chord_matches(bind: &Binding, key: KeyEvent) -> bool {
                 && bind.alt == alt
                 && bind.shift == shift
                 && bc.eq_ignore_ascii_case(&kc)
-        }
+        },
         (KeyCode::Char(bc), KeyCode::Char(kc)) => {
             // A bare letter: case carries Shift, so compare exactly and ignore the
             // Shift flag (but still reject Ctrl/Alt chords).
             !ctrl && !alt && bc == kc
-        }
+        },
         (bcode, kcode) => {
             bcode == kcode && bind.ctrl == ctrl && bind.alt == alt && bind.shift == shift
-        }
+        },
     }
 }
 

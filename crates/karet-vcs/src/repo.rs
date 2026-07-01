@@ -1,7 +1,10 @@
 //! Repository discovery and the error-mapping helpers shared by the other modules.
 
-use crate::{Repository, VcsError};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
+
+use crate::Repository;
+use crate::VcsError;
 
 /// Map any error that implements [`std::fmt::Display`] into [`VcsError::Git`].
 pub(crate) fn to_git<E: std::fmt::Display>(e: E) -> VcsError {
@@ -66,9 +69,12 @@ impl Repository {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Repository, VcsError};
     use std::process::Command;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::Ordering;
+
+    use crate::Repository;
+    use crate::VcsError;
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 

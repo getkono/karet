@@ -10,14 +10,25 @@
 //! and [`EditorState`] are defined; the painting/input logic is filled in
 //! separately.
 
-use karet_core::{Decoration, DecorationKind, Diagnostic, InlayHint, LineCol, Range, ThemeRole};
-use karet_syntax::{FoldRegions, HighlightSpan, Highlights};
+use karet_core::Decoration;
+use karet_core::DecorationKind;
+use karet_core::Diagnostic;
+use karet_core::InlayHint;
+use karet_core::LineCol;
+use karet_core::Range;
+use karet_core::ThemeRole;
+use karet_syntax::FoldRegions;
+use karet_syntax::HighlightSpan;
+use karet_syntax::Highlights;
 use karet_text::TextBuffer;
-use karet_theme::{Rgba, Theme};
+use karet_theme::Rgba;
+use karet_theme::Theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::style::Modifier;
+use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::text::Span;
 use ratatui::widgets::StatefulWidget;
 
 /// The persistent, per-view editor state: scroll position and cursor.
@@ -392,7 +403,7 @@ impl StatefulWidget for Editor<'_> {
             None => {
                 fallback = Theme::dark();
                 &fallback
-            }
+            },
         };
 
         let line_count = self.buffer.line_count() as u32;
@@ -534,8 +545,10 @@ fn fg_for(abs: usize, hl: &[HighlightSpan], theme: &Theme, default_fg: Rgba) -> 
 
 #[cfg(test)]
 mod tests {
+    use karet_core::BytePos;
+    use karet_core::TokenId;
+
     use super::*;
-    use karet_core::{BytePos, TokenId};
 
     #[test]
     fn editor_builder_collects_layers() {

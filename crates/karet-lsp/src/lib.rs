@@ -20,11 +20,22 @@
 //!   (`line_col_to_utf16` / `utf16_to_line_col`); this client applies them when the
 //!   negotiated encoding is not `utf-8`.
 
-use karet_core::{
-    CodeAction, CompletionItem, Diagnostic, Hover, InlayHint, LineCol, Location, Range,
-    SignatureHelp, Symbol, SymbolProvider, TextEdit, WorkspaceEdit,
-};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::CodeAction;
+use karet_core::CompletionItem;
+use karet_core::Diagnostic;
+use karet_core::Hover;
+use karet_core::InlayHint;
+use karet_core::LineCol;
+use karet_core::Location;
+use karet_core::Range;
+use karet_core::SignatureHelp;
+use karet_core::Symbol;
+use karet_core::SymbolProvider;
+use karet_core::TextEdit;
+use karet_core::WorkspaceEdit;
 use tokio::sync::broadcast;
 
 /// Errors produced by the LSP client.

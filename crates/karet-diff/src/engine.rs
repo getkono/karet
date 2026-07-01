@@ -7,10 +7,16 @@
 
 use std::path::Path;
 
-use imara_diff::{Algorithm, Diff as ImaraDiff, InternedInput};
+use imara_diff::Algorithm;
+use imara_diff::Diff as ImaraDiff;
+use imara_diff::InternedInput;
 
 use crate::DiffError;
-use crate::model::{DiffLine, FileDiff, FileStatus, Hunk, LineKind};
+use crate::model::DiffLine;
+use crate::model::FileDiff;
+use crate::model::FileStatus;
+use crate::model::Hunk;
+use crate::model::LineKind;
 
 /// Options controlling how [`diff_text`] / [`diff_files`] build the diff.
 #[derive(Clone, Debug)]

@@ -4,11 +4,13 @@
 //! [`EditorState`] used by code tabs for scroll/cursor. Diff and hex tabs keep
 //! their own scroll inside the kind.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
 use karet_core::Decoration;
 use karet_editor::EditorState;
-use karet_session::{DocumentId, ViewId};
+use karet_session::DocumentId;
+use karet_session::ViewId;
 use karet_syntax::Highlights;
 use karet_text::TextBuffer;
 use karet_widgets::image::Image;

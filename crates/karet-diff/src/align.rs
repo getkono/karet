@@ -1,6 +1,7 @@
 //! Side-by-side alignment: turn a flat hunk into paired left/right rows.
 
-use crate::model::{DiffLine, LineKind};
+use crate::model::DiffLine;
+use crate::model::LineKind;
 
 /// One side (left or right) of a [`SideBySideRow`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,7 +54,7 @@ pub fn align_hunk(lines: &[DiffLine]) -> Vec<SideBySideRow> {
                     }),
                 });
                 i += 1;
-            }
+            },
             LineKind::Remove | LineKind::Add => {
                 // Collect the consecutive Remove block...
                 let remove_start = i;
@@ -88,7 +89,7 @@ pub fn align_hunk(lines: &[DiffLine]) -> Vec<SideBySideRow> {
                     });
                     rows.push(SideBySideRow { left, right });
                 }
-            }
+            },
         }
     }
 

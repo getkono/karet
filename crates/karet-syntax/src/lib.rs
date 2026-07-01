@@ -8,7 +8,8 @@
 //! Fold regions, bracket pairs and structural selection are reserved (the public
 //! joints are defined; their tree-walking is filled in with the editor).
 
-use karet_core::{Span, TokenId};
+use karet_core::Span;
+use karet_core::TokenId;
 use karet_treesitter::SyntaxTree;
 
 mod highlight;
@@ -129,8 +130,9 @@ pub fn structural_selection(tree: &SyntaxTree, at: Span, dir: ExpandDir) -> Span
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use karet_core::BytePos;
+
+    use super::*;
 
     fn span(start: usize, end: usize) -> Span {
         Span {
@@ -175,8 +177,11 @@ mod tests {
 
     #[test]
     fn highlights_rust_code_end_to_end() -> Result<(), Box<dyn std::error::Error>> {
-        use karet_treesitter::{ParserPool, SyntaxTree, language_id_from_path};
         use std::path::Path;
+
+        use karet_treesitter::ParserPool;
+        use karet_treesitter::SyntaxTree;
+        use karet_treesitter::language_id_from_path;
 
         let Some(lang) = language_id_from_path(Path::new("x.rs")) else {
             return Ok(()); // rust grammar not compiled into this build; nothing to test

@@ -10,9 +10,11 @@
 //! single-threaded (a parallel walk is a deferred optimization) and replace
 //! planning ([`ReplacePlan`]) is not yet implemented.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
-use regex::{Regex, RegexBuilder};
+use regex::Regex;
+use regex::RegexBuilder;
 
 /// Errors produced by search/replace.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -419,7 +421,8 @@ mod tests {
         assert!(!m.is_empty());
     }
 
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
 
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 

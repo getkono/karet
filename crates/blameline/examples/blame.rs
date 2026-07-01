@@ -5,7 +5,8 @@
 //! cargo run -p blameline --example blame -- path/to/file.rs
 //! ```
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arg = std::env::args().nth(1).ok_or("usage: blame <file>")?;

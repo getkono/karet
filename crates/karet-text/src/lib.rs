@@ -13,20 +13,26 @@
 //! strict UTF-8 with line-ending/BOM detection; saving ([`save`](TextBuffer::save))
 //! is atomic and round-trips the detected encoding.
 
-use karet_core::{BytePos, LineCol, Span};
 use std::io::Read;
+
+use karet_core::BytePos;
+use karet_core::LineCol;
+use karet_core::Span;
 
 mod apply;
 mod history;
 mod load;
 mod save;
 
-pub use apply::{Applied, AppliedEdit};
-pub use history::{EditCause, EditContext};
-pub use load::{Encoding, Eol, LoadError};
-pub use save::SavedState;
-
+pub use apply::Applied;
+pub use apply::AppliedEdit;
+pub use history::EditCause;
+pub use history::EditContext;
 use history::History;
+pub use load::Encoding;
+pub use load::Eol;
+pub use load::LoadError;
+pub use save::SavedState;
 
 /// Errors produced by [`TextBuffer`] operations.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -355,8 +361,9 @@ fn line_content_chars(line: ropey::RopeSlice<'_>) -> usize {
 
 /// Cursor and selection behavior built on the neutral [`karet_core::edit`] types.
 pub mod cursor {
-    use super::TextBuffer;
     use karet_core::edit::CursorState;
+
+    use super::TextBuffer;
 
     /// The direction of a motion.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]

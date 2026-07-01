@@ -1,6 +1,7 @@
 //! Mapping tree-sitter highlight capture names to karet's [`TokenId`] vocabulary.
 
-use karet_core::{StandardToken, TokenId};
+use karet_core::StandardToken;
+use karet_core::TokenId;
 
 /// Resolve a tree-sitter capture name (e.g. `keyword.control`, `string.escape`) to
 /// a [`TokenId`], or `None` to leave it unhighlighted.

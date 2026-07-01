@@ -5,7 +5,8 @@
 //! theme ([`Theme::dark`], also [`Theme::default`]); the `vscode` feature loads VS
 //! Code JSON themes. Enable `view` to convert colors into ratatui values.
 
-use karet_core::{ThemeRole, TokenId};
+use karet_core::ThemeRole;
+use karet_core::TokenId;
 
 mod default;
 #[cfg(feature = "vscode")]
@@ -184,8 +185,9 @@ pub(crate) fn is_dark_color(c: Rgba) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use karet_core::StandardToken;
+
+    use super::*;
 
     #[test]
     fn error_displays() {

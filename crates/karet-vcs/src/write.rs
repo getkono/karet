@@ -5,9 +5,11 @@
 //! whole module is gated behind the `git2` feature, and the public entry points in
 //! [`crate::Repository`] return [`VcsError::FeatureDisabled`] when it is off.
 
-use crate::repo::to_git;
-use crate::{Repository, VcsError};
 use std::path::PathBuf;
+
+use crate::Repository;
+use crate::VcsError;
+use crate::repo::to_git;
 
 impl Repository {
     /// The working directory, or a [`VcsError::Git`] for a bare repository (which
@@ -130,10 +132,16 @@ impl Repository {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Repository, Selection, StatusKind, VcsError};
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
+    use std::path::PathBuf;
     use std::process::Command;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::Ordering;
+
+    use crate::Repository;
+    use crate::Selection;
+    use crate::StatusKind;
+    use crate::VcsError;
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 

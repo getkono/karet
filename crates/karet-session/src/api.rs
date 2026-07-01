@@ -5,13 +5,21 @@
 //! is the designated extraction point for a future dependency-light
 //! `karet-protocol` crate when the client-server split is undertaken.
 
-use karet_core::{
-    Change, CompletionItem, CursorState, Decoration, Diagnostic, Hover, LineCol, Location, Symbol,
-};
-use karet_search::{FileHit, SearchQuery};
+use std::path::PathBuf;
+
+use karet_core::Change;
+use karet_core::CompletionItem;
+use karet_core::CursorState;
+use karet_core::Decoration;
+use karet_core::Diagnostic;
+use karet_core::Hover;
+use karet_core::LineCol;
+use karet_core::Location;
+use karet_core::Symbol;
+use karet_search::FileHit;
+use karet_search::SearchQuery;
 use karet_syntax::HighlightSpan;
 use karet_vcs::FileChange;
-use std::path::PathBuf;
 
 /// Identifies an open document within a session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

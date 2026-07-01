@@ -8,8 +8,10 @@
 //! This is the implementation *skeleton*: the public joints are defined; the gix
 //! logic is filled in separately.
 
+use std::path::Path;
+use std::path::PathBuf;
+
 use karet_core::Decoration;
-use std::path::{Path, PathBuf};
 
 mod changes;
 mod repo;

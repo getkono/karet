@@ -11,7 +11,8 @@
 use std::error::Error;
 use std::path::Path;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use gix::date::time::format::ISO8601_STRICT;
 
@@ -36,13 +37,13 @@ fn main() {
                 "cargo:rustc-env=KARET_GIT_COMMIT_TIMESTAMP={}",
                 info.commit_timestamp
             );
-        }
+        },
         Err(e) => {
             println!("cargo:warning=karet: git build-info unavailable: {e}");
             println!("cargo:rustc-env=KARET_GIT_SHA=unknown");
             println!("cargo:rustc-env=KARET_GIT_DIRTY=");
             println!("cargo:rustc-env=KARET_GIT_COMMIT_TIMESTAMP=unknown");
-        }
+        },
     }
 }
 

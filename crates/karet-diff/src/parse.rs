@@ -7,7 +7,12 @@
 
 use crate::DiffError;
 use crate::align::align_hunk;
-use crate::model::{Diff, DiffLine, FileDiff, FileStatus, Hunk, LineKind};
+use crate::model::Diff;
+use crate::model::DiffLine;
+use crate::model::FileDiff;
+use crate::model::FileStatus;
+use crate::model::Hunk;
+use crate::model::LineKind;
 
 /// Parse unified diff text into a [`Diff`].
 ///
@@ -244,27 +249,27 @@ fn decode_path(s: &str) -> String {
             Some(&b'\\') => {
                 out.push(b'\\');
                 i += 2;
-            }
+            },
             Some(&b'"') => {
                 out.push(b'"');
                 i += 2;
-            }
+            },
             Some(&b't') => {
                 out.push(b'\t');
                 i += 2;
-            }
+            },
             Some(&b'n') => {
                 out.push(b'\n');
                 i += 2;
-            }
+            },
             Some(&b'r') => {
                 out.push(b'\r');
                 i += 2;
-            }
+            },
             _ => {
                 out.push(b'\\');
                 i += 1;
-            }
+            },
         }
     }
 
@@ -338,17 +343,17 @@ fn parse_hunks(lines: &[&str]) -> Result<Vec<Hunk>, DiffError> {
                     old_lineno += 1;
                     new_lineno += 1;
                     pair
-                }
+                },
                 LineKind::Remove => {
                     let pair = (Some(old_lineno), None);
                     old_lineno += 1;
                     pair
-                }
+                },
                 LineKind::Add => {
                     let pair = (None, Some(new_lineno));
                     new_lineno += 1;
                     pair
-                }
+                },
             };
 
             diff_lines.push(DiffLine {
@@ -605,7 +610,9 @@ index aaa..bbb 100644
 
     #[test]
     fn engine_output_round_trips_through_patch_and_parse() -> Result<(), DiffError> {
-        use crate::{DiffOptions, diff_text, format_hunk_patch};
+        use crate::DiffOptions;
+        use crate::diff_text;
+        use crate::format_hunk_patch;
         let engine_diff = diff_text(
             "a\nb\nc\nd\n",
             "a\nB\nc\nd\n",

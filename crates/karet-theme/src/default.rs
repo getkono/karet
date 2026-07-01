@@ -1,8 +1,13 @@
 //! The built-in dark theme palette (Tokyo-Night-flavored).
 
-use karet_core::{StandardToken, ThemeRole};
+use karet_core::StandardToken;
+use karet_core::ThemeRole;
 
-use crate::{ROLE_COUNT, Rgba, TOKEN_COUNT, Theme, is_dark_color};
+use crate::ROLE_COUNT;
+use crate::Rgba;
+use crate::TOKEN_COUNT;
+use crate::Theme;
+use crate::is_dark_color;
 
 const fn rgb(r: u8, g: u8, b: u8) -> Rgba {
     Rgba { r, g, b, a: 255 }

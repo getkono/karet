@@ -2,11 +2,14 @@
 //! collapse consecutive same-commit lines into [`BlameGroup`]s.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
 use gix::ObjectId;
 
-use crate::{BlameError, BlameGroup, LineRange};
+use crate::BlameError;
+use crate::BlameGroup;
+use crate::LineRange;
 
 /// Whole-file semantic blame at `HEAD`, grouped by commit.
 ///
@@ -39,7 +42,7 @@ pub fn blame_file(repo_root: &Path, file: &Path) -> Result<Vec<BlameGroup>, Blam
                 "{} is outside the repository worktree",
                 abs_canon.display()
             )));
-        }
+        },
     };
 
     // gix blame starts at HEAD and can only attribute lines that exist in HEAD's
@@ -79,7 +82,7 @@ pub fn blame_file(repo_root: &Path, file: &Path) -> Result<Vec<BlameGroup>, Blam
                 let info = commit_meta(&repo, id)?;
                 meta.insert(id, info.clone());
                 info
-            }
+            },
         };
         groups.push(BlameGroup {
             lines: LineRange {

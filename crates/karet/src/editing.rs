@@ -6,7 +6,10 @@
 //! returned [`Change`] into a `karet_session::Command::ApplyChange` and moves the
 //! caret to the returned position optimistically.
 
-use karet_core::{Change, LineCol, Range, TextEdit};
+use karet_core::Change;
+use karet_core::LineCol;
+use karet_core::Range;
+use karet_core::TextEdit;
 use karet_text::TextBuffer;
 
 /// One indent level. (EditorConfig-driven width is a later refinement.)
@@ -174,7 +177,7 @@ pub fn indent(caret: LineCol, selection: Option<Range>, base: u64) -> Edit {
                 change: Change::new(base, edits),
                 caret: LineCol::new(caret.line, caret.col + width),
             }
-        }
+        },
         None => insert(caret, None, base, INDENT),
     }
 }

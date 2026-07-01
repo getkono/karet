@@ -11,12 +11,14 @@
 //! future remote split (a remote client reconstructs its own replica from the
 //! `Change`-bearing events instead).
 
-use crate::api::DocumentId;
+use std::sync::Arc;
+
 use karet_core::Decoration;
 use karet_syntax::Highlights;
 use karet_text::TextBuffer;
-use std::sync::Arc;
 use tokio::sync::mpsc;
+
+use crate::api::DocumentId;
 
 /// An owned, render-only snapshot of a document at a particular version.
 #[derive(Clone)]

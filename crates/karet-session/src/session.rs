@@ -6,21 +6,41 @@
 //! applies [`Command`]s synchronously (the fast paths — open/apply/save/undo — are
 //! inline) and emits [`Event`]s plus [`DocSnapshot`]s.
 
-use crate::api::{Command, DocumentId, Event, RequestId};
-use crate::local::{DocSnapshot, SnapshotRx};
-use karet_core::{Change, CursorState, Decoration, Selection};
-use karet_syntax::{Highlighter, Highlights};
-use karet_text::{AppliedEdit, EditCause, EditContext, TextBuffer};
-use karet_treesitter::{
-    LanguageId, ParserPool, SyntaxTree, language_id_from_path, language_name_from_path,
-};
-use karet_vcs::{FileChange, Repository, Selection as VcsSelection, VcsError};
-use karet_watch::{FsEvent, Watcher};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
+
+use karet_core::Change;
+use karet_core::CursorState;
+use karet_core::Decoration;
+use karet_core::Selection;
+use karet_syntax::Highlighter;
+use karet_syntax::Highlights;
+use karet_text::AppliedEdit;
+use karet_text::EditCause;
+use karet_text::EditContext;
+use karet_text::TextBuffer;
+use karet_treesitter::LanguageId;
+use karet_treesitter::ParserPool;
+use karet_treesitter::SyntaxTree;
+use karet_treesitter::language_id_from_path;
+use karet_treesitter::language_name_from_path;
+use karet_vcs::FileChange;
+use karet_vcs::Repository;
+use karet_vcs::Selection as VcsSelection;
+use karet_vcs::VcsError;
+use karet_watch::FsEvent;
+use karet_watch::Watcher;
 use tokio::sync::mpsc;
+
+use crate::api::Command;
+use crate::api::DocumentId;
+use crate::api::Event;
+use crate::api::RequestId;
+use crate::local::DocSnapshot;
+use crate::local::SnapshotRx;
 
 /// Errors produced by the backend session.
 #[derive(Debug, thiserror::Error)]
@@ -152,7 +172,7 @@ impl Session {
             Command::Save { doc } => self.save(id, doc),
             // The caret is UI-local; `SetCursor` becomes meaningful when producers
             // (LSP at a position, multi-view sync) need it.
-            Command::SetCursor { .. } => {}
+            Command::SetCursor { .. } => {},
             Command::Stage { paths } => self.vcs_write(id, |repo| repo.stage(&paths)),
             Command::Unstage { paths } => self.vcs_write(id, |repo| repo.unstage(&paths)),
             Command::Discard { paths } => self.vcs_write(id, |repo| repo.discard(&paths)),
@@ -161,7 +181,7 @@ impl Session {
             Command::Commit { message } => self.commit(id, &message),
             Command::RefreshVcs => self.emit_vcs_status(Some(id)),
             // Language-intelligence and search commands are wired in later milestones.
-            _ => {}
+            _ => {},
         }
     }
 
@@ -209,7 +229,7 @@ impl Session {
             Ok(()) => {
                 self.last_vcs = None;
                 self.emit_vcs_status(Some(id));
-            }
+            },
             Err(e) => self.emit(
                 Some(id),
                 Event::Progress {
@@ -231,7 +251,7 @@ impl Session {
                 self.emit(Some(id), Event::Committed { oid });
                 self.last_vcs = None;
                 self.emit_vcs_status(Some(id));
-            }
+            },
             Err(e) => self.emit(
                 Some(id),
                 Event::Progress {
@@ -313,7 +333,7 @@ impl Session {
                     },
                 );
                 return;
-            }
+            },
         };
         let lang_id = language_id_from_path(&path);
         let language = language
@@ -427,7 +447,7 @@ impl Session {
             Some(doc) => {
                 doc.refs = doc.refs.saturating_sub(1);
                 doc.refs == 0
-            }
+            },
             None => return,
         };
         if removed {
@@ -684,9 +704,13 @@ impl EventRx {
 
 #[cfg(test)]
 mod tests {
+    use karet_core::Change;
+    use karet_core::LineCol;
+    use karet_core::Range;
+    use karet_core::TextEdit;
+
     use super::*;
     use crate::api::Command;
-    use karet_core::{Change, LineCol, Range, TextEdit};
 
     fn write_temp(name: &str, body: &str) -> Option<(tempfile::TempDir, PathBuf)> {
         let dir = tempfile::tempdir().ok()?;

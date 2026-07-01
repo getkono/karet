@@ -6,21 +6,42 @@ use karet_core::ThemeRole;
 use karet_editor::Editor;
 use karet_theme::Theme;
 use karet_vcs::StatusKind;
-use karet_widgets::image::{GraphicsProtocol, ImageWidget};
+use karet_widgets::FileTree;
+use karet_widgets::HexView;
+use karet_widgets::UiIcon;
+use karet_widgets::image::GraphicsProtocol;
+use karet_widgets::image::ImageWidget;
 use karet_widgets::viewer::Placeholder;
-use karet_widgets::{FileTree, HexView, UiIcon};
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::layout::Alignment;
+use ratatui::layout::Constraint;
+use ratatui::layout::Layout;
+use ratatui::layout::Rect;
+use ratatui::style::Modifier;
+use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::text::Span;
+use ratatui::widgets::Block;
+use ratatui::widgets::Borders;
+use ratatui::widgets::Clear;
+use ratatui::widgets::List;
+use ratatui::widgets::ListItem;
+use ratatui::widgets::ListState;
+use ratatui::widgets::Paragraph;
+use ratatui::widgets::Wrap;
 
-use crate::app::{App, FindState, TabHit};
+use crate::app::App;
+use crate::app::FindState;
+use crate::app::TabHit;
 use crate::command::Command;
-use crate::keymap::{Focus, SidebarPanel};
+use crate::keymap::Focus;
+use crate::keymap::SidebarPanel;
 use crate::overlay::Overlay;
-use crate::render::{self, Section};
-use crate::tab::{Tab, TabKind, ViewMode};
+use crate::render::Section;
+use crate::render::{self};
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::tab::ViewMode;
 
 /// Draw one frame of the shell.
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -146,7 +167,7 @@ fn draw_overlay(f: &mut Frame, overlay: &Overlay, theme: &Theme, area: Rect) {
                     Span::raw(" ".repeat(pad)),
                     Span::styled(h.clone(), dim),
                 ]))
-            }
+            },
             None => ListItem::new(Line::raw((*label).to_string())),
         })
         .collect();
@@ -238,7 +259,7 @@ fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                 rows[1],
                 &mut app.explorer,
             );
-        }
+        },
         SidebarPanel::SourceControl => draw_scm(f, app, theme, rows[1]),
         SidebarPanel::Search => draw_search_panel(f, app, theme, rows[1]),
     }
@@ -474,14 +495,14 @@ fn draw_main(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                 .selection(selection)
                 .focused(focused);
             f.render_stateful_widget(editor, area, &mut tab.editor);
-        }
+        },
         TabKind::Diff { file, view, scroll } => draw_diff(f, theme, area, file, *view, scroll),
         TabKind::Blame { groups, scroll, .. } => draw_blame(f, theme, area, groups, scroll),
         TabKind::Hex { bytes, scroll, .. } => {
             let rows = bytes.len().div_ceil(16);
             *scroll = (*scroll).min(rows.saturating_sub(1));
             f.render_widget(HexView::new(bytes).scroll(*scroll).theme(theme), area);
-        }
+        },
         TabKind::Image { image, .. } => {
             if graphics == GraphicsProtocol::Kitty {
                 // Reserve the area; the app flushes the Kitty escape after drawing.
@@ -494,7 +515,7 @@ fn draw_main(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             } else {
                 f.render_widget(ImageWidget::new(image), area);
             }
-        }
+        },
         TabKind::Placeholder {
             path,
             kind,
@@ -502,7 +523,7 @@ fn draw_main(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             len,
         } => {
             f.render_widget(Placeholder::new(path, *kind, *dims, *len), area);
-        }
+        },
     }
 }
 
@@ -522,7 +543,7 @@ fn draw_diff(
                 .saturating_sub(area.height);
             *scroll = (*scroll).min(max);
             f.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), area);
-        }
+        },
         ViewMode::SideBySide => {
             let (left, right) = render::side_by_side_lines(file, theme);
             let height = left.len().max(right.len());
@@ -539,7 +560,7 @@ fn draw_diff(
             f.render_widget(Paragraph::new(left).scroll((*scroll, 0)), panes[0]);
             f.render_widget(Block::new().borders(Borders::LEFT), panes[1]);
             f.render_widget(Paragraph::new(right).scroll((*scroll, 0)), panes[2]);
-        }
+        },
     }
 }
 

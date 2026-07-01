@@ -6,9 +6,11 @@
 
 use std::path::Path;
 
-use karet_treesitter::{
-    ParserPool, Query, SyntaxTree, language_id_from_path, language_name_from_path,
-};
+use karet_treesitter::ParserPool;
+use karet_treesitter::Query;
+use karet_treesitter::SyntaxTree;
+use karet_treesitter::language_id_from_path;
+use karet_treesitter::language_name_from_path;
 
 use crate::LineRange;
 

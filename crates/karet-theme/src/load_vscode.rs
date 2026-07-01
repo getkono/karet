@@ -2,10 +2,14 @@
 
 use std::collections::HashMap;
 
-use karet_core::{StandardToken, ThemeRole};
+use karet_core::StandardToken;
+use karet_core::ThemeRole;
 use serde::Deserialize;
 
-use crate::{Rgba, Theme, ThemeError, is_dark_color};
+use crate::Rgba;
+use crate::Theme;
+use crate::ThemeError;
+use crate::is_dark_color;
 
 #[derive(Deserialize)]
 struct Root {

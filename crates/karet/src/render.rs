@@ -6,19 +6,32 @@
 //! When no grammar is available the file renders as plaintext — no token colors, but
 //! add/remove and intra-line emphasis still apply.
 
-use karet_core::{BytePos, Span as ByteSpan, TokenId};
-use karet_diff::{
-    Cell, DiffLine, DiffOptions, FileDiff, HighlightedPair, LineKind, Segment, align_hunk,
-    compute_highlights, diff_text,
-};
+use karet_core::BytePos;
+use karet_core::Span as ByteSpan;
+use karet_core::TokenId;
+use karet_diff::Cell;
+use karet_diff::DiffLine;
+use karet_diff::DiffOptions;
+use karet_diff::FileDiff;
+use karet_diff::HighlightedPair;
+use karet_diff::LineKind;
+use karet_diff::Segment;
+use karet_diff::align_hunk;
+use karet_diff::compute_highlights;
+use karet_diff::diff_text;
 use karet_syntax::Highlighter;
-use karet_theme::{Rgba, Theme};
-use karet_treesitter::{
-    LanguageId, ParserPool, SyntaxTree, language_id_from_path, language_name_from_path,
-};
+use karet_theme::Rgba;
+use karet_theme::Theme;
+use karet_treesitter::LanguageId;
+use karet_treesitter::ParserPool;
+use karet_treesitter::SyntaxTree;
+use karet_treesitter::language_id_from_path;
+use karet_treesitter::language_name_from_path;
 use karet_vcs::FileChange;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::style::Modifier;
+use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::text::Span;
 
 /// Which Source-Control group a changed file belongs to, mirroring VS Code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,7 +228,7 @@ pub fn side_by_side_lines(
             let pair = match (&row.left, &row.right) {
                 (Some(l), Some(r)) if l.kind == LineKind::Remove && r.kind == LineKind::Add => {
                     Some(compute_highlights(&l.content, &r.content))
-                }
+                },
                 _ => None,
             };
             left.push(cell_line(
@@ -477,9 +490,11 @@ fn color(c: Rgba) -> Style {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use karet_vcs::StatusKind;
     use std::path::PathBuf;
+
+    use karet_vcs::StatusKind;
+
+    use super::*;
 
     fn change(path: &str, old: &str, new: &str) -> FileChange {
         FileChange {

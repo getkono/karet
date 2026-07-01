@@ -1,7 +1,10 @@
 //! The default diff [`Selection`] and the cheap dirty-state predicates behind it.
 
-use crate::{Repository, VcsError, repo::to_git};
 use std::ops::ControlFlow;
+
+use crate::Repository;
+use crate::VcsError;
+use crate::repo::to_git;
 
 /// Which diff to show, mirroring VS Code's default behaviour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
