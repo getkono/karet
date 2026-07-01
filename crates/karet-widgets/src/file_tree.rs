@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 use karet_core::{Decoration, DecorationKind, ThemeRole};
 use karet_filetype::{IconStyle, chevron, directory_icon, icon_for_path};
 use karet_theme::Theme;
+
+use crate::ListSelection;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -46,7 +48,7 @@ pub struct FileTreeRow {
 pub struct FileTreeState {
     root: PathBuf,
     expanded: BTreeSet<PathBuf>,
-    selected: usize,
+    selection: ListSelection,
     offset: usize,
     rows: Vec<FileTreeRow>,
     show_hidden: bool,
@@ -59,7 +61,7 @@ impl Default for FileTreeState {
         Self {
             root: PathBuf::new(),
             expanded: BTreeSet::new(),
-            selected: 0,
+            selection: ListSelection::new(0),
             offset: 0,
             rows: Vec::new(),
             show_hidden: false,
@@ -88,10 +90,16 @@ impl FileTreeState {
         &self.rows
     }
 
-    /// The selected row, if any.
+    /// The row at the selection cursor, if any.
     #[must_use]
     pub fn selected(&self) -> Option<&FileTreeRow> {
-        self.rows.get(self.selected)
+        self.rows.get(self.selection.cursor())
+    }
+
+    /// Whether the row at `index` is part of the (possibly multi-row) selection.
+    #[must_use]
+    pub fn is_selected(&self, index: usize) -> bool {
+        self.selection.is_selected(index)
     }
 
     /// The first visible row (vertical scroll offset) from the last render.
@@ -100,31 +108,51 @@ impl FileTreeState {
         self.offset
     }
 
-    /// Select the row currently shown at `viewport_row` (0 = top of the viewport),
-    /// clamped to the last row. A no-op when the tree is empty.
+    /// Move the cursor to the row currently shown at `viewport_row` (0 = top of the
+    /// viewport), collapsing any multi-selection. A no-op when the tree is empty.
     pub fn select_visible(&mut self, viewport_row: usize) {
-        if self.rows.is_empty() {
-            return;
-        }
-        self.selected = (self.offset + viewport_row).min(self.rows.len() - 1);
+        self.selection.move_to(self.offset + viewport_row);
     }
 
-    /// The path of the selected row, if any.
+    /// Extend the range selection to the row at `viewport_row`.
+    pub fn extend_visible(&mut self, viewport_row: usize) {
+        self.selection.extend_to(self.offset + viewport_row);
+    }
+
+    /// Toggle selection of the row at `viewport_row` (Ctrl-click).
+    pub fn toggle_visible(&mut self, viewport_row: usize) {
+        self.selection.toggle(self.offset + viewport_row);
+    }
+
+    /// The path of the cursor row, if any.
     #[must_use]
     pub fn selected_path(&self) -> Option<&Path> {
         self.selected().map(|r| r.path.as_path())
     }
 
-    /// Move the selection to the next row.
+    /// Move the cursor to the next row, collapsing any multi-selection.
     pub fn select_next(&mut self) {
-        if !self.rows.is_empty() {
-            self.selected = (self.selected + 1).min(self.rows.len() - 1);
-        }
+        self.selection.move_by(1);
     }
 
-    /// Move the selection to the previous row.
+    /// Move the cursor to the previous row, collapsing any multi-selection.
     pub fn select_prev(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
+        self.selection.move_by(-1);
+    }
+
+    /// Extend the range selection by `delta` rows (Shift+Arrows).
+    pub fn select_extend(&mut self, delta: i32) {
+        self.selection.extend_by(delta);
+    }
+
+    /// Toggle whether the cursor row is part of the selection (Space/`x`).
+    pub fn mark_toggle(&mut self) {
+        self.selection.toggle_cursor();
+    }
+
+    /// Select every row.
+    pub fn select_all(&mut self) {
+        self.selection.select_all();
     }
 
     /// Expand directory `path`.
@@ -150,9 +178,9 @@ impl FileTreeState {
         }
     }
 
-    /// Toggle the currently-selected directory (no-op on a file).
+    /// Toggle the expansion of the cursor's directory (no-op on a file).
     pub fn toggle_selected(&mut self) {
-        if let Some(row) = self.rows.get(self.selected)
+        if let Some(row) = self.rows.get(self.selection.cursor())
             && row.is_dir
         {
             let path = row.path.clone();
@@ -174,9 +202,7 @@ impl FileTreeState {
         let children = read_dir_sorted(root, self.show_hidden, self.respect_gitignore);
         self.push_entries(children, 0, &mut rows);
         self.rows = rows;
-        if self.selected >= self.rows.len() {
-            self.selected = self.rows.len().saturating_sub(1);
-        }
+        self.selection.set_len(self.rows.len());
         self.needs_rebuild = false;
     }
 
@@ -332,11 +358,12 @@ impl StatefulWidget for FileTree<'_> {
             return;
         }
 
-        // Keep the selection within the viewport.
-        if state.selected < state.offset {
-            state.offset = state.selected;
-        } else if state.selected >= state.offset + height {
-            state.offset = state.selected + 1 - height;
+        // Keep the cursor within the viewport.
+        let cursor = state.selection.cursor();
+        if cursor < state.offset {
+            state.offset = cursor;
+        } else if cursor >= state.offset + height {
+            state.offset = cursor + 1 - height;
         }
 
         let fallback;
@@ -358,7 +385,7 @@ impl StatefulWidget for FileTree<'_> {
             .take(height)
         {
             let y = area.y + u16::try_from(i - state.offset).unwrap_or(0);
-            let selected = i == state.selected;
+            let selected = state.selection.is_selected(i);
             if selected {
                 buf.set_style(
                     Rect {
@@ -542,6 +569,33 @@ mod tests {
     }
 
     #[test]
+    fn multi_select_extends_toggles_and_selects_all() {
+        let dir = temp_dir();
+        write(&dir.path, "a.txt", b"a");
+        write(&dir.path, "b.txt", b"b");
+        write(&dir.path, "c.txt", b"c");
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+
+        // Range: cursor 0, extend down one → rows 0 and 1 selected, 2 not.
+        state.select_extend(1);
+        assert!(state.is_selected(0));
+        assert!(state.is_selected(1));
+        assert!(!state.is_selected(2));
+
+        // A plain move collapses the range back to a single row.
+        state.select_next();
+        assert!(!state.is_selected(0));
+        assert!(state.is_selected(2));
+
+        // Toggle keeps the cursor row and adds another; select_all covers everything.
+        state.select_prev(); // cursor 1
+        state.mark_toggle(); // {1}
+        state.select_all();
+        assert!((0..3).all(|i| state.is_selected(i)));
+    }
+
+    #[test]
     fn select_visible_maps_viewport_rows_via_offset() {
         let dir = temp_dir();
         write(&dir.path, "a.txt", b"a");
@@ -551,9 +605,15 @@ mod tests {
         state.ensure_built(&dir.path);
         assert_eq!(state.offset(), 0);
         state.select_visible(2);
-        assert_eq!(state.selected, 2);
+        assert_eq!(
+            state.selected_path(),
+            Some(dir.path.join("c.txt").as_path())
+        );
         state.select_visible(99); // clamps to the last row
-        assert_eq!(state.selected, state.rows().len() - 1);
+        assert_eq!(
+            state.selected_path(),
+            state.rows().last().map(|r| r.path.as_path())
+        );
     }
 
     #[test]

@@ -25,15 +25,15 @@ use karet_session::{
 use karet_text::TextBuffer;
 use karet_theme::Theme;
 use karet_vcs::FileChange;
-use karet_widgets::FileTreeState;
 use karet_widgets::image::{self, GraphicsProtocol};
+use karet_widgets::{FileTreeState, ListSelection};
 use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 
 use crate::clipboard::Clipboard;
 use crate::command::Command;
 use crate::editing;
-use crate::keymap::{self, Focus, SidebarPanel};
+use crate::keymap::{self, Focus, FocusTarget, SidebarPanel};
 use crate::overlay::{Overlay, OverlayEvent};
 use crate::render::{FileView, Section};
 use crate::tab::{Tab, TabKind, ViewMode};
@@ -45,8 +45,8 @@ pub(crate) struct Scm {
     pub(crate) changes: Vec<FileChange>,
     /// The number of staged files at the front of `changes`.
     pub(crate) staged_count: usize,
-    /// The selected entry (index into `changes`).
-    pub(crate) selected: usize,
+    /// The cursor and multi-file selection over `changes`.
+    pub(crate) selection: ListSelection,
 }
 
 impl Scm {
@@ -57,6 +57,16 @@ impl Scm {
         } else {
             Section::Working
         }
+    }
+
+    /// The repository-relative paths of the selected file(s).
+    fn selected_paths(&self) -> Vec<PathBuf> {
+        self.selection
+            .selected_indices()
+            .into_iter()
+            .filter_map(|i| self.changes.get(i))
+            .map(|c| c.path.clone())
+            .collect()
     }
 }
 
@@ -130,6 +140,11 @@ pub struct App {
     pub(crate) overlay: Option<Overlay>,
     /// The find-in-file bar, if open.
     pub(crate) find: Option<FindState>,
+    /// The in-progress commit message while the Source-Control commit input is open.
+    pub(crate) commit_input: Option<String>,
+    /// Paths awaiting a discard confirmation (set after pressing discard; cleared
+    /// when the user confirms or cancels).
+    pub(crate) pending_discard: Option<Vec<PathBuf>>,
     /// The workspace-search panel state.
     pub(crate) search: SearchPanel,
     /// A transient status message.
@@ -214,15 +229,17 @@ impl App {
             sidebar_visible: true,
             explorer: FileTreeState::new(),
             scm: Scm {
+                selection: ListSelection::new(changes.len()),
                 changes,
                 staged_count,
-                selected: 0,
             },
             tabs: vec![Tab::welcome()],
             active: 0,
             closed: Vec::new(),
             overlay: None,
             find: None,
+            commit_input: None,
+            pending_discard: None,
             search: SearchPanel::default(),
             status: None,
             sidebar_rect: Rect::default(),
@@ -270,11 +287,25 @@ impl App {
         self.tabs.get(self.active).is_some_and(Tab::is_diff)
     }
 
+    /// The pane that currently holds keyboard focus — the single value that
+    /// determines which keybinding layer is live.
+    pub(crate) fn focus_target(&self) -> FocusTarget {
+        FocusTarget::from(self.focus, self.sidebar_panel, self.active_is_diff())
+    }
+
     /// Handle a key press: route to the open overlay, else resolve via the keymap.
     fn handle_key(&mut self, key: KeyEvent) {
         self.status = None;
         if self.overlay.is_some() {
             self.handle_overlay_key(key);
+            return;
+        }
+        if self.commit_input.is_some() {
+            self.handle_commit_key(key);
+            return;
+        }
+        if self.pending_discard.is_some() {
+            self.handle_discard_confirm_key(key);
             return;
         }
         if self.find.is_some() {
@@ -290,7 +321,9 @@ impl App {
             }
             return;
         }
-        if let Some(command) = keymap::resolve(self.focus, self.active_is_diff(), key) {
+        if let Some(command) =
+            keymap::resolve(self.focus, self.sidebar_panel, self.active_is_diff(), key)
+        {
             self.dispatch(command);
         } else if self.focus == Focus::Editor
             && self.active_code_doc().is_some()
@@ -622,6 +655,18 @@ impl App {
             Command::Save => self.save_active(),
             Command::Cut => self.cut(),
             Command::Paste => self.paste_from_clipboard(),
+            Command::SelectExtendUp => self.sidebar_select_extend(-1),
+            Command::SelectExtendDown => self.sidebar_select_extend(1),
+            Command::SelectToggle => self.sidebar_select_toggle(),
+            Command::SelectAll => self.sidebar_select_all(),
+            Command::ScmStage => self.scm_send_paths(|paths| SessionCommand::Stage { paths }),
+            Command::ScmUnstage => self.scm_send_paths(|paths| SessionCommand::Unstage { paths }),
+            Command::ScmToggleStage => self.scm_toggle_stage(),
+            Command::ScmStageAll => self.send_vcs(SessionCommand::StageAll),
+            Command::ScmUnstageAll => self.send_vcs(SessionCommand::UnstageAll),
+            Command::ScmDiscard => self.scm_arm_discard(),
+            Command::ScmCommit => self.scm_open_commit_input(),
+            Command::ScmRefresh => self.send_vcs(SessionCommand::RefreshVcs),
         }
     }
 
@@ -644,14 +689,8 @@ impl App {
                     self.explorer.select_prev();
                 }
             }
-            SidebarPanel::SourceControl => {
-                let len = self.scm.changes.len();
-                if len > 0 {
-                    let next =
-                        (self.scm.selected as i64 + i64::from(delta)).clamp(0, len as i64 - 1);
-                    self.scm.selected = next as usize;
-                }
-            }
+            // A plain move collapses any range or multi-selection.
+            SidebarPanel::SourceControl => self.scm.selection.move_by(delta),
             SidebarPanel::Search => self.search_select(delta),
         }
     }
@@ -695,10 +734,11 @@ impl App {
 
     /// Open a diff tab for the selected Source-Control entry.
     fn open_selected_diff(&mut self) {
-        let Some(change) = self.scm.changes.get(self.scm.selected) else {
+        let cursor = self.scm.selection.cursor();
+        let Some(change) = self.scm.changes.get(cursor) else {
             return;
         };
-        let section = self.scm.section(self.scm.selected);
+        let section = self.scm.section(cursor);
         let title = change
             .path
             .file_name()
@@ -715,6 +755,169 @@ impl App {
             },
         );
         self.push_tab(tab);
+        // Previewing a change must not steal focus: `push_tab` focuses the editor
+        // (right for opening a file), but here the Source-Control pane stays active
+        // so stage/unstage/discard/commit and selection keys keep working while the
+        // diff is shown. Press Tab to move into the diff to scroll it.
+        self.focus = Focus::Sidebar;
+    }
+
+    // --- source control ---------------------------------------------------
+
+    /// Send a fire-and-forget command to the backend (no document context).
+    fn send_vcs(&mut self, command: SessionCommand) {
+        if let Some(backend) = &self.backend {
+            let id = backend.next_id();
+            let _ = backend.send(id, command);
+        }
+    }
+
+    /// Send a path-scoped Source-Control command for the current selection.
+    fn scm_send_paths(&mut self, make: impl FnOnce(Vec<PathBuf>) -> SessionCommand) {
+        let paths = self.scm.selected_paths();
+        if paths.is_empty() {
+            return;
+        }
+        self.send_vcs(make(paths));
+    }
+
+    /// Toggle staging for the selection. A multi-file selection may span both
+    /// groups, so partition it by section: staged rows are unstaged, working rows
+    /// are staged.
+    fn scm_toggle_stage(&mut self) {
+        let mut to_stage = Vec::new();
+        let mut to_unstage = Vec::new();
+        for i in self.scm.selection.selected_indices() {
+            let Some(change) = self.scm.changes.get(i) else {
+                continue;
+            };
+            match self.scm.section(i) {
+                Section::Staged => to_unstage.push(change.path.clone()),
+                Section::Working => to_stage.push(change.path.clone()),
+            }
+        }
+        if !to_unstage.is_empty() {
+            self.send_vcs(SessionCommand::Unstage { paths: to_unstage });
+        }
+        if !to_stage.is_empty() {
+            self.send_vcs(SessionCommand::Stage { paths: to_stage });
+        }
+    }
+
+    /// Extend the focused list panel's range selection by `delta` rows.
+    fn sidebar_select_extend(&mut self, delta: i32) {
+        match self.sidebar_panel {
+            SidebarPanel::Explorer => {
+                self.explorer.ensure_built(&self.root);
+                self.explorer.select_extend(delta);
+            }
+            SidebarPanel::SourceControl => self.scm.selection.extend_by(delta),
+            SidebarPanel::Search => {}
+        }
+    }
+
+    /// Toggle the cursor row in the focused list panel's selection.
+    fn sidebar_select_toggle(&mut self) {
+        match self.sidebar_panel {
+            SidebarPanel::Explorer => {
+                self.explorer.ensure_built(&self.root);
+                self.explorer.mark_toggle();
+            }
+            SidebarPanel::SourceControl => self.scm.selection.toggle_cursor(),
+            SidebarPanel::Search => {}
+        }
+    }
+
+    /// Select every row in the focused list panel.
+    fn sidebar_select_all(&mut self) {
+        match self.sidebar_panel {
+            SidebarPanel::Explorer => {
+                self.explorer.ensure_built(&self.root);
+                self.explorer.select_all();
+            }
+            SidebarPanel::SourceControl => self.scm.selection.select_all(),
+            SidebarPanel::Search => {}
+        }
+    }
+
+    /// Open the commit-message input, if there is something staged to commit.
+    fn scm_open_commit_input(&mut self) {
+        if self.scm.staged_count == 0 {
+            self.status = Some("commit: stage changes first".to_string());
+            return;
+        }
+        self.commit_input = Some(String::new());
+    }
+
+    /// Arm a discard confirmation for the current selection.
+    fn scm_arm_discard(&mut self) {
+        let paths = self.scm.selected_paths();
+        if paths.is_empty() {
+            return;
+        }
+        self.status = Some(format!(
+            "discard {} file(s)? press y to confirm, any other key to cancel",
+            paths.len()
+        ));
+        self.pending_discard = Some(paths);
+    }
+
+    /// Handle a key while the commit-message input is open.
+    fn handle_commit_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Esc => {
+                self.commit_input = None;
+                self.status = Some("commit cancelled".to_string());
+            }
+            KeyCode::Enter => {
+                let message = self.commit_input.take().unwrap_or_default();
+                let message = message.trim().to_string();
+                if message.is_empty() {
+                    self.commit_input = Some(String::new());
+                    self.status = Some("commit: message required".to_string());
+                } else {
+                    self.send_vcs(SessionCommand::Commit { message });
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(message) = self.commit_input.as_mut() {
+                    message.pop();
+                }
+            }
+            KeyCode::Char(c) if !ctrl && !alt => {
+                if let Some(message) = self.commit_input.as_mut() {
+                    message.push(c);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle a key while a discard confirmation is pending.
+    fn handle_discard_confirm_key(&mut self, key: KeyEvent) {
+        let confirmed = matches!(key.code, KeyCode::Char('y' | 'Y') | KeyCode::Enter);
+        let paths = self.pending_discard.take();
+        if confirmed {
+            if let Some(paths) = paths {
+                self.send_vcs(SessionCommand::Discard { paths });
+                self.status = Some("discarded".to_string());
+            }
+        } else {
+            self.status = Some("discard cancelled".to_string());
+        }
+    }
+
+    /// Replace the Source-Control panel state from a fresh backend status,
+    /// reconciling the existing selection against the new row count.
+    fn apply_vcs_status(&mut self, staged: Vec<FileChange>, working: Vec<FileChange>) {
+        let staged_count = staged.len();
+        let mut changes = staged;
+        changes.extend(working);
+        self.scm.changes = changes;
+        self.scm.staged_count = staged_count;
+        self.scm.selection.set_len(self.scm.changes.len());
     }
 
     /// Open `path`, focusing an existing tab for the same file instead of opening a
@@ -1001,8 +1204,9 @@ impl App {
         if len == 0 {
             return;
         }
-        let next = (self.scm.selected as i64 + i64::from(delta)).clamp(0, len as i64 - 1) as usize;
-        self.scm.selected = next;
+        let next = (self.scm.selection.cursor() as i64 + i64::from(delta)).clamp(0, len as i64 - 1)
+            as usize;
+        self.scm.selection.move_to(next);
         let view = match &self.tabs[self.active].kind {
             TabKind::Diff { view, .. } => *view,
             _ => ViewMode::Unified,
@@ -1124,7 +1328,7 @@ impl App {
             MouseEventKind::ScrollUp => self.scroll_lines(-3),
             MouseEventKind::Down(MouseButton::Left) => {
                 if in_sidebar {
-                    self.handle_sidebar_click(mouse.column, mouse.row);
+                    self.handle_sidebar_click(mouse.column, mouse.row, mouse.modifiers);
                 } else {
                     self.handle_editor_click(mouse);
                 }
@@ -1144,13 +1348,17 @@ impl App {
     }
 
     /// Handle a left click inside the sidebar: switch panels via the header, or
-    /// select and activate the clicked row.
-    fn handle_sidebar_click(&mut self, col: u16, row_y: u16) {
+    /// select the clicked row. A plain click moves the cursor and activates the
+    /// row; Ctrl toggles it in the selection and Shift extends a range to it
+    /// (neither activates).
+    fn handle_sidebar_click(&mut self, col: u16, row_y: u16, modifiers: KeyModifiers) {
         self.focus = Focus::Sidebar;
         if let Some(panel) = self.panel_at(col, row_y) {
             self.dispatch(Command::SelectPanel(panel));
             return;
         }
+        let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+        let shift = modifiers.contains(KeyModifiers::SHIFT);
         match self.sidebar_panel {
             SidebarPanel::Explorer => {
                 if !rect_contains(self.sidebar_content_rect, (col, row_y)) {
@@ -1159,8 +1367,14 @@ impl App {
                 let view_row = (row_y - self.sidebar_content_rect.y) as usize;
                 let root = self.root.clone();
                 self.explorer.ensure_built(&root);
-                self.explorer.select_visible(view_row);
-                self.sidebar_activate();
+                if ctrl {
+                    self.explorer.toggle_visible(view_row);
+                } else if shift {
+                    self.explorer.extend_visible(view_row);
+                } else {
+                    self.explorer.select_visible(view_row);
+                    self.sidebar_activate();
+                }
             }
             SidebarPanel::SourceControl => {
                 if !rect_contains(self.sidebar_content_rect, (col, row_y)) {
@@ -1168,8 +1382,14 @@ impl App {
                 }
                 let display = self.scm_offset + (row_y - self.sidebar_content_rect.y) as usize;
                 if let Some(Some(idx)) = self.scm_row_map.get(display).copied() {
-                    self.scm.selected = idx;
-                    self.open_selected_diff();
+                    if ctrl {
+                        self.scm.selection.toggle(idx);
+                    } else if shift {
+                        self.scm.selection.extend_to(idx);
+                    } else {
+                        self.scm.selection.move_to(idx);
+                        self.open_selected_diff();
+                    }
                 }
             }
             SidebarPanel::Search => {
@@ -1540,6 +1760,12 @@ impl App {
                 self.status = Some("⚠ file changed on disk — you have unsaved changes".to_string());
             }
             SessionEvent::Progress { message, .. } => self.status = Some(message),
+            SessionEvent::VcsStatus { staged, working } => self.apply_vcs_status(staged, working),
+            SessionEvent::Committed { oid } => {
+                self.commit_input = None;
+                let short: String = oid.chars().take(7).collect();
+                self.status = Some(format!("committed {short}"));
+            }
             _ => {}
         }
     }
@@ -1784,12 +2010,80 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_diff_replaces_welcome_and_focuses_editor() {
+    fn focus_target_tracks_focus_and_panel() {
+        let mut app = app();
+        assert_eq!(app.focus_target(), FocusTarget::Explorer);
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        assert_eq!(app.focus_target(), FocusTarget::SourceControl);
+        app.focus = Focus::Editor;
+        assert_eq!(app.focus_target(), FocusTarget::Editor);
+    }
+
+    #[test]
+    fn scm_range_selection_collects_both_paths() {
+        // `app()` seeds one staged (a.rs) and one working (b.rs) change.
+        let mut app = app();
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        app.dispatch(Command::SelectExtendDown);
+        assert_eq!(app.scm.selection.selected_indices(), vec![0, 1]);
+        assert_eq!(app.scm.selected_paths().len(), 2);
+    }
+
+    #[test]
+    fn scm_plain_move_collapses_range() {
+        let mut app = app();
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        app.dispatch(Command::SelectExtendDown);
+        assert!(app.scm.selection.anchor().is_some());
+        // A non-extending move in the SCM panel clears the range.
+        app.dispatch(Command::SidebarDown);
+        assert!(app.scm.selection.anchor().is_none());
+        assert_eq!(app.scm.selection.selected_indices(), vec![1]);
+    }
+
+    #[test]
+    fn vcs_status_event_repopulates_panel() {
+        let mut app = app();
+        app.apply_vcs_status(
+            vec![change("x.rs", StatusKind::Added)],
+            vec![
+                change("y.rs", StatusKind::Untracked),
+                change("z.rs", StatusKind::Modified),
+            ],
+        );
+        assert_eq!(app.scm.staged_count, 1);
+        assert_eq!(app.scm.changes.len(), 3);
+        assert_eq!(app.scm.changes[0].status, StatusKind::Added);
+        assert_eq!(app.scm.selection.anchor(), None);
+        assert_eq!(app.scm.selection.len(), 3);
+    }
+
+    #[test]
+    fn commit_input_requires_staged_changes() {
+        let mut app = app();
+        // a.rs is staged, so the input opens.
+        app.dispatch(Command::ScmCommit);
+        assert!(app.commit_input.is_some());
+
+        // With nothing staged, it refuses and reports why.
+        app.apply_vcs_status(Vec::new(), vec![change("b.rs", StatusKind::Modified)]);
+        app.commit_input = None;
+        app.dispatch(Command::ScmCommit);
+        assert!(app.commit_input.is_none());
+        assert!(app.status.is_some());
+    }
+
+    #[test]
+    fn opening_a_diff_keeps_source_control_focused() {
         let mut app = app();
         app.sidebar_panel = SidebarPanel::SourceControl;
         app.dispatch(Command::SidebarActivate);
-        assert!(app.active_is_diff());
-        assert_eq!(app.focus, Focus::Editor);
+        assert!(app.active_is_diff(), "the diff tab is shown");
+        // Focus stays in the SCM pane so its action/selection keys keep working
+        // (the bug was that previewing a diff moved focus to the editor, silently
+        // disabling stage/unstage/discard/commit).
+        assert_eq!(app.focus, Focus::Sidebar);
+        assert_eq!(app.focus_target(), FocusTarget::SourceControl);
         assert_eq!(app.tabs.len(), 1, "welcome tab is replaced, not appended");
     }
 
@@ -1799,9 +2093,9 @@ mod tests {
         app.sidebar_panel = SidebarPanel::SourceControl;
         app.dispatch(Command::SidebarActivate); // opens a.rs (index 0)
         app.dispatch(Command::NextChangedFile);
-        assert_eq!(app.scm.selected, 1);
+        assert_eq!(app.scm.selection.cursor(), 1);
         app.dispatch(Command::PrevChangedFile);
-        assert_eq!(app.scm.selected, 0);
+        assert_eq!(app.scm.selection.cursor(), 0);
     }
 
     #[test]
@@ -2128,7 +2422,7 @@ mod tests {
             (25, 27, SidebarPanel::Search),
             (27, 29, SidebarPanel::SourceControl),
         ];
-        app.handle_sidebar_click(25, 1); // header row, the "2" cell
+        app.handle_sidebar_click(25, 1, KeyModifiers::NONE); // header row, the "2" cell
         assert_eq!(app.sidebar_panel, SidebarPanel::Search);
     }
 
@@ -2151,9 +2445,13 @@ mod tests {
         app.scm_offset = 0;
         // Display rows: 0 header, 1 a.rs(0), 2 header, 3 b.rs(1).
         app.scm_row_map = vec![None, Some(0), None, Some(1)];
-        app.handle_sidebar_click(2, 5); // content row 3 -> change index 1
-        assert_eq!(app.scm.selected, 1);
+        app.handle_sidebar_click(2, 5, KeyModifiers::NONE); // content row 3 -> change index 1
+        assert_eq!(app.scm.selection.cursor(), 1);
         assert!(app.active_is_diff());
+
+        // Ctrl-click a second row adds it to the selection without opening a diff.
+        app.handle_sidebar_click(2, 3, KeyModifiers::CONTROL); // content row 1 -> index 0
+        assert_eq!(app.scm.selection.selected_indices(), vec![0, 1]);
     }
 
     #[test]
@@ -2217,5 +2515,149 @@ mod tests {
         assert!(app.tabs.iter().any(|t| t.path() == Some(file.as_path())));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- full-stack Source-Control action tests ------------------------------
+    //
+    // These drive the real `Session` + `local()` backend over a temp git repo, so
+    // they exercise the whole key → focus/layer → dispatch → backend actor → git2 →
+    // VcsStatus → apply loop that unit tests skip.
+
+    /// A temp directory removed on drop, so a panicking test can't leak it.
+    struct TempRepo {
+        path: PathBuf,
+    }
+
+    impl Drop for TempRepo {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    /// Run `git` in `dir`, returning whether it succeeded.
+    fn git(dir: &Path, args: &[&str]) -> bool {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    /// A git repo in a fresh temp dir holding a single untracked file, or `None`
+    /// when `git` is unavailable (so the test skips rather than fails).
+    fn init_test_repo() -> Option<TempRepo> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "karet-scm-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&path).ok()?;
+        let repo = TempRepo { path };
+        if !git(&repo.path, &["init", "-q"])
+            || !git(&repo.path, &["config", "user.email", "test@example.com"])
+            || !git(&repo.path, &["config", "user.name", "karet test"])
+        {
+            return None;
+        }
+        std::fs::write(repo.path.join("new.rs"), "fn main() {}\n").ok()?;
+        Some(repo)
+    }
+
+    /// A bare key press (no modifiers).
+    fn press(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    /// Drain backend events into `app`, waiting briefly for the spawned actor.
+    async fn pump(app: &mut App, events: &mut EventRx) {
+        while let Ok(Some((id, ev))) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), events.recv()).await
+        {
+            app.on_backend_event(id, ev);
+        }
+    }
+
+    /// Build an app wired to a real session + local backend, focused on the SCM pane.
+    fn scm_app(root: PathBuf) -> (App, EventRx) {
+        let (session, events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root.clone()],
+            ..SessionConfig::default()
+        });
+        let backend: Arc<dyn Backend> = Arc::new(local(session));
+        let mut app = App::new(root, Vec::new(), Vec::new(), false);
+        app.backend = Some(backend);
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        app.focus = Focus::Sidebar;
+        (app, events)
+    }
+
+    #[tokio::test]
+    async fn scm_stage_key_stages_through_the_backend() {
+        let Some(repo) = init_test_repo() else {
+            return;
+        };
+        let (mut app, mut events) = scm_app(repo.path.clone());
+
+        // The seeded status lists the untracked file.
+        pump(&mut app, &mut events).await;
+        assert_eq!(app.scm.changes.len(), 1);
+        assert_eq!(app.scm.changes[0].status, StatusKind::Untracked);
+
+        // Pressing 's' in the focused SCM pane stages it, end to end.
+        app.handle_key(press('s'));
+        pump(&mut app, &mut events).await;
+        assert_eq!(app.scm.staged_count, 1);
+        assert_eq!(app.scm.changes[0].status, StatusKind::Added);
+    }
+
+    #[tokio::test]
+    async fn scm_stage_still_works_after_previewing_a_diff() {
+        // Regression for "actions do nothing after opening a diff": the preview
+        // must not steal focus away from the Source-Control pane.
+        let Some(repo) = init_test_repo() else {
+            return;
+        };
+        let (mut app, mut events) = scm_app(repo.path.clone());
+        pump(&mut app, &mut events).await;
+        assert_eq!(app.scm.changes.len(), 1);
+
+        // Preview the change's diff — focus must stay on the SCM layer.
+        app.dispatch(Command::SidebarActivate);
+        assert!(app.active_is_diff());
+        assert_eq!(app.focus_target(), FocusTarget::SourceControl);
+
+        // Staging still works after the preview.
+        app.handle_key(press('s'));
+        pump(&mut app, &mut events).await;
+        assert_eq!(app.scm.staged_count, 1);
+        assert_eq!(app.scm.changes[0].status, StatusKind::Added);
+    }
+
+    #[tokio::test]
+    async fn scm_stages_a_multi_file_selection() {
+        let Some(repo) = init_test_repo() else {
+            return;
+        };
+        if std::fs::write(repo.path.join("second.rs"), b"fn second() {}\n").is_err() {
+            return;
+        }
+        let (mut app, mut events) = scm_app(repo.path.clone());
+        pump(&mut app, &mut events).await;
+        assert_eq!(app.scm.changes.len(), 2);
+
+        // Select both changed files, then stage the whole selection at once.
+        app.scm.selection.select_all();
+        app.handle_key(press('s'));
+        pump(&mut app, &mut events).await;
+        assert_eq!(app.scm.staged_count, 2);
+        assert!(
+            app.scm
+                .changes
+                .iter()
+                .all(|c| c.status == StatusKind::Added)
+        );
     }
 }

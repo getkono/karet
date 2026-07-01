@@ -105,6 +105,9 @@ lsp-types = "0.97.0"
 # (mandatory, not-implied) hash backend; `max-performance-safe` is pure-Rust (no C
 # toolchain). We trim the heavy default `extras` (archive/credentials/mailmap/blame/…).
 gix = { version = "0.85.0", default-features = false, features = ["status", "max-performance-safe", "sha1"] }
+# Optional libgit2 write backend for karet-vcs staging (no ssh/https system deps;
+# libgit2-sys still vendors and builds libgit2 via a C toolchain when enabled).
+git2 = { version = "0.20", default-features = false }
 # Filesystem watching (karet-watch)
 notify                 = "8.2"
 notify-debouncer-full  = "0.7"

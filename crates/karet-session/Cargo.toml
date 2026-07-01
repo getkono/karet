@@ -21,7 +21,7 @@ karet-syntax.workspace = true
 karet-diff.workspace = true
 karet-lsp.workspace = true            # headless
 karet-dap.workspace = true            # headless
-karet-vcs.workspace = true            # headless
+karet-vcs = { workspace = true, features = ["git2"] }   # headless; git2 = staging writes
 karet-search.workspace = true
 karet-fuzzy.workspace = true
 karet-terminal.workspace = true       # PTY host is server-side business logic

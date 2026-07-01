@@ -10,6 +10,7 @@ use karet_core::{
 };
 use karet_search::{FileHit, SearchQuery};
 use karet_syntax::HighlightSpan;
+use karet_vcs::FileChange;
 use std::path::PathBuf;
 
 /// Identifies an open document within a session.
@@ -136,6 +137,32 @@ pub enum Command {
         /// The new cursor state.
         cursors: CursorState,
     },
+    /// Stage the given paths (add their worktree state to the index).
+    Stage {
+        /// Repository-relative paths to stage.
+        paths: Vec<PathBuf>,
+    },
+    /// Unstage the given paths (reset their index entries to `HEAD`).
+    Unstage {
+        /// Repository-relative paths to unstage.
+        paths: Vec<PathBuf>,
+    },
+    /// Discard the working-tree changes to the given paths (destructive).
+    Discard {
+        /// Repository-relative paths to discard.
+        paths: Vec<PathBuf>,
+    },
+    /// Stage every change in the worktree.
+    StageAll,
+    /// Unstage every staged change.
+    UnstageAll,
+    /// Commit the staged changes with the given message.
+    Commit {
+        /// The commit message.
+        message: String,
+    },
+    /// Recompute and re-emit the source-control status.
+    RefreshVcs,
 }
 
 /// A message emitted by the backend to the presentation layer. When it answers a
@@ -237,6 +264,19 @@ pub enum Event {
         message: String,
         /// Percent complete (0–100), if known.
         percent: Option<u8>,
+    },
+    /// The current source-control status: the staged (`HEAD`↔index) and working
+    /// (index↔worktree, plus untracked and conflicted) change sets.
+    VcsStatus {
+        /// The staged changes.
+        staged: Vec<FileChange>,
+        /// The working-tree changes (unstaged, untracked, conflicted).
+        working: Vec<FileChange>,
+    },
+    /// A commit was created.
+    Committed {
+        /// The new commit's hex object id.
+        oid: String,
     },
 }
 

@@ -18,12 +18,14 @@ pub mod file_tree;
 pub mod glyph;
 pub mod hex;
 pub mod image;
+pub mod select;
 pub mod viewer;
 
 pub use file_tree::{FileTree, FileTreeRow, FileTreeState};
 pub use glyph::UiIcon;
 pub use hex::HexView;
 pub use karet_filetype::IconStyle;
+pub use select::ListSelection;
 
 /// A symbol outline tree over a [`SymbolProvider`].
 pub struct Outline<'a> {
