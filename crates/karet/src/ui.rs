@@ -300,7 +300,7 @@ fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     };
 
     let selection_bg = theme.role(ThemeRole::Selection).to_ratatui();
-    let (lo, hi) = app.scm.selected_range();
+    let cursor = app.scm.selection.cursor();
     let mut items: Vec<ListItem> = Vec::new();
     let mut row_map: Vec<Option<usize>> = Vec::new();
     let mut selected_row = 0;
@@ -325,7 +325,7 @@ fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             row_map.push(None);
             last = Some(section);
         }
-        if i == app.scm.selected {
+        if i == cursor {
             selected_row = items.len();
         }
         let (glyph, role) = status_glyph(change.status);
@@ -336,9 +336,10 @@ fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             ),
             Span::raw(change.path.to_string_lossy().into_owned()),
         ]));
-        // Every row in the selected range gets the selection background; the cursor
-        // row additionally gets the bold highlight below.
-        if (lo..=hi).contains(&i) {
+        // Every selected row (a contiguous range or a scattered toggle-set) gets the
+        // selection background; the cursor row additionally gets the bold highlight
+        // below.
+        if app.scm.selection.is_selected(i) {
             item = item.style(Style::default().bg(selection_bg));
         }
         items.push(item);

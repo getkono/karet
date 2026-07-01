@@ -25,8 +25,8 @@ use karet_session::{
 use karet_text::TextBuffer;
 use karet_theme::Theme;
 use karet_vcs::FileChange;
-use karet_widgets::FileTreeState;
 use karet_widgets::image::{self, GraphicsProtocol};
+use karet_widgets::{FileTreeState, ListSelection};
 use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 
@@ -45,10 +45,8 @@ pub(crate) struct Scm {
     pub(crate) changes: Vec<FileChange>,
     /// The number of staged files at the front of `changes`.
     pub(crate) staged_count: usize,
-    /// The selected entry (index into `changes`).
-    pub(crate) selected: usize,
-    /// The fixed end of a multi-row range selection, set while extending it.
-    pub(crate) anchor: Option<usize>,
+    /// The cursor and multi-file selection over `changes`.
+    pub(crate) selection: ListSelection,
 }
 
 impl Scm {
@@ -61,22 +59,14 @@ impl Scm {
         }
     }
 
-    /// The inclusive `(lo, hi)` row range currently selected (a single row when
-    /// not extending a range).
-    pub(crate) fn selected_range(&self) -> (usize, usize) {
-        match self.anchor {
-            Some(anchor) => (anchor.min(self.selected), anchor.max(self.selected)),
-            None => (self.selected, self.selected),
-        }
-    }
-
     /// The repository-relative paths of the selected file(s).
     fn selected_paths(&self) -> Vec<PathBuf> {
-        let (lo, hi) = self.selected_range();
-        self.changes
-            .get(lo..=hi)
-            .map(|rows| rows.iter().map(|c| c.path.clone()).collect())
-            .unwrap_or_default()
+        self.selection
+            .selected_indices()
+            .into_iter()
+            .filter_map(|i| self.changes.get(i))
+            .map(|c| c.path.clone())
+            .collect()
     }
 }
 
@@ -239,10 +229,9 @@ impl App {
             sidebar_visible: true,
             explorer: FileTreeState::new(),
             scm: Scm {
+                selection: ListSelection::new(changes.len()),
                 changes,
                 staged_count,
-                selected: 0,
-                anchor: None,
             },
             tabs: vec![Tab::welcome()],
             active: 0,
@@ -698,16 +687,8 @@ impl App {
                     self.explorer.select_prev();
                 }
             }
-            SidebarPanel::SourceControl => {
-                let len = self.scm.changes.len();
-                if len > 0 {
-                    let next =
-                        (self.scm.selected as i64 + i64::from(delta)).clamp(0, len as i64 - 1);
-                    self.scm.selected = next as usize;
-                }
-                // A plain move collapses any range selection.
-                self.scm.anchor = None;
-            }
+            // A plain move collapses any range or multi-selection.
+            SidebarPanel::SourceControl => self.scm.selection.move_by(delta),
             SidebarPanel::Search => self.search_select(delta),
         }
     }
@@ -751,10 +732,11 @@ impl App {
 
     /// Open a diff tab for the selected Source-Control entry.
     fn open_selected_diff(&mut self) {
-        let Some(change) = self.scm.changes.get(self.scm.selected) else {
+        let cursor = self.scm.selection.cursor();
+        let Some(change) = self.scm.changes.get(cursor) else {
             return;
         };
-        let section = self.scm.section(self.scm.selected);
+        let section = self.scm.section(cursor);
         let title = change
             .path
             .file_name()
@@ -797,31 +779,32 @@ impl App {
         self.send_vcs(make(paths));
     }
 
-    /// Stage the selection if it is in the working group, unstage it if it is
-    /// staged (the section of the cursor row decides).
+    /// Toggle staging for the selection. A multi-file selection may span both
+    /// groups, so partition it by section: staged rows are unstaged, working rows
+    /// are staged.
     fn scm_toggle_stage(&mut self) {
-        let paths = self.scm.selected_paths();
-        if paths.is_empty() {
-            return;
+        let mut to_stage = Vec::new();
+        let mut to_unstage = Vec::new();
+        for i in self.scm.selection.selected_indices() {
+            let Some(change) = self.scm.changes.get(i) else {
+                continue;
+            };
+            match self.scm.section(i) {
+                Section::Staged => to_unstage.push(change.path.clone()),
+                Section::Working => to_stage.push(change.path.clone()),
+            }
         }
-        if self.scm.selected < self.scm.staged_count {
-            self.send_vcs(SessionCommand::Unstage { paths });
-        } else {
-            self.send_vcs(SessionCommand::Stage { paths });
+        if !to_unstage.is_empty() {
+            self.send_vcs(SessionCommand::Unstage { paths: to_unstage });
+        }
+        if !to_stage.is_empty() {
+            self.send_vcs(SessionCommand::Stage { paths: to_stage });
         }
     }
 
     /// Extend the Source-Control range selection by `delta` rows.
     fn scm_extend(&mut self, delta: i32) {
-        let len = self.scm.changes.len();
-        if len == 0 {
-            return;
-        }
-        if self.scm.anchor.is_none() {
-            self.scm.anchor = Some(self.scm.selected);
-        }
-        let next = (self.scm.selected as i64 + i64::from(delta)).clamp(0, len as i64 - 1);
-        self.scm.selected = next as usize;
+        self.scm.selection.extend_by(delta);
     }
 
     /// Open the commit-message input, if there is something staged to commit.
@@ -893,18 +876,15 @@ impl App {
         }
     }
 
-    /// Replace the Source-Control panel state from a fresh backend status.
+    /// Replace the Source-Control panel state from a fresh backend status,
+    /// reconciling the existing selection against the new row count.
     fn apply_vcs_status(&mut self, staged: Vec<FileChange>, working: Vec<FileChange>) {
         let staged_count = staged.len();
         let mut changes = staged;
         changes.extend(working);
-        let selected = self.scm.selected.min(changes.len().saturating_sub(1));
-        self.scm = Scm {
-            changes,
-            staged_count,
-            selected,
-            anchor: None,
-        };
+        self.scm.changes = changes;
+        self.scm.staged_count = staged_count;
+        self.scm.selection.set_len(self.scm.changes.len());
     }
 
     /// Open `path`, focusing an existing tab for the same file instead of opening a
@@ -1191,8 +1171,9 @@ impl App {
         if len == 0 {
             return;
         }
-        let next = (self.scm.selected as i64 + i64::from(delta)).clamp(0, len as i64 - 1) as usize;
-        self.scm.selected = next;
+        let next = (self.scm.selection.cursor() as i64 + i64::from(delta)).clamp(0, len as i64 - 1)
+            as usize;
+        self.scm.selection.move_to(next);
         let view = match &self.tabs[self.active].kind {
             TabKind::Diff { view, .. } => *view,
             _ => ViewMode::Unified,
@@ -1358,7 +1339,7 @@ impl App {
                 }
                 let display = self.scm_offset + (row_y - self.sidebar_content_rect.y) as usize;
                 if let Some(Some(idx)) = self.scm_row_map.get(display).copied() {
-                    self.scm.selected = idx;
+                    self.scm.selection.move_to(idx);
                     self.open_selected_diff();
                 }
             }
@@ -1993,9 +1974,8 @@ mod tests {
     fn scm_range_selection_collects_both_paths() {
         // `app()` seeds one staged (a.rs) and one working (b.rs) change.
         let mut app = app();
-        app.scm.selected = 0;
         app.dispatch(Command::ScmSelectDown);
-        assert_eq!(app.scm.selected_range(), (0, 1));
+        assert_eq!(app.scm.selection.selected_indices(), vec![0, 1]);
         assert_eq!(app.scm.selected_paths().len(), 2);
     }
 
@@ -2004,10 +1984,11 @@ mod tests {
         let mut app = app();
         app.sidebar_panel = SidebarPanel::SourceControl;
         app.dispatch(Command::ScmSelectDown);
-        assert!(app.scm.anchor.is_some());
+        assert!(app.scm.selection.anchor().is_some());
         // A non-extending move in the SCM panel clears the range.
         app.dispatch(Command::SidebarDown);
-        assert!(app.scm.anchor.is_none());
+        assert!(app.scm.selection.anchor().is_none());
+        assert_eq!(app.scm.selection.selected_indices(), vec![1]);
     }
 
     #[test]
@@ -2023,7 +2004,8 @@ mod tests {
         assert_eq!(app.scm.staged_count, 1);
         assert_eq!(app.scm.changes.len(), 3);
         assert_eq!(app.scm.changes[0].status, StatusKind::Added);
-        assert_eq!(app.scm.anchor, None);
+        assert_eq!(app.scm.selection.anchor(), None);
+        assert_eq!(app.scm.selection.len(), 3);
     }
 
     #[test]
@@ -2061,9 +2043,9 @@ mod tests {
         app.sidebar_panel = SidebarPanel::SourceControl;
         app.dispatch(Command::SidebarActivate); // opens a.rs (index 0)
         app.dispatch(Command::NextChangedFile);
-        assert_eq!(app.scm.selected, 1);
+        assert_eq!(app.scm.selection.cursor(), 1);
         app.dispatch(Command::PrevChangedFile);
-        assert_eq!(app.scm.selected, 0);
+        assert_eq!(app.scm.selection.cursor(), 0);
     }
 
     #[test]
@@ -2414,7 +2396,7 @@ mod tests {
         // Display rows: 0 header, 1 a.rs(0), 2 header, 3 b.rs(1).
         app.scm_row_map = vec![None, Some(0), None, Some(1)];
         app.handle_sidebar_click(2, 5); // content row 3 -> change index 1
-        assert_eq!(app.scm.selected, 1);
+        assert_eq!(app.scm.selection.cursor(), 1);
         assert!(app.active_is_diff());
     }
 
@@ -2598,5 +2580,30 @@ mod tests {
         pump(&mut app, &mut events).await;
         assert_eq!(app.scm.staged_count, 1);
         assert_eq!(app.scm.changes[0].status, StatusKind::Added);
+    }
+
+    #[tokio::test]
+    async fn scm_stages_a_multi_file_selection() {
+        let Some(repo) = init_test_repo() else {
+            return;
+        };
+        if std::fs::write(repo.path.join("second.rs"), b"fn second() {}\n").is_err() {
+            return;
+        }
+        let (mut app, mut events) = scm_app(repo.path.clone());
+        pump(&mut app, &mut events).await;
+        assert_eq!(app.scm.changes.len(), 2);
+
+        // Select both changed files, then stage the whole selection at once.
+        app.scm.selection.select_all();
+        app.handle_key(press('s'));
+        pump(&mut app, &mut events).await;
+        assert_eq!(app.scm.staged_count, 2);
+        assert!(
+            app.scm
+                .changes
+                .iter()
+                .all(|c| c.status == StatusKind::Added)
+        );
     }
 }
