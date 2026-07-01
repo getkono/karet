@@ -771,6 +771,11 @@ impl App {
             },
         );
         self.push_tab(tab);
+        // Previewing a change must not steal focus: `push_tab` focuses the editor
+        // (right for opening a file), but here the Source-Control pane stays active
+        // so stage/unstage/discard/commit and selection keys keep working while the
+        // diff is shown. Press Tab to move into the diff to scroll it.
+        self.focus = Focus::Sidebar;
     }
 
     // --- source control ---------------------------------------------------
@@ -2037,12 +2042,16 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_diff_replaces_welcome_and_focuses_editor() {
+    fn opening_a_diff_keeps_source_control_focused() {
         let mut app = app();
         app.sidebar_panel = SidebarPanel::SourceControl;
         app.dispatch(Command::SidebarActivate);
-        assert!(app.active_is_diff());
-        assert_eq!(app.focus, Focus::Editor);
+        assert!(app.active_is_diff(), "the diff tab is shown");
+        // Focus stays in the SCM pane so its action/selection keys keep working
+        // (the bug was that previewing a diff moved focus to the editor, silently
+        // disabling stage/unstage/discard/commit).
+        assert_eq!(app.focus, Focus::Sidebar);
+        assert_eq!(app.focus_target(), FocusTarget::SourceControl);
         assert_eq!(app.tabs.len(), 1, "welcome tab is replaced, not appended");
     }
 
@@ -2470,5 +2479,124 @@ mod tests {
         assert!(app.tabs.iter().any(|t| t.path() == Some(file.as_path())));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- full-stack Source-Control action tests ------------------------------
+    //
+    // These drive the real `Session` + `local()` backend over a temp git repo, so
+    // they exercise the whole key → focus/layer → dispatch → backend actor → git2 →
+    // VcsStatus → apply loop that unit tests skip.
+
+    /// A temp directory removed on drop, so a panicking test can't leak it.
+    struct TempRepo {
+        path: PathBuf,
+    }
+
+    impl Drop for TempRepo {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    /// Run `git` in `dir`, returning whether it succeeded.
+    fn git(dir: &Path, args: &[&str]) -> bool {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    /// A git repo in a fresh temp dir holding a single untracked file, or `None`
+    /// when `git` is unavailable (so the test skips rather than fails).
+    fn init_test_repo() -> Option<TempRepo> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "karet-scm-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&path).ok()?;
+        let repo = TempRepo { path };
+        if !git(&repo.path, &["init", "-q"])
+            || !git(&repo.path, &["config", "user.email", "test@example.com"])
+            || !git(&repo.path, &["config", "user.name", "karet test"])
+        {
+            return None;
+        }
+        std::fs::write(repo.path.join("new.rs"), "fn main() {}\n").ok()?;
+        Some(repo)
+    }
+
+    /// A bare key press (no modifiers).
+    fn press(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    /// Drain backend events into `app`, waiting briefly for the spawned actor.
+    async fn pump(app: &mut App, events: &mut EventRx) {
+        while let Ok(Some((id, ev))) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), events.recv()).await
+        {
+            app.on_backend_event(id, ev);
+        }
+    }
+
+    /// Build an app wired to a real session + local backend, focused on the SCM pane.
+    fn scm_app(root: PathBuf) -> (App, EventRx) {
+        let (session, events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root.clone()],
+            ..SessionConfig::default()
+        });
+        let backend: Arc<dyn Backend> = Arc::new(local(session));
+        let mut app = App::new(root, Vec::new(), Vec::new(), false);
+        app.backend = Some(backend);
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        app.focus = Focus::Sidebar;
+        (app, events)
+    }
+
+    #[tokio::test]
+    async fn scm_stage_key_stages_through_the_backend() {
+        let Some(repo) = init_test_repo() else {
+            return;
+        };
+        let (mut app, mut events) = scm_app(repo.path.clone());
+
+        // The seeded status lists the untracked file.
+        pump(&mut app, &mut events).await;
+        assert_eq!(app.scm.changes.len(), 1);
+        assert_eq!(app.scm.changes[0].status, StatusKind::Untracked);
+
+        // Pressing 's' in the focused SCM pane stages it, end to end.
+        app.handle_key(press('s'));
+        pump(&mut app, &mut events).await;
+        assert_eq!(app.scm.staged_count, 1);
+        assert_eq!(app.scm.changes[0].status, StatusKind::Added);
+    }
+
+    #[tokio::test]
+    async fn scm_stage_still_works_after_previewing_a_diff() {
+        // Regression for "actions do nothing after opening a diff": the preview
+        // must not steal focus away from the Source-Control pane.
+        let Some(repo) = init_test_repo() else {
+            return;
+        };
+        let (mut app, mut events) = scm_app(repo.path.clone());
+        pump(&mut app, &mut events).await;
+        assert_eq!(app.scm.changes.len(), 1);
+
+        // Preview the change's diff — focus must stay on the SCM layer.
+        app.dispatch(Command::SidebarActivate);
+        assert!(app.active_is_diff());
+        assert_eq!(app.focus_target(), FocusTarget::SourceControl);
+
+        // Staging still works after the preview.
+        app.handle_key(press('s'));
+        pump(&mut app, &mut events).await;
+        assert_eq!(app.scm.staged_count, 1);
+        assert_eq!(app.scm.changes[0].status, StatusKind::Added);
     }
 }
