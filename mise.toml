@@ -28,3 +28,7 @@ run = "cargo test --workspace --all-features"
 [tasks.coverage]
 description = "Report line coverage with cargo-llvm-cov"
 run = "cargo llvm-cov --workspace --all-features"
+
+[tasks.install]
+description = "Install `karet` binary to user path."
+run = "cargo install --path crates/karet"
