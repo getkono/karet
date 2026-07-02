@@ -27,10 +27,25 @@ pub enum SidebarPanel {
     SourceControl,
 }
 
+/// The content kind of the active editor tab — the third input to
+/// [`FocusTarget::from`], which picks the editor sub-target (and thus its
+/// keybinding layer). Kept keymap-side and coarse: the shell maps its richer tab
+/// model down to this, so the keymap need not know about documents or file kinds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EditorTab {
+    /// A code/text tab, or any tab with no dedicated layer (image, hex, blame, …).
+    #[default]
+    Plain,
+    /// A diff tab.
+    Diff,
+    /// A too-large-file placeholder, which offers an "open anyway" override.
+    Oversize,
+}
+
 /// The single pane that currently holds keyboard focus.
 ///
 /// This is the one value that decides which keybinding layers are live. It is a
-/// *derived* view of the stored `(Focus, SidebarPanel, is_diff)` state (see
+/// *derived* view of the stored `(Focus, SidebarPanel, EditorTab)` state (see
 /// [`FocusTarget::from`]) rather than a second source of truth — the sidebar
 /// always has an active panel for rendering independent of who holds focus, so
 /// the two stored fields stay orthogonal and this collapses them for dispatch.
@@ -40,6 +55,8 @@ pub enum FocusTarget {
     Editor,
     /// A diff editor tab.
     DiffEditor,
+    /// A too-large-file placeholder, which offers an "open anyway" override.
+    Oversize,
     /// The file explorer panel.
     Explorer,
     /// The workspace search panel.
@@ -50,12 +67,15 @@ pub enum FocusTarget {
 
 impl FocusTarget {
     /// Derive the focused pane from the stored focus, the active sidebar panel,
-    /// and whether the active editor tab is a diff.
+    /// and the content kind of the active editor tab.
     #[must_use]
-    pub fn from(focus: Focus, panel: SidebarPanel, is_diff: bool) -> Self {
+    pub fn from(focus: Focus, panel: SidebarPanel, tab: EditorTab) -> Self {
         match focus {
-            Focus::Editor if is_diff => FocusTarget::DiffEditor,
-            Focus::Editor => FocusTarget::Editor,
+            Focus::Editor => match tab {
+                EditorTab::Diff => FocusTarget::DiffEditor,
+                EditorTab::Oversize => FocusTarget::Oversize,
+                EditorTab::Plain => FocusTarget::Editor,
+            },
             Focus::Sidebar => match panel {
                 SidebarPanel::Explorer => FocusTarget::Explorer,
                 SidebarPanel::Search => FocusTarget::Search,
@@ -79,6 +99,10 @@ pub enum Layer {
     Editor,
     /// Active when a diff editor tab has focus.
     DiffEditor,
+    /// Active when a too-large-file placeholder has focus (the "open anyway"
+    /// override). A placeholder is not editable, so this does not stack the
+    /// [`Editor`](Layer::Editor) layer.
+    Oversize,
     /// Active while the quick-open / command-palette overlay is open.
     Overlay,
     /// Active while the in-file find bar is open.
@@ -158,6 +182,7 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
         None => match ctx.target {
             FocusTarget::Editor => &[L::Editor, L::Global],
             FocusTarget::DiffEditor => &[L::DiffEditor, L::Editor, L::Global],
+            FocusTarget::Oversize => &[L::Oversize, L::Global],
             FocusTarget::Explorer | FocusTarget::Search => &[L::Sidebar, L::Global],
             FocusTarget::SourceControl => &[L::SourceControl, L::Sidebar, L::Global],
         },
@@ -191,10 +216,26 @@ mod tests {
     }
 
     #[test]
+    fn oversize_placeholder_is_its_own_layer_over_global() {
+        // A too-large placeholder is not editable, so its layer stacks straight onto
+        // Global — the Editor layer's editing/motion keys must not leak in.
+        assert_eq!(
+            active_layers(Context::focus(FocusTarget::Oversize)),
+            &[Layer::Oversize, Layer::Global]
+        );
+        // A too-large placeholder tab in the editor resolves to the Oversize target.
+        assert_eq!(
+            FocusTarget::from(Focus::Editor, SidebarPanel::Explorer, EditorTab::Oversize),
+            FocusTarget::Oversize
+        );
+    }
+
+    #[test]
     fn global_is_always_last_for_focus_contexts() {
         for target in [
             FocusTarget::Editor,
             FocusTarget::DiffEditor,
+            FocusTarget::Oversize,
             FocusTarget::Explorer,
             FocusTarget::Search,
             FocusTarget::SourceControl,

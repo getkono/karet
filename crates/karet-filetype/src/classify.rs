@@ -18,6 +18,8 @@ pub enum FileKind {
     Text,
     /// Markdown source.
     Markdown,
+    /// A CBOR document, shown decoded as editable diagnostic notation.
+    Cbor,
     /// A raster image (png/jpg/gif/webp/bmp/…).
     Image,
     /// A PDF document.
@@ -43,6 +45,23 @@ pub fn classify(path: &Path, head: &[u8], len: u64) -> FileKind {
     if len > SIZE_GUARD {
         return FileKind::TooLarge { len };
     }
+    classify_content(path, head)
+}
+
+/// Classify a file by its `path` and `head` sample **without** the [`SIZE_GUARD`]
+/// check, so an over-large file still resolves to the renderer its content
+/// warrants — this never returns [`FileKind::TooLarge`].
+///
+/// [`classify`] guards by size for the default open path; a caller that has made
+/// the deliberate choice to load a large file regardless (e.g. an "open anyway"
+/// override in the UI) routes it through here instead.
+#[must_use]
+pub fn classify_ignoring_size(path: &Path, head: &[u8]) -> FileKind {
+    classify_content(path, head)
+}
+
+/// The size-independent core of [`classify`]: extension and magic-byte routing.
+fn classify_content(path: &Path, head: &[u8]) -> FileKind {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -54,6 +73,7 @@ pub fn classify(path: &Path, head: &[u8], len: u64) -> FileKind {
             },
             "pdf" => return FileKind::Pdf,
             "md" | "markdown" | "mdown" | "mkd" => return FileKind::Markdown,
+            "cbor" => return FileKind::Cbor,
             _ => {},
         }
     }
@@ -62,6 +82,9 @@ pub fn classify(path: &Path, head: &[u8], len: u64) -> FileKind {
     }
     if is_image(head) {
         return FileKind::Image;
+    }
+    if is_cbor(head) {
+        return FileKind::Cbor;
     }
     if looks_binary(head) {
         return FileKind::Binary;
@@ -72,6 +95,13 @@ pub fn classify(path: &Path, head: &[u8], len: u64) -> FileKind {
 /// Whether `head` begins with a PDF signature.
 fn is_pdf(head: &[u8]) -> bool {
     head.starts_with(b"%PDF-")
+}
+
+/// Whether `head` begins with the CBOR self-describe tag (`0xD9D9F7`, RFC 8949
+/// §3.4.6). Plain CBOR has no universal magic, so this only recovers files that
+/// carry the optional prefix; the `.cbor` extension is the primary signal.
+fn is_cbor(head: &[u8]) -> bool {
+    head.starts_with(&[0xD9, 0xD9, 0xF7])
 }
 
 /// Whether `head` begins with a known raster-image signature.
@@ -122,6 +152,17 @@ mod tests {
     }
 
     #[test]
+    fn classifies_cbor_by_extension_and_self_describe_tag() {
+        // The extension is the primary signal (content is arbitrary bytes).
+        assert_eq!(classify(Path::new("a.cbor"), &[0x01], 1), FileKind::Cbor);
+        // A self-describing CBOR blob mislabeled `.bin` is still recognized.
+        assert_eq!(
+            classify(Path::new("x.bin"), &[0xD9, 0xD9, 0xF7, 0x01], 4),
+            FileKind::Cbor
+        );
+    }
+
+    #[test]
     fn nul_byte_is_binary_utf8_is_text() {
         assert_eq!(classify(Path::new("x"), b"a\x00b", 3), FileKind::Binary);
         assert_eq!(
@@ -147,6 +188,24 @@ mod tests {
         assert_eq!(
             classify(Path::new("big.rs"), b"fn", len),
             FileKind::TooLarge { len }
+        );
+    }
+
+    #[test]
+    fn ignoring_size_routes_oversize_to_its_real_renderer() {
+        // The same over-large inputs that `classify` guards as `TooLarge` resolve to
+        // the content's real kind when the size guard is bypassed — never `TooLarge`.
+        assert_eq!(
+            classify_ignoring_size(Path::new("big.cbor"), &[0x01]),
+            FileKind::Cbor
+        );
+        assert_eq!(
+            classify_ignoring_size(Path::new("big.rs"), b"fn main(){}"),
+            FileKind::Text
+        );
+        assert_eq!(
+            classify_ignoring_size(Path::new("big.bin"), b"a\x00b"),
+            FileKind::Binary
         );
     }
 }

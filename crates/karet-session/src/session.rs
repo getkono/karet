@@ -16,6 +16,8 @@ use karet_core::Change;
 use karet_core::CursorState;
 use karet_core::Decoration;
 use karet_core::Selection;
+use karet_filetype::FileKind;
+use karet_filetype::classify_ignoring_size;
 use karet_syntax::Highlighter;
 use karet_syntax::Highlights;
 use karet_text::AppliedEdit;
@@ -65,12 +67,72 @@ pub struct SessionConfig {
     pub spellcheck: bool,
 }
 
+/// How a document's edit buffer maps to its on-disk bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DocFormat {
+    /// Plain UTF-8 text: the on-disk bytes are the buffer's text.
+    Text,
+    /// CBOR: the buffer holds diagnostic-notation text; disk holds CBOR bytes.
+    /// Decoded on open and re-encoded on save.
+    Cbor,
+}
+
+/// How many leading bytes to sample when classifying a document's on-disk format.
+const CLASSIFY_HEAD: usize = 8192;
+
+/// Load `path` into an editable buffer, decoding a known binary format (CBOR) to
+/// text, and report the [`DocFormat`] to re-encode with on save.
+///
+/// The buffer records the on-disk fingerprint of the *original* bytes so the
+/// file-watcher can still recognize the editor's own writes.
+fn load_document(path: &Path) -> Result<(TextBuffer, DocFormat), String> {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let head = &bytes[..bytes.len().min(CLASSIFY_HEAD)];
+    // Format detection ignores the size guard: once the session is asked to open a
+    // document it must decode it correctly regardless of size (the guard is an
+    // app-level *routing* choice), so a large CBOR still decodes rather than being
+    // mistaken for plain text.
+    if classify_ignoring_size(path, head) == FileKind::Cbor {
+        let text = karet_cbor::decode_to_text(&bytes).map_err(|e| e.to_string())?;
+        let mut buffer = TextBuffer::from_text(&text);
+        buffer.record_disk_state(path, &bytes);
+        Ok((buffer, DocFormat::Cbor))
+    } else {
+        let mut buffer = TextBuffer::from_bytes(&bytes).map_err(|e| e.to_string())?;
+        buffer.record_disk_state(path, &bytes);
+        Ok((buffer, DocFormat::Text))
+    }
+}
+
+/// Save `doc` to disk, re-encoding a decoded binary format (CBOR) from its edit
+/// text. A CBOR encode error (e.g. malformed diagnostic notation after editing)
+/// leaves the file untouched and surfaces as a save failure.
+fn save_document(doc: &mut Document) -> Result<(), String> {
+    match doc.format {
+        DocFormat::Text => doc
+            .buffer
+            .save(&doc.path)
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        DocFormat::Cbor => {
+            let text = doc.buffer.text();
+            let bytes = karet_cbor::encode_from_text(&text).map_err(|e| e.to_string())?;
+            doc.buffer
+                .save_bytes(&doc.path, &bytes)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        },
+    }
+}
+
 /// One open document and its derived state.
 struct Document {
     path: PathBuf,
     language: Option<&'static str>,
     lang_id: Option<LanguageId>,
     buffer: TextBuffer,
+    /// How the buffer is (de)serialized on disk.
+    format: DocFormat,
     tree: Option<SyntaxTree>,
     highlights: Arc<Highlights>,
     decorations: Vec<Decoration>,
@@ -322,8 +384,8 @@ impl Session {
             }
             return;
         }
-        let buffer = match TextBuffer::load(&path) {
-            Ok(b) => b,
+        let (buffer, format) = match load_document(&path) {
+            Ok(loaded) => loaded,
             Err(e) => {
                 self.emit(
                     Some(id),
@@ -346,6 +408,7 @@ impl Session {
             language,
             lang_id,
             buffer,
+            format,
             tree: None,
             highlights: Arc::new(Highlights::default()),
             decorations: Vec::new(),
@@ -425,10 +488,7 @@ impl Session {
     }
 
     fn save(&mut self, id: RequestId, doc_id: DocumentId) {
-        let result = match self.store.docs.get_mut(&doc_id) {
-            Some(doc) => Some(doc.buffer.save(&doc.path)),
-            None => None,
-        };
+        let result = self.store.docs.get_mut(&doc_id).map(save_document);
         match result {
             Some(Ok(_)) => self.emit(Some(id), Event::Saved { doc: doc_id }),
             Some(Err(e)) => self.emit(
@@ -494,7 +554,7 @@ impl Session {
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
                 return;
             };
-            let Ok(fresh) = TextBuffer::load(&doc.path) else {
+            let Ok((fresh, _)) = load_document(&doc.path) else {
                 return; // file vanished or became unreadable; leave the buffer as-is
             };
             doc.buffer.adopt_content(fresh);
@@ -811,6 +871,133 @@ mod tests {
             session
                 .document(doc)
                 .is_some_and(|v| v.buffer().line_count() == 2)
+        );
+    }
+
+    #[test]
+    fn cbor_opens_decoded_and_save_reencodes() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("data.cbor");
+        let original = karet_cbor::CborValue::Array(vec![
+            karet_cbor::CborValue::Integer(1),
+            karet_cbor::CborValue::Integer(2),
+        ]);
+        let Ok(bytes) = karet_cbor::encode(&original) else {
+            return;
+        };
+        if std::fs::write(&path, &bytes).is_err() {
+            return;
+        }
+
+        let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let Some(doc) = opened_doc(&mut events) else {
+            return;
+        };
+        // The buffer holds decoded diagnostic notation, not the raw CBOR bytes.
+        let text = session.document(doc).map(|v| v.buffer().text());
+        assert_eq!(text.as_deref(), Some("[\n  1,\n  2\n]"));
+        while snaps.try_recv().is_some() {}
+
+        // Edit the "2" (line 2, col 2) to "3".
+        let change = Change::new(
+            0,
+            vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(2, 2),
+                    end: LineCol::new(2, 3),
+                },
+                new_text: "3".to_string(),
+            }],
+        );
+        session.handle(RequestId(2), Command::ApplyChange { doc, change });
+        while events.try_recv().is_some() {}
+
+        // Save re-encodes to CBOR; the file on disk decodes to the edited value.
+        session.handle(RequestId(3), Command::Save { doc });
+        let mut saved = false;
+        while let Some((_, ev)) = events.try_recv() {
+            if let Event::Saved { .. } = ev {
+                saved = true;
+            }
+        }
+        assert!(saved, "a cbor save should succeed");
+        let disk = std::fs::read(&path).unwrap_or_default();
+        let expected = karet_cbor::CborValue::Array(vec![
+            karet_cbor::CborValue::Integer(1),
+            karet_cbor::CborValue::Integer(3),
+        ]);
+        assert_eq!(karet_cbor::decode(&disk).ok(), Some(expected));
+    }
+
+    #[test]
+    fn cbor_save_of_malformed_edit_leaves_file_untouched() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("bad.cbor");
+        let original = karet_cbor::CborValue::Array(vec![
+            karet_cbor::CborValue::Integer(1),
+            karet_cbor::CborValue::Integer(2),
+        ]);
+        let Ok(bytes) = karet_cbor::encode(&original) else {
+            return;
+        };
+        if std::fs::write(&path, &bytes).is_err() {
+            return;
+        }
+
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let Some(doc) = opened_doc(&mut events) else {
+            return;
+        };
+
+        // Delete the closing ']' (line 3, col 0), making the text un-parseable.
+        let change = Change::new(
+            0,
+            vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(3, 0),
+                    end: LineCol::new(3, 1),
+                },
+                new_text: String::new(),
+            }],
+        );
+        session.handle(RequestId(2), Command::ApplyChange { doc, change });
+        while events.try_recv().is_some() {}
+
+        // Save fails to encode; no Saved event, and the file is unchanged.
+        session.handle(RequestId(3), Command::Save { doc });
+        let mut saved = false;
+        let mut failed = false;
+        while let Some((_, ev)) = events.try_recv() {
+            match ev {
+                Event::Saved { .. } => saved = true,
+                Event::Progress { .. } => failed = true,
+                _ => {},
+            }
+        }
+        assert!(!saved, "a malformed cbor buffer must not save");
+        assert!(failed, "the failure should surface as progress");
+        assert_eq!(
+            std::fs::read(&path).unwrap_or_default(),
+            bytes,
+            "the file is untouched"
         );
     }
 

@@ -22,6 +22,7 @@ mod registry;
 pub use classify::FileKind;
 pub use classify::SIZE_GUARD;
 pub use classify::classify;
+pub use classify::classify_ignoring_size;
 pub use icon::Category;
 pub use icon::IconStyle;
 pub use icon::chevron;

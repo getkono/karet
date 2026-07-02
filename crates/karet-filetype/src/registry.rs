@@ -177,6 +177,7 @@ static REGISTRY: &[FileType] = &[
     ft("SQL", Data, Some('\u{f1c0}'), &["sql"], &[]),
     ft("GraphQL", Data, None, &["graphql", "gql"], &[]),
     ft("Protobuf", Data, None, &["proto"], &[]),
+    ft("CBOR", Data, None, &["cbor"], &[]),
     ft("Lockfile", Config, Some('\u{f023}'), &["lock"], &[]),
     // --- shell ---
     ft(

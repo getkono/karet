@@ -80,6 +80,7 @@ bytes so a mislabeled file still routes sensibly):
 |---|---|---|
 | Image | inline image widget (or a placeholder if it can't decode) | `png`, `jpg`, `jpeg`, `gif`, `webp`, `bmp`, `ico`, `tiff`, `tif` + magic bytes |
 | PDF | placeholder (no inline preview yet) | `pdf` + `%PDF-` magic |
+| CBOR | decoded to editable [diagnostic notation](https://www.rfc-editor.org/rfc/rfc8949#section-8) text and re-encoded on save (hex view if it can't decode) — via [`karet-cbor`](../crates/karet-cbor) | `cbor` + `0xD9D9F7` self-describe tag |
 | Binary | hex view | NUL byte / invalid UTF-8 in the sampled head |
 | Too large | placeholder | larger than 10 MiB |
 

@@ -16,6 +16,8 @@ publish = false                       # karet-internal backend — pulls the who
 [dependencies]
 karet-core = { workspace = true, features = ["serde"] }   # serde-ready seam models
 karet-text.workspace = true
+karet-filetype.workspace = true       # classify a document to pick its on-disk codec
+karet-cbor.workspace = true           # decode/encode CBOR ↔ editable diagnostic text
 karet-treesitter.workspace = true
 karet-syntax.workspace = true
 karet-diff.workspace = true

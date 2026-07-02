@@ -25,14 +25,39 @@ use crate::tab::TabKind;
 /// How many leading bytes to sample for file-type classification.
 const HEAD_BYTES: usize = 8192;
 
-/// Open `path` as a tab, classifying its content and choosing a renderer. Failures
-/// degrade gracefully to a placeholder rather than erroring.
+/// Open `path` as a tab, classifying its content and choosing a renderer. Files
+/// larger than the [size guard](viewer::SIZE_GUARD) route to a too-large
+/// placeholder; [`open_file_ignoring_size`] bypasses that guard. Failures degrade
+/// gracefully to a placeholder rather than erroring.
 #[must_use]
 pub fn open_file(path: &Path, syntax: bool) -> Tab {
-    let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    let bytes = std::fs::read(path).unwrap_or_default();
+    let (bytes, len) = read_file(path);
     let head = &bytes[..bytes.len().min(HEAD_BYTES)];
     let kind = viewer::classify(path, head, len);
+    open_classified(path, syntax, kind, bytes, len)
+}
+
+/// Open `path`, bypassing the [size guard](viewer::SIZE_GUARD) so an over-large
+/// file opens with the renderer its content warrants (never a too-large
+/// placeholder). Backs the TUI "open anyway" override on a too-large placeholder.
+#[must_use]
+pub fn open_file_ignoring_size(path: &Path, syntax: bool) -> Tab {
+    let (bytes, len) = read_file(path);
+    let head = &bytes[..bytes.len().min(HEAD_BYTES)];
+    let kind = viewer::classify_ignoring_size(path, head);
+    open_classified(path, syntax, kind, bytes, len)
+}
+
+/// Read `path`'s bytes (empty on error) and its length, the shared inputs to both
+/// open paths.
+fn read_file(path: &Path) -> (Vec<u8>, u64) {
+    let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let bytes = std::fs::read(path).unwrap_or_default();
+    (bytes, len)
+}
+
+/// Route an already-classified file to its renderer tab.
+fn open_classified(path: &Path, syntax: bool, kind: FileKind, bytes: Vec<u8>, len: u64) -> Tab {
     match kind {
         FileKind::Text | FileKind::Markdown => open_text(path, &bytes, syntax),
         FileKind::Image => match image::decode(&bytes) {
@@ -45,6 +70,7 @@ pub fn open_file(path: &Path, syntax: bool) -> Tab {
             ),
             Err(_) => placeholder(path, kind, &bytes, len),
         },
+        FileKind::Cbor => open_cbor(path, &bytes),
         FileKind::Binary => Tab::new(
             title(path),
             TabKind::Hex {
@@ -82,6 +108,38 @@ fn open_text(path: &Path, bytes: &[u8], syntax: bool) -> Tab {
             decos: Vec::new(),
         },
     )
+}
+
+/// Open a CBOR file as an editable code tab holding its decoded diagnostic
+/// notation, or fall back to a hex view if it cannot be decoded. The session
+/// re-decodes authoritatively and re-encodes on save (see `karet-session`).
+fn open_cbor(path: &Path, bytes: &[u8]) -> Tab {
+    match karet_cbor::decode_to_text(bytes) {
+        Ok(text) => {
+            let buffer = TextBuffer::from_text(&text);
+            Tab::new(
+                title(path),
+                TabKind::Code {
+                    path: path.to_path_buf(),
+                    language: "CBOR",
+                    doc: None,
+                    next_version: 0,
+                    buffer,
+                    text,
+                    highlights: Highlights::default(),
+                    decos: Vec::new(),
+                },
+            )
+        },
+        Err(_) => Tab::new(
+            title(path),
+            TabKind::Hex {
+                path: path.to_path_buf(),
+                bytes: bytes.to_vec(),
+                scroll: 0,
+            },
+        ),
+    }
 }
 
 /// Highlight `text` for `path`'s language, or return empty highlights.
@@ -186,6 +244,56 @@ mod tests {
         let _ = std::fs::write(&file, "fn main() {}\n");
         let tab = open_file(&file, true);
         assert!(matches!(tab.kind, TabKind::Code { .. }));
+    }
+
+    #[test]
+    fn opens_cbor_as_decoded_code_tab() {
+        let dir = temp_dir();
+        let file = dir.path.join("data.cbor");
+        let value = karet_cbor::CborValue::Array(vec![
+            karet_cbor::CborValue::Integer(1),
+            karet_cbor::CborValue::Integer(2),
+        ]);
+        let bytes = karet_cbor::encode(&value).unwrap_or_default();
+        let _ = std::fs::write(&file, &bytes);
+        let tab = open_file(&file, true);
+        let TabKind::Code { language, text, .. } = tab.kind else {
+            panic!("expected a decoded code tab for a .cbor file");
+        };
+        assert_eq!(language, "CBOR");
+        assert_eq!(text, "[\n  1,\n  2\n]");
+    }
+
+    #[test]
+    fn open_file_ignoring_size_bypasses_the_too_large_guard() {
+        let dir = temp_dir();
+        let file = dir.path.join("big.bin");
+        // Just over the size guard: the default open path shows a too-large
+        // placeholder…
+        let _ = std::fs::write(&file, vec![0u8; viewer::SIZE_GUARD as usize + 1]);
+        assert!(matches!(
+            open_file(&file, false).kind,
+            TabKind::Placeholder {
+                kind: FileKind::TooLarge { .. },
+                ..
+            }
+        ));
+        // …while the override opens it with the renderer its content warrants (a
+        // NUL-filled blob is binary → the hex view).
+        assert!(matches!(
+            open_file_ignoring_size(&file, false).kind,
+            TabKind::Hex { .. }
+        ));
+    }
+
+    #[test]
+    fn opens_corrupt_cbor_as_hex_tab() {
+        let dir = temp_dir();
+        let file = dir.path.join("broken.cbor");
+        // Truncated / invalid CBOR (a map header promising entries, with none).
+        let _ = std::fs::write(&file, [0xa1u8]);
+        let tab = open_file(&file, true);
+        assert!(matches!(tab.kind, TabKind::Hex { .. }));
     }
 
     #[test]

@@ -40,18 +40,32 @@ impl TextBuffer {
     /// Returns [`TextError::Io`] if the file cannot be written.
     pub fn save(&mut self, path: &Path) -> Result<SavedState, TextError> {
         let bytes = self.serialize();
+        self.save_bytes(path, &bytes)
+    }
+
+    /// Save already-serialized `bytes` to `path` atomically, recording the on-disk
+    /// fingerprint and clearing the dirty flag on success.
+    ///
+    /// Unlike [`save`](Self::save), this does **not** serialize the rope — the
+    /// caller has produced the on-disk bytes itself. Use it for documents whose
+    /// on-disk form differs from the edit buffer (e.g. a binary format decoded to
+    /// editable text and re-encoded on save).
+    ///
+    /// # Errors
+    /// Returns [`TextError::Io`] if the file cannot be written.
+    pub fn save_bytes(&mut self, path: &Path, bytes: &[u8]) -> Result<SavedState, TextError> {
         // Resolve symlinks so we replace the real file's directory entry, not the
         // link. `canonicalize` fails for a not-yet-existing file; then use the path.
         let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let dir = target
             .parent()
             .ok_or_else(|| TextError::Io("save path has no parent directory".to_string()))?;
-        write_atomic(dir, &target, &bytes)?;
+        write_atomic(dir, &target, bytes)?;
         let meta = std::fs::metadata(&target).map_err(|e| TextError::Io(e.to_string()))?;
         let state = SavedState {
             mtime: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
             size: meta.len(),
-            hash: hash_bytes(&bytes),
+            hash: hash_bytes(bytes),
         };
         self.saved_state = Some(state.clone());
         self.history.mark_saved();
@@ -169,6 +183,20 @@ mod tests {
         if let Some((raw, _)) = round_trip(b"abc") {
             assert_eq!(raw, b"abc");
         }
+    }
+
+    #[test]
+    fn save_bytes_writes_raw_and_records_state() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("blob.cbor");
+        let mut buf = TextBuffer::from_text("null");
+        // 0xf6 is CBOR `null`; the on-disk form differs from the edit text.
+        assert!(buf.save_bytes(&path, &[0xf6]).is_ok());
+        assert_eq!(std::fs::read(&path).unwrap_or_default(), vec![0xf6]);
+        assert!(buf.saved_state().is_some());
+        assert!(!buf.is_dirty());
     }
 
     #[test]

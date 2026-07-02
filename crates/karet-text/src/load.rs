@@ -104,14 +104,26 @@ impl TextBuffer {
     pub fn load(path: &Path) -> Result<Self, LoadError> {
         let bytes = std::fs::read(path).map_err(|e| LoadError::Io(e.to_string()))?;
         let mut buf = Self::from_bytes(&bytes)?;
+        buf.record_disk_state(path, &bytes);
+        Ok(buf)
+    }
+
+    /// Record the on-disk fingerprint of `disk_bytes` at `path` (size, mtime, and a
+    /// content hash), so a file-watcher can later distinguish the editor's own
+    /// writes from external edits.
+    ///
+    /// [`load`](Self::load) does this automatically. Call it explicitly after
+    /// building a buffer from text whose on-disk form you already have — e.g. a
+    /// binary format decoded into an editable buffer, where the disk bytes are the
+    /// undecoded original.
+    pub fn record_disk_state(&mut self, path: &Path, disk_bytes: &[u8]) {
         if let Ok(meta) = std::fs::metadata(path) {
-            buf.saved_state = Some(SavedState {
+            self.saved_state = Some(SavedState {
                 mtime: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
                 size: meta.len(),
-                hash: hash_bytes(&bytes),
+                hash: hash_bytes(disk_bytes),
             });
         }
-        Ok(buf)
     }
 }
 
