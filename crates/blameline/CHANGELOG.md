@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1](https://github.com/getkono/karet/compare/blameline-v1.0.0...blameline-v1.0.1) - 2026-07-02
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [1.0.0](https://github.com/getkono/karet/releases/tag/blameline-v1.0.0) - 2026-07-02
 
 ### Added
