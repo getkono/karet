@@ -150,18 +150,44 @@ pub(crate) struct StoredPane {
     pub(crate) active: usize,
 }
 
-/// The find-in-file bar state: the query and the match cursor.
+/// The find-in-file bar state: the query, the match cursor, and the replace field
+/// (mirroring the workspace Search panel's model for a consistent UI).
 #[derive(Default)]
 pub(crate) struct FindState {
     /// The search query.
     pub(crate) query: String,
+    /// The replacement text.
+    pub(crate) replace: String,
     /// The number of matches.
     pub(crate) count: usize,
     /// The current match (0-based).
     pub(crate) current: usize,
+    /// Which field is being edited (find / replace).
+    pub(crate) field: SearchField,
+    /// Whether the replace field is shown (collapsible; hidden by default).
+    pub(crate) replace_visible: bool,
+    /// Interpret the query as a regular expression.
+    pub(crate) regex: bool,
+    /// Match case-sensitively.
+    pub(crate) case_sensitive: bool,
+    /// Match whole words only.
+    pub(crate) whole_word: bool,
 }
 
-/// Which field of the Search panel is being edited.
+impl FindState {
+    /// The [`SearchQuery`] for the current query text and option toggles.
+    fn query_spec(&self) -> SearchQuery {
+        SearchQuery {
+            pattern: self.query.clone(),
+            regex: self.regex,
+            case_sensitive: self.case_sensitive,
+            whole_word: self.whole_word,
+            ..Default::default()
+        }
+    }
+}
+
+/// Which field of a find/replace surface is being edited.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum SearchField {
     /// The find query.
@@ -169,6 +195,17 @@ pub(crate) enum SearchField {
     Find,
     /// The replacement text.
     Replace,
+}
+
+/// A toggleable match option shared by the Search panel and the in-file find bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SearchOption {
+    /// Interpret the query as a regular expression.
+    Regex,
+    /// Match case-sensitively.
+    Case,
+    /// Match whole words only.
+    Word,
 }
 
 /// The workspace-search panel state.
@@ -744,31 +781,39 @@ impl App {
     /// the search. Command keys (Esc / Enter / Ctrl+G / arrows) resolve via the
     /// keymap's `Find` layer instead.
     fn find_input(&mut self, key: KeyEvent) {
+        let Some(find) = self.find.as_mut() else {
+            return;
+        };
+        let editing_query = find.field == SearchField::Find;
+        let target = if editing_query {
+            &mut find.query
+        } else {
+            &mut find.replace
+        };
         match key.code {
             KeyCode::Backspace => {
-                if let Some(find) = self.find.as_mut() {
-                    find.query.pop();
-                }
-                self.run_find();
+                target.pop();
             },
             KeyCode::Char(c)
                 if !key
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                if let Some(find) = self.find.as_mut() {
-                    find.query.push(c);
-                }
-                self.run_find();
+                target.push(c);
             },
-            _ => {},
+            _ => return,
+        }
+        // Only re-run the search when the query changed (the replacement doesn't
+        // affect what matches).
+        if editing_query {
+            self.run_find();
         }
     }
 
     /// Re-run the in-file search and rebuild the active tab's match decorations.
     fn run_find(&mut self) {
-        let query = match &self.find {
-            Some(find) => find.query.clone(),
+        let q = match &self.find {
+            Some(find) => find.query_spec(),
             None => return,
         };
         let mut count = 0;
@@ -784,14 +829,9 @@ impl App {
             ..
         }) = self.tabs.get_mut(self.active)
         {
-            if query.is_empty() {
+            if q.pattern.is_empty() {
                 decos.clear();
             } else {
-                let q = SearchQuery {
-                    pattern: query,
-                    case_sensitive: false,
-                    ..Default::default()
-                };
                 let matches = search_in_file(text, &q).unwrap_or_default();
                 *decos = matches
                     .iter()
@@ -840,6 +880,111 @@ impl App {
             let pos = deco.range.start;
             editor.goto(buffer, pos);
         }
+    }
+
+    /// Enter in the find bar: advance to the next match, or (in the replace field)
+    /// replace the current match.
+    fn find_submit(&mut self) {
+        if self.find.as_ref().map(|f| f.field) == Some(SearchField::Replace) {
+            self.find_replace_current();
+        } else {
+            self.find_step(1);
+        }
+    }
+
+    /// Replace the current in-file match with the replacement text. The edit is
+    /// applied through the document (undoable); find re-runs when the snapshot lands.
+    fn find_replace_current(&mut self) {
+        let Some(find) = self.find.as_ref() else {
+            return;
+        };
+        if find.count == 0 {
+            return;
+        }
+        let current = find.current;
+        let replacement = find.replace.clone();
+        let range = match self.tabs.get(self.active) {
+            Some(Tab {
+                kind: TabKind::Code { decos, .. },
+                ..
+            }) => decos.get(current).map(|d| d.range),
+            _ => None,
+        };
+        let Some(range) = range else {
+            return;
+        };
+        self.submit_edit(move |caret, _sel, _buf, base| {
+            Some(editing::insert(caret, Some(range), base, &replacement))
+        });
+    }
+
+    /// Replace every in-file match at once by rewriting the whole buffer through a
+    /// single undoable edit (offset-safe via `karet_search::apply_replacements`).
+    fn find_replace_all(&mut self) {
+        let Some(find) = self.find.as_ref() else {
+            return;
+        };
+        let query = find.query_spec();
+        let replacement = find.replace.clone();
+        if query.pattern.is_empty() {
+            return;
+        }
+        let (text, whole) = match self.tabs.get(self.active) {
+            Some(Tab {
+                kind: TabKind::Code { text, buffer, .. },
+                ..
+            }) => (
+                text.clone(),
+                Range {
+                    start: LineCol::new(0, 0),
+                    end: buffer.byte_to_line_col(BytePos(text.len())),
+                },
+            ),
+            _ => return,
+        };
+        let plan = karet_search::plan_replacements(&text, &query, &replacement).unwrap_or_default();
+        if plan.is_empty() {
+            return;
+        }
+        let updated = karet_search::apply_replacements(&text, &plan);
+        self.submit_edit(move |caret, _sel, _buf, base| {
+            Some(editing::insert(caret, Some(whole), base, &updated))
+        });
+    }
+
+    /// Show or hide the find bar's replace field (collapsing returns to the query).
+    fn find_toggle_replace(&mut self) {
+        if let Some(find) = self.find.as_mut() {
+            find.replace_visible = !find.replace_visible;
+            if !find.replace_visible {
+                find.field = SearchField::Find;
+            }
+        }
+    }
+
+    /// Switch the edited find-bar field between find and replace.
+    fn find_toggle_field(&mut self) {
+        if let Some(find) = self.find.as_mut() {
+            find.field = match find.field {
+                SearchField::Find => {
+                    find.replace_visible = true;
+                    SearchField::Replace
+                },
+                SearchField::Replace => SearchField::Find,
+            };
+        }
+    }
+
+    /// Toggle a find-bar match option (regex / case / whole-word) and refresh matches.
+    fn find_toggle_option(&mut self, option: SearchOption) {
+        if let Some(find) = self.find.as_mut() {
+            match option {
+                SearchOption::Regex => find.regex = !find.regex,
+                SearchOption::Case => find.case_sensitive = !find.case_sensitive,
+                SearchOption::Word => find.whole_word = !find.whole_word,
+            }
+        }
+        self.run_find();
     }
 
     /// Focus the Search panel and (re)start the query input.
@@ -1138,6 +1283,13 @@ impl App {
             Command::FindNext => self.find_step(1),
             Command::FindPrev => self.find_step(-1),
             Command::FindCancel => self.close_find(),
+            Command::FindSubmit => self.find_submit(),
+            Command::FindReplaceAll => self.find_replace_all(),
+            Command::FindToggleReplace => self.find_toggle_replace(),
+            Command::FindToggleField => self.find_toggle_field(),
+            Command::FindToggleRegex => self.find_toggle_option(SearchOption::Regex),
+            Command::FindToggleCase => self.find_toggle_option(SearchOption::Case),
+            Command::FindToggleWord => self.find_toggle_option(SearchOption::Word),
             Command::CommitSubmit => self.commit_submit(),
             Command::CommitCancel => self.commit_cancel(),
             Command::ExplorerEditSubmit => self.explorer_commit_edit(),
@@ -3168,6 +3320,11 @@ impl App {
             }
             tab.dirty = snap.dirty;
         }
+        // If the find bar is open, an edit (e.g. a replace) just changed the buffer,
+        // so recompute the match highlights against the fresh text.
+        if self.find.is_some() {
+            self.run_find();
+        }
     }
 }
 
@@ -4513,6 +4670,52 @@ mod tests {
         assert!(dir.join("hello.txt").exists());
         assert!(!app.explorer.is_editing());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn find_bar_toggle_field_reveals_and_switches_replace() {
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        app.find = Some(FindState::default());
+        assert!(app.find.as_ref().is_some_and(|f| !f.replace_visible));
+        app.find_toggle_field();
+        assert!(
+            app.find
+                .as_ref()
+                .is_some_and(|f| f.replace_visible && f.field == SearchField::Replace)
+        );
+        app.find_toggle_field();
+        assert!(
+            app.find
+                .as_ref()
+                .is_some_and(|f| f.field == SearchField::Find)
+        );
+    }
+
+    #[test]
+    fn find_input_edits_the_active_field() {
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        app.find = Some(FindState::default());
+        app.find_input(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        app.find_toggle_field(); // switch to the replace field
+        app.find_input(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        assert!(
+            app.find
+                .as_ref()
+                .is_some_and(|f| f.query == "a" && f.replace == "b")
+        );
+    }
+
+    #[test]
+    fn find_toggle_option_flips_the_flags() {
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        app.find = Some(FindState::default());
+        app.find_toggle_option(SearchOption::Regex);
+        app.find_toggle_option(SearchOption::Word);
+        assert!(
+            app.find
+                .as_ref()
+                .is_some_and(|f| f.regex && !f.case_sensitive && f.whole_word)
+        );
     }
 
     #[test]

@@ -85,7 +85,11 @@ tab: `\` toggles unified/side-by-side, `[` / `]` walk changed files.
 
 **Overlays / find:** type to filter, `↑`/`↓` (or `Ctrl+N`/`Ctrl+P`) move, `Enter`
 accept, `Esc` dismiss; find adds `Ctrl+G` / `Ctrl+Shift+G` for next/previous. The
-command palette shows each command's shortcut on the right.
+in-file find bar has the same find/replace model as the Search panel — `Alt+H`
+toggles the replace field, `Tab` switches find/replace, `Enter` finds the next
+match (or replaces the current one from the replace field), `Alt+Enter` replaces
+all, and `Alt+R`/`Alt+C`/`Alt+W` toggle regex/case/whole-word. The command palette
+shows each command's shortcut on the right.
 
 **Search panel:** the find and replace fields show by default (`Alt+H` collapses the
 replace field). `Tab` switches find/replace; `Enter` runs the search (or, in the

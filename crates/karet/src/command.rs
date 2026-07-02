@@ -196,6 +196,21 @@ pub enum Command {
     FindPrev,
     /// Close the find bar.
     FindCancel,
+    /// Confirm the find bar: next match, or replace the current match in the replace
+    /// field.
+    FindSubmit,
+    /// Replace every in-file match at once.
+    FindReplaceAll,
+    /// Show or hide the find bar's replace field.
+    FindToggleReplace,
+    /// Switch the edited find-bar field between find and replace.
+    FindToggleField,
+    /// Toggle the find bar's regex option.
+    FindToggleRegex,
+    /// Toggle the find bar's case-sensitivity option.
+    FindToggleCase,
+    /// Toggle the find bar's whole-word option.
+    FindToggleWord,
     /// Submit the commit message.
     CommitSubmit,
     /// Cancel the commit input.
@@ -330,6 +345,13 @@ impl Command {
             Self::FindNext => "Find: Next Match",
             Self::FindPrev => "Find: Previous Match",
             Self::FindCancel => "Find: Close",
+            Self::FindSubmit => "Find: Next / Replace Match",
+            Self::FindReplaceAll => "Find: Replace All",
+            Self::FindToggleReplace => "Find: Toggle Replace",
+            Self::FindToggleField => "Find: Switch Find / Replace",
+            Self::FindToggleRegex => "Find: Toggle Regular Expression",
+            Self::FindToggleCase => "Find: Toggle Case Sensitivity",
+            Self::FindToggleWord => "Find: Toggle Whole Word",
             Self::CommitSubmit => "Commit: Submit",
             Self::CommitCancel => "Commit: Cancel",
             Self::ExplorerEditSubmit => "Explorer: Confirm Name",
@@ -419,6 +441,13 @@ impl Command {
             Self::FindNext => "next",
             Self::FindPrev => "prev",
             Self::FindCancel => "close",
+            Self::FindSubmit => "next",
+            Self::FindReplaceAll => "replace all",
+            Self::FindToggleReplace => "replace",
+            Self::FindToggleField => "field",
+            Self::FindToggleRegex => "regex",
+            Self::FindToggleCase => "case",
+            Self::FindToggleWord => "word",
             Self::CommitSubmit => "submit",
             Self::CommitCancel => "cancel",
             Self::ExplorerEditSubmit => "confirm",

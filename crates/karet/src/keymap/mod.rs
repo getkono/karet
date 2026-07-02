@@ -257,13 +257,19 @@ static BINDINGS: &[Binding] = &[
     b(Overlay, true,  false, false, Char('p'), Command::OverlayUp),
     b(Overlay, false, false, false, Down,      Command::OverlayDown),
     b(Overlay, true,  false, false, Char('n'), Command::OverlayDown),
-    // In-file find bar.
+    // In-file find bar (find + replace, mirroring the workspace Search panel).
     b(Find, false, false, false, Esc,       Command::FindCancel),
-    b(Find, false, false, false, Enter,     Command::FindNext),
+    b(Find, false, false, false, Enter,     Command::FindSubmit),
     b(Find, false, false, false, Down,      Command::FindNext),
     b(Find, false, false, false, Up,        Command::FindPrev),
     b(Find, true,  false, false, Char('g'), Command::FindNext),
     b(Find, true,  true,  false, Char('g'), Command::FindPrev),
+    b(Find, false, false, false, Tab,       Command::FindToggleField),
+    b(Find, false, false, true,  Enter,     Command::FindReplaceAll),
+    b(Find, false, false, true,  Char('h'), Command::FindToggleReplace),
+    b(Find, false, false, true,  Char('r'), Command::FindToggleRegex),
+    b(Find, false, false, true,  Char('c'), Command::FindToggleCase),
+    b(Find, false, false, true,  Char('w'), Command::FindToggleWord),
     // Commit-message input.
     b(CommitInput, false, false, false, Esc,   Command::CommitCancel),
     b(CommitInput, false, false, false, Enter, Command::CommitSubmit),

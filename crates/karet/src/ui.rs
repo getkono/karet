@@ -199,14 +199,17 @@ fn render_pane(
     }
     let mut content = parts[2];
     if let Some(find) = ctx.find {
+        // One row for find; a second when the replace field is shown.
+        let want = if find.replace_visible { 2 } else { 1 };
+        let h = want.min(content.height);
         let bar = Rect {
-            height: 1.min(content.height),
+            height: h,
             ..content
         };
         draw_find_bar(f, find, ctx.theme, bar);
         content = Rect {
-            y: content.y.saturating_add(1),
-            height: content.height.saturating_sub(1),
+            y: content.y.saturating_add(h),
+            height: content.height.saturating_sub(h),
             ..content
         };
     }
@@ -263,27 +266,79 @@ fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     f.render_widget(toasts, area);
 }
 
-/// Draw the one-line find-in-file bar.
+/// Draw the find-in-file bar: a find row (query, match count, option toggles) and,
+/// when the replace field is shown, a replace row. Mirrors the workspace Search
+/// panel's model on the status-bar strip for a consistent find/replace experience.
 fn draw_find_bar(f: &mut Frame, find: &FindState, theme: &Theme, area: Rect) {
-    let style = Style::default()
+    use crate::app::SearchField;
+
+    let base = Style::default()
         .bg(theme.role(ThemeRole::StatusBarBackground).to_ratatui())
         .fg(theme.role(ThemeRole::StatusBarForeground).to_ratatui());
-    let label = if find.query.is_empty() {
-        " Find: ".to_string()
+    let accent = theme.role(ThemeRole::LineNumberActive).to_ratatui();
+    let dim = theme.role(ThemeRole::LineNumber).to_ratatui();
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+
+    // Find row.
+    let editing_find = find.field == SearchField::Find;
+    let count = if find.query.is_empty() {
+        String::new()
     } else if find.count == 0 {
-        format!(" Find: {}   no results ", find.query)
+        "  no results".to_string()
     } else {
-        // The next/close chords are derived from the keymap's Find layer.
-        let next = keymap::hint_for(Command::FindNext, ChordStyle::Verbose).unwrap_or_default();
-        let close = keymap::hint_for(Command::FindCancel, ChordStyle::Verbose).unwrap_or_default();
-        format!(
-            " Find: {}   {}/{}   ({next} next · {close} close) ",
-            find.query,
-            find.current + 1,
-            find.count
+        format!("  {}/{}", find.current + 1, find.count)
+    };
+    let toggle = |label: &'static str, on: bool| {
+        Span::styled(
+            label,
+            if on {
+                base.fg(accent).add_modifier(Modifier::BOLD)
+            } else {
+                base.fg(dim)
+            },
         )
     };
-    f.render_widget(Paragraph::new(label).style(style), area);
+    let find_spans = vec![
+        Span::styled(" Find: ", base),
+        Span::styled(
+            find.query.clone(),
+            if editing_find { base.fg(accent) } else { base },
+        ),
+        Span::styled(if editing_find { "_" } else { "" }, base),
+        Span::styled(count, base.fg(dim)),
+        Span::styled("   ", base),
+        toggle(".*", find.regex),
+        Span::styled(" ", base),
+        toggle("Aa", find.case_sensitive),
+        Span::styled(" ", base),
+        toggle("\\b", find.whole_word),
+    ];
+    f.render_widget(Paragraph::new(Line::from(find_spans)).style(base), rows[0]);
+
+    // Replace row (only when shown and there is room).
+    if find.replace_visible && rows[1].height >= 1 {
+        let editing_replace = find.field == SearchField::Replace;
+        let replace_spans = vec![
+            Span::styled(" Repl: ", base),
+            Span::styled(
+                find.replace.clone(),
+                if editing_replace {
+                    base.fg(accent)
+                } else {
+                    base
+                },
+            ),
+            Span::styled(if editing_replace { "_" } else { "" }, base),
+            Span::styled(
+                "   (Enter replace · Alt+Enter all · Tab find)",
+                base.fg(dim),
+            ),
+        ];
+        f.render_widget(
+            Paragraph::new(Line::from(replace_spans)).style(base),
+            rows[1],
+        );
+    }
 }
 
 /// Draw a centered modal overlay (quick-open / command palette).
