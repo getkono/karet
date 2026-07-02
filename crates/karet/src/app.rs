@@ -1215,6 +1215,21 @@ impl App {
             Command::SelectDown => self.caret_motion(true, EditorState::move_down),
             Command::SelectLeft => self.caret_motion(true, EditorState::move_left),
             Command::SelectRight => self.caret_motion(true, EditorState::move_right),
+            Command::CaretWordLeft => self.caret_motion(false, EditorState::move_word_left),
+            Command::CaretWordRight => self.caret_motion(false, EditorState::move_word_right),
+            Command::CaretLineStart => self.caret_motion(false, EditorState::move_line_start),
+            Command::CaretLineEnd => self.caret_motion(false, EditorState::move_line_end),
+            Command::CaretDocStart => self.caret_motion(false, EditorState::move_doc_start),
+            Command::CaretDocEnd => self.caret_motion(false, EditorState::move_doc_end),
+            Command::SelectWordLeft => self.caret_motion(true, EditorState::move_word_left),
+            Command::SelectWordRight => self.caret_motion(true, EditorState::move_word_right),
+            Command::SelectLineStart => self.caret_motion(true, EditorState::move_line_start),
+            Command::SelectLineEnd => self.caret_motion(true, EditorState::move_line_end),
+            Command::SelectDocStart => self.caret_motion(true, EditorState::move_doc_start),
+            Command::SelectDocEnd => self.caret_motion(true, EditorState::move_doc_end),
+            Command::SelectPageUp => self.caret_motion(true, EditorState::page_up),
+            Command::SelectPageDown => self.caret_motion(true, EditorState::page_down),
+            Command::EditorSelectAll => self.editor_select_all(),
             Command::ScrollUp => self.scroll_lines(-1),
             Command::ScrollDown => self.scroll_lines(1),
             Command::PageUp => self.scroll_lines(-i32::from(self.main_rect.height.max(1))),
@@ -2858,6 +2873,18 @@ impl App {
         }
     }
 
+    /// Select the whole buffer in the active editor tab (Ctrl+A).
+    fn editor_select_all(&mut self) {
+        if let Some(Tab {
+            kind: TabKind::Code { buffer, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            editor.select_all(buffer);
+        }
+    }
+
     /// Update and return the multi-click streak for a click at `(col, row)`.
     fn click_streak(&mut self, col: u16, row: u16) -> u8 {
         let now = Instant::now();
@@ -4381,6 +4408,41 @@ mod tests {
         app.dispatch(Command::SelectRight);
         app.dispatch(Command::Copy);
         assert_eq!(app.status.as_deref(), Some("copied selection"));
+    }
+
+    #[test]
+    fn select_line_end_then_select_all_dispatch_in_editor() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "hello world\nsecond"));
+        app.focus = Focus::Editor;
+        // Shift+End selects from the caret to the end of the line.
+        app.dispatch(Command::SelectLineEnd);
+        assert_eq!(
+            app.tabs[app.active].editor.selection_range(),
+            Some(Range {
+                start: LineCol::new(0, 0),
+                end: LineCol::new(0, 11),
+            })
+        );
+        // Ctrl+A selects the whole buffer.
+        app.dispatch(Command::EditorSelectAll);
+        assert_eq!(
+            app.tabs[app.active].editor.selection_range(),
+            Some(Range {
+                start: LineCol::new(0, 0),
+                end: LineCol::new(1, 6),
+            })
+        );
+    }
+
+    #[test]
+    fn caret_line_end_moves_without_selecting() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "hello"));
+        app.focus = Focus::Editor;
+        app.dispatch(Command::CaretLineEnd);
+        assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 5));
+        assert_eq!(app.tabs[app.active].editor.selection_range(), None);
     }
 
     #[test]

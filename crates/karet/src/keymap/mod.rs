@@ -217,8 +217,25 @@ static BINDINGS: &[Binding] = &[
     b(Editor, false, true,  false, Right,     Command::SelectRight),
     b(Editor, false, false, false, PageDown,  Command::PageDown),
     b(Editor, false, false, false, PageUp,    Command::PageUp),
-    b(Editor, false, false, false, Home,      Command::Top),
-    b(Editor, false, false, false, End,       Command::Bottom),
+    // Word- and line-wise caret motion (VS Code parity). Home/End move to the line
+    // edges; Ctrl+Home/End jump the caret to the document edges (moving it, not just
+    // scrolling); Ctrl+Left/Right step by word.
+    b(Editor, false, false, false, Home,      Command::CaretLineStart),
+    b(Editor, false, false, false, End,       Command::CaretLineEnd),
+    b(Editor, true,  false, false, Home,      Command::CaretDocStart),
+    b(Editor, true,  false, false, End,       Command::CaretDocEnd),
+    b(Editor, true,  false, false, Left,      Command::CaretWordLeft),
+    b(Editor, true,  false, false, Right,     Command::CaretWordRight),
+    // Selection: Shift extends each motion; Ctrl adds word/document granularity.
+    b(Editor, false, true,  false, Home,      Command::SelectLineStart),
+    b(Editor, false, true,  false, End,       Command::SelectLineEnd),
+    b(Editor, true,  true,  false, Home,      Command::SelectDocStart),
+    b(Editor, true,  true,  false, End,       Command::SelectDocEnd),
+    b(Editor, true,  true,  false, Left,      Command::SelectWordLeft),
+    b(Editor, true,  true,  false, Right,     Command::SelectWordRight),
+    b(Editor, false, true,  false, PageDown,  Command::SelectPageDown),
+    b(Editor, false, true,  false, PageUp,    Command::SelectPageUp),
+    b(Editor, true,  false, false, Char('a'), Command::EditorSelectAll),
     // Editing.
     b(Editor, false, false, false, Enter,     Command::InsertNewline),
     b(Editor, false, false, false, Backspace, Command::DeleteBackward),
@@ -592,14 +609,58 @@ mod tests {
     }
 
     #[test]
-    fn home_and_end_jump_to_edges() {
+    fn home_end_move_to_line_edges_ctrl_to_document() {
         assert_eq!(
             res(Focus::Editor, false, key(KeyCode::Home, KeyModifiers::NONE)),
-            Some(Command::Top)
+            Some(Command::CaretLineStart)
         );
         assert_eq!(
             res(Focus::Editor, false, key(KeyCode::End, KeyModifiers::NONE)),
-            Some(Command::Bottom)
+            Some(Command::CaretLineEnd)
+        );
+        assert_eq!(
+            res(
+                Focus::Editor,
+                false,
+                key(KeyCode::Home, KeyModifiers::CONTROL)
+            ),
+            Some(Command::CaretDocStart)
+        );
+        assert_eq!(
+            res(
+                Focus::Editor,
+                false,
+                key(KeyCode::End, KeyModifiers::CONTROL)
+            ),
+            Some(Command::CaretDocEnd)
+        );
+    }
+
+    #[test]
+    fn word_motion_and_select_all_bind_in_editor() {
+        assert_eq!(
+            res(
+                Focus::Editor,
+                false,
+                key(KeyCode::Left, KeyModifiers::CONTROL)
+            ),
+            Some(Command::CaretWordLeft)
+        );
+        assert_eq!(
+            res(
+                Focus::Editor,
+                false,
+                key(KeyCode::Right, KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+            ),
+            Some(Command::SelectWordRight)
+        );
+        assert_eq!(
+            res(
+                Focus::Editor,
+                false,
+                key(KeyCode::Char('a'), KeyModifiers::CONTROL)
+            ),
+            Some(Command::EditorSelectAll)
         );
     }
 

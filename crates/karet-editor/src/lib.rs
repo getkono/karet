@@ -246,6 +246,49 @@ impl EditorState {
         });
     }
 
+    /// Move every caret to the start of its line (column 0).
+    pub fn move_line_start(&mut self, _buffer: &TextBuffer) {
+        self.map_heads(|h| LineCol::new(h.line, 0));
+    }
+
+    /// Move every caret to the end of its line.
+    pub fn move_line_end(&mut self, buffer: &TextBuffer) {
+        self.map_heads(|h| LineCol::new(h.line, line_len(buffer, h.line)));
+    }
+
+    /// Move every caret to the start of the document.
+    pub fn move_doc_start(&mut self, _buffer: &TextBuffer) {
+        self.map_heads(|_| LineCol::new(0, 0));
+    }
+
+    /// Move every caret to the end of the document.
+    pub fn move_doc_end(&mut self, buffer: &TextBuffer) {
+        let last = last_line(buffer);
+        let end = LineCol::new(last, line_len(buffer, last));
+        self.map_heads(move |_| end);
+    }
+
+    /// Move every caret to the start of the previous word (wrapping across lines).
+    pub fn move_word_left(&mut self, buffer: &TextBuffer) {
+        self.map_heads(|h| prev_word_boundary(buffer, h));
+    }
+
+    /// Move every caret to the end of the next word (wrapping across lines).
+    pub fn move_word_right(&mut self, buffer: &TextBuffer) {
+        self.map_heads(|h| next_word_boundary(buffer, h));
+    }
+
+    /// Select the entire buffer as a single selection, caret at the end (Ctrl+A).
+    pub fn select_all(&mut self, buffer: &TextBuffer) {
+        let last = last_line(buffer);
+        let end = LineCol::new(last, line_len(buffer, last));
+        self.cursors = CursorState::single(Selection {
+            anchor: LineCol::new(0, 0),
+            head: end,
+        });
+        self.scroll_to(end);
+    }
+
     /// Jump the caret to `pos` (clamped), collapsing to a single bare caret there.
     /// Used to place the caret at a target (search match, go-to-line).
     pub fn goto(&mut self, buffer: &TextBuffer, pos: LineCol) {
@@ -723,6 +766,69 @@ fn in_any(selections: &[Range], l: u32, col: u32) -> bool {
     selections.iter().any(|r| col_in_range(l, col, *r))
 }
 
+/// Whether `c` is part of a word (alphanumeric or underscore), for word motions.
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// The start of the word before `pos`, wrapping to the previous line's end when at
+/// column 0. Skips trailing whitespace, then a single word/punctuation run.
+fn prev_word_boundary(buffer: &TextBuffer, pos: LineCol) -> LineCol {
+    if pos.col == 0 {
+        return if pos.line > 0 {
+            let line = pos.line - 1;
+            LineCol::new(line, line_len(buffer, line))
+        } else {
+            pos
+        };
+    }
+    let chars: Vec<char> = buffer
+        .line(pos.line as usize)
+        .unwrap_or_default()
+        .chars()
+        .collect();
+    let mut i = (pos.col as usize).min(chars.len());
+    while i > 0 && chars[i - 1].is_whitespace() {
+        i -= 1;
+    }
+    if i > 0 {
+        let word = is_word_char(chars[i - 1]);
+        while i > 0 && !chars[i - 1].is_whitespace() && is_word_char(chars[i - 1]) == word {
+            i -= 1;
+        }
+    }
+    LineCol::new(pos.line, i as u32)
+}
+
+/// The end of the word after `pos`, wrapping to the next line's start at end of line.
+/// Skips leading whitespace, then a single word/punctuation run.
+fn next_word_boundary(buffer: &TextBuffer, pos: LineCol) -> LineCol {
+    let chars: Vec<char> = buffer
+        .line(pos.line as usize)
+        .unwrap_or_default()
+        .chars()
+        .collect();
+    let n = chars.len();
+    if pos.col as usize >= n {
+        return if pos.line < last_line(buffer) {
+            LineCol::new(pos.line + 1, 0)
+        } else {
+            pos
+        };
+    }
+    let mut i = pos.col as usize;
+    while i < n && chars[i].is_whitespace() {
+        i += 1;
+    }
+    if i < n {
+        let word = is_word_char(chars[i]);
+        while i < n && !chars[i].is_whitespace() && is_word_char(chars[i]) == word {
+            i += 1;
+        }
+    }
+    LineCol::new(pos.line, i as u32)
+}
+
 /// Whether line `l` is hidden inside the interior of a collapsed fold in `folds`.
 fn hidden_in(folds: &[Fold], l: u32) -> bool {
     folds
@@ -931,6 +1037,46 @@ mod tests {
         assert_eq!(
             buf[(0, 0)].bg,
             theme.role(ThemeRole::Background).to_ratatui()
+        );
+    }
+
+    #[test]
+    fn line_word_and_doc_motions() {
+        let buffer = TextBuffer::from_text("foo bar\nbaz");
+        let mut state = EditorState::new();
+        state.last_height = 4;
+        state.move_line_end(&buffer);
+        assert_eq!(state.cursor(), LineCol::new(0, 7));
+        state.move_line_start(&buffer);
+        assert_eq!(state.cursor(), LineCol::new(0, 0));
+        // Word-right lands at the end of each word, then wraps to the next line.
+        state.move_word_right(&buffer);
+        assert_eq!(state.cursor(), LineCol::new(0, 3));
+        state.move_word_right(&buffer);
+        assert_eq!(state.cursor(), LineCol::new(0, 7));
+        state.move_word_right(&buffer);
+        assert_eq!(state.cursor(), LineCol::new(1, 0));
+        // Word-left from column 0 wraps to the previous line's end.
+        state.move_word_left(&buffer);
+        assert_eq!(state.cursor(), LineCol::new(0, 7));
+        state.move_doc_end(&buffer);
+        assert_eq!(state.cursor(), LineCol::new(1, 3));
+        state.move_doc_start(&buffer);
+        assert_eq!(state.cursor(), LineCol::new(0, 0));
+    }
+
+    #[test]
+    fn select_all_spans_the_whole_buffer() {
+        let buffer = TextBuffer::from_text("ab\ncde");
+        let mut state = EditorState::new();
+        state.last_height = 4;
+        state.select_all(&buffer);
+        assert_eq!(
+            state.selection_range(),
+            Some(Range {
+                start: LineCol::new(0, 0),
+                end: LineCol::new(1, 3),
+            })
         );
     }
 

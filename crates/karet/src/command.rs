@@ -99,6 +99,36 @@ pub enum Command {
     SelectLeft,
     /// Extend the selection right one column.
     SelectRight,
+    /// Move the caret to the previous word boundary.
+    CaretWordLeft,
+    /// Move the caret to the next word boundary.
+    CaretWordRight,
+    /// Move the caret to the start of the line.
+    CaretLineStart,
+    /// Move the caret to the end of the line.
+    CaretLineEnd,
+    /// Move the caret to the start of the document.
+    CaretDocStart,
+    /// Move the caret to the end of the document.
+    CaretDocEnd,
+    /// Extend the selection to the previous word boundary.
+    SelectWordLeft,
+    /// Extend the selection to the next word boundary.
+    SelectWordRight,
+    /// Extend the selection to the start of the line.
+    SelectLineStart,
+    /// Extend the selection to the end of the line.
+    SelectLineEnd,
+    /// Extend the selection to the start of the document.
+    SelectDocStart,
+    /// Extend the selection to the end of the document.
+    SelectDocEnd,
+    /// Extend the selection up one page.
+    SelectPageUp,
+    /// Extend the selection down one page.
+    SelectPageDown,
+    /// Select the entire document in the editor.
+    EditorSelectAll,
     /// Scroll the active tab up one line.
     ScrollUp,
     /// Scroll the active tab down one line.
@@ -298,6 +328,21 @@ impl Command {
             Self::SelectDown => "Select Down",
             Self::SelectLeft => "Select Left",
             Self::SelectRight => "Select Right",
+            Self::CaretWordLeft => "Cursor Word Left",
+            Self::CaretWordRight => "Cursor Word Right",
+            Self::CaretLineStart => "Cursor Line Start",
+            Self::CaretLineEnd => "Cursor Line End",
+            Self::CaretDocStart => "Cursor Document Start",
+            Self::CaretDocEnd => "Cursor Document End",
+            Self::SelectWordLeft => "Select Word Left",
+            Self::SelectWordRight => "Select Word Right",
+            Self::SelectLineStart => "Select to Line Start",
+            Self::SelectLineEnd => "Select to Line End",
+            Self::SelectDocStart => "Select to Document Start",
+            Self::SelectDocEnd => "Select to Document End",
+            Self::SelectPageUp => "Select Page Up",
+            Self::SelectPageDown => "Select Page Down",
+            Self::EditorSelectAll => "Selection: Select All",
             Self::ScrollUp => "Scroll Up",
             Self::ScrollDown => "Scroll Down",
             Self::PageUp => "Scroll Page Up",
@@ -486,6 +531,21 @@ impl Command {
             | Self::SelectDown
             | Self::SelectLeft
             | Self::SelectRight
+            | Self::CaretWordLeft
+            | Self::CaretWordRight
+            | Self::CaretLineStart
+            | Self::CaretLineEnd
+            | Self::CaretDocStart
+            | Self::CaretDocEnd
+            | Self::SelectWordLeft
+            | Self::SelectWordRight
+            | Self::SelectLineStart
+            | Self::SelectLineEnd
+            | Self::SelectDocStart
+            | Self::SelectDocEnd
+            | Self::SelectPageUp
+            | Self::SelectPageDown
+            | Self::EditorSelectAll
             | Self::ScrollUp
             | Self::ScrollDown
             | Self::PageUp
