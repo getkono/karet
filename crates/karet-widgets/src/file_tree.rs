@@ -219,17 +219,28 @@ impl FileTreeState {
         self.root = root.to_path_buf();
         let mut rows = Vec::new();
         let children = read_dir_sorted(root, self.show_hidden, self.respect_gitignore);
-        self.push_entries(children, 0, &mut rows);
+        self.push_entries(children, 0, false, &mut rows);
         self.rows = rows;
         self.selection.set_len(self.rows.len());
         self.needs_rebuild = false;
     }
 
     /// Append pre-read `children` (files and compacted directory chains) to `rows`.
-    fn push_entries(&self, children: Vec<Entry>, depth: u16, rows: &mut Vec<FileTreeRow>) {
+    ///
+    /// `parent_ignored` propagates gitignore state downward: git cannot re-include a
+    /// path once an ancestor directory is excluded, so every descendant of an ignored
+    /// directory is ignored too — even though the descendant's own name matches no
+    /// pattern (a `target/` rule dims everything under `target/`, not just `target/`).
+    fn push_entries(
+        &self,
+        children: Vec<Entry>,
+        depth: u16,
+        parent_ignored: bool,
+        rows: &mut Vec<FileTreeRow>,
+    ) {
         for entry in children {
             if entry.is_dir {
-                self.push_compacted_dir(entry, depth, rows);
+                self.push_compacted_dir(entry, depth, parent_ignored, rows);
             } else {
                 rows.push(FileTreeRow {
                     label: file_label(&entry.path),
@@ -237,7 +248,7 @@ impl FileTreeState {
                     depth,
                     is_dir: false,
                     expanded: false,
-                    ignored: entry.ignored,
+                    ignored: parent_ignored || entry.ignored,
                 });
             }
         }
@@ -245,10 +256,17 @@ impl FileTreeState {
 
     /// Push a directory row, compacting a single-child directory chain into one
     /// `a/b/c` row, and recursing into the chain's tip when it is expanded.
-    fn push_compacted_dir(&self, first: Entry, depth: u16, rows: &mut Vec<FileTreeRow>) {
+    fn push_compacted_dir(
+        &self,
+        first: Entry,
+        depth: u16,
+        parent_ignored: bool,
+        rows: &mut Vec<FileTreeRow>,
+    ) {
         let mut label = file_label(&first.path);
         let mut tip = first.path;
-        let mut ignored = first.ignored;
+        // Ignore inherits strictly: once an ancestor is ignored the whole subtree is.
+        let mut ignored = parent_ignored || first.ignored;
         // Descend while the current directory's *only* entry is another directory.
         let children = loop {
             let entries = read_dir_sorted(&tip, self.show_hidden, self.respect_gitignore);
@@ -272,7 +290,7 @@ impl FileTreeState {
             ignored,
         });
         if expanded {
-            self.push_entries(children, depth + 1, rows);
+            self.push_entries(children, depth + 1, ignored, rows);
         }
     }
 }
@@ -707,6 +725,43 @@ mod tests {
             .map(|r| name_key(&r.path))
             .collect();
         assert_eq!(ignored, vec!["ignored.txt"]);
+    }
+
+    #[test]
+    fn gitignore_state_is_inherited_by_descendants() {
+        let dir = temp_dir();
+        // `target/` is ignored by name; its children match no pattern themselves, so
+        // strict inheritance is the only thing that keeps them dimmed once expanded.
+        write(&dir.path, ".gitignore", b"target/\n");
+        write(&dir.path, "target/debug/app", b"bin");
+        write(&dir.path, "target/notes.txt", b"n");
+        write(&dir.path, "src/main.rs", b"fn main() {}\n");
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+        // `target` itself is ignored...
+        let target = dir.path.join("target");
+        assert!(state.rows().iter().any(|r| r.path == target && r.ignored));
+        // ...and after expanding it, every descendant row inherits the ignored flag.
+        state.expand(&target);
+        state.expand(&target.join("debug"));
+        state.ensure_built(&dir.path);
+        let under_target: Vec<&FileTreeRow> = state
+            .rows()
+            .iter()
+            .filter(|r| r.path.starts_with(&target))
+            .collect();
+        assert!(under_target.len() >= 3, "expected target subtree rows");
+        assert!(
+            under_target.iter().all(|r| r.ignored),
+            "descendants of an ignored dir must all be ignored"
+        );
+        // A sibling outside the ignored subtree is unaffected.
+        assert!(
+            state
+                .rows()
+                .iter()
+                .any(|r| r.path == dir.path.join("src") && !r.ignored)
+        );
     }
 
     #[test]
