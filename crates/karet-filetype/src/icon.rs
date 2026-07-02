@@ -123,9 +123,9 @@ pub fn chevron(open: bool, style: IconStyle) -> char {
         },
         IconStyle::Unicode | IconStyle::NerdFont => {
             if open {
-                '\u{25be}' // ▾
+                '\u{25bc}' // ▼ (larger, heavier than ▾ for legibility)
             } else {
-                '\u{25b8}' // ▸
+                '\u{25b6}' // ▶ (larger, heavier than ▸ for legibility)
             }
         },
     }

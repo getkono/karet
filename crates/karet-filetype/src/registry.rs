@@ -351,6 +351,13 @@ pub fn icon_for_path(path: &Path, style: IconStyle) -> char {
     file_type_for_path(path).icon(style)
 }
 
+/// The coarse [`Category`] for a path — a convenience wrapper over
+/// [`file_type_for_path`] + [`FileType::category`], used by renderers to tint icons.
+#[must_use]
+pub fn category_for_path(path: &Path) -> Category {
+    file_type_for_path(path).category()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,6 +371,13 @@ mod tests {
             file_type_for_path(Path::new("photo.PNG")).category(),
             Category::Image
         );
+    }
+
+    #[test]
+    fn category_for_path_wraps_file_type() {
+        assert_eq!(category_for_path(Path::new("src/main.rs")), Category::Code);
+        assert_eq!(category_for_path(Path::new("photo.png")), Category::Image);
+        assert_eq!(category_for_path(Path::new("mystery.qqq")), Category::Unknown);
     }
 
     #[test]
