@@ -26,5 +26,8 @@ unicode-width.workspace = true
 unicode-segmentation.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+crossterm.workspace = true            # the read_only pager example's terminal loop
+
 [lints]
 workspace = true

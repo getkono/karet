@@ -2536,6 +2536,7 @@ dependencies = [
 name = "karet-editor"
 version = "0.1.0"
 dependencies = [
+ "crossterm",
  "karet-core",
  "karet-syntax",
  "karet-text",
