@@ -14,6 +14,7 @@
 use std::sync::Arc;
 
 use karet_core::Decoration;
+use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
 use karet_text::TextBuffer;
 use tokio::sync::mpsc;
@@ -29,6 +30,8 @@ pub struct DocSnapshot {
     pub buffer: TextBuffer,
     /// Syntax highlights for this version.
     pub highlights: Arc<Highlights>,
+    /// Foldable regions for this version (tree-sitter fold ranges).
+    pub folds: Arc<FoldRegions>,
     /// Decorations merged across producers (empty until producers attach).
     pub decorations: Arc<Vec<Decoration>>,
     /// The display language name, if detected.

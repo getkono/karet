@@ -216,6 +216,9 @@ static BINDINGS: &[Binding] = &[
     b(Editor, true,  true,  false, Char('b'), Command::ShowBlame),
     b(Editor, false, false, true,  Char('b'), Command::BlameFunction),
 
+    // Code folding (VS Code parity): `Ctrl+K Ctrl+L` toggles the fold at the cursor.
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('l'))], Command::ToggleFold),
+
     // Editor focus, diff tab only.
     b(DiffEditor, false, false, false, Char('\\'), Command::ToggleDiffLayout),
     b(DiffEditor, false, false, false, Char(']'),  Command::NextChangedFile),

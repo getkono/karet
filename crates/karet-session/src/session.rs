@@ -20,6 +20,7 @@ use karet_core::Selection;
 use karet_core::Severity;
 use karet_filetype::FileKind;
 use karet_filetype::classify_ignoring_size;
+use karet_syntax::FoldRegions;
 use karet_syntax::Highlighter;
 use karet_syntax::Highlights;
 use karet_text::AppliedEdit;
@@ -137,6 +138,7 @@ struct Document {
     format: DocFormat,
     tree: Option<SyntaxTree>,
     highlights: Arc<Highlights>,
+    folds: Arc<FoldRegions>,
     decorations: Vec<Decoration>,
     /// Open reference count (a path opened in N views shares one document).
     refs: u32,
@@ -499,6 +501,7 @@ impl Session {
             format,
             tree: None,
             highlights: Arc::new(Highlights::default()),
+            folds: Arc::new(FoldRegions::default()),
             decorations: Vec::new(),
             refs: 1,
         };
@@ -677,6 +680,7 @@ impl Session {
                 version: doc.buffer.version(),
                 buffer: doc.buffer.content_snapshot(),
                 highlights: doc.highlights.clone(),
+                folds: doc.folds.clone(),
                 decorations: Arc::new(doc.decorations.clone()),
                 language: doc.language,
                 dirty: doc.buffer.is_dirty(),
@@ -702,6 +706,7 @@ fn update_syntax(
     let Some(lang) = doc.lang_id else {
         doc.tree = None;
         doc.highlights = Arc::new(Highlights::default());
+        doc.folds = Arc::new(FoldRegions::default());
         return;
     };
 
@@ -724,6 +729,12 @@ fn update_syntax(
     doc.highlights = match (doc.tree.as_ref(), highlighters.get(&lang)) {
         (Some(tree), Some(hl)) => Arc::new(hl.highlight(tree, &text).unwrap_or_default()),
         _ => Arc::new(Highlights::default()),
+    };
+    // Fold regions are grammar-agnostic (any multi-line node), so they come straight
+    // off the tree with no per-language highlighter.
+    doc.folds = match doc.tree.as_ref() {
+        Some(tree) => Arc::new(karet_syntax::fold(tree)),
+        None => Arc::new(FoldRegions::default()),
     };
 }
 

@@ -2,6 +2,7 @@
 //! setup. The shell composes the engine/widget crates — it owns the open tabs and
 //! the sidebar, and applies [`Command`]s resolved from key events.
 
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::Write;
@@ -40,6 +41,7 @@ use karet_core::Range;
 use karet_core::Severity;
 use karet_core::ThemeRole;
 use karet_editor::EditorState;
+use karet_editor::Fold;
 use karet_filetype::FileKind;
 use karet_filetype::IconStyle;
 use karet_fileview::image::GraphicsProtocol;
@@ -61,6 +63,7 @@ use karet_session::SessionConfig;
 use karet_session::SnapshotRx;
 use karet_session::ViewId;
 use karet_session::local;
+use karet_syntax::FoldRegions;
 use karet_text::TextBuffer;
 use karet_theme::Theme;
 use karet_vcs::Commit;
@@ -882,6 +885,7 @@ impl App {
             Command::Top => self.scroll_edge(true),
             Command::Bottom => self.scroll_edge(false),
             Command::ToggleDiffLayout => self.toggle_diff_layout(),
+            Command::ToggleFold => self.toggle_fold(),
             Command::NextChangedFile => self.step_changed_file(1),
             Command::PrevChangedFile => self.step_changed_file(-1),
             Command::InsertChar(c) => {
@@ -1723,6 +1727,8 @@ impl App {
                     buffer,
                     text,
                     highlights,
+                    folds,
+                    folded,
                     decos,
                 } => Tab::new(
                     t.title.clone(),
@@ -1734,6 +1740,8 @@ impl App {
                         buffer: buffer.clone(),
                         text: text.clone(),
                         highlights: highlights.clone(),
+                        folds: folds.clone(),
+                        folded: folded.clone(),
                         decos: decos.clone(),
                     },
                 ),
@@ -1921,6 +1929,48 @@ impl App {
                 ViewMode::SideBySide => ViewMode::Unified,
             };
             *scroll = 0;
+        }
+    }
+
+    /// Fold or unfold the code region at the cursor: prefer a fold headered on the
+    /// cursor line, else the innermost fold containing it. Collapsing a region the
+    /// cursor sits inside relocates the caret to the (visible) header line.
+    fn toggle_fold(&mut self) {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let line = tab.editor.cursor.line;
+        let TabKind::Code {
+            buffer,
+            folds,
+            folded,
+            ..
+        } = &mut tab.kind
+        else {
+            return;
+        };
+        let target = folds
+            .regions()
+            .iter()
+            .find(|r| r.start == line)
+            .or_else(|| {
+                folds
+                    .regions()
+                    .iter()
+                    .filter(|r| r.start <= line && line <= r.end)
+                    .min_by_key(|r| r.end - r.start)
+            })
+            .copied();
+        let Some(region) = target else {
+            return;
+        };
+        // `remove` returns whether it was collapsed: toggle by remove-or-insert.
+        if !folded.remove(&region.start) {
+            folded.insert(region.start);
+            if line > region.start {
+                let pos = LineCol::new(region.start, tab.editor.cursor.col);
+                tab.editor.set_caret(buffer, pos);
+            }
         }
     }
 
@@ -2324,12 +2374,19 @@ impl App {
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         let streak = self.click_streak(mouse.column, mouse.row);
         if let Some(Tab {
-            kind: TabKind::Code { buffer, .. },
+            kind:
+                TabKind::Code {
+                    buffer,
+                    folds,
+                    folded,
+                    ..
+                },
             editor,
             ..
         }) = self.tabs.get_mut(self.active)
         {
-            let pos = editor.pos_at(area, buffer, mouse.column, mouse.row);
+            let fold_lines = resolve_folds(folds, folded);
+            let pos = editor.pos_at(area, buffer, &fold_lines, mouse.column, mouse.row);
             match streak {
                 2 => {
                     let (anchor, head) = word_at(buffer, pos);
@@ -2357,12 +2414,19 @@ impl App {
     fn drag_select_to(&mut self, col: u16, row: u16) {
         let area = self.editor_rect;
         if let Some(Tab {
-            kind: TabKind::Code { buffer, .. },
+            kind:
+                TabKind::Code {
+                    buffer,
+                    folds,
+                    folded,
+                    ..
+                },
             editor,
             ..
         }) = self.tabs.get_mut(self.active)
         {
-            let pos = editor.pos_at(area, buffer, col, row);
+            let fold_lines = resolve_folds(folds, folded);
+            let pos = editor.pos_at(area, buffer, &fold_lines, col, row);
             editor.extend_to(buffer, pos);
         }
     }
@@ -2721,6 +2785,8 @@ impl App {
             if let TabKind::Code {
                 buffer,
                 highlights,
+                folds,
+                folded,
                 text,
                 next_version,
                 ..
@@ -2728,12 +2794,31 @@ impl App {
             {
                 *buffer = snap.buffer.clone();
                 *highlights = (*snap.highlights).clone();
+                *folds = (*snap.folds).clone();
                 *text = snap.buffer.text();
                 *next_version = (*next_version).max(snap.version);
+                // Drop collapsed markers whose fold no longer starts where it did (an
+                // edit shifted or removed it), so stale hidden lines can't linger.
+                let starts: HashSet<u32> = folds.regions().iter().map(|r| r.start).collect();
+                folded.retain(|line| starts.contains(line));
             }
             tab.dirty = snap.dirty;
         }
     }
+}
+
+/// Resolve a snapshot's fold regions plus the view's collapsed set into the
+/// line-based [`Fold`]s the editor renders and hit-tests against.
+pub(crate) fn resolve_folds(folds: &FoldRegions, folded: &BTreeSet<u32>) -> Vec<Fold> {
+    folds
+        .regions()
+        .iter()
+        .map(|r| Fold {
+            start: r.start,
+            end: r.end,
+            collapsed: folded.contains(&r.start),
+        })
+        .collect()
 }
 
 /// Whether the screen point `(x, y)` lies inside `r`.
@@ -3176,6 +3261,42 @@ mod tests {
     }
 
     #[test]
+    fn toggle_fold_collapses_at_cursor_and_relocates_caret() {
+        use karet_treesitter::ParserPool;
+        use karet_treesitter::SyntaxTree;
+        use karet_treesitter::language_id_from_path;
+
+        let Some(lang) = language_id_from_path(Path::new("f.rs")) else {
+            return; // rust grammar not compiled in
+        };
+        let src = "fn main() {\n    let x = 1;\n    let y = 2;\n}\n";
+        let mut pool = ParserPool::new();
+        let tree = SyntaxTree::parse(&mut pool, lang, src).expect("parse");
+        let regions = karet_syntax::fold(&tree);
+        let start = regions.regions()[0].start;
+        assert_eq!(start, 0, "the function body folds from line 0");
+
+        let mut app = app();
+        app.push_tab(text_tab("f.rs", src));
+        if let TabKind::Code { folds, .. } = &mut app.tabs[app.active].kind {
+            *folds = regions;
+        }
+        // Cursor inside the region: toggling collapses it and moves the caret to the
+        // (still visible) header line.
+        app.tabs[app.active].editor.cursor = LineCol::new(1, 0);
+        app.toggle_fold();
+        assert_eq!(app.tabs[app.active].editor.cursor.line, 0);
+        if let TabKind::Code { folded, .. } = &app.tabs[app.active].kind {
+            assert!(folded.contains(&0));
+        }
+        // Toggling again (cursor now on the header) expands it.
+        app.toggle_fold();
+        if let TabKind::Code { folded, .. } = &app.tabs[app.active].kind {
+            assert!(!folded.contains(&0));
+        }
+    }
+
+    #[test]
     fn prepended_commits_dedupe_and_preserve_scroll() {
         let mut app = app();
         app.scm.log = vec![commit("aaaaaaa1", "old top"), commit("bbbbbbb2", "older")];
@@ -3413,6 +3534,8 @@ mod tests {
                 buffer: TextBuffer::from_text("foo bar foo"),
                 text: "foo bar foo".to_string(),
                 highlights: Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
                 decos: Vec::new(),
             },
         ));
@@ -3491,6 +3614,8 @@ mod tests {
                 buffer: TextBuffer::from_text("fn main() {}\n"),
                 text: "fn main() {}\n".to_string(),
                 highlights: Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
                 decos: Vec::new(),
             },
         ));
@@ -3532,6 +3657,8 @@ mod tests {
                 buffer: TextBuffer::from_text("x\n"),
                 text: "x\n".to_string(),
                 highlights: Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
                 decos: Vec::new(),
             },
         )
@@ -3580,6 +3707,8 @@ mod tests {
                 buffer: TextBuffer::from_text(text),
                 text: text.to_string(),
                 highlights: Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
                 decos: Vec::new(),
             },
         )

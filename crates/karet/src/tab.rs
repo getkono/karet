@@ -4,6 +4,7 @@
 //! [`EditorState`] used by code tabs for scroll/cursor. Diff and hex tabs keep
 //! their own scroll inside the kind.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -14,6 +15,7 @@ use karet_fileview::image::Image;
 use karet_fileview::viewer::FileKind;
 use karet_session::DocumentId;
 use karet_session::ViewId;
+use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
 use karet_text::TextBuffer;
 
@@ -54,6 +56,10 @@ pub enum TabKind {
         text: String,
         /// Syntax highlight spans (empty when no grammar / disabled).
         highlights: Highlights,
+        /// Foldable line regions from the latest snapshot (empty when no grammar).
+        folds: FoldRegions,
+        /// The set of collapsed fold header lines (per-view UI state).
+        folded: BTreeSet<u32>,
         /// Find-in-file match decorations (empty when not searching).
         decos: Vec<Decoration>,
     },
@@ -206,6 +212,8 @@ mod tests {
                 buffer: TextBuffer::from_text("fn main() {}"),
                 text: "fn main() {}".to_string(),
                 highlights: Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
                 decos: Vec::new(),
             },
         );

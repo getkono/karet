@@ -447,11 +447,9 @@ impl<'a> FileTree<'a> {
 /// unrecognized falls back to the neutral [`Foreground`](ThemeRole::Foreground).
 fn category_role(category: Category) -> ThemeRole {
     match category {
-        Category::Code
-        | Category::Markup
-        | Category::Data
-        | Category::Config
-        | Category::Shell => ThemeRole::FileIconText,
+        Category::Code | Category::Markup | Category::Data | Category::Config | Category::Shell => {
+            ThemeRole::FileIconText
+        },
         Category::Image | Category::Document => ThemeRole::FileIconMedia,
         Category::Archive | Category::Binary => ThemeRole::FileIconBinary,
         // Unknown — and any future Category variant — stays neutral.

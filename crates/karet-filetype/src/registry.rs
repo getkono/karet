@@ -377,7 +377,10 @@ mod tests {
     fn category_for_path_wraps_file_type() {
         assert_eq!(category_for_path(Path::new("src/main.rs")), Category::Code);
         assert_eq!(category_for_path(Path::new("photo.png")), Category::Image);
-        assert_eq!(category_for_path(Path::new("mystery.qqq")), Category::Unknown);
+        assert_eq!(
+            category_for_path(Path::new("mystery.qqq")),
+            Category::Unknown
+        );
     }
 
     #[test]

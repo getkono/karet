@@ -71,16 +71,29 @@ impl Highlights {
     }
 }
 
-/// The foldable regions of a buffer (by byte span).
+/// A foldable region as an inclusive line range `[start, end]` (0-based lines). The
+/// `start` line is the header that stays visible when collapsed; lines
+/// `start + 1 ..= end` are the ones that hide. Line ranges (not byte spans) because
+/// folding is inherently a line operation for every consumer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FoldRegion {
+    /// The 0-based header line (stays visible when collapsed).
+    pub start: u32,
+    /// The 0-based last line of the region, inclusive.
+    pub end: u32,
+}
+
+/// The foldable regions of a buffer, in document order (outermost first), with at
+/// most one region per start line.
 #[derive(Clone, Debug, Default)]
 pub struct FoldRegions {
-    regions: Vec<Span>,
+    regions: Vec<FoldRegion>,
 }
 
 impl FoldRegions {
     /// The fold regions, outermost first.
     #[must_use]
-    pub fn regions(&self) -> &[Span] {
+    pub fn regions(&self) -> &[FoldRegion] {
         &self.regions
     }
 }
@@ -102,22 +115,22 @@ impl FoldRegions {
 /// folds everywhere today.
 #[must_use]
 pub fn fold(tree: &SyntaxTree) -> FoldRegions {
-    // One fold per start line — the outermost (largest end) node beginning there.
-    let mut by_start: BTreeMap<u32, Span> = BTreeMap::new();
+    // One fold per start line — the outermost node beginning there, i.e. the one that
+    // ends on the latest line.
+    let mut by_start: BTreeMap<u32, u32> = BTreeMap::new();
     for node in tree.multiline_named_spans() {
         by_start
             .entry(node.start_row)
-            .and_modify(|span| {
-                if node.span.end.0 > span.end.0 {
-                    *span = node.span;
-                }
-            })
-            .or_insert(node.span);
+            .and_modify(|end| *end = (*end).max(node.end_row))
+            .or_insert(node.end_row);
     }
     // BTreeMap iterates by ascending start line, i.e. document order (outermost
     // first), which is exactly the contract of `FoldRegions::regions`.
     FoldRegions {
-        regions: by_start.into_values().collect(),
+        regions: by_start
+            .into_iter()
+            .map(|(start, end)| FoldRegion { start, end })
+            .collect(),
     }
 }
 
@@ -225,20 +238,28 @@ mod tests {
         let folds = fold(&tree);
         let regions = folds.regions();
         assert!(!regions.is_empty(), "expected at least one fold region");
-        // Every region spans more than one source line.
+        // Every region spans more than one line, and the function's body (starting on
+        // line 0) folds down to (at least) the closing brace on line 3.
         for r in regions {
-            let start_line = src[..r.start.0].matches('\n').count();
-            let end_line = src[..r.end.0].matches('\n').count();
-            assert!(
-                end_line > start_line,
-                "region {r:?} does not span multiple lines"
-            );
+            assert!(r.end > r.start, "region {r:?} does not span multiple lines");
         }
+        assert!(
+            regions.iter().any(|r| r.start == 0 && r.end >= 3),
+            "expected a fold covering the whole function body"
+        );
         // Regions are unique per start line (outermost kept) and in document order.
-        let starts: Vec<usize> = regions.iter().map(|r| r.start.0).collect();
+        let starts: Vec<u32> = regions.iter().map(|r| r.start).collect();
         let mut sorted = starts.clone();
         sorted.sort_unstable();
         assert_eq!(starts, sorted, "regions must be in ascending start order");
+        assert_eq!(
+            starts.len(),
+            sorted
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            "at most one region per start line"
+        );
         Ok(())
     }
 

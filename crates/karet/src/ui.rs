@@ -785,15 +785,19 @@ fn draw_pane_content(
         TabKind::Code {
             buffer,
             highlights,
+            folds,
+            folded,
             decos,
             ..
         } => {
             let selection = tab.editor.selection_range();
+            let fold_lines = crate::app::resolve_folds(folds, folded);
             let editor = Editor::new(buffer)
                 .highlights(highlights)
                 .theme(theme)
                 .decorations(decos)
                 .selection(selection)
+                .folds(&fold_lines)
                 .focused(ctx.editor_focused);
             f.render_stateful_widget(editor, area, &mut tab.editor);
         },
