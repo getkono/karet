@@ -6,9 +6,11 @@
 //! crate stays dependency-light; an integrator maps them to its own coordinate
 //! types.
 //!
-//! Search (in-file and workspace) is implemented; the workspace walk is currently
-//! single-threaded (a parallel walk is a deferred optimization) and replace
-//! planning ([`ReplacePlan`]) is not yet implemented.
+//! Search and replace (both in-file and workspace) are implemented via
+//! [`search_in_file`]/[`WorkspaceSearch::run`] and
+//! [`plan_replacements`]/[`apply_replacements`]/[`WorkspaceSearch::replace`]. The
+//! workspace walk is currently single-threaded (a parallel walk is a deferred
+//! optimization).
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -170,6 +172,45 @@ impl Matcher {
             Self::Regex(re) => regex_matches(text, re),
         }
     }
+
+    /// Plan a [`Replacement`] for every match in `text`. When `expand` is set (a
+    /// regex query), the regex `$1` / `${name}` / `$0` substitutions are expanded
+    /// against each match's captures; otherwise `replacement` is inserted literally
+    /// (so a literal or whole-word query never mis-reads a `$` in the replacement).
+    fn plan(&self, text: &str, replacement: &str, expand: bool) -> Vec<Replacement> {
+        match self {
+            Self::Literal(needle) if needle.is_empty() => Vec::new(),
+            Self::Literal(needle) => literal_matches(text, needle)
+                .into_iter()
+                .map(|m| Replacement {
+                    start: m.start,
+                    end: m.end,
+                    text: replacement.to_string(),
+                })
+                .collect(),
+            Self::Regex(re) => {
+                let mut out = Vec::new();
+                for caps in re.captures_iter(text) {
+                    let Some(whole) = caps.get(0) else {
+                        continue;
+                    };
+                    let text = if expand {
+                        let mut dst = String::new();
+                        caps.expand(replacement, &mut dst);
+                        dst
+                    } else {
+                        replacement.to_string()
+                    };
+                    out.push(Replacement {
+                        start: whole.start(),
+                        end: whole.end(),
+                        text,
+                    });
+                }
+                out
+            },
+        }
+    }
 }
 
 /// Search `text` for `query`, returning every match.
@@ -233,70 +274,146 @@ impl WorkspaceSearch {
             return Ok(());
         }
         let matcher = Matcher::build(query)?;
-
-        let mut builder = ignore::WalkBuilder::new(root);
-        builder.standard_filters(true);
-        // Honor `.gitignore` even outside a git repository (matches editor
-        // expectations and keeps non-repo workspaces filtered).
-        builder.require_git(false);
-        if !query.includes.is_empty() || !query.excludes.is_empty() {
-            let mut overrides = ignore::overrides::OverrideBuilder::new(root);
-            for inc in &query.includes {
-                overrides
-                    .add(inc)
-                    .map_err(|_| SearchError::InvalidPattern)?;
-            }
-            for exc in &query.excludes {
-                // `!glob` excludes in override syntax.
-                overrides
-                    .add(&format!("!{exc}"))
-                    .map_err(|_| SearchError::InvalidPattern)?;
-            }
-            let overrides = overrides.build().map_err(|_| SearchError::InvalidPattern)?;
-            builder.overrides(overrides);
-        }
-
-        for entry in builder.build().flatten() {
-            if !entry.file_type().is_some_and(|t| t.is_file()) {
-                continue;
-            }
-            if entry.metadata().is_ok_and(|m| m.len() > MAX_FILE_BYTES) {
-                continue;
-            }
-            let path = entry.path();
-            let Ok(bytes) = std::fs::read(path) else {
+        for entry in build_walk(root, query)?.flatten() {
+            let Some(text) = read_searchable(&entry) else {
                 continue;
             };
-            // Skip binary files: a NUL byte in the head, or invalid UTF-8.
-            let head = &bytes[..bytes.len().min(BINARY_SNIFF_BYTES)];
-            if head.contains(&0) {
-                continue;
-            }
-            let Ok(text) = std::str::from_utf8(&bytes) else {
-                continue;
-            };
-            let matches = matcher.find(text);
+            let matches = matcher.find(&text);
             if !matches.is_empty() {
                 sink(FileHit {
-                    path: path.to_path_buf(),
+                    path: entry.path().to_path_buf(),
                     matches,
                 });
             }
         }
         Ok(())
     }
+
+    /// Walk `root` and replace every match of `query` with `replacement`, writing
+    /// each changed file back to disk. Honors the same gitignore / glob / binary /
+    /// size filters as [`run`](Self::run); returns a [`ReplaceSummary`] of what
+    /// changed. Regex capture substitutions (`$1`, `${name}`) apply when
+    /// [`SearchQuery::regex`] is set.
+    ///
+    /// # Errors
+    /// Returns [`SearchError::InvalidPattern`] if the pattern or a glob is invalid.
+    pub fn replace(
+        &self,
+        root: &Path,
+        query: &SearchQuery,
+        replacement: &str,
+    ) -> Result<ReplaceSummary, SearchError> {
+        if query.pattern.is_empty() {
+            return Ok(ReplaceSummary::default());
+        }
+        let matcher = Matcher::build(query)?;
+        let mut summary = ReplaceSummary::default();
+        for entry in build_walk(root, query)?.flatten() {
+            let Some(text) = read_searchable(&entry) else {
+                continue;
+            };
+            let plan = matcher.plan(&text, replacement, query.regex);
+            if plan.is_empty() {
+                continue;
+            }
+            let updated = apply_replacements(&text, &plan);
+            if std::fs::write(entry.path(), updated).is_ok() {
+                summary.files_changed += 1;
+                summary.replacements += plan.len();
+            }
+        }
+        Ok(summary)
+    }
 }
 
-/// A planned set of replacements across files.
-#[derive(Clone, Debug, Default)]
-pub struct ReplacePlan {}
+/// The result of a workspace [`replace`](WorkspaceSearch::replace).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReplaceSummary {
+    /// The number of files written.
+    pub files_changed: usize,
+    /// The total number of replacements applied.
+    pub replacements: usize,
+}
 
-impl ReplacePlan {
-    /// The replacements this plan would apply, grouped by file.
-    #[must_use]
-    pub fn changes(&self) -> Vec<(PathBuf, Vec<Replacement>)> {
-        todo!()
+/// Build the gitignore-aware workspace walk for `query` (shared by search & replace).
+fn build_walk(root: &Path, query: &SearchQuery) -> Result<ignore::Walk, SearchError> {
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder.standard_filters(true);
+    // Honor `.gitignore` even outside a git repository (matches editor expectations
+    // and keeps non-repo workspaces filtered).
+    builder.require_git(false);
+    if !query.includes.is_empty() || !query.excludes.is_empty() {
+        let mut overrides = ignore::overrides::OverrideBuilder::new(root);
+        for inc in &query.includes {
+            overrides
+                .add(inc)
+                .map_err(|_| SearchError::InvalidPattern)?;
+        }
+        for exc in &query.excludes {
+            // `!glob` excludes in override syntax.
+            overrides
+                .add(&format!("!{exc}"))
+                .map_err(|_| SearchError::InvalidPattern)?;
+        }
+        let overrides = overrides.build().map_err(|_| SearchError::InvalidPattern)?;
+        builder.overrides(overrides);
     }
+    Ok(builder.build())
+}
+
+/// Read a walked entry as UTF-8 text, or `None` if it is not a searchable file
+/// (a directory, oversize, binary, or non-UTF-8).
+fn read_searchable(entry: &ignore::DirEntry) -> Option<String> {
+    if !entry.file_type().is_some_and(|t| t.is_file()) {
+        return None;
+    }
+    if entry.metadata().is_ok_and(|m| m.len() > MAX_FILE_BYTES) {
+        return None;
+    }
+    let bytes = std::fs::read(entry.path()).ok()?;
+    // Skip binary files: a NUL byte in the head, or invalid UTF-8.
+    let head = &bytes[..bytes.len().min(BINARY_SNIFF_BYTES)];
+    if head.contains(&0) {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
+/// Plan a [`Replacement`] for every match of `query` in `text`, replacing each with
+/// `replacement`. When [`SearchQuery::regex`] is set, `$1` / `${name}` / `$0`
+/// capture substitutions are expanded; otherwise `replacement` is inserted verbatim.
+///
+/// # Errors
+/// Returns [`SearchError::InvalidPattern`] for a malformed regex.
+pub fn plan_replacements(
+    text: &str,
+    query: &SearchQuery,
+    replacement: &str,
+) -> Result<Vec<Replacement>, SearchError> {
+    if query.pattern.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(Matcher::build(query)?.plan(text, replacement, query.regex))
+}
+
+/// Apply `replacements` to `text`, returning the rewritten string. Spans are applied
+/// right-to-left so earlier byte offsets stay valid; out-of-range or non-char-boundary
+/// spans are skipped defensively.
+#[must_use]
+pub fn apply_replacements(text: &str, replacements: &[Replacement]) -> String {
+    let mut ordered: Vec<&Replacement> = replacements.iter().collect();
+    ordered.sort_by_key(|r| std::cmp::Reverse(r.start));
+    let mut out = text.to_string();
+    for r in ordered {
+        if r.start <= r.end
+            && r.end <= out.len()
+            && out.is_char_boundary(r.start)
+            && out.is_char_boundary(r.end)
+        {
+            out.replace_range(r.start..r.end, &r.text);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -515,6 +632,81 @@ mod tests {
         let hits = collect(&dir.path, &query);
         assert_eq!(hits.len(), 1);
         assert!(hits[0].path.ends_with("keep.rs"));
+    }
+
+    #[test]
+    fn literal_replace_plans_and_applies() {
+        let text = "foo bar foo";
+        let plan = plan_replacements(text, &literal("foo"), "baz").unwrap_or_default();
+        assert_eq!(plan.len(), 2);
+        assert_eq!(apply_replacements(text, &plan), "baz bar baz");
+    }
+
+    #[test]
+    fn regex_replace_expands_capture_groups() {
+        let q = SearchQuery {
+            pattern: r"(\w+)=(\d+)".into(),
+            regex: true,
+            case_sensitive: true,
+            ..Default::default()
+        };
+        let plan = plan_replacements("a=1 b=2", &q, "$2=$1").unwrap_or_default();
+        assert_eq!(apply_replacements("a=1 b=2", &plan), "1=a 2=b");
+    }
+
+    #[test]
+    fn non_regex_replacement_is_literal_even_with_dollar() {
+        // A whole-word (non-regex) query compiles to a regex internally, but a `$1`
+        // in the replacement must be inserted verbatim, not treated as a capture.
+        let q = SearchQuery {
+            pattern: "x".into(),
+            whole_word: true,
+            case_sensitive: true,
+            ..Default::default()
+        };
+        let plan = plan_replacements("x y x", &q, "$1").unwrap_or_default();
+        assert_eq!(apply_replacements("x y x", &plan), "$1 y $1");
+    }
+
+    #[test]
+    fn apply_is_offset_safe_for_length_changing_edits() {
+        // Replacements of differing lengths must not corrupt neighbours (right-to-left).
+        let text = "aa bb aa";
+        let plan = plan_replacements(text, &literal("aa"), "wide").unwrap_or_default();
+        assert_eq!(apply_replacements(text, &plan), "wide bb wide");
+    }
+
+    #[test]
+    fn empty_pattern_plans_nothing() {
+        assert!(
+            plan_replacements("abc", &literal(""), "z")
+                .unwrap_or_default()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn workspace_replace_writes_matching_files_only() {
+        let dir = temp_dir();
+        write(&dir.path, "a.txt", b"needle and needle\n");
+        write(&dir.path, "b.txt", b"nothing\n");
+        write(&dir.path, ".gitignore", b"ignored.txt\n");
+        write(&dir.path, "ignored.txt", b"needle\n");
+
+        let summary = WorkspaceSearch::new()
+            .replace(&dir.path, &literal("needle"), "pin")
+            .unwrap_or_default();
+        assert_eq!(summary.files_changed, 1);
+        assert_eq!(summary.replacements, 2);
+        assert_eq!(
+            std::fs::read_to_string(dir.path.join("a.txt")).unwrap_or_default(),
+            "pin and pin\n"
+        );
+        // The gitignored file is untouched.
+        assert_eq!(
+            std::fs::read_to_string(dir.path.join("ignored.txt")).unwrap_or_default(),
+            "needle\n"
+        );
     }
 
     #[test]
