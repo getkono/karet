@@ -113,7 +113,7 @@ lsp-types = "0.97.0"
 # toolchain). We trim the heavy default `extras` (archive/credentials/mailmap/…).
 # NOTE: the `blameline` crate enables gix's `blame` feature; feature unification means
 # the workspace build compiles gix's blame module even though it's not listed here.
-gix = { version = "0.85.0", default-features = false, features = ["status", "max-performance-safe", "sha1"] }
+gix = { version = "0.85.0", default-features = false, features = ["status", "max-performance-safe", "sha1", "revision"] }
 # Optional libgit2 write backend for karet-vcs staging (no ssh/https system deps;
 # libgit2-sys still vendors and builds libgit2 via a C toolchain when enabled).
 git2 = { version = "0.20", default-features = false }
