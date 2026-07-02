@@ -148,6 +148,13 @@ static BINDINGS: &[Binding] = &[
     seq(Global, chord(true, false, false, Char('k')), &[chord(true,  false, false, Char('w'))], Command::CloseAllTabs),
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('w'))], Command::CloseOtherTabs),
 
+    // Pane splitting & focus (VS Code parity): `Ctrl+\` splits right, `Ctrl+K Ctrl+\`
+    // splits down, and `Ctrl+K` + arrow cycles pane focus.
+    b(Global, true, false, false, Char('\\'), Command::SplitRight),
+    seq(Global, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('\\'))], Command::SplitDown),
+    seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Right)], Command::FocusNextPane),
+    seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Left)],  Command::FocusPrevPane),
+
     // Source-Control panel (sidebar focus, SCM panel active). Listed before the
     // generic sidebar bindings so its keys win when both would match.
     b(SourceControl, false, false, false, Char(' '), Command::ScmToggleStage),

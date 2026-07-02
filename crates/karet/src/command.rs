@@ -59,6 +59,14 @@ pub enum Command {
     DismissNotification,
     /// Dismiss all notifications.
     DismissAllNotifications,
+    /// Split the focused pane into a new pane on the right.
+    SplitRight,
+    /// Split the focused pane into a new pane below.
+    SplitDown,
+    /// Move focus to the next pane.
+    FocusNextPane,
+    /// Move focus to the previous pane.
+    FocusPrevPane,
     /// Copy the selection (or the cursor line) to the clipboard.
     Copy,
     /// Copy the active file's absolute path to the clipboard.
@@ -227,6 +235,10 @@ impl Command {
             Self::OpenAnyway => "File: Open Anyway (Ignore Size Limit)",
             Self::DismissNotification => "Notifications: Dismiss",
             Self::DismissAllNotifications => "Notifications: Dismiss All",
+            Self::SplitRight => "View: Split Editor Right",
+            Self::SplitDown => "View: Split Editor Down",
+            Self::FocusNextPane => "View: Focus Next Pane",
+            Self::FocusPrevPane => "View: Focus Previous Pane",
             Self::Copy => "Copy",
             Self::CopyPath => "Copy Path of Active File",
             Self::CopyRelativePath => "Copy Relative Path of Active File",
@@ -372,6 +384,10 @@ impl Command {
             | Self::GoToTab(_)
             | Self::CloseTabsToRight
             | Self::DismissAllNotifications
+            | Self::SplitRight
+            | Self::SplitDown
+            | Self::FocusNextPane
+            | Self::FocusPrevPane
             | Self::CopyPath
             | Self::CopyRelativePath
             | Self::SidebarUp
@@ -443,6 +459,10 @@ impl Command {
                 | Self::BlameFunction
                 | Self::DismissNotification
                 | Self::DismissAllNotifications
+                | Self::SplitRight
+                | Self::SplitDown
+                | Self::FocusNextPane
+                | Self::FocusPrevPane
         )
     }
 }
@@ -483,6 +503,10 @@ pub fn palette() -> Vec<Command> {
         Command::ScmUnstageAll,
         Command::ScmCommit,
         Command::ScmRefresh,
+        Command::SplitRight,
+        Command::SplitDown,
+        Command::FocusNextPane,
+        Command::FocusPrevPane,
         Command::DismissNotification,
         Command::DismissAllNotifications,
         Command::Quit,
