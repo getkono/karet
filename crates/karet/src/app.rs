@@ -33,7 +33,11 @@ use karet_core::BytePos;
 use karet_core::Decoration;
 use karet_core::DecorationKind;
 use karet_core::LineCol;
+use karet_core::Notification;
+use karet_core::NotificationId;
+use karet_core::NotificationKind;
 use karet_core::Range;
+use karet_core::Severity;
 use karet_core::ThemeRole;
 use karet_editor::EditorState;
 use karet_filetype::FileKind;
@@ -45,6 +49,7 @@ use karet_search::SearchQuery;
 use karet_search::WorkspaceSearch;
 use karet_search::search_in_file;
 use karet_session::Backend;
+use karet_session::BackendError;
 use karet_session::Command as SessionCommand;
 use karet_session::DocSnapshot;
 use karet_session::DocumentId;
@@ -76,6 +81,7 @@ use crate::keymap::Modal;
 use crate::keymap::Resolved;
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
+use crate::notify::NotificationCenter;
 use crate::overlay::Overlay;
 use crate::overlay::OverlayEvent;
 use crate::render::FileView;
@@ -155,6 +161,15 @@ pub(crate) struct TabHit {
     pub(crate) close: u16,
 }
 
+/// A clickable toast card, recorded during the last render for click hit-testing.
+#[derive(Clone, Copy)]
+pub(crate) struct ToastHit {
+    /// The card rectangle (a click anywhere on it dismisses the notification).
+    pub(crate) rect: Rect,
+    /// The notification the card shows.
+    pub(crate) id: NotificationId,
+}
+
 /// The IDE shell state.
 pub struct App {
     /// The workspace root.
@@ -198,6 +213,10 @@ pub struct App {
     pub(crate) search: SearchPanel,
     /// A transient status message.
     pub(crate) status: Option<String>,
+    /// The centralized notification stack (errors, out-of-band conditions).
+    pub(crate) notifications: NotificationCenter,
+    /// Clickable toast cards from the last frame (mouse hit-testing).
+    pub(crate) toast_hits: Vec<ToastHit>,
     /// The sidebar rect from the last frame (mouse hit-testing).
     pub(crate) sidebar_rect: Rect,
     /// The main content rect from the last frame.
@@ -292,6 +311,8 @@ impl App {
             pending: Vec::new(),
             search: SearchPanel::default(),
             status: None,
+            notifications: NotificationCenter::default(),
+            toast_hits: Vec::new(),
             sidebar_rect: Rect::default(),
             main_rect: Rect::default(),
             tabstrip_rect: Rect::default(),
@@ -363,6 +384,17 @@ impl App {
     /// active modal's text input when nothing is bound.
     fn handle_key(&mut self, key: KeyEvent) {
         self.status = None;
+        // Esc dismisses a showing notification first (VS Code-style), but only when no
+        // modal already owns Esc — so overlay/find/commit cancels are untouched, and
+        // base Esc behaves normally whenever no toast is visible.
+        if key.code == KeyCode::Esc
+            && key.modifiers.is_empty()
+            && !self.notifications.is_empty()
+            && self.input_context().modal.is_none()
+        {
+            self.notifications.dismiss_latest();
+            return;
+        }
         let ctx = self.input_context();
         match ctx.modal {
             Some(modal) => match keymap::resolve(ctx, &[KeyChord::from_event(key)]) {
@@ -722,6 +754,8 @@ impl App {
             Command::CloseAllTabs => self.close_all_tabs(),
             Command::ReopenClosedTab => self.reopen_closed_tab(),
             Command::OpenAnyway => self.open_active_anyway(),
+            Command::DismissNotification => self.notifications.dismiss_latest(),
+            Command::DismissAllNotifications => self.notifications.dismiss_all(),
             Command::Copy => self.copy_selection(),
             Command::CopyPath => self.copy_path(false),
             Command::CopyRelativePath => self.copy_path(true),
@@ -911,9 +945,12 @@ impl App {
 
     /// Send a fire-and-forget command to the backend (no document context).
     fn send_vcs(&mut self, command: SessionCommand) {
-        if let Some(backend) = &self.backend {
+        let result = self.backend.as_ref().map(|backend| {
             let id = backend.next_id();
-            let _ = backend.send(id, command);
+            backend.send(id, command)
+        });
+        if let Some(Err(e)) = result {
+            self.notify_backend_error(e);
         }
     }
 
@@ -1500,6 +1537,25 @@ impl App {
         true
     }
 
+    /// Handle a left click on a toast card: dismiss it. Returns `true` when the
+    /// click landed on a card (so it is not routed elsewhere).
+    fn handle_toast_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return false;
+        }
+        let point = (mouse.column, mouse.row);
+        let Some(hit) = self
+            .toast_hits
+            .iter()
+            .find(|h| rect_contains(h.rect, point))
+        else {
+            return false;
+        };
+        let id = hit.id;
+        self.notifications.dismiss(id);
+        true
+    }
+
     /// The command bound to the status-bar segment at column `x`, if any.
     fn status_command_at(&self, x: u16) -> Option<Command> {
         self.status_hits
@@ -1523,6 +1579,11 @@ impl App {
     /// Handle a mouse event: the tab strip (switch / close / cycle), wheel scrolls
     /// (the sidebar or the active tab), and a left click moves focus.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
+        // Toasts float above everything (including the overlay), so hit-test them
+        // first: a left click on a card dismisses it.
+        if self.handle_toast_mouse(mouse) {
+            return;
+        }
         if self.overlay.is_some() {
             return;
         }
@@ -1911,22 +1972,27 @@ impl App {
         let Some(doc) = self.active_code_doc() else {
             return;
         };
-        if let Some(backend) = &self.backend {
+        let result = self.backend.as_ref().map(|backend| {
             let id = backend.next_id();
-            let _ = backend.send(id, make(doc));
+            backend.send(id, make(doc))
+        });
+        if let Some(Err(e)) = result {
+            self.notify_backend_error(e);
         }
     }
 
     /// Save the active document, or report that there is no file to save.
     fn save_active(&mut self) {
-        match self.active_code_doc() {
-            Some(doc) => {
-                if let Some(backend) = &self.backend {
-                    let id = backend.next_id();
-                    let _ = backend.send(id, SessionCommand::Save { doc });
-                }
-            },
-            None => self.status = Some("save: open a text file".to_string()),
+        let Some(doc) = self.active_code_doc() else {
+            self.status = Some("save: open a text file".to_string());
+            return;
+        };
+        let result = self.backend.as_ref().map(|backend| {
+            let id = backend.next_id();
+            backend.send(id, SessionCommand::Save { doc })
+        });
+        if let Some(Err(e)) = result {
+            self.notify_backend_error(e);
         }
     }
 
@@ -1962,6 +2028,39 @@ impl App {
         self.submit_edit(move |caret, sel, _b, base| {
             Some(editing::insert(caret, sel, base, &normalized))
         });
+    }
+
+    /// Push a notification onto the center. Errors and warnings persist until
+    /// dismissed; info and success auto-expire after a few seconds.
+    fn notify(&mut self, severity: Severity, kind: NotificationKind, title: impl Into<String>) {
+        let timeout = match severity {
+            Severity::Error | Severity::Warning => None,
+            // Info, success (Hint), and any future severity auto-dismiss.
+            _ => Some(Duration::from_secs(4)),
+        };
+        self.notifications.push(
+            Notification {
+                id: NotificationId(0),
+                severity,
+                kind,
+                title: title.into(),
+                body: None,
+                tag: None,
+                timeout,
+                dismissable: true,
+            },
+            Instant::now(),
+        );
+    }
+
+    /// Surface a dropped backend-submission error as a persistent notification, so a
+    /// closed or wedged backend never fails silently.
+    fn notify_backend_error(&mut self, error: BackendError) {
+        self.notify(
+            Severity::Error,
+            NotificationKind::System,
+            format!("backend: {error}"),
+        );
     }
 
     /// Handle a backend event: correlate opens to tabs, surface save/progress status.
@@ -2164,6 +2263,10 @@ async fn event_loop(
         terminal.draw(|f| ui::draw(f, app))?;
         app.flush_graphics();
 
+        // Wake to expire notifications exactly when the soonest one elapses; park on
+        // the other sources when nothing is pending (no idle repaints).
+        let deadline = app.notifications.next_deadline(Instant::now());
+
         tokio::select! {
             biased;
             input = input_rx.recv() => match input {
@@ -2176,7 +2279,14 @@ async fn event_loop(
             snap = snaps.recv() => if let Some((doc, snap)) = snap {
                 app.on_snapshot(doc, &snap);
             },
+            () = async move {
+                match deadline {
+                    Some(d) => tokio::time::sleep(d).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {},
         }
+        app.notifications.expire(Instant::now());
 
         // Drain everything else that is ready so a burst collapses into one frame.
         while let Ok(event) = input_rx.try_recv() {
@@ -2233,6 +2343,29 @@ mod tests {
             vec![change("b.rs", StatusKind::Modified)],
             false,
         )
+    }
+
+    #[test]
+    fn notify_makes_errors_persistent_and_info_transient() {
+        let mut app = app();
+        app.notify(Severity::Error, NotificationKind::Io, "save failed");
+        app.notify(Severity::Information, NotificationKind::Vcs, "committed");
+        let active = app.notifications.active();
+        assert_eq!(active.len(), 2);
+        // Newest (info) is first; it auto-expires. The error persists.
+        assert!(active[0].timeout.is_some());
+        assert!(active[1].timeout.is_none());
+    }
+
+    #[test]
+    fn esc_dismisses_a_toast_before_normal_handling() {
+        let mut app = app();
+        app.notify(Severity::Error, NotificationKind::Io, "boom");
+        assert!(!app.notifications.is_empty());
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()));
+        assert!(app.notifications.is_empty());
+        // A second Esc, with no toast left, falls through to normal handling.
+        assert!(!app.should_quit);
     }
 
     #[test]

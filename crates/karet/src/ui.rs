@@ -11,7 +11,9 @@ use karet_fileview::image::ImageWidget;
 use karet_fileview::viewer::Placeholder;
 use karet_theme::Theme;
 use karet_vcs::StatusKind;
+use karet_widgets::Corner;
 use karet_widgets::FileTree;
+use karet_widgets::Toasts;
 use karet_widgets::UiIcon;
 use ratatui::Frame;
 use ratatui::layout::Alignment;
@@ -34,6 +36,7 @@ use ratatui::widgets::Wrap;
 use crate::app::App;
 use crate::app::FindState;
 use crate::app::TabHit;
+use crate::app::ToastHit;
 use crate::command::Command;
 use crate::keymap::ChordStyle;
 use crate::keymap::Context;
@@ -101,6 +104,31 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if let Some(overlay) = &app.overlay {
         draw_overlay(f, overlay, &theme, area);
     }
+
+    // Toasts float above everything, including the modal overlay.
+    draw_toasts(f, app, &theme, area);
+}
+
+/// Draw the notification toast stack (bottom-right) and record each card's clickable
+/// region for dismissal hit-testing. A no-op when there are no active notifications.
+fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+    app.toast_hits.clear();
+    if app.notifications.is_empty() {
+        return;
+    }
+    let notes = app.notifications.active();
+    let toasts = Toasts {
+        notifications: &notes,
+        theme,
+        corner: Corner::BottomRight,
+    };
+    for slot in toasts.layout(area) {
+        app.toast_hits.push(ToastHit {
+            rect: slot.rect,
+            id: slot.id,
+        });
+    }
+    f.render_widget(toasts, area);
 }
 
 /// Draw the one-line find-in-file bar.
