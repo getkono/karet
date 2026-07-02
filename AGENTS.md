@@ -11,8 +11,9 @@ subset (e.g. "highlight a snippet", "diff two files", "render markdown") without
 pulling in unrelated heavy deps. Only the **app** is exempt from these rules.
 
 - **Engines are headless** (no `ratatui`); any TUI widget an engine offers lives
-  behind an off-by-default **`view`** feature. Exception: `karet-widgets` and
-  `karet-editor` *are* widgets, so `ratatui` is a hard dependency.
+  behind an off-by-default **`view`** feature. Exception: `karet-widgets`,
+  `karet-editor` and `karet-fileview` *are* widgets, so `ratatui` is a hard
+  dependency.
 - **Decouple by inversion**: producers (`karet-lsp`, `karet-vcs`, `karet-dap`)
   emit neutral `karet-core` models (`Decoration`, `Diagnostic`, `Symbol`);
   renderers (`karet-editor`, `karet-widgets`) consume them. Only the app connects
@@ -25,8 +26,9 @@ pulling in unrelated heavy deps. Only the **app** is exempt from these rules.
 - A piece with no standalone reuse is a **module inside a larger crate**, not its
   own crate — e.g. terminal-image rendering, the keymap engine, the clipboard.
 - **Published to crates.io**: `karet-core`, `karet-filetype`, `karet-treesitter`,
-  `karet-diff`, `karet-lsp`, `karet-dap`, `karet-vcs`, `karet-search`. Everything
-  else is `publish = false`.
+  `karet-diff`, `karet-lsp`, `karet-dap`, `karet-vcs`, `karet-search`, `karet-text`,
+  `karet-syntax`, `karet-theme`, `karet-editor`, `karet-fileview`. Everything else
+  is `publish = false`.
 
 ## Versioning
 
@@ -45,10 +47,10 @@ published to crates.io (everything else is `publish = false`).
 |---|---|---|---|
 | `karet-core` | foundation | ✓ | shared vocabulary: geometry, text coords, neutral models (Diagnostic/Decoration/Symbol/Completion/Hover/…), neutral edits, `SymbolProvider`, `TokenId` |
 | `karet-filetype` | engine | ✓ | single registry: path → file type (name, category, per-`IconStyle` icon) + renderer routing (`FileKind`/`classify`); dependency-free |
-| `karet-text` | engine | — | rope buffer, undo/redo, dirty/save, large-file mmap, cursors & selections (module) |
+| `karet-text` | engine | ✓ | rope buffer, undo/redo, dirty/save, large-file mmap, cursors & selections (module) |
 | `karet-treesitter` | engine | ✓ | shared tree-sitter parse host (parser pool, incremental trees, queries) |
-| `karet-syntax` | engine | — | tree-sitter highlighting, fold regions, bracket pairs, structural selection |
-| `karet-theme` | engine | — | token palette, .tmTheme + VS Code JSON loaders, contrast (`view` feat) |
+| `karet-syntax` | engine | ✓ | tree-sitter highlighting, fold regions, bracket pairs, structural selection |
+| `karet-theme` | engine | ✓ | token palette, .tmTheme + VS Code JSON loaders, contrast (`view` feat) |
 | `karet-diff` | engine | ✓ | pure syntax-aware diffing (tree-sitter + line/word fallback) — no presentation |
 | `karet-markdown` | engine | — | markdown render model (`view` + `highlight` feats) |
 | `karet-terminal` | engine | — | VT/PTY emulator, scrollback, OSC 133 (`view` feat) |
@@ -58,8 +60,9 @@ published to crates.io (everything else is `publish = false`).
 | `karet-search` | engine | ✓ | in-file + workspace search/replace (ripgrep-style; no karet deps) |
 | `karet-fuzzy` | engine | — | fuzzy match + frecency + quick-open query parsing |
 | `karet-session` | backend | — | headless editor backend: owns documents/workspace, orchestrates producers, applies `Command`s, emits `Event`s; holds format-on-save, spell-check, settings/session |
-| `karet-widgets` | widget | — | ratatui UI toolkit: file tree, picker/palette, outline+breadcrumbs, status bar, dialogs, dock, problems, pane layout, hex view, terminal image, LSP completion/hover popups |
-| `karet-editor` | widget | — | the editor widget: gutter, minimap, scroll, visual aids, snippets (modules) |
+| `karet-widgets` | widget | — | ratatui UI toolkit: file tree, picker/palette, outline+breadcrumbs, status bar, dialogs, dock, problems, pane layout, LSP completion/hover popups |
+| `karet-editor` | widget | ✓ | the editor widget: gutter, minimap, scroll, visual aids, snippets (modules); `read_only` pager mode |
+| `karet-fileview` | widget | ✓ | read-only "render any file" widget: dispatches `FileKind` → editor/hex/image/placeholder; hosts the hex view + terminal image; Markdown renders as source |
 | `karet` | app | — | composition root / TUI client (local mode); merges the clipboard + input (keymap) modules; `publish = false` |
 
 ## Quality

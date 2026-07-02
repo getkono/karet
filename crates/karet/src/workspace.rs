@@ -2,7 +2,7 @@
 //! shown in the explorer's quick-open list.
 //!
 //! These call the engines directly (`karet-text`, `karet-treesitter`,
-//! `karet-syntax`, `karet-widgets`). Routing through `karet-session` is a deferred
+//! `karet-syntax`, `karet-fileview`). Routing through `karet-session` is a deferred
 //! step; its `Command`/`Event` variants already map onto this flow.
 
 use std::path::Path;
