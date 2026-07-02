@@ -512,18 +512,39 @@ fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
         SidebarPanel::Search => "SEARCH",
         SidebarPanel::SourceControl => "SOURCE CONTROL",
     };
-    let cols = Layout::horizontal([Constraint::Min(0), Constraint::Length(7)]).split(area);
+    // Header columns: a small "karet" brand at the far left, then the panel title,
+    // then the activity-bar switcher (7 cells). The brand is dropped on a narrow
+    // sidebar so the title and switcher always fit.
+    const BRAND: &str = "karet";
+    const BRAND_W: u16 = BRAND.len() as u16 + 1; // one leading space
+    let show_brand = area.width >= BRAND_W + 9 + 7; // title (" EXPLORER") + switcher
+    let brand_w = if show_brand { BRAND_W } else { 0 };
+    let cols = Layout::horizontal([
+        Constraint::Length(brand_w),
+        Constraint::Min(0),
+        Constraint::Length(7),
+    ])
+    .split(area);
+    if show_brand {
+        let brand_style = Style::default()
+            .fg(theme.role(ThemeRole::Muted).to_ratatui())
+            .add_modifier(Modifier::BOLD);
+        f.render_widget(
+            Paragraph::new(Line::styled(format!(" {BRAND}"), brand_style)),
+            cols[0],
+        );
+    }
     let title = Style::default()
         .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
         .add_modifier(Modifier::BOLD);
     f.render_widget(
         Paragraph::new(Line::styled(format!(" {name}"), title)),
-        cols[0],
+        cols[1],
     );
 
     // The activity-bar switcher: an icon per panel. Each glyph occupies one cell
     // plus the space after it (2 cells), so the hit regions march in twos.
-    let switch = cols[1];
+    let switch = cols[2];
     let active = app.sidebar_panel;
     let icon_style = app.icon_style;
     app.panel_hits = vec![
