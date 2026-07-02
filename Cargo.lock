@@ -2482,6 +2482,7 @@ dependencies = [
  "karet-diff",
  "karet-editor",
  "karet-filetype",
+ "karet-fileview",
  "karet-fuzzy",
  "karet-markdown",
  "karet-search",
@@ -2535,6 +2536,7 @@ dependencies = [
 name = "karet-editor"
 version = "0.1.0"
 dependencies = [
+ "crossterm",
  "karet-core",
  "karet-syntax",
  "karet-text",
@@ -2548,6 +2550,24 @@ dependencies = [
 [[package]]
 name = "karet-filetype"
 version = "0.1.0"
+
+[[package]]
+name = "karet-fileview"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "crossterm",
+ "image",
+ "karet-core",
+ "karet-editor",
+ "karet-filetype",
+ "karet-syntax",
+ "karet-text",
+ "karet-theme",
+ "karet-treesitter",
+ "ratatui",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "karet-fuzzy"
@@ -2725,16 +2745,13 @@ dependencies = [
 name = "karet-widgets"
 version = "0.1.0"
 dependencies = [
- "base64",
  "ignore",
- "image",
  "karet-core",
  "karet-filetype",
  "karet-fuzzy",
  "karet-markdown",
  "karet-theme",
  "ratatui",
- "thiserror 2.0.18",
  "unicode-width",
 ]
 

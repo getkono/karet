@@ -4,14 +4,14 @@
 
 use karet_core::ThemeRole;
 use karet_editor::Editor;
+use karet_fileview::HexView;
+use karet_fileview::image::GraphicsProtocol;
+use karet_fileview::image::ImageWidget;
+use karet_fileview::viewer::Placeholder;
 use karet_theme::Theme;
 use karet_vcs::StatusKind;
 use karet_widgets::FileTree;
-use karet_widgets::HexView;
 use karet_widgets::UiIcon;
-use karet_widgets::image::GraphicsProtocol;
-use karet_widgets::image::ImageWidget;
-use karet_widgets::viewer::Placeholder;
 use ratatui::Frame;
 use ratatui::layout::Alignment;
 use ratatui::layout::Constraint;

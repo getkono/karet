@@ -9,12 +9,12 @@ use std::path::PathBuf;
 
 use karet_core::Decoration;
 use karet_editor::EditorState;
+use karet_fileview::image::Image;
+use karet_fileview::viewer::FileKind;
 use karet_session::DocumentId;
 use karet_session::ViewId;
 use karet_syntax::Highlights;
 use karet_text::TextBuffer;
-use karet_widgets::image::Image;
-use karet_widgets::viewer::FileKind;
 
 use crate::render::FileView;
 

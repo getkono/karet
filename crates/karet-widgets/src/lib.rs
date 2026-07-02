@@ -3,9 +3,10 @@
 //! A lightweight (ratatui-only) crate of the UI widgets an editor needs. Widgets
 //! render data fed in by the application — they consume `karet-core` models and a
 //! [`SymbolProvider`], and so do **not** depend on the producers
-//! (`karet-lsp`/`karet-vcs`/`karet-dap`). This crate also hosts the merged
-//! [`image`] module and the LSP [`completion`]/[`hover`] popups, which render
-//! `karet-core` models supplied over the backend's event stream.
+//! (`karet-lsp`/`karet-vcs`/`karet-dap`). This crate also hosts the LSP
+//! [`completion`]/[`hover`] popups, which render `karet-core` models supplied over
+//! the backend's event stream. The read-only file-view primitives (hex dump,
+//! terminal image, placeholder) live in `karet-fileview`.
 //!
 //! This is the implementation *skeleton*: each widget's data joint (the borrowed
 //! inputs it renders) is defined as a builder struct; the ratatui `Widget` render
@@ -18,16 +19,12 @@ use karet_fuzzy::Matcher;
 
 pub mod file_tree;
 pub mod glyph;
-pub mod hex;
-pub mod image;
 pub mod select;
-pub mod viewer;
 
 pub use file_tree::FileTree;
 pub use file_tree::FileTreeRow;
 pub use file_tree::FileTreeState;
 pub use glyph::UiIcon;
-pub use hex::HexView;
 pub use karet_filetype::IconStyle;
 pub use select::ListSelection;
 
@@ -108,13 +105,5 @@ mod tests {
         let syms: Vec<Symbol> = Vec::new();
         let outline = Outline { provider: &syms };
         assert!(outline.provider.symbols().is_empty());
-    }
-
-    #[test]
-    fn image_error_displays() {
-        assert_eq!(
-            image::ImageError::Decode.to_string(),
-            "failed to decode image"
-        );
     }
 }

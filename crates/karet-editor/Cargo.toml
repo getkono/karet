@@ -11,7 +11,6 @@ homepage.workspace     = true
 readme.workspace       = true
 keywords.workspace     = true
 categories.workspace   = true
-publish = false                       # karet-internal — not published to crates.io
 
 [features]
 default = []
@@ -25,6 +24,9 @@ ratatui.workspace = true
 unicode-width.workspace = true
 unicode-segmentation.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+crossterm.workspace = true            # the read_only pager example's terminal loop
 
 [lints]
 workspace = true

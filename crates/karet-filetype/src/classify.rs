@@ -38,9 +38,26 @@ pub enum FileKind {
 /// [`FileKind::Text`]; the application resolves a grammar from the path. Image and
 /// PDF kinds are detected by extension and confirmed (or recovered) by magic
 /// bytes, so a mislabeled file still routes sensibly.
+///
+/// Files larger than [`SIZE_GUARD`] are [`FileKind::TooLarge`]. To route with a
+/// different ceiling — an inline preview and a full-file reader typically use very
+/// different budgets — call [`classify_with_guard`] instead.
 #[must_use]
 pub fn classify(path: &Path, head: &[u8], len: u64) -> FileKind {
-    if len > SIZE_GUARD {
+    classify_with_guard(path, head, len, SIZE_GUARD)
+}
+
+/// Classify a file like [`classify`], but with a caller-supplied `size_guard`
+/// instead of the fixed [`SIZE_GUARD`]: files with `len > size_guard` are
+/// [`FileKind::TooLarge`].
+///
+/// This lets a consumer pick the ceiling appropriate to the context — for example
+/// a small budget for an inline preview and a larger one for a full-file reader —
+/// without relying on this crate's default. All other routing (extension and
+/// magic-byte sniffing) is identical to [`classify`].
+#[must_use]
+pub fn classify_with_guard(path: &Path, head: &[u8], len: u64, size_guard: u64) -> FileKind {
+    if len > size_guard {
         return FileKind::TooLarge { len };
     }
     let ext = path
@@ -148,5 +165,36 @@ mod tests {
             classify(Path::new("big.rs"), b"fn", len),
             FileKind::TooLarge { len }
         );
+    }
+
+    #[test]
+    fn custom_guard_overrides_default_ceiling() {
+        // A file under SIZE_GUARD but over a caller's smaller budget is TooLarge.
+        let len = 300 * 1024;
+        assert_eq!(
+            classify_with_guard(Path::new("a.rs"), b"fn main(){}", len, 256 * 1024),
+            FileKind::TooLarge { len }
+        );
+        // A larger caller budget routes a file the default would reject.
+        let big = SIZE_GUARD + 1;
+        assert_eq!(
+            classify_with_guard(Path::new("a.rs"), b"fn main(){}", big, SIZE_GUARD * 2),
+            FileKind::Text
+        );
+    }
+
+    #[test]
+    fn classify_matches_guard_with_default() {
+        let cases: &[(&str, &[u8], u64)] = &[
+            ("a.png", b"", 10),
+            ("a.rs", b"fn main(){}", 11),
+            ("x", b"a\x00b", 3),
+        ];
+        for &(name, head, len) in cases {
+            assert_eq!(
+                classify(Path::new(name), head, len),
+                classify_with_guard(Path::new(name), head, len, SIZE_GUARD)
+            );
+        }
     }
 }

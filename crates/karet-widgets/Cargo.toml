@@ -18,16 +18,13 @@ default = []
 
 [dependencies]
 karet-core.workspace = true
-karet-filetype.workspace = true       # file-type icons + classification (FileKind)
+karet-filetype.workspace = true       # file-type icons for the file tree/glyphs
 karet-fuzzy.workspace = true
 karet-markdown.workspace = true       # hover/doc popup rendering (relocated LSP popups)
 karet-theme = { workspace = true, features = ["view"] }  # role colors for the widgets
 ratatui.workspace = true
-image.workspace = true                # merged from the former karet-image crate
-base64.workspace = true               # Kitty graphics protocol payload encoding
 ignore.workspace = true
 unicode-width.workspace = true
-thiserror.workspace = true
 
 [lints]
 workspace = true

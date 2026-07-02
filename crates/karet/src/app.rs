@@ -37,6 +37,8 @@ use karet_core::Range;
 use karet_core::ThemeRole;
 use karet_editor::EditorState;
 use karet_filetype::IconStyle;
+use karet_fileview::image::GraphicsProtocol;
+use karet_fileview::image::{self};
 use karet_search::FileHit;
 use karet_search::SearchQuery;
 use karet_search::WorkspaceSearch;
@@ -58,8 +60,6 @@ use karet_theme::Theme;
 use karet_vcs::FileChange;
 use karet_widgets::FileTreeState;
 use karet_widgets::ListSelection;
-use karet_widgets::image::GraphicsProtocol;
-use karet_widgets::image::{self};
 use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 

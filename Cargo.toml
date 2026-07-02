@@ -41,6 +41,7 @@ karet-search     = { path = "crates/karet-search",     version = "0.1.0" }
 karet-fuzzy      = { path = "crates/karet-fuzzy",      version = "0.1.0" }
 karet-widgets    = { path = "crates/karet-widgets",    version = "0.1.0" }
 karet-editor     = { path = "crates/karet-editor",     version = "0.1.0" }
+karet-fileview   = { path = "crates/karet-fileview",   version = "0.1.0" }
 karet-session    = { path = "crates/karet-session",    version = "0.1.0" }
 karet-watch      = { path = "crates/karet-watch",      version = "0.1.0" }
 # blameline is a standalone library on its OWN SemVer line (NOT the workspace lockstep);
