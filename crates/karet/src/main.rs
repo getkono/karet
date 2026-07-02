@@ -20,6 +20,7 @@ mod clipboard;
 mod command;
 mod editing;
 mod keymap;
+mod notify;
 mod overlay;
 mod render;
 mod tab;

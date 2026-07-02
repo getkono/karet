@@ -206,6 +206,9 @@ pub enum ThemeRole {
     SearchMatch,
     /// A debugger breakpoint marker.
     Breakpoint,
+    /// A mouse-hover highlight for list rows (a secondary accent, distinct from the
+    /// primary [`Selection`](Self::Selection) highlight).
+    HoverHighlight,
 }
 
 #[cfg(test)]

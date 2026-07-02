@@ -2,6 +2,11 @@
 //! breadcrumb, a switchable sidebar (explorer / search / source-control), the main
 //! content area (the active tab), and a status bar.
 
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
+
 use karet_core::ThemeRole;
 use karet_editor::Editor;
 use karet_filetype::FileKind;
@@ -11,7 +16,9 @@ use karet_fileview::image::ImageWidget;
 use karet_fileview::viewer::Placeholder;
 use karet_theme::Theme;
 use karet_vcs::StatusKind;
+use karet_widgets::Corner;
 use karet_widgets::FileTree;
+use karet_widgets::Toasts;
 use karet_widgets::UiIcon;
 use ratatui::Frame;
 use ratatui::layout::Alignment;
@@ -34,6 +41,7 @@ use ratatui::widgets::Wrap;
 use crate::app::App;
 use crate::app::FindState;
 use crate::app::TabHit;
+use crate::app::ToastHit;
 use crate::command::Command;
 use crate::keymap::ChordStyle;
 use crate::keymap::Context;
@@ -101,6 +109,31 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if let Some(overlay) = &app.overlay {
         draw_overlay(f, overlay, &theme, area);
     }
+
+    // Toasts float above everything, including the modal overlay.
+    draw_toasts(f, app, &theme, area);
+}
+
+/// Draw the notification toast stack (bottom-right) and record each card's clickable
+/// region for dismissal hit-testing. A no-op when there are no active notifications.
+fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+    app.toast_hits.clear();
+    if app.notifications.is_empty() {
+        return;
+    }
+    let notes = app.notifications.active();
+    let toasts = Toasts {
+        notifications: &notes,
+        theme,
+        corner: Corner::BottomRight,
+    };
+    for slot in toasts.layout(area) {
+        app.toast_hits.push(ToastHit {
+            rect: slot.rect,
+            id: slot.id,
+        });
+    }
+    f.render_widget(toasts, area);
 }
 
 /// Draw the one-line find-in-file bar.
@@ -219,7 +252,10 @@ fn draw_tabs(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         } else {
             Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())
         };
-        let label = format!(" {} ", tab.title);
+        // A pre-allocated 1-cell status slot keeps the layout stable: `●` for
+        // unsaved changes (a spinner frame while a slow save writes), else blank.
+        let mark = save_mark(tab);
+        let label = format!(" {mark} {} ", tab.title);
         let label_w = label.chars().count() as u16;
         let start = x;
         spans.push(Span::styled(label, style));
@@ -235,6 +271,29 @@ fn draw_tabs(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     }
     let bar = Style::default().bg(theme.role(ThemeRole::Background).to_ratatui());
     f.render_widget(Paragraph::new(Line::from(spans)).style(bar), area);
+}
+
+/// Braille spinner frames for a slow save (each is a single display cell).
+const SPINNER: &[char] = &[
+    '\u{280b}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283c}', '\u{2834}', '\u{2826}', '\u{2827}',
+    '\u{2807}', '\u{280f}',
+];
+/// How long a save must run before its spinner appears.
+const SPINNER_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+/// Milliseconds per spinner frame.
+const SPINNER_FRAME_MS: u128 = 100;
+
+/// The 1-cell tab status mark: a spinner while a slow save writes, `●` for unsaved
+/// changes, else blank. The slot is always one cell so the layout never shifts.
+fn save_mark(tab: &Tab) -> char {
+    if let Some(since) = tab.saving_since {
+        let elapsed = since.elapsed();
+        if elapsed >= SPINNER_DELAY {
+            let frame = (elapsed.as_millis() / SPINNER_FRAME_MS) as usize % SPINNER.len();
+            return SPINNER[frame];
+        }
+    }
+    if tab.dirty { '\u{25cf}' } else { ' ' }
 }
 
 fn draw_breadcrumb(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
@@ -261,8 +320,25 @@ fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         SidebarPanel::Explorer => {
             let root = app.root.clone();
             let icon_style = app.icon_style;
+            // Highlight files open in tabs, with the active one emphasized.
+            let open: Vec<PathBuf> = app
+                .tabs
+                .iter()
+                .filter_map(|t| t.path().map(Path::to_path_buf))
+                .collect();
+            let active = app
+                .tabs
+                .get(app.active)
+                .and_then(Tab::path)
+                .map(Path::to_path_buf);
+            let hover = app.hovered_explorer_row();
             f.render_stateful_widget(
-                FileTree::new(&root).theme(theme).icons(icon_style),
+                FileTree::new(&root)
+                    .theme(theme)
+                    .icons(icon_style)
+                    .open(&open)
+                    .active(active.as_deref())
+                    .hover(hover),
                 rows[1],
                 &mut app.explorer,
             );
@@ -328,6 +404,8 @@ fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     };
 
     let selection_bg = theme.role(ThemeRole::Selection).to_ratatui();
+    let hover_bg = theme.role(ThemeRole::HoverHighlight).to_ratatui();
+    let hovered = app.hovered_scm_change();
     let cursor = app.scm.selection.cursor();
     let mut items: Vec<ListItem> = Vec::new();
     let mut row_map: Vec<Option<usize>> = Vec::new();
@@ -366,13 +444,51 @@ fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         ]));
         // Every selected row (a contiguous range or a scattered toggle-set) gets the
         // selection background; the cursor row additionally gets the bold highlight
-        // below.
+        // below. A hovered-but-unselected row gets the secondary hover accent.
         if app.scm.selection.is_selected(i) {
             item = item.style(Style::default().bg(selection_bg));
+        } else if hovered == Some(i) {
+            item = item.style(Style::default().bg(hover_bg));
         }
         items.push(item);
         row_map.push(Some(i));
     }
+
+    // The commit-history log (lazily loaded), below the change sections. Its rows
+    // are not selectable (row_map None); only the "load more" affordance is clickable.
+    app.scm_more_row = None;
+    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let header_style = Style::default()
+        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+        .add_modifier(Modifier::BOLD);
+    if !app.scm.log.is_empty() || app.scm.log_has_more {
+        if !app.scm.changes.is_empty() {
+            items.push(ListItem::new(Line::raw("")));
+            row_map.push(None);
+        }
+        items.push(ListItem::new(Line::styled(" COMMITS", header_style)));
+        row_map.push(None);
+        let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
+        for commit in &app.scm.log {
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled(format!(" {} ", commit.short_hash), hash_style),
+                Span::raw(commit.summary.clone()),
+                Span::styled(format!("  {}", relative_time(commit.time)), dim),
+            ])));
+            row_map.push(None);
+        }
+        if app.scm.log_has_more {
+            app.scm_more_row = Some(items.len());
+            let label = if app.scm.log_loading {
+                " loading…"
+            } else {
+                " ⋯ load more"
+            };
+            items.push(ListItem::new(Line::styled(label, dim)));
+            row_map.push(None);
+        }
+    }
+
     if items.is_empty() {
         app.scm_row_map = Vec::new();
         app.scm_offset = 0;
@@ -380,7 +496,9 @@ fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         return;
     }
     let mut state = ListState::default();
-    state.select(Some(selected_row));
+    // Highlight the selected change (auto-scrolls to it); with no changes, the log
+    // is shown without a highlighted row.
+    state.select((!app.scm.changes.is_empty()).then_some(selected_row));
     let list = List::new(items).highlight_style(
         Style::default()
             .bg(selection_bg)
@@ -389,6 +507,35 @@ fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     f.render_stateful_widget(list, list_area, &mut state);
     app.scm_row_map = row_map;
     app.scm_offset = state.offset();
+}
+
+/// A terse `git log`-style relative time (e.g. `3d ago`) for a Unix timestamp.
+fn relative_time(secs: i64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+        .unwrap_or(0);
+    let delta = now - secs;
+    if delta < 0 {
+        return "just now".to_string();
+    }
+    let (n, unit) = if delta < 60 {
+        (delta, "s")
+    } else if delta < 3600 {
+        (delta / 60, "m")
+    } else if delta < 86_400 {
+        (delta / 3600, "h")
+    } else if delta < 86_400 * 7 {
+        (delta / 86_400, "d")
+    } else if delta < 86_400 * 30 {
+        (delta / (86_400 * 7), "w")
+    } else if delta < 86_400 * 365 {
+        (delta / (86_400 * 30), "mo")
+    } else {
+        (delta / (86_400 * 365), "y")
+    };
+    format!("{n}{unit} ago")
 }
 
 /// Draw the one-line commit-message input shown above the change list.

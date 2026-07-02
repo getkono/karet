@@ -15,7 +15,9 @@ use std::time::Instant;
 use karet_core::Change;
 use karet_core::CursorState;
 use karet_core::Decoration;
+use karet_core::NotificationKind;
 use karet_core::Selection;
+use karet_core::Severity;
 use karet_filetype::FileKind;
 use karet_filetype::classify_ignoring_size;
 use karet_syntax::Highlighter;
@@ -242,12 +244,43 @@ impl Session {
             Command::UnstageAll => self.vcs_write(id, Repository::unstage_all),
             Command::Commit { message } => self.commit(id, &message),
             Command::RefreshVcs => self.emit_vcs_status(Some(id)),
+            Command::VcsLog { skip, limit } => self.emit_vcs_log(id, skip, limit),
             // Language-intelligence and search commands are wired in later milestones.
             _ => {},
         }
     }
 
     // --- source control ---------------------------------------------------
+
+    /// Fetch a page of the commit log and emit it. Requests one extra commit to
+    /// detect whether more remain, then trims to `limit`. A no-op without a repo.
+    fn emit_vcs_log(&mut self, id: RequestId, skip: usize, limit: usize) {
+        let Some(repo) = self.vcs.as_ref() else {
+            return;
+        };
+        match repo.log(skip, limit.saturating_add(1)) {
+            Ok(mut commits) => {
+                let has_more = commits.len() > limit;
+                commits.truncate(limit);
+                self.emit(
+                    Some(id),
+                    Event::VcsLog {
+                        skip,
+                        commits,
+                        has_more,
+                    },
+                );
+            },
+            Err(e) => self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::Vcs,
+                    message: e.to_string(),
+                },
+            ),
+        }
+    }
 
     /// Compute the current `(staged, working)` change sets, or `None` when there is
     /// no repository. A read failure yields empty sets rather than erroring.
@@ -277,8 +310,8 @@ impl Session {
     }
 
     /// Run a write action against the repository, then force a fresh status (so the
-    /// user always sees the result of their action). Failures surface as a
-    /// [`Event::Progress`] message.
+    /// user always sees the result of their action). Failures surface as an
+    /// [`Event::Notification`].
     fn vcs_write(
         &mut self,
         id: RequestId,
@@ -294,16 +327,17 @@ impl Session {
             },
             Err(e) => self.emit(
                 Some(id),
-                Event::Progress {
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::Vcs,
                     message: e.to_string(),
-                    percent: None,
                 },
             ),
         }
     }
 
     /// Commit the staged changes, emitting [`Event::Committed`] then a fresh status,
-    /// or a [`Event::Progress`] message on failure (e.g. conflicts or no identity).
+    /// or a [`Event::Notification`] on failure (e.g. conflicts or no identity).
     fn commit(&mut self, id: RequestId, message: &str) {
         let Some(repo) = self.vcs.as_ref() else {
             return;
@@ -316,9 +350,10 @@ impl Session {
             },
             Err(e) => self.emit(
                 Some(id),
-                Event::Progress {
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::Vcs,
                     message: e.to_string(),
-                    percent: None,
                 },
             ),
         }
@@ -389,9 +424,10 @@ impl Session {
             Err(e) => {
                 self.emit(
                     Some(id),
-                    Event::Progress {
+                    Event::Notification {
+                        severity: Severity::Error,
+                        kind: NotificationKind::Io,
                         message: format!("could not open {}: {e}", path.display()),
-                        percent: None,
                     },
                 );
                 return;
@@ -493,9 +529,10 @@ impl Session {
             Some(Ok(_)) => self.emit(Some(id), Event::Saved { doc: doc_id }),
             Some(Err(e)) => self.emit(
                 Some(id),
-                Event::Progress {
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::Io,
                     message: format!("save failed: {e}"),
-                    percent: None,
                 },
             ),
             None => self.emit(Some(id), unknown_document(doc_id)),
@@ -702,9 +739,10 @@ fn name_for_language(_id: &str) -> Option<&'static str> {
 }
 
 fn unknown_document(doc: DocumentId) -> Event {
-    Event::Progress {
+    Event::Notification {
+        severity: Severity::Error,
+        kind: NotificationKind::System,
         message: format!("unknown document {}", doc.0),
-        percent: None,
     }
 }
 
@@ -988,12 +1026,18 @@ mod tests {
         while let Some((_, ev)) = events.try_recv() {
             match ev {
                 Event::Saved { .. } => saved = true,
-                Event::Progress { .. } => failed = true,
+                Event::Notification {
+                    severity: Severity::Error,
+                    ..
+                } => failed = true,
                 _ => {},
             }
         }
         assert!(!saved, "a malformed cbor buffer must not save");
-        assert!(failed, "the failure should surface as progress");
+        assert!(
+            failed,
+            "the failure should surface as an error notification"
+        );
         assert_eq!(
             std::fs::read(&path).unwrap_or_default(),
             bytes,

@@ -25,6 +25,7 @@ pub mod edit;
 pub mod error;
 pub mod geometry;
 pub mod model;
+pub mod notify;
 pub mod provider;
 pub mod token;
 
@@ -68,6 +69,10 @@ pub use model::SignatureHelp;
 pub use model::Symbol;
 pub use model::SymbolKind;
 pub use model::UnderlineStyle;
+pub use notify::Notification;
+pub use notify::NotificationId;
+pub use notify::NotificationKind;
+pub use notify::severity_role;
 pub use provider::DecorationSource;
 pub use provider::DiagnosticSource;
 pub use provider::SymbolProvider;

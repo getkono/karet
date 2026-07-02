@@ -33,7 +33,11 @@ use karet_core::BytePos;
 use karet_core::Decoration;
 use karet_core::DecorationKind;
 use karet_core::LineCol;
+use karet_core::Notification;
+use karet_core::NotificationId;
+use karet_core::NotificationKind;
 use karet_core::Range;
+use karet_core::Severity;
 use karet_core::ThemeRole;
 use karet_editor::EditorState;
 use karet_filetype::FileKind;
@@ -45,6 +49,7 @@ use karet_search::SearchQuery;
 use karet_search::WorkspaceSearch;
 use karet_search::search_in_file;
 use karet_session::Backend;
+use karet_session::BackendError;
 use karet_session::Command as SessionCommand;
 use karet_session::DocSnapshot;
 use karet_session::DocumentId;
@@ -58,6 +63,7 @@ use karet_session::ViewId;
 use karet_session::local;
 use karet_text::TextBuffer;
 use karet_theme::Theme;
+use karet_vcs::Commit;
 use karet_vcs::FileChange;
 use karet_widgets::FileTreeState;
 use karet_widgets::ListSelection;
@@ -76,6 +82,7 @@ use crate::keymap::Modal;
 use crate::keymap::Resolved;
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
+use crate::notify::NotificationCenter;
 use crate::overlay::Overlay;
 use crate::overlay::OverlayEvent;
 use crate::render::FileView;
@@ -94,6 +101,12 @@ pub(crate) struct Scm {
     pub(crate) staged_count: usize,
     /// The cursor and multi-file selection over `changes`.
     pub(crate) selection: ListSelection,
+    /// The loaded commit-log page(s), newest first (lazily fetched).
+    pub(crate) log: Vec<Commit>,
+    /// Whether more commits exist beyond the loaded ones.
+    pub(crate) log_has_more: bool,
+    /// Whether a log page request is currently in flight.
+    pub(crate) log_loading: bool,
 }
 
 impl Scm {
@@ -144,6 +157,9 @@ pub(crate) struct SearchPanel {
 /// The maximum number of matching files the workspace search panel collects.
 const SEARCH_RESULT_CAP: usize = 500;
 
+/// How many commits the source-control log fetches per lazily-loaded page.
+const SCM_LOG_PAGE: usize = 25;
+
 /// A clickable tab region in the tab strip, recorded during the last render.
 #[derive(Clone, Copy)]
 pub(crate) struct TabHit {
@@ -153,6 +169,15 @@ pub(crate) struct TabHit {
     pub(crate) end: u16,
     /// Column of the close (×) glyph.
     pub(crate) close: u16,
+}
+
+/// A clickable toast card, recorded during the last render for click hit-testing.
+#[derive(Clone, Copy)]
+pub(crate) struct ToastHit {
+    /// The card rectangle (a click anywhere on it dismisses the notification).
+    pub(crate) rect: Rect,
+    /// The notification the card shows.
+    pub(crate) id: NotificationId,
 }
 
 /// The IDE shell state.
@@ -198,6 +223,10 @@ pub struct App {
     pub(crate) search: SearchPanel,
     /// A transient status message.
     pub(crate) status: Option<String>,
+    /// The centralized notification stack (errors, out-of-band conditions).
+    pub(crate) notifications: NotificationCenter,
+    /// Clickable toast cards from the last frame (mouse hit-testing).
+    pub(crate) toast_hits: Vec<ToastHit>,
     /// The sidebar rect from the last frame (mouse hit-testing).
     pub(crate) sidebar_rect: Rect,
     /// The main content rect from the last frame.
@@ -210,12 +239,17 @@ pub struct App {
     pub(crate) tab_dragging: bool,
     /// The sidebar's content area (below the header) from the last frame.
     pub(crate) sidebar_content_rect: Rect,
+    /// The current mouse position while hovering the sidebar content, for a
+    /// secondary-accent row highlight (explorer / source-control lists).
+    pub(crate) hover: Option<(u16, u16)>,
     /// The header panel-switcher cells (`1 2 3`) from the last frame.
     pub(crate) panel_hits: Vec<(u16, u16, SidebarPanel)>,
     /// Source-Control display-row → change-index map from the last frame.
     pub(crate) scm_row_map: Vec<Option<usize>>,
     /// The Source-Control list scroll offset from the last frame.
     pub(crate) scm_offset: usize,
+    /// The display row of the commit-log "load more" affordance, if shown.
+    pub(crate) scm_more_row: Option<usize>,
     /// The search-results area from the last frame.
     pub(crate) search_results_rect: Rect,
     /// The search-results list scroll offset from the last frame.
@@ -245,6 +279,9 @@ pub struct App {
     backend: Option<Arc<dyn Backend>>,
     /// Open requests awaiting their `Opened` event, mapping request id → file path.
     pending_open: HashMap<RequestId, PathBuf>,
+    /// In-flight save requests, mapping request id → document, so the tab's saving
+    /// spinner clears when the answering event (saved or error) arrives.
+    pending_saves: HashMap<RequestId, DocumentId>,
     /// Session documents the app has opened, so closing the last tab for a document
     /// can release it (the session ref-counts; the app must balance opens/closes).
     open_docs: HashSet<DocumentId>,
@@ -281,6 +318,9 @@ impl App {
                 selection: ListSelection::new(changes.len()),
                 changes,
                 staged_count,
+                log: Vec::new(),
+                log_has_more: false,
+                log_loading: false,
             },
             tabs: vec![Tab::welcome()],
             active: 0,
@@ -292,15 +332,19 @@ impl App {
             pending: Vec::new(),
             search: SearchPanel::default(),
             status: None,
+            notifications: NotificationCenter::default(),
+            toast_hits: Vec::new(),
             sidebar_rect: Rect::default(),
             main_rect: Rect::default(),
             tabstrip_rect: Rect::default(),
             tab_hits: Vec::new(),
             tab_dragging: false,
             sidebar_content_rect: Rect::default(),
+            hover: None,
             panel_hits: Vec::new(),
             scm_row_map: Vec::new(),
             scm_offset: 0,
+            scm_more_row: None,
             search_results_rect: Rect::default(),
             search_offset: 0,
             status_rect: Rect::default(),
@@ -315,6 +359,7 @@ impl App {
             should_quit: false,
             backend: None,
             pending_open: HashMap::new(),
+            pending_saves: HashMap::new(),
             open_docs: HashSet::new(),
             next_view: 1,
         }
@@ -363,6 +408,17 @@ impl App {
     /// active modal's text input when nothing is bound.
     fn handle_key(&mut self, key: KeyEvent) {
         self.status = None;
+        // Esc dismisses a showing notification first (VS Code-style), but only when no
+        // modal already owns Esc — so overlay/find/commit cancels are untouched, and
+        // base Esc behaves normally whenever no toast is visible.
+        if key.code == KeyCode::Esc
+            && key.modifiers.is_empty()
+            && !self.notifications.is_empty()
+            && self.input_context().modal.is_none()
+        {
+            self.notifications.dismiss_latest();
+            return;
+        }
         let ctx = self.input_context();
         match ctx.modal {
             Some(modal) => match keymap::resolve(ctx, &[KeyChord::from_event(key)]) {
@@ -706,6 +762,10 @@ impl App {
                 self.sidebar_panel = panel;
                 self.sidebar_visible = true;
                 self.focus = Focus::Sidebar;
+                // Lazily fetch the first commit-log page when Source Control opens.
+                if panel == SidebarPanel::SourceControl && self.scm.log.is_empty() {
+                    self.request_scm_log(0);
+                }
             },
             Command::OpenQuickOpen => self.open_quick_open(),
             Command::OpenCommandPalette => self.overlay = Some(Overlay::command_palette()),
@@ -722,6 +782,8 @@ impl App {
             Command::CloseAllTabs => self.close_all_tabs(),
             Command::ReopenClosedTab => self.reopen_closed_tab(),
             Command::OpenAnyway => self.open_active_anyway(),
+            Command::DismissNotification => self.notifications.dismiss_latest(),
+            Command::DismissAllNotifications => self.notifications.dismiss_all(),
             Command::Copy => self.copy_selection(),
             Command::CopyPath => self.copy_path(false),
             Command::CopyRelativePath => self.copy_path(true),
@@ -909,11 +971,35 @@ impl App {
 
     // --- source control ---------------------------------------------------
 
+    /// Request one page of the commit log starting at `skip`, unless one is already
+    /// in flight. The result arrives as [`SessionEvent::VcsLog`].
+    fn request_scm_log(&mut self, skip: usize) {
+        if self.scm.log_loading {
+            return;
+        }
+        self.scm.log_loading = true;
+        self.send_vcs(SessionCommand::VcsLog {
+            skip,
+            limit: SCM_LOG_PAGE,
+        });
+    }
+
+    /// Fetch the next page of the commit log (from the end of what is loaded).
+    fn load_more_scm_log(&mut self) {
+        if self.scm.log_has_more {
+            let skip = self.scm.log.len();
+            self.request_scm_log(skip);
+        }
+    }
+
     /// Send a fire-and-forget command to the backend (no document context).
     fn send_vcs(&mut self, command: SessionCommand) {
-        if let Some(backend) = &self.backend {
+        let result = self.backend.as_ref().map(|backend| {
             let id = backend.next_id();
-            let _ = backend.send(id, command);
+            backend.send(id, command)
+        });
+        if let Some(Err(e)) = result {
+            self.notify_backend_error(e);
         }
     }
 
@@ -1053,7 +1139,11 @@ impl App {
         if confirmed {
             if let Some(paths) = paths {
                 self.send_vcs(SessionCommand::Discard { paths });
-                self.status = Some("discarded".to_string());
+                self.notify(
+                    Severity::Information,
+                    NotificationKind::Vcs,
+                    "discarded changes",
+                );
             }
         } else {
             self.status = Some("discard cancelled".to_string());
@@ -1069,6 +1159,19 @@ impl App {
         self.scm.changes = changes;
         self.scm.staged_count = staged_count;
         self.scm.selection.set_len(self.scm.changes.len());
+    }
+
+    /// Apply a fetched commit-log page: the first page (`skip == 0`) replaces the
+    /// log; a later page appends. Guards against duplicate appends if a page is
+    /// re-delivered.
+    fn apply_vcs_log(&mut self, skip: usize, commits: Vec<Commit>, has_more: bool) {
+        self.scm.log_loading = false;
+        self.scm.log_has_more = has_more;
+        if skip == 0 {
+            self.scm.log = commits;
+        } else if skip == self.scm.log.len() {
+            self.scm.log.extend(commits);
+        }
     }
 
     /// Open `path`, focusing an existing tab for the same file instead of opening a
@@ -1191,7 +1294,11 @@ impl App {
                 return;
             },
             Err(e) => {
-                self.status = Some(format!("blame: {e}"));
+                self.notify(
+                    Severity::Error,
+                    NotificationKind::Vcs,
+                    format!("blame: {e}"),
+                );
                 return;
             },
         };
@@ -1500,6 +1607,25 @@ impl App {
         true
     }
 
+    /// Handle a left click on a toast card: dismiss it. Returns `true` when the
+    /// click landed on a card (so it is not routed elsewhere).
+    fn handle_toast_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return false;
+        }
+        let point = (mouse.column, mouse.row);
+        let Some(hit) = self
+            .toast_hits
+            .iter()
+            .find(|h| rect_contains(h.rect, point))
+        else {
+            return false;
+        };
+        let id = hit.id;
+        self.notifications.dismiss(id);
+        true
+    }
+
     /// The command bound to the status-bar segment at column `x`, if any.
     fn status_command_at(&self, x: u16) -> Option<Command> {
         self.status_hits
@@ -1523,6 +1649,11 @@ impl App {
     /// Handle a mouse event: the tab strip (switch / close / cycle), wheel scrolls
     /// (the sidebar or the active tab), and a left click moves focus.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
+        // Toasts float above everything (including the overlay), so hit-test them
+        // first: a left click on a card dismisses it.
+        if self.handle_toast_mouse(mouse) {
+            return;
+        }
         if self.overlay.is_some() {
             return;
         }
@@ -1566,8 +1697,32 @@ impl App {
                     self.handle_editor_click(mouse);
                 }
             },
+            // Track the hover position for the secondary-accent row highlight in the
+            // explorer / source-control lists (cleared when off the content area).
+            MouseEventKind::Moved => {
+                self.hover = rect_contains(self.sidebar_content_rect, point).then_some(point);
+            },
             _ => {},
         }
+    }
+
+    /// The absolute explorer row index under the hover cursor, if the mouse is over
+    /// the explorer's content (accounts for the current scroll offset).
+    pub(crate) fn hovered_explorer_row(&self) -> Option<usize> {
+        let (_, hy) = self.hover?;
+        let top = self.sidebar_content_rect.y;
+        (hy >= top).then(|| self.explorer.offset() + usize::from(hy - top))
+    }
+
+    /// The source-control change index under the hover cursor, if any (mirrors the
+    /// SCM click hit-testing, using the last frame's row map).
+    pub(crate) fn hovered_scm_change(&self) -> Option<usize> {
+        let (_, hy) = self.hover?;
+        if hy < self.sidebar_content_rect.y {
+            return None;
+        }
+        let display = self.scm_offset + usize::from(hy - self.sidebar_content_rect.y);
+        self.scm_row_map.get(display).copied().flatten()
     }
 
     /// The sidebar panel whose header switcher cell is at `(col, row_y)`, if any.
@@ -1614,7 +1769,9 @@ impl App {
                     return;
                 }
                 let display = self.scm_offset + (row_y - self.sidebar_content_rect.y) as usize;
-                if let Some(Some(idx)) = self.scm_row_map.get(display).copied() {
+                if self.scm_more_row == Some(display) {
+                    self.load_more_scm_log();
+                } else if let Some(Some(idx)) = self.scm_row_map.get(display).copied() {
                     if ctrl {
                         self.scm.selection.toggle(idx);
                     } else if shift {
@@ -1725,13 +1882,15 @@ impl App {
     }
 
     /// Handle a left click in the editor: focus it and place the caret (single
-    /// click), select the word (double) or the line (triple).
+    /// click), extend the selection to the click (Shift+click), or select the word
+    /// (double) / line (triple).
     fn handle_editor_click(&mut self, mouse: MouseEvent) {
         self.focus = Focus::Editor;
         if !rect_contains(self.editor_rect, (mouse.column, mouse.row)) {
             return;
         }
         let area = self.editor_rect;
+        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         let streak = self.click_streak(mouse.column, mouse.row);
         if let Some(Tab {
             kind: TabKind::Code { buffer, .. },
@@ -1749,10 +1908,17 @@ impl App {
                     let (anchor, head) = line_span(buffer, pos.line);
                     editor.set_selection(buffer, anchor, head);
                 },
+                // Shift+click extends the selection from the current caret to the
+                // click point (VS Code style); a plain click places the caret.
+                _ if shift => {
+                    editor.ensure_anchor();
+                    editor.extend_to(buffer, pos);
+                },
                 _ => editor.set_caret(buffer, pos),
             }
         }
-        // Only a single click starts a drag-select; word/line clicks are atomic.
+        // A single click (plain or shift) starts a drag-select so the pointer can
+        // keep extending; word/line clicks are atomic.
         self.editor_selecting = streak == 1;
     }
 
@@ -1911,22 +2077,37 @@ impl App {
         let Some(doc) = self.active_code_doc() else {
             return;
         };
-        if let Some(backend) = &self.backend {
+        let result = self.backend.as_ref().map(|backend| {
             let id = backend.next_id();
-            let _ = backend.send(id, make(doc));
+            backend.send(id, make(doc))
+        });
+        if let Some(Err(e)) = result {
+            self.notify_backend_error(e);
         }
     }
 
-    /// Save the active document, or report that there is no file to save.
+    /// Save the active document, or report that there is no file to save. Tracks the
+    /// in-flight save so a slow write shows a spinner in the tab.
     fn save_active(&mut self) {
-        match self.active_code_doc() {
-            Some(doc) => {
-                if let Some(backend) = &self.backend {
-                    let id = backend.next_id();
-                    let _ = backend.send(id, SessionCommand::Save { doc });
+        let Some(doc) = self.active_code_doc() else {
+            self.status = Some("save: open a text file".to_string());
+            return;
+        };
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        let id = backend.next_id();
+        match backend.send(id, SessionCommand::Save { doc }) {
+            Ok(()) => {
+                self.pending_saves.insert(id, doc);
+                let now = Instant::now();
+                for tab in &mut self.tabs {
+                    if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
+                        tab.saving_since = Some(now);
+                    }
                 }
             },
-            None => self.status = Some("save: open a text file".to_string()),
+            Err(e) => self.notify_backend_error(e),
         }
     }
 
@@ -1964,8 +2145,63 @@ impl App {
         });
     }
 
+    /// The soonest the event loop should wake for time-based UI: notification expiry,
+    /// or a save-spinner animation frame while any save is in flight. `None` when the
+    /// loop can park on its event sources alone.
+    fn next_wake(&self) -> Option<Duration> {
+        let notif = self.notifications.next_deadline(Instant::now());
+        let spinner = (!self.pending_saves.is_empty()).then(|| Duration::from_millis(100));
+        match (notif, spinner) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// Push a notification onto the center. Errors and warnings persist until
+    /// dismissed; info and success auto-expire after a few seconds.
+    fn notify(&mut self, severity: Severity, kind: NotificationKind, title: impl Into<String>) {
+        let timeout = match severity {
+            Severity::Error | Severity::Warning => None,
+            // Info, success (Hint), and any future severity auto-dismiss.
+            _ => Some(Duration::from_secs(4)),
+        };
+        self.notifications.push(
+            Notification {
+                id: NotificationId(0),
+                severity,
+                kind,
+                title: title.into(),
+                body: None,
+                tag: None,
+                timeout,
+                dismissable: true,
+            },
+            Instant::now(),
+        );
+    }
+
+    /// Surface a dropped backend-submission error as a persistent notification, so a
+    /// closed or wedged backend never fails silently.
+    fn notify_backend_error(&mut self, error: BackendError) {
+        self.notify(
+            Severity::Error,
+            NotificationKind::System,
+            format!("backend: {error}"),
+        );
+    }
+
     /// Handle a backend event: correlate opens to tabs, surface save/progress status.
     fn on_backend_event(&mut self, id: Option<RequestId>, event: SessionEvent) {
+        // A save's answering event (saved or error) clears its tab spinner.
+        if let Some(req) = id
+            && let Some(doc) = self.pending_saves.remove(&req)
+        {
+            for tab in &mut self.tabs {
+                if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
+                    tab.saving_since = None;
+                }
+            }
+        }
         match event {
             SessionEvent::Opened { doc, .. } => {
                 self.open_docs.insert(doc);
@@ -1984,44 +2220,81 @@ impl App {
                     }
                 }
             },
-            SessionEvent::Saved { .. } => self.status = Some("saved".to_string()),
+            SessionEvent::Saved { doc } => {
+                for tab in &mut self.tabs {
+                    if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
+                        tab.dirty = false;
+                    }
+                }
+                self.status = Some("saved".to_string());
+            },
             // The fresh content arrives via the snapshot stream; just note it.
             SessionEvent::Reloaded { .. } => {
-                self.status = Some("reloaded from disk".to_string());
+                self.notify(
+                    Severity::Information,
+                    NotificationKind::Io,
+                    "reloaded from disk",
+                );
             },
+            // A persistent warning: a transient status hint would vanish on the next
+            // keystroke, but an unsaved-vs-disk conflict must not be missed.
             SessionEvent::ExternalConflict { .. } => {
-                self.status = Some("⚠ file changed on disk — you have unsaved changes".to_string());
+                self.notify(
+                    Severity::Warning,
+                    NotificationKind::Io,
+                    "file changed on disk — you have unsaved changes",
+                );
             },
             SessionEvent::Progress { message, .. } => self.status = Some(message),
+            // The single high-up funnel: every backend-reported condition becomes a
+            // notification, so nothing is silently dropped.
+            SessionEvent::Notification {
+                severity,
+                kind,
+                message,
+            } => self.notify(severity, kind, message),
             SessionEvent::VcsStatus { staged, working } => self.apply_vcs_status(staged, working),
+            SessionEvent::VcsLog {
+                skip,
+                commits,
+                has_more,
+            } => self.apply_vcs_log(skip, commits, has_more),
             SessionEvent::Committed { oid } => {
                 self.commit_input = None;
                 let short: String = oid.chars().take(7).collect();
-                self.status = Some(format!("committed {short}"));
+                self.notify(
+                    Severity::Information,
+                    NotificationKind::Vcs,
+                    format!("committed {short}"),
+                );
             },
             _ => {},
         }
     }
 
     /// Apply a document snapshot to the matching code tab(s): the snapshot is the
-    /// render source of truth (buffer, highlights, and the search text).
+    /// render source of truth (buffer, highlights, the search text, and the
+    /// unsaved-changes flag).
     fn on_snapshot(&mut self, doc: DocumentId, snap: &DocSnapshot) {
         for tab in &mut self.tabs {
+            let matches = matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc);
+            if !matches {
+                continue;
+            }
             if let TabKind::Code {
-                doc: Some(d),
                 buffer,
                 highlights,
                 text,
                 next_version,
                 ..
             } = &mut tab.kind
-                && *d == doc
             {
                 *buffer = snap.buffer.clone();
                 *highlights = (*snap.highlights).clone();
                 *text = snap.buffer.text();
                 *next_version = (*next_version).max(snap.version);
             }
+            tab.dirty = snap.dirty;
         }
     }
 }
@@ -2164,6 +2437,10 @@ async fn event_loop(
         terminal.draw(|f| ui::draw(f, app))?;
         app.flush_graphics();
 
+        // Wake for notification expiry or a save-spinner frame; park on the event
+        // sources when nothing time-based is pending (no idle repaints).
+        let deadline = app.next_wake();
+
         tokio::select! {
             biased;
             input = input_rx.recv() => match input {
@@ -2176,7 +2453,14 @@ async fn event_loop(
             snap = snaps.recv() => if let Some((doc, snap)) = snap {
                 app.on_snapshot(doc, &snap);
             },
+            () = async move {
+                match deadline {
+                    Some(d) => tokio::time::sleep(d).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {},
         }
+        app.notifications.expire(Instant::now());
 
         // Drain everything else that is ready so a burst collapses into one frame.
         while let Ok(event) = input_rx.try_recv() {
@@ -2236,6 +2520,118 @@ mod tests {
     }
 
     #[test]
+    fn pending_save_drives_the_animation_tick() {
+        let mut app = app();
+        assert!(app.next_wake().is_none());
+        app.pending_saves.insert(RequestId(1), DocumentId(1));
+        assert_eq!(app.next_wake(), Some(Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn save_completion_clears_the_spinner() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "x"));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(2));
+        }
+        app.tabs[app.active].saving_since = Some(Instant::now());
+        app.pending_saves.insert(RequestId(5), DocumentId(2));
+        app.on_backend_event(
+            Some(RequestId(5)),
+            SessionEvent::Saved { doc: DocumentId(2) },
+        );
+        assert!(app.tabs[app.active].saving_since.is_none());
+        assert!(app.pending_saves.is_empty());
+    }
+
+    #[test]
+    fn saved_event_clears_the_dirty_flag() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "x"));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(1));
+        }
+        app.tabs[app.active].dirty = true;
+        app.on_backend_event(None, SessionEvent::Saved { doc: DocumentId(1) });
+        assert!(!app.tabs[app.active].dirty);
+    }
+
+    #[test]
+    fn scm_log_pages_replace_then_append() {
+        fn commit(hash: &str, summary: &str) -> Commit {
+            Commit {
+                hash: hash.to_string(),
+                short_hash: hash.chars().take(7).collect(),
+                summary: summary.to_string(),
+                author: "a".to_string(),
+                time: 0,
+            }
+        }
+        let mut app = app();
+        // The first page replaces and clears the in-flight flag.
+        app.scm.log_loading = true;
+        app.apply_vcs_log(0, vec![commit("aaaaaaa", "first")], true);
+        assert_eq!(app.scm.log.len(), 1);
+        assert!(app.scm.log_has_more);
+        assert!(!app.scm.log_loading);
+        // A page at the right offset appends.
+        app.apply_vcs_log(1, vec![commit("bbbbbbb", "second")], false);
+        assert_eq!(app.scm.log.len(), 2);
+        assert!(!app.scm.log_has_more);
+        // A page at the wrong offset is ignored (no duplicate/torn appends).
+        app.apply_vcs_log(5, vec![commit("ccccccc", "stale")], false);
+        assert_eq!(app.scm.log.len(), 2);
+    }
+
+    #[test]
+    fn hover_maps_to_explorer_and_scm_rows() {
+        let mut app = app();
+        app.sidebar_content_rect = Rect {
+            x: 0,
+            y: 2,
+            width: 20,
+            height: 10,
+        };
+        // Explorer: hover at y=4 with offset 0 → absolute row 2.
+        app.hover = Some((5, 4));
+        assert_eq!(app.hovered_explorer_row(), Some(2));
+        // Above the content area → no hovered row.
+        app.hover = Some((5, 1));
+        assert_eq!(app.hovered_explorer_row(), None);
+
+        // Source control: display 0 is a section header, 1 and 2 are changes.
+        app.scm_offset = 0;
+        app.scm_row_map = vec![None, Some(0), Some(1)];
+        app.hover = Some((5, 3)); // display = 0 + (3 - 2) = 1 → change 0
+        assert_eq!(app.hovered_scm_change(), Some(0));
+        app.hover = Some((5, 2)); // display 0 → header → nothing
+        assert_eq!(app.hovered_scm_change(), None);
+    }
+
+    #[test]
+    fn notify_makes_errors_persistent_and_info_transient() {
+        let mut app = app();
+        app.notify(Severity::Error, NotificationKind::Io, "save failed");
+        app.notify(Severity::Information, NotificationKind::Vcs, "committed");
+        let active = app.notifications.active();
+        assert_eq!(active.len(), 2);
+        // Newest (info) is first; it auto-expires. The error persists.
+        assert!(active[0].timeout.is_some());
+        assert!(active[1].timeout.is_none());
+    }
+
+    #[test]
+    fn esc_dismisses_a_toast_before_normal_handling() {
+        let mut app = app();
+        app.notify(Severity::Error, NotificationKind::Io, "boom");
+        assert!(!app.notifications.is_empty());
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()));
+        assert!(app.notifications.is_empty());
+        // A second Esc, with no toast left, falls through to normal handling.
+        assert!(!app.should_quit);
+    }
+
+    #[test]
     fn starts_explorer_focused_with_welcome_tab() {
         let app = app();
         assert_eq!(app.focus, Focus::Sidebar);
@@ -2265,7 +2661,7 @@ mod tests {
         let _ = std::fs::write(&file, &bytes);
 
         let mut app = app();
-        let len = karet_widgets::viewer::SIZE_GUARD + 1;
+        let len = karet_fileview::viewer::SIZE_GUARD + 1;
         app.tabs = vec![Tab::new(
             "big.cbor",
             TabKind::Placeholder {
@@ -2598,12 +2994,13 @@ mod tests {
         ));
         app.dispatch(Command::ShowBlame);
 
-        // No Blame tab is created; the failure is surfaced in the status bar.
+        // No Blame tab is created; the failure is surfaced as an error notification.
         assert!(!matches!(app.tabs[app.active].kind, TabKind::Blame { .. }));
+        let active = app.notifications.active();
         assert!(
-            app.status
-                .as_deref()
-                .is_some_and(|s| s.starts_with("blame:"))
+            active
+                .iter()
+                .any(|n| n.severity == Severity::Error && n.title.starts_with("blame:"))
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2725,6 +3122,39 @@ mod tests {
             Some(Range {
                 start: LineCol::new(0, 4),
                 end: LineCol::new(0, 7),
+            })
+        );
+    }
+
+    #[test]
+    fn shift_click_extends_selection_to_the_click() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "foo bar baz"));
+        app.editor_rect = Rect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 5,
+        };
+        let click = |col, shift| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row: 0,
+            modifiers: if shift {
+                KeyModifiers::SHIFT
+            } else {
+                KeyModifiers::NONE
+            },
+        };
+        // Place the caret at buffer col 0 (screen col 3 past the gutter), then
+        // Shift+click at buffer col 5 (screen col 8) to extend the selection.
+        app.handle_editor_click(click(3, false));
+        app.handle_editor_click(click(8, true));
+        assert_eq!(
+            app.tabs[app.active].editor.selection_range(),
+            Some(Range {
+                start: LineCol::new(0, 0),
+                end: LineCol::new(0, 5),
             })
         );
     }

@@ -14,12 +14,14 @@ use std::path::PathBuf;
 use karet_core::Decoration;
 
 mod changes;
+mod log;
 mod repo;
 mod selection;
 #[cfg(feature = "git2")]
 mod write;
 
 pub use changes::FileChange;
+pub use log::Commit;
 pub use selection::Selection;
 
 /// Errors produced by the VCS engine.
