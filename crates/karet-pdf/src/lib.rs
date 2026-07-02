@@ -229,14 +229,21 @@ trailer<</Size 5/Root 1 0 R>>\n%%EOF";
             Some((100, 100))
         );
         // The interpreter must have drawn the rectangle: some pixels are black…
-        let has_black = page
-            .as_ref()
-            .is_some_and(|p| p.rgba().chunks_exact(4).any(|px| px[0] < 16 && px[1] < 16 && px[2] < 16));
+        let has_black = page.as_ref().is_some_and(|p| {
+            p.rgba()
+                .chunks_exact(4)
+                .any(|px| px[0] < 16 && px[1] < 16 && px[2] < 16)
+        });
         // …and the margin is still white.
-        let has_white = page
-            .as_ref()
-            .is_some_and(|p| p.rgba().chunks_exact(4).any(|px| px == [255, 255, 255, 255]));
-        assert!(has_black, "expected the filled rectangle to render as black pixels");
+        let has_white = page.as_ref().is_some_and(|p| {
+            p.rgba()
+                .chunks_exact(4)
+                .any(|px| px == [255, 255, 255, 255])
+        });
+        assert!(
+            has_black,
+            "expected the filled rectangle to render as black pixels"
+        );
         assert!(has_white, "expected the page margin to stay white");
     }
 }
