@@ -184,6 +184,20 @@ pub(crate) struct TabHit {
     pub(crate) close: u16,
 }
 
+/// A rendered pane's clickable regions, recorded during the last frame for mouse
+/// hit-testing (which pane a click lands in, and its tab strip / content).
+#[derive(Clone)]
+pub(crate) struct PaneFrame {
+    /// The pane this frame belongs to.
+    pub(crate) pane: PaneId,
+    /// The pane's tab strip row.
+    pub(crate) tabstrip_rect: Rect,
+    /// Per-tab clickable regions within the strip.
+    pub(crate) tab_hits: Vec<TabHit>,
+    /// The pane's content (editor) area.
+    pub(crate) content_rect: Rect,
+}
+
 /// A clickable toast card, recorded during the last render for click hit-testing.
 #[derive(Clone, Copy)]
 pub(crate) struct ToastHit {
@@ -248,10 +262,8 @@ pub struct App {
     pub(crate) sidebar_rect: Rect,
     /// The main content rect from the last frame.
     pub(crate) main_rect: Rect,
-    /// The tab strip rect from the last frame (mouse hit-testing).
-    pub(crate) tabstrip_rect: Rect,
-    /// Per-tab clickable regions from the last frame (mouse hit-testing).
-    pub(crate) tab_hits: Vec<TabHit>,
+    /// Per-pane clickable regions from the last frame (mouse hit-testing).
+    pub(crate) pane_frames: Vec<PaneFrame>,
     /// Whether the active tab is being dragged to a new position.
     pub(crate) tab_dragging: bool,
     /// The sidebar's content area (below the header) from the last frame.
@@ -288,7 +300,7 @@ pub struct App {
     /// The active Kitty image placement rect (set by the renderer), if any.
     pub(crate) image_area: Option<Rect>,
     /// The tab index whose image is currently transmitted to the terminal.
-    shown_image: Option<usize>,
+    shown_image: Option<ViewId>,
     /// Whether the app should quit.
     should_quit: bool,
     /// The headless editor backend; edits route through it. `None` in unit tests,
@@ -355,8 +367,7 @@ impl App {
             toast_hits: Vec::new(),
             sidebar_rect: Rect::default(),
             main_rect: Rect::default(),
-            tabstrip_rect: Rect::default(),
-            tab_hits: Vec::new(),
+            pane_frames: Vec::new(),
             tab_dragging: false,
             sidebar_content_rect: Rect::default(),
             hover: None,
@@ -1270,6 +1281,32 @@ impl App {
         self.layout.focus()
     }
 
+    /// Make `pane` the focused pane, swapping the current focused tabs into storage
+    /// and `pane`'s tabs out. A no-op if `pane` is already focused or unknown.
+    fn focus_pane_switch(&mut self, pane: PaneId) {
+        let current = self.layout.focus();
+        if pane == current || !self.layout.contains(pane) {
+            return;
+        }
+        let tabs = std::mem::take(&mut self.tabs);
+        self.stored.insert(
+            current,
+            StoredPane {
+                tabs,
+                active: self.active,
+            },
+        );
+        if let Some(sp) = self.stored.remove(&pane) {
+            self.tabs = sp.tabs;
+            self.active = sp.active;
+        } else {
+            // A freshly created pane with no stored tabs yet shows a lone welcome tab.
+            self.tabs = vec![Tab::welcome()];
+            self.active = 0;
+        }
+        self.layout.set_focus(pane);
+    }
+
     /// Every tab across every pane (the focused pane plus all stored panes). Used by
     /// backend-event/snapshot handlers that must reach a document wherever it is shown.
     fn all_tabs_mut(&mut self) -> impl Iterator<Item = &mut Tab> {
@@ -1404,9 +1441,15 @@ impl App {
         self.active = to;
     }
 
-    /// While dragging, move the active tab under column `x`.
+    /// While dragging, move the active tab under column `x` within the focused pane.
     fn drag_tab_to(&mut self, x: u16) {
-        if let Some((target, _)) = self.tab_at(x)
+        let focused = self.focus_pane();
+        let hit = self
+            .pane_frames
+            .iter()
+            .find(|f| f.pane == focused)
+            .and_then(|f| tab_at(&f.tab_hits, x));
+        if let Some((target, _)) = hit
             && target != self.active
         {
             self.move_tab(self.active, target);
@@ -1609,25 +1652,29 @@ impl App {
         }
     }
 
-    /// The tab at column `x` and whether `x` is on its close glyph.
-    fn tab_at(&self, x: u16) -> Option<(usize, bool)> {
-        self.tab_hits
-            .iter()
-            .enumerate()
-            .find_map(|(i, h)| (x >= h.start && x < h.end).then_some((i, x == h.close)))
-    }
-
-    /// Handle a mouse event over the tab strip (click to switch / close, wheel to
-    /// cycle). Returns `true` when the event was consumed.
+    /// Handle a mouse event over a pane's tab strip (click to switch / close, wheel
+    /// to cycle). Returns `true` when the event was consumed.
     fn handle_tabstrip_mouse(&mut self, mouse: MouseEvent) -> bool {
-        if !rect_contains(self.tabstrip_rect, (mouse.column, mouse.row)) {
+        let point = (mouse.column, mouse.row);
+        let Some((pane, hit)) = self.pane_frames.iter().find_map(|f| {
+            rect_contains(f.tabstrip_rect, point)
+                .then(|| (f.pane, tab_at(&f.tab_hits, mouse.column)))
+        }) else {
             return false;
-        }
+        };
+        // Act on the clicked pane (borrow of `pane_frames` has ended).
         match mouse.kind {
-            MouseEventKind::ScrollDown => self.next_tab(),
-            MouseEventKind::ScrollUp => self.prev_tab(),
+            MouseEventKind::ScrollDown => {
+                self.focus_pane_switch(pane);
+                self.next_tab();
+            },
+            MouseEventKind::ScrollUp => {
+                self.focus_pane_switch(pane);
+                self.prev_tab();
+            },
             MouseEventKind::Down(MouseButton::Left) => {
-                if let Some((i, on_close)) = self.tab_at(mouse.column) {
+                self.focus_pane_switch(pane);
+                if let Some((i, on_close)) = hit {
                     if on_close {
                         self.close_tab_at(i);
                     } else {
@@ -1637,7 +1684,8 @@ impl App {
                 }
             },
             MouseEventKind::Down(MouseButton::Middle) => {
-                if let Some((i, _)) = self.tab_at(mouse.column) {
+                self.focus_pane_switch(pane);
+                if let Some((i, _)) = hit {
                     self.close_tab_at(i);
                 }
             },
@@ -1924,11 +1972,18 @@ impl App {
     /// click), extend the selection to the click (Shift+click), or select the word
     /// (double) / line (triple).
     fn handle_editor_click(&mut self, mouse: MouseEvent) {
-        self.focus = Focus::Editor;
-        if !rect_contains(self.editor_rect, (mouse.column, mouse.row)) {
+        let point = (mouse.column, mouse.row);
+        // Route the click to the pane whose content it landed in, focusing it.
+        let Some((pane, area)) = self
+            .pane_frames
+            .iter()
+            .find(|f| rect_contains(f.content_rect, point))
+            .map(|f| (f.pane, f.content_rect))
+        else {
             return;
-        }
-        let area = self.editor_rect;
+        };
+        self.focus_pane_switch(pane);
+        self.focus = Focus::Editor;
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         let streak = self.click_streak(mouse.column, mouse.row);
         if let Some(Tab {
@@ -1981,8 +2036,11 @@ impl App {
             return;
         }
         let mut stdout = io::stdout();
+        // The image, if any, belongs to the focused pane's active tab (keyed by its
+        // stable ViewId so a focus switch re-transmits correctly).
+        let current = self.tabs.get(self.active).map(|t| t.view);
         match self.image_area {
-            Some(area) if self.shown_image != Some(self.active) => {
+            Some(area) if self.shown_image != current => {
                 let _ = write!(stdout, "{}", image::kitty_delete_all());
                 let _ = write!(stdout, "\x1b[{};{}H", area.y + 1, area.x + 1);
                 if let Some(Tab {
@@ -1993,7 +2051,7 @@ impl App {
                     let _ = write!(stdout, "{}", image.kitty_escape(area.width, area.height));
                 }
                 let _ = stdout.flush();
-                self.shown_image = Some(self.active);
+                self.shown_image = current;
             },
             None if self.shown_image.is_some() => {
                 let _ = write!(stdout, "{}", image::kitty_delete_all());
@@ -2341,6 +2399,13 @@ impl App {
 /// Whether the screen point `(x, y)` lies inside `r`.
 fn rect_contains(r: Rect, (x, y): (u16, u16)) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
+}
+
+/// The tab at column `x` among `hits`, and whether `x` is on its close glyph.
+fn tab_at(hits: &[TabHit], x: u16) -> Option<(usize, bool)> {
+    hits.iter()
+        .enumerate()
+        .find_map(|(i, h)| (x >= h.start && x < h.end).then_some((i, x == h.close)))
 }
 
 /// The canonical form of `path` for tab de-duplication, falling back to the path
@@ -3045,6 +3110,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A single focused-pane frame whose content covers `rect`, so editor-click
+    /// tests route through the pane hit-testing.
+    fn content_frame(app: &App, rect: Rect) -> PaneFrame {
+        PaneFrame {
+            pane: app.focus_pane(),
+            tabstrip_rect: Rect::default(),
+            tab_hits: Vec::new(),
+            content_rect: rect,
+        }
+    }
+
     fn code_tab(name: &str) -> Tab {
         use karet_syntax::Highlights;
         use karet_text::TextBuffer;
@@ -3140,12 +3216,15 @@ mod tests {
     fn double_click_selects_the_word() {
         let mut app = app();
         app.push_tab(text_tab("t.rs", "foo bar baz"));
-        app.editor_rect = Rect {
-            x: 0,
-            y: 0,
-            width: 40,
-            height: 5,
-        };
+        app.pane_frames = vec![content_frame(
+            &app,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 40,
+                height: 5,
+            },
+        )];
         // Two quick clicks over the 'a' of "bar" (buffer col 5 -> screen col 8).
         let click = |col| MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -3169,12 +3248,15 @@ mod tests {
     fn shift_click_extends_selection_to_the_click() {
         let mut app = app();
         app.push_tab(text_tab("t.rs", "foo bar baz"));
-        app.editor_rect = Rect {
-            x: 0,
-            y: 0,
-            width: 40,
-            height: 5,
-        };
+        app.pane_frames = vec![content_frame(
+            &app,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 40,
+                height: 5,
+            },
+        )];
         let click = |col, shift| MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: col,
@@ -3218,8 +3300,7 @@ mod tests {
 
     #[test]
     fn tab_at_maps_columns_to_tabs_and_close() {
-        let mut app = app();
-        app.tab_hits = vec![
+        let hits = vec![
             TabHit {
                 start: 0,
                 end: 10,
@@ -3231,11 +3312,11 @@ mod tests {
                 close: 18,
             },
         ];
-        assert_eq!(app.tab_at(3), Some((0, false)));
-        assert_eq!(app.tab_at(8), Some((0, true)));
-        assert_eq!(app.tab_at(12), Some((1, false)));
-        assert_eq!(app.tab_at(18), Some((1, true)));
-        assert_eq!(app.tab_at(25), None);
+        assert_eq!(tab_at(&hits, 3), Some((0, false)));
+        assert_eq!(tab_at(&hits, 8), Some((0, true)));
+        assert_eq!(tab_at(&hits, 12), Some((1, false)));
+        assert_eq!(tab_at(&hits, 18), Some((1, true)));
+        assert_eq!(tab_at(&hits, 25), None);
     }
 
     #[test]
@@ -3317,23 +3398,28 @@ mod tests {
         app.push_tab(code_tab("a.rs"));
         app.push_tab(code_tab("b.rs"));
         app.push_tab(code_tab("c.rs"));
-        app.tab_hits = vec![
-            TabHit {
-                start: 0,
-                end: 8,
-                close: 6,
-            },
-            TabHit {
-                start: 8,
-                end: 16,
-                close: 14,
-            },
-            TabHit {
-                start: 16,
-                end: 24,
-                close: 22,
-            },
-        ];
+        app.pane_frames = vec![PaneFrame {
+            pane: app.focus_pane(),
+            tabstrip_rect: Rect::default(),
+            tab_hits: vec![
+                TabHit {
+                    start: 0,
+                    end: 8,
+                    close: 6,
+                },
+                TabHit {
+                    start: 8,
+                    end: 16,
+                    close: 14,
+                },
+                TabHit {
+                    start: 16,
+                    end: 24,
+                    close: 22,
+                },
+            ],
+            content_rect: Rect::default(),
+        }];
         app.active = 0;
         app.tab_dragging = true;
         app.drag_tab_to(20); // over the third tab

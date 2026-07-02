@@ -60,51 +60,28 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let theme = app.theme.clone();
     let area = f.area();
 
-    let has_path = app.tabs.get(app.active).is_some_and(|t| t.path().is_some());
-    let breadcrumb_h = u16::from(has_path);
-    let rows = Layout::vertical([
-        Constraint::Length(1),            // tab strip
-        Constraint::Length(breadcrumb_h), // breadcrumb (collapses when no path)
-        Constraint::Min(0),               // body
-        Constraint::Length(1),            // status bar
-    ])
-    .split(area);
+    // Top level: the body (sidebar + panes) over a one-row status bar. Tab strips
+    // and breadcrumbs now live *inside* each pane rather than spanning the top.
+    let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
+    let body = rows[0];
 
     let sidebar = if app.sidebar_visible {
         let width = sidebar_width(area.width);
-        let cols =
-            Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).split(rows[2]);
+        let cols = Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).split(body);
         app.sidebar_rect = cols[0];
         app.main_rect = cols[1];
         Some(cols[0])
     } else {
         app.sidebar_rect = Rect::default();
-        app.main_rect = rows[2];
+        app.main_rect = body;
         None
     };
 
-    draw_tabs(f, app, &theme, rows[0]);
-    if breadcrumb_h == 1 {
-        draw_breadcrumb(f, app, &theme, rows[1]);
-    }
     if let Some(rect) = sidebar {
         draw_sidebar(f, app, &theme, rect);
     }
-    let mut main = app.main_rect;
-    if let Some(find) = &app.find {
-        let bar = Rect {
-            height: 1.min(main.height),
-            ..main
-        };
-        draw_find_bar(f, find, &theme, bar);
-        main = Rect {
-            y: main.y.saturating_add(1),
-            height: main.height.saturating_sub(1),
-            ..main
-        };
-    }
-    draw_main(f, app, &theme, main);
-    draw_status(f, app, &theme, rows[3]);
+    draw_panes(f, app, &theme, app.main_rect);
+    draw_status(f, app, &theme, rows[1]);
 
     if let Some(overlay) = &app.overlay {
         draw_overlay(f, overlay, &theme, area);
@@ -112,6 +89,116 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     // Toasts float above everything, including the modal overlay.
     draw_toasts(f, app, &theme, area);
+}
+
+/// Immutable per-pane render inputs, bundled to keep the render helpers' signatures
+/// small.
+struct PaneCtx<'a> {
+    theme: &'a Theme,
+    graphics: GraphicsProtocol,
+    /// Whether this pane holds the window focus (affects tab-strip styling).
+    pane_focused: bool,
+    /// Whether the editor should draw its caret as focused.
+    editor_focused: bool,
+    /// The find bar to draw atop this pane's content, if any (focused pane only).
+    find: Option<&'a FindState>,
+}
+
+/// What a rendered pane reported back for hit-testing and image placement.
+struct RenderedPane {
+    tabstrip_rect: Rect,
+    tab_hits: Vec<TabHit>,
+    content_rect: Rect,
+    image_area: Option<Rect>,
+}
+
+/// Draw every pane (tab strip + breadcrumb + content) tiled across `area`, recording
+/// each pane's clickable regions for mouse routing.
+fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+    app.pane_frames.clear();
+    app.image_area = None;
+    app.editor_rect = Rect::default();
+    let focused = app.focus_pane();
+    let editor_focused = app.focus == Focus::Editor;
+    let graphics = app.graphics;
+    for (pane, rect) in app.layout.layout(area) {
+        let is_focused = pane == focused;
+        let rendered = if is_focused {
+            let ctx = PaneCtx {
+                theme,
+                graphics,
+                pane_focused: true,
+                editor_focused,
+                find: app.find.as_ref(),
+            };
+            render_pane(f, &mut app.tabs, app.active, rect, &ctx)
+        } else if let Some(stored) = app.stored.get_mut(&pane) {
+            let ctx = PaneCtx {
+                theme,
+                graphics,
+                pane_focused: false,
+                editor_focused: false,
+                find: None,
+            };
+            render_pane(f, &mut stored.tabs, stored.active, rect, &ctx)
+        } else {
+            continue;
+        };
+        if is_focused {
+            app.editor_rect = rendered.content_rect;
+            app.image_area = rendered.image_area;
+        }
+        app.pane_frames.push(crate::app::PaneFrame {
+            pane,
+            tabstrip_rect: rendered.tabstrip_rect,
+            tab_hits: rendered.tab_hits,
+            content_rect: rendered.content_rect,
+        });
+    }
+}
+
+/// Render one pane into `area`: its tab strip, optional breadcrumb, an optional find
+/// bar (focused pane), and the active tab's content.
+fn render_pane(
+    f: &mut Frame,
+    tabs: &mut [Tab],
+    active: usize,
+    area: Rect,
+    ctx: &PaneCtx,
+) -> RenderedPane {
+    let has_path = tabs.get(active).is_some_and(|t| t.path().is_some());
+    let bc = u16::from(has_path);
+    let parts = Layout::vertical([
+        Constraint::Length(1),  // tab strip
+        Constraint::Length(bc), // breadcrumb (collapses when no path)
+        Constraint::Min(0),     // content
+    ])
+    .split(area);
+    let (tabstrip_rect, tab_hits) =
+        draw_pane_tabs(f, tabs, active, ctx.pane_focused, ctx.theme, parts[0]);
+    if bc == 1 {
+        draw_pane_breadcrumb(f, tabs.get(active), ctx.theme, parts[1]);
+    }
+    let mut content = parts[2];
+    if let Some(find) = ctx.find {
+        let bar = Rect {
+            height: 1.min(content.height),
+            ..content
+        };
+        draw_find_bar(f, find, ctx.theme, bar);
+        content = Rect {
+            y: content.y.saturating_add(1),
+            height: content.height.saturating_sub(1),
+            ..content
+        };
+    }
+    let image_area = draw_pane_content(f, tabs, active, ctx, content);
+    RenderedPane {
+        tabstrip_rect,
+        tab_hits,
+        content_rect: content,
+        image_area,
+    }
 }
 
 /// Draw the notification toast stack (bottom-right) and record each card's clickable
@@ -239,16 +326,30 @@ fn sidebar_width(total: u16) -> u16 {
     30.min(cap)
 }
 
-fn draw_tabs(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
-    app.tabstrip_rect = area;
-    app.tab_hits.clear();
+/// Draw a pane's tab strip and return its rect plus per-tab clickable regions. The
+/// active tab is emphasized when the pane is focused, and muted when it is not, so
+/// the focused pane reads clearly.
+fn draw_pane_tabs(
+    f: &mut Frame,
+    tabs: &[Tab],
+    active: usize,
+    pane_focused: bool,
+    theme: &Theme,
+    area: Rect,
+) -> (Rect, Vec<TabHit>) {
+    let mut hits = Vec::new();
     let mut spans = Vec::new();
     let mut x = area.x;
-    for (i, tab) in app.tabs.iter().enumerate() {
-        let style = if i == app.active {
+    for (i, tab) in tabs.iter().enumerate() {
+        let style = if i == active && pane_focused {
             Style::default()
                 .fg(theme.role(ThemeRole::Foreground).to_ratatui())
                 .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else if i == active {
+            // Active tab of an unfocused pane: emphasized but not reversed.
+            Style::default()
+                .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())
         };
@@ -263,7 +364,7 @@ fn draw_tabs(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         spans.push(Span::styled(" ", style));
         let close = start + label_w;
         x = close + 2;
-        app.tab_hits.push(TabHit {
+        hits.push(TabHit {
             start,
             end: x,
             close,
@@ -271,6 +372,7 @@ fn draw_tabs(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     }
     let bar = Style::default().bg(theme.role(ThemeRole::Background).to_ratatui());
     f.render_widget(Paragraph::new(Line::from(spans)).style(bar), area);
+    (area, hits)
 }
 
 /// Braille spinner frames for a slow save (each is a single display cell).
@@ -296,10 +398,8 @@ fn save_mark(tab: &Tab) -> char {
     if tab.dirty { '\u{25cf}' } else { ' ' }
 }
 
-fn draw_breadcrumb(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
-    let crumbs = app
-        .tabs
-        .get(app.active)
+fn draw_pane_breadcrumb(f: &mut Frame, tab: Option<&Tab>, theme: &Theme, area: Rect) {
+    let crumbs = tab
         .and_then(Tab::path)
         .map(|p| {
             p.components()
@@ -618,21 +718,18 @@ fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     app.search_offset = state.offset();
 }
 
-fn draw_main(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
-    app.image_area = None;
-    app.editor_rect = Rect::default();
-    let active = app.active;
-    let graphics = app.graphics;
-    let focused = app.focus == Focus::Editor;
-    if matches!(
-        app.tabs.get(active).map(|t| &t.kind),
-        Some(TabKind::Code { .. })
-    ) {
-        app.editor_rect = area;
-    }
-    let Some(tab) = app.tabs.get_mut(active) else {
-        return;
-    };
+/// Draw one pane's active tab into `area`. Returns the rect to reserve for a Kitty
+/// image, if the active tab is an image on a Kitty terminal.
+fn draw_pane_content(
+    f: &mut Frame,
+    tabs: &mut [Tab],
+    active: usize,
+    ctx: &PaneCtx,
+    area: Rect,
+) -> Option<Rect> {
+    let theme = ctx.theme;
+    let tab = tabs.get_mut(active)?;
+    let mut image_area = None;
     match &mut tab.kind {
         TabKind::Welcome => draw_welcome(f, theme, area),
         TabKind::Code {
@@ -647,7 +744,7 @@ fn draw_main(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                 .theme(theme)
                 .decorations(decos)
                 .selection(selection)
-                .focused(focused);
+                .focused(ctx.editor_focused);
             f.render_stateful_widget(editor, area, &mut tab.editor);
         },
         TabKind::Diff { file, view, scroll } => draw_diff(f, theme, area, file, *view, scroll),
@@ -658,14 +755,14 @@ fn draw_main(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             f.render_widget(HexView::new(bytes).scroll(*scroll).theme(theme), area);
         },
         TabKind::Image { image, .. } => {
-            if graphics == GraphicsProtocol::Kitty {
+            if ctx.graphics == GraphicsProtocol::Kitty {
                 // Reserve the area; the app flushes the Kitty escape after drawing.
                 f.render_widget(
                     Block::default()
                         .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui())),
                     area,
                 );
-                app.image_area = Some(area);
+                image_area = Some(area);
             } else {
                 f.render_widget(ImageWidget::new(image), area);
             }
@@ -687,6 +784,7 @@ fn draw_main(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             f.render_widget(widget, area);
         },
     }
+    image_area
 }
 
 fn draw_diff(
