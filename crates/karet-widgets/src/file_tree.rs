@@ -31,6 +31,7 @@ use karet_filetype::icon_for_path;
 use karet_theme::Theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -366,6 +367,8 @@ fn name_key(path: &Path) -> String {
 pub struct FileTree<'a> {
     root: &'a Path,
     status: &'a [(PathBuf, Decoration)],
+    open: &'a [PathBuf],
+    active: Option<&'a Path>,
     icons: IconStyle,
     theme: Option<&'a Theme>,
 }
@@ -377,9 +380,27 @@ impl<'a> FileTree<'a> {
         Self {
             root,
             status: &[],
+            open: &[],
+            active: None,
             icons: IconStyle::default(),
             theme: None,
         }
+    }
+
+    /// Supply the paths of files currently open in editor tabs, so their rows are
+    /// highlighted (the [`active`](Self::active) one most prominently).
+    #[must_use]
+    pub fn open(mut self, open: &'a [PathBuf]) -> Self {
+        self.open = open;
+        self
+    }
+
+    /// Supply the path of the active editor tab, so its row gets the strongest
+    /// highlight (VS Code shows the active file emphasized in the explorer).
+    #[must_use]
+    pub fn active(mut self, active: Option<&'a Path>) -> Self {
+        self.active = active;
+        self
     }
 
     /// Supply a path-keyed status overlay (e.g. from `karet-vcs`).
@@ -437,6 +458,7 @@ impl StatefulWidget for FileTree<'_> {
         };
         let fg = theme.role(ThemeRole::Foreground);
         let guide = theme.role(ThemeRole::IndentGuide);
+        let accent = theme.role(ThemeRole::LineNumberActive);
 
         for (i, row) in state
             .rows
@@ -473,8 +495,25 @@ impl StatefulWidget for FileTree<'_> {
                 icon_for_path(&row.path, self.icons)
             };
 
-            // Gitignored entries recede to the dim gutter color (VS Code style).
-            let text = if row.ignored { guide } else { fg };
+            // Foreground precedence: the active editor's file is accented and bold;
+            // other open files are accented; gitignored entries recede to the dim
+            // gutter color (VS Code style); everything else is normal.
+            let is_active = self.active == Some(row.path.as_path());
+            let is_open = self.open.iter().any(|p| p == &row.path);
+            let (text, label_style) = if is_active {
+                (
+                    accent,
+                    Style::default()
+                        .fg(accent.to_ratatui())
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else if is_open {
+                (accent, Style::default().fg(accent.to_ratatui()))
+            } else if row.ignored {
+                (guide, Style::default().fg(guide.to_ratatui()))
+            } else {
+                (fg, Style::default().fg(fg.to_ratatui()))
+            };
             let mut spans = vec![
                 Span::styled(
                     "  ".repeat(row.depth as usize),
@@ -482,7 +521,7 @@ impl StatefulWidget for FileTree<'_> {
                 ),
                 Span::styled(format!("{chev} "), Style::default().fg(guide.to_ratatui())),
                 Span::styled(format!("{icon} "), Style::default().fg(text.to_ratatui())),
-                Span::styled(row.label.clone(), Style::default().fg(text.to_ratatui())),
+                Span::styled(row.label.clone(), label_style),
             ];
             if let Some(dec) = self.status_for(&row.path)
                 && let DecorationKind::GutterMarker { glyph } = &dec.kind
@@ -700,6 +739,31 @@ mod tests {
             state.selected_path(),
             state.rows().last().map(|r| r.path.as_path())
         );
+    }
+
+    #[test]
+    fn active_file_row_is_bold() {
+        let dir = temp_dir();
+        write(&dir.path, "a.txt", b"a");
+        let mut state = FileTreeState::new();
+        let theme = Theme::dark();
+        let active = dir.path.join("a.txt");
+        let area = Rect::new(0, 0, 30, 4);
+        let mut buf = Buffer::empty(area);
+        FileTree::new(&dir.path)
+            .theme(&theme)
+            .active(Some(&active))
+            .render(area, &mut buf, &mut state);
+        // The label starts at column 4 (2 chevron + 2 icon cells) and is bold.
+        assert!(buf.content()[4].modifier.contains(Modifier::BOLD));
+
+        // Without an active path, the same row is not bold.
+        let mut plain = Buffer::empty(area);
+        let mut state2 = FileTreeState::new();
+        FileTree::new(&dir.path)
+            .theme(&theme)
+            .render(area, &mut plain, &mut state2);
+        assert!(!plain.content()[4].modifier.contains(Modifier::BOLD));
     }
 
     #[test]

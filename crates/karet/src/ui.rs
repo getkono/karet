@@ -2,6 +2,9 @@
 //! breadcrumb, a switchable sidebar (explorer / search / source-control), the main
 //! content area (the active tab), and a status bar.
 
+use std::path::Path;
+use std::path::PathBuf;
+
 use karet_core::ThemeRole;
 use karet_editor::Editor;
 use karet_filetype::FileKind;
@@ -289,8 +292,23 @@ fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         SidebarPanel::Explorer => {
             let root = app.root.clone();
             let icon_style = app.icon_style;
+            // Highlight files open in tabs, with the active one emphasized.
+            let open: Vec<PathBuf> = app
+                .tabs
+                .iter()
+                .filter_map(|t| t.path().map(Path::to_path_buf))
+                .collect();
+            let active = app
+                .tabs
+                .get(app.active)
+                .and_then(Tab::path)
+                .map(Path::to_path_buf);
             f.render_stateful_widget(
-                FileTree::new(&root).theme(theme).icons(icon_style),
+                FileTree::new(&root)
+                    .theme(theme)
+                    .icons(icon_style)
+                    .open(&open)
+                    .active(active.as_deref()),
                 rows[1],
                 &mut app.explorer,
             );
