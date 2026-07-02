@@ -71,9 +71,18 @@ pub(crate) enum Content {
     },
     /// A decoded raster image.
     Image(image::Image),
+    /// A parsed multi-page document (e.g. PDF) rasterized to images on demand.
+    #[cfg(feature = "pdf")]
+    Document {
+        /// The parsed document; pages are rasterized lazily during rendering.
+        doc: karet_pdf::Document,
+        /// The total page count, cached so navigation needn't re-query.
+        page_count: usize,
+    },
     /// Raw bytes shown as a hex dump.
     Binary(Vec<u8>),
-    /// Nothing to render inline (PDF, too-large, or an undecodable image).
+    /// Nothing to render inline (too-large, undecodable image, or an unrendered
+    /// document format).
     Placeholder,
 }
 
@@ -116,7 +125,16 @@ impl FileDoc {
                 Err(_) => Content::Placeholder,
             },
             FileKind::Binary => Content::Binary(bytes.to_vec()),
-            // Pdf, TooLarge, and any future `#[non_exhaustive]` kind → placeholder.
+            #[cfg(feature = "pdf")]
+            FileKind::Pdf => match karet_pdf::Document::load(bytes.to_vec()) {
+                Ok(doc) => {
+                    let page_count = doc.page_count();
+                    Content::Document { doc, page_count }
+                },
+                Err(_) => Content::Placeholder,
+            },
+            // TooLarge, DOCX, PDF (without the `pdf` feature), and any future
+            // `#[non_exhaustive]` kind → placeholder.
             _ => Content::Placeholder,
         };
         // Annotate an undecodable-image placeholder with the pixel dimensions.
@@ -151,13 +169,26 @@ impl FileDoc {
     }
 
     /// The number of scrollable units — text lines or hex rows — or `0` for the
-    /// image / placeholder branches. Useful for sizing a scrollbar.
+    /// image / document / placeholder branches. Useful for sizing a scrollbar.
     #[must_use]
     pub fn row_count(&self) -> usize {
         match &self.content {
             Content::Text { buffer, .. } => buffer.line_count(),
             Content::Binary(bytes) => bytes.len().div_ceil(16),
+            #[cfg(feature = "pdf")]
+            Content::Document { .. } => 0,
             Content::Image(_) | Content::Placeholder => 0,
+        }
+    }
+
+    /// The number of pages for a document branch (e.g. PDF), or `None` for every
+    /// other kind. Drives a page indicator and page navigation.
+    #[must_use]
+    pub fn page_count(&self) -> Option<usize> {
+        match &self.content {
+            #[cfg(feature = "pdf")]
+            Content::Document { page_count, .. } => Some(*page_count),
+            _ => None,
         }
     }
 }
@@ -282,6 +313,42 @@ mod tests {
         // Pass only a head sample with a large reported len — must not touch a body.
         let doc = FileDoc::prepare(Path::new("big.rs"), b"fn", 4096, &limits);
         assert_eq!(doc.kind(), FileKind::TooLarge { len: 4096 });
+        assert!(matches!(doc.content, Content::Placeholder));
+    }
+
+    /// A minimal single-page PDF (empty US-Letter page), inline so there is no fixture.
+    #[cfg(feature = "pdf")]
+    const MINIMAL_PDF: &[u8] = b"%PDF-1.4\n\
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n\
+2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n\
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n\
+trailer<</Size 4/Root 1 0 R>>\n%%EOF";
+
+    #[cfg(feature = "pdf")]
+    #[test]
+    fn pdf_prepares_to_a_document_with_page_count() {
+        let doc = FileDoc::prepare(
+            Path::new("a.pdf"),
+            MINIMAL_PDF,
+            MINIMAL_PDF.len() as u64,
+            &Limits::default(),
+        );
+        assert_eq!(doc.kind(), FileKind::Pdf);
+        assert!(matches!(doc.content, Content::Document { .. }));
+        assert_eq!(doc.page_count(), Some(1));
+    }
+
+    #[cfg(feature = "pdf")]
+    #[test]
+    fn undecodable_pdf_falls_back_to_placeholder() {
+        // The `.pdf` extension classifies Pdf, but the bytes are not a parseable PDF.
+        let doc = FileDoc::prepare(
+            Path::new("bad.pdf"),
+            b"totally not a pdf",
+            17,
+            &Limits::default(),
+        );
+        assert_eq!(doc.kind(), FileKind::Pdf);
         assert!(matches!(doc.content, Content::Placeholder));
     }
 }

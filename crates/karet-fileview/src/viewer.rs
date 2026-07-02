@@ -37,10 +37,7 @@ impl Placeholder {
     /// `dimensions` and the file `len`.
     #[must_use]
     pub fn new(path: &Path, kind: FileKind, dimensions: Option<(u32, u32)>, len: u64) -> Self {
-        let title = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map_or_else(|| path.display().to_string(), str::to_string);
+        let title = file_name(path);
         let mut lines = vec![describe(kind).to_string()];
         if let Some((w, h)) = dimensions {
             lines.push(format!("{w} × {h}"));
@@ -53,6 +50,23 @@ impl Placeholder {
         }
     }
 
+    /// A placeholder telling the user this file renders as an image and therefore
+    /// needs a terminal that speaks the Kitty graphics protocol. Shown for document
+    /// formats (e.g. PDF) when no graphics protocol was detected — so the message
+    /// attributes the limitation to the terminal, not to a missing feature.
+    #[must_use]
+    pub fn requires_kitty(path: &Path) -> Self {
+        Self {
+            title: file_name(path),
+            lines: vec![
+                "This document renders as an image,".to_string(),
+                "which needs a terminal with the Kitty graphics protocol".to_string(),
+                "(kitty, ghostty, WezTerm, …).".to_string(),
+            ],
+            hint: None,
+        }
+    }
+
     /// Add an action-hint line shown below the description (e.g. an "open anyway"
     /// override). The caller supplies the full text — including any key chord — so
     /// the widget stays agnostic of the consumer's keybindings.
@@ -61,6 +75,14 @@ impl Placeholder {
         self.hint = Some(hint.into());
         self
     }
+}
+
+/// The file name of `path` for a placeholder title, or the full path if it has no
+/// final component.
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map_or_else(|| path.display().to_string(), str::to_string)
 }
 
 impl Widget for Placeholder {
@@ -100,7 +122,10 @@ impl Widget for Placeholder {
 fn describe(kind: FileKind) -> &'static str {
     match kind {
         FileKind::Image => "Image preview unavailable",
-        FileKind::Pdf => "PDF preview is not supported yet",
+        // Shown only when PDF rendering is not compiled in (the `pdf` feature); when
+        // it is, a PDF either renders or shows the requires-Kitty placeholder.
+        FileKind::Pdf => "PDF document",
+        FileKind::Docx => "DOCX rendering is not available yet",
         FileKind::Binary => "Binary file",
         FileKind::TooLarge { .. } => "File too large to open",
         FileKind::Text | FileKind::Markdown => "Text file",
@@ -157,6 +182,28 @@ mod tests {
             .collect();
         assert!(rendered.contains("File too large to open"));
         assert!(rendered.contains("open anyway"));
+    }
+
+    #[test]
+    fn requires_kitty_names_the_protocol_not_a_missing_feature() {
+        let area = Rect::new(0, 0, 60, 8);
+        let mut buf = Buffer::empty(area);
+        Placeholder::requires_kitty(Path::new("report.pdf")).render(area, &mut buf);
+        let rendered: String = buf
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(rendered.contains("report.pdf"));
+        assert!(rendered.contains("Kitty graphics protocol"));
+    }
+
+    #[test]
+    fn describe_docx_is_pending_not_unsupported() {
+        assert_eq!(
+            describe(FileKind::Docx),
+            "DOCX rendering is not available yet"
+        );
     }
 
     #[test]

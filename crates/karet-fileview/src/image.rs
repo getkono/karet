@@ -61,6 +61,31 @@ pub fn kitty_delete_all() -> String {
     "\x1b_Ga=d\x1b\\".to_string()
 }
 
+/// Approximate terminal cell aspect ratio (height ÷ width). A monospace cell is
+/// roughly twice as tall as it is wide, so preserving a `w × h` pixel image's
+/// aspect ratio means mapping it onto a cell box of `2w : h`.
+const CELL_ASPECT: f64 = 2.0;
+
+/// Fit a `px_w × px_h` pixel image into `area` (in cells), returning the largest
+/// aspect-ratio-preserving sub-rect, centered. Used to reserve a Kitty placement
+/// that does not stretch a page/image to the full pane. Falls back to `area` for
+/// degenerate inputs.
+#[must_use]
+pub fn fit_rect(area: Rect, px_w: u32, px_h: u32) -> Rect {
+    if px_w == 0 || px_h == 0 || area.width == 0 || area.height == 0 {
+        return area;
+    }
+    // Target cell box that preserves the pixel aspect ratio (see `CELL_ASPECT`).
+    let target_cols = f64::from(px_w) * CELL_ASPECT;
+    let target_rows = f64::from(px_h);
+    let scale = (f64::from(area.width) / target_cols).min(f64::from(area.height) / target_rows);
+    let w = ((target_cols * scale).round() as u16).clamp(1, area.width);
+    let h = ((target_rows * scale).round() as u16).clamp(1, area.height);
+    let x = area.x + (area.width - w) / 2;
+    let y = area.y + (area.height - h) / 2;
+    Rect::new(x, y, w, h)
+}
+
 /// A decoded RGBA image.
 #[derive(Clone, Debug)]
 pub struct Image {
@@ -70,6 +95,25 @@ pub struct Image {
 }
 
 impl Image {
+    /// Build an image directly from raw 8-bit RGBA pixels (row-major, 4 bytes per
+    /// pixel, `width * height * 4` bytes).
+    ///
+    /// This is the entry point for pixels produced by something other than an
+    /// encoded image file — e.g. a rasterized PDF page — so they can reuse the
+    /// Kitty escape / halfblock machinery. If `rgba` is not exactly
+    /// `width * height * 4` bytes it is padded or truncated to fit, keeping the
+    /// declared dimensions authoritative.
+    #[must_use]
+    pub fn from_rgba(mut rgba: Vec<u8>, width: u32, height: u32) -> Self {
+        let expected = width as usize * height as usize * 4;
+        rgba.resize(expected, 0);
+        Self {
+            rgba,
+            width,
+            height,
+        }
+    }
+
     /// The pixel width.
     #[must_use]
     pub fn width(&self) -> u32 {
@@ -239,6 +283,27 @@ mod tests {
     }
 
     #[test]
+    fn from_rgba_keeps_dimensions_and_feeds_kitty() {
+        // A 2×1 image supplied as raw RGBA reuses the Kitty escape path.
+        let img = Image::from_rgba(vec![1, 2, 3, 4, 5, 6, 7, 8], 2, 1);
+        assert_eq!((img.width(), img.height()), (2, 1));
+        let esc = img.kitty_escape(2, 1);
+        assert!(esc.contains("s=2"));
+        assert!(esc.contains("v=1"));
+    }
+
+    #[test]
+    fn from_rgba_pads_short_buffers_to_declared_size() {
+        // Fewer bytes than width*height*4 are padded so the buffer stays valid.
+        let img = Image::from_rgba(vec![255, 0, 0, 255], 2, 2);
+        assert_eq!((img.width(), img.height()), (2, 2));
+        let area = Rect::new(0, 0, 2, 2);
+        let mut buf = Buffer::empty(area);
+        ImageWidget::new(&img).render(area, &mut buf);
+        assert!(buf.content().iter().any(|c| c.symbol() == "▀"));
+    }
+
+    #[test]
     fn halfblocks_fill_cells() {
         let img = decode(&tiny_png()).unwrap_or_else(|_| empty());
         let area = Rect::new(0, 0, 4, 2);
@@ -257,6 +322,24 @@ mod tests {
         assert!(esc.contains("f=32"));
         assert!(esc.contains("c=4"));
         assert!(esc.contains("r=2"));
+    }
+
+    #[test]
+    fn fit_rect_preserves_aspect_and_centers() {
+        // A tall page (612×792 px) into a wide area keeps its portrait aspect and
+        // never exceeds the area.
+        let area = Rect::new(0, 0, 80, 24);
+        let fit = fit_rect(area, 612, 792);
+        assert!(fit.width <= area.width && fit.height <= area.height);
+        assert!(fit.width > 0 && fit.height > 0);
+        // Portrait page → height should hit the limiting dimension.
+        assert_eq!(fit.height, area.height);
+        // Centered within the area (±1 cell from integer rounding on odd sizes).
+        let fit_center = i32::from(fit.x) + i32::from(fit.width) / 2;
+        let area_center = i32::from(area.x) + i32::from(area.width) / 2;
+        assert!((fit_center - area_center).abs() <= 1);
+        // Degenerate inputs fall back to the whole area.
+        assert_eq!(fit_rect(area, 0, 10), area);
     }
 
     #[test]

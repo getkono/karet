@@ -79,8 +79,10 @@ fn open_classified(path: &Path, syntax: bool, kind: FileKind, bytes: Vec<u8>, le
                 scroll: 0,
             },
         ),
-        FileKind::Pdf | FileKind::TooLarge { .. } => placeholder(path, kind, &bytes, len),
-        // `FileKind` is `#[non_exhaustive]`; route any future kind to a placeholder.
+        FileKind::Pdf => open_document(path, bytes, len),
+        FileKind::TooLarge { .. } => placeholder(path, kind, &bytes, len),
+        // DOCX (rendering deferred — no pure-Rust rasterizer yet) and any future
+        // `#[non_exhaustive]` kind route to a placeholder describing them.
         _ => placeholder(path, kind, &bytes, len),
     }
 }
@@ -157,7 +159,28 @@ fn highlight(path: &Path, text: &str) -> Highlights {
     highlighter.highlight(&tree, text).unwrap_or_default()
 }
 
-/// Build a graceful placeholder tab (PDF / too-large / undecodable image).
+/// Open a PDF as a document tab whose pages rasterize on demand (via `karet-pdf`),
+/// or fall back to a placeholder if the bytes are not a parseable PDF.
+fn open_document(path: &Path, bytes: Vec<u8>, len: u64) -> Tab {
+    match karet_pdf::Document::load(bytes) {
+        Ok(doc) => {
+            let page_count = doc.page_count();
+            Tab::new(
+                title(path),
+                TabKind::Document {
+                    path: path.to_path_buf(),
+                    doc,
+                    page_count,
+                    page: 0,
+                    rendered: None,
+                },
+            )
+        },
+        Err(_) => placeholder(path, FileKind::Pdf, &[], len),
+    }
+}
+
+/// Build a graceful placeholder tab (too-large / DOCX / undecodable image / PDF).
 fn placeholder(path: &Path, kind: FileKind, bytes: &[u8], len: u64) -> Tab {
     let dims = if kind == FileKind::Image {
         image::dimensions(bytes)
@@ -294,6 +317,41 @@ mod tests {
         let _ = std::fs::write(&file, [0xa1u8]);
         let tab = open_file(&file, true);
         assert!(matches!(tab.kind, TabKind::Hex { .. }));
+    }
+
+    /// A minimal single-page PDF (empty US-Letter page), inline (no fixture).
+    const MINIMAL_PDF: &[u8] = b"%PDF-1.4\n\
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n\
+2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n\
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n\
+trailer<</Size 4/Root 1 0 R>>\n%%EOF";
+
+    #[test]
+    fn opens_pdf_as_document_tab() {
+        let dir = temp_dir();
+        let file = dir.path.join("a.pdf");
+        let _ = std::fs::write(&file, MINIMAL_PDF);
+        let tab = open_file(&file, true);
+        let TabKind::Document { page_count, .. } = tab.kind else {
+            panic!("expected a document tab for a .pdf file");
+        };
+        assert_eq!(page_count, 1);
+    }
+
+    #[test]
+    fn opens_corrupt_pdf_as_placeholder() {
+        let dir = temp_dir();
+        let file = dir.path.join("broken.pdf");
+        // A `.pdf` extension classifies Pdf, but the bytes are not a parseable PDF.
+        let _ = std::fs::write(&file, b"this is not a pdf at all");
+        let tab = open_file(&file, true);
+        assert!(matches!(
+            tab.kind,
+            TabKind::Placeholder {
+                kind: FileKind::Pdf,
+                ..
+            }
+        ));
     }
 
     #[test]

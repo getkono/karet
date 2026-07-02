@@ -1,0 +1,23 @@
+[package]
+name        = "karet-pdf"
+description = "Headless, pure-Rust PDF page rasterization (via hayro) producing RGBA pixels for terminal image rendering."
+publish     = false
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+
+[dependencies]
+# `hayro` re-exports `hayro_syntax` (parsing) and `vello_cpu` (the pixmap), so this
+# single dependency covers loading a PDF and rendering pages. Pure Rust, no C-sys.
+hayro.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

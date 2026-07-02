@@ -12,7 +12,9 @@ use karet_editor::Editor;
 use karet_filetype::FileKind;
 use karet_fileview::HexView;
 use karet_fileview::image::GraphicsProtocol;
+use karet_fileview::image::Image;
 use karet_fileview::image::ImageWidget;
+use karet_fileview::image::fit_rect;
 use karet_fileview::viewer::Placeholder;
 use karet_theme::Theme;
 use karet_vcs::StatusKind;
@@ -409,6 +411,11 @@ const SPINNER_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 /// Milliseconds per spinner frame.
 const SPINNER_FRAME_MS: u128 = 100;
 
+/// The scale at which document (PDF) pages are rasterized. Larger than a typical
+/// pane so the Kitty protocol downscales (sharp) rather than upscales into the
+/// reserved cell box; 2.0 ≈ 144 DPI for a native 72-DPI page.
+const DOC_RENDER_SCALE: f32 = 2.0;
+
 /// The 1-cell tab status mark: a spinner while a slow save writes, `●` for unsaved
 /// changes, else blank. The slot is always one cell so the layout never shifts.
 fn save_mark(tab: &Tab) -> char {
@@ -789,6 +796,65 @@ fn draw_pane_content(
                 image_area = Some(area);
             } else {
                 f.render_widget(ImageWidget::new(image), area);
+            }
+        },
+        TabKind::Document {
+            path,
+            doc,
+            page_count,
+            page,
+            rendered,
+        } => {
+            let page_count = (*page_count).max(1);
+            let idx = (*page).min(page_count - 1);
+            *page = idx;
+            if ctx.graphics == GraphicsProtocol::Kitty {
+                // Rasterize the current page unless it is already cached.
+                if !matches!(rendered.as_ref(), Some((i, _)) if *i == idx) {
+                    *rendered = doc.render_page(idx, DOC_RENDER_SCALE).ok().map(|p| {
+                        let (w, h) = (p.width(), p.height());
+                        (idx, Image::from_rgba(p.into_rgba(), w, h))
+                    });
+                }
+                // Paint the pane background so nothing shows through the page margins.
+                f.render_widget(
+                    Block::default()
+                        .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui())),
+                    area,
+                );
+                // Reserve a one-row footer for the page indicator when there is room.
+                let footer_h = u16::from(page_count > 1 && area.height > 3);
+                let content = Rect {
+                    height: area.height - footer_h,
+                    ..area
+                };
+                if let Some((_, img)) = rendered.as_ref() {
+                    // Reserve an aspect-fit sub-rect so the page is not stretched.
+                    image_area = Some(fit_rect(content, img.width(), img.height()));
+                } else {
+                    // Parsed, but this page failed to rasterize — show a neutral note.
+                    f.render_widget(Placeholder::new(path, FileKind::Pdf, None, 0), content);
+                }
+                if footer_h == 1 {
+                    let footer = Rect {
+                        y: area.y + area.height - 1,
+                        height: 1,
+                        ..area
+                    };
+                    f.render_widget(
+                        Paragraph::new(format!(
+                            "Page {} / {}   ·   PgDn / PgUp",
+                            idx + 1,
+                            page_count
+                        ))
+                        .alignment(Alignment::Center)
+                        .style(Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())),
+                        footer,
+                    );
+                }
+            } else {
+                // No Kitty graphics: attribute the limitation to the terminal.
+                f.render_widget(Placeholder::requires_kitty(path), area);
             }
         },
         TabKind::Placeholder {
