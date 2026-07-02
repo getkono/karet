@@ -55,10 +55,20 @@ renderer — everything unsupported fails gracefully:
 
 ## Keymap
 
-**Global:** `Ctrl+P` quick-open · `Ctrl+Shift+P` command palette · `Ctrl+F` find
-in file · `Ctrl+Shift+F` workspace search · `Ctrl+B` toggle sidebar ·
+**Global:** `Ctrl+P` quick-open · `Ctrl+Shift+P` (or `F1`) command palette · `Ctrl+F`
+find in file · `Ctrl+Shift+F` workspace search · `Ctrl+B` toggle sidebar ·
 `Ctrl+1/2/3` Explorer/Search/Source Control · `Ctrl+C` copy · `Tab` switch focus ·
 `Ctrl+Q` quit (`q` also quits in a viewer).
+
+> **Modifiers, terminals & SSH.** karet uses `Ctrl` as its single primary modifier.
+> This is deliberate and platform-agnostic: a terminal never receives the macOS
+> `Cmd` key — the emulator consumes it — so `Ctrl` is the only modifier a TUI can
+> rely on locally or over SSH (where the client platform is unknown). Some emulators
+> also capture certain `Ctrl+Shift+…` chords for their own shortcuts before the app
+> sees them; **`Ctrl+Shift+P` is the most common casualty** — use **`F1`** for the
+> command palette instead, or click the ` +N` overflow marker at the right of the
+> status bar (it opens the palette, keeping every command reachable). All bindings
+> live in one table (`keymap/mod.rs`), the single place to change or rebind them.
 
 **Tabs:** `Ctrl+Tab` / `Ctrl+Shift+Tab` (or `Ctrl+PageDown`/`Ctrl+PageUp`) next /
 previous · `Ctrl+Shift+PageUp`/`PageDown` move left / right · `Alt+1`…`9` go to tab

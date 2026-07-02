@@ -86,6 +86,7 @@ use KeyCode::Down;
 use KeyCode::End;
 use KeyCode::Enter;
 use KeyCode::Esc;
+use KeyCode::F;
 use KeyCode::Home;
 use KeyCode::Left;
 use KeyCode::PageDown;
@@ -117,6 +118,9 @@ static BINDINGS: &[Binding] = &[
     b(Global, true,  false, false, Char('c'), Command::Copy),
     b(Global, true,  false, false, Char('p'), Command::OpenQuickOpen),
     b(Global, true,  true,  false, Char('p'), Command::OpenCommandPalette),
+    // F1 is a terminal-safe alternate for the command palette: some emulators
+    // capture Ctrl+Shift+P before it reaches the app (see the app README).
+    b(Global, false, false, false, F(1),      Command::OpenCommandPalette),
     b(Global, true,  false, false, Char('f'), Command::OpenFind),
     b(Global, true,  true,  false, Char('f'), Command::OpenGlobalSearch),
     b(Global, true,  false, false, Char('b'), Command::ToggleSidebar),
@@ -504,6 +508,12 @@ mod tests {
                     KeyModifiers::CONTROL | KeyModifiers::SHIFT
                 )
             ),
+            Some(Command::OpenCommandPalette)
+        );
+        // F1 is a terminal-safe alternate for the command palette (some emulators
+        // capture Ctrl+Shift+P). It works regardless of focus.
+        assert_eq!(
+            res(Focus::Editor, false, key(KeyCode::F(1), KeyModifiers::NONE)),
             Some(Command::OpenCommandPalette)
         );
     }
