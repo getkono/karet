@@ -52,7 +52,6 @@ use crate::keymap::Focus;
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
 use crate::overlay::Overlay;
-use crate::render::Section;
 use crate::render::{self};
 use crate::tab::Tab;
 use crate::tab::TabKind;
@@ -717,87 +716,90 @@ fn draw_scm_divider(f: &mut Frame, theme: &Theme, area: Rect, active: bool) {
     f.render_widget(Paragraph::new(Line::styled(rule, style)), area);
 }
 
-/// Draw the changes region (staged / working sections). Shows a "No changes"
-/// placeholder rather than empty space when the working tree is clean.
+/// Draw the changes region. Both the staged and working sections are always shown;
+/// an empty section renders a greyed placeholder line rather than collapsing, so the
+/// layout stays stable as files move between them.
 fn draw_scm_changes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let selection_bg = theme.role(ThemeRole::Selection).to_ratatui();
     let hover_bg = theme.role(ThemeRole::HoverHighlight).to_ratatui();
     let hovered = app.hovered_scm_change();
     let cursor = app.scm.selection.cursor();
+    let header_style = Style::default()
+        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+        .add_modifier(Modifier::BOLD);
+    let placeholder_style = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
     let mut items: Vec<ListItem> = Vec::new();
     let mut row_map: Vec<Option<usize>> = Vec::new();
-    let mut last: Option<Section> = None;
-    for (i, change) in app.scm.changes.iter().enumerate() {
-        let section = if i < app.scm.staged_count {
-            Section::Staged
-        } else {
-            Section::Working
-        };
-        if last != Some(section) {
-            let label = match section {
-                Section::Staged => "STAGED CHANGES",
-                Section::Working => "CHANGES",
-            };
+
+    // Both sections are always drawn, in order. Each reserves at least one line — a
+    // greyed placeholder when empty — so staging a single file (moving it between the
+    // two sections) never makes a header appear or disappear and shift the layout.
+    let staged = app.scm.staged_count;
+    let total_changes = app.scm.changes.len();
+    let sections = [
+        ("STAGED CHANGES", "No staged changes", 0..staged),
+        ("CHANGES", "No changes", staged..total_changes),
+    ];
+    for (label, empty_hint, range) in sections {
+        items.push(ListItem::new(Line::styled(
+            format!(" {label}"),
+            header_style,
+        )));
+        row_map.push(None);
+        if range.is_empty() {
             items.push(ListItem::new(Line::styled(
-                format!(" {label}"),
-                Style::default()
-                    .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
-                    .add_modifier(Modifier::BOLD),
+                format!("   {empty_hint}"),
+                placeholder_style,
             )));
             row_map.push(None);
-            last = Some(section);
+            continue;
         }
-        let (glyph, role) = status_glyph(change.status);
-        // Filename front and centre; the parent directory trails in dim grey and is
-        // omitted entirely for files at the repo root.
-        let name = change.path.file_name().map_or_else(
-            || change.path.to_string_lossy().into_owned(),
-            |n| n.to_string_lossy().into_owned(),
-        );
-        let parent = change
-            .path
-            .parent()
-            .map(|p| p.to_string_lossy().into_owned())
-            .filter(|p| !p.is_empty());
-        let mut spans = vec![
-            Span::styled(
-                format!(" {glyph} "),
-                Style::default().fg(theme.role(role).to_ratatui()),
-            ),
-            Span::raw(name),
-        ];
-        if let Some(parent) = parent {
-            spans.push(Span::styled(
-                format!("  {parent}"),
-                Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
-            ));
+        for i in range {
+            let change = &app.scm.changes[i];
+            let (glyph, role) = status_glyph(change.status);
+            // Filename front and centre; the parent directory trails in dim grey and
+            // is omitted entirely for files at the repo root.
+            let name = change.path.file_name().map_or_else(
+                || change.path.to_string_lossy().into_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            let parent = change
+                .path
+                .parent()
+                .map(|p| p.to_string_lossy().into_owned())
+                .filter(|p| !p.is_empty());
+            let mut spans = vec![
+                Span::styled(
+                    format!(" {glyph} "),
+                    Style::default().fg(theme.role(role).to_ratatui()),
+                ),
+                Span::raw(name),
+            ];
+            if let Some(parent) = parent {
+                spans.push(Span::styled(
+                    format!("  {parent}"),
+                    Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
+                ));
+            }
+            let item = ListItem::new(Line::from(spans));
+            // Every selected row (a contiguous range or a scattered toggle-set) gets
+            // the selection background; the cursor row additionally gets a bold
+            // highlight. A hovered-but-unselected row gets the secondary hover accent.
+            let mut style = Style::default();
+            if app.scm.selection.is_selected(i) {
+                style = style.bg(selection_bg);
+            } else if hovered == Some(i) {
+                style = style.bg(hover_bg);
+            }
+            if i == cursor {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            items.push(item.style(style));
+            row_map.push(Some(i));
         }
-        let item = ListItem::new(Line::from(spans));
-        // Every selected row (a contiguous range or a scattered toggle-set) gets the
-        // selection background; the cursor row additionally gets a bold highlight. A
-        // hovered-but-unselected row gets the secondary hover accent.
-        let mut style = Style::default();
-        if app.scm.selection.is_selected(i) {
-            style = style.bg(selection_bg);
-        } else if hovered == Some(i) {
-            style = style.bg(hover_bg);
-        }
-        if i == cursor {
-            style = style.add_modifier(Modifier::BOLD);
-        }
-        items.push(item.style(style));
-        row_map.push(Some(i));
     }
 
     app.scm_changes_rect = area;
-    if items.is_empty() {
-        app.scm_row_map = Vec::new();
-        app.scm_offset = 0;
-        app.scm_total_rows = 0;
-        let dim = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
-        f.render_widget(Paragraph::new(Line::styled(" No changes", dim)), area);
-        return;
-    }
     let total = items.len();
     let height = area.height as usize;
     let offset = app.scm_offset.min(total.saturating_sub(height));

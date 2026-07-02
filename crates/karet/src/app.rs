@@ -1358,20 +1358,20 @@ impl App {
         }
     }
 
-    /// The display row of the Source-Control change cursor, accounting for the
-    /// "STAGED CHANGES" / "CHANGES" section headers above it.
+    /// The display row of the Source-Control change cursor. Both section headers are
+    /// always drawn, and an empty section reserves one placeholder line, so the
+    /// staged block is `1` header + `max(staged, 1)` rows regardless of contents.
     fn scm_cursor_display_row(&self) -> usize {
         let i = self.scm.selection.cursor();
         let staged = self.scm.staged_count;
-        let working = self.scm.changes.len().saturating_sub(staged);
-        let mut row = i;
-        if staged > 0 {
-            row += 1; // the "STAGED CHANGES" header
+        if i < staged {
+            // In the staged section: the "STAGED CHANGES" header sits above it.
+            1 + i
+        } else {
+            // In the working section: the full staged block plus the "CHANGES" header.
+            let staged_block = 1 + staged.max(1);
+            staged_block + 1 + (i - staged)
         }
-        if i >= staged && working > 0 {
-            row += 1; // the "CHANGES" header
-        }
-        row
     }
 
     /// Scroll the changes region so the change cursor stays visible.
@@ -3982,6 +3982,47 @@ mod tests {
         assert_eq!(app.scm.changes[0].status, StatusKind::Added);
         assert_eq!(app.scm.selection.anchor(), None);
         assert_eq!(app.scm.selection.len(), 3);
+    }
+
+    #[test]
+    fn scm_cursor_display_row_accounts_for_both_permanent_headers() {
+        let mut app = app();
+        app.apply_vcs_status(
+            vec![
+                change("a.rs", StatusKind::Added),
+                change("b.rs", StatusKind::Added),
+            ],
+            vec![
+                change("c.rs", StatusKind::Modified),
+                change("d.rs", StatusKind::Modified),
+            ],
+        );
+        // Layout rows: 0 "STAGED CHANGES", 1-2 staged, 3 "CHANGES", 4-5 working.
+        let rows: Vec<usize> = (0..4)
+            .map(|i| {
+                app.scm.selection.move_to(i);
+                app.scm_cursor_display_row()
+            })
+            .collect();
+        assert_eq!(rows, vec![1, 2, 4, 5]);
+    }
+
+    #[test]
+    fn scm_cursor_display_row_reserves_line_for_empty_staged_section() {
+        let mut app = app();
+        // With nothing staged, the staged section still reserves its header plus one
+        // placeholder line, so the first working row lands at display row 3.
+        app.apply_vcs_status(
+            Vec::new(),
+            vec![
+                change("c.rs", StatusKind::Modified),
+                change("d.rs", StatusKind::Modified),
+            ],
+        );
+        app.scm.selection.move_to(0);
+        assert_eq!(app.scm_cursor_display_row(), 3);
+        app.scm.selection.move_to(1);
+        assert_eq!(app.scm_cursor_display_row(), 4);
     }
 
     #[test]
