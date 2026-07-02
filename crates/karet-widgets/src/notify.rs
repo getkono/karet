@@ -8,6 +8,7 @@
 //! render area to one [`ToastSlot`] per shown notification.
 
 use karet_core::Notification;
+use karet_core::ThemeRole;
 use karet_core::severity_role;
 use karet_theme::Theme;
 use ratatui::buffer::Buffer;
@@ -20,8 +21,6 @@ use ratatui::widgets::Block;
 use ratatui::widgets::Clear;
 use ratatui::widgets::Widget;
 use unicode_width::UnicodeWidthStr;
-
-use karet_core::ThemeRole;
 
 /// Which screen corner the stack grows from.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
