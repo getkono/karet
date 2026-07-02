@@ -27,6 +27,12 @@ use crate::viewer::Placeholder;
 /// The bytes shown per hex row (matches [`HexView`]).
 const HEX_ROW_WIDTH: usize = 16;
 
+/// The scale at which document (PDF) pages are rasterized. Rendered larger than a
+/// typical pane so the Kitty protocol downscales (sharp) rather than upscales
+/// (blurry) into the reserved cell box; 2.0 ≈ 144 DPI for a native 72-DPI page.
+#[cfg(feature = "pdf")]
+const PDF_RENDER_SCALE: f32 = 2.0;
+
 /// The persistent per-view state for a [`FileView`]: scroll position and, for the
 /// Kitty image path, the rect reserved this frame (see [`flush_kitty_image`]).
 ///
@@ -44,6 +50,12 @@ pub struct FileViewState {
     /// The rect reserved for a Kitty image this frame, consumed by
     /// [`flush_kitty_image`]. `None` for every other branch/protocol.
     pending_image: Option<Rect>,
+    /// The current 0-based page for a document (PDF) branch.
+    doc_page: usize,
+    /// Cache of the most recently rasterized document page — `(page index, image)`
+    /// — so scrolling/resizing does not re-rasterize the same page every frame.
+    #[cfg(feature = "pdf")]
+    rendered: Option<(usize, image::Image)>,
 }
 
 impl FileViewState {
@@ -89,6 +101,23 @@ impl FileViewState {
         let scroll = line.saturating_sub(half);
         self.editor.scroll_line = scroll;
         self.hex_scroll = scroll as usize;
+    }
+
+    /// Advance to the next page of a document (PDF) branch. Clamped to the last
+    /// page when rendered; a no-op for every other branch.
+    pub fn next_page(&mut self) {
+        self.doc_page = self.doc_page.saturating_add(1);
+    }
+
+    /// Go back to the previous page of a document branch.
+    pub fn prev_page(&mut self) {
+        self.doc_page = self.doc_page.saturating_sub(1);
+    }
+
+    /// The current 0-based document page (see [`next_page`](Self::next_page)).
+    #[must_use]
+    pub fn doc_page(&self) -> usize {
+        self.doc_page
     }
 }
 
@@ -184,6 +213,42 @@ impl StatefulWidget for FileView<'_> {
                 },
                 GraphicsProtocol::Halfblocks => ImageWidget::new(img).render(area, buf),
             },
+            #[cfg(feature = "pdf")]
+            Content::Document { doc, page_count } => {
+                let page_count = (*page_count).max(1);
+                let idx = state.doc_page.min(page_count - 1);
+                state.doc_page = idx;
+                match self.protocol {
+                    GraphicsProtocol::Kitty => {
+                        // Rasterize the current page unless it is already cached.
+                        let cached = matches!(&state.rendered, Some((i, _)) if *i == idx);
+                        if !cached {
+                            state.rendered =
+                                doc.render_page(idx, PDF_RENDER_SCALE).ok().map(|page| {
+                                    let (w, h) = (page.width(), page.height());
+                                    (idx, image::Image::from_rgba(page.into_rgba(), w, h))
+                                });
+                        }
+                        if let Some((_, img)) = &state.rendered {
+                            buf.set_style(
+                                area,
+                                Style::default().bg(theme.role(ThemeRole::Background).to_ratatui()),
+                            );
+                            // Reserve an aspect-fit sub-rect so the page is not stretched.
+                            state.pending_image =
+                                Some(image::fit_rect(area, img.width(), img.height()));
+                        } else {
+                            // Rasterization failed — fall back to a neutral placeholder.
+                            Placeholder::new(&self.doc.path, self.doc.kind, None, self.doc.len)
+                                .render(area, buf);
+                        }
+                    },
+                    // No Kitty graphics: say so rather than pretending we can't open it.
+                    GraphicsProtocol::Halfblocks => {
+                        Placeholder::requires_kitty(&self.doc.path).render(area, buf);
+                    },
+                }
+            },
             Content::Binary(bytes) => {
                 let rows = bytes.len().div_ceil(HEX_ROW_WIDTH);
                 state.hex_scroll = state.hex_scroll.min(rows.saturating_sub(1));
@@ -215,7 +280,18 @@ pub fn flush_kitty_image(
     state: &FileViewState,
     out: &mut impl Write,
 ) -> io::Result<()> {
-    let (Some(rect), Content::Image(img)) = (state.pending_image, &doc.content) else {
+    let Some(rect) = state.pending_image else {
+        return Ok(());
+    };
+    // The pixels live either directly on the document (a raster image) or in the
+    // per-view cache (a rasterized document page).
+    let img = match &doc.content {
+        Content::Image(img) => Some(img),
+        #[cfg(feature = "pdf")]
+        Content::Document { .. } => state.rendered.as_ref().map(|(_, img)| img),
+        _ => None,
+    };
+    let Some(img) = img else {
         return Ok(());
     };
     write!(out, "{}", image::kitty_delete_all())?;
@@ -337,6 +413,65 @@ mod tests {
         let mut none = Vec::new();
         let _ = flush_kitty_image(&doc, &hb_state, &mut none); // infallible; expect no bytes
         assert!(none.is_empty(), "halfblock path must not flush escapes");
+    }
+
+    /// A minimal single-page PDF (empty US-Letter page), inline (no fixture).
+    #[cfg(feature = "pdf")]
+    const MINIMAL_PDF: &[u8] = b"%PDF-1.4\n\
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n\
+2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n\
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n\
+trailer<</Size 4/Root 1 0 R>>\n%%EOF";
+
+    #[cfg(feature = "pdf")]
+    #[test]
+    fn pdf_kitty_reserves_and_flushes_a_page() {
+        let doc = FileDoc::prepare(
+            Path::new("a.pdf"),
+            MINIMAL_PDF,
+            MINIMAL_PDF.len() as u64,
+            &Limits::default(),
+        );
+        let area = Rect::new(0, 0, 40, 20);
+        let mut state = FileViewState::new();
+        let mut buf = Buffer::empty(area);
+        FileView::new(&doc)
+            .graphics(GraphicsProtocol::Kitty)
+            .render(area, &mut buf, &mut state);
+        // A page was rasterized and a placement rect reserved.
+        assert!(state.pending_image.is_some(), "expected a reserved rect");
+        let mut out = Vec::new();
+        let _ = flush_kitty_image(&doc, &state, &mut out); // writing to a Vec is infallible
+        let escape = String::from_utf8_lossy(&out);
+        assert!(
+            escape.contains("\x1b_G"),
+            "expected a Kitty graphics escape"
+        );
+    }
+
+    #[cfg(feature = "pdf")]
+    #[test]
+    fn pdf_without_kitty_asks_for_the_protocol() {
+        let doc = FileDoc::prepare(
+            Path::new("a.pdf"),
+            MINIMAL_PDF,
+            MINIMAL_PDF.len() as u64,
+            &Limits::default(),
+        );
+        let area = Rect::new(0, 0, 60, 8);
+        let mut state = FileViewState::new();
+        // Default protocol is Halfblocks (no Kitty).
+        let buf = render(&doc, area, &mut state);
+        let text: String = buf
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(
+            text.contains("Kitty graphics protocol"),
+            "expected the requires-Kitty message"
+        );
+        assert!(state.pending_image.is_none(), "no image should be reserved");
     }
 
     #[test]

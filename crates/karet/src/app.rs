@@ -449,6 +449,9 @@ pub struct App {
     pub(crate) image_area: Option<Rect>,
     /// The tab index whose image is currently transmitted to the terminal.
     shown_image: Option<ViewId>,
+    /// The document page currently transmitted, so paging a PDF re-transmits even
+    /// though the view (and thus [`shown_image`](Self::shown_image)) is unchanged.
+    shown_page: usize,
     /// Whether the app should quit.
     should_quit: bool,
     /// The headless editor backend; edits route through it. `None` in unit tests,
@@ -550,6 +553,7 @@ impl App {
             clipboard: Clipboard::new(),
             image_area: None,
             shown_image: None,
+            shown_page: 0,
             should_quit: false,
             backend: None,
             pending_open: HashMap::new(),
@@ -2356,6 +2360,14 @@ impl App {
                 let next = (*scroll as i64 + i64::from(delta)).clamp(0, max);
                 *scroll = next as usize;
             },
+            // Scrolling a document turns pages (one page per scroll gesture).
+            TabKind::Document {
+                page, page_count, ..
+            } => {
+                let max = (*page_count).saturating_sub(1) as i64;
+                let step = i64::from(delta.signum());
+                *page = (*page as i64 + step).clamp(0, max) as usize;
+            },
             _ => {},
         }
     }
@@ -2381,6 +2393,15 @@ impl App {
                     0
                 } else {
                     bytes.len().div_ceil(16).saturating_sub(1)
+                };
+            },
+            TabKind::Document {
+                page, page_count, ..
+            } => {
+                *page = if top {
+                    0
+                } else {
+                    (*page_count).saturating_sub(1)
                 };
             },
             _ => {},
@@ -3042,21 +3063,32 @@ impl App {
         }
         let mut stdout = io::stdout();
         // The image, if any, belongs to the focused pane's active tab (keyed by its
-        // stable ViewId so a focus switch re-transmits correctly).
+        // stable ViewId so a focus switch re-transmits correctly). Documents also key
+        // on the current page so paging re-transmits under an unchanged ViewId.
         let current = self.tabs.get(self.active).map(|t| t.view);
+        let current_page = match self.tabs.get(self.active).map(|t| &t.kind) {
+            Some(TabKind::Document { page, .. }) => *page,
+            _ => 0,
+        };
+        // The pixels live directly on an image tab, or in a document tab's page cache.
+        let image = match self.tabs.get(self.active).map(|t| &t.kind) {
+            Some(TabKind::Image { image, .. }) => Some(image),
+            Some(TabKind::Document {
+                rendered: Some((_, image)),
+                ..
+            }) => Some(image),
+            _ => None,
+        };
         match self.image_area {
-            Some(area) if self.shown_image != current => {
+            Some(area) if self.shown_image != current || self.shown_page != current_page => {
                 let _ = write!(stdout, "{}", image::kitty_delete_all());
                 let _ = write!(stdout, "\x1b[{};{}H", area.y + 1, area.x + 1);
-                if let Some(Tab {
-                    kind: TabKind::Image { image, .. },
-                    ..
-                }) = self.tabs.get(self.active)
-                {
+                if let Some(image) = image {
                     let _ = write!(stdout, "{}", image.kitty_escape(area.width, area.height));
                 }
                 let _ = stdout.flush();
                 self.shown_image = current;
+                self.shown_page = current_page;
             },
             None if self.shown_image.is_some() => {
                 let _ = write!(stdout, "{}", image::kitty_delete_all());
@@ -3506,6 +3538,57 @@ impl Drop for KeyboardEnhancementGuard {
     }
 }
 
+/// Best-effort probe for Kitty graphics protocol support.
+///
+/// Emits a graphics *query* (`a=q`, which does not display anything) followed by a
+/// Primary Device Attributes request (`ESC [ c`) as a terminator, then reads the
+/// reply straight from stdin. Returns `Some(true)` when the terminal answers the
+/// graphics query, `Some(false)` when it answers DA1 but not the graphics query,
+/// and `None` on timeout or I/O error.
+///
+/// Must run in raw mode and **before** the input reader thread starts, so the
+/// query responses are consumed here rather than leaking into the UI as keystrokes.
+/// Unlike the env-var [`detect_protocol`](image::detect_protocol) heuristic, this
+/// recognizes any graphics-capable terminal, not just an allowlist.
+fn probe_kitty_graphics(timeout: Duration) -> Option<bool> {
+    use std::io::Read;
+
+    // `i=31` is an arbitrary image id echoed back in the reply; `\x1b[c` (DA1) is
+    // answered by every terminal and marks the end of the responses to read.
+    let query = "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c";
+    let mut stdout = std::io::stdout();
+    write!(stdout, "{query}").ok()?;
+    stdout.flush().ok()?;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut stdin = std::io::stdin();
+        let mut buf = Vec::new();
+        let mut byte = [0u8; 1];
+        let mut saw_csi = false;
+        loop {
+            match stdin.read(&mut byte) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let b = byte[0];
+                    buf.push(b);
+                    // Stop once the DA1 reply (CSI … 'c') has been fully consumed.
+                    saw_csi |= b == b'[';
+                    if saw_csi && b == b'c' {
+                        break;
+                    }
+                },
+            }
+        }
+        let _ = tx.send(buf);
+    });
+
+    let buf = rx.recv_timeout(timeout).ok()?;
+    // A Kitty graphics acknowledgement looks like: ESC _ G i=31 ; OK ESC \
+    let ok = buf.windows(2).any(|w| w == b"_G") && buf.windows(2).any(|w| w == b"OK");
+    Some(ok)
+}
+
 /// Run the IDE shell: require the kitty keyboard protocol, set up the terminal,
 /// loop until quit, then restore it.
 ///
@@ -3544,6 +3627,14 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     // Bracketed paste makes a multi-line paste arrive as one `Event::Paste`, never a
     // storm of keystrokes the keymap would misinterpret.
     let _ = crossterm::execute!(io::stdout(), EnableMouseCapture, EnableBracketedPaste);
+
+    // Refine the env-var graphics heuristic with a real handshake (raw mode is on and
+    // the input reader thread has not started yet, so we can read the reply here).
+    // Upgrade to Kitty when the terminal actually answers; never downgrade a terminal
+    // the heuristic already trusts.
+    if probe_kitty_graphics(Duration::from_millis(200)) == Some(true) {
+        app.graphics = GraphicsProtocol::Kitty;
+    }
 
     let result = runtime.block_on(async move {
         let backend: Arc<dyn Backend> = Arc::new(local(session));

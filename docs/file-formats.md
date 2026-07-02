@@ -78,8 +78,9 @@ bytes so a mislabeled file still routes sensibly):
 
 | Kind | Handling | Extensions / detection |
 |---|---|---|
-| Image | inline image widget (or a placeholder if it can't decode) | `png`, `jpg`, `jpeg`, `gif`, `webp`, `bmp`, `ico`, `tiff`, `tif` + magic bytes |
-| PDF | placeholder (no inline preview yet) | `pdf` + `%PDF-` magic |
+| Image | inline image widget — Kitty graphics with a truecolor halfblock fallback (or a placeholder if it can't decode) | `png`, `jpg`, `jpeg`, `gif`, `webp`, `bmp`, `ico`, `tiff`, `tif` + magic bytes |
+| PDF | pages rasterized and shown inline via the **Kitty graphics protocol** — via [`karet-pdf`](../crates/karet-pdf) (pure-Rust [`hayro`](https://github.com/LaurenzV/hayro)); on a terminal without Kitty graphics, a message explaining the requirement | `pdf` + `%PDF-` magic |
+| DOCX | placeholder — visual rendering is pending a pure-Rust rasterizer (see below) | `docx` |
 | CBOR | decoded to editable [diagnostic notation](https://www.rfc-editor.org/rfc/rfc8949#section-8) text and re-encoded on save (hex view if it can't decode) — via [`karet-cbor`](../crates/karet-cbor) | `cbor` + `0xD9D9F7` self-describe tag |
 | Binary | hex view | NUL byte / invalid UTF-8 in the sampled head |
 | Too large | placeholder, with an "open anyway" override | larger than 10 MiB |
@@ -90,14 +91,21 @@ the file ignoring its size and opens it with the renderer its content warrants �
 so a large `.cbor`, for instance, still decodes to editable diagnostic notation.
 `classify_ignoring_size` is the size-independent entry point behind it.
 
-Documents (`doc`/`xlsx`/…), archives (`zip`/`tar`/…), fonts, audio, and video are
-given icons and labels but currently open as a binary hex view or placeholder.
+Other office documents (`doc`/`xlsx`/…), archives (`zip`/`tar`/…), fonts, audio,
+and video are given icons and labels but currently open as a binary hex view or
+placeholder.
 
 ## Planned / not yet supported
 
 - **Pkl highlighting** — pkl is recognized (icon + label) but there is no
   published `tree-sitter-pkl` Rust crate; once one exists, add a `lang-pkl`
   feature + registry entry in `karet-treesitter`.
+- **DOCX rendering** — `.docx` is recognized and routed to `FileKind::Docx`, but
+  visual page rendering is deferred: the only pure-Rust DOCX renderer with a
+  layout engine (`rdocx`) currently pulls in the C library `zstd-sys` transitively
+  (via its `zip` dependency), which conflicts with karet's pure-Rust policy. When a
+  pure-Rust DOCX rasterizer is available, a `karet-docx` engine can rasterize pages
+  into the same Kitty-graphics path as PDF.
 - **Inline Markdown highlighting** — only `tree-sitter-md`'s block grammar is
   wired; the inline grammar (emphasis, links) needs the multi-grammar injection
   path.
