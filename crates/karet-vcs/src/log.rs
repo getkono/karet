@@ -200,8 +200,8 @@ mod tests {
     #[test]
     fn head_hash_tracks_the_tip() -> Result<(), VcsError> {
         let (_g, repo) = repo_with_commits(2)?;
-        let head = repo.head_hash()?.expect("has a HEAD");
-        assert_eq!(head, repo.log(0, 1)?[0].hash);
+        let head = repo.head_hash()?;
+        assert_eq!(head.as_deref(), Some(repo.log(0, 1)?[0].hash.as_str()));
         Ok(())
     }
 
@@ -216,14 +216,14 @@ mod tests {
     fn commits_since_returns_only_the_new_ones() -> Result<(), VcsError> {
         let (g, repo) = repo_with_commits(3)?;
         // The tip as previously known: fetch nothing new against the current HEAD.
-        let tip = repo.head_hash()?.expect("has a HEAD");
-        assert!(repo.commits_since(Some(&tip), 25)?.is_empty());
+        let tip = repo.head_hash()?;
+        assert!(repo.commits_since(tip.as_deref(), 25)?.is_empty());
         // Add two commits; commits_since(old tip) returns exactly those two, newest first.
         std::fs::write(g.0.join("f.txt"), "new1\n").map_err(io)?;
         git(&g.0, &["commit", "-qam", "commit 3"]);
         std::fs::write(g.0.join("f.txt"), "new2\n").map_err(io)?;
         git(&g.0, &["commit", "-qam", "commit 4"]);
-        let fresh = repo.commits_since(Some(&tip), 25)?;
+        let fresh = repo.commits_since(tip.as_deref(), 25)?;
         assert_eq!(fresh.len(), 2);
         assert_eq!(fresh[0].summary, "commit 4");
         assert_eq!(fresh[1].summary, "commit 3");

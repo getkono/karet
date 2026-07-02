@@ -22,7 +22,7 @@ use karet_text::TextBuffer;
 use crate::render::FileView;
 
 /// How a diff tab is laid out.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewMode {
     /// One column: removals then additions.
     Unified,

@@ -296,6 +296,8 @@ pub struct App {
     pub(crate) sidebar_divider_x: u16,
     /// Whether a sidebar-resize drag is currently in progress.
     pub(crate) sidebar_resizing: bool,
+    /// The last-used diff layout; newly-opened diffs adopt it so the choice sticks.
+    pub(crate) diff_layout: ViewMode,
     /// Per-pane clickable regions from the last frame (mouse hit-testing).
     pub(crate) pane_frames: Vec<PaneFrame>,
     /// The in-progress tab drag, if the pointer is dragging a tab.
@@ -409,6 +411,7 @@ impl App {
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             sidebar_divider_x: 0,
             sidebar_resizing: false,
+            diff_layout: ViewMode::Unified,
             pane_frames: Vec::new(),
             tab_drag: None,
             sidebar_content_rect: Rect::default(),
@@ -1100,7 +1103,7 @@ impl App {
             title,
             TabKind::Diff {
                 file: Box::new(file),
-                view: ViewMode::Unified,
+                view: self.diff_layout,
                 scroll: 0,
             },
         );
@@ -1929,6 +1932,8 @@ impl App {
                 ViewMode::SideBySide => ViewMode::Unified,
             };
             *scroll = 0;
+            // Remember the choice so subsequently-opened diffs adopt it.
+            self.diff_layout = *view;
         }
     }
 
@@ -3473,6 +3478,17 @@ mod tests {
             }
         );
         assert!(before && after);
+        // The choice persists: the next opened diff adopts the remembered layout.
+        assert_eq!(app.diff_layout, ViewMode::SideBySide);
+        app.scm.selection.move_to(1);
+        app.dispatch(Command::SidebarActivate);
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::Diff {
+                view: ViewMode::SideBySide,
+                ..
+            }
+        ));
     }
 
     #[test]
