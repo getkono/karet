@@ -279,9 +279,19 @@ static BINDINGS: &[Binding] = &[
     b(SearchList, false, false, false, Up,        Command::SearchSelectUp),
     b(SearchList, false, false, false, Char('k'), Command::SearchSelectUp),
     b(SearchList, false, false, false, Char('/'), Command::SearchBeginInput),
-    // Workspace Search: editing the query.
+    b(SearchList, false, false, false, Char('r'), Command::SearchReplaceAll),
+    b(SearchList, false, false, true,  Char('h'), Command::SearchToggleReplace),
+    b(SearchList, false, false, true,  Char('r'), Command::SearchToggleRegex),
+    b(SearchList, false, false, true,  Char('c'), Command::SearchToggleCase),
+    b(SearchList, false, false, true,  Char('w'), Command::SearchToggleWord),
+    // Workspace Search: editing the query / replacement.
     b(SearchInput, false, false, false, Esc,   Command::SearchEndInput),
     b(SearchInput, false, false, false, Enter, Command::SearchRun),
+    b(SearchInput, false, false, false, Tab,   Command::SearchToggleField),
+    b(SearchInput, false, false, true,  Char('h'), Command::SearchToggleReplace),
+    b(SearchInput, false, false, true,  Char('r'), Command::SearchToggleRegex),
+    b(SearchInput, false, false, true,  Char('c'), Command::SearchToggleCase),
+    b(SearchInput, false, false, true,  Char('w'), Command::SearchToggleWord),
 ];
 
 /// Resolve a key press into a [`Command`], given the focus, the active sidebar

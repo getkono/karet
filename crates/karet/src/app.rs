@@ -161,17 +161,56 @@ pub(crate) struct FindState {
     pub(crate) current: usize,
 }
 
+/// Which field of the Search panel is being edited.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SearchField {
+    /// The find query.
+    #[default]
+    Find,
+    /// The replacement text.
+    Replace,
+}
+
 /// The workspace-search panel state.
-#[derive(Default)]
 pub(crate) struct SearchPanel {
     /// The query being typed/run.
     pub(crate) query: String,
+    /// The replacement text.
+    pub(crate) replace: String,
     /// The streamed results (one entry per matching file).
     pub(crate) results: Vec<FileHit>,
     /// The selected result.
     pub(crate) selected: usize,
-    /// Whether the query input is active (vs. browsing results).
+    /// Whether a field is being edited (vs. browsing results).
     pub(crate) input: bool,
+    /// Which field the input edits (find / replace).
+    pub(crate) field: SearchField,
+    /// Whether the replace field is shown (collapsible; shown by default).
+    pub(crate) replace_visible: bool,
+    /// Interpret the query as a regular expression.
+    pub(crate) regex: bool,
+    /// Match case-sensitively.
+    pub(crate) case_sensitive: bool,
+    /// Match whole words only.
+    pub(crate) whole_word: bool,
+}
+
+impl Default for SearchPanel {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            replace: String::new(),
+            results: Vec::new(),
+            selected: 0,
+            input: false,
+            field: SearchField::Find,
+            // The replace field is shown by default (collapsible via keybinding).
+            replace_visible: true,
+            regex: false,
+            case_sensitive: false,
+            whole_word: false,
+        }
+    }
 }
 
 /// The maximum number of matching files the workspace search panel collects.
@@ -346,6 +385,13 @@ pub struct App {
     pub(crate) search_results_rect: Rect,
     /// The search-results list scroll offset from the last frame.
     pub(crate) search_offset: usize,
+    /// The Search panel's find-field row y from the last frame (click to edit).
+    pub(crate) search_query_row: u16,
+    /// The Search panel's replace-field row y from the last frame, if shown.
+    pub(crate) search_replace_row: Option<u16>,
+    /// The Search panel's clickable header buttons `(start, end, row, command)` from
+    /// the last frame (option toggles and replace-all).
+    pub(crate) search_action_hits: Vec<(u16, u16, u16, Command)>,
     /// The status bar rect from the last frame (mouse hit-testing).
     pub(crate) status_rect: Rect,
     /// Clickable status-bar segments `(start, end, command)` from the last frame.
@@ -453,6 +499,9 @@ impl App {
             scm_resizing: false,
             search_results_rect: Rect::default(),
             search_offset: 0,
+            search_query_row: 0,
+            search_replace_row: None,
+            search_action_hits: Vec::new(),
             status_rect: Rect::default(),
             status_hits: Vec::new(),
             editor_rect: Rect::default(),
@@ -805,16 +854,20 @@ impl App {
     /// `SearchInput` modal is active. Navigation and mode keys resolve via the
     /// keymap's `SearchInput` / `SearchList` layers instead.
     fn search_edit(&mut self, key: KeyEvent) {
+        let target = match self.search.field {
+            SearchField::Find => &mut self.search.query,
+            SearchField::Replace => &mut self.search.replace,
+        };
         match key.code {
             KeyCode::Backspace => {
-                self.search.query.pop();
+                target.pop();
             },
             KeyCode::Char(c)
                 if !key
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                self.search.query.push(c);
+                target.push(c);
             },
             _ => {},
         }
@@ -822,8 +875,98 @@ impl App {
 
     /// Run the Search query and return to the results list.
     fn run_search_query(&mut self) {
+        // Enter runs the find search; while editing the replace field it applies the
+        // replacement across the current matches instead.
+        if self.search.field == SearchField::Replace {
+            self.search_replace_all();
+        } else {
+            self.run_global_search();
+            self.search.input = false;
+        }
+    }
+
+    /// Build a [`SearchQuery`] from the panel's query text and option toggles.
+    fn build_search_query(&self) -> SearchQuery {
+        SearchQuery {
+            pattern: self.search.query.clone(),
+            regex: self.search.regex,
+            case_sensitive: self.search.case_sensitive,
+            whole_word: self.search.whole_word,
+            ..Default::default()
+        }
+    }
+
+    /// Toggle the visibility of the replace field (collapsing it returns focus to the
+    /// find field).
+    fn search_toggle_replace(&mut self) {
+        self.search.replace_visible = !self.search.replace_visible;
+        if !self.search.replace_visible {
+            self.search.field = SearchField::Find;
+        }
+    }
+
+    /// Switch the edited field between find and replace (revealing the replace field
+    /// when moving to it), keeping the panel in input mode.
+    fn search_toggle_field(&mut self) {
+        self.search.input = true;
+        self.search.field = match self.search.field {
+            SearchField::Find => {
+                self.search.replace_visible = true;
+                SearchField::Replace
+            },
+            SearchField::Replace => SearchField::Find,
+        };
+    }
+
+    /// Apply the replacement across every match in the workspace, then refresh the
+    /// results. Open buffers pick up the change through the file watcher.
+    fn search_replace_all(&mut self) {
+        if self.search.query.is_empty() {
+            return;
+        }
+        let query = self.build_search_query();
+        let replacement = self.search.replace.clone();
+        let summary = WorkspaceSearch::new()
+            .replace(&self.root, &query, &replacement)
+            .unwrap_or_default();
+        self.notify(
+            Severity::Information,
+            NotificationKind::System,
+            format!(
+                "replaced {} occurrence(s) in {} file(s)",
+                summary.replacements, summary.files_changed
+            ),
+        );
+        // Re-run the search so the (now empty, unless the replacement re-matches)
+        // results reflect the edited files.
         self.run_global_search();
         self.search.input = false;
+    }
+
+    /// Re-run the workspace search if there is a non-empty query (after an option
+    /// toggle changes what matches).
+    fn rerun_search(&mut self) {
+        if !self.search.query.is_empty() {
+            self.run_global_search();
+        }
+    }
+
+    /// Toggle the regex option and refresh results.
+    fn search_toggle_regex(&mut self) {
+        self.search.regex = !self.search.regex;
+        self.rerun_search();
+    }
+
+    /// Toggle case-sensitivity and refresh results.
+    fn search_toggle_case(&mut self) {
+        self.search.case_sensitive = !self.search.case_sensitive;
+        self.rerun_search();
+    }
+
+    /// Toggle whole-word matching and refresh results.
+    fn search_toggle_word(&mut self) {
+        self.search.whole_word = !self.search.whole_word;
+        self.rerun_search();
     }
 
     /// Run the workspace search for the current query, collecting up to the cap.
@@ -833,11 +976,7 @@ impl App {
         if self.search.query.is_empty() {
             return;
         }
-        let query = SearchQuery {
-            pattern: self.search.query.clone(),
-            case_sensitive: false,
-            ..Default::default()
-        };
+        let query = self.build_search_query();
         let mut results = Vec::new();
         let _ = WorkspaceSearch::new().run(&self.root, &query, |hit| {
             if results.len() < SEARCH_RESULT_CAP {
@@ -1011,6 +1150,12 @@ impl App {
             Command::SearchQuit => self.should_quit = true,
             Command::SearchRun => self.run_search_query(),
             Command::SearchEndInput => self.search.input = false,
+            Command::SearchToggleReplace => self.search_toggle_replace(),
+            Command::SearchToggleField => self.search_toggle_field(),
+            Command::SearchReplaceAll => self.search_replace_all(),
+            Command::SearchToggleRegex => self.search_toggle_regex(),
+            Command::SearchToggleCase => self.search_toggle_case(),
+            Command::SearchToggleWord => self.search_toggle_word(),
         }
     }
 
@@ -2457,8 +2602,27 @@ impl App {
                 }
             },
             SidebarPanel::Search => {
-                // The query line sits just above the results; click it to type.
-                if row_y == self.sidebar_content_rect.y {
+                // Header buttons: option toggles on the find row, replace-all on the
+                // replace row.
+                if let Some(cmd) =
+                    self.search_action_hits
+                        .iter()
+                        .find_map(|&(start, end, ry, cmd)| {
+                            (row_y == ry && col >= start && col < end).then_some(cmd)
+                        })
+                {
+                    self.dispatch(cmd);
+                    return;
+                }
+                // Click a field to edit it.
+                if row_y == self.search_query_row {
+                    self.search.field = SearchField::Find;
+                    self.search.input = true;
+                    return;
+                }
+                if Some(row_y) == self.search_replace_row {
+                    self.search.field = SearchField::Replace;
+                    self.search.replace_visible = true;
                     self.search.input = true;
                     return;
                 }
@@ -4349,6 +4513,69 @@ mod tests {
         assert!(dir.join("hello.txt").exists());
         assert!(!app.explorer.is_editing());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_toggle_field_reveals_and_switches_replace() {
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        assert_eq!(app.search.field, SearchField::Find);
+        // Collapse the replace field, then Tab reveals it and moves focus to it.
+        app.search_toggle_replace();
+        assert!(!app.search.replace_visible);
+        app.search_toggle_field();
+        assert!(app.search.replace_visible);
+        assert_eq!(app.search.field, SearchField::Replace);
+        assert!(app.search.input);
+        // Tab again returns to the find field.
+        app.search_toggle_field();
+        assert_eq!(app.search.field, SearchField::Find);
+    }
+
+    #[test]
+    fn search_edit_targets_the_active_field() {
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        app.search.field = SearchField::Find;
+        app.search_edit(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        app.search.field = SearchField::Replace;
+        app.search_edit(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        assert_eq!(app.search.query, "a");
+        assert_eq!(app.search.replace, "b");
+    }
+
+    #[test]
+    fn search_replace_all_rewrites_matching_files() {
+        let dir = std::env::temp_dir().join(format!("karet-replace-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("a.txt"), "needle and needle\n");
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Search;
+        app.search.query = "needle".to_string();
+        app.search.case_sensitive = true;
+        app.search.replace = "pin".to_string();
+        app.search_replace_all();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap_or_default(),
+            "pin and pin\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_option_toggle_button_click_dispatches() {
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Search;
+        app.sidebar_rect = Rect {
+            x: 0,
+            y: 1,
+            width: 30,
+            height: 10,
+        };
+        // A "regex" toggle button on row 2, columns 20..22.
+        app.search_action_hits = vec![(20, 22, 2, Command::SearchToggleRegex)];
+        assert!(!app.search.regex);
+        app.handle_sidebar_click(20, 2, KeyModifiers::NONE);
+        assert!(app.search.regex);
     }
 
     // --- full-stack Source-Control action tests ------------------------------

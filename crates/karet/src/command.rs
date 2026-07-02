@@ -220,6 +220,18 @@ pub enum Command {
     SearchRun,
     /// Stop editing the Search query without leaving the panel.
     SearchEndInput,
+    /// Show or hide the Search replace field.
+    SearchToggleReplace,
+    /// Switch the edited Search field between find and replace.
+    SearchToggleField,
+    /// Apply the replacement across every workspace match.
+    SearchReplaceAll,
+    /// Toggle the Search regex option.
+    SearchToggleRegex,
+    /// Toggle the Search case-sensitivity option.
+    SearchToggleCase,
+    /// Toggle the Search whole-word option.
+    SearchToggleWord,
 }
 
 impl Command {
@@ -330,6 +342,12 @@ impl Command {
             Self::SearchQuit => "Search: Leave Panel",
             Self::SearchRun => "Search: Run Query",
             Self::SearchEndInput => "Search: Stop Editing Query",
+            Self::SearchToggleReplace => "Search: Toggle Replace",
+            Self::SearchToggleField => "Search: Switch Find / Replace",
+            Self::SearchReplaceAll => "Search: Replace All",
+            Self::SearchToggleRegex => "Search: Toggle Regular Expression",
+            Self::SearchToggleCase => "Search: Toggle Case Sensitivity",
+            Self::SearchToggleWord => "Search: Toggle Whole Word",
         }
     }
 
@@ -411,6 +429,12 @@ impl Command {
             Self::SearchQuit => "close",
             Self::SearchRun => "run",
             Self::SearchEndInput => "done",
+            Self::SearchToggleReplace => "replace",
+            Self::SearchToggleField => "field",
+            Self::SearchReplaceAll => "replace all",
+            Self::SearchToggleRegex => "regex",
+            Self::SearchToggleCase => "case",
+            Self::SearchToggleWord => "word",
             // Self-evident motion, selection, and editing — no hint.
             Self::MoveTabLeft
             | Self::MoveTabRight

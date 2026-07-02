@@ -87,6 +87,13 @@ tab: `\` toggles unified/side-by-side, `[` / `]` walk changed files.
 accept, `Esc` dismiss; find adds `Ctrl+G` / `Ctrl+Shift+G` for next/previous. The
 command palette shows each command's shortcut on the right.
 
+**Search panel:** the find and replace fields show by default (`Alt+H` collapses the
+replace field). `Tab` switches find/replace; `Enter` runs the search (or, in the
+replace field, replaces all matches across the workspace). Option toggles —
+`Alt+R` regex, `Alt+C` case-sensitive, `Alt+W` whole-word — are also clickable
+`.*` / `Aa` / `\b` buttons on the find row; `r` (browsing results) or the ` ⟳ all`
+button replaces everywhere.
+
 **Mouse** (every element is interactive): click a tab to switch, its `×` (or
 middle-click) to close, drag to reorder; click explorer rows to open files /
 toggle folders and the header `1 2 3` to switch panels; click SCM / search rows to

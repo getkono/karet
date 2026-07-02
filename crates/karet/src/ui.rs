@@ -821,28 +821,102 @@ fn draw_commit_input(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
 }
 
 fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
-    app.search_results_rect = rows[1];
-    app.search_offset = 0;
-    let search = &app.search;
+    use crate::app::SearchField;
 
-    // Query line: prefixed with a caret, highlighted while the input is active.
-    let cursor = if search.input { "_" } else { "" };
-    let query_style = if search.input {
-        Style::default()
-            .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
-            .add_modifier(Modifier::BOLD)
+    // Right-hand slot on the find/replace rows for the option toggles / replace-all.
+    const SLOT_W: u16 = 10;
+    let replace_visible = app.search.replace_visible;
+    let replace_h = u16::from(replace_visible);
+    let rows = Layout::vertical([
+        Constraint::Length(1),         // find field
+        Constraint::Length(replace_h), // replace field (collapsible)
+        Constraint::Min(0),            // results
+    ])
+    .split(area);
+    app.search_results_rect = rows[2];
+    app.search_offset = 0;
+    app.search_query_row = rows[0].y;
+    app.search_replace_row = replace_visible.then_some(rows[1].y);
+    app.search_action_hits = Vec::new();
+
+    let accent = theme.role(ThemeRole::LineNumberActive).to_ratatui();
+    let dim = theme.role(ThemeRole::LineNumber).to_ratatui();
+    let fg = theme.role(ThemeRole::Foreground).to_ratatui();
+    let editing_find = app.search.input && app.search.field == SearchField::Find;
+    let editing_replace = app.search.input && app.search.field == SearchField::Replace;
+
+    // Find row: query on the left, the option toggles (.* Aa \b) on the right.
+    let find_cols =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(SLOT_W)]).split(rows[0]);
+    let find_style = if editing_find {
+        Style::default().fg(accent).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui())
+        Style::default().fg(fg)
     };
+    let find_cursor = if editing_find { "_" } else { "" };
     f.render_widget(
         Paragraph::new(Line::styled(
-            format!(" › {}{cursor}", search.query),
-            query_style,
+            format!(" › {}{find_cursor}", app.search.query),
+            find_style,
         )),
-        rows[0],
+        find_cols[0],
     );
+    let toggles = [
+        (".*", app.search.regex, Command::SearchToggleRegex),
+        ("Aa", app.search.case_sensitive, Command::SearchToggleCase),
+        ("\\b", app.search.whole_word, Command::SearchToggleWord),
+    ];
+    let mut toggle_spans = Vec::with_capacity(toggles.len());
+    for (i, (label, on, cmd)) in toggles.into_iter().enumerate() {
+        let x = find_cols[1].x + i as u16 * 3;
+        app.search_action_hits.push((x, x + 2, rows[0].y, cmd));
+        let style = if on {
+            Style::default().fg(accent).add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default().fg(dim)
+        };
+        toggle_spans.push(Span::styled(label, style));
+        toggle_spans.push(Span::raw(" "));
+    }
+    f.render_widget(Paragraph::new(Line::from(toggle_spans)), find_cols[1]);
 
+    // Replace row (collapsible): replacement on the left, a replace-all button right.
+    if replace_visible {
+        let rep_cols =
+            Layout::horizontal([Constraint::Min(0), Constraint::Length(SLOT_W)]).split(rows[1]);
+        let rep_style = if editing_replace {
+            Style::default().fg(accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(fg)
+        };
+        let rep_cursor = if editing_replace { "_" } else { "" };
+        f.render_widget(
+            Paragraph::new(Line::styled(
+                format!(" ⇄ {}{rep_cursor}", app.search.replace),
+                rep_style,
+            )),
+            rep_cols[0],
+        );
+        // "replace all" button, active only when there are results to replace.
+        let has_results = !app.search.results.is_empty();
+        let btn_style = if has_results {
+            Style::default().fg(accent)
+        } else {
+            Style::default().fg(dim)
+        };
+        app.search_action_hits.push((
+            rep_cols[1].x,
+            rep_cols[1].x + SLOT_W,
+            rows[1].y,
+            Command::SearchReplaceAll,
+        ));
+        f.render_widget(
+            Paragraph::new(Line::styled(" ⟳ all", btn_style)),
+            rep_cols[1],
+        );
+    }
+
+    let search = &app.search;
     if search.results.is_empty() {
         let hint = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
         let msg = if search.query.is_empty() {
@@ -850,7 +924,7 @@ fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         } else {
             "  no results"
         };
-        f.render_widget(Paragraph::new(Line::styled(msg, hint)), rows[1]);
+        f.render_widget(Paragraph::new(Line::styled(msg, hint)), rows[2]);
         return;
     }
 
@@ -880,7 +954,7 @@ fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             .bg(theme.role(ThemeRole::Selection).to_ratatui())
             .add_modifier(Modifier::BOLD),
     );
-    f.render_stateful_widget(list, rows[1], &mut state);
+    f.render_stateful_widget(list, rows[2], &mut state);
     app.search_offset = state.offset();
 }
 
