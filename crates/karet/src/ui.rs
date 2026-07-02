@@ -40,6 +40,7 @@ use ratatui::widgets::Wrap;
 
 use crate::app::App;
 use crate::app::FindState;
+use crate::app::TabDrag;
 use crate::app::TabHit;
 use crate::app::ToastHit;
 use crate::command::Command;
@@ -81,6 +82,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_sidebar(f, app, &theme, rect);
     }
     draw_panes(f, app, &theme, app.main_rect);
+    draw_drop_preview(f, app, &theme);
     draw_status(f, app, &theme, rows[1]);
 
     if let Some(overlay) = &app.overlay {
@@ -199,6 +201,28 @@ fn render_pane(
         content_rect: content,
         image_area,
     }
+}
+
+/// While dragging a tab over another pane, tint the region it would land in (a half
+/// for an edge split, the whole pane for a center move) — VS Code's drop preview.
+fn draw_drop_preview(f: &mut Frame, app: &App, theme: &Theme) {
+    let Some(TabDrag {
+        hover: Some((pane, zone)),
+        ..
+    }) = app.tab_drag
+    else {
+        return;
+    };
+    let Some(frame) = app.pane_frames.iter().find(|fr| fr.pane == pane) else {
+        return;
+    };
+    let preview = karet_widgets::drop_preview_rect(frame.content_rect, zone);
+    f.render_widget(Clear, preview);
+    f.render_widget(
+        Block::default()
+            .style(Style::default().bg(theme.role(ThemeRole::HoverHighlight).to_ratatui())),
+        preview,
+    );
 }
 
 /// Draw the notification toast stack (bottom-right) and record each card's clickable

@@ -65,10 +65,12 @@ use karet_text::TextBuffer;
 use karet_theme::Theme;
 use karet_vcs::Commit;
 use karet_vcs::FileChange;
+use karet_widgets::DropZone;
 use karet_widgets::FileTreeState;
 use karet_widgets::ListSelection;
 use karet_widgets::PaneId;
 use karet_widgets::PaneLayout;
+use karet_widgets::drop_zone;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 
@@ -198,6 +200,16 @@ pub(crate) struct PaneFrame {
     pub(crate) content_rect: Rect,
 }
 
+/// An in-progress tab drag: the pane it started from and the current drop target
+/// (a pane plus which zone of it), used to preview and apply a move/split on release.
+#[derive(Clone, Copy)]
+pub(crate) struct TabDrag {
+    /// The pane the dragged tab started in (and is still in until dropped).
+    pub(crate) from_pane: PaneId,
+    /// The current drop target: a pane and the zone the cursor is over, if any.
+    pub(crate) hover: Option<(PaneId, DropZone)>,
+}
+
 /// A clickable toast card, recorded during the last render for click hit-testing.
 #[derive(Clone, Copy)]
 pub(crate) struct ToastHit {
@@ -264,8 +276,8 @@ pub struct App {
     pub(crate) main_rect: Rect,
     /// Per-pane clickable regions from the last frame (mouse hit-testing).
     pub(crate) pane_frames: Vec<PaneFrame>,
-    /// Whether the active tab is being dragged to a new position.
-    pub(crate) tab_dragging: bool,
+    /// The in-progress tab drag, if the pointer is dragging a tab.
+    pub(crate) tab_drag: Option<TabDrag>,
     /// The sidebar's content area (below the header) from the last frame.
     pub(crate) sidebar_content_rect: Rect,
     /// The current mouse position while hovering the sidebar content, for a
@@ -368,7 +380,7 @@ impl App {
             sidebar_rect: Rect::default(),
             main_rect: Rect::default(),
             pane_frames: Vec::new(),
-            tab_dragging: false,
+            tab_drag: None,
             sidebar_content_rect: Rect::default(),
             hover: None,
             panel_hits: Vec::new(),
@@ -1281,13 +1293,10 @@ impl App {
         self.layout.focus()
     }
 
-    /// Make `pane` the focused pane, swapping the current focused tabs into storage
-    /// and `pane`'s tabs out. A no-op if `pane` is already focused or unknown.
-    fn focus_pane_switch(&mut self, pane: PaneId) {
+    /// Stash the focused pane's tabs into storage, so *every* pane's tabs live in
+    /// `stored` and the layout can be freely mutated. Pair with [`load_focused`].
+    fn stash_focused(&mut self) {
         let current = self.layout.focus();
-        if pane == current || !self.layout.contains(pane) {
-            return;
-        }
         let tabs = std::mem::take(&mut self.tabs);
         self.stored.insert(
             current,
@@ -1296,15 +1305,31 @@ impl App {
                 active: self.active,
             },
         );
+        self.active = 0;
+    }
+
+    /// Pull the (possibly newly) focused pane's tabs out of storage into the live
+    /// `tabs`/`active` fields. A pane with no stored tabs shows a lone welcome tab.
+    fn load_focused(&mut self) {
+        let pane = self.layout.focus();
         if let Some(sp) = self.stored.remove(&pane) {
             self.tabs = sp.tabs;
             self.active = sp.active;
         } else {
-            // A freshly created pane with no stored tabs yet shows a lone welcome tab.
             self.tabs = vec![Tab::welcome()];
             self.active = 0;
         }
+    }
+
+    /// Make `pane` the focused pane, swapping the current focused tabs into storage
+    /// and `pane`'s tabs out. A no-op if `pane` is already focused or unknown.
+    fn focus_pane_switch(&mut self, pane: PaneId) {
+        if pane == self.layout.focus() || !self.layout.contains(pane) {
+            return;
+        }
+        self.stash_focused();
         self.layout.set_focus(pane);
+        self.load_focused();
     }
 
     /// Every tab across every pane (the focused pane plus all stored panes). Used by
@@ -1454,6 +1479,94 @@ impl App {
         {
             self.move_tab(self.active, target);
         }
+    }
+
+    /// The pane whose *content* area contains `(x, y)`, and that content rect.
+    fn pane_at_content(&self, x: u16, y: u16) -> Option<(PaneId, Rect)> {
+        self.pane_frames
+            .iter()
+            .find(|f| rect_contains(f.content_rect, (x, y)))
+            .map(|f| (f.pane, f.content_rect))
+    }
+
+    /// Update the in-progress tab drag: reorder within the origin pane's strip, or
+    /// track a drop target (pane + zone) over another pane's content for preview.
+    fn drag_tab_update(&mut self, x: u16, y: u16) {
+        let Some(drag) = self.tab_drag else {
+            return;
+        };
+        // Over the origin pane's own tab strip: reorder in place, no drop target.
+        let on_from_strip = self
+            .pane_frames
+            .iter()
+            .find(|f| f.pane == drag.from_pane)
+            .is_some_and(|f| rect_contains(f.tabstrip_rect, (x, y)));
+        if on_from_strip {
+            self.drag_tab_to(x);
+            if let Some(d) = self.tab_drag.as_mut() {
+                d.hover = None;
+            }
+            return;
+        }
+        let hover = self
+            .pane_at_content(x, y)
+            .map(|(pane, rect)| (pane, drop_zone(rect, x, y)));
+        if let Some(d) = self.tab_drag.as_mut() {
+            d.hover = hover;
+        }
+    }
+
+    /// Finish a tab drag: apply the pending move/split, if any.
+    fn drag_tab_drop(&mut self) {
+        let Some(drag) = self.tab_drag.take() else {
+            return;
+        };
+        if let Some((target, zone)) = drag.hover {
+            self.drop_tab_on(target, zone);
+        }
+    }
+
+    /// Drop the focused pane's active tab onto `target`'s `zone`: an edge splits
+    /// `target` and moves the tab into the new pane; the center moves it into
+    /// `target`. Collapses the origin pane if it empties.
+    fn drop_tab_on(&mut self, target: PaneId, zone: DropZone) {
+        let from = self.focus_pane();
+        if self.tabs.is_empty() || (target == from && zone == DropZone::Center) {
+            return;
+        }
+        let idx = self.active.min(self.tabs.len().saturating_sub(1));
+        let tab = self.tabs.remove(idx);
+        self.active = self.active.min(self.tabs.len().saturating_sub(1));
+
+        // Move all panes into storage so the layout can be mutated freely.
+        self.stash_focused();
+        let dest = match zone.split_dir() {
+            Some(dir) => {
+                let new_pane = self.layout.split(target, dir);
+                self.stored.insert(
+                    new_pane,
+                    StoredPane {
+                        tabs: Vec::new(),
+                        active: 0,
+                    },
+                );
+                new_pane
+            },
+            None => target,
+        };
+        if let Some(sp) = self.stored.get_mut(&dest) {
+            sp.tabs.push(tab);
+            sp.active = sp.tabs.len().saturating_sub(1);
+        }
+        // If the origin pane emptied, close it (collapsing the split).
+        if from != dest && self.stored.get(&from).is_some_and(|sp| sp.tabs.is_empty()) {
+            self.stored.remove(&from);
+            self.layout.close(from);
+        }
+        self.layout.set_focus(dest);
+        self.load_focused();
+        self.focus = Focus::Editor;
+        self.reconcile_open_docs();
     }
 
     /// Move the active tab one slot left (`-1`) or right (`+1`), clamped (no wrap).
@@ -1679,7 +1792,10 @@ impl App {
                         self.close_tab_at(i);
                     } else {
                         self.select_tab(i);
-                        self.tab_dragging = true;
+                        self.tab_drag = Some(TabDrag {
+                            from_pane: pane,
+                            hover: None,
+                        });
                     }
                 }
             },
@@ -1745,10 +1861,12 @@ impl App {
             return;
         }
         // An in-progress tab drag captures motion until the button is released.
-        if self.tab_dragging {
+        if self.tab_drag.is_some() {
             match mouse.kind {
-                MouseEventKind::Drag(MouseButton::Left) => self.drag_tab_to(mouse.column),
-                MouseEventKind::Up(MouseButton::Left) => self.tab_dragging = false,
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    self.drag_tab_update(mouse.column, mouse.row);
+                },
+                MouseEventKind::Up(MouseButton::Left) => self.drag_tab_drop(),
                 _ => {},
             }
             return;
@@ -3421,11 +3539,51 @@ mod tests {
             content_rect: Rect::default(),
         }];
         app.active = 0;
-        app.tab_dragging = true;
+        app.tab_drag = Some(TabDrag {
+            from_pane: app.focus_pane(),
+            hover: None,
+        });
         app.drag_tab_to(20); // over the third tab
         let titles: Vec<_> = app.tabs.iter().map(|t| t.title.clone()).collect();
         assert_eq!(titles, vec!["b.rs", "c.rs", "a.rs"]);
         assert_eq!(app.active, 2);
+    }
+
+    #[test]
+    fn drop_tab_on_right_edge_creates_a_second_pane() {
+        let mut app = app();
+        app.push_tab(code_tab("a.rs"));
+        app.push_tab(code_tab("b.rs"));
+        let from = app.focus_pane();
+        let dragged = app.tabs[app.active].title.clone();
+        app.drop_tab_on(from, DropZone::Right);
+        assert_eq!(app.layout.pane_count(), 2);
+        // Focus moved to the new pane, holding the dragged tab.
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.tabs[0].title, dragged);
+        // The origin pane survives with its remaining tab(s), in storage.
+        assert!(app.stored.contains_key(&from));
+    }
+
+    #[test]
+    fn dropping_the_only_tab_on_an_edge_keeps_one_pane() {
+        let mut app = app();
+        app.push_tab(code_tab("only.rs"));
+        let from = app.focus_pane();
+        // The sole tab can't leave an empty origin pane behind, so the split
+        // collapses back to a single pane holding it.
+        app.drop_tab_on(from, DropZone::Bottom);
+        assert_eq!(app.layout.pane_count(), 1);
+        assert_eq!(app.tabs[0].title, "only.rs");
+    }
+
+    #[test]
+    fn drop_tab_center_on_self_is_a_noop() {
+        let mut app = app();
+        app.push_tab(code_tab("a.rs"));
+        let from = app.focus_pane();
+        app.drop_tab_on(from, DropZone::Center);
+        assert_eq!(app.layout.pane_count(), 1);
     }
 
     #[test]

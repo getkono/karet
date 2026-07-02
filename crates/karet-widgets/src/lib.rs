@@ -36,6 +36,8 @@ pub use pane::PaneId;
 pub use pane::PaneLayout;
 pub use pane::SplitAxis;
 pub use pane::SplitDir;
+pub use pane::drop_preview_rect;
+pub use pane::drop_zone;
 pub use select::ListSelection;
 
 /// A symbol outline tree over a [`SymbolProvider`].
