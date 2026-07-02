@@ -67,6 +67,9 @@ pub(crate) fn dark() -> Theme {
     role(ThemeRole::Breakpoint, rgb(0xdb, 0x4b, 0x4b));
     // A secondary accent for mouse hover, distinct from the (bluer) Selection.
     role(ThemeRole::HoverHighlight, rgb(0x2e, 0x35, 0x50));
+    // The focused editor's file in the explorer — a brighter, bluer step above
+    // Selection so it reads as the strongest of the active-file highlight tiers.
+    role(ThemeRole::ActiveEditorRow, rgb(0x34, 0x45, 0x6b));
     // De-emphasized UI text — readable grey (matches the Comment brightness), used
     // for gitignored explorer rows.
     role(ThemeRole::Muted, rgb(0x56, 0x5f, 0x89));

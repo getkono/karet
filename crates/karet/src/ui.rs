@@ -468,24 +468,34 @@ fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         SidebarPanel::Explorer => {
             let root = app.root.clone();
             let icon_style = app.icon_style;
-            // Highlight files open in tabs, with the active one emphasized.
-            let open: Vec<PathBuf> = app
-                .tabs
-                .iter()
-                .filter_map(|t| t.path().map(Path::to_path_buf))
-                .collect();
+            // The explorer highlight tracks which editors *show* a file, not which
+            // are merely open: the focused pane's active tab is the strong "active"
+            // marker; every other pane's active tab is a weaker "visible" marker.
             let active = app
                 .tabs
                 .get(app.active)
                 .and_then(Tab::path)
                 .map(Path::to_path_buf);
+            let visible: Vec<PathBuf> = app
+                .stored
+                .values()
+                .filter_map(|p| {
+                    p.tabs
+                        .get(p.active)
+                        .and_then(Tab::path)
+                        .map(Path::to_path_buf)
+                })
+                .collect();
+            let explorer_focused =
+                app.focus == Focus::Sidebar && app.sidebar_panel == SidebarPanel::Explorer;
             let hover = app.hovered_explorer_row();
             f.render_stateful_widget(
                 FileTree::new(&root)
                     .theme(theme)
                     .icons(icon_style)
-                    .open(&open)
+                    .visible(&visible)
                     .active(active.as_deref())
+                    .explorer_focused(explorer_focused)
                     .hover(hover),
                 rows[1],
                 &mut app.explorer,

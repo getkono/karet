@@ -387,8 +387,9 @@ fn name_key(path: &Path) -> String {
 pub struct FileTree<'a> {
     root: &'a Path,
     status: &'a [(PathBuf, Decoration)],
-    open: &'a [PathBuf],
+    visible: &'a [PathBuf],
     active: Option<&'a Path>,
+    explorer_focused: bool,
     hover: Option<usize>,
     icons: IconStyle,
     theme: Option<&'a Theme>,
@@ -401,8 +402,9 @@ impl<'a> FileTree<'a> {
         Self {
             root,
             status: &[],
-            open: &[],
+            visible: &[],
             active: None,
+            explorer_focused: false,
             hover: None,
             icons: IconStyle::default(),
             theme: None,
@@ -417,19 +419,33 @@ impl<'a> FileTree<'a> {
         self
     }
 
-    /// Supply the paths of files currently open in editor tabs, so their rows are
-    /// highlighted (the [`active`](Self::active) one most prominently).
+    /// Supply the paths of files shown in *other* (non-focused) editor panes — i.e.
+    /// each background pane's active tab. Their rows get the accent foreground (a
+    /// weaker tier than [`active`](Self::active)). Files that are merely open in a
+    /// background tab (not the visible tab of any pane) are intentionally omitted, so
+    /// opening a file no longer dims/recolors its explorer row.
     #[must_use]
-    pub fn open(mut self, open: &'a [PathBuf]) -> Self {
-        self.open = open;
+    pub fn visible(mut self, visible: &'a [PathBuf]) -> Self {
+        self.visible = visible;
         self
     }
 
-    /// Supply the path of the active editor tab, so its row gets the strongest
-    /// highlight (VS Code shows the active file emphasized in the explorer).
+    /// Supply the path of the focused editor pane's active tab, so its row gets the
+    /// strongest highlight (a distinct background plus a bold accent) — the "you are
+    /// here" marker VS Code shows for the active file.
     #[must_use]
     pub fn active(mut self, active: Option<&'a Path>) -> Self {
         self.active = active;
+        self
+    }
+
+    /// Whether the explorer panel currently holds keyboard focus. The tree's own
+    /// selection (cursor / last click) only gets the [`Selection`](ThemeRole::Selection)
+    /// background while it does, so it stops competing with the active-file highlight
+    /// once focus moves to the editor.
+    #[must_use]
+    pub fn explorer_focused(mut self, focused: bool) -> Self {
+        self.explorer_focused = focused;
         self
     }
 
@@ -514,9 +530,18 @@ impl StatefulWidget for FileTree<'_> {
             .take(height)
         {
             let y = area.y + u16::try_from(i - state.offset).unwrap_or(0);
+            // Which editor(s) show this file drives the highlight: the focused pane's
+            // active file is strongest, a file visible in another pane is weaker.
+            let is_active = self.active == Some(row.path.as_path());
+            let is_visible = self.visible.iter().any(|p| p == &row.path);
             let selected = state.selection.is_selected(i);
-            // The primary Selection highlight wins over the secondary hover highlight.
-            let row_bg = if selected {
+            // Background precedence: the focused pane's active file ("you are here")
+            // wins; then the explorer's own cursor — but only while the explorer holds
+            // focus, so the last-clicked row doesn't linger once you return to editing;
+            // then the transient mouse-hover accent.
+            let row_bg = if is_active {
+                Some(ThemeRole::ActiveEditorRow)
+            } else if selected && self.explorer_focused {
                 Some(ThemeRole::Selection)
             } else if self.hover == Some(i) {
                 Some(ThemeRole::HoverHighlight)
@@ -549,11 +574,10 @@ impl StatefulWidget for FileTree<'_> {
                 icon_for_path(&row.path, self.icons)
             };
 
-            // Foreground precedence: the active editor's file is accented and bold;
-            // other open files are accented; gitignored entries recede to a readable
-            // muted grey (VS Code style); everything else is normal.
-            let is_active = self.active == Some(row.path.as_path());
-            let is_open = self.open.iter().any(|p| p == &row.path);
+            // Foreground precedence: the focused pane's active file is accented and
+            // bold; a file visible in another pane is accented; gitignored entries
+            // recede to a readable muted grey (VS Code style); everything else — a
+            // merely-open background tab included — is normal.
             let (row_fg, label_style) = if is_active {
                 (
                     accent,
@@ -561,7 +585,7 @@ impl StatefulWidget for FileTree<'_> {
                         .fg(accent.to_ratatui())
                         .add_modifier(Modifier::BOLD),
                 )
-            } else if is_open {
+            } else if is_visible {
                 (accent, Style::default().fg(accent.to_ratatui()))
             } else if row.ignored {
                 (muted, Style::default().fg(muted.to_ratatui()))
@@ -868,13 +892,76 @@ mod tests {
         // The label starts at column 4 (2 chevron + 2 icon cells) and is bold.
         assert!(buf.content()[4].modifier.contains(Modifier::BOLD));
 
-        // Without an active path, the same row is not bold.
+        // The focused pane's active file also gets the dedicated row background.
+        assert_eq!(
+            buf.content()[0].bg,
+            theme.role(ThemeRole::ActiveEditorRow).to_ratatui()
+        );
+
+        // Without an active path, the same row is not bold and has no active bg.
         let mut plain = Buffer::empty(area);
         let mut state2 = FileTreeState::new();
         FileTree::new(&dir.path)
             .theme(&theme)
             .render(area, &mut plain, &mut state2);
         assert!(!plain.content()[4].modifier.contains(Modifier::BOLD));
+        assert_ne!(
+            plain.content()[0].bg,
+            theme.role(ThemeRole::ActiveEditorRow).to_ratatui()
+        );
+    }
+
+    #[test]
+    fn visible_file_row_is_accent_not_bold() {
+        let dir = temp_dir();
+        write(&dir.path, "a.txt", b"a");
+        let mut state = FileTreeState::new();
+        let theme = Theme::dark();
+        let visible = vec![dir.path.join("a.txt")];
+        let area = Rect::new(0, 0, 30, 4);
+        let mut buf = Buffer::empty(area);
+        FileTree::new(&dir.path)
+            .theme(&theme)
+            .visible(&visible)
+            .render(area, &mut buf, &mut state);
+        // A file visible in another (non-focused) pane: accent foreground, not bold,
+        // and none of the stronger active-file background.
+        assert_eq!(
+            buf.content()[4].fg,
+            theme.role(ThemeRole::LineNumberActive).to_ratatui()
+        );
+        assert!(!buf.content()[4].modifier.contains(Modifier::BOLD));
+        assert_ne!(
+            buf.content()[0].bg,
+            theme.role(ThemeRole::ActiveEditorRow).to_ratatui()
+        );
+    }
+
+    #[test]
+    fn selection_background_requires_explorer_focus() {
+        let dir = temp_dir();
+        write(&dir.path, "a.txt", b"a");
+        let theme = Theme::dark();
+        let area = Rect::new(0, 0, 30, 4);
+        let sel = theme.role(ThemeRole::Selection).to_ratatui();
+
+        // Cursor on row 0 but the explorer is not focused → no selection background,
+        // so the last click doesn't linger once focus is in the editor.
+        let mut unfocused = FileTreeState::new();
+        let mut buf = Buffer::empty(area);
+        FileTree::new(&dir.path)
+            .theme(&theme)
+            .render(area, &mut buf, &mut unfocused);
+        assert_ne!(buf.content()[0].bg, sel);
+
+        // Explorer focused → the cursor row gets the selection background.
+        let mut focused = FileTreeState::new();
+        let mut buf2 = Buffer::empty(area);
+        FileTree::new(&dir.path)
+            .theme(&theme)
+            .explorer_focused(true)
+            .render(area, &mut buf2, &mut focused);
+        assert_eq!(buf2.content()[0].bg, sel);
     }
 
     #[test]

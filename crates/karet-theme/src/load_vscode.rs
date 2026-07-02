@@ -58,6 +58,7 @@ const ROLE_KEYS: &[(&str, ThemeRole)] = &[
     ("statusBar.background", ThemeRole::StatusBarBackground),
     ("statusBar.foreground", ThemeRole::StatusBarForeground),
     ("list.hoverBackground", ThemeRole::HoverHighlight),
+    ("list.activeSelectionBackground", ThemeRole::ActiveEditorRow),
 ];
 
 /// Load a VS Code JSON theme, falling back to the built-in dark theme for any key
