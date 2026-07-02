@@ -183,6 +183,10 @@ pub(crate) const DEFAULT_SIDEBAR_WIDTH: u16 = 30;
 /// collapses the sidebar entirely.
 pub(crate) const SIDEBAR_MIN_WIDTH: u16 = 16;
 
+/// Load the next commit page once the Source-Control viewport comes within this many
+/// rows of the end of the loaded log.
+const COMMIT_AUTOLOAD_THRESHOLD: usize = 3;
+
 /// A clickable tab region in the tab strip, recorded during the last render.
 #[derive(Clone, Copy)]
 pub(crate) struct TabHit {
@@ -302,8 +306,13 @@ pub struct App {
     pub(crate) panel_hits: Vec<(u16, u16, SidebarPanel)>,
     /// Source-Control display-row → change-index map from the last frame.
     pub(crate) scm_row_map: Vec<Option<usize>>,
-    /// The Source-Control list scroll offset from the last frame.
+    /// The Source-Control list scroll offset (drives the viewport; user-controlled
+    /// via the wheel and selection follow, clamped to the content each frame).
     pub(crate) scm_offset: usize,
+    /// The Source-Control list viewport height from the last frame.
+    pub(crate) scm_view_h: u16,
+    /// The total number of Source-Control display rows from the last frame.
+    pub(crate) scm_total_rows: usize,
     /// The display row of the commit-log "load more" affordance, if shown.
     pub(crate) scm_more_row: Option<usize>,
     /// The search-results area from the last frame.
@@ -404,6 +413,8 @@ impl App {
             panel_hits: Vec::new(),
             scm_row_map: Vec::new(),
             scm_offset: 0,
+            scm_view_h: 0,
+            scm_total_rows: 0,
             scm_more_row: None,
             search_results_rect: Rect::default(),
             search_offset: 0,
@@ -949,6 +960,16 @@ impl App {
         };
     }
 
+    /// Route a mouse-wheel notch over the sidebar: the Source-Control panel scrolls
+    /// its list (so the commit log is reachable), while the explorer and search move
+    /// their selection one step per notch.
+    fn sidebar_wheel(&mut self, delta: i32) {
+        match self.sidebar_panel {
+            SidebarPanel::SourceControl => self.scm_scroll_by(delta),
+            _ => self.sidebar_step(delta.signum()),
+        }
+    }
+
     /// Move the sidebar selection within the active panel.
     fn sidebar_step(&mut self, delta: i32) {
         match self.sidebar_panel {
@@ -960,9 +981,63 @@ impl App {
                     self.explorer.select_prev();
                 }
             },
-            // A plain move collapses any range or multi-selection.
-            SidebarPanel::SourceControl => self.scm.selection.move_by(delta),
+            // A plain move collapses any range or multi-selection; the viewport then
+            // follows the change cursor so it stays visible.
+            SidebarPanel::SourceControl => {
+                self.scm.selection.move_by(delta);
+                self.scm_follow_cursor();
+            },
             SidebarPanel::Search => self.search_select(delta),
+        }
+    }
+
+    /// The display row of the Source-Control change cursor, accounting for the
+    /// "STAGED CHANGES" / "CHANGES" section headers above it.
+    fn scm_cursor_display_row(&self) -> usize {
+        let i = self.scm.selection.cursor();
+        let staged = self.scm.staged_count;
+        let working = self.scm.changes.len().saturating_sub(staged);
+        let mut row = i;
+        if staged > 0 {
+            row += 1; // the "STAGED CHANGES" header
+        }
+        if i >= staged && working > 0 {
+            row += 1; // the "CHANGES" header
+        }
+        row
+    }
+
+    /// Scroll the Source-Control viewport so the change cursor stays visible.
+    fn scm_follow_cursor(&mut self) {
+        let h = self.scm_view_h as usize;
+        if h == 0 {
+            return;
+        }
+        let row = self.scm_cursor_display_row();
+        if row < self.scm_offset {
+            self.scm_offset = row;
+        } else if row >= self.scm_offset + h {
+            self.scm_offset = row + 1 - h;
+        }
+    }
+
+    /// Scroll the Source-Control list by `delta` rows (the mouse wheel over the SCM
+    /// panel), clamped to the content, and lazily load more commits near the bottom.
+    fn scm_scroll_by(&mut self, delta: i32) {
+        let max = self.scm_total_rows.saturating_sub(self.scm_view_h as usize);
+        let next = (self.scm_offset as i64 + i64::from(delta)).clamp(0, max as i64);
+        self.scm_offset = next as usize;
+        self.maybe_autoload_commits();
+    }
+
+    /// Request the next commit page once the viewport nears the end of what is loaded.
+    fn maybe_autoload_commits(&mut self) {
+        if !self.scm.log_has_more || self.scm.log_loading {
+            return;
+        }
+        let bottom = self.scm_offset + self.scm_view_h as usize;
+        if bottom + COMMIT_AUTOLOAD_THRESHOLD >= self.scm_total_rows {
+            self.load_more_scm_log();
         }
     }
 
@@ -1232,9 +1307,31 @@ impl App {
         self.scm.log_loading = false;
         self.scm.log_has_more = has_more;
         if skip == 0 {
+            // A fresh first page (initial load or a reconciliation reset) replaces the
+            // log; scroll back to the top so the newest commits are in view.
             self.scm.log = commits;
+            self.scm_offset = 0;
         } else if skip == self.scm.log.len() {
             self.scm.log.extend(commits);
+        }
+    }
+
+    /// Prepend newly-observed commits reported by the backend (an external commit
+    /// picked up via file-watching). Duplicates are dropped, and the viewport is
+    /// nudged so the user's position in the older history is preserved.
+    fn apply_vcs_commits_prepended(&mut self, mut commits: Vec<Commit>) {
+        let known: HashSet<&str> = self.scm.log.iter().map(|c| c.hash.as_str()).collect();
+        commits.retain(|c| !known.contains(c.hash.as_str()));
+        let inserted = commits.len();
+        if inserted == 0 {
+            return;
+        }
+        commits.append(&mut self.scm.log);
+        self.scm.log = commits;
+        // If the user had scrolled into the log, shift down so the same commits stay
+        // put; at the top (offset 0) keep them at the newest.
+        if self.scm_offset > 0 {
+            self.scm_offset += inserted;
         }
     }
 
@@ -2010,8 +2107,8 @@ impl App {
         let point = (mouse.column, mouse.row);
         let in_sidebar = self.sidebar_visible && rect_contains(self.sidebar_rect, point);
         match mouse.kind {
-            MouseEventKind::ScrollDown if in_sidebar => self.sidebar_step(1),
-            MouseEventKind::ScrollUp if in_sidebar => self.sidebar_step(-1),
+            MouseEventKind::ScrollDown if in_sidebar => self.sidebar_wheel(3),
+            MouseEventKind::ScrollUp if in_sidebar => self.sidebar_wheel(-3),
             MouseEventKind::ScrollDown => self.scroll_lines(3),
             MouseEventKind::ScrollUp => self.scroll_lines(-3),
             MouseEventKind::Down(MouseButton::Left) => {
@@ -2596,6 +2693,9 @@ impl App {
                 commits,
                 has_more,
             } => self.apply_vcs_log(skip, commits, has_more),
+            SessionEvent::VcsCommitsPrepended { commits } => {
+                self.apply_vcs_commits_prepended(commits);
+            },
             SessionEvent::Committed { oid } => {
                 self.commit_input = None;
                 let short: String = oid.chars().take(7).collect();
@@ -3063,6 +3163,47 @@ mod tests {
 
     fn send_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         app.handle_key(KeyEvent::new(code, mods));
+    }
+
+    fn commit(hash: &str, summary: &str) -> Commit {
+        Commit {
+            hash: hash.to_string(),
+            short_hash: hash.chars().take(7).collect(),
+            summary: summary.to_string(),
+            author: "T".to_string(),
+            time: 0,
+        }
+    }
+
+    #[test]
+    fn prepended_commits_dedupe_and_preserve_scroll() {
+        let mut app = app();
+        app.scm.log = vec![commit("aaaaaaa1", "old top"), commit("bbbbbbb2", "older")];
+        app.scm_offset = 5;
+        // A genuinely-new commit plus a duplicate of the current top: only the new
+        // one prepends, and the viewport shifts down by that one inserted row.
+        app.apply_vcs_commits_prepended(vec![
+            commit("ccccccc3", "new"),
+            commit("aaaaaaa1", "old top"),
+        ]);
+        assert_eq!(app.scm.log.len(), 3);
+        assert_eq!(app.scm.log[0].summary, "new");
+        assert_eq!(app.scm.log[1].summary, "old top");
+        assert_eq!(app.scm_offset, 6);
+    }
+
+    #[test]
+    fn scm_wheel_scrolls_and_clamps() {
+        let mut app = app();
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        app.scm_total_rows = 20;
+        app.scm_view_h = 10;
+        app.sidebar_wheel(5);
+        assert_eq!(app.scm_offset, 5);
+        app.sidebar_wheel(100); // clamps to total_rows - view_h
+        assert_eq!(app.scm_offset, 10);
+        app.sidebar_wheel(-100);
+        assert_eq!(app.scm_offset, 0);
     }
 
     #[test]

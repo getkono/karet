@@ -557,7 +557,6 @@ fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let cursor = app.scm.selection.cursor();
     let mut items: Vec<ListItem> = Vec::new();
     let mut row_map: Vec<Option<usize>> = Vec::new();
-    let mut selected_row = 0;
     let mut last: Option<Section> = None;
     for (i, change) in app.scm.changes.iter().enumerate() {
         let section = if i < app.scm.staged_count {
@@ -579,11 +578,8 @@ fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             row_map.push(None);
             last = Some(section);
         }
-        if i == cursor {
-            selected_row = items.len();
-        }
         let (glyph, role) = status_glyph(change.status);
-        let mut item = ListItem::new(Line::from(vec![
+        let item = ListItem::new(Line::from(vec![
             Span::styled(
                 format!(" {glyph} "),
                 Style::default().fg(theme.role(role).to_ratatui()),
@@ -591,14 +587,18 @@ fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             Span::raw(change.path.to_string_lossy().into_owned()),
         ]));
         // Every selected row (a contiguous range or a scattered toggle-set) gets the
-        // selection background; the cursor row additionally gets the bold highlight
-        // below. A hovered-but-unselected row gets the secondary hover accent.
+        // selection background; the cursor row additionally gets a bold highlight. A
+        // hovered-but-unselected row gets the secondary hover accent.
+        let mut style = Style::default();
         if app.scm.selection.is_selected(i) {
-            item = item.style(Style::default().bg(selection_bg));
+            style = style.bg(selection_bg);
         } else if hovered == Some(i) {
-            item = item.style(Style::default().bg(hover_bg));
+            style = style.bg(hover_bg);
         }
-        items.push(item);
+        if i == cursor {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        items.push(item.style(style));
         row_map.push(Some(i));
     }
 
@@ -640,21 +640,23 @@ fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     if items.is_empty() {
         app.scm_row_map = Vec::new();
         app.scm_offset = 0;
+        app.scm_total_rows = 0;
+        app.scm_view_h = list_area.height;
         f.render_widget(Paragraph::new(Line::raw(" no changes")), list_area);
         return;
     }
+    // The viewport offset is user-controlled (wheel scroll / selection follow), not
+    // pinned to a selected row — so the commit log below the changes is reachable.
+    let total = items.len();
+    let height = list_area.height as usize;
+    let offset = app.scm_offset.min(total.saturating_sub(height));
     let mut state = ListState::default();
-    // Highlight the selected change (auto-scrolls to it); with no changes, the log
-    // is shown without a highlighted row.
-    state.select((!app.scm.changes.is_empty()).then_some(selected_row));
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .bg(selection_bg)
-            .add_modifier(Modifier::BOLD),
-    );
-    f.render_stateful_widget(list, list_area, &mut state);
+    *state.offset_mut() = offset;
+    f.render_stateful_widget(List::new(items), list_area, &mut state);
     app.scm_row_map = row_map;
     app.scm_offset = state.offset();
+    app.scm_total_rows = total;
+    app.scm_view_h = list_area.height;
 }
 
 /// A terse `git log`-style relative time (e.g. `3d ago`) for a Unix timestamp.
