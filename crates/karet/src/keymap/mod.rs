@@ -98,6 +98,8 @@ use Layer::CommitInput;
 use Layer::DiffEditor;
 use Layer::DiscardConfirm;
 use Layer::Editor;
+use Layer::Explorer;
+use Layer::ExplorerEdit;
 use Layer::Find;
 use Layer::Global;
 use Layer::Overlay;
@@ -169,6 +171,18 @@ static BINDINGS: &[Binding] = &[
     b(SourceControl, false, false, false, Char('c'), Command::ScmCommit),
     b(SourceControl, false, false, false, Char('d'), Command::ScmDiscard),
     b(SourceControl, false, false, false, Char('r'), Command::ScmRefresh),
+
+    // Explorer panel (sidebar focus, Explorer active). Listed before the generic
+    // sidebar bindings so its keys win. New file/folder, rename, refresh; collapse-all
+    // and new file/folder are also on the panel's toolbar buttons and in the palette.
+    b(Explorer, false, false, false, Char('a'), Command::ExplorerNewFile),
+    b(Explorer, false, false, false, Char('A'), Command::ExplorerNewFolder),
+    b(Explorer, false, false, false, F(2),      Command::ExplorerRename),
+    b(Explorer, false, false, false, F(5),      Command::ExplorerRefresh),
+
+    // Explorer inline name editor (new file/folder or rename).
+    b(ExplorerEdit, false, false, false, Esc,   Command::ExplorerEditCancel),
+    b(ExplorerEdit, false, false, false, Enter, Command::ExplorerEditSubmit),
 
     // Sidebar focus. Selection verbs are shared across every list panel (explorer
     // and source control) — they route to the focused panel's selection in dispatch.

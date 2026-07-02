@@ -73,6 +73,7 @@ use karet_widgets::FileTreeState;
 use karet_widgets::ListSelection;
 use karet_widgets::PaneId;
 use karet_widgets::PaneLayout;
+use karet_widgets::PendingEdit;
 use karet_widgets::SplitDir;
 use karet_widgets::drop_zone;
 use ratatui::layout::Rect;
@@ -316,6 +317,9 @@ pub struct App {
     pub(crate) hover: Option<(u16, u16)>,
     /// The header panel-switcher cells (`1 2 3`) from the last frame.
     pub(crate) panel_hits: Vec<(u16, u16, SidebarPanel)>,
+    /// The explorer header toolbar-button cells `(start, end, command)` from the last
+    /// frame (new file / new folder / refresh / collapse all).
+    pub(crate) header_action_hits: Vec<(u16, u16, Command)>,
     /// Source-Control *changes* display-row → change-index map from the last frame.
     pub(crate) scm_row_map: Vec<Option<usize>>,
     /// The changes-region scroll offset (top region; wheel + selection-follow).
@@ -435,6 +439,7 @@ impl App {
             sidebar_content_rect: Rect::default(),
             hover: None,
             panel_hits: Vec::new(),
+            header_action_hits: Vec::new(),
             scm_row_map: Vec::new(),
             scm_offset: 0,
             scm_changes_rect: Rect::default(),
@@ -542,6 +547,8 @@ impl App {
             Some(Modal::DiscardConfirm)
         } else if self.find.is_some() {
             Some(Modal::Find)
+        } else if self.explorer.is_editing() {
+            Some(Modal::ExplorerEdit)
         } else if self.focus == Focus::Sidebar && self.sidebar_panel == SidebarPanel::Search {
             Some(if self.search.input {
                 Modal::SearchInput
@@ -598,9 +605,26 @@ impl App {
             Modal::Overlay => self.overlay_input(key),
             Modal::Find => self.find_input(key),
             Modal::CommitInput => self.commit_edit(key),
+            Modal::ExplorerEdit => self.explorer_edit(key),
             Modal::SearchInput => self.search_edit(key),
             Modal::SearchList => {},
             Modal::DiscardConfirm => self.resolve_discard(false),
+        }
+    }
+
+    /// Feed a key to the explorer inline name editor: printable characters extend the
+    /// name, Backspace trims it (Enter/Esc are handled as bound commands).
+    fn explorer_edit(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Backspace => self.explorer.edit_backspace(),
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.explorer.edit_push(c);
+            },
+            _ => {},
         }
     }
 
@@ -953,6 +977,11 @@ impl App {
             Command::ScmRefresh => self.send_vcs(SessionCommand::RefreshVcs),
             Command::ShowBlame => self.open_blame(false),
             Command::BlameFunction => self.open_blame(true),
+            Command::ExplorerNewFile => self.explorer_begin_new(false),
+            Command::ExplorerNewFolder => self.explorer_begin_new(true),
+            Command::ExplorerRename => self.explorer_begin_rename(),
+            Command::ExplorerRefresh => self.explorer_refresh(),
+            Command::ExplorerCollapseAll => self.explorer.collapse_all(),
 
             // Modal-scoped commands (resolved only while a modal context is active).
             Command::OverlayUp => {
@@ -972,6 +1001,8 @@ impl App {
             Command::FindCancel => self.close_find(),
             Command::CommitSubmit => self.commit_submit(),
             Command::CommitCancel => self.commit_cancel(),
+            Command::ExplorerEditSubmit => self.explorer_commit_edit(),
+            Command::ExplorerEditCancel => self.explorer.cancel_edit(),
             Command::ConfirmDiscard => self.resolve_discard(true),
             Command::SearchSelectUp => self.search_select(-1),
             Command::SearchSelectDown => self.search_select(1),
@@ -1126,6 +1157,78 @@ impl App {
     fn sidebar_toggle_expand(&mut self) {
         if self.sidebar_panel == SidebarPanel::Explorer {
             self.explorer.toggle_selected();
+        }
+    }
+
+    /// Begin creating a new file (or folder) in the explorer, ensuring the panel is
+    /// visible and focused so its inline name editor is shown.
+    fn explorer_begin_new(&mut self, folder: bool) {
+        self.sidebar_panel = SidebarPanel::Explorer;
+        self.sidebar_visible = true;
+        self.focus = Focus::Sidebar;
+        self.explorer.ensure_built(&self.root);
+        self.explorer.begin_new(folder);
+    }
+
+    /// Begin renaming the selected explorer entry (no-op unless the Explorer panel is
+    /// the active sidebar panel).
+    fn explorer_begin_rename(&mut self) {
+        if self.sidebar_panel != SidebarPanel::Explorer {
+            return;
+        }
+        self.explorer.ensure_built(&self.root);
+        self.explorer.begin_rename();
+    }
+
+    /// Hard-reload the explorer tree and re-request VCS status — a bullet-proof
+    /// refresh that drops every cached row and re-reads the filesystem.
+    fn explorer_refresh(&mut self) {
+        self.explorer.rebuild(&self.root);
+        self.send_vcs(SessionCommand::RefreshVcs);
+    }
+
+    /// Apply the explorer inline edit: create the file/folder or rename on disk, then
+    /// reload the tree (and open a newly-created file).
+    fn explorer_commit_edit(&mut self) {
+        let Some(pending) = self.explorer.take_edit() else {
+            return;
+        };
+        match pending {
+            PendingEdit::Create { path, folder } => {
+                let result = if folder {
+                    std::fs::create_dir_all(&path)
+                } else {
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    std::fs::File::create(&path).map(|_| ())
+                };
+                match result {
+                    Ok(()) => {
+                        self.explorer.rebuild(&self.root);
+                        if !folder {
+                            self.open_path(&path);
+                        }
+                    },
+                    Err(e) => {
+                        self.notify(
+                            Severity::Error,
+                            NotificationKind::Io,
+                            format!("create failed: {e}"),
+                        );
+                    },
+                }
+            },
+            PendingEdit::Rename { from, to } => match std::fs::rename(&from, &to) {
+                Ok(()) => self.explorer.rebuild(&self.root),
+                Err(e) => {
+                    self.notify(
+                        Severity::Error,
+                        NotificationKind::Io,
+                        format!("rename failed: {e}"),
+                    );
+                },
+            },
         }
     }
 
@@ -2294,6 +2397,16 @@ impl App {
     /// (neither activates).
     fn handle_sidebar_click(&mut self, col: u16, row_y: u16, modifiers: KeyModifiers) {
         self.focus = Focus::Sidebar;
+        // Explorer header toolbar buttons sit on the header row alongside the switcher.
+        if row_y == self.sidebar_rect.y
+            && let Some(cmd) = self
+                .header_action_hits
+                .iter()
+                .find_map(|&(start, end, cmd)| (col >= start && col < end).then_some(cmd))
+        {
+            self.dispatch(cmd);
+            return;
+        }
         if let Some(panel) = self.panel_at(col, row_y) {
             self.dispatch(Command::SelectPanel(panel));
             return;
@@ -4198,6 +4311,43 @@ mod tests {
         app.reopen_closed_tab();
         assert!(app.tabs.iter().any(|t| t.path() == Some(file.as_path())));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explorer_header_toolbar_click_begins_new_file() {
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+        app.sidebar_rect = Rect {
+            x: 0,
+            y: 1,
+            width: 30,
+            height: 10,
+        };
+        app.header_action_hits = vec![
+            (20, 22, Command::ExplorerNewFile),
+            (22, 24, Command::ExplorerNewFolder),
+            (24, 26, Command::ExplorerRefresh),
+            (26, 28, Command::ExplorerCollapseAll),
+        ];
+        // Clicking the "new file" button on the header row starts an inline edit.
+        app.handle_sidebar_click(20, 1, KeyModifiers::NONE);
+        assert!(app.explorer.is_editing());
+    }
+
+    #[test]
+    fn explorer_commit_edit_creates_a_file() {
+        let dir = std::env::temp_dir().join(format!("karet-newfile-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+        app.explorer_begin_new(false);
+        for c in "hello.txt".chars() {
+            app.explorer.edit_push(c);
+        }
+        app.explorer_commit_edit();
+        assert!(dir.join("hello.txt").exists());
+        assert!(!app.explorer.is_editing());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

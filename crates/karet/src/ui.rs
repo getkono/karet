@@ -513,16 +513,26 @@ fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
         SidebarPanel::Search => "SEARCH",
         SidebarPanel::SourceControl => "SOURCE CONTROL",
     };
-    // Header columns: a small "karet" brand at the far left, then the panel title,
-    // then the activity-bar switcher (7 cells). The brand is dropped on a narrow
-    // sidebar so the title and switcher always fit.
+    // Header columns: a small "karet" brand at the far left, the panel title, an
+    // optional Explorer toolbar, then the activity-bar switcher (7 cells). The
+    // toolbar (Explorer only) and then the brand are dropped on a narrow sidebar so
+    // the title and switcher always fit.
     const BRAND: &str = "karet";
     const BRAND_W: u16 = BRAND.len() as u16 + 1; // one leading space
-    let show_brand = area.width >= BRAND_W + 9 + 7; // title (" EXPLORER") + switcher
+    const ACTIONS_W: u16 = 8; // four buttons × 2 cells
+    let icon_style = app.icon_style;
+    let explorer = app.sidebar_panel == SidebarPanel::Explorer;
+    let actions_w = if explorer && area.width >= 9 + ACTIONS_W + 7 {
+        ACTIONS_W
+    } else {
+        0
+    };
+    let show_brand = area.width >= BRAND_W + 9 + actions_w + 7;
     let brand_w = if show_brand { BRAND_W } else { 0 };
     let cols = Layout::horizontal([
         Constraint::Length(brand_w),
         Constraint::Min(0),
+        Constraint::Length(actions_w),
         Constraint::Length(7),
     ])
     .split(area);
@@ -543,11 +553,34 @@ fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
         cols[1],
     );
 
+    // The Explorer toolbar (new file / new folder / refresh / collapse all), each
+    // glyph occupying 2 cells; hit regions march in twos like the switcher.
+    app.header_action_hits = Vec::new();
+    if actions_w > 0 {
+        let a = cols[2];
+        let action_style = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+        let actions = [
+            (UiIcon::NewFile, Command::ExplorerNewFile),
+            (UiIcon::NewFolder, Command::ExplorerNewFolder),
+            (UiIcon::Refresh, Command::ExplorerRefresh),
+            (UiIcon::CollapseAll, Command::ExplorerCollapseAll),
+        ];
+        let mut spans = Vec::with_capacity(actions.len());
+        for (i, (ui_icon, cmd)) in actions.into_iter().enumerate() {
+            let x = a.x + i as u16 * 2;
+            app.header_action_hits.push((x, x + 2, cmd));
+            spans.push(Span::styled(
+                format!("{} ", ui_icon.glyph(icon_style)),
+                action_style,
+            ));
+        }
+        f.render_widget(Paragraph::new(Line::from(spans)), a);
+    }
+
     // The activity-bar switcher: an icon per panel. Each glyph occupies one cell
     // plus the space after it (2 cells), so the hit regions march in twos.
-    let switch = cols[2];
+    let switch = cols[3];
     let active = app.sidebar_panel;
-    let icon_style = app.icon_style;
     app.panel_hits = vec![
         (switch.x, switch.x + 2, SidebarPanel::Explorer),
         (switch.x + 2, switch.x + 4, SidebarPanel::Search),

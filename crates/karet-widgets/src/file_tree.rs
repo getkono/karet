@@ -58,6 +58,49 @@ pub struct FileTreeRow {
     pub expanded: bool,
     /// Whether the entry is gitignored (shown dimmed, VS Code style).
     pub ignored: bool,
+    /// Whether this row is the in-progress inline name editor (a new file/folder
+    /// placeholder or a rename): its [`label`](Self::label) holds the typed buffer and
+    /// it renders with a text cursor rather than as a real entry.
+    pub editing: bool,
+}
+
+/// What an in-progress inline edit will create or change once committed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum EditKind {
+    /// Create a new file under [`EditState::parent`].
+    NewFile,
+    /// Create a new folder under [`EditState::parent`].
+    NewFolder,
+    /// Rename the entry at this path.
+    Rename(PathBuf),
+}
+
+/// The in-progress inline name edit: what it will do, the directory it acts in, and
+/// the name typed so far.
+#[derive(Clone, Debug)]
+struct EditState {
+    kind: EditKind,
+    parent: PathBuf,
+    buffer: String,
+}
+
+/// A committed inline edit for the host to apply on the filesystem.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PendingEdit {
+    /// Create a file or (when `folder`) a directory at `path`.
+    Create {
+        /// The absolute path to create.
+        path: PathBuf,
+        /// Whether to create a directory (else an empty file).
+        folder: bool,
+    },
+    /// Rename `from` to `to`.
+    Rename {
+        /// The existing absolute path.
+        from: PathBuf,
+        /// The new absolute path.
+        to: PathBuf,
+    },
 }
 
 /// Persistent file-tree state: expansion, selection, and the flattened row cache.
@@ -71,6 +114,7 @@ pub struct FileTreeState {
     show_hidden: bool,
     respect_gitignore: bool,
     needs_rebuild: bool,
+    editing: Option<EditState>,
 }
 
 impl Default for FileTreeState {
@@ -84,6 +128,7 @@ impl Default for FileTreeState {
             show_hidden: true,
             respect_gitignore: true,
             needs_rebuild: true,
+            editing: None,
         }
     }
 }
@@ -174,6 +219,162 @@ impl FileTreeState {
         self.selection.select_all();
     }
 
+    /// Collapse every expanded directory (VS Code's "Collapse Folders").
+    pub fn collapse_all(&mut self) {
+        if !self.expanded.is_empty() {
+            self.expanded.clear();
+            self.needs_rebuild = true;
+        }
+    }
+
+    /// Whether an inline name edit (new file/folder or rename) is in progress.
+    #[must_use]
+    pub fn is_editing(&self) -> bool {
+        self.editing.is_some()
+    }
+
+    /// The directory a newly-created entry should live in: the selected directory, a
+    /// selected file's parent, or the root when nothing is selected.
+    fn new_entry_parent(&self) -> PathBuf {
+        match self.selected() {
+            Some(row) if row.is_dir => row.path.clone(),
+            Some(row) => row
+                .path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| self.root.clone()),
+            None => self.root.clone(),
+        }
+    }
+
+    /// Begin creating a new file (or, when `folder`, a directory) under the selection,
+    /// showing an inline name editor. The parent directory is expanded so the editor
+    /// is visible as its first child.
+    pub fn begin_new(&mut self, folder: bool) {
+        let parent = self.new_entry_parent();
+        if parent != self.root {
+            self.expanded.insert(parent.clone());
+        }
+        let kind = if folder {
+            EditKind::NewFolder
+        } else {
+            EditKind::NewFile
+        };
+        self.editing = Some(EditState {
+            kind,
+            parent,
+            buffer: String::new(),
+        });
+        self.needs_rebuild = true;
+    }
+
+    /// Begin renaming the selected entry, seeding the editor with its current name.
+    pub fn begin_rename(&mut self) {
+        if let Some(row) = self.selected() {
+            let old = row.path.clone();
+            let parent = old
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| self.root.clone());
+            self.editing = Some(EditState {
+                kind: EditKind::Rename(old.clone()),
+                parent,
+                buffer: file_label(&old),
+            });
+            self.needs_rebuild = true;
+        }
+    }
+
+    /// Append a character to the inline edit buffer (no-op when not editing).
+    pub fn edit_push(&mut self, c: char) {
+        if let Some(edit) = self.editing.as_mut() {
+            edit.buffer.push(c);
+            self.needs_rebuild = true;
+        }
+    }
+
+    /// Delete the last character of the inline edit buffer (no-op when not editing).
+    pub fn edit_backspace(&mut self) {
+        if let Some(edit) = self.editing.as_mut() {
+            edit.buffer.pop();
+            self.needs_rebuild = true;
+        }
+    }
+
+    /// Cancel any in-progress inline edit.
+    pub fn cancel_edit(&mut self) {
+        if self.editing.take().is_some() {
+            self.needs_rebuild = true;
+        }
+    }
+
+    /// Finish the inline edit, returning the filesystem action to apply (or `None` if
+    /// the name is blank). The editor is cleared either way.
+    #[must_use]
+    pub fn take_edit(&mut self) -> Option<PendingEdit> {
+        let edit = self.editing.take()?;
+        self.needs_rebuild = true;
+        let name = edit.buffer.trim();
+        if name.is_empty() {
+            return None;
+        }
+        Some(match edit.kind {
+            EditKind::NewFile => PendingEdit::Create {
+                path: edit.parent.join(name),
+                folder: false,
+            },
+            EditKind::NewFolder => PendingEdit::Create {
+                path: edit.parent.join(name),
+                folder: true,
+            },
+            EditKind::Rename(old) => {
+                let to = old
+                    .parent()
+                    .map_or_else(|| edit.parent.join(name), |p| p.join(name));
+                PendingEdit::Rename { from: old, to }
+            },
+        })
+    }
+
+    /// Overlay the in-progress inline edit onto freshly-built `rows`: a rename marks
+    /// its target row as editing; a new file/folder inserts a placeholder editing row
+    /// under its parent. Returns the row index the cursor should follow, if any.
+    fn apply_editing(&self, rows: &mut Vec<FileTreeRow>) -> Option<usize> {
+        let edit = self.editing.as_ref()?;
+        match &edit.kind {
+            EditKind::Rename(old) => {
+                let idx = rows.iter().position(|r| &r.path == old)?;
+                rows[idx].editing = true;
+                rows[idx].label = edit.buffer.clone();
+                Some(idx)
+            },
+            EditKind::NewFile | EditKind::NewFolder => {
+                let is_dir = matches!(edit.kind, EditKind::NewFolder);
+                let (at, depth) = if edit.parent == self.root {
+                    (0, 0)
+                } else if let Some(idx) = rows.iter().position(|r| r.path == edit.parent) {
+                    (idx + 1, rows[idx].depth + 1)
+                } else {
+                    (0, 0)
+                };
+                let at = at.min(rows.len());
+                rows.insert(
+                    at,
+                    FileTreeRow {
+                        path: edit.parent.clone(),
+                        label: edit.buffer.clone(),
+                        depth,
+                        is_dir,
+                        expanded: false,
+                        ignored: false,
+                        editing: true,
+                    },
+                );
+                Some(at)
+            },
+        }
+    }
+
     /// Expand directory `path`.
     pub fn expand(&mut self, path: &Path) {
         if self.expanded.insert(path.to_path_buf()) {
@@ -220,8 +421,13 @@ impl FileTreeState {
         let mut rows = Vec::new();
         let children = read_dir_sorted(root, self.show_hidden, self.respect_gitignore);
         self.push_entries(children, 0, false, &mut rows);
+        // Overlay any in-progress inline edit, then keep its row under the cursor.
+        let follow = self.apply_editing(&mut rows);
         self.rows = rows;
         self.selection.set_len(self.rows.len());
+        if let Some(idx) = follow {
+            self.selection.move_to(idx);
+        }
         self.needs_rebuild = false;
     }
 
@@ -249,6 +455,7 @@ impl FileTreeState {
                     is_dir: false,
                     expanded: false,
                     ignored: parent_ignored || entry.ignored,
+                    editing: false,
                 });
             }
         }
@@ -288,6 +495,7 @@ impl FileTreeState {
             is_dir: true,
             expanded,
             ignored,
+            editing: false,
         });
         if expanded {
             self.push_entries(children, depth + 1, ignored, rows);
@@ -620,16 +828,28 @@ impl StatefulWidget for FileTree<'_> {
                 format!("{icon} "),
                 Style::default().fg(icon_color.to_ratatui()),
             ));
-            spans.push(Span::styled(row.label.clone(), label_style));
-            if let Some(dec) = self.status_for(&row.path)
-                && let DecorationKind::GutterMarker { glyph } = &dec.kind
-            {
-                let color = dec.role.map_or(fg, |r| theme.role(r));
-                spans.push(Span::raw(" "));
+            if row.editing {
+                // The inline name editor: the buffer plus a reversed-cell cursor.
                 spans.push(Span::styled(
-                    glyph.to_string(),
-                    Style::default().fg(color.to_ratatui()),
+                    row.label.clone(),
+                    Style::default().fg(accent.to_ratatui()),
                 ));
+                spans.push(Span::styled(
+                    " ",
+                    Style::default().add_modifier(Modifier::REVERSED),
+                ));
+            } else {
+                spans.push(Span::styled(row.label.clone(), label_style));
+                if let Some(dec) = self.status_for(&row.path)
+                    && let DecorationKind::GutterMarker { glyph } = &dec.kind
+                {
+                    let color = dec.role.map_or(fg, |r| theme.role(r));
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(
+                        glyph.to_string(),
+                        Style::default().fg(color.to_ratatui()),
+                    ));
+                }
             }
 
             buf.set_line(area.x, y, &Line::from(spans), area.width);
@@ -786,6 +1006,126 @@ mod tests {
                 .iter()
                 .any(|r| r.path == dir.path.join("src") && !r.ignored)
         );
+    }
+
+    #[test]
+    fn new_file_inserts_an_inline_editor_and_commits() {
+        let dir = temp_dir();
+        write(&dir.path, "existing.txt", b"x");
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+        // Begin a new file at the root; an editing placeholder row appears at the top.
+        state.begin_new(false);
+        state.ensure_built(&dir.path);
+        assert!(state.is_editing());
+        assert!(state.rows().iter().any(|r| r.editing));
+        // Type a name; the editor row reflects it.
+        for c in "new.rs".chars() {
+            state.edit_push(c);
+        }
+        state.ensure_built(&dir.path);
+        assert!(
+            state
+                .rows()
+                .iter()
+                .any(|r| r.editing && r.label == "new.rs")
+        );
+        // Commit → a Create for the joined path, and editing ends.
+        let pending = state.take_edit();
+        assert_eq!(
+            pending,
+            Some(PendingEdit::Create {
+                path: dir.path.join("new.rs"),
+                folder: false,
+            })
+        );
+        assert!(!state.is_editing());
+    }
+
+    #[test]
+    fn new_folder_nests_under_the_selected_directory() {
+        let dir = temp_dir();
+        write(&dir.path, "sub/keep.txt", b"k");
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+        // Select the "sub" directory, then create a folder inside it.
+        state.select_visible(0);
+        assert!(state.selected().is_some_and(|r| r.is_dir));
+        state.begin_new(true);
+        for c in "child".chars() {
+            state.edit_push(c);
+        }
+        state.ensure_built(&dir.path);
+        // The editor row is nested one level under "sub".
+        let editing = state.rows().iter().find(|r| r.editing);
+        assert!(editing.is_some_and(|r| r.is_dir && r.depth == 1));
+        assert_eq!(
+            state.take_edit(),
+            Some(PendingEdit::Create {
+                path: dir.path.join("sub").join("child"),
+                folder: true,
+            })
+        );
+    }
+
+    #[test]
+    fn rename_marks_the_row_and_returns_the_new_path() {
+        let dir = temp_dir();
+        write(&dir.path, "old.txt", b"o");
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+        state.select_visible(0);
+        state.begin_rename();
+        // The buffer seeds with the current name; clear it and type a new one.
+        for _ in 0.."old.txt".len() {
+            state.edit_backspace();
+        }
+        for c in "renamed.txt".chars() {
+            state.edit_push(c);
+        }
+        state.ensure_built(&dir.path);
+        assert!(
+            state
+                .rows()
+                .iter()
+                .any(|r| r.editing && r.label == "renamed.txt")
+        );
+        assert_eq!(
+            state.take_edit(),
+            Some(PendingEdit::Rename {
+                from: dir.path.join("old.txt"),
+                to: dir.path.join("renamed.txt"),
+            })
+        );
+    }
+
+    #[test]
+    fn blank_name_commit_is_a_no_op() {
+        let dir = temp_dir();
+        write(&dir.path, "a.txt", b"a");
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+        state.begin_new(false);
+        assert_eq!(state.take_edit(), None); // nothing typed → no action
+        assert!(!state.is_editing());
+    }
+
+    #[test]
+    fn collapse_all_closes_every_directory() {
+        let dir = temp_dir();
+        write(&dir.path, "a/b/c.txt", b"c");
+        write(&dir.path, "a/note.txt", b"n"); // keeps "a" from compacting
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+        state.expand(&dir.path.join("a"));
+        state.expand(&dir.path.join("a/b"));
+        state.ensure_built(&dir.path);
+        assert!(state.rows().len() > 1);
+        state.collapse_all();
+        state.ensure_built(&dir.path);
+        // Only the top-level "a" remains, collapsed.
+        assert_eq!(labels(&state), vec!["a"]);
+        assert!(!state.rows()[0].expanded);
     }
 
     #[test]

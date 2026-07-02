@@ -24,6 +24,14 @@ pub enum UiIcon {
     Close,
     /// A right-pointing chevron, e.g. a breadcrumb separator.
     ChevronRight,
+    /// The explorer "new file" toolbar action.
+    NewFile,
+    /// The explorer "new folder" toolbar action.
+    NewFolder,
+    /// The explorer "refresh" toolbar action.
+    Refresh,
+    /// The explorer "collapse all folders" toolbar action.
+    CollapseAll,
 }
 
 impl UiIcon {
@@ -45,6 +53,10 @@ impl UiIcon {
             Self::SourceControl => '\u{f126}', // code-fork (branch)
             Self::Close => '\u{f00d}',         // times
             Self::ChevronRight => '\u{f054}',  // chevron-right
+            Self::NewFile => '\u{f15b}',       // file
+            Self::NewFolder => '\u{f07b}',     // folder
+            Self::Refresh => '\u{f021}',       // refresh
+            Self::CollapseAll => '\u{f066}',   // compress
         }
     }
 
@@ -56,6 +68,10 @@ impl UiIcon {
             Self::SourceControl => '\u{2387}', // ⎇ alternative key (branch-ish)
             Self::Close => '\u{00d7}',         // ×
             Self::ChevronRight => '\u{203a}',  // ›
+            Self::NewFile => '\u{25A4}',       // ▤ (file-ish lines)
+            Self::NewFolder => '\u{25B0}',     // ▰ (folder-ish block)
+            Self::Refresh => '\u{21BB}',       // ↻
+            Self::CollapseAll => '\u{2212}',   // − (minus / collapse)
         }
     }
 
@@ -67,6 +83,10 @@ impl UiIcon {
             Self::SourceControl => 'B', // branch
             Self::Close => 'x',
             Self::ChevronRight => '>',
+            Self::NewFile => '+',
+            Self::NewFolder => 'D', // new directory
+            Self::Refresh => 'R',
+            Self::CollapseAll => '-',
         }
     }
 }
@@ -90,6 +110,10 @@ mod tests {
             UiIcon::SourceControl,
             UiIcon::Close,
             UiIcon::ChevronRight,
+            UiIcon::NewFile,
+            UiIcon::NewFolder,
+            UiIcon::Refresh,
+            UiIcon::CollapseAll,
         ] {
             assert!(icon.glyph(IconStyle::Ascii).is_ascii_graphic());
         }

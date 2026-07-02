@@ -169,6 +169,16 @@ pub enum Command {
     ShowBlame,
     /// Open a semantic-blame view narrowed to the function under the caret.
     BlameFunction,
+    /// Begin creating a new file in the explorer (inline name editor).
+    ExplorerNewFile,
+    /// Begin creating a new folder in the explorer (inline name editor).
+    ExplorerNewFolder,
+    /// Begin renaming the selected explorer entry (inline name editor).
+    ExplorerRename,
+    /// Hard-reload the explorer tree (and re-request VCS status).
+    ExplorerRefresh,
+    /// Collapse every expanded folder in the explorer.
+    ExplorerCollapseAll,
 
     // Modal-scoped commands. These are resolved only while a modal context is
     // active (see [`crate::keymap::Modal`]) and never appear in the command palette.
@@ -190,6 +200,10 @@ pub enum Command {
     CommitSubmit,
     /// Cancel the commit input.
     CommitCancel,
+    /// Commit the explorer inline name editor (create / rename).
+    ExplorerEditSubmit,
+    /// Cancel the explorer inline name editor.
+    ExplorerEditCancel,
     /// Confirm the pending discard.
     ConfirmDiscard,
     /// Move the Search results selection up.
@@ -292,6 +306,11 @@ impl Command {
             Self::ScmRefresh => "Source Control: Refresh",
             Self::ShowBlame => "Source Control: Show Blame",
             Self::BlameFunction => "Source Control: Blame This Function",
+            Self::ExplorerNewFile => "Explorer: New File…",
+            Self::ExplorerNewFolder => "Explorer: New Folder…",
+            Self::ExplorerRename => "Explorer: Rename…",
+            Self::ExplorerRefresh => "Explorer: Refresh",
+            Self::ExplorerCollapseAll => "Explorer: Collapse Folders",
             Self::OverlayUp => "Overlay: Select Previous",
             Self::OverlayDown => "Overlay: Select Next",
             Self::OverlayAccept => "Overlay: Accept",
@@ -301,6 +320,8 @@ impl Command {
             Self::FindCancel => "Find: Close",
             Self::CommitSubmit => "Commit: Submit",
             Self::CommitCancel => "Commit: Cancel",
+            Self::ExplorerEditSubmit => "Explorer: Confirm Name",
+            Self::ExplorerEditCancel => "Explorer: Cancel Edit",
             Self::ConfirmDiscard => "Source Control: Confirm Discard",
             Self::SearchSelectUp => "Search: Select Previous",
             Self::SearchSelectDown => "Search: Select Next",
@@ -368,6 +389,12 @@ impl Command {
             Self::ScmDiscard => "discard",
             Self::ScmCommit => "commit",
             Self::ScmRefresh => "refresh",
+            // Explorer.
+            Self::ExplorerNewFile => "new file",
+            Self::ExplorerNewFolder => "new folder",
+            Self::ExplorerRename => "rename",
+            Self::ExplorerRefresh => "refresh",
+            Self::ExplorerCollapseAll => "collapse all",
             // Modal-scoped.
             Self::OverlayAccept => "accept",
             Self::OverlayCancel => "cancel",
@@ -376,6 +403,8 @@ impl Command {
             Self::FindCancel => "close",
             Self::CommitSubmit => "submit",
             Self::CommitCancel => "cancel",
+            Self::ExplorerEditSubmit => "confirm",
+            Self::ExplorerEditCancel => "cancel",
             Self::ConfirmDiscard => "confirm",
             Self::SearchOpen => "open",
             Self::SearchBeginInput => "edit",
@@ -462,6 +491,11 @@ impl Command {
                 | Self::ScmRefresh
                 | Self::ShowBlame
                 | Self::BlameFunction
+                | Self::ExplorerNewFile
+                | Self::ExplorerNewFolder
+                | Self::ExplorerRename
+                | Self::ExplorerRefresh
+                | Self::ExplorerCollapseAll
                 | Self::DismissNotification
                 | Self::DismissAllNotifications
                 | Self::SplitRight
@@ -486,6 +520,11 @@ pub fn palette() -> Vec<Command> {
         Command::OpenGlobalSearch,
         Command::ShowBlame,
         Command::BlameFunction,
+        Command::ExplorerNewFile,
+        Command::ExplorerNewFolder,
+        Command::ExplorerRename,
+        Command::ExplorerRefresh,
+        Command::ExplorerCollapseAll,
         Command::Copy,
         Command::CopyPath,
         Command::CopyRelativePath,
