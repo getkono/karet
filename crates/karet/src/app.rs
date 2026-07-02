@@ -229,6 +229,9 @@ pub struct App {
     pub(crate) tab_dragging: bool,
     /// The sidebar's content area (below the header) from the last frame.
     pub(crate) sidebar_content_rect: Rect,
+    /// The current mouse position while hovering the sidebar content, for a
+    /// secondary-accent row highlight (explorer / source-control lists).
+    pub(crate) hover: Option<(u16, u16)>,
     /// The header panel-switcher cells (`1 2 3`) from the last frame.
     pub(crate) panel_hits: Vec<(u16, u16, SidebarPanel)>,
     /// Source-Control display-row → change-index map from the last frame.
@@ -319,6 +322,7 @@ impl App {
             tab_hits: Vec::new(),
             tab_dragging: false,
             sidebar_content_rect: Rect::default(),
+            hover: None,
             panel_hits: Vec::new(),
             scm_row_map: Vec::new(),
             scm_offset: 0,
@@ -1635,8 +1639,32 @@ impl App {
                     self.handle_editor_click(mouse);
                 }
             },
+            // Track the hover position for the secondary-accent row highlight in the
+            // explorer / source-control lists (cleared when off the content area).
+            MouseEventKind::Moved => {
+                self.hover = rect_contains(self.sidebar_content_rect, point).then_some(point);
+            },
             _ => {},
         }
+    }
+
+    /// The absolute explorer row index under the hover cursor, if the mouse is over
+    /// the explorer's content (accounts for the current scroll offset).
+    pub(crate) fn hovered_explorer_row(&self) -> Option<usize> {
+        let (_, hy) = self.hover?;
+        let top = self.sidebar_content_rect.y;
+        (hy >= top).then(|| self.explorer.offset() + usize::from(hy - top))
+    }
+
+    /// The source-control change index under the hover cursor, if any (mirrors the
+    /// SCM click hit-testing, using the last frame's row map).
+    pub(crate) fn hovered_scm_change(&self) -> Option<usize> {
+        let (_, hy) = self.hover?;
+        if hy < self.sidebar_content_rect.y {
+            return None;
+        }
+        let display = self.scm_offset + usize::from(hy - self.sidebar_content_rect.y);
+        self.scm_row_map.get(display).copied().flatten()
     }
 
     /// The sidebar panel whose header switcher cell is at `(col, row_y)`, if any.
@@ -2381,6 +2409,31 @@ mod tests {
             vec![change("b.rs", StatusKind::Modified)],
             false,
         )
+    }
+
+    #[test]
+    fn hover_maps_to_explorer_and_scm_rows() {
+        let mut app = app();
+        app.sidebar_content_rect = Rect {
+            x: 0,
+            y: 2,
+            width: 20,
+            height: 10,
+        };
+        // Explorer: hover at y=4 with offset 0 → absolute row 2.
+        app.hover = Some((5, 4));
+        assert_eq!(app.hovered_explorer_row(), Some(2));
+        // Above the content area → no hovered row.
+        app.hover = Some((5, 1));
+        assert_eq!(app.hovered_explorer_row(), None);
+
+        // Source control: display 0 is a section header, 1 and 2 are changes.
+        app.scm_offset = 0;
+        app.scm_row_map = vec![None, Some(0), Some(1)];
+        app.hover = Some((5, 3)); // display = 0 + (3 - 2) = 1 → change 0
+        assert_eq!(app.hovered_scm_change(), Some(0));
+        app.hover = Some((5, 2)); // display 0 → header → nothing
+        assert_eq!(app.hovered_scm_change(), None);
     }
 
     #[test]

@@ -303,12 +303,14 @@ fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                 .get(app.active)
                 .and_then(Tab::path)
                 .map(Path::to_path_buf);
+            let hover = app.hovered_explorer_row();
             f.render_stateful_widget(
                 FileTree::new(&root)
                     .theme(theme)
                     .icons(icon_style)
                     .open(&open)
-                    .active(active.as_deref()),
+                    .active(active.as_deref())
+                    .hover(hover),
                 rows[1],
                 &mut app.explorer,
             );
@@ -374,6 +376,8 @@ fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     };
 
     let selection_bg = theme.role(ThemeRole::Selection).to_ratatui();
+    let hover_bg = theme.role(ThemeRole::HoverHighlight).to_ratatui();
+    let hovered = app.hovered_scm_change();
     let cursor = app.scm.selection.cursor();
     let mut items: Vec<ListItem> = Vec::new();
     let mut row_map: Vec<Option<usize>> = Vec::new();
@@ -412,9 +416,11 @@ fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         ]));
         // Every selected row (a contiguous range or a scattered toggle-set) gets the
         // selection background; the cursor row additionally gets the bold highlight
-        // below.
+        // below. A hovered-but-unselected row gets the secondary hover accent.
         if app.scm.selection.is_selected(i) {
             item = item.style(Style::default().bg(selection_bg));
+        } else if hovered == Some(i) {
+            item = item.style(Style::default().bg(hover_bg));
         }
         items.push(item);
         row_map.push(Some(i));

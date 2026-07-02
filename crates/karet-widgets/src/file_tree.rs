@@ -369,6 +369,7 @@ pub struct FileTree<'a> {
     status: &'a [(PathBuf, Decoration)],
     open: &'a [PathBuf],
     active: Option<&'a Path>,
+    hover: Option<usize>,
     icons: IconStyle,
     theme: Option<&'a Theme>,
 }
@@ -382,9 +383,18 @@ impl<'a> FileTree<'a> {
             status: &[],
             open: &[],
             active: None,
+            hover: None,
             icons: IconStyle::default(),
             theme: None,
         }
+    }
+
+    /// Supply the (absolute) row index the mouse is hovering, so it gets a secondary
+    /// highlight distinct from the selection.
+    #[must_use]
+    pub fn hover(mut self, hover: Option<usize>) -> Self {
+        self.hover = hover;
+        self
     }
 
     /// Supply the paths of files currently open in editor tabs, so their rows are
@@ -469,7 +479,15 @@ impl StatefulWidget for FileTree<'_> {
         {
             let y = area.y + u16::try_from(i - state.offset).unwrap_or(0);
             let selected = state.selection.is_selected(i);
-            if selected {
+            // The primary Selection highlight wins over the secondary hover highlight.
+            let row_bg = if selected {
+                Some(ThemeRole::Selection)
+            } else if self.hover == Some(i) {
+                Some(ThemeRole::HoverHighlight)
+            } else {
+                None
+            };
+            if let Some(role) = row_bg {
                 buf.set_style(
                     Rect {
                         x: area.x,
@@ -477,7 +495,7 @@ impl StatefulWidget for FileTree<'_> {
                         width: area.width,
                         height: 1,
                     },
-                    Style::default().bg(theme.role(ThemeRole::Selection).to_ratatui()),
+                    Style::default().bg(theme.role(role).to_ratatui()),
                 );
             }
 
