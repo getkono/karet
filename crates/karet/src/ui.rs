@@ -40,6 +40,7 @@ use ratatui::widgets::Wrap;
 
 use crate::app::App;
 use crate::app::FindState;
+use crate::app::SIDEBAR_MIN_WIDTH;
 use crate::app::TabDrag;
 use crate::app::TabHit;
 use crate::app::ToastHit;
@@ -67,19 +68,33 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let body = rows[0];
 
     let sidebar = if app.sidebar_visible {
-        let width = sidebar_width(area.width);
-        let cols = Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).split(body);
+        // Responsive clamp: the sidebar can grow to nearly the full width, but always
+        // leaves one column for the drag divider. The stored width is written back so
+        // a subsequent drag starts from what's actually shown after a terminal resize.
+        let max = body.width.saturating_sub(1).max(1);
+        let lo = SIDEBAR_MIN_WIDTH.min(max);
+        let width = app.sidebar_width.clamp(lo, max);
+        app.sidebar_width = width;
+        let cols = Layout::horizontal([
+            Constraint::Length(width),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(body);
         app.sidebar_rect = cols[0];
-        app.main_rect = cols[1];
-        Some(cols[0])
+        app.sidebar_divider_x = cols[1].x;
+        app.main_rect = cols[2];
+        Some((cols[0], cols[1]))
     } else {
         app.sidebar_rect = Rect::default();
+        app.sidebar_divider_x = 0;
         app.main_rect = body;
         None
     };
 
-    if let Some(rect) = sidebar {
+    if let Some((rect, divider)) = sidebar {
         draw_sidebar(f, app, &theme, rect);
+        draw_sidebar_divider(f, &theme, divider, app.sidebar_resizing);
     }
     draw_panes(f, app, &theme, app.main_rect);
     draw_drop_preview(f, app, &theme);
@@ -344,10 +359,19 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
-/// The sidebar width: 30 columns, capped at ~40% of a narrow terminal.
-fn sidebar_width(total: u16) -> u16 {
-    let cap = (total * 2 / 5).max(12);
-    30.min(cap)
+/// Draw the vertical divider between the sidebar and the main area. It doubles as
+/// the drag handle for resizing the sidebar; it brightens while a resize is active.
+fn draw_sidebar_divider(f: &mut Frame, theme: &Theme, area: Rect, active: bool) {
+    let role = if active {
+        ThemeRole::LineNumberActive
+    } else {
+        ThemeRole::IndentGuide
+    };
+    let style = Style::default().fg(theme.role(role).to_ratatui());
+    let buf = f.buffer_mut();
+    for y in area.y..area.bottom() {
+        buf.set_string(area.x, y, "\u{2502}", style); // │
+    }
 }
 
 /// Draw a pane's tab strip and return its rect plus per-tab clickable regions. The

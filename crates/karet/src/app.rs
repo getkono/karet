@@ -176,6 +176,13 @@ const SEARCH_RESULT_CAP: usize = 500;
 /// How many commits the source-control log fetches per lazily-loaded page.
 const SCM_LOG_PAGE: usize = 25;
 
+/// The default sidebar width in columns (before the user drags the divider).
+pub(crate) const DEFAULT_SIDEBAR_WIDTH: u16 = 30;
+
+/// The minimum sidebar width in columns; dragging the divider narrower than this
+/// collapses the sidebar entirely.
+pub(crate) const SIDEBAR_MIN_WIDTH: u16 = 16;
+
 /// A clickable tab region in the tab strip, recorded during the last render.
 #[derive(Clone, Copy)]
 pub(crate) struct TabHit {
@@ -275,6 +282,13 @@ pub struct App {
     pub(crate) sidebar_rect: Rect,
     /// The main content rect from the last frame.
     pub(crate) main_rect: Rect,
+    /// The user-controlled sidebar width in columns (draggable; clamped responsively
+    /// to the terminal width each frame).
+    pub(crate) sidebar_width: u16,
+    /// The x column of the sidebar's drag divider from the last frame (hit-testing).
+    pub(crate) sidebar_divider_x: u16,
+    /// Whether a sidebar-resize drag is currently in progress.
+    pub(crate) sidebar_resizing: bool,
     /// Per-pane clickable regions from the last frame (mouse hit-testing).
     pub(crate) pane_frames: Vec<PaneFrame>,
     /// The in-progress tab drag, if the pointer is dragging a tab.
@@ -380,6 +394,9 @@ impl App {
             toast_hits: Vec::new(),
             sidebar_rect: Rect::default(),
             main_rect: Rect::default(),
+            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
+            sidebar_divider_x: 0,
+            sidebar_resizing: false,
             pane_frames: Vec::new(),
             tab_drag: None,
             sidebar_content_rect: Rect::default(),
@@ -1931,6 +1948,19 @@ impl App {
 
     /// Handle a mouse event: the tab strip (switch / close / cycle), wheel scrolls
     /// (the sidebar or the active tab), and a left click moves focus.
+    /// Resize the sidebar so its right edge sits at column `col`. Dragging narrower
+    /// than [`SIDEBAR_MIN_WIDTH`] is read as intent to collapse. The responsive upper
+    /// bound (terminal width) is applied when the layout is next computed.
+    fn resize_sidebar_to(&mut self, col: u16) {
+        let width = col.saturating_sub(self.sidebar_rect.x);
+        if width < SIDEBAR_MIN_WIDTH {
+            self.sidebar_visible = false;
+            self.sidebar_resizing = false;
+        } else {
+            self.sidebar_width = width;
+        }
+    }
+
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         // Toasts float above everything (including the overlay), so hit-test them
         // first: a left click on a card dismisses it.
@@ -1947,6 +1977,15 @@ impl App {
                     self.drag_tab_update(mouse.column, mouse.row);
                 },
                 MouseEventKind::Up(MouseButton::Left) => self.drag_tab_drop(),
+                _ => {},
+            }
+            return;
+        }
+        // An in-progress sidebar resize captures motion until the button is released.
+        if self.sidebar_resizing {
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left) => self.resize_sidebar_to(mouse.column),
+                MouseEventKind::Up(MouseButton::Left) => self.sidebar_resizing = false,
                 _ => {},
             }
             return;
@@ -1976,7 +2015,10 @@ impl App {
             MouseEventKind::ScrollDown => self.scroll_lines(3),
             MouseEventKind::ScrollUp => self.scroll_lines(-3),
             MouseEventKind::Down(MouseButton::Left) => {
-                if in_sidebar {
+                if self.sidebar_visible && mouse.column == self.sidebar_divider_x {
+                    // Grab the divider to start a resize drag.
+                    self.sidebar_resizing = true;
+                } else if in_sidebar {
                     self.handle_sidebar_click(mouse.column, mouse.row, mouse.modifiers);
                 } else {
                     self.handle_editor_click(mouse);
@@ -2819,6 +2861,23 @@ mod tests {
             vec![change("b.rs", StatusKind::Modified)],
             false,
         )
+    }
+
+    #[test]
+    fn sidebar_resize_sets_width_and_collapses_below_min() {
+        let mut app = app();
+        app.sidebar_rect = Rect::new(0, 0, DEFAULT_SIDEBAR_WIDTH, 20);
+        app.sidebar_resizing = true;
+        // Dragging the divider to column 45 widens the sidebar.
+        app.resize_sidebar_to(45);
+        assert_eq!(app.sidebar_width, 45);
+        assert!(app.sidebar_visible);
+        // Dragging narrower than the minimum collapses it and ends the drag, leaving
+        // the last valid width intact so re-showing restores a sensible size.
+        app.resize_sidebar_to(SIDEBAR_MIN_WIDTH - 1);
+        assert!(!app.sidebar_visible);
+        assert!(!app.sidebar_resizing);
+        assert_eq!(app.sidebar_width, 45);
     }
 
     #[test]
