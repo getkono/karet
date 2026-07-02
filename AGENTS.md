@@ -54,6 +54,7 @@ published to crates.io (everything else is `publish = false`).
 | `karet-diff` | engine | ✓ | pure syntax-aware diffing (tree-sitter + line/word fallback) — no presentation |
 | `karet-markdown` | engine | — | markdown render model (`view` + `highlight` feats) |
 | `karet-cbor` | engine | — | CBOR decode/encode ↔ editable diagnostic-notation text (via `ciborium`); no presentation |
+| `karet-pdf` | engine | — | pure-Rust PDF page → RGBA rasterization (via `hayro`); no presentation |
 | `karet-terminal` | engine | — | VT/PTY emulator, scrollback, OSC 133 (`view` feat) |
 | `karet-lsp` | engine | ✓ | async LSP client → core models (headless; ratatui popups live in `karet-widgets`) |
 | `karet-dap` | engine | ✓ | async DAP client → breakpoint decorations (`view` feat = panels) |
