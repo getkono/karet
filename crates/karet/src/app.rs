@@ -70,6 +70,7 @@ use karet_widgets::FileTreeState;
 use karet_widgets::ListSelection;
 use karet_widgets::PaneId;
 use karet_widgets::PaneLayout;
+use karet_widgets::SplitDir;
 use karet_widgets::drop_zone;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc;
@@ -826,6 +827,10 @@ impl App {
             Command::OpenAnyway => self.open_active_anyway(),
             Command::DismissNotification => self.notifications.dismiss_latest(),
             Command::DismissAllNotifications => self.notifications.dismiss_all(),
+            Command::SplitRight => self.split_focused(SplitDir::Right),
+            Command::SplitDown => self.split_focused(SplitDir::Down),
+            Command::FocusNextPane => self.focus_pane_cycle(true),
+            Command::FocusPrevPane => self.focus_pane_cycle(false),
             Command::Copy => self.copy_selection(),
             Command::CopyPath => self.copy_path(false),
             Command::CopyRelativePath => self.copy_path(true),
@@ -1567,6 +1572,81 @@ impl App {
         self.load_focused();
         self.focus = Focus::Editor;
         self.reconcile_open_docs();
+    }
+
+    /// Split the focused pane in `dir` via the keyboard, opening a second view of the
+    /// active document (sharing its session document, with an independent cursor) in
+    /// the new pane, which becomes focused.
+    fn split_focused(&mut self, dir: SplitDir) {
+        let from = self.focus_pane();
+        let dup = self.duplicate_active_tab();
+        self.stash_focused();
+        let new_pane = self.layout.split(from, dir);
+        self.stored.insert(
+            new_pane,
+            StoredPane {
+                tabs: vec![dup],
+                active: 0,
+            },
+        );
+        self.layout.set_focus(new_pane);
+        self.load_focused();
+        self.focus = Focus::Editor;
+    }
+
+    /// Build a second view of the active tab for a new pane: the same document
+    /// (shared edit log) with a fresh [`ViewId`] and independent editor state. A
+    /// non-code (or empty) active tab yields a welcome tab.
+    fn duplicate_active_tab(&mut self) -> Tab {
+        let view = self.alloc_view();
+        let mut tab = match self.tabs.get(self.active) {
+            Some(t) => match &t.kind {
+                TabKind::Code {
+                    path,
+                    language,
+                    doc,
+                    next_version,
+                    buffer,
+                    text,
+                    highlights,
+                    decos,
+                } => Tab::new(
+                    t.title.clone(),
+                    TabKind::Code {
+                        path: path.clone(),
+                        language,
+                        doc: *doc,
+                        next_version: *next_version,
+                        buffer: buffer.clone(),
+                        text: text.clone(),
+                        highlights: highlights.clone(),
+                        decos: decos.clone(),
+                    },
+                ),
+                _ => Tab::welcome(),
+            },
+            None => Tab::welcome(),
+        };
+        tab.view = view;
+        tab
+    }
+
+    /// Cycle window focus to the next (`forward`) or previous pane. A no-op with
+    /// fewer than two panes.
+    fn focus_pane_cycle(&mut self, forward: bool) {
+        let panes = self.layout.panes();
+        let n = panes.len();
+        if n < 2 {
+            return;
+        }
+        let cur = self.layout.focus();
+        let i = panes.iter().position(|p| *p == cur).unwrap_or(0);
+        let next = if forward {
+            (i + 1) % n
+        } else {
+            (i + n - 1) % n
+        };
+        self.focus_pane_switch(panes[next]);
     }
 
     /// Move the active tab one slot left (`-1`) or right (`+1`), clamped (no wrap).
@@ -3575,6 +3655,24 @@ mod tests {
         app.drop_tab_on(from, DropZone::Bottom);
         assert_eq!(app.layout.pane_count(), 1);
         assert_eq!(app.tabs[0].title, "only.rs");
+    }
+
+    #[test]
+    fn keyboard_split_opens_a_second_view_and_focus_cycles() {
+        let mut app = app();
+        app.push_tab(code_tab("a.rs"));
+        let from = app.focus_pane();
+        app.dispatch(Command::SplitRight);
+        assert_eq!(app.layout.pane_count(), 2);
+        let new_pane = app.focus_pane();
+        assert_ne!(new_pane, from);
+        // The new pane holds a duplicate view of the active document.
+        assert_eq!(app.tabs[0].title, "a.rs");
+        // Focus cycles to the origin pane and back.
+        app.dispatch(Command::FocusPrevPane);
+        assert_eq!(app.focus_pane(), from);
+        app.dispatch(Command::FocusNextPane);
+        assert_eq!(app.focus_pane(), new_pane);
     }
 
     #[test]
