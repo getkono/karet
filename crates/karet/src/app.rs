@@ -179,6 +179,13 @@ const SEARCH_RESULT_CAP: usize = 500;
 /// How many commits the source-control log fetches per lazily-loaded page.
 const SCM_LOG_PAGE: usize = 25;
 
+/// The default height (rows) of the pinned Source-Control commit-log region.
+const DEFAULT_SCM_COMMITS_H: u16 = 8;
+
+/// The minimum height (rows) each Source-Control region keeps when both the changes
+/// and the pinned commit-log region are shown.
+pub(crate) const MIN_SCM_REGION: u16 = 3;
+
 /// The default sidebar width in columns (before the user drags the divider).
 pub(crate) const DEFAULT_SIDEBAR_WIDTH: u16 = 30;
 
@@ -309,17 +316,28 @@ pub struct App {
     pub(crate) hover: Option<(u16, u16)>,
     /// The header panel-switcher cells (`1 2 3`) from the last frame.
     pub(crate) panel_hits: Vec<(u16, u16, SidebarPanel)>,
-    /// Source-Control display-row → change-index map from the last frame.
+    /// Source-Control *changes* display-row → change-index map from the last frame.
     pub(crate) scm_row_map: Vec<Option<usize>>,
-    /// The Source-Control list scroll offset (drives the viewport; user-controlled
-    /// via the wheel and selection follow, clamped to the content each frame).
+    /// The changes-region scroll offset (top region; wheel + selection-follow).
     pub(crate) scm_offset: usize,
-    /// The Source-Control list viewport height from the last frame.
-    pub(crate) scm_view_h: u16,
-    /// The total number of Source-Control display rows from the last frame.
+    /// The changes-region viewport rect from the last frame (hit-testing/hover).
+    pub(crate) scm_changes_rect: Rect,
+    /// The total number of changes display rows from the last frame.
     pub(crate) scm_total_rows: usize,
-    /// The display row of the commit-log "load more" affordance, if shown.
+    /// The commit-log region scroll offset (bottom pinned region; wheel + autoload).
+    pub(crate) scm_commits_offset: usize,
+    /// The commit-log region viewport rect from the last frame (hit-testing).
+    pub(crate) scm_commits_rect: Rect,
+    /// The total number of commit-log display rows from the last frame.
+    pub(crate) scm_commits_total: usize,
+    /// The display row *within the commit-log region* of the "load more" affordance.
     pub(crate) scm_more_row: Option<usize>,
+    /// User-controlled height (rows) of the pinned commit-log region (draggable).
+    pub(crate) scm_commits_h: u16,
+    /// The y of the changes/commits drag divider from the last frame (0 = not shown).
+    pub(crate) scm_divider_y: u16,
+    /// Whether a commits-divider resize drag is in progress.
+    pub(crate) scm_resizing: bool,
     /// The search-results area from the last frame.
     pub(crate) search_results_rect: Rect,
     /// The search-results list scroll offset from the last frame.
@@ -419,9 +437,15 @@ impl App {
             panel_hits: Vec::new(),
             scm_row_map: Vec::new(),
             scm_offset: 0,
-            scm_view_h: 0,
+            scm_changes_rect: Rect::default(),
             scm_total_rows: 0,
+            scm_commits_offset: 0,
+            scm_commits_rect: Rect::default(),
+            scm_commits_total: 0,
             scm_more_row: None,
+            scm_commits_h: DEFAULT_SCM_COMMITS_H,
+            scm_divider_y: 0,
+            scm_resizing: false,
             search_results_rect: Rect::default(),
             search_offset: 0,
             status_rect: Rect::default(),
@@ -970,9 +994,17 @@ impl App {
     /// Route a mouse-wheel notch over the sidebar: the Source-Control panel scrolls
     /// its list (so the commit log is reachable), while the explorer and search move
     /// their selection one step per notch.
-    fn sidebar_wheel(&mut self, delta: i32) {
+    fn sidebar_wheel(&mut self, delta: i32, at_row: u16) {
         match self.sidebar_panel {
-            SidebarPanel::SourceControl => self.scm_scroll_by(delta),
+            // Route to whichever Source-Control region the pointer is over: the pinned
+            // commit-log at the bottom, or the changes list above it.
+            SidebarPanel::SourceControl => {
+                if row_in_rect(self.scm_commits_rect, at_row) {
+                    self.scm_scroll_commits(delta);
+                } else {
+                    self.scm_scroll_changes(delta);
+                }
+            },
             _ => self.sidebar_step(delta.signum()),
         }
     }
@@ -1014,9 +1046,9 @@ impl App {
         row
     }
 
-    /// Scroll the Source-Control viewport so the change cursor stays visible.
+    /// Scroll the changes region so the change cursor stays visible.
     fn scm_follow_cursor(&mut self) {
-        let h = self.scm_view_h as usize;
+        let h = self.scm_changes_rect.height as usize;
         if h == 0 {
             return;
         }
@@ -1028,22 +1060,34 @@ impl App {
         }
     }
 
-    /// Scroll the Source-Control list by `delta` rows (the mouse wheel over the SCM
-    /// panel), clamped to the content, and lazily load more commits near the bottom.
-    fn scm_scroll_by(&mut self, delta: i32) {
-        let max = self.scm_total_rows.saturating_sub(self.scm_view_h as usize);
+    /// Scroll the changes region by `delta` rows, clamped to its content.
+    fn scm_scroll_changes(&mut self, delta: i32) {
+        let max = self
+            .scm_total_rows
+            .saturating_sub(self.scm_changes_rect.height as usize);
         let next = (self.scm_offset as i64 + i64::from(delta)).clamp(0, max as i64);
         self.scm_offset = next as usize;
+    }
+
+    /// Scroll the pinned commit-log region by `delta` rows, clamped to its content,
+    /// and lazily load more commits near the bottom.
+    fn scm_scroll_commits(&mut self, delta: i32) {
+        let max = self
+            .scm_commits_total
+            .saturating_sub(self.scm_commits_rect.height as usize);
+        let next = (self.scm_commits_offset as i64 + i64::from(delta)).clamp(0, max as i64);
+        self.scm_commits_offset = next as usize;
         self.maybe_autoload_commits();
     }
 
-    /// Request the next commit page once the viewport nears the end of what is loaded.
+    /// Request the next commit page once the commit-log region nears the end of what
+    /// is loaded.
     fn maybe_autoload_commits(&mut self) {
         if !self.scm.log_has_more || self.scm.log_loading {
             return;
         }
-        let bottom = self.scm_offset + self.scm_view_h as usize;
-        if bottom + COMMIT_AUTOLOAD_THRESHOLD >= self.scm_total_rows {
+        let bottom = self.scm_commits_offset + self.scm_commits_rect.height as usize;
+        if bottom + COMMIT_AUTOLOAD_THRESHOLD >= self.scm_commits_total {
             self.load_more_scm_log();
         }
     }
@@ -1317,7 +1361,7 @@ impl App {
             // A fresh first page (initial load or a reconciliation reset) replaces the
             // log; scroll back to the top so the newest commits are in view.
             self.scm.log = commits;
-            self.scm_offset = 0;
+            self.scm_commits_offset = 0;
         } else if skip == self.scm.log.len() {
             self.scm.log.extend(commits);
         }
@@ -1337,8 +1381,8 @@ impl App {
         self.scm.log = commits;
         // If the user had scrolled into the log, shift down so the same commits stay
         // put; at the top (offset 0) keep them at the newest.
-        if self.scm_offset > 0 {
-            self.scm_offset += inserted;
+        if self.scm_commits_offset > 0 {
+            self.scm_commits_offset += inserted;
         }
     }
 
@@ -2113,6 +2157,20 @@ impl App {
         }
     }
 
+    /// Resize the pinned Source-Control commit-log region so its top edge (the drag
+    /// divider) sits at `row`. The list area's bottom is fixed, so the commit region
+    /// grows as the divider moves up; both regions keep at least [`MIN_SCM_REGION`].
+    fn resize_scm_commits_to(&mut self, row: u16) {
+        let content = self.sidebar_content_rect;
+        let bottom = content.y + content.height;
+        let list_top = self.scm_changes_rect.y;
+        let total = bottom.saturating_sub(list_top);
+        // Reserve MIN for the changes region plus the 1-row divider.
+        let max_commits = total.saturating_sub(MIN_SCM_REGION + 1).max(MIN_SCM_REGION);
+        let h = bottom.saturating_sub(row).saturating_sub(1);
+        self.scm_commits_h = h.clamp(MIN_SCM_REGION, max_commits);
+    }
+
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         // Toasts float above everything (including the overlay), so hit-test them
         // first: a left click on a card dismisses it.
@@ -2142,6 +2200,15 @@ impl App {
             }
             return;
         }
+        // An in-progress Source-Control commit-divider resize captures motion likewise.
+        if self.scm_resizing {
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left) => self.resize_scm_commits_to(mouse.row),
+                MouseEventKind::Up(MouseButton::Left) => self.scm_resizing = false,
+                _ => {},
+            }
+            return;
+        }
         // An in-progress text selection captures motion until the button is released.
         if self.editor_selecting {
             match mouse.kind {
@@ -2162,14 +2229,21 @@ impl App {
         let point = (mouse.column, mouse.row);
         let in_sidebar = self.sidebar_visible && rect_contains(self.sidebar_rect, point);
         match mouse.kind {
-            MouseEventKind::ScrollDown if in_sidebar => self.sidebar_wheel(3),
-            MouseEventKind::ScrollUp if in_sidebar => self.sidebar_wheel(-3),
+            MouseEventKind::ScrollDown if in_sidebar => self.sidebar_wheel(3, mouse.row),
+            MouseEventKind::ScrollUp if in_sidebar => self.sidebar_wheel(-3, mouse.row),
             MouseEventKind::ScrollDown => self.scroll_lines(3),
             MouseEventKind::ScrollUp => self.scroll_lines(-3),
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.sidebar_visible && mouse.column == self.sidebar_divider_x {
-                    // Grab the divider to start a resize drag.
+                    // Grab the sidebar-width divider to start a resize drag.
                     self.sidebar_resizing = true;
+                } else if in_sidebar
+                    && self.sidebar_panel == SidebarPanel::SourceControl
+                    && self.scm_divider_y != 0
+                    && mouse.row == self.scm_divider_y
+                {
+                    // Grab the Source-Control changes/commits divider.
+                    self.scm_resizing = true;
                 } else if in_sidebar {
                     self.handle_sidebar_click(mouse.column, mouse.row, mouse.modifiers);
                 } else {
@@ -2196,11 +2270,11 @@ impl App {
     /// The source-control change index under the hover cursor, if any (mirrors the
     /// SCM click hit-testing, using the last frame's row map).
     pub(crate) fn hovered_scm_change(&self) -> Option<usize> {
-        let (_, hy) = self.hover?;
-        if hy < self.sidebar_content_rect.y {
+        let point = self.hover?;
+        if !rect_contains(self.scm_changes_rect, point) {
             return None;
         }
-        let display = self.scm_offset + usize::from(hy - self.sidebar_content_rect.y);
+        let display = self.scm_offset + usize::from(point.1 - self.scm_changes_rect.y);
         self.scm_row_map.get(display).copied().flatten()
     }
 
@@ -2244,13 +2318,21 @@ impl App {
                 }
             },
             SidebarPanel::SourceControl => {
-                if !rect_contains(self.sidebar_content_rect, (col, row_y)) {
+                // The pinned commit-log region: rows aren't selectable; only the
+                // "load more" affordance is clickable.
+                if rect_contains(self.scm_commits_rect, (col, row_y)) {
+                    let display =
+                        self.scm_commits_offset + (row_y - self.scm_commits_rect.y) as usize;
+                    if self.scm_more_row == Some(display) {
+                        self.load_more_scm_log();
+                    }
                     return;
                 }
-                let display = self.scm_offset + (row_y - self.sidebar_content_rect.y) as usize;
-                if self.scm_more_row == Some(display) {
-                    self.load_more_scm_log();
-                } else if let Some(Some(idx)) = self.scm_row_map.get(display).copied() {
+                if !rect_contains(self.scm_changes_rect, (col, row_y)) {
+                    return;
+                }
+                let display = self.scm_offset + (row_y - self.scm_changes_rect.y) as usize;
+                if let Some(Some(idx)) = self.scm_row_map.get(display).copied() {
                     if ctrl {
                         self.scm.selection.toggle(idx);
                     } else if shift {
@@ -2831,6 +2913,11 @@ fn rect_contains(r: Rect, (x, y): (u16, u16)) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
 
+/// Whether screen row `y` lies within `r`'s vertical span (column ignored).
+fn row_in_rect(r: Rect, y: u16) -> bool {
+    r.height > 0 && y >= r.y && y < r.bottom()
+}
+
 /// The tab at column `x` among `hits`, and whether `x` is on its close glyph.
 fn tab_at(hits: &[TabHit], x: u16) -> Option<(usize, bool)> {
     hits.iter()
@@ -3071,6 +3158,23 @@ mod tests {
     }
 
     #[test]
+    fn scm_commit_divider_resizes_and_clamps() {
+        let mut app = app();
+        // A 20-row list area (rows 2..22); the changes list starts at row 2.
+        app.sidebar_content_rect = Rect::new(0, 2, 30, 20);
+        app.scm_changes_rect = Rect::new(0, 2, 30, 10);
+        // Drag the divider up to row 12 → commits region = rows 13..22 = 9 rows.
+        app.resize_scm_commits_to(12);
+        assert_eq!(app.scm_commits_h, 9);
+        // Dragging past the bottom clamps so the commits region keeps the minimum.
+        app.resize_scm_commits_to(30);
+        assert_eq!(app.scm_commits_h, MIN_SCM_REGION);
+        // Dragging to the very top clamps so the changes region keeps room too.
+        app.resize_scm_commits_to(0);
+        assert_eq!(app.scm_commits_h, 20 - (MIN_SCM_REGION + 1));
+    }
+
+    #[test]
     fn pending_save_drives_the_animation_tick() {
         let mut app = app();
         assert!(app.next_wake().is_none());
@@ -3150,7 +3254,14 @@ mod tests {
         app.hover = Some((5, 1));
         assert_eq!(app.hovered_explorer_row(), None);
 
-        // Source control: display 0 is a section header, 1 and 2 are changes.
+        // Source control: display 0 is a section header, 1 and 2 are changes. Hover
+        // maps against the changes region rect.
+        app.scm_changes_rect = Rect {
+            x: 0,
+            y: 2,
+            width: 20,
+            height: 10,
+        };
         app.scm_offset = 0;
         app.scm_row_map = vec![None, Some(0), Some(1)];
         app.hover = Some((5, 3)); // display = 0 + (3 - 2) = 1 → change 0
@@ -3305,7 +3416,7 @@ mod tests {
     fn prepended_commits_dedupe_and_preserve_scroll() {
         let mut app = app();
         app.scm.log = vec![commit("aaaaaaa1", "old top"), commit("bbbbbbb2", "older")];
-        app.scm_offset = 5;
+        app.scm_commits_offset = 5;
         // A genuinely-new commit plus a duplicate of the current top: only the new
         // one prepends, and the viewport shifts down by that one inserted row.
         app.apply_vcs_commits_prepended(vec![
@@ -3315,21 +3426,43 @@ mod tests {
         assert_eq!(app.scm.log.len(), 3);
         assert_eq!(app.scm.log[0].summary, "new");
         assert_eq!(app.scm.log[1].summary, "old top");
-        assert_eq!(app.scm_offset, 6);
+        assert_eq!(app.scm_commits_offset, 6);
     }
 
     #[test]
-    fn scm_wheel_scrolls_and_clamps() {
+    fn scm_wheel_scrolls_the_region_under_the_pointer() {
         let mut app = app();
         app.sidebar_panel = SidebarPanel::SourceControl;
+        // Changes region on top (rows 0..10), commit-log region below (rows 10..15).
+        app.scm_changes_rect = Rect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 10,
+        };
         app.scm_total_rows = 20;
-        app.scm_view_h = 10;
-        app.sidebar_wheel(5);
+        app.scm_commits_rect = Rect {
+            x: 0,
+            y: 10,
+            width: 20,
+            height: 5,
+        };
+        app.scm_commits_total = 12;
+
+        // Wheeling over the changes region scrolls it, clamped to total - height.
+        app.sidebar_wheel(5, 3);
         assert_eq!(app.scm_offset, 5);
-        app.sidebar_wheel(100); // clamps to total_rows - view_h
+        app.sidebar_wheel(100, 3);
         assert_eq!(app.scm_offset, 10);
-        app.sidebar_wheel(-100);
+        app.sidebar_wheel(-100, 3);
         assert_eq!(app.scm_offset, 0);
+
+        // Wheeling over the commit-log region scrolls it independently.
+        app.sidebar_wheel(4, 11);
+        assert_eq!(app.scm_commits_offset, 4);
+        assert_eq!(app.scm_offset, 0); // changes untouched
+        app.sidebar_wheel(100, 11);
+        assert_eq!(app.scm_commits_offset, 7); // clamps to 12 - 5
     }
 
     #[test]
@@ -3918,6 +4051,13 @@ mod tests {
             height: 10,
         };
         app.sidebar_content_rect = Rect {
+            x: 0,
+            y: 2,
+            width: 30,
+            height: 8,
+        };
+        // Clicks hit-test against the changes region rect.
+        app.scm_changes_rect = Rect {
             x: 0,
             y: 2,
             width: 30,
