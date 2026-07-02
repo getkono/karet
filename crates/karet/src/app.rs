@@ -67,6 +67,8 @@ use karet_vcs::Commit;
 use karet_vcs::FileChange;
 use karet_widgets::FileTreeState;
 use karet_widgets::ListSelection;
+use karet_widgets::PaneId;
+use karet_widgets::PaneLayout;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 
@@ -128,6 +130,17 @@ impl Scm {
             .map(|c| c.path.clone())
             .collect()
     }
+}
+
+/// The tab list of a pane that does not currently hold focus. The focused pane's
+/// tabs live directly on [`App`] (`tabs`/`active`); switching focus swaps a pane's
+/// tabs in and out of here, so the vast majority of the shell operates on "the
+/// current pane" without knowing about the split layout.
+pub(crate) struct StoredPane {
+    /// The pane's open tabs.
+    pub(crate) tabs: Vec<Tab>,
+    /// The pane's active tab index.
+    pub(crate) active: usize,
 }
 
 /// The find-in-file bar state: the query and the match cursor.
@@ -202,10 +215,14 @@ pub struct App {
     pub(crate) explorer: FileTreeState,
     /// The Source-Control panel state.
     pub(crate) scm: Scm,
-    /// The open tabs.
+    /// The focused pane's open tabs.
     pub(crate) tabs: Vec<Tab>,
-    /// The active tab index.
+    /// The focused pane's active tab index.
     pub(crate) active: usize,
+    /// The window split layout; its focused pane's tabs are `tabs`/`active` above.
+    pub(crate) layout: PaneLayout,
+    /// The tabs of every pane that does not currently hold focus, keyed by pane id.
+    pub(crate) stored: HashMap<PaneId, StoredPane>,
     /// Paths of recently-closed file tabs, for "reopen closed editor" (newest last).
     pub(crate) closed: Vec<PathBuf>,
     /// The open modal overlay (quick-open / command palette), if any.
@@ -324,6 +341,8 @@ impl App {
             },
             tabs: vec![Tab::welcome()],
             active: 0,
+            layout: PaneLayout::new(),
+            stored: HashMap::new(),
             closed: Vec::new(),
             overlay: None,
             find: None,
@@ -1246,10 +1265,30 @@ impl App {
         }
     }
 
+    /// The currently focused pane.
+    pub(crate) fn focus_pane(&self) -> PaneId {
+        self.layout.focus()
+    }
+
+    /// Every tab across every pane (the focused pane plus all stored panes). Used by
+    /// backend-event/snapshot handlers that must reach a document wherever it is shown.
+    fn all_tabs_mut(&mut self) -> impl Iterator<Item = &mut Tab> {
+        self.tabs
+            .iter_mut()
+            .chain(self.stored.values_mut().flat_map(|p| p.tabs.iter_mut()))
+    }
+
+    /// Every tab across every pane (immutable).
+    fn all_tabs(&self) -> impl Iterator<Item = &Tab> {
+        self.tabs
+            .iter()
+            .chain(self.stored.values().flat_map(|p| p.tabs.iter()))
+    }
+
     /// Release any session documents no longer shown in a tab (the session
     /// ref-counts opens; the app balances them). Call after closing tabs.
     fn reconcile_open_docs(&mut self) {
-        let live: HashSet<DocumentId> = self.tabs.iter().filter_map(Self::tab_doc).collect();
+        let live: HashSet<DocumentId> = self.all_tabs().filter_map(Self::tab_doc).collect();
         let stale: Vec<DocumentId> = self.open_docs.difference(&live).copied().collect();
         for doc in stale {
             self.open_docs.remove(&doc);
@@ -2196,7 +2235,7 @@ impl App {
         if let Some(req) = id
             && let Some(doc) = self.pending_saves.remove(&req)
         {
-            for tab in &mut self.tabs {
+            for tab in self.all_tabs_mut() {
                 if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
                     tab.saving_since = None;
                 }
@@ -2208,7 +2247,7 @@ impl App {
                 if let Some(req) = id
                     && let Some(path) = self.pending_open.remove(&req)
                 {
-                    for tab in &mut self.tabs {
+                    for tab in self.all_tabs_mut() {
                         if let TabKind::Code {
                             path: p, doc: d, ..
                         } = &mut tab.kind
@@ -2221,7 +2260,7 @@ impl App {
                 }
             },
             SessionEvent::Saved { doc } => {
-                for tab in &mut self.tabs {
+                for tab in self.all_tabs_mut() {
                     if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
                         tab.dirty = false;
                     }
@@ -2276,7 +2315,7 @@ impl App {
     /// render source of truth (buffer, highlights, the search text, and the
     /// unsaved-changes flag).
     fn on_snapshot(&mut self, doc: DocumentId, snap: &DocSnapshot) {
-        for tab in &mut self.tabs {
+        for tab in self.all_tabs_mut() {
             let matches = matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc);
             if !matches {
                 continue;
