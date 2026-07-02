@@ -78,10 +78,24 @@ to the Right / Close All live in the command palette.
 **Sidebar:** `j`/`k`+arrows move · `Enter`/`l`/`→` open or expand · `h`/`←`
 collapse · `Space` toggle a directory.
 
-**Editor:** arrows move the caret (`Shift`+arrows extend the selection) · `j`/`k`
-scroll · `Space`/`PageDown`, `b`/`PageUp` page · `g`/`G` top/bottom · `Ctrl+C`/`y`
-copy the selection (or the cursor line) · `Esc` back to the sidebar. In a **diff**
-tab: `\` toggles unified/side-by-side, `[` / `]` walk changed files.
+**Editor — motion & selection.** Arrows move the caret; `Ctrl+←`/`Ctrl+→` move by
+word; `Home`/`End` go to the line start/end and `Ctrl+Home`/`Ctrl+End` to the
+document edges; `PageUp`/`PageDown` page. Hold **`Shift`** with any of these to
+*extend* the selection, and `Ctrl+A` selects the whole file. `Ctrl+C` copies the
+selection (or the cursor line). `Esc` collapses multiple carets to one, then returns
+focus to the sidebar. In a **diff** tab: `\` toggles unified/side-by-side, `[` / `]`
+walk changed files.
+
+**Editor — multi-cursor.** `Ctrl+Alt+↑`/`Ctrl+Alt+↓` add a caret above / below the
+primary; `Ctrl+D` selects the word under the caret, then adds a caret at the next
+occurrence (wrapping); `Alt+Click` adds or removes a caret and `Alt+Drag` extends the
+newly-added one; `Esc` collapses back to a single caret. Typing, deletion and
+newlines then apply at every caret at once.
+
+Modifier conventions: **`Shift`** always *extends* the selection (paired with any
+motion key or click); **`Ctrl`** widens the granularity (word for arrows, document
+for `Home`/`End`, whole file for `A`); **`Alt`** drives pointer multi-cursor
+(`Alt+Click`/`Alt+Drag`), and with `Ctrl` stacks carets vertically.
 
 **Overlays / find:** type to filter, `↑`/`↓` (or `Ctrl+N`/`Ctrl+P`) move, `Enter`
 accept, `Esc` dismiss; find adds `Ctrl+G` / `Ctrl+Shift+G` for next/previous. The
@@ -102,11 +116,21 @@ button replaces everywhere.
 middle-click) to close, drag to reorder; click explorer rows to open files /
 toggle folders and the header `1 2 3` to switch panels; click SCM / search rows to
 open them; click to place the caret and drag to select text (double / triple-click
-select word / line); the wheel scrolls; click a status-bar segment to run it.
+select word / line); `Alt+Click`/`Alt+Drag` add and grow extra carets; the wheel
+scrolls; click a status-bar segment to run it.
 
-The keymap is a single unit-tested binding table (`keymap.rs`) that drives both the
-resolver and the palette's shortcut hints; all named operations are `Command`s
-(`command.rs`).
+**Where these live (source of truth).** Every key and mouse interaction is defined in
+a few files, so there is one place to read or change each behavior:
+
+- **Keybindings** — the single `BINDINGS` table in `keymap/mod.rs`; it drives both
+  the resolver and the palette's shortcut hints, so a binding and its displayed hint
+  can never drift.
+- **Commands** — every named operation a binding fires is a `Command` in
+  `command.rs`.
+- **Mouse** — click / drag / multi-click handling lives in `app.rs`
+  (`handle_editor_click`, `drag_select_to`, and the `handle_mouse` dispatch).
+- **Caret & selection model** — the multi-caret `EditorState` in the `karet-editor`
+  crate (`lib.rs`), built on `karet_core::CursorState`.
 
 ## Architecture notes
 
