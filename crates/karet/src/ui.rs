@@ -748,13 +748,31 @@ fn draw_scm_changes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             last = Some(section);
         }
         let (glyph, role) = status_glyph(change.status);
-        let item = ListItem::new(Line::from(vec![
+        // Filename front and centre; the parent directory trails in dim grey and is
+        // omitted entirely for files at the repo root.
+        let name = change.path.file_name().map_or_else(
+            || change.path.to_string_lossy().into_owned(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let parent = change
+            .path
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .filter(|p| !p.is_empty());
+        let mut spans = vec![
             Span::styled(
                 format!(" {glyph} "),
                 Style::default().fg(theme.role(role).to_ratatui()),
             ),
-            Span::raw(change.path.to_string_lossy().into_owned()),
-        ]));
+            Span::raw(name),
+        ];
+        if let Some(parent) = parent {
+            spans.push(Span::styled(
+                format!("  {parent}"),
+                Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
+            ));
+        }
+        let item = ListItem::new(Line::from(spans));
         // Every selected row (a contiguous range or a scattered toggle-set) gets the
         // selection background; the cursor row additionally gets a bold highlight. A
         // hovered-but-unselected row gets the secondary hover accent.
