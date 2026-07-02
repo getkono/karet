@@ -119,6 +119,12 @@ pub struct Tab {
     pub editor: EditorState,
     /// This view's identity (assigned by the app on open).
     pub view: ViewId,
+    /// Whether the backing document has unsaved changes (code tabs only). Kept in
+    /// sync from document snapshots and cleared on save.
+    pub dirty: bool,
+    /// Whether a save for this document is currently writing to disk (drives the
+    /// tab's saving spinner once the write exceeds a short threshold).
+    pub saving: bool,
 }
 
 impl Tab {
@@ -130,6 +136,8 @@ impl Tab {
             kind,
             editor: EditorState::new(),
             view: ViewId(0),
+            dirty: false,
+            saving: false,
         }
     }
 

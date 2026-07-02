@@ -252,7 +252,10 @@ fn draw_tabs(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         } else {
             Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())
         };
-        let label = format!(" {} ", tab.title);
+        // A pre-allocated 1-cell status slot keeps the layout stable: `●` for
+        // unsaved changes (a spinner frame while a slow save writes), else blank.
+        let mark = save_mark(tab);
+        let label = format!(" {mark} {} ", tab.title);
         let label_w = label.chars().count() as u16;
         let start = x;
         spans.push(Span::styled(label, style));
@@ -268,6 +271,11 @@ fn draw_tabs(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     }
     let bar = Style::default().bg(theme.role(ThemeRole::Background).to_ratatui());
     f.render_widget(Paragraph::new(Line::from(spans)).style(bar), area);
+}
+
+/// The 1-cell tab status mark: `●` for unsaved changes, else blank.
+fn save_mark(tab: &Tab) -> char {
+    if tab.dirty { '\u{25cf}' } else { ' ' }
 }
 
 fn draw_breadcrumb(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {

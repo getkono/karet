@@ -2184,7 +2184,14 @@ impl App {
                     }
                 }
             },
-            SessionEvent::Saved { .. } => self.status = Some("saved".to_string()),
+            SessionEvent::Saved { doc } => {
+                for tab in &mut self.tabs {
+                    if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
+                        tab.dirty = false;
+                    }
+                }
+                self.status = Some("saved".to_string());
+            },
             // The fresh content arrives via the snapshot stream; just note it.
             SessionEvent::Reloaded { .. } => {
                 self.notify(
@@ -2230,24 +2237,28 @@ impl App {
     }
 
     /// Apply a document snapshot to the matching code tab(s): the snapshot is the
-    /// render source of truth (buffer, highlights, and the search text).
+    /// render source of truth (buffer, highlights, the search text, and the
+    /// unsaved-changes flag).
     fn on_snapshot(&mut self, doc: DocumentId, snap: &DocSnapshot) {
         for tab in &mut self.tabs {
+            let matches = matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc);
+            if !matches {
+                continue;
+            }
             if let TabKind::Code {
-                doc: Some(d),
                 buffer,
                 highlights,
                 text,
                 next_version,
                 ..
             } = &mut tab.kind
-                && *d == doc
             {
                 *buffer = snap.buffer.clone();
                 *highlights = (*snap.highlights).clone();
                 *text = snap.buffer.text();
                 *next_version = (*next_version).max(snap.version);
             }
+            tab.dirty = snap.dirty;
         }
     }
 }
@@ -2470,6 +2481,18 @@ mod tests {
             vec![change("b.rs", StatusKind::Modified)],
             false,
         )
+    }
+
+    #[test]
+    fn saved_event_clears_the_dirty_flag() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "x"));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(1));
+        }
+        app.tabs[app.active].dirty = true;
+        app.on_backend_event(None, SessionEvent::Saved { doc: DocumentId(1) });
+        assert!(!app.tabs[app.active].dirty);
     }
 
     #[test]
