@@ -52,7 +52,7 @@ pub(crate) fn dark() -> Theme {
     role(ThemeRole::Selection, rgb(0x28, 0x34, 0x57));
     role(ThemeRole::LineNumber, rgb(0x3b, 0x42, 0x61));
     role(ThemeRole::LineNumberActive, rgb(0x73, 0x7a, 0xa2));
-    role(ThemeRole::IndentGuide, rgb(0x23, 0x24, 0x33));
+    role(ThemeRole::IndentGuide, rgb(0x3b, 0x42, 0x61));
     role(ThemeRole::MatchingBracket, rgb(0x54, 0x5c, 0x7e));
     role(ThemeRole::StatusBarBackground, rgb(0x16, 0x16, 0x1e));
     role(ThemeRole::StatusBarForeground, rgb(0xa9, 0xb1, 0xd6));
@@ -67,6 +67,13 @@ pub(crate) fn dark() -> Theme {
     role(ThemeRole::Breakpoint, rgb(0xdb, 0x4b, 0x4b));
     // A secondary accent for mouse hover, distinct from the (bluer) Selection.
     role(ThemeRole::HoverHighlight, rgb(0x2e, 0x35, 0x50));
+    // De-emphasized UI text — readable grey (matches the Comment brightness), used
+    // for gitignored explorer rows.
+    role(ThemeRole::Muted, rgb(0x56, 0x5f, 0x89));
+    // Explorer file-icon tints, keyed to the coarse file Category.
+    role(ThemeRole::FileIconText, rgb(0x7a, 0xa2, 0xf7));
+    role(ThemeRole::FileIconMedia, rgb(0x9e, 0xce, 0x6a));
+    role(ThemeRole::FileIconBinary, rgb(0xe0, 0xaf, 0x68));
 
     Theme {
         tokens,

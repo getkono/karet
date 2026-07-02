@@ -17,7 +17,6 @@ use karet_core::InlayHint;
 use karet_core::LineCol;
 use karet_core::Range;
 use karet_core::ThemeRole;
-use karet_syntax::FoldRegions;
 use karet_syntax::HighlightSpan;
 use karet_syntax::Highlights;
 use karet_text::TextBuffer;
@@ -30,6 +29,22 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::StatefulWidget;
+
+/// A fold region resolved for rendering: an inclusive line range plus whether it is
+/// currently collapsed. When collapsed, the interior lines `start + 1 ..= end` are
+/// hidden and the `start` line shows a fold marker and a `⋯` affordance.
+///
+/// The application resolves these from `karet_syntax::FoldRegions` plus its own
+/// per-view "which folds are collapsed" set, keeping fold *policy* out of the widget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fold {
+    /// The 0-based header line (always visible; carries the fold marker).
+    pub start: u32,
+    /// The 0-based last line of the region, inclusive.
+    pub end: u32,
+    /// Whether the region is currently collapsed.
+    pub collapsed: bool,
+}
 
 /// The persistent, per-view editor state: scroll position and cursor.
 ///
@@ -212,12 +227,36 @@ impl EditorState {
     }
 
     /// The buffer position under the screen cell `(col, row)`, given the editor's
-    /// render `area`. Accounts for the gutter width and the scroll offsets.
+    /// render `area` and the `folds` in effect. Accounts for the gutter width, the
+    /// scroll offsets, and any collapsed folds that hide lines between the viewport
+    /// top and the click.
     #[must_use]
-    pub fn pos_at(&self, area: Rect, buffer: &TextBuffer, col: u16, row: u16) -> LineCol {
+    pub fn pos_at(
+        &self,
+        area: Rect,
+        buffer: &TextBuffer,
+        folds: &[Fold],
+        col: u16,
+        row: u16,
+    ) -> LineCol {
         let line_count = buffer.line_count().max(1) as u32;
         let rel_row = u32::from(row.saturating_sub(area.y));
-        let line = (self.scroll_line + rel_row).min(line_count - 1);
+        // Walk visible lines from the (clamped) viewport top to the clicked row.
+        let mut line = self.scroll_line;
+        while line < line_count && hidden_in(folds, line) {
+            line += 1;
+        }
+        for _ in 0..rel_row {
+            let mut next = line + 1;
+            while next < line_count && hidden_in(folds, next) {
+                next += 1;
+            }
+            if next >= line_count {
+                break;
+            }
+            line = next;
+        }
+        let line = line.min(line_count - 1);
         let gutter = 1 + digit_count(line_count) as u16 + 1;
         let content_x = area.x.saturating_add(gutter);
         let rel_col = u32::from(col.saturating_sub(content_x));
@@ -243,7 +282,7 @@ pub struct Editor<'a> {
     decorations: &'a [Decoration],
     diagnostics: &'a [Diagnostic],
     inlay_hints: &'a [InlayHint],
-    folds: Option<&'a FoldRegions>,
+    folds: &'a [Fold],
     selection: Option<Range>,
     focused: bool,
     read_only: bool,
@@ -260,7 +299,7 @@ impl<'a> Editor<'a> {
             decorations: &[],
             diagnostics: &[],
             inlay_hints: &[],
-            folds: None,
+            folds: &[],
             selection: None,
             focused: false,
             read_only: false,
@@ -326,11 +365,30 @@ impl<'a> Editor<'a> {
         self
     }
 
-    /// Supply fold regions.
+    /// Supply the resolved fold regions to render (collapsed folds hide their
+    /// interior lines and mark their header).
     #[must_use]
-    pub fn folds(mut self, folds: &'a FoldRegions) -> Self {
-        self.folds = Some(folds);
+    pub fn folds(mut self, folds: &'a [Fold]) -> Self {
+        self.folds = folds;
         self
+    }
+
+    /// Whether buffer line `l` is hidden inside a collapsed fold's interior.
+    fn is_hidden(&self, l: u32) -> bool {
+        hidden_in(self.folds, l)
+    }
+
+    /// The fold whose header is line `l`, if any.
+    fn fold_at(&self, l: u32) -> Option<Fold> {
+        self.folds.iter().copied().find(|f| f.start == l)
+    }
+
+    /// The first visible line at or after `l` (skipping collapsed-fold interiors).
+    fn first_visible(&self, mut l: u32, line_count: u32) -> u32 {
+        while l < line_count && self.is_hidden(l) {
+            l += 1;
+        }
+        l
     }
 }
 
@@ -453,8 +511,10 @@ impl StatefulWidget for Editor<'_> {
         // Base background for the whole editor area (covers rows past end-of-file).
         buf.set_style(area, Style::default().bg(background.to_ratatui()));
 
+        // Walk visible lines only: start at the first non-hidden line at/after the
+        // scroll top, and after each rendered line skip any collapsed-fold interior.
+        let mut l = self.first_visible(state.scroll_line, line_count);
         for row in 0..area.height {
-            let l = state.scroll_line + u32::from(row);
             if l >= line_count {
                 break;
             }
@@ -476,9 +536,18 @@ impl StatefulWidget for Editor<'_> {
                 Style::default().bg(row_bg.to_ratatui()),
             );
 
-            let (marker_ch, marker_color) = self
-                .gutter_marker(l, theme, default_fg)
-                .unwrap_or((' ', default_fg));
+            // A fold header shows a collapse/expand chevron in the marker column;
+            // other lines show their usual decoration marker (git/diagnostic).
+            let fold = self.fold_at(l);
+            let (marker_ch, marker_color) = match fold {
+                Some(f) => (
+                    if f.collapsed { '\u{25b8}' } else { '\u{25be}' },
+                    theme.role(ThemeRole::LineNumberActive),
+                ),
+                None => self
+                    .gutter_marker(l, theme, default_fg)
+                    .unwrap_or((' ', default_fg)),
+            };
             let number_color = if is_cursor {
                 theme.role(ThemeRole::LineNumberActive)
             } else {
@@ -495,22 +564,42 @@ impl StatefulWidget for Editor<'_> {
                 ),
             ];
             self.push_content_spans(&mut spans, l, theme, default_fg, state.scroll_col);
+            // A collapsed header hints at the hidden lines it conceals.
+            if fold.is_some_and(|f| f.collapsed) {
+                spans.push(Span::styled(
+                    " \u{22ef}", // ⋯
+                    Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
+                ));
+            }
             buf.set_line(area.x, y, &Line::from(spans), area.width);
+
+            l = self.first_visible(l + 1, line_count);
         }
 
         // Draw the caret as a reversed cell when the editor is focused and editable.
         if self.focused && !self.read_only {
             let cl = state.cursor.line;
-            let top = state.scroll_line;
+            let top = self.first_visible(state.scroll_line, line_count);
+            // The caret's screen row is the count of visible lines from the viewport
+            // top up to the cursor line (folds between them collapse the gap).
+            let mut vis_row: u16 = 0;
+            let mut ll = top;
+            while ll < cl {
+                if !self.is_hidden(ll) {
+                    vis_row = vis_row.saturating_add(1);
+                }
+                ll += 1;
+            }
             if cl >= top
-                && cl < top + u32::from(area.height)
+                && !self.is_hidden(cl)
+                && vis_row < area.height
                 && state.cursor.col >= state.scroll_col
             {
                 let gutter = 1 + digits as u16 + 1;
                 let cx = area.x
                     + gutter
                     + u16::try_from(state.cursor.col - state.scroll_col).unwrap_or(u16::MAX);
-                let cy = area.y + u16::try_from(cl - top).unwrap_or(0);
+                let cy = area.y + vis_row;
                 if cx < area.right() && cy < area.bottom() {
                     buf.set_style(
                         Rect {
@@ -525,6 +614,13 @@ impl StatefulWidget for Editor<'_> {
             }
         }
     }
+}
+
+/// Whether line `l` is hidden inside the interior of a collapsed fold in `folds`.
+fn hidden_in(folds: &[Fold], l: u32) -> bool {
+    folds
+        .iter()
+        .any(|f| f.collapsed && l > f.start && l <= f.end)
 }
 
 /// The index of the last line in `buffer` (0 for an empty buffer).
@@ -638,12 +734,35 @@ mod tests {
         state.last_height = 3;
         let area = Rect::new(0, 0, 20, 3);
         // gutter = marker(1) + 1 digit + space = 3; column 5 -> content col 2.
-        assert_eq!(state.pos_at(area, &buffer, 5, 0), LineCol::new(0, 2));
+        assert_eq!(state.pos_at(area, &buffer, &[], 5, 0), LineCol::new(0, 2));
         // A click past the line end clamps to the line length.
-        assert_eq!(state.pos_at(area, &buffer, 100, 0), LineCol::new(0, 5));
+        assert_eq!(state.pos_at(area, &buffer, &[], 100, 0), LineCol::new(0, 5));
         // Vertical scroll shifts the mapped line.
         state.scroll_line = 1;
-        assert_eq!(state.pos_at(area, &buffer, 3, 0), LineCol::new(1, 0));
+        assert_eq!(state.pos_at(area, &buffer, &[], 3, 0), LineCol::new(1, 0));
+    }
+
+    #[test]
+    fn pos_at_skips_collapsed_fold_interiors() {
+        let buffer = TextBuffer::from_text("l0\nl1\nl2\nl3\nl4");
+        let mut state = EditorState::new();
+        state.last_height = 5;
+        let area = Rect::new(0, 0, 20, 5);
+        // Collapse lines 1..=3 under a fold headered on line 0. Visible order is now
+        // l0, l4 — so screen row 1 maps to buffer line 4, not line 1.
+        let folds = [Fold {
+            start: 0,
+            end: 3,
+            collapsed: true,
+        }];
+        assert_eq!(
+            state.pos_at(area, &buffer, &folds, 3, 0),
+            LineCol::new(0, 0)
+        );
+        assert_eq!(
+            state.pos_at(area, &buffer, &folds, 3, 1),
+            LineCol::new(4, 0)
+        );
     }
 
     #[test]

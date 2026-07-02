@@ -2,6 +2,7 @@
 //! setup. The shell composes the engine/widget crates — it owns the open tabs and
 //! the sidebar, and applies [`Command`]s resolved from key events.
 
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::Write;
@@ -40,6 +41,7 @@ use karet_core::Range;
 use karet_core::Severity;
 use karet_core::ThemeRole;
 use karet_editor::EditorState;
+use karet_editor::Fold;
 use karet_filetype::FileKind;
 use karet_filetype::IconStyle;
 use karet_fileview::image::GraphicsProtocol;
@@ -61,6 +63,7 @@ use karet_session::SessionConfig;
 use karet_session::SnapshotRx;
 use karet_session::ViewId;
 use karet_session::local;
+use karet_syntax::FoldRegions;
 use karet_text::TextBuffer;
 use karet_theme::Theme;
 use karet_vcs::Commit;
@@ -176,6 +179,17 @@ const SEARCH_RESULT_CAP: usize = 500;
 /// How many commits the source-control log fetches per lazily-loaded page.
 const SCM_LOG_PAGE: usize = 25;
 
+/// The default sidebar width in columns (before the user drags the divider).
+pub(crate) const DEFAULT_SIDEBAR_WIDTH: u16 = 30;
+
+/// The minimum sidebar width in columns; dragging the divider narrower than this
+/// collapses the sidebar entirely.
+pub(crate) const SIDEBAR_MIN_WIDTH: u16 = 16;
+
+/// Load the next commit page once the Source-Control viewport comes within this many
+/// rows of the end of the loaded log.
+const COMMIT_AUTOLOAD_THRESHOLD: usize = 3;
+
 /// A clickable tab region in the tab strip, recorded during the last render.
 #[derive(Clone, Copy)]
 pub(crate) struct TabHit {
@@ -275,6 +289,15 @@ pub struct App {
     pub(crate) sidebar_rect: Rect,
     /// The main content rect from the last frame.
     pub(crate) main_rect: Rect,
+    /// The user-controlled sidebar width in columns (draggable; clamped responsively
+    /// to the terminal width each frame).
+    pub(crate) sidebar_width: u16,
+    /// The x column of the sidebar's drag divider from the last frame (hit-testing).
+    pub(crate) sidebar_divider_x: u16,
+    /// Whether a sidebar-resize drag is currently in progress.
+    pub(crate) sidebar_resizing: bool,
+    /// The last-used diff layout; newly-opened diffs adopt it so the choice sticks.
+    pub(crate) diff_layout: ViewMode,
     /// Per-pane clickable regions from the last frame (mouse hit-testing).
     pub(crate) pane_frames: Vec<PaneFrame>,
     /// The in-progress tab drag, if the pointer is dragging a tab.
@@ -288,8 +311,13 @@ pub struct App {
     pub(crate) panel_hits: Vec<(u16, u16, SidebarPanel)>,
     /// Source-Control display-row → change-index map from the last frame.
     pub(crate) scm_row_map: Vec<Option<usize>>,
-    /// The Source-Control list scroll offset from the last frame.
+    /// The Source-Control list scroll offset (drives the viewport; user-controlled
+    /// via the wheel and selection follow, clamped to the content each frame).
     pub(crate) scm_offset: usize,
+    /// The Source-Control list viewport height from the last frame.
+    pub(crate) scm_view_h: u16,
+    /// The total number of Source-Control display rows from the last frame.
+    pub(crate) scm_total_rows: usize,
     /// The display row of the commit-log "load more" affordance, if shown.
     pub(crate) scm_more_row: Option<usize>,
     /// The search-results area from the last frame.
@@ -380,6 +408,10 @@ impl App {
             toast_hits: Vec::new(),
             sidebar_rect: Rect::default(),
             main_rect: Rect::default(),
+            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
+            sidebar_divider_x: 0,
+            sidebar_resizing: false,
+            diff_layout: ViewMode::Unified,
             pane_frames: Vec::new(),
             tab_drag: None,
             sidebar_content_rect: Rect::default(),
@@ -387,6 +419,8 @@ impl App {
             panel_hits: Vec::new(),
             scm_row_map: Vec::new(),
             scm_offset: 0,
+            scm_view_h: 0,
+            scm_total_rows: 0,
             scm_more_row: None,
             search_results_rect: Rect::default(),
             search_offset: 0,
@@ -854,6 +888,7 @@ impl App {
             Command::Top => self.scroll_edge(true),
             Command::Bottom => self.scroll_edge(false),
             Command::ToggleDiffLayout => self.toggle_diff_layout(),
+            Command::ToggleFold => self.toggle_fold(),
             Command::NextChangedFile => self.step_changed_file(1),
             Command::PrevChangedFile => self.step_changed_file(-1),
             Command::InsertChar(c) => {
@@ -932,6 +967,16 @@ impl App {
         };
     }
 
+    /// Route a mouse-wheel notch over the sidebar: the Source-Control panel scrolls
+    /// its list (so the commit log is reachable), while the explorer and search move
+    /// their selection one step per notch.
+    fn sidebar_wheel(&mut self, delta: i32) {
+        match self.sidebar_panel {
+            SidebarPanel::SourceControl => self.scm_scroll_by(delta),
+            _ => self.sidebar_step(delta.signum()),
+        }
+    }
+
     /// Move the sidebar selection within the active panel.
     fn sidebar_step(&mut self, delta: i32) {
         match self.sidebar_panel {
@@ -943,9 +988,63 @@ impl App {
                     self.explorer.select_prev();
                 }
             },
-            // A plain move collapses any range or multi-selection.
-            SidebarPanel::SourceControl => self.scm.selection.move_by(delta),
+            // A plain move collapses any range or multi-selection; the viewport then
+            // follows the change cursor so it stays visible.
+            SidebarPanel::SourceControl => {
+                self.scm.selection.move_by(delta);
+                self.scm_follow_cursor();
+            },
             SidebarPanel::Search => self.search_select(delta),
+        }
+    }
+
+    /// The display row of the Source-Control change cursor, accounting for the
+    /// "STAGED CHANGES" / "CHANGES" section headers above it.
+    fn scm_cursor_display_row(&self) -> usize {
+        let i = self.scm.selection.cursor();
+        let staged = self.scm.staged_count;
+        let working = self.scm.changes.len().saturating_sub(staged);
+        let mut row = i;
+        if staged > 0 {
+            row += 1; // the "STAGED CHANGES" header
+        }
+        if i >= staged && working > 0 {
+            row += 1; // the "CHANGES" header
+        }
+        row
+    }
+
+    /// Scroll the Source-Control viewport so the change cursor stays visible.
+    fn scm_follow_cursor(&mut self) {
+        let h = self.scm_view_h as usize;
+        if h == 0 {
+            return;
+        }
+        let row = self.scm_cursor_display_row();
+        if row < self.scm_offset {
+            self.scm_offset = row;
+        } else if row >= self.scm_offset + h {
+            self.scm_offset = row + 1 - h;
+        }
+    }
+
+    /// Scroll the Source-Control list by `delta` rows (the mouse wheel over the SCM
+    /// panel), clamped to the content, and lazily load more commits near the bottom.
+    fn scm_scroll_by(&mut self, delta: i32) {
+        let max = self.scm_total_rows.saturating_sub(self.scm_view_h as usize);
+        let next = (self.scm_offset as i64 + i64::from(delta)).clamp(0, max as i64);
+        self.scm_offset = next as usize;
+        self.maybe_autoload_commits();
+    }
+
+    /// Request the next commit page once the viewport nears the end of what is loaded.
+    fn maybe_autoload_commits(&mut self) {
+        if !self.scm.log_has_more || self.scm.log_loading {
+            return;
+        }
+        let bottom = self.scm_offset + self.scm_view_h as usize;
+        if bottom + COMMIT_AUTOLOAD_THRESHOLD >= self.scm_total_rows {
+            self.load_more_scm_log();
         }
     }
 
@@ -1004,7 +1103,7 @@ impl App {
             title,
             TabKind::Diff {
                 file: Box::new(file),
-                view: ViewMode::Unified,
+                view: self.diff_layout,
                 scroll: 0,
             },
         );
@@ -1215,9 +1314,31 @@ impl App {
         self.scm.log_loading = false;
         self.scm.log_has_more = has_more;
         if skip == 0 {
+            // A fresh first page (initial load or a reconciliation reset) replaces the
+            // log; scroll back to the top so the newest commits are in view.
             self.scm.log = commits;
+            self.scm_offset = 0;
         } else if skip == self.scm.log.len() {
             self.scm.log.extend(commits);
+        }
+    }
+
+    /// Prepend newly-observed commits reported by the backend (an external commit
+    /// picked up via file-watching). Duplicates are dropped, and the viewport is
+    /// nudged so the user's position in the older history is preserved.
+    fn apply_vcs_commits_prepended(&mut self, mut commits: Vec<Commit>) {
+        let known: HashSet<&str> = self.scm.log.iter().map(|c| c.hash.as_str()).collect();
+        commits.retain(|c| !known.contains(c.hash.as_str()));
+        let inserted = commits.len();
+        if inserted == 0 {
+            return;
+        }
+        commits.append(&mut self.scm.log);
+        self.scm.log = commits;
+        // If the user had scrolled into the log, shift down so the same commits stay
+        // put; at the top (offset 0) keep them at the newest.
+        if self.scm_offset > 0 {
+            self.scm_offset += inserted;
         }
     }
 
@@ -1609,6 +1730,8 @@ impl App {
                     buffer,
                     text,
                     highlights,
+                    folds,
+                    folded,
                     decos,
                 } => Tab::new(
                     t.title.clone(),
@@ -1620,6 +1743,8 @@ impl App {
                         buffer: buffer.clone(),
                         text: text.clone(),
                         highlights: highlights.clone(),
+                        folds: folds.clone(),
+                        folded: folded.clone(),
                         decos: decos.clone(),
                     },
                 ),
@@ -1807,6 +1932,50 @@ impl App {
                 ViewMode::SideBySide => ViewMode::Unified,
             };
             *scroll = 0;
+            // Remember the choice so subsequently-opened diffs adopt it.
+            self.diff_layout = *view;
+        }
+    }
+
+    /// Fold or unfold the code region at the cursor: prefer a fold headered on the
+    /// cursor line, else the innermost fold containing it. Collapsing a region the
+    /// cursor sits inside relocates the caret to the (visible) header line.
+    fn toggle_fold(&mut self) {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let line = tab.editor.cursor.line;
+        let TabKind::Code {
+            buffer,
+            folds,
+            folded,
+            ..
+        } = &mut tab.kind
+        else {
+            return;
+        };
+        let target = folds
+            .regions()
+            .iter()
+            .find(|r| r.start == line)
+            .or_else(|| {
+                folds
+                    .regions()
+                    .iter()
+                    .filter(|r| r.start <= line && line <= r.end)
+                    .min_by_key(|r| r.end - r.start)
+            })
+            .copied();
+        let Some(region) = target else {
+            return;
+        };
+        // `remove` returns whether it was collapsed: toggle by remove-or-insert.
+        if !folded.remove(&region.start) {
+            folded.insert(region.start);
+            if line > region.start {
+                let pos = LineCol::new(region.start, tab.editor.cursor.col);
+                tab.editor.set_caret(buffer, pos);
+            }
         }
     }
 
@@ -1931,6 +2100,19 @@ impl App {
 
     /// Handle a mouse event: the tab strip (switch / close / cycle), wheel scrolls
     /// (the sidebar or the active tab), and a left click moves focus.
+    /// Resize the sidebar so its right edge sits at column `col`. Dragging narrower
+    /// than [`SIDEBAR_MIN_WIDTH`] is read as intent to collapse. The responsive upper
+    /// bound (terminal width) is applied when the layout is next computed.
+    fn resize_sidebar_to(&mut self, col: u16) {
+        let width = col.saturating_sub(self.sidebar_rect.x);
+        if width < SIDEBAR_MIN_WIDTH {
+            self.sidebar_visible = false;
+            self.sidebar_resizing = false;
+        } else {
+            self.sidebar_width = width;
+        }
+    }
+
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         // Toasts float above everything (including the overlay), so hit-test them
         // first: a left click on a card dismisses it.
@@ -1947,6 +2129,15 @@ impl App {
                     self.drag_tab_update(mouse.column, mouse.row);
                 },
                 MouseEventKind::Up(MouseButton::Left) => self.drag_tab_drop(),
+                _ => {},
+            }
+            return;
+        }
+        // An in-progress sidebar resize captures motion until the button is released.
+        if self.sidebar_resizing {
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left) => self.resize_sidebar_to(mouse.column),
+                MouseEventKind::Up(MouseButton::Left) => self.sidebar_resizing = false,
                 _ => {},
             }
             return;
@@ -1971,12 +2162,15 @@ impl App {
         let point = (mouse.column, mouse.row);
         let in_sidebar = self.sidebar_visible && rect_contains(self.sidebar_rect, point);
         match mouse.kind {
-            MouseEventKind::ScrollDown if in_sidebar => self.sidebar_step(1),
-            MouseEventKind::ScrollUp if in_sidebar => self.sidebar_step(-1),
+            MouseEventKind::ScrollDown if in_sidebar => self.sidebar_wheel(3),
+            MouseEventKind::ScrollUp if in_sidebar => self.sidebar_wheel(-3),
             MouseEventKind::ScrollDown => self.scroll_lines(3),
             MouseEventKind::ScrollUp => self.scroll_lines(-3),
             MouseEventKind::Down(MouseButton::Left) => {
-                if in_sidebar {
+                if self.sidebar_visible && mouse.column == self.sidebar_divider_x {
+                    // Grab the divider to start a resize drag.
+                    self.sidebar_resizing = true;
+                } else if in_sidebar {
                     self.handle_sidebar_click(mouse.column, mouse.row, mouse.modifiers);
                 } else {
                     self.handle_editor_click(mouse);
@@ -2185,12 +2379,19 @@ impl App {
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         let streak = self.click_streak(mouse.column, mouse.row);
         if let Some(Tab {
-            kind: TabKind::Code { buffer, .. },
+            kind:
+                TabKind::Code {
+                    buffer,
+                    folds,
+                    folded,
+                    ..
+                },
             editor,
             ..
         }) = self.tabs.get_mut(self.active)
         {
-            let pos = editor.pos_at(area, buffer, mouse.column, mouse.row);
+            let fold_lines = resolve_folds(folds, folded);
+            let pos = editor.pos_at(area, buffer, &fold_lines, mouse.column, mouse.row);
             match streak {
                 2 => {
                     let (anchor, head) = word_at(buffer, pos);
@@ -2218,12 +2419,19 @@ impl App {
     fn drag_select_to(&mut self, col: u16, row: u16) {
         let area = self.editor_rect;
         if let Some(Tab {
-            kind: TabKind::Code { buffer, .. },
+            kind:
+                TabKind::Code {
+                    buffer,
+                    folds,
+                    folded,
+                    ..
+                },
             editor,
             ..
         }) = self.tabs.get_mut(self.active)
         {
-            let pos = editor.pos_at(area, buffer, col, row);
+            let fold_lines = resolve_folds(folds, folded);
+            let pos = editor.pos_at(area, buffer, &fold_lines, col, row);
             editor.extend_to(buffer, pos);
         }
     }
@@ -2554,6 +2762,9 @@ impl App {
                 commits,
                 has_more,
             } => self.apply_vcs_log(skip, commits, has_more),
+            SessionEvent::VcsCommitsPrepended { commits } => {
+                self.apply_vcs_commits_prepended(commits);
+            },
             SessionEvent::Committed { oid } => {
                 self.commit_input = None;
                 let short: String = oid.chars().take(7).collect();
@@ -2579,6 +2790,8 @@ impl App {
             if let TabKind::Code {
                 buffer,
                 highlights,
+                folds,
+                folded,
                 text,
                 next_version,
                 ..
@@ -2586,12 +2799,31 @@ impl App {
             {
                 *buffer = snap.buffer.clone();
                 *highlights = (*snap.highlights).clone();
+                *folds = (*snap.folds).clone();
                 *text = snap.buffer.text();
                 *next_version = (*next_version).max(snap.version);
+                // Drop collapsed markers whose fold no longer starts where it did (an
+                // edit shifted or removed it), so stale hidden lines can't linger.
+                let starts: HashSet<u32> = folds.regions().iter().map(|r| r.start).collect();
+                folded.retain(|line| starts.contains(line));
             }
             tab.dirty = snap.dirty;
         }
     }
+}
+
+/// Resolve a snapshot's fold regions plus the view's collapsed set into the
+/// line-based [`Fold`]s the editor renders and hit-tests against.
+pub(crate) fn resolve_folds(folds: &FoldRegions, folded: &BTreeSet<u32>) -> Vec<Fold> {
+    folds
+        .regions()
+        .iter()
+        .map(|r| Fold {
+            start: r.start,
+            end: r.end,
+            collapsed: folded.contains(&r.start),
+        })
+        .collect()
 }
 
 /// Whether the screen point `(x, y)` lies inside `r`.
@@ -2822,6 +3054,23 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_resize_sets_width_and_collapses_below_min() {
+        let mut app = app();
+        app.sidebar_rect = Rect::new(0, 0, DEFAULT_SIDEBAR_WIDTH, 20);
+        app.sidebar_resizing = true;
+        // Dragging the divider to column 45 widens the sidebar.
+        app.resize_sidebar_to(45);
+        assert_eq!(app.sidebar_width, 45);
+        assert!(app.sidebar_visible);
+        // Dragging narrower than the minimum collapses it and ends the drag, leaving
+        // the last valid width intact so re-showing restores a sensible size.
+        app.resize_sidebar_to(SIDEBAR_MIN_WIDTH - 1);
+        assert!(!app.sidebar_visible);
+        assert!(!app.sidebar_resizing);
+        assert_eq!(app.sidebar_width, 45);
+    }
+
+    #[test]
     fn pending_save_drives_the_animation_tick() {
         let mut app = app();
         assert!(app.next_wake().is_none());
@@ -3006,6 +3255,83 @@ mod tests {
         app.handle_key(KeyEvent::new(code, mods));
     }
 
+    fn commit(hash: &str, summary: &str) -> Commit {
+        Commit {
+            hash: hash.to_string(),
+            short_hash: hash.chars().take(7).collect(),
+            summary: summary.to_string(),
+            author: "T".to_string(),
+            time: 0,
+        }
+    }
+
+    #[test]
+    fn toggle_fold_collapses_at_cursor_and_relocates_caret() {
+        use karet_treesitter::ParserPool;
+        use karet_treesitter::SyntaxTree;
+        use karet_treesitter::language_id_from_path;
+
+        let Some(lang) = language_id_from_path(Path::new("f.rs")) else {
+            return; // rust grammar not compiled in
+        };
+        let src = "fn main() {\n    let x = 1;\n    let y = 2;\n}\n";
+        let mut pool = ParserPool::new();
+        let tree = SyntaxTree::parse(&mut pool, lang, src).expect("parse");
+        let regions = karet_syntax::fold(&tree);
+        let start = regions.regions()[0].start;
+        assert_eq!(start, 0, "the function body folds from line 0");
+
+        let mut app = app();
+        app.push_tab(text_tab("f.rs", src));
+        if let TabKind::Code { folds, .. } = &mut app.tabs[app.active].kind {
+            *folds = regions;
+        }
+        // Cursor inside the region: toggling collapses it and moves the caret to the
+        // (still visible) header line.
+        app.tabs[app.active].editor.cursor = LineCol::new(1, 0);
+        app.toggle_fold();
+        assert_eq!(app.tabs[app.active].editor.cursor.line, 0);
+        if let TabKind::Code { folded, .. } = &app.tabs[app.active].kind {
+            assert!(folded.contains(&0));
+        }
+        // Toggling again (cursor now on the header) expands it.
+        app.toggle_fold();
+        if let TabKind::Code { folded, .. } = &app.tabs[app.active].kind {
+            assert!(!folded.contains(&0));
+        }
+    }
+
+    #[test]
+    fn prepended_commits_dedupe_and_preserve_scroll() {
+        let mut app = app();
+        app.scm.log = vec![commit("aaaaaaa1", "old top"), commit("bbbbbbb2", "older")];
+        app.scm_offset = 5;
+        // A genuinely-new commit plus a duplicate of the current top: only the new
+        // one prepends, and the viewport shifts down by that one inserted row.
+        app.apply_vcs_commits_prepended(vec![
+            commit("ccccccc3", "new"),
+            commit("aaaaaaa1", "old top"),
+        ]);
+        assert_eq!(app.scm.log.len(), 3);
+        assert_eq!(app.scm.log[0].summary, "new");
+        assert_eq!(app.scm.log[1].summary, "old top");
+        assert_eq!(app.scm_offset, 6);
+    }
+
+    #[test]
+    fn scm_wheel_scrolls_and_clamps() {
+        let mut app = app();
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        app.scm_total_rows = 20;
+        app.scm_view_h = 10;
+        app.sidebar_wheel(5);
+        assert_eq!(app.scm_offset, 5);
+        app.sidebar_wheel(100); // clamps to total_rows - view_h
+        assert_eq!(app.scm_offset, 10);
+        app.sidebar_wheel(-100);
+        assert_eq!(app.scm_offset, 0);
+    }
+
     #[test]
     fn command_palette_keys_route_through_the_overlay_layer() {
         let mut app = app();
@@ -3152,6 +3478,17 @@ mod tests {
             }
         );
         assert!(before && after);
+        // The choice persists: the next opened diff adopts the remembered layout.
+        assert_eq!(app.diff_layout, ViewMode::SideBySide);
+        app.scm.selection.move_to(1);
+        app.dispatch(Command::SidebarActivate);
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::Diff {
+                view: ViewMode::SideBySide,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -3213,6 +3550,8 @@ mod tests {
                 buffer: TextBuffer::from_text("foo bar foo"),
                 text: "foo bar foo".to_string(),
                 highlights: Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
                 decos: Vec::new(),
             },
         ));
@@ -3291,6 +3630,8 @@ mod tests {
                 buffer: TextBuffer::from_text("fn main() {}\n"),
                 text: "fn main() {}\n".to_string(),
                 highlights: Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
                 decos: Vec::new(),
             },
         ));
@@ -3332,6 +3673,8 @@ mod tests {
                 buffer: TextBuffer::from_text("x\n"),
                 text: "x\n".to_string(),
                 highlights: Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
                 decos: Vec::new(),
             },
         )
@@ -3380,6 +3723,8 @@ mod tests {
                 buffer: TextBuffer::from_text(text),
                 text: text.to_string(),
                 highlights: Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
                 decos: Vec::new(),
             },
         )

@@ -113,6 +113,8 @@ pub enum Command {
     Bottom,
     /// Toggle a diff tab between unified and side-by-side.
     ToggleDiffLayout,
+    /// Fold or unfold the code region at the cursor.
+    ToggleFold,
     /// Move to the next changed file (diff tab).
     NextChangedFile,
     /// Move to the previous changed file (diff tab).
@@ -262,6 +264,7 @@ impl Command {
             Self::Top => "Go to Top",
             Self::Bottom => "Go to Bottom",
             Self::ToggleDiffLayout => "Diff: Toggle Inline / Side-by-Side",
+            Self::ToggleFold => "Fold: Toggle at Cursor",
             Self::NextChangedFile => "Diff: Next Changed File",
             Self::PrevChangedFile => "Diff: Previous Changed File",
             Self::InsertChar(_) => "Insert Character",
@@ -351,6 +354,7 @@ impl Command {
             Self::Paste => "paste",
             Self::ShowBlame => "blame",
             Self::BlameFunction => "blame fn",
+            Self::ToggleFold => "fold",
             // Diff.
             Self::ToggleDiffLayout => "layout",
             Self::NextChangedFile => "next change",
@@ -446,6 +450,7 @@ impl Command {
                 | Self::CopyPath
                 | Self::CopyRelativePath
                 | Self::ToggleDiffLayout
+                | Self::ToggleFold
                 | Self::Undo
                 | Self::Redo
                 | Self::Save
@@ -499,6 +504,7 @@ pub fn palette() -> Vec<Command> {
         Command::Cut,
         Command::Paste,
         Command::ToggleDiffLayout,
+        Command::ToggleFold,
         Command::ScmStageAll,
         Command::ScmUnstageAll,
         Command::ScmCommit,

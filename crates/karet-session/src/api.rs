@@ -316,6 +316,14 @@ pub enum Event {
         /// Whether more commits exist beyond this page.
         has_more: bool,
     },
+    /// New commits appeared at the tip (an external `git commit`, amend, or small
+    /// rebase detected via file-watching). These should be prepended to the loaded
+    /// log without disturbing already-paged history. Emitted spontaneously, never in
+    /// answer to a request.
+    VcsCommitsPrepended {
+        /// The new commits, newest first.
+        commits: Vec<Commit>,
+    },
 }
 
 #[cfg(test)]
