@@ -15,15 +15,28 @@ publish = false                       # made publishable in a later commit (see 
 
 [features]
 default = []
+# Compile in every tree-sitter grammar so the text branch highlights. Off by
+# default so a consumer that only renders images/hex/plain text pulls no grammars.
+all-languages = ["karet-treesitter/all-languages"]
 
 [dependencies]
 karet-core.workspace = true
 karet-filetype.workspace = true       # classify/FileKind + the Placeholder re-exports
-karet-theme = { workspace = true, features = ["view"] }  # role colors for the hex view
+karet-text.workspace = true           # the read-only TextBuffer
+karet-treesitter.workspace = true     # parse host + language ids for highlighting
+karet-syntax.workspace = true         # tree-sitter highlighting -> Highlights
+karet-theme = { workspace = true, features = ["view"] }  # role colors for the views
+karet-editor.workspace = true         # renders the highlighted text branch (read-only)
 ratatui.workspace = true
 image.workspace = true                # image decode + halfblock rendering
 base64.workspace = true               # Kitty graphics protocol payload encoding
 thiserror.workspace = true
+
+[dev-dependencies]
+# Enable every grammar for the crate's own tests + examples so the text branch
+# highlights out of the box; real consumers opt in via the `all-languages` feature.
+karet-treesitter = { workspace = true, features = ["all-languages"] }
+crossterm.workspace = true
 
 [lints]
 workspace = true

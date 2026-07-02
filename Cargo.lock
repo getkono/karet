@@ -2555,10 +2555,15 @@ name = "karet-fileview"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "crossterm",
  "image",
  "karet-core",
+ "karet-editor",
  "karet-filetype",
+ "karet-syntax",
+ "karet-text",
  "karet-theme",
+ "karet-treesitter",
  "ratatui",
  "thiserror 2.0.18",
 ]
