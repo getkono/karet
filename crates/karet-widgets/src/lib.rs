@@ -19,6 +19,7 @@ use karet_fuzzy::Matcher;
 
 pub mod file_tree;
 pub mod glyph;
+pub mod notify;
 pub mod select;
 
 pub use file_tree::FileTree;
@@ -26,6 +27,9 @@ pub use file_tree::FileTreeRow;
 pub use file_tree::FileTreeState;
 pub use glyph::UiIcon;
 pub use karet_filetype::IconStyle;
+pub use notify::Corner;
+pub use notify::ToastSlot;
+pub use notify::Toasts;
 pub use select::ListSelection;
 
 /// A symbol outline tree over a [`SymbolProvider`].
