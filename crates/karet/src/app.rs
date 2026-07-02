@@ -2265,7 +2265,7 @@ mod tests {
         let _ = std::fs::write(&file, &bytes);
 
         let mut app = app();
-        let len = karet_widgets::viewer::SIZE_GUARD + 1;
+        let len = karet_fileview::viewer::SIZE_GUARD + 1;
         app.tabs = vec![Tab::new(
             "big.cbor",
             TabKind::Placeholder {
