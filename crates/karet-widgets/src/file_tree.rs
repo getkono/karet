@@ -7,6 +7,11 @@
 //! optional theme, and a path-keyed status overlay (the application maps
 //! `karet-vcs` statuses to `karet-core` [`Decoration`]s).
 //!
+//! **Gitignore (VS Code behavior):** gitignored files are *not* hidden — they are
+//! listed and rendered dimmed (their [`ignored`](FileTreeRow::ignored) flag), so a
+//! `target/` or `node_modules/` is visible but visually recedes. Dotfiles are shown
+//! too; only the `.git` directory itself is always excluded.
+//!
 //! **Folder compaction:** a directory whose only entry is another directory is
 //! merged into a single `a/b/c` row (like VS Code's "compact folders"). The row's
 //! [`path`](FileTreeRow::path) is the *deepest* directory — expansion, selection,
@@ -48,6 +53,8 @@ pub struct FileTreeRow {
     pub is_dir: bool,
     /// Whether the entry is an expanded directory.
     pub expanded: bool,
+    /// Whether the entry is gitignored (shown dimmed, VS Code style).
+    pub ignored: bool,
 }
 
 /// Persistent file-tree state: expansion, selection, and the flattened row cache.
@@ -71,7 +78,7 @@ impl Default for FileTreeState {
             selection: ListSelection::new(0),
             offset: 0,
             rows: Vec::new(),
-            show_hidden: false,
+            show_hidden: true,
             respect_gitignore: true,
             needs_rebuild: true,
         }
@@ -79,13 +86,15 @@ impl Default for FileTreeState {
 }
 
 impl FileTreeState {
-    /// Create a fresh state (gitignore respected, hidden files hidden).
+    /// Create a fresh state (VS Code defaults: dotfiles shown, gitignored files
+    /// shown dimmed rather than hidden; only `.git` is excluded).
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Whether to show hidden (dot) files.
+    /// Whether to show hidden (dot) files. Note the `.git` directory is always
+    /// excluded regardless.
     pub fn set_show_hidden(&mut self, show: bool) {
         self.show_hidden = show;
         self.needs_rebuild = true;
@@ -214,22 +223,18 @@ impl FileTreeState {
     }
 
     /// Append pre-read `children` (files and compacted directory chains) to `rows`.
-    fn push_entries(
-        &self,
-        children: Vec<(PathBuf, bool)>,
-        depth: u16,
-        rows: &mut Vec<FileTreeRow>,
-    ) {
-        for (path, is_dir) in children {
-            if is_dir {
-                self.push_compacted_dir(path, depth, rows);
+    fn push_entries(&self, children: Vec<Entry>, depth: u16, rows: &mut Vec<FileTreeRow>) {
+        for entry in children {
+            if entry.is_dir {
+                self.push_compacted_dir(entry, depth, rows);
             } else {
                 rows.push(FileTreeRow {
-                    label: file_label(&path),
-                    path,
+                    label: file_label(&entry.path),
+                    path: entry.path,
                     depth,
                     is_dir: false,
                     expanded: false,
+                    ignored: entry.ignored,
                 });
             }
         }
@@ -237,18 +242,19 @@ impl FileTreeState {
 
     /// Push a directory row, compacting a single-child directory chain into one
     /// `a/b/c` row, and recursing into the chain's tip when it is expanded.
-    fn push_compacted_dir(&self, first: PathBuf, depth: u16, rows: &mut Vec<FileTreeRow>) {
-        let mut label = file_label(&first);
-        let mut tip = first;
+    fn push_compacted_dir(&self, first: Entry, depth: u16, rows: &mut Vec<FileTreeRow>) {
+        let mut label = file_label(&first.path);
+        let mut tip = first.path;
+        let mut ignored = first.ignored;
         // Descend while the current directory's *only* entry is another directory.
         let children = loop {
             let entries = read_dir_sorted(&tip, self.show_hidden, self.respect_gitignore);
             match entries.as_slice() {
-                [(child, true)] => {
-                    let child = child.clone();
+                [child] if child.is_dir => {
                     label.push('/');
-                    label.push_str(&file_label(&child));
-                    tip = child;
+                    label.push_str(&file_label(&child.path));
+                    ignored = ignored || child.ignored;
+                    tip = child.path.clone();
                 },
                 _ => break entries,
             }
@@ -260,11 +266,19 @@ impl FileTreeState {
             depth,
             is_dir: true,
             expanded,
+            ignored,
         });
         if expanded {
             self.push_entries(children, depth + 1, rows);
         }
     }
+}
+
+/// One immediate directory entry, with its gitignore status.
+struct Entry {
+    path: PathBuf,
+    is_dir: bool,
+    ignored: bool,
 }
 
 /// The display label for a path: its file name, or `?` if it has none.
@@ -276,28 +290,68 @@ fn file_label(path: &Path) -> String {
 }
 
 /// Read the immediate entries of `dir`, dirs first then case-insensitive name.
-fn read_dir_sorted(dir: &Path, show_hidden: bool, respect_gitignore: bool) -> Vec<(PathBuf, bool)> {
+///
+/// Gitignored entries are listed and flagged `ignored` (VS Code dims them) rather
+/// than filtered out. The `.git` directory is always excluded; dotfiles are shown
+/// unless `show_hidden` is false.
+fn read_dir_sorted(dir: &Path, show_hidden: bool, respect_gitignore: bool) -> Vec<Entry> {
+    // The full listing (gitignore off): everything the user should see.
+    let all = walk_immediate(dir, show_hidden, false);
+    let mut entries: Vec<Entry> = if respect_gitignore {
+        // The non-ignored subset; anything in `all` but not here is gitignored.
+        let visible: BTreeSet<PathBuf> = walk_immediate(dir, show_hidden, true)
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
+        all.into_iter()
+            .map(|(path, is_dir)| {
+                let ignored = !visible.contains(&path);
+                Entry {
+                    path,
+                    is_dir,
+                    ignored,
+                }
+            })
+            .collect()
+    } else {
+        all.into_iter()
+            .map(|(path, is_dir)| Entry {
+                path,
+                is_dir,
+                ignored: false,
+            })
+            .collect()
+    };
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| name_key(&a.path).cmp(&name_key(&b.path)))
+    });
+    entries
+}
+
+/// List the immediate children of `dir` as `(path, is_dir)`, honoring the hidden
+/// and gitignore filters, but always excluding the `.git` directory.
+fn walk_immediate(dir: &Path, show_hidden: bool, git_ignore: bool) -> Vec<(PathBuf, bool)> {
     let mut builder = ignore::WalkBuilder::new(dir);
     builder
         .max_depth(Some(1))
         .hidden(!show_hidden)
-        .git_ignore(respect_gitignore)
-        .git_global(respect_gitignore)
-        .git_exclude(respect_gitignore)
+        .git_ignore(git_ignore)
+        .git_global(git_ignore)
+        .git_exclude(git_ignore)
         .require_git(false)
-        .parents(respect_gitignore);
-
-    let mut entries: Vec<(PathBuf, bool)> = builder
+        .parents(git_ignore);
+    builder
         .build()
         .flatten()
         .filter(|e| e.depth() > 0) // skip the directory itself
+        .filter(|e| e.file_name() != std::ffi::OsStr::new(".git"))
         .map(|e| {
             let is_dir = e.file_type().is_some_and(|t| t.is_dir());
             (e.path().to_path_buf(), is_dir)
         })
-        .collect();
-    entries.sort_by(|(pa, da), (pb, db)| db.cmp(da).then_with(|| name_key(pa).cmp(&name_key(pb))));
-    entries
+        .collect()
 }
 
 /// A case-insensitive sort key from a path's file name.
@@ -419,14 +473,16 @@ impl StatefulWidget for FileTree<'_> {
                 icon_for_path(&row.path, self.icons)
             };
 
+            // Gitignored entries recede to the dim gutter color (VS Code style).
+            let text = if row.ignored { guide } else { fg };
             let mut spans = vec![
                 Span::styled(
                     "  ".repeat(row.depth as usize),
                     Style::default().fg(guide.to_ratatui()),
                 ),
                 Span::styled(format!("{chev} "), Style::default().fg(guide.to_ratatui())),
-                Span::styled(format!("{icon} "), Style::default().fg(fg.to_ratatui())),
-                Span::styled(row.label.clone(), Style::default().fg(fg.to_ratatui())),
+                Span::styled(format!("{icon} "), Style::default().fg(text.to_ratatui())),
+                Span::styled(row.label.clone(), Style::default().fg(text.to_ratatui())),
             ];
             if let Some(dec) = self.status_for(&row.path)
                 && let DecorationKind::GutterMarker { glyph } = &dec.kind
@@ -539,15 +595,34 @@ mod tests {
     }
 
     #[test]
-    fn respects_gitignore() {
+    fn gitignored_files_are_dimmed_not_hidden() {
         let dir = temp_dir();
         write(&dir.path, ".gitignore", b"ignored.txt\n");
         write(&dir.path, "kept.txt", b"k");
         write(&dir.path, "ignored.txt", b"i");
         let mut state = FileTreeState::new();
         state.ensure_built(&dir.path);
-        // .gitignore is hidden (dotfile); ignored.txt is filtered; kept.txt remains.
-        assert_eq!(names(&state), vec!["kept.txt"]);
+        // VS Code behavior: nothing is hidden (dotfiles shown too); the gitignored
+        // file is listed but flagged for dimming.
+        assert_eq!(names(&state), vec![".gitignore", "ignored.txt", "kept.txt"]);
+        let ignored: Vec<String> = state
+            .rows()
+            .iter()
+            .filter(|r| r.ignored)
+            .map(|r| name_key(&r.path))
+            .collect();
+        assert_eq!(ignored, vec!["ignored.txt"]);
+    }
+
+    #[test]
+    fn git_directory_is_always_excluded() {
+        let dir = temp_dir();
+        write(&dir.path, ".git/config", b"[core]\n");
+        write(&dir.path, "src/main.rs", b"fn main() {}\n");
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+        assert!(!names(&state).contains(&".git".to_string()));
+        assert!(names(&state).contains(&"src".to_string()));
     }
 
     #[test]
