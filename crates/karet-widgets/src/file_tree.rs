@@ -24,7 +24,9 @@ use std::path::PathBuf;
 use karet_core::Decoration;
 use karet_core::DecorationKind;
 use karet_core::ThemeRole;
+use karet_filetype::Category;
 use karet_filetype::IconStyle;
+use karet_filetype::category_for_path;
 use karet_filetype::chevron;
 use karet_filetype::directory_icon;
 use karet_filetype::icon_for_path;
@@ -440,6 +442,23 @@ impl<'a> FileTree<'a> {
     }
 }
 
+/// Map a file [`Category`] to the explorer icon-tint role: text-like types share
+/// one tint, media and documents another, binaries/archives a third, and everything
+/// unrecognized falls back to the neutral [`Foreground`](ThemeRole::Foreground).
+fn category_role(category: Category) -> ThemeRole {
+    match category {
+        Category::Code
+        | Category::Markup
+        | Category::Data
+        | Category::Config
+        | Category::Shell => ThemeRole::FileIconText,
+        Category::Image | Category::Document => ThemeRole::FileIconMedia,
+        Category::Archive | Category::Binary => ThemeRole::FileIconBinary,
+        // Unknown — and any future Category variant — stays neutral.
+        _ => ThemeRole::Foreground,
+    }
+}
+
 impl StatefulWidget for FileTree<'_> {
     type State = FileTreeState;
 
@@ -468,6 +487,7 @@ impl StatefulWidget for FileTree<'_> {
         };
         let fg = theme.role(ThemeRole::Foreground);
         let guide = theme.role(ThemeRole::IndentGuide);
+        let muted = theme.role(ThemeRole::Muted);
         let accent = theme.role(ThemeRole::LineNumberActive);
 
         for (i, row) in state
@@ -514,11 +534,11 @@ impl StatefulWidget for FileTree<'_> {
             };
 
             // Foreground precedence: the active editor's file is accented and bold;
-            // other open files are accented; gitignored entries recede to the dim
-            // gutter color (VS Code style); everything else is normal.
+            // other open files are accented; gitignored entries recede to a readable
+            // muted grey (VS Code style); everything else is normal.
             let is_active = self.active == Some(row.path.as_path());
             let is_open = self.open.iter().any(|p| p == &row.path);
-            let (text, label_style) = if is_active {
+            let (row_fg, label_style) = if is_active {
                 (
                     accent,
                     Style::default()
@@ -528,19 +548,39 @@ impl StatefulWidget for FileTree<'_> {
             } else if is_open {
                 (accent, Style::default().fg(accent.to_ratatui()))
             } else if row.ignored {
-                (guide, Style::default().fg(guide.to_ratatui()))
+                (muted, Style::default().fg(muted.to_ratatui()))
             } else {
                 (fg, Style::default().fg(fg.to_ratatui()))
             };
-            let mut spans = vec![
-                Span::styled(
-                    "  ".repeat(row.depth as usize),
+            // The type icon is tinted by file Category (text / media / binary /
+            // neutral); directories follow the row color, and gitignored entries
+            // recede to muted so the whole row dims together.
+            let icon_color = if row.ignored {
+                muted
+            } else if row.is_dir {
+                row_fg
+            } else {
+                theme.role(category_role(category_for_path(&row.path)))
+            };
+            // Indent guides: one vertical rule per ancestor depth level. Rows are
+            // flattened depth-first, so a rule at each ancestor column draws a
+            // continuous line down every expanded directory's children.
+            let mut spans = Vec::with_capacity(row.depth as usize + 3);
+            for _ in 0..row.depth {
+                spans.push(Span::styled(
+                    "\u{2502} ", // "│ " — box-drawing rule + spacer, 2 cells per level
                     Style::default().fg(guide.to_ratatui()),
-                ),
-                Span::styled(format!("{chev} "), Style::default().fg(guide.to_ratatui())),
-                Span::styled(format!("{icon} "), Style::default().fg(text.to_ratatui())),
-                Span::styled(row.label.clone(), label_style),
-            ];
+                ));
+            }
+            spans.push(Span::styled(
+                format!("{chev} "),
+                Style::default().fg(row_fg.to_ratatui()),
+            ));
+            spans.push(Span::styled(
+                format!("{icon} "),
+                Style::default().fg(icon_color.to_ratatui()),
+            ));
+            spans.push(Span::styled(row.label.clone(), label_style));
             if let Some(dec) = self.status_for(&row.path)
                 && let DecorationKind::GutterMarker { glyph } = &dec.kind
             {
@@ -814,5 +854,44 @@ mod tests {
             .collect();
         assert!(rendered.contains("a.txt"));
         assert!(rendered.contains('M'));
+    }
+
+    #[test]
+    fn nested_rows_draw_indent_guides() {
+        let dir = temp_dir();
+        write(&dir.path, "sub/b.txt", b"b");
+        let mut state = FileTreeState::new();
+        let theme = Theme::dark();
+        state.ensure_built(&dir.path);
+        state.toggle(&dir.path.join("sub"));
+        let area = Rect::new(0, 0, 30, 4);
+        let mut buf = Buffer::empty(area);
+        FileTree::new(&dir.path)
+            .theme(&theme)
+            .render(area, &mut buf, &mut state);
+        // Row 0 is the expanded `sub` (depth 0, no guide, ▼ chevron); row 1 is the
+        // nested `b.txt` (depth 1), whose first cell is the box-drawing indent rule.
+        let width = area.width as usize;
+        assert_eq!(buf.content()[0].symbol(), "\u{25bc}"); // ▼ expanded directory
+        assert_eq!(buf.content()[width].symbol(), "\u{2502}"); // │ indent guide
+    }
+
+    #[test]
+    fn file_icons_are_tinted_by_category() {
+        let dir = temp_dir();
+        write(&dir.path, "main.rs", b"fn main() {}");
+        let mut state = FileTreeState::new();
+        let theme = Theme::dark();
+        let area = Rect::new(0, 0, 30, 2);
+        let mut buf = Buffer::empty(area);
+        FileTree::new(&dir.path)
+            .theme(&theme)
+            .render(area, &mut buf, &mut state);
+        // A code file's icon (column 2, after the blank chevron cells) is tinted with
+        // the text-file role, not the neutral foreground.
+        assert_eq!(
+            buf.content()[2].fg,
+            theme.role(ThemeRole::FileIconText).to_ratatui()
+        );
     }
 }
