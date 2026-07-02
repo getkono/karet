@@ -244,12 +244,43 @@ impl Session {
             Command::UnstageAll => self.vcs_write(id, Repository::unstage_all),
             Command::Commit { message } => self.commit(id, &message),
             Command::RefreshVcs => self.emit_vcs_status(Some(id)),
+            Command::VcsLog { skip, limit } => self.emit_vcs_log(id, skip, limit),
             // Language-intelligence and search commands are wired in later milestones.
             _ => {},
         }
     }
 
     // --- source control ---------------------------------------------------
+
+    /// Fetch a page of the commit log and emit it. Requests one extra commit to
+    /// detect whether more remain, then trims to `limit`. A no-op without a repo.
+    fn emit_vcs_log(&mut self, id: RequestId, skip: usize, limit: usize) {
+        let Some(repo) = self.vcs.as_ref() else {
+            return;
+        };
+        match repo.log(skip, limit.saturating_add(1)) {
+            Ok(mut commits) => {
+                let has_more = commits.len() > limit;
+                commits.truncate(limit);
+                self.emit(
+                    Some(id),
+                    Event::VcsLog {
+                        skip,
+                        commits,
+                        has_more,
+                    },
+                );
+            },
+            Err(e) => self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::Vcs,
+                    message: e.to_string(),
+                },
+            ),
+        }
+    }
 
     /// Compute the current `(staged, working)` change sets, or `None` when there is
     /// no repository. A read failure yields empty sets rather than erroring.

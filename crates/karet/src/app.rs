@@ -63,6 +63,7 @@ use karet_session::ViewId;
 use karet_session::local;
 use karet_text::TextBuffer;
 use karet_theme::Theme;
+use karet_vcs::Commit;
 use karet_vcs::FileChange;
 use karet_widgets::FileTreeState;
 use karet_widgets::ListSelection;
@@ -100,6 +101,12 @@ pub(crate) struct Scm {
     pub(crate) staged_count: usize,
     /// The cursor and multi-file selection over `changes`.
     pub(crate) selection: ListSelection,
+    /// The loaded commit-log page(s), newest first (lazily fetched).
+    pub(crate) log: Vec<Commit>,
+    /// Whether more commits exist beyond the loaded ones.
+    pub(crate) log_has_more: bool,
+    /// Whether a log page request is currently in flight.
+    pub(crate) log_loading: bool,
 }
 
 impl Scm {
@@ -149,6 +156,9 @@ pub(crate) struct SearchPanel {
 
 /// The maximum number of matching files the workspace search panel collects.
 const SEARCH_RESULT_CAP: usize = 500;
+
+/// How many commits the source-control log fetches per lazily-loaded page.
+const SCM_LOG_PAGE: usize = 25;
 
 /// A clickable tab region in the tab strip, recorded during the last render.
 #[derive(Clone, Copy)]
@@ -238,6 +248,8 @@ pub struct App {
     pub(crate) scm_row_map: Vec<Option<usize>>,
     /// The Source-Control list scroll offset from the last frame.
     pub(crate) scm_offset: usize,
+    /// The display row of the commit-log "load more" affordance, if shown.
+    pub(crate) scm_more_row: Option<usize>,
     /// The search-results area from the last frame.
     pub(crate) search_results_rect: Rect,
     /// The search-results list scroll offset from the last frame.
@@ -303,6 +315,9 @@ impl App {
                 selection: ListSelection::new(changes.len()),
                 changes,
                 staged_count,
+                log: Vec::new(),
+                log_has_more: false,
+                log_loading: false,
             },
             tabs: vec![Tab::welcome()],
             active: 0,
@@ -326,6 +341,7 @@ impl App {
             panel_hits: Vec::new(),
             scm_row_map: Vec::new(),
             scm_offset: 0,
+            scm_more_row: None,
             search_results_rect: Rect::default(),
             search_offset: 0,
             status_rect: Rect::default(),
@@ -742,6 +758,10 @@ impl App {
                 self.sidebar_panel = panel;
                 self.sidebar_visible = true;
                 self.focus = Focus::Sidebar;
+                // Lazily fetch the first commit-log page when Source Control opens.
+                if panel == SidebarPanel::SourceControl && self.scm.log.is_empty() {
+                    self.request_scm_log(0);
+                }
             },
             Command::OpenQuickOpen => self.open_quick_open(),
             Command::OpenCommandPalette => self.overlay = Some(Overlay::command_palette()),
@@ -947,6 +967,27 @@ impl App {
 
     // --- source control ---------------------------------------------------
 
+    /// Request one page of the commit log starting at `skip`, unless one is already
+    /// in flight. The result arrives as [`SessionEvent::VcsLog`].
+    fn request_scm_log(&mut self, skip: usize) {
+        if self.scm.log_loading {
+            return;
+        }
+        self.scm.log_loading = true;
+        self.send_vcs(SessionCommand::VcsLog {
+            skip,
+            limit: SCM_LOG_PAGE,
+        });
+    }
+
+    /// Fetch the next page of the commit log (from the end of what is loaded).
+    fn load_more_scm_log(&mut self) {
+        if self.scm.log_has_more {
+            let skip = self.scm.log.len();
+            self.request_scm_log(skip);
+        }
+    }
+
     /// Send a fire-and-forget command to the backend (no document context).
     fn send_vcs(&mut self, command: SessionCommand) {
         let result = self.backend.as_ref().map(|backend| {
@@ -1114,6 +1155,19 @@ impl App {
         self.scm.changes = changes;
         self.scm.staged_count = staged_count;
         self.scm.selection.set_len(self.scm.changes.len());
+    }
+
+    /// Apply a fetched commit-log page: the first page (`skip == 0`) replaces the
+    /// log; a later page appends. Guards against duplicate appends if a page is
+    /// re-delivered.
+    fn apply_vcs_log(&mut self, skip: usize, commits: Vec<Commit>, has_more: bool) {
+        self.scm.log_loading = false;
+        self.scm.log_has_more = has_more;
+        if skip == 0 {
+            self.scm.log = commits;
+        } else if skip == self.scm.log.len() {
+            self.scm.log.extend(commits);
+        }
     }
 
     /// Open `path`, focusing an existing tab for the same file instead of opening a
@@ -1711,7 +1765,9 @@ impl App {
                     return;
                 }
                 let display = self.scm_offset + (row_y - self.sidebar_content_rect.y) as usize;
-                if let Some(Some(idx)) = self.scm_row_map.get(display).copied() {
+                if self.scm_more_row == Some(display) {
+                    self.load_more_scm_log();
+                } else if let Some(Some(idx)) = self.scm_row_map.get(display).copied() {
                     if ctrl {
                         self.scm.selection.toggle(idx);
                     } else if shift {
@@ -2155,6 +2211,11 @@ impl App {
                 message,
             } => self.notify(severity, kind, message),
             SessionEvent::VcsStatus { staged, working } => self.apply_vcs_status(staged, working),
+            SessionEvent::VcsLog {
+                skip,
+                commits,
+                has_more,
+            } => self.apply_vcs_log(skip, commits, has_more),
             SessionEvent::Committed { oid } => {
                 self.commit_input = None;
                 let short: String = oid.chars().take(7).collect();
@@ -2409,6 +2470,33 @@ mod tests {
             vec![change("b.rs", StatusKind::Modified)],
             false,
         )
+    }
+
+    #[test]
+    fn scm_log_pages_replace_then_append() {
+        fn commit(hash: &str, summary: &str) -> Commit {
+            Commit {
+                hash: hash.to_string(),
+                short_hash: hash.chars().take(7).collect(),
+                summary: summary.to_string(),
+                author: "a".to_string(),
+                time: 0,
+            }
+        }
+        let mut app = app();
+        // The first page replaces and clears the in-flight flag.
+        app.scm.log_loading = true;
+        app.apply_vcs_log(0, vec![commit("aaaaaaa", "first")], true);
+        assert_eq!(app.scm.log.len(), 1);
+        assert!(app.scm.log_has_more);
+        assert!(!app.scm.log_loading);
+        // A page at the right offset appends.
+        app.apply_vcs_log(1, vec![commit("bbbbbbb", "second")], false);
+        assert_eq!(app.scm.log.len(), 2);
+        assert!(!app.scm.log_has_more);
+        // A page at the wrong offset is ignored (no duplicate/torn appends).
+        app.apply_vcs_log(5, vec![commit("ccccccc", "stale")], false);
+        assert_eq!(app.scm.log.len(), 2);
     }
 
     #[test]

@@ -4,6 +4,8 @@
 
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use karet_core::ThemeRole;
 use karet_editor::Editor;
@@ -425,6 +427,42 @@ fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         items.push(item);
         row_map.push(Some(i));
     }
+
+    // The commit-history log (lazily loaded), below the change sections. Its rows
+    // are not selectable (row_map None); only the "load more" affordance is clickable.
+    app.scm_more_row = None;
+    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let header_style = Style::default()
+        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+        .add_modifier(Modifier::BOLD);
+    if !app.scm.log.is_empty() || app.scm.log_has_more {
+        if !app.scm.changes.is_empty() {
+            items.push(ListItem::new(Line::raw("")));
+            row_map.push(None);
+        }
+        items.push(ListItem::new(Line::styled(" COMMITS", header_style)));
+        row_map.push(None);
+        let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
+        for commit in &app.scm.log {
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled(format!(" {} ", commit.short_hash), hash_style),
+                Span::raw(commit.summary.clone()),
+                Span::styled(format!("  {}", relative_time(commit.time)), dim),
+            ])));
+            row_map.push(None);
+        }
+        if app.scm.log_has_more {
+            app.scm_more_row = Some(items.len());
+            let label = if app.scm.log_loading {
+                " loading…"
+            } else {
+                " ⋯ load more"
+            };
+            items.push(ListItem::new(Line::styled(label, dim)));
+            row_map.push(None);
+        }
+    }
+
     if items.is_empty() {
         app.scm_row_map = Vec::new();
         app.scm_offset = 0;
@@ -432,7 +470,9 @@ fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         return;
     }
     let mut state = ListState::default();
-    state.select(Some(selected_row));
+    // Highlight the selected change (auto-scrolls to it); with no changes, the log
+    // is shown without a highlighted row.
+    state.select((!app.scm.changes.is_empty()).then_some(selected_row));
     let list = List::new(items).highlight_style(
         Style::default()
             .bg(selection_bg)
@@ -441,6 +481,35 @@ fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     f.render_stateful_widget(list, list_area, &mut state);
     app.scm_row_map = row_map;
     app.scm_offset = state.offset();
+}
+
+/// A terse `git log`-style relative time (e.g. `3d ago`) for a Unix timestamp.
+fn relative_time(secs: i64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+        .unwrap_or(0);
+    let delta = now - secs;
+    if delta < 0 {
+        return "just now".to_string();
+    }
+    let (n, unit) = if delta < 60 {
+        (delta, "s")
+    } else if delta < 3600 {
+        (delta / 60, "m")
+    } else if delta < 86_400 {
+        (delta / 3600, "h")
+    } else if delta < 86_400 * 7 {
+        (delta / 86_400, "d")
+    } else if delta < 86_400 * 30 {
+        (delta / (86_400 * 7), "w")
+    } else if delta < 86_400 * 365 {
+        (delta / (86_400 * 30), "mo")
+    } else {
+        (delta / (86_400 * 365), "y")
+    };
+    format!("{n}{unit} ago")
 }
 
 /// Draw the one-line commit-message input shown above the change list.

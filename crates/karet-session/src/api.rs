@@ -21,6 +21,7 @@ use karet_core::Symbol;
 use karet_search::FileHit;
 use karet_search::SearchQuery;
 use karet_syntax::HighlightSpan;
+use karet_vcs::Commit;
 use karet_vcs::FileChange;
 
 /// Identifies an open document within a session.
@@ -173,6 +174,13 @@ pub enum Command {
     },
     /// Recompute and re-emit the source-control status.
     RefreshVcs,
+    /// Fetch a page of the commit-history log (newest first), for lazy loading.
+    VcsLog {
+        /// How many commits to skip from `HEAD`.
+        skip: usize,
+        /// The maximum number of commits to return.
+        limit: usize,
+    },
 }
 
 /// A message emitted by the backend to the presentation layer. When it answers a
@@ -298,6 +306,15 @@ pub enum Event {
     Committed {
         /// The new commit's hex object id.
         oid: String,
+    },
+    /// A page of the commit-history log, answering a [`Command::VcsLog`].
+    VcsLog {
+        /// How many commits were skipped from `HEAD` (the page offset).
+        skip: usize,
+        /// The commits in this page, newest first.
+        commits: Vec<Commit>,
+        /// Whether more commits exist beyond this page.
+        has_more: bool,
     },
 }
 
