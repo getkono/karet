@@ -37,6 +37,29 @@ fn advance(start: LineCol, text: &str) -> LineCol {
     pos
 }
 
+/// Reposition a caret that lands (against the original buffer, considering only its
+/// own selection's edit) at `local`, given the batch `earlier` edits that fall
+/// strictly before that selection. When several carets edit at once, each edit shifts
+/// the carets after it; this sums those line/column deltas so the caret ends up where
+/// the atomic batch actually leaves it. Exact for karet's built-in ops, whose edits
+/// sit at or beside their own caret.
+#[must_use]
+pub fn reflow_caret(local: LineCol, earlier: &[TextEdit]) -> LineCol {
+    let (mut line, mut col) = (i64::from(local.line), i64::from(local.col));
+    for ed in earlier {
+        let end = ed.range.end;
+        let new_end = advance(ed.range.start, &ed.new_text);
+        let net_lines = i64::from(new_end.line) - i64::from(end.line);
+        if end.line < local.line {
+            line += net_lines;
+        } else if end.line == local.line {
+            line += net_lines;
+            col += i64::from(new_end.col) - i64::from(end.col);
+        }
+    }
+    LineCol::new(line.max(0) as u32, col.max(0) as u32)
+}
+
 /// The number of `char`s on `line` (excluding the trailing break).
 fn line_chars(buffer: &TextBuffer, line: u32) -> u32 {
     buffer
@@ -229,6 +252,44 @@ mod tests {
             start: at(s.0, s.1),
             end: at(e.0, e.1),
         })
+    }
+
+    fn edit(range: Range, new_text: &str) -> TextEdit {
+        TextEdit {
+            range,
+            new_text: new_text.to_string(),
+        }
+    }
+
+    #[test]
+    fn reflow_caret_identity_without_earlier_edits() {
+        assert_eq!(reflow_caret(at(3, 4), &[]), at(3, 4));
+    }
+
+    #[test]
+    fn reflow_caret_shifts_line_by_earlier_newline() {
+        // An earlier caret on line 0 inserts a newline; a caret on line 2 slides down.
+        let earlier = [edit(
+            Range {
+                start: at(0, 1),
+                end: at(0, 1),
+            },
+            "\n",
+        )];
+        assert_eq!(reflow_caret(at(2, 5), &earlier), at(3, 5));
+    }
+
+    #[test]
+    fn reflow_caret_shifts_col_on_same_line() {
+        // An earlier same-line insert before the caret pushes its column right.
+        let earlier = [edit(
+            Range {
+                start: at(1, 2),
+                end: at(1, 2),
+            },
+            "xyz",
+        )];
+        assert_eq!(reflow_caret(at(1, 6), &earlier), at(1, 9));
     }
 
     #[test]

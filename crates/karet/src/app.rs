@@ -31,6 +31,7 @@ use crossterm::event::PopKeyboardEnhancementFlags;
 use crossterm::event::PushKeyboardEnhancementFlags;
 use crossterm::event::{self};
 use karet_core::BytePos;
+use karet_core::Change;
 use karet_core::Decoration;
 use karet_core::DecorationKind;
 use karet_core::LineCol;
@@ -39,6 +40,7 @@ use karet_core::NotificationId;
 use karet_core::NotificationKind;
 use karet_core::Range;
 use karet_core::Severity;
+use karet_core::TextEdit;
 use karet_core::ThemeRole;
 use karet_editor::EditorState;
 use karet_editor::Fold;
@@ -1940,7 +1942,7 @@ impl App {
         // Snapshot the inputs and release the borrow before mutating `self`.
         let input = self.tabs.get(self.active).and_then(|t| match &t.kind {
             TabKind::Code { path, text, .. } => {
-                Some((path.clone(), text.clone(), t.editor.cursor.line))
+                Some((path.clone(), text.clone(), t.editor.cursor().line))
             },
             _ => None,
         });
@@ -2388,7 +2390,7 @@ impl App {
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
-        let line = tab.editor.cursor.line;
+        let line = tab.editor.cursor().line;
         let TabKind::Code {
             buffer,
             folds,
@@ -2417,7 +2419,7 @@ impl App {
         if !folded.remove(&region.start) {
             folded.insert(region.start);
             if line > region.start {
-                let pos = LineCol::new(region.start, tab.editor.cursor.col);
+                let pos = LineCol::new(region.start, tab.editor.cursor().col);
                 tab.editor.set_caret(buffer, pos);
             }
         }
@@ -2809,7 +2811,7 @@ impl App {
             }) => editor.selection_range().map_or_else(
                 || {
                     buffer
-                        .line(editor.cursor.line as usize)
+                        .line(editor.cursor().line as usize)
                         .map(|l| format!("{l}\n"))
                 },
                 |range| selection_text(buffer, text, range),
@@ -2846,12 +2848,13 @@ impl App {
             ..
         }) = self.tabs.get_mut(self.active)
         {
-            if extend {
-                editor.ensure_anchor();
-            } else {
+            // The motion moves every caret's head; a non-extending motion then
+            // collapses each selection onto its new head, while an extending one keeps
+            // the anchors so the selection grows.
+            motion(editor, buffer);
+            if !extend {
                 editor.clear_selection();
             }
-            motion(editor, buffer);
         }
     }
 
@@ -2914,10 +2917,7 @@ impl App {
                 },
                 // Shift+click extends the selection from the current caret to the
                 // click point (VS Code style); a plain click places the caret.
-                _ if shift => {
-                    editor.ensure_anchor();
-                    editor.extend_to(buffer, pos);
-                },
+                _ if shift => editor.extend_to(buffer, pos),
                 _ => editor.set_caret(buffer, pos),
             }
         }
@@ -3021,13 +3021,17 @@ impl App {
     /// submit it through the session, moving the caret optimistically.
     fn submit_edit<F>(&mut self, build: F)
     where
-        F: FnOnce(LineCol, Option<Range>, &TextBuffer, u64) -> Option<editing::Edit>,
+        F: Fn(LineCol, Option<Range>, &TextBuffer, u64) -> Option<editing::Edit>,
     {
         if self.backend.is_none() {
             return;
         }
         let idx = self.active;
-        let (doc, edit) = match self.tabs.get(idx) {
+        // Build one edit per selection against the same base version, then flatten to a
+        // single non-overlapping batch (the buffer applies it bottom-up). Each caret is
+        // repositioned by the edits that fall strictly before its selection. With a
+        // single cursor this collapses to exactly the former single-edit behavior.
+        let (doc, base, edits, carets) = match self.tabs.get(idx) {
             Some(Tab {
                 kind:
                     TabKind::Code {
@@ -3038,19 +3042,35 @@ impl App {
                     },
                 editor,
                 ..
-            }) => (
-                *doc,
-                build(
-                    editor.cursor,
-                    editor.selection_range(),
-                    buffer,
-                    *next_version,
-                ),
-            ),
+            }) => {
+                let base = *next_version;
+                let mut per: Vec<(LineCol, Vec<TextEdit>, LineCol)> = Vec::new();
+                for sel in &editor.cursors().selections {
+                    let range = sel.range();
+                    let selection = (!range.is_empty()).then_some(range);
+                    if let Some(e) = build(sel.head, selection, buffer, base) {
+                        per.push((range.start, e.change.edits, e.caret));
+                    }
+                }
+                if per.is_empty() {
+                    return;
+                }
+                per.sort_by_key(|(start, ..)| *start);
+                let flat: Vec<TextEdit> = per.iter().flat_map(|(.., e, _)| e.clone()).collect();
+                let carets: Vec<LineCol> = per
+                    .iter()
+                    .map(|(start, _, local)| {
+                        let earlier: Vec<TextEdit> = flat
+                            .iter()
+                            .filter(|te| te.range.start < *start)
+                            .cloned()
+                            .collect();
+                        editing::reflow_caret(*local, &earlier)
+                    })
+                    .collect();
+                (*doc, base, flat, carets)
+            },
             _ => return,
-        };
-        let Some(edit) = edit else {
-            return;
         };
         if let Some(backend) = &self.backend {
             let id = backend.next_id();
@@ -3058,7 +3078,7 @@ impl App {
                 id,
                 SessionCommand::ApplyChange {
                     doc,
-                    change: edit.change,
+                    change: Change::new(base, edits),
                 },
             );
         }
@@ -3069,9 +3089,9 @@ impl App {
         }) = self.tabs.get_mut(idx)
         {
             *next_version += 1;
-            editor.cursor = edit.caret;
-            editor.selection_anchor = None;
-            editor.scroll_to(edit.caret);
+            editor.set_carets(&carets);
+            let head = editor.cursor();
+            editor.scroll_to(head);
         }
     }
 
@@ -3833,9 +3853,9 @@ mod tests {
         }
         // Cursor inside the region: toggling collapses it and moves the caret to the
         // (still visible) header line.
-        app.tabs[app.active].editor.cursor = LineCol::new(1, 0);
+        app.tabs[app.active].editor.place_caret(LineCol::new(1, 0));
         app.toggle_fold();
-        assert_eq!(app.tabs[app.active].editor.cursor.line, 0);
+        assert_eq!(app.tabs[app.active].editor.cursor().line, 0);
         if let TabKind::Code { folded, .. } = &app.tabs[app.active].kind {
             assert!(folded.contains(&0));
         }
