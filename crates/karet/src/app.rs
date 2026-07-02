@@ -1230,6 +1230,10 @@ impl App {
             Command::SelectPageUp => self.caret_motion(true, EditorState::page_up),
             Command::SelectPageDown => self.caret_motion(true, EditorState::page_down),
             Command::EditorSelectAll => self.editor_select_all(),
+            Command::AddCursorAbove => self.add_cursor_vertical(true),
+            Command::AddCursorBelow => self.add_cursor_vertical(false),
+            Command::AddCursorNextOccurrence => self.add_cursor_next_occurrence(),
+            Command::CollapseCarets => self.collapse_carets_or_unfocus(),
             Command::ScrollUp => self.scroll_lines(-1),
             Command::ScrollDown => self.scroll_lines(1),
             Command::PageUp => self.scroll_lines(-i32::from(self.main_rect.height.max(1))),
@@ -2885,6 +2889,55 @@ impl App {
         }
     }
 
+    /// Add a caret one line above or below the primary caret (Ctrl+Alt+Up/Down).
+    fn add_cursor_vertical(&mut self, above: bool) {
+        if let Some(Tab {
+            kind: TabKind::Code { buffer, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            if above {
+                editor.add_caret_above(buffer);
+            } else {
+                editor.add_caret_below(buffer);
+            }
+        }
+    }
+
+    /// Select the word under the caret, then add a caret at the next occurrence
+    /// (Ctrl+D).
+    fn add_cursor_next_occurrence(&mut self) {
+        if let Some(Tab {
+            kind: TabKind::Code { buffer, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            editor.add_next_occurrence(buffer);
+        }
+    }
+
+    /// Esc in the editor: collapse multiple carets to the primary; with a single caret
+    /// it preserves the former behavior of returning focus to the sidebar.
+    fn collapse_carets_or_unfocus(&mut self) {
+        let multi = matches!(
+            self.tabs.get(self.active),
+            Some(Tab {
+                kind: TabKind::Code { .. },
+                editor,
+                ..
+            }) if editor.has_multiple_cursors()
+        );
+        if multi {
+            if let Some(Tab { editor, .. }) = self.tabs.get_mut(self.active) {
+                editor.collapse_to_primary();
+            }
+        } else {
+            self.toggle_focus();
+        }
+    }
+
     /// Update and return the multi-click streak for a click at `(col, row)`.
     fn click_streak(&mut self, col: u16, row: u16) -> u8 {
         let now = Instant::now();
@@ -2918,6 +2971,7 @@ impl App {
         self.focus_pane_switch(pane);
         self.focus = Focus::Editor;
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+        let alt = mouse.modifiers.contains(KeyModifiers::ALT);
         let streak = self.click_streak(mouse.column, mouse.row);
         if let Some(Tab {
             kind:
@@ -2942,9 +2996,16 @@ impl App {
                     let (anchor, head) = line_span(buffer, pos.line);
                     editor.set_selection(buffer, anchor, head);
                 },
-                // Shift+click extends the selection from the current caret to the
-                // click point (VS Code style); a plain click places the caret.
-                _ if shift => editor.extend_to(buffer, pos),
+                // Alt+click adds (or toggles off) a caret at the click, building a
+                // multi-cursor set.
+                _ if alt => editor.add_caret(buffer, pos),
+                // Shift+click extends the selection from the current caret to the click
+                // point (VS Code style); a plain click places the caret, discarding any
+                // secondary carets.
+                _ if shift => {
+                    editor.collapse_to_primary();
+                    editor.extend_to(buffer, pos);
+                },
                 _ => editor.set_caret(buffer, pos),
             }
         }
@@ -3413,29 +3474,10 @@ fn canonical(path: &Path) -> PathBuf {
 }
 
 /// The (anchor, head) span of the word under `pos`, or the single character there
-/// when the cursor is not on a word character.
+/// when the cursor is not on a word character. Delegates to the widget's
+/// [`karet_editor::word_bounds`] so double-click and word motions agree.
 fn word_at(buffer: &TextBuffer, pos: LineCol) -> (LineCol, LineCol) {
-    let line = buffer.line(pos.line as usize).unwrap_or_default();
-    let chars: Vec<char> = line.chars().collect();
-    let n = chars.len() as u32;
-    let col = pos.col.min(n);
-    let is_word = |c: char| c.is_alphanumeric() || c == '_';
-    let mut start = col;
-    while start > 0 && is_word(chars[start as usize - 1]) {
-        start -= 1;
-    }
-    let mut end = col;
-    while end < n && is_word(chars[end as usize]) {
-        end += 1;
-    }
-    if start == end {
-        (
-            LineCol::new(pos.line, col),
-            LineCol::new(pos.line, (col + 1).min(n)),
-        )
-    } else {
-        (LineCol::new(pos.line, start), LineCol::new(pos.line, end))
-    }
+    karet_editor::word_bounds(buffer, pos)
 }
 
 /// The text within `range`, sliced from the tab's `source` using byte offsets
@@ -4443,6 +4485,52 @@ mod tests {
         app.dispatch(Command::CaretLineEnd);
         assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 5));
         assert_eq!(app.tabs[app.active].editor.selection_range(), None);
+    }
+
+    #[test]
+    fn add_cursor_below_then_esc_collapses() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "ab\ncd"));
+        app.focus = Focus::Editor;
+        app.dispatch(Command::AddCursorBelow);
+        assert!(app.tabs[app.active].editor.has_multiple_cursors());
+        // Esc with several carets collapses to the primary, keeping editor focus.
+        app.dispatch(Command::CollapseCarets);
+        assert!(!app.tabs[app.active].editor.has_multiple_cursors());
+        assert_eq!(app.focus, Focus::Editor);
+    }
+
+    #[test]
+    fn esc_with_a_single_caret_returns_focus_to_the_sidebar() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "ab"));
+        app.focus = Focus::Editor;
+        app.dispatch(Command::CollapseCarets);
+        assert_eq!(app.focus, Focus::Sidebar);
+    }
+
+    #[test]
+    fn alt_click_adds_a_second_caret() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "foo bar baz"));
+        app.pane_frames = vec![content_frame(
+            &app,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 40,
+                height: 5,
+            },
+        )];
+        let click = |col, mods| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row: 0,
+            modifiers: mods,
+        };
+        app.handle_editor_click(click(3, KeyModifiers::NONE));
+        app.handle_editor_click(click(8, KeyModifiers::ALT));
+        assert!(app.tabs[app.active].editor.has_multiple_cursors());
     }
 
     #[test]

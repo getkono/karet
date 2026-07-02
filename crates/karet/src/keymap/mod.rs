@@ -206,7 +206,9 @@ static BINDINGS: &[Binding] = &[
     // Editor focus. The editor is non-modal: arrows/Home/End/PageUp-Down navigate,
     // and any unbound printable is text input (the shell inserts it after the keymap
     // declines). Bare-letter motions are intentionally gone so letters can be typed.
-    b(Editor, false, false, false, Esc,       Command::ToggleFocus),
+    // Esc collapses multiple carets to the primary; with a single caret the dispatch
+    // falls back to returning focus to the sidebar (the former behavior).
+    b(Editor, false, false, false, Esc,       Command::CollapseCarets),
     b(Editor, false, false, false, Down,      Command::CaretDown),
     b(Editor, false, false, false, Up,        Command::CaretUp),
     b(Editor, false, false, false, Left,      Command::CaretLeft),
@@ -236,6 +238,11 @@ static BINDINGS: &[Binding] = &[
     b(Editor, false, true,  false, PageDown,  Command::SelectPageDown),
     b(Editor, false, true,  false, PageUp,    Command::SelectPageUp),
     b(Editor, true,  false, false, Char('a'), Command::EditorSelectAll),
+    // Multi-cursor (VS Code parity): Ctrl+Alt+Up/Down stack carets vertically, Ctrl+D
+    // grows the selection to the next occurrence of the word / current selection.
+    b(Editor, true,  false, true,  Up,        Command::AddCursorAbove),
+    b(Editor, true,  false, true,  Down,      Command::AddCursorBelow),
+    b(Editor, true,  false, false, Char('d'), Command::AddCursorNextOccurrence),
     // Editing.
     b(Editor, false, false, false, Enter,     Command::InsertNewline),
     b(Editor, false, false, false, Backspace, Command::DeleteBackward),
@@ -661,6 +668,38 @@ mod tests {
                 key(KeyCode::Char('a'), KeyModifiers::CONTROL)
             ),
             Some(Command::EditorSelectAll)
+        );
+    }
+
+    #[test]
+    fn multi_cursor_chords_bind_in_editor() {
+        assert_eq!(
+            res(
+                Focus::Editor,
+                false,
+                key(KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::ALT)
+            ),
+            Some(Command::AddCursorAbove)
+        );
+        assert_eq!(
+            res(
+                Focus::Editor,
+                false,
+                key(KeyCode::Down, KeyModifiers::CONTROL | KeyModifiers::ALT)
+            ),
+            Some(Command::AddCursorBelow)
+        );
+        assert_eq!(
+            res(
+                Focus::Editor,
+                false,
+                key(KeyCode::Char('d'), KeyModifiers::CONTROL)
+            ),
+            Some(Command::AddCursorNextOccurrence)
+        );
+        assert_eq!(
+            res(Focus::Editor, false, key(KeyCode::Esc, KeyModifiers::NONE)),
+            Some(Command::CollapseCarets)
         );
     }
 

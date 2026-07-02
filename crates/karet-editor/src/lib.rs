@@ -10,6 +10,7 @@
 //! and [`EditorState`] are defined; the painting/input logic is filled in
 //! separately.
 
+use karet_core::BytePos;
 use karet_core::CursorState;
 use karet_core::Decoration;
 use karet_core::DecorationKind;
@@ -350,6 +351,92 @@ impl EditorState {
         let head = clamp_to_buffer(buffer, head);
         self.cursors = CursorState::single(Selection { anchor, head });
         self.scroll_to(head);
+    }
+
+    /// Collapse the cursor set to just the primary selection (the `Esc` fold-back).
+    pub fn collapse_to_primary(&mut self) {
+        self.cursors.collapse_to_primary();
+    }
+
+    /// Add a bare caret one line above the primary (column clamped to the shorter
+    /// line), merging if it collides. A no-op when the primary is already on line 0.
+    pub fn add_caret_above(&mut self, buffer: &TextBuffer) {
+        let h = self.cursor();
+        if h.line == 0 {
+            return;
+        }
+        let p = clamp_to_buffer(buffer, LineCol::new(h.line - 1, h.col));
+        self.cursors.push(Selection::caret(p));
+        self.scroll_to(self.cursor());
+    }
+
+    /// Add a bare caret one line below the primary. A no-op on the last line.
+    pub fn add_caret_below(&mut self, buffer: &TextBuffer) {
+        let h = self.cursor();
+        if h.line >= last_line(buffer) {
+            return;
+        }
+        let p = clamp_to_buffer(buffer, LineCol::new(h.line + 1, h.col));
+        self.cursors.push(Selection::caret(p));
+        self.scroll_to(self.cursor());
+    }
+
+    /// Toggle a caret at `pos` (Alt+click): remove a coincident bare caret unless it is
+    /// the only one, otherwise add one as the new primary.
+    pub fn add_caret(&mut self, buffer: &TextBuffer, pos: LineCol) {
+        let p = clamp_to_buffer(buffer, pos);
+        if let Some(i) = self
+            .cursors
+            .selections
+            .iter()
+            .position(|s| s.is_empty() && s.head == p)
+            && self.cursors.selections.len() > 1
+        {
+            self.cursors.selections.remove(i);
+            self.cursors.primary = self.cursors.primary.min(self.cursors.selections.len() - 1);
+            return;
+        }
+        self.cursors.push(Selection::caret(p));
+        self.scroll_to(p);
+    }
+
+    /// `Ctrl+D`: if the primary is a bare caret, select the word under it; otherwise
+    /// add a caret selecting the next occurrence (wrapping) of the primary selection's
+    /// text.
+    pub fn add_next_occurrence(&mut self, buffer: &TextBuffer) {
+        let primary = self.cursors.primary();
+        if primary.is_empty() {
+            let (anchor, head) = word_bounds(buffer, primary.head);
+            if let Some(s) = self.cursors.selections.get_mut(self.cursors.primary) {
+                *s = Selection { anchor, head };
+            }
+            self.scroll_to(self.cursor());
+            return;
+        }
+        let Some(needle) = slice_text(buffer, primary.range()) else {
+            return;
+        };
+        if needle.is_empty() {
+            return;
+        }
+        let hay = buffer.text();
+        let from = self
+            .cursors
+            .selections
+            .iter()
+            .filter_map(|s| buffer.line_col_to_byte(s.range().end).ok())
+            .map(|b| b.0)
+            .max()
+            .unwrap_or(0);
+        if let Some(byte) = find_next(&hay, &needle, from) {
+            let start = buffer.byte_to_line_col(BytePos(byte));
+            let end = buffer.byte_to_line_col(BytePos(byte + needle.len()));
+            self.cursors.push(Selection {
+                anchor: start,
+                head: end,
+            });
+            self.scroll_to(self.cursor());
+        }
     }
 
     /// The buffer position under the screen cell `(col, row)`, given the editor's
@@ -771,6 +858,52 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+/// The `(start, end)` of the word (alphanumeric + `_`) around `pos` on its line, or a
+/// single-character span when `pos` is not on a word character. Mirrors the span a
+/// double-click selects; reused by the app's click handling.
+#[must_use]
+pub fn word_bounds(buffer: &TextBuffer, pos: LineCol) -> (LineCol, LineCol) {
+    let chars: Vec<char> = buffer
+        .line(pos.line as usize)
+        .unwrap_or_default()
+        .chars()
+        .collect();
+    let n = chars.len() as u32;
+    let col = pos.col.min(n);
+    let mut start = col;
+    while start > 0 && is_word_char(chars[start as usize - 1]) {
+        start -= 1;
+    }
+    let mut end = col;
+    while end < n && is_word_char(chars[end as usize]) {
+        end += 1;
+    }
+    if start == end {
+        (
+            LineCol::new(pos.line, col),
+            LineCol::new(pos.line, (col + 1).min(n)),
+        )
+    } else {
+        (LineCol::new(pos.line, start), LineCol::new(pos.line, end))
+    }
+}
+
+/// The text within `range`, or `None` if either end can't be resolved to a byte.
+fn slice_text(buffer: &TextBuffer, range: Range) -> Option<String> {
+    let start = buffer.line_col_to_byte(range.start).ok()?.0;
+    let end = buffer.line_col_to_byte(range.end).ok()?.0;
+    buffer.text().get(start..end).map(str::to_string)
+}
+
+/// The byte offset of the next occurrence of `needle` in `hay` at or after `from`,
+/// wrapping around to the start of the buffer.
+fn find_next(hay: &str, needle: &str, from: usize) -> Option<usize> {
+    let from = from.min(hay.len());
+    hay.get(from..)
+        .and_then(|tail| tail.find(needle).map(|i| from + i))
+        .or_else(|| hay.get(..from).and_then(|head| head.find(needle)))
+}
+
 /// The start of the word before `pos`, wrapping to the previous line's end when at
 /// column 0. Skips trailing whitespace, then a single word/punctuation run.
 fn prev_word_boundary(buffer: &TextBuffer, pos: LineCol) -> LineCol {
@@ -1111,6 +1244,72 @@ mod tests {
         state.set_carets(&[LineCol::new(3, 3), LineCol::new(3, 3)]);
         assert!(!state.has_multiple_cursors());
         assert_eq!(state.cursor(), LineCol::new(3, 3));
+    }
+
+    #[test]
+    fn add_caret_below_clamps_to_short_line() {
+        let buffer = TextBuffer::from_text("longline\nab");
+        let mut state = EditorState::new();
+        state.last_height = 4;
+        state.place_caret(LineCol::new(0, 6));
+        state.add_caret_below(&buffer);
+        let heads: Vec<LineCol> = state.cursors().selections.iter().map(|s| s.head).collect();
+        assert_eq!(heads, vec![LineCol::new(0, 6), LineCol::new(1, 2)]);
+    }
+
+    #[test]
+    fn add_caret_above_is_noop_on_the_top_line() {
+        let buffer = TextBuffer::from_text("ab\ncd");
+        let mut state = EditorState::new();
+        state.last_height = 4;
+        state.place_caret(LineCol::new(0, 1));
+        state.add_caret_above(&buffer);
+        assert!(!state.has_multiple_cursors());
+    }
+
+    #[test]
+    fn add_caret_toggles_a_coincident_caret() {
+        let buffer = TextBuffer::from_text("abcdef");
+        let mut state = EditorState::new();
+        state.last_height = 4;
+        state.place_caret(LineCol::new(0, 0));
+        state.add_caret(&buffer, LineCol::new(0, 3));
+        assert_eq!(state.cursors().selections.len(), 2);
+        // Alt-adding at the same spot removes it, leaving the original.
+        state.add_caret(&buffer, LineCol::new(0, 3));
+        assert!(!state.has_multiple_cursors());
+        assert_eq!(state.cursor(), LineCol::new(0, 0));
+    }
+
+    #[test]
+    fn add_next_occurrence_selects_word_then_next_match() {
+        let buffer = TextBuffer::from_text("foo bar foo");
+        let mut state = EditorState::new();
+        state.last_height = 4;
+        state.place_caret(LineCol::new(0, 1)); // inside the first "foo"
+        state.add_next_occurrence(&buffer);
+        assert_eq!(
+            state.selection_range(),
+            Some(Range {
+                start: LineCol::new(0, 0),
+                end: LineCol::new(0, 3),
+            })
+        );
+        state.add_next_occurrence(&buffer);
+        assert!(state.has_multiple_cursors());
+        assert!(state.selection_ranges().contains(&Range {
+            start: LineCol::new(0, 8),
+            end: LineCol::new(0, 11),
+        }));
+    }
+
+    #[test]
+    fn word_bounds_spans_the_word_under_pos() {
+        let buffer = TextBuffer::from_text("foo bar");
+        assert_eq!(
+            word_bounds(&buffer, LineCol::new(0, 5)),
+            (LineCol::new(0, 4), LineCol::new(0, 7))
+        );
     }
 
     #[test]

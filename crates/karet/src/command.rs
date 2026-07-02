@@ -129,6 +129,14 @@ pub enum Command {
     SelectPageDown,
     /// Select the entire document in the editor.
     EditorSelectAll,
+    /// Add a caret on the line above the primary caret.
+    AddCursorAbove,
+    /// Add a caret on the line below the primary caret.
+    AddCursorBelow,
+    /// Select the word under the caret, then add a caret at the next occurrence.
+    AddCursorNextOccurrence,
+    /// Collapse multiple carets to the primary; with one caret, leave the editor.
+    CollapseCarets,
     /// Scroll the active tab up one line.
     ScrollUp,
     /// Scroll the active tab down one line.
@@ -343,6 +351,10 @@ impl Command {
             Self::SelectPageUp => "Select Page Up",
             Self::SelectPageDown => "Select Page Down",
             Self::EditorSelectAll => "Selection: Select All",
+            Self::AddCursorAbove => "Add Cursor Above",
+            Self::AddCursorBelow => "Add Cursor Below",
+            Self::AddCursorNextOccurrence => "Add Cursor to Next Occurrence",
+            Self::CollapseCarets => "Collapse Cursors",
             Self::ScrollUp => "Scroll Up",
             Self::ScrollDown => "Scroll Down",
             Self::PageUp => "Scroll Page Up",
@@ -461,6 +473,7 @@ impl Command {
             Self::ShowBlame => "blame",
             Self::BlameFunction => "blame fn",
             Self::ToggleFold => "fold",
+            Self::AddCursorNextOccurrence => "add cursor",
             // Diff.
             Self::ToggleDiffLayout => "layout",
             Self::NextChangedFile => "next change",
@@ -546,6 +559,9 @@ impl Command {
             | Self::SelectPageUp
             | Self::SelectPageDown
             | Self::EditorSelectAll
+            | Self::AddCursorAbove
+            | Self::AddCursorBelow
+            | Self::CollapseCarets
             | Self::ScrollUp
             | Self::ScrollDown
             | Self::PageUp
@@ -593,6 +609,9 @@ impl Command {
                 | Self::CopyRelativePath
                 | Self::ToggleDiffLayout
                 | Self::ToggleFold
+                | Self::AddCursorAbove
+                | Self::AddCursorBelow
+                | Self::AddCursorNextOccurrence
                 | Self::Undo
                 | Self::Redo
                 | Self::Save
@@ -657,6 +676,9 @@ pub fn palette() -> Vec<Command> {
         Command::Paste,
         Command::ToggleDiffLayout,
         Command::ToggleFold,
+        Command::AddCursorAbove,
+        Command::AddCursorBelow,
+        Command::AddCursorNextOccurrence,
         Command::ScmStageAll,
         Command::ScmUnstageAll,
         Command::ScmCommit,
