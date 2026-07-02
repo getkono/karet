@@ -1,0 +1,24 @@
+[package]
+name        = "karet-cbor"
+description = "CBOR support for karet TUI editors: decode/encode CBOR and render it as human-readable diagnostic notation."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+publish = false                       # karet-internal — not published to crates.io
+
+[dependencies]
+ciborium.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true             # temp files for the file round-trip integration test
+
+[lints]
+workspace = true

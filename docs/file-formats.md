@@ -80,8 +80,15 @@ bytes so a mislabeled file still routes sensibly):
 |---|---|---|
 | Image | inline image widget (or a placeholder if it can't decode) | `png`, `jpg`, `jpeg`, `gif`, `webp`, `bmp`, `ico`, `tiff`, `tif` + magic bytes |
 | PDF | placeholder (no inline preview yet) | `pdf` + `%PDF-` magic |
+| CBOR | decoded to editable [diagnostic notation](https://www.rfc-editor.org/rfc/rfc8949#section-8) text and re-encoded on save (hex view if it can't decode) — via [`karet-cbor`](../crates/karet-cbor) | `cbor` + `0xD9D9F7` self-describe tag |
 | Binary | hex view | NUL byte / invalid UTF-8 in the sampled head |
-| Too large | placeholder | larger than 10 MiB |
+| Too large | placeholder, with an "open anyway" override | larger than 10 MiB |
+
+The 10 MiB guard is a *routing* default, not a hard limit: the too-large
+placeholder offers an "open anyway" action (Enter in the TUI) that re-classifies
+the file ignoring its size and opens it with the renderer its content warrants —
+so a large `.cbor`, for instance, still decodes to editable diagnostic notation.
+`classify_ignoring_size` is the size-independent entry point behind it.
 
 Documents (`doc`/`xlsx`/…), archives (`zip`/`tar`/…), fonts, audio, and video are
 given icons and labels but currently open as a binary hex view or placeholder.

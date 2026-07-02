@@ -36,6 +36,7 @@ use karet_core::LineCol;
 use karet_core::Range;
 use karet_core::ThemeRole;
 use karet_editor::EditorState;
+use karet_filetype::FileKind;
 use karet_filetype::IconStyle;
 use karet_fileview::image::GraphicsProtocol;
 use karet_fileview::image::{self};
@@ -67,6 +68,7 @@ use crate::clipboard::Clipboard;
 use crate::command::Command;
 use crate::editing;
 use crate::keymap::Context;
+use crate::keymap::EditorTab;
 use crate::keymap::Focus;
 use crate::keymap::FocusTarget;
 use crate::keymap::KeyChord;
@@ -335,10 +337,25 @@ impl App {
         self.tabs.get(self.active).is_some_and(Tab::is_diff)
     }
 
+    /// The content kind of the active editor tab, mapping the shell's tab model
+    /// down to the coarse [`EditorTab`] the keymap layers on. Only a too-large
+    /// placeholder gets its own layer (for the "open anyway" override); every
+    /// other tab is [`EditorTab::Plain`] except a diff.
+    fn active_editor_tab(&self) -> EditorTab {
+        match self.tabs.get(self.active).map(|t| &t.kind) {
+            Some(TabKind::Diff { .. }) => EditorTab::Diff,
+            Some(TabKind::Placeholder {
+                kind: FileKind::TooLarge { .. },
+                ..
+            }) => EditorTab::Oversize,
+            _ => EditorTab::Plain,
+        }
+    }
+
     /// The pane that currently holds keyboard focus — the single value that
     /// determines which keybinding layer is live.
     pub(crate) fn focus_target(&self) -> FocusTarget {
-        FocusTarget::from(self.focus, self.sidebar_panel, self.active_is_diff())
+        FocusTarget::from(self.focus, self.sidebar_panel, self.active_editor_tab())
     }
 
     /// Handle a key press: resolve it against the layered keymap for the current
@@ -704,6 +721,7 @@ impl App {
             Command::CloseTabsToRight => self.close_tabs_to_right(),
             Command::CloseAllTabs => self.close_all_tabs(),
             Command::ReopenClosedTab => self.reopen_closed_tab(),
+            Command::OpenAnyway => self.open_active_anyway(),
             Command::Copy => self.copy_selection(),
             Command::CopyPath => self.copy_path(false),
             Command::CopyRelativePath => self.copy_path(true),
@@ -1070,6 +1088,30 @@ impl App {
         }
         let tab = workspace::open_file(path, self.syntax);
         self.push_tab(tab);
+    }
+
+    /// The "open anyway" override: re-open the active too-large placeholder's file
+    /// with the size guard bypassed, replacing the placeholder tab in place (rather
+    /// than opening a second tab for the same path). A no-op on any other tab — the
+    /// binding is only live over a too-large placeholder.
+    fn open_active_anyway(&mut self) {
+        let path = match self.tabs.get(self.active) {
+            Some(Tab {
+                kind:
+                    TabKind::Placeholder {
+                        kind: FileKind::TooLarge { .. },
+                        path,
+                        ..
+                    },
+                ..
+            }) => path.clone(),
+            _ => return,
+        };
+        let mut tab = workspace::open_file_ignoring_size(&path, self.syntax);
+        tab.view = self.alloc_view();
+        self.tabs[self.active] = tab;
+        self.focus = Focus::Editor;
+        self.register_doc(self.active);
     }
 
     /// Add a tab, replacing a lone Welcome tab, and focus the editor.
@@ -2209,6 +2251,57 @@ mod tests {
         assert_eq!(app.focus_target(), FocusTarget::SourceControl);
         app.focus = Focus::Editor;
         assert_eq!(app.focus_target(), FocusTarget::Editor);
+    }
+
+    #[test]
+    fn open_anyway_bypasses_the_guard_and_decodes_in_place() {
+        // A .cbor file that (per its recorded length) tripped the size guard shows a
+        // too-large placeholder; the override re-opens it decoded, in the same tab.
+        let dir = std::env::temp_dir().join(format!("karet-anyway-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("big.cbor");
+        let value = karet_cbor::CborValue::Array(vec![karet_cbor::CborValue::Integer(1)]);
+        let bytes = karet_cbor::encode(&value).unwrap_or_default();
+        let _ = std::fs::write(&file, &bytes);
+
+        let mut app = app();
+        let len = karet_widgets::viewer::SIZE_GUARD + 1;
+        app.tabs = vec![Tab::new(
+            "big.cbor",
+            TabKind::Placeholder {
+                path: file.clone(),
+                kind: FileKind::TooLarge { len },
+                dims: None,
+                len,
+            },
+        )];
+        app.active = 0;
+        app.focus = Focus::Editor;
+        // A too-large placeholder gets the override layer, so Enter is bound.
+        assert_eq!(app.focus_target(), FocusTarget::Oversize);
+
+        app.dispatch(Command::OpenAnyway);
+        assert_eq!(
+            app.tabs.len(),
+            1,
+            "the placeholder is replaced, not appended"
+        );
+        assert!(
+            matches!(
+                app.tabs[0].kind,
+                TabKind::Code {
+                    language: "CBOR",
+                    ..
+                }
+            ),
+            "open-anyway decodes the CBOR in place"
+        );
+
+        // The override is inert on an ordinary tab.
+        app.dispatch(Command::OpenAnyway);
+        assert!(matches!(app.tabs[0].kind, TabKind::Code { .. }));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn send_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {

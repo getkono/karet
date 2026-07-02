@@ -4,6 +4,7 @@
 
 use karet_core::ThemeRole;
 use karet_editor::Editor;
+use karet_filetype::FileKind;
 use karet_fileview::HexView;
 use karet_fileview::image::GraphicsProtocol;
 use karet_fileview::image::ImageWidget;
@@ -528,7 +529,15 @@ fn draw_main(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             dims,
             len,
         } => {
-            f.render_widget(Placeholder::new(path, *kind, *dims, *len), area);
+            let mut widget = Placeholder::new(path, *kind, *dims, *len);
+            // A too-large file can be opened anyway; surface the override right on
+            // the placeholder, with the chord read from the keymap so it can't drift.
+            if matches!(kind, FileKind::TooLarge { .. })
+                && let Some(chord) = keymap::hint_for(Command::OpenAnyway, ChordStyle::Verbose)
+            {
+                widget = widget.hint(format!("Press {chord} to open anyway"));
+            }
+            f.render_widget(widget, area);
         },
     }
 }

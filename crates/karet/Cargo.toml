@@ -29,6 +29,7 @@ karet-syntax.workspace = true
 karet-theme      = { workspace = true, features = ["view", "vscode"] }
 karet-diff.workspace = true
 karet-markdown   = { workspace = true, features = ["view", "highlight"] }
+karet-cbor.workspace = true           # decode .cbor to editable diagnostic text
 karet-terminal   = { workspace = true, features = ["view"] }
 karet-dap        = { workspace = true, features = ["view"] }
 karet-vcs        = { workspace = true, features = ["view"] }

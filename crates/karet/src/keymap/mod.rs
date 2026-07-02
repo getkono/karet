@@ -24,6 +24,7 @@ pub use chord::KeyChord;
 use chord::chord;
 use crossterm::event::KeyCode;
 pub use layer::Context;
+pub use layer::EditorTab;
 pub use layer::Focus;
 pub use layer::FocusTarget;
 use layer::Layer;
@@ -99,6 +100,7 @@ use Layer::Editor;
 use Layer::Find;
 use Layer::Global;
 use Layer::Overlay;
+use Layer::Oversize;
 use Layer::SearchInput;
 use Layer::SearchList;
 use Layer::Sidebar;
@@ -211,6 +213,12 @@ static BINDINGS: &[Binding] = &[
     b(DiffEditor, false, false, false, Char('\\'), Command::ToggleDiffLayout),
     b(DiffEditor, false, false, false, Char(']'),  Command::NextChangedFile),
     b(DiffEditor, false, false, false, Char('['),  Command::PrevChangedFile),
+
+    // Editor focus, a too-large-file placeholder: bypass the size guard on demand.
+    // Enter loads it anyway; Esc returns focus to the sidebar (as it does in the
+    // editor, whose layer is not stacked here).
+    b(Oversize, false, false, false, Enter, Command::OpenAnyway),
+    b(Oversize, false, false, false, Esc,   Command::ToggleFocus),
 
     // Modal contexts. Each is exclusive (see `active_layers`); any key with no
     // binding here falls through to the modal's text input.
@@ -447,9 +455,15 @@ mod tests {
         }
     }
 
-    /// Resolve a single key press in a focus context to its command.
+    /// Resolve a single key press in a focus context to its command. `is_diff` maps
+    /// to the diff editor tab; every other editor tab is treated as plain here.
     fn res_in(focus: Focus, panel: SidebarPanel, is_diff: bool, key: KeyEvent) -> Option<Command> {
-        let ctx = Context::focus(FocusTarget::from(focus, panel, is_diff));
+        let tab = if is_diff {
+            EditorTab::Diff
+        } else {
+            EditorTab::Plain
+        };
+        let ctx = Context::focus(FocusTarget::from(focus, panel, tab));
         match resolve(ctx, &[KeyChord::from_event(key)]) {
             Resolved::Command(c) => Some(c),
             _ => None,
@@ -562,11 +576,15 @@ mod tests {
     #[test]
     fn focus_target_derivation() {
         assert_eq!(
-            FocusTarget::from(Focus::Sidebar, SidebarPanel::SourceControl, false),
+            FocusTarget::from(
+                Focus::Sidebar,
+                SidebarPanel::SourceControl,
+                EditorTab::Plain
+            ),
             FocusTarget::SourceControl
         );
         assert_eq!(
-            FocusTarget::from(Focus::Sidebar, SidebarPanel::Explorer, false),
+            FocusTarget::from(Focus::Sidebar, SidebarPanel::Explorer, EditorTab::Plain),
             FocusTarget::Explorer
         );
         // Opening a diff moves focus to the editor: the active layer becomes
@@ -574,12 +592,63 @@ mod tests {
         // underlying sidebar panel. This is the fact behind the "SCM keys do
         // nothing after previewing a diff" bug.
         assert_eq!(
-            FocusTarget::from(Focus::Editor, SidebarPanel::SourceControl, true),
+            FocusTarget::from(Focus::Editor, SidebarPanel::SourceControl, EditorTab::Diff),
             FocusTarget::DiffEditor
         );
         assert_eq!(
-            FocusTarget::from(Focus::Editor, SidebarPanel::Explorer, false),
+            FocusTarget::from(Focus::Editor, SidebarPanel::Explorer, EditorTab::Plain),
             FocusTarget::Editor
+        );
+        // A too-large placeholder in the editor resolves to its override target.
+        assert_eq!(
+            FocusTarget::from(Focus::Editor, SidebarPanel::Explorer, EditorTab::Oversize),
+            FocusTarget::Oversize
+        );
+    }
+
+    #[test]
+    fn oversize_placeholder_binds_open_anyway() {
+        // Enter over a too-large placeholder loads it anyway; Esc leaves for the
+        // sidebar. Editor editing keys must not leak in (the layer is not stacked).
+        let ctx = Context::focus(FocusTarget::Oversize);
+        assert_eq!(
+            resolve(
+                ctx,
+                &[KeyChord::from_event(key(
+                    KeyCode::Enter,
+                    KeyModifiers::NONE
+                ))]
+            ),
+            Resolved::Command(Command::OpenAnyway)
+        );
+        assert_eq!(
+            resolve(
+                ctx,
+                &[KeyChord::from_event(key(KeyCode::Esc, KeyModifiers::NONE))]
+            ),
+            Resolved::Command(Command::ToggleFocus)
+        );
+        // A Ctrl-chord still resolves globally (close tab), but Save (Editor layer)
+        // does not reach a placeholder.
+        assert_eq!(
+            resolve(
+                ctx,
+                &[KeyChord::from_event(key(
+                    KeyCode::Char('w'),
+                    KeyModifiers::CONTROL
+                ))]
+            ),
+            Resolved::Command(Command::CloseTab)
+        );
+        assert_eq!(
+            resolve(
+                ctx,
+                &[KeyChord::from_event(key(
+                    KeyCode::Char('s'),
+                    KeyModifiers::CONTROL
+                ))]
+            ),
+            Resolved::None
         );
     }
 

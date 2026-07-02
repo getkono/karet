@@ -53,6 +53,8 @@ pub enum Command {
     CloseAllTabs,
     /// Reopen the most recently closed file tab.
     ReopenClosedTab,
+    /// Open the active too-large-file placeholder anyway, bypassing the size guard.
+    OpenAnyway,
     /// Copy the selection (or the cursor line) to the clipboard.
     Copy,
     /// Copy the active file's absolute path to the clipboard.
@@ -218,6 +220,7 @@ impl Command {
             Self::CloseTabsToRight => "View: Close Editors to the Right",
             Self::CloseAllTabs => "View: Close All Editors",
             Self::ReopenClosedTab => "View: Reopen Closed Editor",
+            Self::OpenAnyway => "File: Open Anyway (Ignore Size Limit)",
             Self::Copy => "Copy",
             Self::CopyPath => "Copy Path of Active File",
             Self::CopyRelativePath => "Copy Relative Path of Active File",
@@ -313,6 +316,7 @@ impl Command {
             Self::CloseOtherTabs => "close others",
             Self::CloseAllTabs => "close all",
             Self::ReopenClosedTab => "reopen",
+            Self::OpenAnyway => "open anyway",
             Self::Copy => "copy",
             // Sidebar.
             Self::SidebarActivate => "open",

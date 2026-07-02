@@ -13,6 +13,7 @@ use std::path::Path;
 pub use karet_filetype::FileKind;
 pub use karet_filetype::SIZE_GUARD;
 pub use karet_filetype::classify;
+pub use karet_filetype::classify_ignoring_size;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Alignment;
 use ratatui::layout::Rect;
@@ -28,6 +29,7 @@ use ratatui::widgets::Widget;
 pub struct Placeholder {
     title: String,
     lines: Vec<String>,
+    hint: Option<String>,
 }
 
 impl Placeholder {
@@ -44,7 +46,20 @@ impl Placeholder {
             lines.push(format!("{w} × {h}"));
         }
         lines.push(human_size(len));
-        Self { title, lines }
+        Self {
+            title,
+            lines,
+            hint: None,
+        }
+    }
+
+    /// Add an action-hint line shown below the description (e.g. an "open anyway"
+    /// override). The caller supplies the full text — including any key chord — so
+    /// the widget stays agnostic of the consumer's keybindings.
+    #[must_use]
+    pub fn hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
     }
 }
 
@@ -58,10 +73,16 @@ impl Widget for Placeholder {
         if inner.width == 0 || inner.height == 0 {
             return;
         }
-        let height = u16::try_from(self.lines.len())
+        let mut lines = self.lines;
+        if let Some(hint) = self.hint {
+            // A blank spacer sets the hint apart from the description above it.
+            lines.push(String::new());
+            lines.push(hint);
+        }
+        let height = u16::try_from(lines.len())
             .unwrap_or(u16::MAX)
             .min(inner.height);
-        let text = Text::from(self.lines.into_iter().map(Line::from).collect::<Vec<_>>());
+        let text = Text::from(lines.into_iter().map(Line::from).collect::<Vec<_>>());
         let y = inner.y + inner.height.saturating_sub(height) / 2;
         let area = Rect {
             x: inner.x,
@@ -119,6 +140,23 @@ mod tests {
             .collect();
         assert!(rendered.contains("doc.pdf"));
         assert!(rendered.contains("2.0 KiB"));
+    }
+
+    #[test]
+    fn placeholder_renders_an_action_hint() {
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buf = Buffer::empty(area);
+        let len = SIZE_GUARD + 1;
+        Placeholder::new(Path::new("big.cbor"), FileKind::TooLarge { len }, None, len)
+            .hint("Press Enter to open anyway")
+            .render(area, &mut buf);
+        let rendered: String = buf
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(rendered.contains("File too large to open"));
+        assert!(rendered.contains("open anyway"));
     }
 
     #[test]
