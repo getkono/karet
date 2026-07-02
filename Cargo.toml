@@ -43,6 +43,7 @@ karet-fuzzy      = { path = "crates/karet-fuzzy",      version = "0.1.0" }
 karet-widgets    = { path = "crates/karet-widgets",    version = "0.1.0" }
 karet-editor     = { path = "crates/karet-editor",     version = "0.1.0" }
 karet-fileview   = { path = "crates/karet-fileview",   version = "0.1.0" }
+karet-pdf        = { path = "crates/karet-pdf",        version = "0.1.0" }
 karet-session    = { path = "crates/karet-session",    version = "0.1.0" }
 karet-watch      = { path = "crates/karet-watch",      version = "0.1.0" }
 # blameline is a standalone library on its OWN SemVer line (NOT the workspace lockstep);
@@ -99,6 +100,12 @@ tree-sitter-md         = "0.5.3"
 imara-diff    = "0.2.0"
 pulldown-cmark = "0.13.4"
 image         = "0.25.10"
+# PDF rasterization (karet-pdf). `hayro` is a pure-Rust PDF interpreter/renderer
+# (`#![forbid(unsafe_code)]`, CPU-only, no C-sys deps — verified via `cargo tree`).
+# It re-exports `hayro_syntax` (parsing) and `vello_cpu` (the pixmap), so a single
+# dependency covers load + render. `embed-fonts`/`embed-cmaps` (on by default) ship
+# the 14 standard PDF fonts + 61 predefined cmaps so text renders out of the box.
+hayro         = "0.7.1"
 # CBOR (binary serialization) — decode/encode backing karet-cbor's textual layer
 ciborium      = "0.2.2"
 # Terminal emulation

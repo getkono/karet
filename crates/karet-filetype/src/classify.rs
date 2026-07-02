@@ -24,6 +24,8 @@ pub enum FileKind {
     Image,
     /// A PDF document.
     Pdf,
+    /// A Word (OOXML `.docx`) document.
+    Docx,
     /// Binary content (shown as a hex dump).
     Binary,
     /// A file too large to load inline.
@@ -89,6 +91,9 @@ fn classify_content(path: &Path, head: &[u8]) -> FileKind {
                 return FileKind::Image;
             },
             "pdf" => return FileKind::Pdf,
+            // DOCX is a ZIP container (`PK\x03\x04`, ambiguous with any archive), so it is
+            // routed by extension only — there is no cheap magic-byte signal in the head.
+            "docx" => return FileKind::Docx,
             "md" | "markdown" | "mdown" | "mkd" => return FileKind::Markdown,
             "cbor" => return FileKind::Cbor,
             _ => {},
@@ -153,6 +158,10 @@ mod tests {
     fn classifies_by_extension() {
         assert_eq!(classify(Path::new("a.png"), b"", 10), FileKind::Image);
         assert_eq!(classify(Path::new("a.pdf"), b"", 10), FileKind::Pdf);
+        assert_eq!(
+            classify(Path::new("a.docx"), b"PK\x03\x04", 4),
+            FileKind::Docx
+        );
         assert_eq!(classify(Path::new("a.md"), b"# hi", 4), FileKind::Markdown);
         assert_eq!(
             classify(Path::new("a.rs"), b"fn main(){}", 11),

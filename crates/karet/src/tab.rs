@@ -12,6 +12,7 @@ use karet_core::Decoration;
 use karet_editor::EditorState;
 use karet_fileview::image::Image;
 use karet_fileview::viewer::FileKind;
+use karet_pdf::Document as PdfDocument;
 use karet_session::DocumentId;
 use karet_session::ViewId;
 use karet_syntax::Highlights;
@@ -63,6 +64,21 @@ pub enum TabKind {
         path: PathBuf,
         /// The decoded image.
         image: Image,
+    },
+    /// A rendered multi-page document (e.g. PDF): pages rasterized to images on
+    /// demand and shown via the Kitty graphics protocol.
+    Document {
+        /// The file path.
+        path: PathBuf,
+        /// The parsed document; pages rasterize lazily during rendering.
+        doc: PdfDocument,
+        /// The total number of pages.
+        page_count: usize,
+        /// The current 0-based page.
+        page: usize,
+        /// Cache of the most recently rasterized page — `(page index, image)` — so a
+        /// redraw at the same page does not re-rasterize.
+        rendered: Option<(usize, Image)>,
     },
     /// A hex dump of binary content.
     Hex {
@@ -154,6 +170,7 @@ impl Tab {
         match &self.kind {
             TabKind::Code { path, .. }
             | TabKind::Image { path, .. }
+            | TabKind::Document { path, .. }
             | TabKind::Hex { path, .. }
             | TabKind::Placeholder { path, .. }
             | TabKind::Blame { path, .. } => Some(path),
@@ -174,6 +191,7 @@ impl Tab {
         match &self.kind {
             TabKind::Code { language, .. } => language,
             TabKind::Image { .. } => "image",
+            TabKind::Document { .. } => "pdf",
             TabKind::Hex { .. } => "binary",
             TabKind::Placeholder { .. } => "preview",
             TabKind::Diff { file, .. } => file.language,
