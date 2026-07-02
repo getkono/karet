@@ -273,8 +273,26 @@ fn draw_tabs(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(spans)).style(bar), area);
 }
 
-/// The 1-cell tab status mark: `●` for unsaved changes, else blank.
+/// Braille spinner frames for a slow save (each is a single display cell).
+const SPINNER: &[char] = &[
+    '\u{280b}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283c}', '\u{2834}', '\u{2826}', '\u{2827}',
+    '\u{2807}', '\u{280f}',
+];
+/// How long a save must run before its spinner appears.
+const SPINNER_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+/// Milliseconds per spinner frame.
+const SPINNER_FRAME_MS: u128 = 100;
+
+/// The 1-cell tab status mark: a spinner while a slow save writes, `●` for unsaved
+/// changes, else blank. The slot is always one cell so the layout never shifts.
 fn save_mark(tab: &Tab) -> char {
+    if let Some(since) = tab.saving_since {
+        let elapsed = since.elapsed();
+        if elapsed >= SPINNER_DELAY {
+            let frame = (elapsed.as_millis() / SPINNER_FRAME_MS) as usize % SPINNER.len();
+            return SPINNER[frame];
+        }
+    }
     if tab.dirty { '\u{25cf}' } else { ' ' }
 }
 

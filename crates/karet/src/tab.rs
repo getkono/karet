@@ -6,6 +6,7 @@
 
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use karet_core::Decoration;
 use karet_editor::EditorState;
@@ -122,9 +123,9 @@ pub struct Tab {
     /// Whether the backing document has unsaved changes (code tabs only). Kept in
     /// sync from document snapshots and cleared on save.
     pub dirty: bool,
-    /// Whether a save for this document is currently writing to disk (drives the
-    /// tab's saving spinner once the write exceeds a short threshold).
-    pub saving: bool,
+    /// When the in-flight save began, if a save is writing to disk. Drives the tab's
+    /// saving spinner once the write exceeds a short threshold; `None` when idle.
+    pub saving_since: Option<Instant>,
 }
 
 impl Tab {
@@ -137,7 +138,7 @@ impl Tab {
             editor: EditorState::new(),
             view: ViewId(0),
             dirty: false,
-            saving: false,
+            saving_since: None,
         }
     }
 

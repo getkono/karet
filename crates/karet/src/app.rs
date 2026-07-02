@@ -279,6 +279,9 @@ pub struct App {
     backend: Option<Arc<dyn Backend>>,
     /// Open requests awaiting their `Opened` event, mapping request id → file path.
     pending_open: HashMap<RequestId, PathBuf>,
+    /// In-flight save requests, mapping request id → document, so the tab's saving
+    /// spinner clears when the answering event (saved or error) arrives.
+    pending_saves: HashMap<RequestId, DocumentId>,
     /// Session documents the app has opened, so closing the last tab for a document
     /// can release it (the session ref-counts; the app must balance opens/closes).
     open_docs: HashSet<DocumentId>,
@@ -356,6 +359,7 @@ impl App {
             should_quit: false,
             backend: None,
             pending_open: HashMap::new(),
+            pending_saves: HashMap::new(),
             open_docs: HashSet::new(),
             next_view: 1,
         }
@@ -2082,18 +2086,28 @@ impl App {
         }
     }
 
-    /// Save the active document, or report that there is no file to save.
+    /// Save the active document, or report that there is no file to save. Tracks the
+    /// in-flight save so a slow write shows a spinner in the tab.
     fn save_active(&mut self) {
         let Some(doc) = self.active_code_doc() else {
             self.status = Some("save: open a text file".to_string());
             return;
         };
-        let result = self.backend.as_ref().map(|backend| {
-            let id = backend.next_id();
-            backend.send(id, SessionCommand::Save { doc })
-        });
-        if let Some(Err(e)) = result {
-            self.notify_backend_error(e);
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        let id = backend.next_id();
+        match backend.send(id, SessionCommand::Save { doc }) {
+            Ok(()) => {
+                self.pending_saves.insert(id, doc);
+                let now = Instant::now();
+                for tab in &mut self.tabs {
+                    if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
+                        tab.saving_since = Some(now);
+                    }
+                }
+            },
+            Err(e) => self.notify_backend_error(e),
         }
     }
 
@@ -2131,6 +2145,18 @@ impl App {
         });
     }
 
+    /// The soonest the event loop should wake for time-based UI: notification expiry,
+    /// or a save-spinner animation frame while any save is in flight. `None` when the
+    /// loop can park on its event sources alone.
+    fn next_wake(&self) -> Option<Duration> {
+        let notif = self.notifications.next_deadline(Instant::now());
+        let spinner = (!self.pending_saves.is_empty()).then(|| Duration::from_millis(100));
+        match (notif, spinner) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
     /// Push a notification onto the center. Errors and warnings persist until
     /// dismissed; info and success auto-expire after a few seconds.
     fn notify(&mut self, severity: Severity, kind: NotificationKind, title: impl Into<String>) {
@@ -2166,6 +2192,16 @@ impl App {
 
     /// Handle a backend event: correlate opens to tabs, surface save/progress status.
     fn on_backend_event(&mut self, id: Option<RequestId>, event: SessionEvent) {
+        // A save's answering event (saved or error) clears its tab spinner.
+        if let Some(req) = id
+            && let Some(doc) = self.pending_saves.remove(&req)
+        {
+            for tab in &mut self.tabs {
+                if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
+                    tab.saving_since = None;
+                }
+            }
+        }
         match event {
             SessionEvent::Opened { doc, .. } => {
                 self.open_docs.insert(doc);
@@ -2401,9 +2437,9 @@ async fn event_loop(
         terminal.draw(|f| ui::draw(f, app))?;
         app.flush_graphics();
 
-        // Wake to expire notifications exactly when the soonest one elapses; park on
-        // the other sources when nothing is pending (no idle repaints).
-        let deadline = app.notifications.next_deadline(Instant::now());
+        // Wake for notification expiry or a save-spinner frame; park on the event
+        // sources when nothing time-based is pending (no idle repaints).
+        let deadline = app.next_wake();
 
         tokio::select! {
             biased;
@@ -2481,6 +2517,31 @@ mod tests {
             vec![change("b.rs", StatusKind::Modified)],
             false,
         )
+    }
+
+    #[test]
+    fn pending_save_drives_the_animation_tick() {
+        let mut app = app();
+        assert!(app.next_wake().is_none());
+        app.pending_saves.insert(RequestId(1), DocumentId(1));
+        assert_eq!(app.next_wake(), Some(Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn save_completion_clears_the_spinner() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "x"));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(2));
+        }
+        app.tabs[app.active].saving_since = Some(Instant::now());
+        app.pending_saves.insert(RequestId(5), DocumentId(2));
+        app.on_backend_event(
+            Some(RequestId(5)),
+            SessionEvent::Saved { doc: DocumentId(2) },
+        );
+        assert!(app.tabs[app.active].saving_since.is_none());
+        assert!(app.pending_saves.is_empty());
     }
 
     #[test]
