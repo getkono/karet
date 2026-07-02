@@ -15,6 +15,8 @@ use karet_core::Diagnostic;
 use karet_core::Hover;
 use karet_core::LineCol;
 use karet_core::Location;
+use karet_core::NotificationKind;
+use karet_core::Severity;
 use karet_core::Symbol;
 use karet_search::FileHit;
 use karet_search::SearchQuery;
@@ -272,6 +274,17 @@ pub enum Event {
         message: String,
         /// Percent complete (0–100), if known.
         percent: Option<u8>,
+    },
+    /// A condition the client should surface to the user (an error, a warning, or
+    /// an out-of-band informational message). Distinct from [`Progress`](Self::Progress),
+    /// which is for genuine long-running progress.
+    Notification {
+        /// How prominently to surface it.
+        severity: Severity,
+        /// The originating subsystem.
+        kind: NotificationKind,
+        /// A human-readable message.
+        message: String,
     },
     /// The current source-control status: the staged (`HEAD`↔index) and working
     /// (index↔worktree, plus untracked and conflicted) change sets.

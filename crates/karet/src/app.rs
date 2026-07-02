@@ -2092,6 +2092,13 @@ impl App {
                 self.status = Some("⚠ file changed on disk — you have unsaved changes".to_string());
             },
             SessionEvent::Progress { message, .. } => self.status = Some(message),
+            // The single high-up funnel: every backend-reported condition becomes a
+            // notification, so nothing is silently dropped.
+            SessionEvent::Notification {
+                severity,
+                kind,
+                message,
+            } => self.notify(severity, kind, message),
             SessionEvent::VcsStatus { staged, working } => self.apply_vcs_status(staged, working),
             SessionEvent::Committed { oid } => {
                 self.commit_input = None;
