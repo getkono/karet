@@ -20,6 +20,7 @@ use karet_fuzzy::Matcher;
 pub mod file_tree;
 pub mod glyph;
 pub mod notify;
+pub mod pane;
 pub mod select;
 
 pub use file_tree::FileTree;
@@ -30,6 +31,11 @@ pub use karet_filetype::IconStyle;
 pub use notify::Corner;
 pub use notify::ToastSlot;
 pub use notify::Toasts;
+pub use pane::DropZone;
+pub use pane::PaneId;
+pub use pane::PaneLayout;
+pub use pane::SplitAxis;
+pub use pane::SplitDir;
 pub use select::ListSelection;
 
 /// A symbol outline tree over a [`SymbolProvider`].
@@ -68,10 +74,6 @@ pub struct StatusBar {
     /// Right-aligned text.
     pub right: String,
 }
-
-/// A pane split tree with a focus ring (the editor's window layout).
-#[derive(Clone, Debug, Default)]
-pub struct PaneLayout {}
 
 /// The LSP completion popup (relocated here from `karet-lsp`).
 pub mod completion {
