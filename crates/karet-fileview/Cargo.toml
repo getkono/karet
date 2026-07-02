@@ -11,7 +11,6 @@ homepage.workspace     = true
 readme.workspace       = true
 keywords.workspace     = true
 categories.workspace   = true
-publish = false                       # made publishable in a later commit (see the release commit)
 
 [features]
 default = []

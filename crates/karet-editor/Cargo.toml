@@ -11,7 +11,6 @@ homepage.workspace     = true
 readme.workspace       = true
 keywords.workspace     = true
 categories.workspace   = true
-publish = false                       # karet-internal — not published to crates.io
 
 [features]
 default = []
