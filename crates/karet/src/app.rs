@@ -1090,7 +1090,11 @@ impl App {
         if confirmed {
             if let Some(paths) = paths {
                 self.send_vcs(SessionCommand::Discard { paths });
-                self.status = Some("discarded".to_string());
+                self.notify(
+                    Severity::Information,
+                    NotificationKind::Vcs,
+                    "discarded changes",
+                );
             }
         } else {
             self.status = Some("discard cancelled".to_string());
@@ -1228,7 +1232,11 @@ impl App {
                 return;
             },
             Err(e) => {
-                self.status = Some(format!("blame: {e}"));
+                self.notify(
+                    Severity::Error,
+                    NotificationKind::Vcs,
+                    format!("blame: {e}"),
+                );
                 return;
             },
         };
@@ -2086,10 +2094,20 @@ impl App {
             SessionEvent::Saved { .. } => self.status = Some("saved".to_string()),
             // The fresh content arrives via the snapshot stream; just note it.
             SessionEvent::Reloaded { .. } => {
-                self.status = Some("reloaded from disk".to_string());
+                self.notify(
+                    Severity::Information,
+                    NotificationKind::Io,
+                    "reloaded from disk",
+                );
             },
+            // A persistent warning: a transient status hint would vanish on the next
+            // keystroke, but an unsaved-vs-disk conflict must not be missed.
             SessionEvent::ExternalConflict { .. } => {
-                self.status = Some("⚠ file changed on disk — you have unsaved changes".to_string());
+                self.notify(
+                    Severity::Warning,
+                    NotificationKind::Io,
+                    "file changed on disk — you have unsaved changes",
+                );
             },
             SessionEvent::Progress { message, .. } => self.status = Some(message),
             // The single high-up funnel: every backend-reported condition becomes a
@@ -2103,7 +2121,11 @@ impl App {
             SessionEvent::Committed { oid } => {
                 self.commit_input = None;
                 let short: String = oid.chars().take(7).collect();
-                self.status = Some(format!("committed {short}"));
+                self.notify(
+                    Severity::Information,
+                    NotificationKind::Vcs,
+                    format!("committed {short}"),
+                );
             },
             _ => {},
         }
@@ -2738,12 +2760,13 @@ mod tests {
         ));
         app.dispatch(Command::ShowBlame);
 
-        // No Blame tab is created; the failure is surfaced in the status bar.
+        // No Blame tab is created; the failure is surfaced as an error notification.
         assert!(!matches!(app.tabs[app.active].kind, TabKind::Blame { .. }));
+        let active = app.notifications.active();
         assert!(
-            app.status
-                .as_deref()
-                .is_some_and(|s| s.starts_with("blame:"))
+            active
+                .iter()
+                .any(|n| n.severity == Severity::Error && n.title.starts_with("blame:"))
         );
 
         let _ = std::fs::remove_dir_all(&dir);
