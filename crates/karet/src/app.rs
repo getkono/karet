@@ -1794,13 +1794,15 @@ impl App {
     }
 
     /// Handle a left click in the editor: focus it and place the caret (single
-    /// click), select the word (double) or the line (triple).
+    /// click), extend the selection to the click (Shift+click), or select the word
+    /// (double) / line (triple).
     fn handle_editor_click(&mut self, mouse: MouseEvent) {
         self.focus = Focus::Editor;
         if !rect_contains(self.editor_rect, (mouse.column, mouse.row)) {
             return;
         }
         let area = self.editor_rect;
+        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         let streak = self.click_streak(mouse.column, mouse.row);
         if let Some(Tab {
             kind: TabKind::Code { buffer, .. },
@@ -1818,10 +1820,17 @@ impl App {
                     let (anchor, head) = line_span(buffer, pos.line);
                     editor.set_selection(buffer, anchor, head);
                 },
+                // Shift+click extends the selection from the current caret to the
+                // click point (VS Code style); a plain click places the caret.
+                _ if shift => {
+                    editor.ensure_anchor();
+                    editor.extend_to(buffer, pos);
+                },
                 _ => editor.set_caret(buffer, pos),
             }
         }
-        // Only a single click starts a drag-select; word/line clicks are atomic.
+        // A single click (plain or shift) starts a drag-select so the pointer can
+        // keep extending; word/line clicks are atomic.
         self.editor_selecting = streak == 1;
     }
 
@@ -2888,6 +2897,39 @@ mod tests {
             Some(Range {
                 start: LineCol::new(0, 4),
                 end: LineCol::new(0, 7),
+            })
+        );
+    }
+
+    #[test]
+    fn shift_click_extends_selection_to_the_click() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "foo bar baz"));
+        app.editor_rect = Rect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 5,
+        };
+        let click = |col, shift| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row: 0,
+            modifiers: if shift {
+                KeyModifiers::SHIFT
+            } else {
+                KeyModifiers::NONE
+            },
+        };
+        // Place the caret at buffer col 0 (screen col 3 past the gutter), then
+        // Shift+click at buffer col 5 (screen col 8) to extend the selection.
+        app.handle_editor_click(click(3, false));
+        app.handle_editor_click(click(8, true));
+        assert_eq!(
+            app.tabs[app.active].editor.selection_range(),
+            Some(Range {
+                start: LineCol::new(0, 0),
+                end: LineCol::new(0, 5),
             })
         );
     }
