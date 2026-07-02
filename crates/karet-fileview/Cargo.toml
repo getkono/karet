@@ -17,6 +17,9 @@ default = []
 # Compile in every tree-sitter grammar so the text branch highlights. Off by
 # default so a consumer that only renders images/hex/plain text pulls no grammars.
 all-languages = ["karet-treesitter/all-languages"]
+# Rasterize PDF pages (via karet-pdf/hayro) into the Kitty image path. Off by
+# default so a consumer that never opens PDFs pulls neither hayro nor its deps.
+pdf = ["dep:karet-pdf"]
 
 [dependencies]
 karet-core.workspace = true
@@ -26,6 +29,7 @@ karet-treesitter.workspace = true     # parse host + language ids for highlighti
 karet-syntax.workspace = true         # tree-sitter highlighting -> Highlights
 karet-theme = { workspace = true, features = ["view"] }  # role colors for the views
 karet-editor.workspace = true         # renders the highlighted text branch (read-only)
+karet-pdf = { workspace = true, optional = true }  # PDF page rasterization (behind `pdf`)
 ratatui.workspace = true
 image.workspace = true                # image decode + halfblock rendering
 base64.workspace = true               # Kitty graphics protocol payload encoding
