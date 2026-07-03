@@ -167,13 +167,19 @@ mod tests {
     #[test]
     fn successors_and_predecessors_follow_edge_direction() {
         let mut view = GraphView::new();
-        view.nodes.push(GraphNode::new("a", "A", GraphNodeKind::Symbol));
-        view.nodes.push(GraphNode::new("b", "B", GraphNodeKind::Symbol));
-        view.nodes.push(GraphNode::new("c", "C", GraphNodeKind::Symbol));
+        view.nodes
+            .push(GraphNode::new("a", "A", GraphNodeKind::Symbol));
+        view.nodes
+            .push(GraphNode::new("b", "B", GraphNodeKind::Symbol));
+        view.nodes
+            .push(GraphNode::new("c", "C", GraphNodeKind::Symbol));
         // a calls b and c; b calls c.
-        view.edges.push(GraphEdge::new("a", "b", GraphEdgeKind::Call));
-        view.edges.push(GraphEdge::new("a", "c", GraphEdgeKind::Call));
-        view.edges.push(GraphEdge::new("b", "c", GraphEdgeKind::Call));
+        view.edges
+            .push(GraphEdge::new("a", "b", GraphEdgeKind::Call));
+        view.edges
+            .push(GraphEdge::new("a", "c", GraphEdgeKind::Call));
+        view.edges
+            .push(GraphEdge::new("b", "c", GraphEdgeKind::Call));
 
         let mut callees = view.successors("a", GraphEdgeKind::Call);
         callees.sort_unstable();
