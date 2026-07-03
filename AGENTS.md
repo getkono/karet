@@ -52,6 +52,7 @@ published to crates.io (everything else is `publish = false`).
 | `karet-syntax` | engine | ✓ | tree-sitter highlighting, fold regions, bracket pairs, structural selection |
 | `karet-theme` | engine | ✓ | token palette, .tmTheme + VS Code JSON loaders, contrast (`view` feat) |
 | `karet-diff` | engine | ✓ | pure syntax-aware diffing (tree-sitter + line/word fallback) — no presentation |
+| `karet-graph` | engine | — | DAG lane-assignment layout + rail renderer (`view` feat) for the commit graph & code visualizations; consumes `karet_core::GraphView` |
 | `karet-markdown` | engine | — | markdown render model (`view` + `highlight` feats) |
 | `karet-cbor` | engine | — | CBOR decode/encode ↔ editable diagnostic-notation text (via `ciborium`); no presentation |
 | `karet-pdf` | engine | — | pure-Rust PDF page → RGBA rasterization (via `hayro`); no presentation |

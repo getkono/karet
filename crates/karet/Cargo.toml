@@ -33,6 +33,7 @@ karet-cbor.workspace = true           # decode .cbor to editable diagnostic text
 karet-terminal   = { workspace = true, features = ["view"] }
 karet-dap        = { workspace = true, features = ["view"] }
 karet-vcs        = { workspace = true, features = ["view"] }
+karet-graph      = { workspace = true, features = ["view"] }
 blameline        = { workspace = true, features = ["all-languages"] }
 karet-search.workspace = true
 karet-fuzzy.workspace = true

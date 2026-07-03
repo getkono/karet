@@ -24,11 +24,13 @@ pub mod backup;
 pub mod config;
 pub mod local;
 pub mod session;
+pub mod viz;
 
 pub use api::Command;
 pub use api::DecorationLayer;
 pub use api::DocumentId;
 pub use api::Event;
+pub use api::GraphKind;
 pub use api::RequestId;
 pub use api::SwapInfo;
 pub use api::ViewId;

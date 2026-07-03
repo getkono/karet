@@ -278,6 +278,8 @@ pub enum Command {
     RecoverSwaps,
     /// At the startup recovery prompt: discard the crash-recovery backups.
     DiscardSwaps,
+    /// Open the workspace package-dependency graph visualization.
+    ShowDependencyGraph,
     /// Move the Search results selection up.
     SearchSelectUp,
     /// Move the Search results selection down.
@@ -442,6 +444,7 @@ impl Command {
             Self::QuitDiscard => "Quit: Discard and Exit",
             Self::RecoverSwaps => "Recover Unsaved Changes",
             Self::DiscardSwaps => "Discard Unsaved Backups",
+            Self::ShowDependencyGraph => "Visualize: Dependency Graph",
             Self::SearchSelectUp => "Search: Select Previous",
             Self::SearchSelectDown => "Search: Select Next",
             Self::SearchOpen => "Search: Open Selected Result",
@@ -546,6 +549,7 @@ impl Command {
             Self::QuitDiscard => "discard & quit",
             Self::RecoverSwaps => "recover",
             Self::DiscardSwaps => "discard",
+            Self::ShowDependencyGraph => "deps",
             Self::SearchOpen => "open",
             Self::SearchBeginInput => "edit",
             Self::SearchQuit => "close",
@@ -673,6 +677,7 @@ impl Command {
                 | Self::SplitDown
                 | Self::FocusNextPane
                 | Self::FocusPrevPane
+                | Self::ShowDependencyGraph
         )
     }
 }
@@ -692,6 +697,7 @@ pub fn palette() -> Vec<Command> {
         Command::OpenGlobalSearch,
         Command::ShowBlame,
         Command::BlameFunction,
+        Command::ShowDependencyGraph,
         Command::ExplorerNewFile,
         Command::ExplorerNewFolder,
         Command::ExplorerRename,

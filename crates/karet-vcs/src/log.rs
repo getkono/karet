@@ -17,6 +17,9 @@ pub struct Commit {
     pub author: String,
     /// The commit time, in seconds since the Unix epoch.
     pub time: i64,
+    /// The full hex hashes of this commit's parents, first-parent first. Empty for a
+    /// root commit; two or more for a merge. Drives the DAG lane layout.
+    pub parents: Vec<String>,
 }
 
 impl Repository {
@@ -106,12 +109,19 @@ impl Repository {
             .map(|a| a.name.to_string())
             .unwrap_or_default();
         let time = commit.time().map(|t| t.seconds).unwrap_or_default();
+        // Parent ids are already decoded in the commit object; collect them (first
+        // parent first) so the renderer can lay out branch/merge lanes.
+        let parents = commit
+            .parent_ids()
+            .map(|id| id.to_hex().to_string())
+            .collect();
         Ok(Commit {
             hash,
             short_hash,
             summary,
             author,
             time,
+            parents,
         })
     }
 }
@@ -237,6 +247,52 @@ mod tests {
         // caller to reload in full rather than trust a partial slice.
         let capped = repo.commits_since(None, 2)?;
         assert_eq!(capped.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn linear_history_records_single_parents() -> Result<(), VcsError> {
+        let (_g, repo) = repo_with_commits(2)?;
+        let log = repo.log(0, 10)?;
+        assert_eq!(log.len(), 2);
+        // The newest commit's single parent is the older commit; the root has none.
+        assert_eq!(log[0].parents, vec![log[1].hash.clone()]);
+        assert!(log[1].parents.is_empty(), "root commit has no parents");
+        Ok(())
+    }
+
+    #[test]
+    fn merge_commit_records_two_parents() -> Result<(), VcsError> {
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("karet-vcs-merge-{}-{id}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(io)?;
+        let _guard = TempDir(dir.clone());
+        git(&dir, &["init", "-q"]);
+        git(&dir, &["config", "user.name", "Tester"]);
+        git(&dir, &["config", "user.email", "t@example.com"]);
+        std::fs::write(dir.join("f.txt"), "base\n").map_err(io)?;
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-q", "-m", "base"]);
+        // A side branch with its own commit.
+        git(&dir, &["checkout", "-q", "-b", "side"]);
+        std::fs::write(dir.join("s.txt"), "side\n").map_err(io)?;
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-q", "-m", "side commit"]);
+        // Back to the original branch, diverge, then merge (no fast-forward).
+        git(&dir, &["checkout", "-q", "-"]);
+        std::fs::write(dir.join("m.txt"), "main\n").map_err(io)?;
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-q", "-m", "main commit"]);
+        git(
+            &dir,
+            &["merge", "--no-ff", "-q", "-m", "merge side", "side"],
+        );
+
+        let repo = Repository::discover(&dir)?;
+        let log = repo.log(0, 10)?;
+        assert_eq!(log[0].summary, "merge side");
+        assert_eq!(log[0].parents.len(), 2, "a merge records both parents");
         Ok(())
     }
 }

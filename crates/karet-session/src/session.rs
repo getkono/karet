@@ -330,6 +330,7 @@ impl Session {
             Command::VcsLog { skip, limit } => self.emit_vcs_log(Some(id), skip, limit),
             Command::RecoverSwaps => self.recover_swaps(id),
             Command::DiscardSwaps => self.discard_swaps(),
+            Command::DependencyGraph => self.emit_dependency_graph(id),
             // Language-intelligence and search commands are wired in later milestones.
             _ => {},
         }
@@ -767,6 +768,41 @@ impl Session {
     fn discard_swaps(&mut self) {
         for record in std::mem::take(&mut self.pending_swaps) {
             discard(&record.swap_path);
+        }
+    }
+
+    // --- visualizations ---------------------------------------------------
+
+    /// Build the workspace package-dependency graph and emit it, or surface a failure
+    /// (no lockfile / parse error) as a notification.
+    fn emit_dependency_graph(&mut self, id: RequestId) {
+        let Some(root) = self.config.roots.first() else {
+            return;
+        };
+        match crate::viz::dependency_graph(root) {
+            Ok(view) => {
+                let title = root
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("workspace")
+                    .to_string();
+                self.emit(
+                    Some(id),
+                    Event::GraphReady {
+                        kind: crate::api::GraphKind::Dependency,
+                        title,
+                        view,
+                    },
+                );
+            },
+            Err(e) => self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::System,
+                    message: format!("dependency graph: {e}"),
+                },
+            ),
         }
     }
 

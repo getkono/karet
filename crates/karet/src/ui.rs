@@ -16,6 +16,9 @@ use karet_fileview::image::Image;
 use karet_fileview::image::ImageWidget;
 use karet_fileview::image::fit_rect;
 use karet_fileview::viewer::Placeholder;
+use karet_graph::LaneInput;
+use karet_graph::assign_lanes;
+use karet_graph::view::render_rail;
 use karet_theme::Theme;
 use karet_vcs::StatusKind;
 use karet_widgets::Corner;
@@ -27,6 +30,7 @@ use ratatui::layout::Alignment;
 use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -908,13 +912,45 @@ fn draw_scm_commits(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
         .add_modifier(Modifier::BOLD);
     let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
+    // A small cycle of distinct colours so adjacent branch lanes read apart. Like
+    // other git tools, lane colour is decorative, so it uses fixed terminal colours
+    // rather than theme tokens.
+    const LANE_COLORS: [Color; 6] = [
+        Color::Cyan,
+        Color::Green,
+        Color::Yellow,
+        Color::Magenta,
+        Color::Blue,
+        Color::Red,
+    ];
+    let lane_style = |lane: u8| Style::default().fg(LANE_COLORS[lane as usize % LANE_COLORS.len()]);
     let mut items: Vec<ListItem> = vec![ListItem::new(Line::styled(" COMMITS", header_style))];
-    for commit in &app.scm.log {
-        items.push(ListItem::new(Line::from(vec![
-            Span::styled(format!(" {} ", commit.short_hash), hash_style),
-            Span::raw(commit.summary.clone()),
-            Span::styled(format!("  {}", relative_time(commit.time)), dim),
-        ])));
+
+    // Lay the loaded commits out as a DAG: one rail gutter per row, drawn to the left
+    // of the hash/summary/age columns. The newest loaded commit (row 0, page 0) is the
+    // current tip. Parents beyond the loaded window simply leave their lane open.
+    let inputs: Vec<LaneInput> = app
+        .scm
+        .log
+        .iter()
+        .enumerate()
+        .map(|(i, c)| LaneInput {
+            id: c.hash.clone(),
+            parents: c.parents.clone(),
+            head: i == 0 && app.scm_commits_offset == 0,
+        })
+        .collect();
+    let rails = assign_lanes(&inputs);
+    for (commit, rail) in app.scm.log.iter().zip(rails.iter()) {
+        let mut spans = vec![Span::raw(" ")];
+        spans.extend(render_rail(rail, lane_style).spans);
+        spans.push(Span::styled(format!(" {} ", commit.short_hash), hash_style));
+        spans.push(Span::raw(commit.summary.clone()));
+        spans.push(Span::styled(
+            format!("  {}", relative_time(commit.time)),
+            dim,
+        ));
+        items.push(ListItem::new(Line::from(spans)));
     }
     if app.scm.log_has_more {
         // The "load more" display row is relative to the commit region's top.
@@ -1154,6 +1190,11 @@ fn draw_pane_content(
         },
         TabKind::Diff { file, view, scroll } => draw_diff(f, theme, area, file, *view, scroll),
         TabKind::Blame { groups, scroll, .. } => draw_blame(f, theme, area, groups, scroll),
+        TabKind::Graph {
+            title,
+            view,
+            scroll,
+        } => draw_graph(f, theme, area, title, view, scroll),
         TabKind::Hex { bytes, scroll, .. } => {
             let rows = bytes.len().div_ceil(16);
             *scroll = (*scroll).min(rows.saturating_sub(1));
@@ -1318,6 +1359,73 @@ fn draw_diff(
 
 /// Render the semantic-blame view: each commit group as a header (line range, short
 /// hash, author, date) followed by its full commit message — the "why".
+/// Draw a code-visualization graph as a scrollable indented tree: a DFS from the
+/// graph's roots along dependency edges, with box-drawing depth guides. Cycles and
+/// already-expanded nodes are shown once and marked `⟲` rather than re-expanded.
+fn draw_graph(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    title: &str,
+    view: &karet_core::GraphView,
+    scroll: &mut u16,
+) {
+    use karet_core::GraphEdgeKind;
+
+    let header_style = Style::default()
+        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+        .add_modifier(Modifier::BOLD);
+    let guide = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let name_style = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
+    let badge_style = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let revisit_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
+
+    // Flatten the graph to indented rows (DFS from roots, cycle-safe).
+    let mut rows: Vec<Line> = vec![Line::styled(
+        format!(" ⧉ {title} — dependency graph"),
+        header_style,
+    )];
+    let mut expanded: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut stack: Vec<(&str, usize)> = view
+        .roots
+        .iter()
+        .rev()
+        .map(|r| (r.as_str(), 0usize))
+        .collect();
+    while let Some((id, depth)) = stack.pop() {
+        let Some(node) = view.nodes.iter().find(|n| n.id == id) else {
+            continue;
+        };
+        let first_visit = expanded.insert(id);
+        let children = view.successors(id, GraphEdgeKind::Dependency);
+        let mut spans = vec![Span::raw(" ")];
+        for _ in 0..depth {
+            spans.push(Span::styled("\u{2502} ", guide));
+        }
+        spans.push(Span::styled("\u{25CF} ", guide));
+        spans.push(Span::styled(node.label.clone(), name_style));
+        if let Some(badge) = &node.badge {
+            spans.push(Span::styled(format!("  {badge}"), badge_style));
+        }
+        if !first_visit && !children.is_empty() {
+            // Already expanded elsewhere (or a cycle): show but don't recurse again.
+            spans.push(Span::styled("  \u{27F2}", revisit_style));
+        }
+        rows.push(Line::from(spans));
+        if first_visit {
+            for child in children.iter().rev() {
+                stack.push((child, depth + 1));
+            }
+        }
+    }
+
+    let height = area.height as usize;
+    let max_scroll = rows.len().saturating_sub(height);
+    *scroll = (*scroll).min(max_scroll as u16);
+    let para = Paragraph::new(rows).scroll((*scroll, 0));
+    f.render_widget(para, area);
+}
+
 fn draw_blame(
     f: &mut Frame,
     theme: &Theme,

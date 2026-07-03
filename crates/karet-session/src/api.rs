@@ -187,6 +187,18 @@ pub enum Command {
     /// Discard the crash-recovery swaps announced by [`Event::SwapsFound`] without
     /// recovering them.
     DiscardSwaps,
+    /// Build the workspace package-dependency graph (answered by [`Event::GraphReady`]).
+    DependencyGraph,
+}
+
+/// Which visualization a [`Event::GraphReady`] carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum GraphKind {
+    /// The package-dependency graph of the workspace.
+    Dependency,
+    /// The usage/call graph of a symbol.
+    Usage,
 }
 
 /// A crash-recovery swap offered to the UI on startup (see [`Event::SwapsFound`]).
@@ -347,6 +359,15 @@ pub enum Event {
     SwapsFound {
         /// The recoverable swaps.
         swaps: Vec<SwapInfo>,
+    },
+    /// A visualization graph is ready to render (answers [`Command::DependencyGraph`]).
+    GraphReady {
+        /// Which visualization this is.
+        kind: GraphKind,
+        /// A short title for the view (e.g. the workspace or symbol name).
+        title: String,
+        /// The neutral graph to render.
+        view: karet_core::GraphView,
     },
 }
 
