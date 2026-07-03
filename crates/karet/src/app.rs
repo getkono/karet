@@ -3459,6 +3459,15 @@ impl App {
                 folded.retain(|line| starts.contains(line));
             }
             tab.dirty = snap.dirty;
+            // Undo/redo snapshots carry the caret to jump to; ordinary edits carry
+            // `None` so the optimistic placement from `submit_edit` is preserved.
+            if let Some(cursor) = &snap.cursor {
+                let heads: Vec<LineCol> = cursor.selections.iter().map(|s| s.head).collect();
+                if !heads.is_empty() {
+                    tab.editor.set_carets(&heads);
+                    tab.editor.scroll_to(cursor.primary().head);
+                }
+            }
         }
         // If the find bar is open, an edit (e.g. a replace) just changed the buffer,
         // so recompute the match highlights against the fresh text.

@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use karet_core::BytePos;
 use karet_core::Change;
 use karet_core::CursorState;
 use karet_core::Decoration;
@@ -469,7 +470,7 @@ impl Session {
                         version,
                     },
                 );
-                self.publish(existing);
+                self.publish(existing, None);
             }
             return;
         }
@@ -516,7 +517,7 @@ impl Session {
                 version,
             },
         );
-        self.publish(doc_id);
+        self.publish(doc_id, None);
     }
 
     fn apply(&mut self, id: RequestId, doc_id: DocumentId, change: &Change) {
@@ -547,11 +548,11 @@ impl Session {
                 version,
             },
         );
-        self.publish(doc_id);
+        self.publish(doc_id, None);
     }
 
     fn undo_redo(&mut self, id: RequestId, doc_id: DocumentId, undo: bool) {
-        let version = {
+        let (version, cursor) = {
             let pool = &mut self.pool;
             let highlighters = &mut self.highlighters;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
@@ -566,7 +567,20 @@ impl Session {
                 return; // nothing to undo/redo
             };
             update_syntax(pool, highlighters, doc, Some(&applied.edits));
-            applied.version
+            // Jump the caret to the change: undo restores the exact pre-edit cursor;
+            // redo (which records none) lands at the end of the re-applied edit that
+            // reaches furthest into the document.
+            let cursor = applied.restored_cursor.clone().or_else(|| {
+                applied
+                    .edits
+                    .iter()
+                    .max_by_key(|e| e.new_end_byte)
+                    .map(|e| {
+                        let pos = doc.buffer.byte_to_line_col(BytePos(e.new_end_byte));
+                        CursorState::single(Selection::caret(pos))
+                    })
+            });
+            (applied.version, cursor)
         };
         self.emit(
             Some(id),
@@ -575,7 +589,7 @@ impl Session {
                 version,
             },
         );
-        self.publish(doc_id);
+        self.publish(doc_id, cursor);
     }
 
     fn save(&mut self, id: RequestId, doc_id: DocumentId) {
@@ -661,7 +675,7 @@ impl Session {
                 version,
             },
         );
-        self.publish(doc_id);
+        self.publish(doc_id, None);
     }
 
     // --- helpers ----------------------------------------------------------
@@ -674,7 +688,10 @@ impl Session {
         self.events.send((id, event)).ok();
     }
 
-    fn publish(&self, doc_id: DocumentId) {
+    /// Push a render-only snapshot of `doc_id` on the snapshot stream. `cursor` is
+    /// `Some` only for undo/redo, carrying the caret the editor should jump to; every
+    /// other publish passes `None` and leaves the UI's cursor untouched.
+    fn publish(&self, doc_id: DocumentId, cursor: Option<CursorState>) {
         if let Some(doc) = self.store.docs.get(&doc_id) {
             let snapshot = Arc::new(DocSnapshot {
                 version: doc.buffer.version(),
@@ -684,6 +701,7 @@ impl Session {
                 decorations: Arc::new(doc.decorations.clone()),
                 language: doc.language,
                 dirty: doc.buffer.is_dirty(),
+                cursor,
             });
             self.snapshots.send((doc_id, snapshot)).ok();
         }
@@ -972,6 +990,66 @@ mod tests {
             session
                 .document(doc)
                 .is_some_and(|v| v.buffer().line_count() == 2)
+        );
+    }
+
+    #[test]
+    fn undo_redo_snapshot_carries_caret_but_edits_do_not() {
+        let Some((_dir, path)) = write_temp("main.rs", "fn main() {}\n") else {
+            return;
+        };
+        let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let Some(doc) = opened_doc(&mut events) else {
+            return;
+        };
+
+        // Helper: drain the snapshot stream and return the most recent snapshot.
+        fn drain(snaps: &mut SnapshotRx) -> Option<std::sync::Arc<DocSnapshot>> {
+            let mut last = None;
+            while let Some((_, s)) = snaps.try_recv() {
+                last = Some(s);
+            }
+            last
+        }
+        let _ = drain(&mut snaps); // discard the open snapshot
+
+        // An ordinary edit publishes a snapshot with no caret (the UI owns the caret).
+        let change = Change::new(
+            0,
+            vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(1, 0),
+                    end: LineCol::new(1, 0),
+                },
+                new_text: "fn x() {}\n".to_string(),
+            }],
+        );
+        session.handle(RequestId(2), Command::ApplyChange { doc, change });
+        assert_eq!(
+            drain(&mut snaps).and_then(|s| s.cursor.clone()),
+            None,
+            "an ordinary edit must not carry a caret"
+        );
+
+        // Undo publishes a snapshot that carries the caret to jump to.
+        session.handle(RequestId(3), Command::Undo { doc });
+        assert!(
+            drain(&mut snaps).is_some_and(|s| s.cursor.is_some()),
+            "undo must carry a caret so the editor jumps to the change"
+        );
+
+        // Redo (which records no cursor) still carries a derived caret at the edit.
+        session.handle(RequestId(4), Command::Redo { doc });
+        assert!(
+            drain(&mut snaps).is_some_and(|s| s.cursor.is_some()),
+            "redo must carry a caret derived from the re-applied edit"
         );
     }
 
