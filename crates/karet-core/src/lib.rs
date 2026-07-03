@@ -16,6 +16,7 @@
 //! - [`geometry`] — `Point`, `Size`, `Rect`, offsets, and the [`clamp`] helper.
 //! - [`coord`] — text coordinates: `BytePos`, `CharPos`, `LineCol`, `Range`, `Span`.
 //! - [`model`] — neutral models: diagnostics, decorations, symbols, completion, hover, ….
+//! - [`graph`] — a neutral directed-graph model ([`GraphView`]) for visualizations.
 //! - [`edit`] — neutral edit/selection types (`TextEdit`, `Change`, `Selection`, `CursorState`).
 //! - [`provider`] — interop traits such as [`SymbolProvider`].
 //! - [`token`] — semantic [`TokenId`] / [`ThemeRole`] vocabulary shared by syntax & theme.
@@ -24,6 +25,7 @@ pub mod coord;
 pub mod edit;
 pub mod error;
 pub mod geometry;
+pub mod graph;
 pub mod model;
 pub mod notify;
 pub mod provider;
@@ -46,6 +48,11 @@ pub use geometry::Point;
 pub use geometry::Rect;
 pub use geometry::Size;
 pub use geometry::clamp;
+pub use graph::GraphEdge;
+pub use graph::GraphEdgeKind;
+pub use graph::GraphNode;
+pub use graph::GraphNodeKind;
+pub use graph::GraphView;
 pub use model::CodeAction;
 pub use model::CodeLens;
 pub use model::CommandId;
