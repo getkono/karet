@@ -124,6 +124,10 @@ pub enum Layer {
     CommitInput,
     /// Active while the discard-confirmation prompt is up.
     DiscardConfirm,
+    /// Active while the quit-confirmation prompt (unsaved changes) is up.
+    QuitConfirm,
+    /// Active while the startup crash-recovery prompt is up.
+    SwapRecover,
     /// Active while the explorer inline name editor is open.
     ExplorerEdit,
 }
@@ -145,6 +149,10 @@ pub enum Modal {
     CommitInput,
     /// The discard-confirmation prompt.
     DiscardConfirm,
+    /// The quit-confirmation prompt shown when quitting with unsaved changes.
+    QuitConfirm,
+    /// The startup prompt to recover crash-recovery backups.
+    SwapRecover,
     /// The explorer inline name editor (new file/folder or rename).
     ExplorerEdit,
 }
@@ -190,6 +198,8 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
         Some(Modal::Find) => &[L::Find],
         Some(Modal::CommitInput) => &[L::CommitInput],
         Some(Modal::DiscardConfirm) => &[L::DiscardConfirm],
+        Some(Modal::QuitConfirm) => &[L::QuitConfirm],
+        Some(Modal::SwapRecover) => &[L::SwapRecover],
         Some(Modal::ExplorerEdit) => &[L::ExplorerEdit],
         Some(Modal::SearchInput) => &[L::SearchInput, L::Global],
         Some(Modal::SearchList) => &[L::SearchList, L::Global],

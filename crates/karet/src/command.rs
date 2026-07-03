@@ -269,6 +269,15 @@ pub enum Command {
     ExplorerEditCancel,
     /// Confirm the pending discard.
     ConfirmDiscard,
+    /// At the quit prompt: save every unsaved document, then exit.
+    QuitSaveAll,
+    /// At the quit prompt: discard unsaved changes and exit.
+    QuitDiscard,
+    /// At the startup recovery prompt: restore the unsaved changes from a previous
+    /// session's crash-recovery backups.
+    RecoverSwaps,
+    /// At the startup recovery prompt: discard the crash-recovery backups.
+    DiscardSwaps,
     /// Move the Search results selection up.
     SearchSelectUp,
     /// Move the Search results selection down.
@@ -429,6 +438,10 @@ impl Command {
             Self::ExplorerEditSubmit => "Explorer: Confirm Name",
             Self::ExplorerEditCancel => "Explorer: Cancel Edit",
             Self::ConfirmDiscard => "Source Control: Confirm Discard",
+            Self::QuitSaveAll => "Quit: Save All and Exit",
+            Self::QuitDiscard => "Quit: Discard and Exit",
+            Self::RecoverSwaps => "Recover Unsaved Changes",
+            Self::DiscardSwaps => "Discard Unsaved Backups",
             Self::SearchSelectUp => "Search: Select Previous",
             Self::SearchSelectDown => "Search: Select Next",
             Self::SearchOpen => "Search: Open Selected Result",
@@ -529,6 +542,10 @@ impl Command {
             Self::ExplorerEditSubmit => "confirm",
             Self::ExplorerEditCancel => "cancel",
             Self::ConfirmDiscard => "confirm",
+            Self::QuitSaveAll => "save all & quit",
+            Self::QuitDiscard => "discard & quit",
+            Self::RecoverSwaps => "recover",
+            Self::DiscardSwaps => "discard",
             Self::SearchOpen => "open",
             Self::SearchBeginInput => "edit",
             Self::SearchQuit => "close",
