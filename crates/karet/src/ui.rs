@@ -38,6 +38,9 @@ use ratatui::widgets::List;
 use ratatui::widgets::ListItem;
 use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
+use ratatui::widgets::Scrollbar;
+use ratatui::widgets::ScrollbarOrientation;
+use ratatui::widgets::ScrollbarState;
 use ratatui::widgets::Wrap;
 
 use crate::app::App;
@@ -1115,9 +1118,12 @@ fn draw_pane_content(
                         .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui())),
                     area,
                 );
-                // Reserve a one-row footer for the page indicator when there is room.
+                // Reserve a one-row footer for the page indicator and a one-column
+                // vertical scroll bar (page position), each only when there is room.
                 let footer_h = u16::from(page_count > 1 && area.height > 3);
+                let scrollbar_w = u16::from(page_count > 1 && area.width > 3);
                 let content = Rect {
+                    width: area.width - scrollbar_w,
                     height: area.height - footer_h,
                     ..area
                 };
@@ -1127,6 +1133,30 @@ fn draw_pane_content(
                 } else {
                     // Parsed, but this page failed to rasterize — show a neutral note.
                     f.render_widget(Placeholder::new(path, FileKind::Pdf, None, 0), content);
+                }
+                if scrollbar_w == 1 {
+                    // The scroll bar tracks the current page's position in the document.
+                    let track = Rect {
+                        x: area.x + area.width - 1,
+                        y: area.y,
+                        width: 1,
+                        height: area.height - footer_h,
+                    };
+                    let mut sb = ScrollbarState::new(page_count).position(idx);
+                    f.render_stateful_widget(
+                        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                            .begin_symbol(None)
+                            .end_symbol(None)
+                            .track_style(
+                                Style::default()
+                                    .fg(theme.role(ThemeRole::IndentGuide).to_ratatui()),
+                            )
+                            .thumb_style(
+                                Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui()),
+                            ),
+                        track,
+                        &mut sb,
+                    );
                 }
                 if footer_h == 1 {
                     let footer = Rect {
