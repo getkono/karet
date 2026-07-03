@@ -359,55 +359,6 @@ fn line_content_chars(line: ropey::RopeSlice<'_>) -> usize {
     end
 }
 
-/// Cursor and selection behavior built on the neutral [`karet_core::edit`] types.
-pub mod cursor {
-    use karet_core::edit::CursorState;
-
-    use super::TextBuffer;
-
-    /// The direction of a motion.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum Direction {
-        /// Toward the end of the buffer.
-        Forward,
-        /// Toward the start of the buffer.
-        Backward,
-    }
-
-    /// A multi-cursor with per-cursor desired-column memory, built on
-    /// [`CursorState`].
-    #[derive(Clone, Debug, Default)]
-    pub struct MultiCursor {
-        state: CursorState,
-    }
-
-    impl MultiCursor {
-        /// Create a multi-cursor from an initial [`CursorState`].
-        #[must_use]
-        pub fn new(state: CursorState) -> Self {
-            Self { state }
-        }
-
-        /// The underlying selection state.
-        #[must_use]
-        pub fn state(&self) -> &CursorState {
-            &self.state
-        }
-
-        /// Move every cursor by one word in `dir`.
-        pub fn move_word(&mut self, buf: &TextBuffer, dir: Direction) {
-            let _ = (buf, dir);
-            todo!()
-        }
-
-        /// Expand every selection to its enclosing bracket pair.
-        pub fn expand_to_bracket(&mut self, buf: &TextBuffer) {
-            let _ = buf;
-            todo!()
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

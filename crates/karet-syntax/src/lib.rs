@@ -8,6 +8,8 @@
 //! Fold regions, bracket pairs and structural selection are reserved (the public
 //! joints are defined; their tree-walking is filled in with the editor).
 
+use std::collections::BTreeMap;
+
 use karet_core::Span;
 use karet_core::TokenId;
 use karet_treesitter::SyntaxTree;
@@ -69,25 +71,67 @@ impl Highlights {
     }
 }
 
-/// The foldable regions of a buffer (by byte span).
+/// A foldable region as an inclusive line range `[start, end]` (0-based lines). The
+/// `start` line is the header that stays visible when collapsed; lines
+/// `start + 1 ..= end` are the ones that hide. Line ranges (not byte spans) because
+/// folding is inherently a line operation for every consumer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FoldRegion {
+    /// The 0-based header line (stays visible when collapsed).
+    pub start: u32,
+    /// The 0-based last line of the region, inclusive.
+    pub end: u32,
+}
+
+/// The foldable regions of a buffer, in document order (outermost first), with at
+/// most one region per start line.
 #[derive(Clone, Debug, Default)]
 pub struct FoldRegions {
-    regions: Vec<Span>,
+    regions: Vec<FoldRegion>,
 }
 
 impl FoldRegions {
     /// The fold regions, outermost first.
     #[must_use]
-    pub fn regions(&self) -> &[Span] {
+    pub fn regions(&self) -> &[FoldRegion] {
         &self.regions
     }
 }
 
-/// Compute fold regions from a parsed tree. (Reserved; not yet implemented.)
+/// Compute fold regions from a parsed tree.
+///
+/// The algorithm is deliberately **language-agnostic**: it folds every named node
+/// that spans more than one line, keeping the outermost node per start line so a
+/// construct and its wrapper (or two constructs sharing a line, like `} else {`)
+/// don't stack duplicate folds. This works on any tree-sitter grammar with no
+/// per-language configuration.
+///
+/// The trade-off is granularity: because it folds *any* multi-line node, it also
+/// creates folds for coarse nodes a human might not (e.g. a multi-line call
+/// argument list). Polished, per-construct folding — fold a function's body but not
+/// its signature line, skip trivial expressions — is inherently **not**
+/// language-agnostic: it requires per-grammar `folds.scm` queries (a `@fold`
+/// capture per language). That refinement is deferred; this baseline gives usable
+/// folds everywhere today.
 #[must_use]
 pub fn fold(tree: &SyntaxTree) -> FoldRegions {
-    let _ = tree;
-    FoldRegions::default()
+    // One fold per start line — the outermost node beginning there, i.e. the one that
+    // ends on the latest line.
+    let mut by_start: BTreeMap<u32, u32> = BTreeMap::new();
+    for node in tree.multiline_named_spans() {
+        by_start
+            .entry(node.start_row)
+            .and_modify(|end| *end = (*end).max(node.end_row))
+            .or_insert(node.end_row);
+    }
+    // BTreeMap iterates by ascending start line, i.e. document order (outermost
+    // first), which is exactly the contract of `FoldRegions::regions`.
+    FoldRegions {
+        regions: by_start
+            .into_iter()
+            .map(|(start, end)| FoldRegion { start, end })
+            .collect(),
+    }
 }
 
 /// Matched bracket pairs (open span, close span) within a buffer.
@@ -173,6 +217,67 @@ mod tests {
         assert_eq!(hl.spans_in(span(0, 10)).len(), 2);
         // Gap between spans yields nothing.
         assert!(hl.spans_in(span(9, 12)).is_empty());
+    }
+
+    #[test]
+    fn fold_finds_multiline_regions() -> Result<(), Box<dyn std::error::Error>> {
+        use std::path::Path;
+
+        use karet_treesitter::ParserPool;
+        use karet_treesitter::SyntaxTree;
+        use karet_treesitter::language_id_from_path;
+
+        let Some(lang) = language_id_from_path(Path::new("x.rs")) else {
+            return Ok(()); // rust grammar not compiled in; nothing to test
+        };
+        // A function whose body spans several lines: the fn item (and its block) are
+        // multi-line and must yield a fold; the one-line `let` inside must not.
+        let src = "fn main() {\n    let x = 42;\n    let y = x + 1;\n}\n";
+        let mut pool = ParserPool::new();
+        let tree = SyntaxTree::parse(&mut pool, lang, src)?;
+        let folds = fold(&tree);
+        let regions = folds.regions();
+        assert!(!regions.is_empty(), "expected at least one fold region");
+        // Every region spans more than one line, and the function's body (starting on
+        // line 0) folds down to (at least) the closing brace on line 3.
+        for r in regions {
+            assert!(r.end > r.start, "region {r:?} does not span multiple lines");
+        }
+        assert!(
+            regions.iter().any(|r| r.start == 0 && r.end >= 3),
+            "expected a fold covering the whole function body"
+        );
+        // Regions are unique per start line (outermost kept) and in document order.
+        let starts: Vec<u32> = regions.iter().map(|r| r.start).collect();
+        let mut sorted = starts.clone();
+        sorted.sort_unstable();
+        assert_eq!(starts, sorted, "regions must be in ascending start order");
+        assert_eq!(
+            starts.len(),
+            sorted
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            "at most one region per start line"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fold_is_empty_for_single_line_source() -> Result<(), Box<dyn std::error::Error>> {
+        use std::path::Path;
+
+        use karet_treesitter::ParserPool;
+        use karet_treesitter::SyntaxTree;
+        use karet_treesitter::language_id_from_path;
+
+        let Some(lang) = language_id_from_path(Path::new("x.rs")) else {
+            return Ok(());
+        };
+        let mut pool = ParserPool::new();
+        let tree = SyntaxTree::parse(&mut pool, lang, "let x = 1;")?;
+        assert!(fold(&tree).regions().is_empty());
+        Ok(())
     }
 
     #[test]

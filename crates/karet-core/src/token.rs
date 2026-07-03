@@ -209,6 +209,19 @@ pub enum ThemeRole {
     /// A mouse-hover highlight for list rows (a secondary accent, distinct from the
     /// primary [`Selection`](Self::Selection) highlight).
     HoverHighlight,
+    /// Background of the explorer row whose file is shown in the focused editor pane
+    /// (the "you are here" marker). Brighter than [`Selection`](Self::Selection) so
+    /// the focused editor's file reads as the strongest of the active-file tiers.
+    ActiveEditorRow,
+    /// De-emphasized UI text (gitignored / disabled explorer rows, etc.). Readable,
+    /// unlike the near-background [`IndentGuide`](Self::IndentGuide) rule color.
+    Muted,
+    /// Explorer icon tint for text-like files (code, markup, data, config, shell).
+    FileIconText,
+    /// Explorer icon tint for media and documents (images, PDFs, office docs).
+    FileIconMedia,
+    /// Explorer icon tint for opaque binaries and archives.
+    FileIconBinary,
 }
 
 #[cfg(test)]

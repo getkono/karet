@@ -13,6 +13,8 @@ pub enum Focus {
     Sidebar,
     /// The active editor tab.
     Editor,
+    /// The right-side outline panel.
+    Outline,
 }
 
 /// The sidebar's active panel.
@@ -63,6 +65,8 @@ pub enum FocusTarget {
     Search,
     /// The source-control panel.
     SourceControl,
+    /// The right-side outline panel.
+    Outline,
 }
 
 impl FocusTarget {
@@ -71,6 +75,7 @@ impl FocusTarget {
     #[must_use]
     pub fn from(focus: Focus, panel: SidebarPanel, tab: EditorTab) -> Self {
         match focus {
+            Focus::Outline => FocusTarget::Outline,
             Focus::Editor => match tab {
                 EditorTab::Diff => FocusTarget::DiffEditor,
                 EditorTab::Oversize => FocusTarget::Oversize,
@@ -93,8 +98,12 @@ pub enum Layer {
     Global,
     /// Active when any sidebar panel has focus.
     Sidebar,
+    /// Active when the Explorer panel has focus (new file/folder, rename, refresh).
+    Explorer,
     /// Active when the Source-Control panel has focus.
     SourceControl,
+    /// Active when the right-side outline panel has focus.
+    Outline,
     /// Active when a code or diff editor tab has focus.
     Editor,
     /// Active when a diff editor tab has focus.
@@ -115,6 +124,8 @@ pub enum Layer {
     CommitInput,
     /// Active while the discard-confirmation prompt is up.
     DiscardConfirm,
+    /// Active while the explorer inline name editor is open.
+    ExplorerEdit,
 }
 
 /// A text-capturing or transient context that shadows the focus layers. When one
@@ -134,6 +145,8 @@ pub enum Modal {
     CommitInput,
     /// The discard-confirmation prompt.
     DiscardConfirm,
+    /// The explorer inline name editor (new file/folder or rename).
+    ExplorerEdit,
 }
 
 /// The full input context: an optional exclusive [`Modal`] over the focused pane.
@@ -177,13 +190,16 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
         Some(Modal::Find) => &[L::Find],
         Some(Modal::CommitInput) => &[L::CommitInput],
         Some(Modal::DiscardConfirm) => &[L::DiscardConfirm],
+        Some(Modal::ExplorerEdit) => &[L::ExplorerEdit],
         Some(Modal::SearchInput) => &[L::SearchInput, L::Global],
         Some(Modal::SearchList) => &[L::SearchList, L::Global],
         None => match ctx.target {
+            FocusTarget::Outline => &[L::Outline, L::Global],
             FocusTarget::Editor => &[L::Editor, L::Global],
             FocusTarget::DiffEditor => &[L::DiffEditor, L::Editor, L::Global],
             FocusTarget::Oversize => &[L::Oversize, L::Global],
-            FocusTarget::Explorer | FocusTarget::Search => &[L::Sidebar, L::Global],
+            FocusTarget::Explorer => &[L::Explorer, L::Sidebar, L::Global],
+            FocusTarget::Search => &[L::Sidebar, L::Global],
             FocusTarget::SourceControl => &[L::SourceControl, L::Sidebar, L::Global],
         },
     }

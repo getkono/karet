@@ -125,6 +125,62 @@ impl CursorState {
             .copied()
             .unwrap_or_else(|| Selection::caret(LineCol::new(0, 0)))
     }
+
+    /// Add `sel` as the new primary selection, then merge any overlaps. Use this to
+    /// grow the cursor set (add-caret, add-next-occurrence).
+    pub fn push(&mut self, sel: Selection) {
+        self.selections.push(sel);
+        self.primary = self.selections.len().saturating_sub(1);
+        self.normalize();
+    }
+
+    /// Collapse the set to just the primary selection (e.g. the `Esc` fold-back).
+    pub fn collapse_to_primary(&mut self) {
+        let p = self.primary();
+        self.selections = vec![p];
+        self.primary = 0;
+    }
+
+    /// Merge coincident carets and overlapping/touching selections into their
+    /// forward-oriented union, preserving document order and which selection is
+    /// primary. A single selection is left untouched (its orientation is preserved),
+    /// so the common single-cursor path is a no-op. `selections` stays non-empty.
+    pub fn normalize(&mut self) {
+        if self.selections.len() <= 1 {
+            return;
+        }
+        let primary_head = self.primary().head;
+        let mut order = self.selections.clone();
+        order.sort_by_key(|s| {
+            let r = s.range();
+            (r.start, r.end)
+        });
+        let mut merged: Vec<Selection> = Vec::with_capacity(order.len());
+        for s in order {
+            match merged.last_mut() {
+                // Sorted, so `prev.start <= s.start`; they touch/overlap when
+                // `s.start <= prev.end`. Fuse into the forward-oriented union.
+                Some(prev) if s.range().start <= prev.range().end => {
+                    let lo = prev.range().start.min(s.range().start);
+                    let hi = prev.range().end.max(s.range().end);
+                    *prev = Selection {
+                        anchor: lo,
+                        head: hi,
+                    };
+                },
+                _ => merged.push(s),
+            }
+        }
+        // The primary is the merged group that spans the old primary caret.
+        self.primary = merged
+            .iter()
+            .position(|m| {
+                let r = m.range();
+                r.start <= primary_head && primary_head <= r.end
+            })
+            .unwrap_or(0);
+        self.selections = merged;
+    }
 }
 
 #[cfg(test)]
@@ -158,5 +214,58 @@ mod tests {
             CursorState::default().primary(),
             Selection::caret(LineCol::new(0, 0))
         );
+    }
+
+    #[test]
+    fn normalize_merges_coincident_carets() {
+        let mut cs = CursorState::single(Selection::caret(LineCol::new(1, 2)));
+        cs.selections.push(Selection::caret(LineCol::new(1, 2)));
+        cs.normalize();
+        assert_eq!(cs.selections.len(), 1);
+        assert_eq!(cs.primary().head, LineCol::new(1, 2));
+    }
+
+    #[test]
+    fn normalize_merges_overlapping_and_tracks_primary() {
+        // Three selections; the last (primary) overlaps the first.
+        let mut cs = CursorState {
+            selections: vec![
+                Selection {
+                    anchor: LineCol::new(0, 0),
+                    head: LineCol::new(0, 4),
+                },
+                Selection::caret(LineCol::new(2, 0)),
+                Selection {
+                    anchor: LineCol::new(0, 3),
+                    head: LineCol::new(0, 7),
+                },
+            ],
+            primary: 2,
+        };
+        cs.normalize();
+        // The two overlapping [0,0..0,4] and [0,3..0,7] fuse into [0,0..0,7]; the
+        // caret at (2,0) stays separate.
+        assert_eq!(cs.selections.len(), 2);
+        assert_eq!(
+            cs.selections[0].range(),
+            Range {
+                start: LineCol::new(0, 0),
+                end: LineCol::new(0, 7),
+            }
+        );
+        // The primary caret (0,7) still lives in the merged group.
+        let p = cs.primary().range();
+        assert!(p.start <= LineCol::new(0, 7) && LineCol::new(0, 7) <= p.end);
+    }
+
+    #[test]
+    fn push_sets_primary_then_collapse_keeps_it() {
+        let mut cs = CursorState::single(Selection::caret(LineCol::new(0, 0)));
+        cs.push(Selection::caret(LineCol::new(3, 1)));
+        assert_eq!(cs.selections.len(), 2);
+        assert_eq!(cs.primary().head, LineCol::new(3, 1));
+        cs.collapse_to_primary();
+        assert_eq!(cs.selections, vec![Selection::caret(LineCol::new(3, 1))]);
+        assert_eq!(cs.primary, 0);
     }
 }

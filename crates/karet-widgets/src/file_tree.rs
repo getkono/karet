@@ -24,7 +24,9 @@ use std::path::PathBuf;
 use karet_core::Decoration;
 use karet_core::DecorationKind;
 use karet_core::ThemeRole;
+use karet_filetype::Category;
 use karet_filetype::IconStyle;
+use karet_filetype::category_for_path;
 use karet_filetype::chevron;
 use karet_filetype::directory_icon;
 use karet_filetype::icon_for_path;
@@ -56,6 +58,49 @@ pub struct FileTreeRow {
     pub expanded: bool,
     /// Whether the entry is gitignored (shown dimmed, VS Code style).
     pub ignored: bool,
+    /// Whether this row is the in-progress inline name editor (a new file/folder
+    /// placeholder or a rename): its [`label`](Self::label) holds the typed buffer and
+    /// it renders with a text cursor rather than as a real entry.
+    pub editing: bool,
+}
+
+/// What an in-progress inline edit will create or change once committed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum EditKind {
+    /// Create a new file under [`EditState::parent`].
+    NewFile,
+    /// Create a new folder under [`EditState::parent`].
+    NewFolder,
+    /// Rename the entry at this path.
+    Rename(PathBuf),
+}
+
+/// The in-progress inline name edit: what it will do, the directory it acts in, and
+/// the name typed so far.
+#[derive(Clone, Debug)]
+struct EditState {
+    kind: EditKind,
+    parent: PathBuf,
+    buffer: String,
+}
+
+/// A committed inline edit for the host to apply on the filesystem.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PendingEdit {
+    /// Create a file or (when `folder`) a directory at `path`.
+    Create {
+        /// The absolute path to create.
+        path: PathBuf,
+        /// Whether to create a directory (else an empty file).
+        folder: bool,
+    },
+    /// Rename `from` to `to`.
+    Rename {
+        /// The existing absolute path.
+        from: PathBuf,
+        /// The new absolute path.
+        to: PathBuf,
+    },
 }
 
 /// Persistent file-tree state: expansion, selection, and the flattened row cache.
@@ -69,6 +114,7 @@ pub struct FileTreeState {
     show_hidden: bool,
     respect_gitignore: bool,
     needs_rebuild: bool,
+    editing: Option<EditState>,
 }
 
 impl Default for FileTreeState {
@@ -82,6 +128,7 @@ impl Default for FileTreeState {
             show_hidden: true,
             respect_gitignore: true,
             needs_rebuild: true,
+            editing: None,
         }
     }
 }
@@ -172,6 +219,162 @@ impl FileTreeState {
         self.selection.select_all();
     }
 
+    /// Collapse every expanded directory (VS Code's "Collapse Folders").
+    pub fn collapse_all(&mut self) {
+        if !self.expanded.is_empty() {
+            self.expanded.clear();
+            self.needs_rebuild = true;
+        }
+    }
+
+    /// Whether an inline name edit (new file/folder or rename) is in progress.
+    #[must_use]
+    pub fn is_editing(&self) -> bool {
+        self.editing.is_some()
+    }
+
+    /// The directory a newly-created entry should live in: the selected directory, a
+    /// selected file's parent, or the root when nothing is selected.
+    fn new_entry_parent(&self) -> PathBuf {
+        match self.selected() {
+            Some(row) if row.is_dir => row.path.clone(),
+            Some(row) => row
+                .path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| self.root.clone()),
+            None => self.root.clone(),
+        }
+    }
+
+    /// Begin creating a new file (or, when `folder`, a directory) under the selection,
+    /// showing an inline name editor. The parent directory is expanded so the editor
+    /// is visible as its first child.
+    pub fn begin_new(&mut self, folder: bool) {
+        let parent = self.new_entry_parent();
+        if parent != self.root {
+            self.expanded.insert(parent.clone());
+        }
+        let kind = if folder {
+            EditKind::NewFolder
+        } else {
+            EditKind::NewFile
+        };
+        self.editing = Some(EditState {
+            kind,
+            parent,
+            buffer: String::new(),
+        });
+        self.needs_rebuild = true;
+    }
+
+    /// Begin renaming the selected entry, seeding the editor with its current name.
+    pub fn begin_rename(&mut self) {
+        if let Some(row) = self.selected() {
+            let old = row.path.clone();
+            let parent = old
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| self.root.clone());
+            self.editing = Some(EditState {
+                kind: EditKind::Rename(old.clone()),
+                parent,
+                buffer: file_label(&old),
+            });
+            self.needs_rebuild = true;
+        }
+    }
+
+    /// Append a character to the inline edit buffer (no-op when not editing).
+    pub fn edit_push(&mut self, c: char) {
+        if let Some(edit) = self.editing.as_mut() {
+            edit.buffer.push(c);
+            self.needs_rebuild = true;
+        }
+    }
+
+    /// Delete the last character of the inline edit buffer (no-op when not editing).
+    pub fn edit_backspace(&mut self) {
+        if let Some(edit) = self.editing.as_mut() {
+            edit.buffer.pop();
+            self.needs_rebuild = true;
+        }
+    }
+
+    /// Cancel any in-progress inline edit.
+    pub fn cancel_edit(&mut self) {
+        if self.editing.take().is_some() {
+            self.needs_rebuild = true;
+        }
+    }
+
+    /// Finish the inline edit, returning the filesystem action to apply (or `None` if
+    /// the name is blank). The editor is cleared either way.
+    #[must_use]
+    pub fn take_edit(&mut self) -> Option<PendingEdit> {
+        let edit = self.editing.take()?;
+        self.needs_rebuild = true;
+        let name = edit.buffer.trim();
+        if name.is_empty() {
+            return None;
+        }
+        Some(match edit.kind {
+            EditKind::NewFile => PendingEdit::Create {
+                path: edit.parent.join(name),
+                folder: false,
+            },
+            EditKind::NewFolder => PendingEdit::Create {
+                path: edit.parent.join(name),
+                folder: true,
+            },
+            EditKind::Rename(old) => {
+                let to = old
+                    .parent()
+                    .map_or_else(|| edit.parent.join(name), |p| p.join(name));
+                PendingEdit::Rename { from: old, to }
+            },
+        })
+    }
+
+    /// Overlay the in-progress inline edit onto freshly-built `rows`: a rename marks
+    /// its target row as editing; a new file/folder inserts a placeholder editing row
+    /// under its parent. Returns the row index the cursor should follow, if any.
+    fn apply_editing(&self, rows: &mut Vec<FileTreeRow>) -> Option<usize> {
+        let edit = self.editing.as_ref()?;
+        match &edit.kind {
+            EditKind::Rename(old) => {
+                let idx = rows.iter().position(|r| &r.path == old)?;
+                rows[idx].editing = true;
+                rows[idx].label = edit.buffer.clone();
+                Some(idx)
+            },
+            EditKind::NewFile | EditKind::NewFolder => {
+                let is_dir = matches!(edit.kind, EditKind::NewFolder);
+                let (at, depth) = if edit.parent == self.root {
+                    (0, 0)
+                } else if let Some(idx) = rows.iter().position(|r| r.path == edit.parent) {
+                    (idx + 1, rows[idx].depth + 1)
+                } else {
+                    (0, 0)
+                };
+                let at = at.min(rows.len());
+                rows.insert(
+                    at,
+                    FileTreeRow {
+                        path: edit.parent.clone(),
+                        label: edit.buffer.clone(),
+                        depth,
+                        is_dir,
+                        expanded: false,
+                        ignored: false,
+                        editing: true,
+                    },
+                );
+                Some(at)
+            },
+        }
+    }
+
     /// Expand directory `path`.
     pub fn expand(&mut self, path: &Path) {
         if self.expanded.insert(path.to_path_buf()) {
@@ -217,17 +420,33 @@ impl FileTreeState {
         self.root = root.to_path_buf();
         let mut rows = Vec::new();
         let children = read_dir_sorted(root, self.show_hidden, self.respect_gitignore);
-        self.push_entries(children, 0, &mut rows);
+        self.push_entries(children, 0, false, &mut rows);
+        // Overlay any in-progress inline edit, then keep its row under the cursor.
+        let follow = self.apply_editing(&mut rows);
         self.rows = rows;
         self.selection.set_len(self.rows.len());
+        if let Some(idx) = follow {
+            self.selection.move_to(idx);
+        }
         self.needs_rebuild = false;
     }
 
     /// Append pre-read `children` (files and compacted directory chains) to `rows`.
-    fn push_entries(&self, children: Vec<Entry>, depth: u16, rows: &mut Vec<FileTreeRow>) {
+    ///
+    /// `parent_ignored` propagates gitignore state downward: git cannot re-include a
+    /// path once an ancestor directory is excluded, so every descendant of an ignored
+    /// directory is ignored too — even though the descendant's own name matches no
+    /// pattern (a `target/` rule dims everything under `target/`, not just `target/`).
+    fn push_entries(
+        &self,
+        children: Vec<Entry>,
+        depth: u16,
+        parent_ignored: bool,
+        rows: &mut Vec<FileTreeRow>,
+    ) {
         for entry in children {
             if entry.is_dir {
-                self.push_compacted_dir(entry, depth, rows);
+                self.push_compacted_dir(entry, depth, parent_ignored, rows);
             } else {
                 rows.push(FileTreeRow {
                     label: file_label(&entry.path),
@@ -235,7 +454,8 @@ impl FileTreeState {
                     depth,
                     is_dir: false,
                     expanded: false,
-                    ignored: entry.ignored,
+                    ignored: parent_ignored || entry.ignored,
+                    editing: false,
                 });
             }
         }
@@ -243,10 +463,17 @@ impl FileTreeState {
 
     /// Push a directory row, compacting a single-child directory chain into one
     /// `a/b/c` row, and recursing into the chain's tip when it is expanded.
-    fn push_compacted_dir(&self, first: Entry, depth: u16, rows: &mut Vec<FileTreeRow>) {
+    fn push_compacted_dir(
+        &self,
+        first: Entry,
+        depth: u16,
+        parent_ignored: bool,
+        rows: &mut Vec<FileTreeRow>,
+    ) {
         let mut label = file_label(&first.path);
         let mut tip = first.path;
-        let mut ignored = first.ignored;
+        // Ignore inherits strictly: once an ancestor is ignored the whole subtree is.
+        let mut ignored = parent_ignored || first.ignored;
         // Descend while the current directory's *only* entry is another directory.
         let children = loop {
             let entries = read_dir_sorted(&tip, self.show_hidden, self.respect_gitignore);
@@ -268,9 +495,10 @@ impl FileTreeState {
             is_dir: true,
             expanded,
             ignored,
+            editing: false,
         });
         if expanded {
-            self.push_entries(children, depth + 1, rows);
+            self.push_entries(children, depth + 1, ignored, rows);
         }
     }
 }
@@ -367,8 +595,9 @@ fn name_key(path: &Path) -> String {
 pub struct FileTree<'a> {
     root: &'a Path,
     status: &'a [(PathBuf, Decoration)],
-    open: &'a [PathBuf],
+    visible: &'a [PathBuf],
     active: Option<&'a Path>,
+    explorer_focused: bool,
     hover: Option<usize>,
     icons: IconStyle,
     theme: Option<&'a Theme>,
@@ -381,8 +610,9 @@ impl<'a> FileTree<'a> {
         Self {
             root,
             status: &[],
-            open: &[],
+            visible: &[],
             active: None,
+            explorer_focused: false,
             hover: None,
             icons: IconStyle::default(),
             theme: None,
@@ -397,19 +627,33 @@ impl<'a> FileTree<'a> {
         self
     }
 
-    /// Supply the paths of files currently open in editor tabs, so their rows are
-    /// highlighted (the [`active`](Self::active) one most prominently).
+    /// Supply the paths of files shown in *other* (non-focused) editor panes — i.e.
+    /// each background pane's active tab. Their rows get the accent foreground (a
+    /// weaker tier than [`active`](Self::active)). Files that are merely open in a
+    /// background tab (not the visible tab of any pane) are intentionally omitted, so
+    /// opening a file no longer dims/recolors its explorer row.
     #[must_use]
-    pub fn open(mut self, open: &'a [PathBuf]) -> Self {
-        self.open = open;
+    pub fn visible(mut self, visible: &'a [PathBuf]) -> Self {
+        self.visible = visible;
         self
     }
 
-    /// Supply the path of the active editor tab, so its row gets the strongest
-    /// highlight (VS Code shows the active file emphasized in the explorer).
+    /// Supply the path of the focused editor pane's active tab, so its row gets the
+    /// strongest highlight (a distinct background plus a bold accent) — the "you are
+    /// here" marker VS Code shows for the active file.
     #[must_use]
     pub fn active(mut self, active: Option<&'a Path>) -> Self {
         self.active = active;
+        self
+    }
+
+    /// Whether the explorer panel currently holds keyboard focus. The tree's own
+    /// selection (cursor / last click) only gets the [`Selection`](ThemeRole::Selection)
+    /// background while it does, so it stops competing with the active-file highlight
+    /// once focus moves to the editor.
+    #[must_use]
+    pub fn explorer_focused(mut self, focused: bool) -> Self {
+        self.explorer_focused = focused;
         self
     }
 
@@ -437,6 +681,21 @@ impl<'a> FileTree<'a> {
     /// The status decoration for `path`, if any.
     fn status_for(&self, path: &Path) -> Option<&Decoration> {
         self.status.iter().find(|(p, _)| p == path).map(|(_, d)| d)
+    }
+}
+
+/// Map a file [`Category`] to the explorer icon-tint role: text-like types share
+/// one tint, media and documents another, binaries/archives a third, and everything
+/// unrecognized falls back to the neutral [`Foreground`](ThemeRole::Foreground).
+fn category_role(category: Category) -> ThemeRole {
+    match category {
+        Category::Code | Category::Markup | Category::Data | Category::Config | Category::Shell => {
+            ThemeRole::FileIconText
+        },
+        Category::Image | Category::Document => ThemeRole::FileIconMedia,
+        Category::Archive | Category::Binary => ThemeRole::FileIconBinary,
+        // Unknown — and any future Category variant — stays neutral.
+        _ => ThemeRole::Foreground,
     }
 }
 
@@ -468,6 +727,7 @@ impl StatefulWidget for FileTree<'_> {
         };
         let fg = theme.role(ThemeRole::Foreground);
         let guide = theme.role(ThemeRole::IndentGuide);
+        let muted = theme.role(ThemeRole::Muted);
         let accent = theme.role(ThemeRole::LineNumberActive);
 
         for (i, row) in state
@@ -478,9 +738,18 @@ impl StatefulWidget for FileTree<'_> {
             .take(height)
         {
             let y = area.y + u16::try_from(i - state.offset).unwrap_or(0);
+            // Which editor(s) show this file drives the highlight: the focused pane's
+            // active file is strongest, a file visible in another pane is weaker.
+            let is_active = self.active == Some(row.path.as_path());
+            let is_visible = self.visible.iter().any(|p| p == &row.path);
             let selected = state.selection.is_selected(i);
-            // The primary Selection highlight wins over the secondary hover highlight.
-            let row_bg = if selected {
+            // Background precedence: the focused pane's active file ("you are here")
+            // wins; then the explorer's own cursor — but only while the explorer holds
+            // focus, so the last-clicked row doesn't linger once you return to editing;
+            // then the transient mouse-hover accent.
+            let row_bg = if is_active {
+                Some(ThemeRole::ActiveEditorRow)
+            } else if selected && self.explorer_focused {
                 Some(ThemeRole::Selection)
             } else if self.hover == Some(i) {
                 Some(ThemeRole::HoverHighlight)
@@ -513,43 +782,74 @@ impl StatefulWidget for FileTree<'_> {
                 icon_for_path(&row.path, self.icons)
             };
 
-            // Foreground precedence: the active editor's file is accented and bold;
-            // other open files are accented; gitignored entries recede to the dim
-            // gutter color (VS Code style); everything else is normal.
-            let is_active = self.active == Some(row.path.as_path());
-            let is_open = self.open.iter().any(|p| p == &row.path);
-            let (text, label_style) = if is_active {
+            // Foreground precedence: the focused pane's active file is accented and
+            // bold; a file visible in another pane is accented; gitignored entries
+            // recede to a readable muted grey (VS Code style); everything else — a
+            // merely-open background tab included — is normal.
+            let (row_fg, label_style) = if is_active {
                 (
                     accent,
                     Style::default()
                         .fg(accent.to_ratatui())
                         .add_modifier(Modifier::BOLD),
                 )
-            } else if is_open {
+            } else if is_visible {
                 (accent, Style::default().fg(accent.to_ratatui()))
             } else if row.ignored {
-                (guide, Style::default().fg(guide.to_ratatui()))
+                (muted, Style::default().fg(muted.to_ratatui()))
             } else {
                 (fg, Style::default().fg(fg.to_ratatui()))
             };
-            let mut spans = vec![
-                Span::styled(
-                    "  ".repeat(row.depth as usize),
-                    Style::default().fg(guide.to_ratatui()),
-                ),
-                Span::styled(format!("{chev} "), Style::default().fg(guide.to_ratatui())),
-                Span::styled(format!("{icon} "), Style::default().fg(text.to_ratatui())),
-                Span::styled(row.label.clone(), label_style),
-            ];
-            if let Some(dec) = self.status_for(&row.path)
-                && let DecorationKind::GutterMarker { glyph } = &dec.kind
-            {
-                let color = dec.role.map_or(fg, |r| theme.role(r));
-                spans.push(Span::raw(" "));
+            // The type icon is tinted by file Category (text / media / binary /
+            // neutral); directories follow the row color, and gitignored entries
+            // recede to muted so the whole row dims together.
+            let icon_color = if row.ignored {
+                muted
+            } else if row.is_dir {
+                row_fg
+            } else {
+                theme.role(category_role(category_for_path(&row.path)))
+            };
+            // Indent guides: one vertical rule per ancestor depth level. Rows are
+            // flattened depth-first, so a rule at each ancestor column draws a
+            // continuous line down every expanded directory's children.
+            let mut spans = Vec::with_capacity(row.depth as usize + 3);
+            for _ in 0..row.depth {
                 spans.push(Span::styled(
-                    glyph.to_string(),
-                    Style::default().fg(color.to_ratatui()),
+                    "\u{2502} ", // "│ " — box-drawing rule + spacer, 2 cells per level
+                    Style::default().fg(guide.to_ratatui()),
                 ));
+            }
+            spans.push(Span::styled(
+                format!("{chev} "),
+                Style::default().fg(row_fg.to_ratatui()),
+            ));
+            spans.push(Span::styled(
+                format!("{icon} "),
+                Style::default().fg(icon_color.to_ratatui()),
+            ));
+            if row.editing {
+                // The inline name editor: the buffer plus a reversed-cell cursor.
+                spans.push(Span::styled(
+                    row.label.clone(),
+                    Style::default().fg(accent.to_ratatui()),
+                ));
+                spans.push(Span::styled(
+                    " ",
+                    Style::default().add_modifier(Modifier::REVERSED),
+                ));
+            } else {
+                spans.push(Span::styled(row.label.clone(), label_style));
+                if let Some(dec) = self.status_for(&row.path)
+                    && let DecorationKind::GutterMarker { glyph } = &dec.kind
+                {
+                    let color = dec.role.map_or(fg, |r| theme.role(r));
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(
+                        glyph.to_string(),
+                        Style::default().fg(color.to_ratatui()),
+                    ));
+                }
             }
 
             buf.set_line(area.x, y, &Line::from(spans), area.width);
@@ -672,6 +972,163 @@ mod tests {
     }
 
     #[test]
+    fn gitignore_state_is_inherited_by_descendants() {
+        let dir = temp_dir();
+        // `target/` is ignored by name; its children match no pattern themselves, so
+        // strict inheritance is the only thing that keeps them dimmed once expanded.
+        write(&dir.path, ".gitignore", b"target/\n");
+        write(&dir.path, "target/debug/app", b"bin");
+        write(&dir.path, "target/notes.txt", b"n");
+        write(&dir.path, "src/main.rs", b"fn main() {}\n");
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+        // `target` itself is ignored...
+        let target = dir.path.join("target");
+        assert!(state.rows().iter().any(|r| r.path == target && r.ignored));
+        // ...and after expanding it, every descendant row inherits the ignored flag.
+        state.expand(&target);
+        state.expand(&target.join("debug"));
+        state.ensure_built(&dir.path);
+        let under_target: Vec<&FileTreeRow> = state
+            .rows()
+            .iter()
+            .filter(|r| r.path.starts_with(&target))
+            .collect();
+        assert!(under_target.len() >= 3, "expected target subtree rows");
+        assert!(
+            under_target.iter().all(|r| r.ignored),
+            "descendants of an ignored dir must all be ignored"
+        );
+        // A sibling outside the ignored subtree is unaffected.
+        assert!(
+            state
+                .rows()
+                .iter()
+                .any(|r| r.path == dir.path.join("src") && !r.ignored)
+        );
+    }
+
+    #[test]
+    fn new_file_inserts_an_inline_editor_and_commits() {
+        let dir = temp_dir();
+        write(&dir.path, "existing.txt", b"x");
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+        // Begin a new file at the root; an editing placeholder row appears at the top.
+        state.begin_new(false);
+        state.ensure_built(&dir.path);
+        assert!(state.is_editing());
+        assert!(state.rows().iter().any(|r| r.editing));
+        // Type a name; the editor row reflects it.
+        for c in "new.rs".chars() {
+            state.edit_push(c);
+        }
+        state.ensure_built(&dir.path);
+        assert!(
+            state
+                .rows()
+                .iter()
+                .any(|r| r.editing && r.label == "new.rs")
+        );
+        // Commit → a Create for the joined path, and editing ends.
+        let pending = state.take_edit();
+        assert_eq!(
+            pending,
+            Some(PendingEdit::Create {
+                path: dir.path.join("new.rs"),
+                folder: false,
+            })
+        );
+        assert!(!state.is_editing());
+    }
+
+    #[test]
+    fn new_folder_nests_under_the_selected_directory() {
+        let dir = temp_dir();
+        write(&dir.path, "sub/keep.txt", b"k");
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+        // Select the "sub" directory, then create a folder inside it.
+        state.select_visible(0);
+        assert!(state.selected().is_some_and(|r| r.is_dir));
+        state.begin_new(true);
+        for c in "child".chars() {
+            state.edit_push(c);
+        }
+        state.ensure_built(&dir.path);
+        // The editor row is nested one level under "sub".
+        let editing = state.rows().iter().find(|r| r.editing);
+        assert!(editing.is_some_and(|r| r.is_dir && r.depth == 1));
+        assert_eq!(
+            state.take_edit(),
+            Some(PendingEdit::Create {
+                path: dir.path.join("sub").join("child"),
+                folder: true,
+            })
+        );
+    }
+
+    #[test]
+    fn rename_marks_the_row_and_returns_the_new_path() {
+        let dir = temp_dir();
+        write(&dir.path, "old.txt", b"o");
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+        state.select_visible(0);
+        state.begin_rename();
+        // The buffer seeds with the current name; clear it and type a new one.
+        for _ in 0.."old.txt".len() {
+            state.edit_backspace();
+        }
+        for c in "renamed.txt".chars() {
+            state.edit_push(c);
+        }
+        state.ensure_built(&dir.path);
+        assert!(
+            state
+                .rows()
+                .iter()
+                .any(|r| r.editing && r.label == "renamed.txt")
+        );
+        assert_eq!(
+            state.take_edit(),
+            Some(PendingEdit::Rename {
+                from: dir.path.join("old.txt"),
+                to: dir.path.join("renamed.txt"),
+            })
+        );
+    }
+
+    #[test]
+    fn blank_name_commit_is_a_no_op() {
+        let dir = temp_dir();
+        write(&dir.path, "a.txt", b"a");
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+        state.begin_new(false);
+        assert_eq!(state.take_edit(), None); // nothing typed → no action
+        assert!(!state.is_editing());
+    }
+
+    #[test]
+    fn collapse_all_closes_every_directory() {
+        let dir = temp_dir();
+        write(&dir.path, "a/b/c.txt", b"c");
+        write(&dir.path, "a/note.txt", b"n"); // keeps "a" from compacting
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+        state.expand(&dir.path.join("a"));
+        state.expand(&dir.path.join("a/b"));
+        state.ensure_built(&dir.path);
+        assert!(state.rows().len() > 1);
+        state.collapse_all();
+        state.ensure_built(&dir.path);
+        // Only the top-level "a" remains, collapsed.
+        assert_eq!(labels(&state), vec!["a"]);
+        assert!(!state.rows()[0].expanded);
+    }
+
+    #[test]
     fn git_directory_is_always_excluded() {
         let dir = temp_dir();
         write(&dir.path, ".git/config", b"[core]\n");
@@ -775,13 +1232,76 @@ mod tests {
         // The label starts at column 4 (2 chevron + 2 icon cells) and is bold.
         assert!(buf.content()[4].modifier.contains(Modifier::BOLD));
 
-        // Without an active path, the same row is not bold.
+        // The focused pane's active file also gets the dedicated row background.
+        assert_eq!(
+            buf.content()[0].bg,
+            theme.role(ThemeRole::ActiveEditorRow).to_ratatui()
+        );
+
+        // Without an active path, the same row is not bold and has no active bg.
         let mut plain = Buffer::empty(area);
         let mut state2 = FileTreeState::new();
         FileTree::new(&dir.path)
             .theme(&theme)
             .render(area, &mut plain, &mut state2);
         assert!(!plain.content()[4].modifier.contains(Modifier::BOLD));
+        assert_ne!(
+            plain.content()[0].bg,
+            theme.role(ThemeRole::ActiveEditorRow).to_ratatui()
+        );
+    }
+
+    #[test]
+    fn visible_file_row_is_accent_not_bold() {
+        let dir = temp_dir();
+        write(&dir.path, "a.txt", b"a");
+        let mut state = FileTreeState::new();
+        let theme = Theme::dark();
+        let visible = vec![dir.path.join("a.txt")];
+        let area = Rect::new(0, 0, 30, 4);
+        let mut buf = Buffer::empty(area);
+        FileTree::new(&dir.path)
+            .theme(&theme)
+            .visible(&visible)
+            .render(area, &mut buf, &mut state);
+        // A file visible in another (non-focused) pane: accent foreground, not bold,
+        // and none of the stronger active-file background.
+        assert_eq!(
+            buf.content()[4].fg,
+            theme.role(ThemeRole::LineNumberActive).to_ratatui()
+        );
+        assert!(!buf.content()[4].modifier.contains(Modifier::BOLD));
+        assert_ne!(
+            buf.content()[0].bg,
+            theme.role(ThemeRole::ActiveEditorRow).to_ratatui()
+        );
+    }
+
+    #[test]
+    fn selection_background_requires_explorer_focus() {
+        let dir = temp_dir();
+        write(&dir.path, "a.txt", b"a");
+        let theme = Theme::dark();
+        let area = Rect::new(0, 0, 30, 4);
+        let sel = theme.role(ThemeRole::Selection).to_ratatui();
+
+        // Cursor on row 0 but the explorer is not focused → no selection background,
+        // so the last click doesn't linger once focus is in the editor.
+        let mut unfocused = FileTreeState::new();
+        let mut buf = Buffer::empty(area);
+        FileTree::new(&dir.path)
+            .theme(&theme)
+            .render(area, &mut buf, &mut unfocused);
+        assert_ne!(buf.content()[0].bg, sel);
+
+        // Explorer focused → the cursor row gets the selection background.
+        let mut focused = FileTreeState::new();
+        let mut buf2 = Buffer::empty(area);
+        FileTree::new(&dir.path)
+            .theme(&theme)
+            .explorer_focused(true)
+            .render(area, &mut buf2, &mut focused);
+        assert_eq!(buf2.content()[0].bg, sel);
     }
 
     #[test]
@@ -814,5 +1334,44 @@ mod tests {
             .collect();
         assert!(rendered.contains("a.txt"));
         assert!(rendered.contains('M'));
+    }
+
+    #[test]
+    fn nested_rows_draw_indent_guides() {
+        let dir = temp_dir();
+        write(&dir.path, "sub/b.txt", b"b");
+        let mut state = FileTreeState::new();
+        let theme = Theme::dark();
+        state.ensure_built(&dir.path);
+        state.toggle(&dir.path.join("sub"));
+        let area = Rect::new(0, 0, 30, 4);
+        let mut buf = Buffer::empty(area);
+        FileTree::new(&dir.path)
+            .theme(&theme)
+            .render(area, &mut buf, &mut state);
+        // Row 0 is the expanded `sub` (depth 0, no guide, ▼ chevron); row 1 is the
+        // nested `b.txt` (depth 1), whose first cell is the box-drawing indent rule.
+        let width = area.width as usize;
+        assert_eq!(buf.content()[0].symbol(), "\u{25bc}"); // ▼ expanded directory
+        assert_eq!(buf.content()[width].symbol(), "\u{2502}"); // │ indent guide
+    }
+
+    #[test]
+    fn file_icons_are_tinted_by_category() {
+        let dir = temp_dir();
+        write(&dir.path, "main.rs", b"fn main() {}");
+        let mut state = FileTreeState::new();
+        let theme = Theme::dark();
+        let area = Rect::new(0, 0, 30, 2);
+        let mut buf = Buffer::empty(area);
+        FileTree::new(&dir.path)
+            .theme(&theme)
+            .render(area, &mut buf, &mut state);
+        // A code file's icon (column 2, after the blank chevron cells) is tinted with
+        // the text-file role, not the neutral foreground.
+        assert_eq!(
+            buf.content()[2].fg,
+            theme.role(ThemeRole::FileIconText).to_ratatui()
+        );
     }
 }

@@ -21,6 +21,7 @@ mod command;
 mod editing;
 mod keymap;
 mod notify;
+mod outline;
 mod overlay;
 mod render;
 mod tab;

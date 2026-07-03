@@ -83,6 +83,16 @@ pub enum Command {
     SidebarCollapse,
     /// Toggle expansion of the selected directory.
     SidebarToggleExpand,
+    /// Show or hide the right-side outline panel (and focus it when shown).
+    ToggleOutline,
+    /// Move the outline selection up.
+    OutlineUp,
+    /// Move the outline selection down.
+    OutlineDown,
+    /// Navigate to the selected outline entry (jump to its page / position).
+    OutlineActivate,
+    /// Leave the outline panel, returning focus to the editor.
+    OutlineCollapse,
     /// Move the caret up one line.
     CaretUp,
     /// Move the caret down one line.
@@ -99,6 +109,44 @@ pub enum Command {
     SelectLeft,
     /// Extend the selection right one column.
     SelectRight,
+    /// Move the caret to the previous word boundary.
+    CaretWordLeft,
+    /// Move the caret to the next word boundary.
+    CaretWordRight,
+    /// Move the caret to the start of the line.
+    CaretLineStart,
+    /// Move the caret to the end of the line.
+    CaretLineEnd,
+    /// Move the caret to the start of the document.
+    CaretDocStart,
+    /// Move the caret to the end of the document.
+    CaretDocEnd,
+    /// Extend the selection to the previous word boundary.
+    SelectWordLeft,
+    /// Extend the selection to the next word boundary.
+    SelectWordRight,
+    /// Extend the selection to the start of the line.
+    SelectLineStart,
+    /// Extend the selection to the end of the line.
+    SelectLineEnd,
+    /// Extend the selection to the start of the document.
+    SelectDocStart,
+    /// Extend the selection to the end of the document.
+    SelectDocEnd,
+    /// Extend the selection up one page.
+    SelectPageUp,
+    /// Extend the selection down one page.
+    SelectPageDown,
+    /// Select the entire document in the editor.
+    EditorSelectAll,
+    /// Add a caret on the line above the primary caret.
+    AddCursorAbove,
+    /// Add a caret on the line below the primary caret.
+    AddCursorBelow,
+    /// Select the word under the caret, then add a caret at the next occurrence.
+    AddCursorNextOccurrence,
+    /// Collapse multiple carets to the primary; with one caret, leave the editor.
+    CollapseCarets,
     /// Scroll the active tab up one line.
     ScrollUp,
     /// Scroll the active tab down one line.
@@ -113,6 +161,8 @@ pub enum Command {
     Bottom,
     /// Toggle a diff tab between unified and side-by-side.
     ToggleDiffLayout,
+    /// Fold or unfold the code region at the cursor.
+    ToggleFold,
     /// Move to the next changed file (diff tab).
     NextChangedFile,
     /// Move to the previous changed file (diff tab).
@@ -167,6 +217,16 @@ pub enum Command {
     ShowBlame,
     /// Open a semantic-blame view narrowed to the function under the caret.
     BlameFunction,
+    /// Begin creating a new file in the explorer (inline name editor).
+    ExplorerNewFile,
+    /// Begin creating a new folder in the explorer (inline name editor).
+    ExplorerNewFolder,
+    /// Begin renaming the selected explorer entry (inline name editor).
+    ExplorerRename,
+    /// Hard-reload the explorer tree (and re-request VCS status).
+    ExplorerRefresh,
+    /// Collapse every expanded folder in the explorer.
+    ExplorerCollapseAll,
 
     // Modal-scoped commands. These are resolved only while a modal context is
     // active (see [`crate::keymap::Modal`]) and never appear in the command palette.
@@ -184,10 +244,29 @@ pub enum Command {
     FindPrev,
     /// Close the find bar.
     FindCancel,
+    /// Confirm the find bar: next match, or replace the current match in the replace
+    /// field.
+    FindSubmit,
+    /// Replace every in-file match at once.
+    FindReplaceAll,
+    /// Show or hide the find bar's replace field.
+    FindToggleReplace,
+    /// Switch the edited find-bar field between find and replace.
+    FindToggleField,
+    /// Toggle the find bar's regex option.
+    FindToggleRegex,
+    /// Toggle the find bar's case-sensitivity option.
+    FindToggleCase,
+    /// Toggle the find bar's whole-word option.
+    FindToggleWord,
     /// Submit the commit message.
     CommitSubmit,
     /// Cancel the commit input.
     CommitCancel,
+    /// Commit the explorer inline name editor (create / rename).
+    ExplorerEditSubmit,
+    /// Cancel the explorer inline name editor.
+    ExplorerEditCancel,
     /// Confirm the pending discard.
     ConfirmDiscard,
     /// Move the Search results selection up.
@@ -204,6 +283,18 @@ pub enum Command {
     SearchRun,
     /// Stop editing the Search query without leaving the panel.
     SearchEndInput,
+    /// Show or hide the Search replace field.
+    SearchToggleReplace,
+    /// Switch the edited Search field between find and replace.
+    SearchToggleField,
+    /// Apply the replacement across every workspace match.
+    SearchReplaceAll,
+    /// Toggle the Search regex option.
+    SearchToggleRegex,
+    /// Toggle the Search case-sensitivity option.
+    SearchToggleCase,
+    /// Toggle the Search whole-word option.
+    SearchToggleWord,
 }
 
 impl Command {
@@ -247,6 +338,11 @@ impl Command {
             Self::SidebarActivate => "Sidebar: Open Selected",
             Self::SidebarCollapse => "Sidebar: Collapse",
             Self::SidebarToggleExpand => "Sidebar: Toggle Expand",
+            Self::ToggleOutline => "View: Toggle Outline",
+            Self::OutlineUp => "Outline: Select Previous",
+            Self::OutlineDown => "Outline: Select Next",
+            Self::OutlineActivate => "Outline: Go to Selected",
+            Self::OutlineCollapse => "Outline: Close",
             Self::CaretUp => "Cursor Up",
             Self::CaretDown => "Cursor Down",
             Self::CaretLeft => "Cursor Left",
@@ -255,6 +351,25 @@ impl Command {
             Self::SelectDown => "Select Down",
             Self::SelectLeft => "Select Left",
             Self::SelectRight => "Select Right",
+            Self::CaretWordLeft => "Cursor Word Left",
+            Self::CaretWordRight => "Cursor Word Right",
+            Self::CaretLineStart => "Cursor Line Start",
+            Self::CaretLineEnd => "Cursor Line End",
+            Self::CaretDocStart => "Cursor Document Start",
+            Self::CaretDocEnd => "Cursor Document End",
+            Self::SelectWordLeft => "Select Word Left",
+            Self::SelectWordRight => "Select Word Right",
+            Self::SelectLineStart => "Select to Line Start",
+            Self::SelectLineEnd => "Select to Line End",
+            Self::SelectDocStart => "Select to Document Start",
+            Self::SelectDocEnd => "Select to Document End",
+            Self::SelectPageUp => "Select Page Up",
+            Self::SelectPageDown => "Select Page Down",
+            Self::EditorSelectAll => "Selection: Select All",
+            Self::AddCursorAbove => "Add Cursor Above",
+            Self::AddCursorBelow => "Add Cursor Below",
+            Self::AddCursorNextOccurrence => "Add Cursor to Next Occurrence",
+            Self::CollapseCarets => "Collapse Cursors",
             Self::ScrollUp => "Scroll Up",
             Self::ScrollDown => "Scroll Down",
             Self::PageUp => "Scroll Page Up",
@@ -262,6 +377,7 @@ impl Command {
             Self::Top => "Go to Top",
             Self::Bottom => "Go to Bottom",
             Self::ToggleDiffLayout => "Diff: Toggle Inline / Side-by-Side",
+            Self::ToggleFold => "Fold: Toggle at Cursor",
             Self::NextChangedFile => "Diff: Next Changed File",
             Self::PrevChangedFile => "Diff: Previous Changed File",
             Self::InsertChar(_) => "Insert Character",
@@ -289,6 +405,11 @@ impl Command {
             Self::ScmRefresh => "Source Control: Refresh",
             Self::ShowBlame => "Source Control: Show Blame",
             Self::BlameFunction => "Source Control: Blame This Function",
+            Self::ExplorerNewFile => "Explorer: New File…",
+            Self::ExplorerNewFolder => "Explorer: New Folder…",
+            Self::ExplorerRename => "Explorer: Rename…",
+            Self::ExplorerRefresh => "Explorer: Refresh",
+            Self::ExplorerCollapseAll => "Explorer: Collapse Folders",
             Self::OverlayUp => "Overlay: Select Previous",
             Self::OverlayDown => "Overlay: Select Next",
             Self::OverlayAccept => "Overlay: Accept",
@@ -296,8 +417,17 @@ impl Command {
             Self::FindNext => "Find: Next Match",
             Self::FindPrev => "Find: Previous Match",
             Self::FindCancel => "Find: Close",
+            Self::FindSubmit => "Find: Next / Replace Match",
+            Self::FindReplaceAll => "Find: Replace All",
+            Self::FindToggleReplace => "Find: Toggle Replace",
+            Self::FindToggleField => "Find: Switch Find / Replace",
+            Self::FindToggleRegex => "Find: Toggle Regular Expression",
+            Self::FindToggleCase => "Find: Toggle Case Sensitivity",
+            Self::FindToggleWord => "Find: Toggle Whole Word",
             Self::CommitSubmit => "Commit: Submit",
             Self::CommitCancel => "Commit: Cancel",
+            Self::ExplorerEditSubmit => "Explorer: Confirm Name",
+            Self::ExplorerEditCancel => "Explorer: Cancel Edit",
             Self::ConfirmDiscard => "Source Control: Confirm Discard",
             Self::SearchSelectUp => "Search: Select Previous",
             Self::SearchSelectDown => "Search: Select Next",
@@ -306,6 +436,12 @@ impl Command {
             Self::SearchQuit => "Search: Leave Panel",
             Self::SearchRun => "Search: Run Query",
             Self::SearchEndInput => "Search: Stop Editing Query",
+            Self::SearchToggleReplace => "Search: Toggle Replace",
+            Self::SearchToggleField => "Search: Switch Find / Replace",
+            Self::SearchReplaceAll => "Search: Replace All",
+            Self::SearchToggleRegex => "Search: Toggle Regular Expression",
+            Self::SearchToggleCase => "Search: Toggle Case Sensitivity",
+            Self::SearchToggleWord => "Search: Toggle Whole Word",
         }
     }
 
@@ -320,6 +456,7 @@ impl Command {
             // Global.
             Self::Quit => "quit",
             Self::ToggleSidebar => "sidebar",
+            Self::ToggleOutline => "outline",
             Self::ToggleFocus => "focus",
             Self::SelectPanel(SidebarPanel::Explorer) => "explorer",
             Self::SelectPanel(SidebarPanel::Search) => "search",
@@ -343,6 +480,8 @@ impl Command {
             Self::SidebarToggleExpand => "expand",
             Self::SelectToggle => "select",
             Self::SelectAll => "select all",
+            // Outline.
+            Self::OutlineActivate => "go to",
             // Editor.
             Self::Undo => "undo",
             Self::Redo => "redo",
@@ -351,6 +490,8 @@ impl Command {
             Self::Paste => "paste",
             Self::ShowBlame => "blame",
             Self::BlameFunction => "blame fn",
+            Self::ToggleFold => "fold",
+            Self::AddCursorNextOccurrence => "add cursor",
             // Diff.
             Self::ToggleDiffLayout => "layout",
             Self::NextChangedFile => "next change",
@@ -364,20 +505,41 @@ impl Command {
             Self::ScmDiscard => "discard",
             Self::ScmCommit => "commit",
             Self::ScmRefresh => "refresh",
+            // Explorer.
+            Self::ExplorerNewFile => "new file",
+            Self::ExplorerNewFolder => "new folder",
+            Self::ExplorerRename => "rename",
+            Self::ExplorerRefresh => "refresh",
+            Self::ExplorerCollapseAll => "collapse all",
             // Modal-scoped.
             Self::OverlayAccept => "accept",
             Self::OverlayCancel => "cancel",
             Self::FindNext => "next",
             Self::FindPrev => "prev",
             Self::FindCancel => "close",
+            Self::FindSubmit => "next",
+            Self::FindReplaceAll => "replace all",
+            Self::FindToggleReplace => "replace",
+            Self::FindToggleField => "field",
+            Self::FindToggleRegex => "regex",
+            Self::FindToggleCase => "case",
+            Self::FindToggleWord => "word",
             Self::CommitSubmit => "submit",
             Self::CommitCancel => "cancel",
+            Self::ExplorerEditSubmit => "confirm",
+            Self::ExplorerEditCancel => "cancel",
             Self::ConfirmDiscard => "confirm",
             Self::SearchOpen => "open",
             Self::SearchBeginInput => "edit",
             Self::SearchQuit => "close",
             Self::SearchRun => "run",
             Self::SearchEndInput => "done",
+            Self::SearchToggleReplace => "replace",
+            Self::SearchToggleField => "field",
+            Self::SearchReplaceAll => "replace all",
+            Self::SearchToggleRegex => "regex",
+            Self::SearchToggleCase => "case",
+            Self::SearchToggleWord => "word",
             // Self-evident motion, selection, and editing — no hint.
             Self::MoveTabLeft
             | Self::MoveTabRight
@@ -392,6 +554,9 @@ impl Command {
             | Self::CopyRelativePath
             | Self::SidebarUp
             | Self::SidebarDown
+            | Self::OutlineUp
+            | Self::OutlineDown
+            | Self::OutlineCollapse
             | Self::CaretUp
             | Self::CaretDown
             | Self::CaretLeft
@@ -400,6 +565,24 @@ impl Command {
             | Self::SelectDown
             | Self::SelectLeft
             | Self::SelectRight
+            | Self::CaretWordLeft
+            | Self::CaretWordRight
+            | Self::CaretLineStart
+            | Self::CaretLineEnd
+            | Self::CaretDocStart
+            | Self::CaretDocEnd
+            | Self::SelectWordLeft
+            | Self::SelectWordRight
+            | Self::SelectLineStart
+            | Self::SelectLineEnd
+            | Self::SelectDocStart
+            | Self::SelectDocEnd
+            | Self::SelectPageUp
+            | Self::SelectPageDown
+            | Self::EditorSelectAll
+            | Self::AddCursorAbove
+            | Self::AddCursorBelow
+            | Self::CollapseCarets
             | Self::ScrollUp
             | Self::ScrollDown
             | Self::PageUp
@@ -428,6 +611,7 @@ impl Command {
             self,
             Self::Quit
                 | Self::ToggleSidebar
+                | Self::ToggleOutline
                 | Self::ToggleFocus
                 | Self::SelectPanel(_)
                 | Self::OpenQuickOpen
@@ -446,6 +630,10 @@ impl Command {
                 | Self::CopyPath
                 | Self::CopyRelativePath
                 | Self::ToggleDiffLayout
+                | Self::ToggleFold
+                | Self::AddCursorAbove
+                | Self::AddCursorBelow
+                | Self::AddCursorNextOccurrence
                 | Self::Undo
                 | Self::Redo
                 | Self::Save
@@ -457,6 +645,11 @@ impl Command {
                 | Self::ScmRefresh
                 | Self::ShowBlame
                 | Self::BlameFunction
+                | Self::ExplorerNewFile
+                | Self::ExplorerNewFolder
+                | Self::ExplorerRename
+                | Self::ExplorerRefresh
+                | Self::ExplorerCollapseAll
                 | Self::DismissNotification
                 | Self::DismissAllNotifications
                 | Self::SplitRight
@@ -476,11 +669,17 @@ pub fn palette() -> Vec<Command> {
         Command::SelectPanel(SidebarPanel::Search),
         Command::SelectPanel(SidebarPanel::SourceControl),
         Command::ToggleSidebar,
+        Command::ToggleOutline,
         Command::ToggleFocus,
         Command::OpenFind,
         Command::OpenGlobalSearch,
         Command::ShowBlame,
         Command::BlameFunction,
+        Command::ExplorerNewFile,
+        Command::ExplorerNewFolder,
+        Command::ExplorerRename,
+        Command::ExplorerRefresh,
+        Command::ExplorerCollapseAll,
         Command::Copy,
         Command::CopyPath,
         Command::CopyRelativePath,
@@ -499,6 +698,10 @@ pub fn palette() -> Vec<Command> {
         Command::Cut,
         Command::Paste,
         Command::ToggleDiffLayout,
+        Command::ToggleFold,
+        Command::AddCursorAbove,
+        Command::AddCursorBelow,
+        Command::AddCursorNextOccurrence,
         Command::ScmStageAll,
         Command::ScmUnstageAll,
         Command::ScmCommit,

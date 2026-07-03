@@ -10,14 +10,16 @@
 //! and [`EditorState`] are defined; the painting/input logic is filled in
 //! separately.
 
+use karet_core::BytePos;
+use karet_core::CursorState;
 use karet_core::Decoration;
 use karet_core::DecorationKind;
 use karet_core::Diagnostic;
 use karet_core::InlayHint;
 use karet_core::LineCol;
 use karet_core::Range;
+use karet_core::Selection;
 use karet_core::ThemeRole;
-use karet_syntax::FoldRegions;
 use karet_syntax::HighlightSpan;
 use karet_syntax::Highlights;
 use karet_text::TextBuffer;
@@ -31,23 +33,53 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::StatefulWidget;
 
-/// The persistent, per-view editor state: scroll position and cursor.
+/// A fold region resolved for rendering: an inclusive line range plus whether it is
+/// currently collapsed. When collapsed, the interior lines `start + 1 ..= end` are
+/// hidden and the `start` line shows a fold marker and a `⋯` affordance.
+///
+/// The application resolves these from `karet_syntax::FoldRegions` plus its own
+/// per-view "which folds are collapsed" set, keeping fold *policy* out of the widget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fold {
+    /// The 0-based header line (always visible; carries the fold marker).
+    pub start: u32,
+    /// The 0-based last line of the region, inclusive.
+    pub end: u32,
+    /// Whether the region is currently collapsed.
+    pub collapsed: bool,
+}
+
+/// The persistent, per-view editor state: scroll position and the cursor/selection
+/// set.
+///
+/// Cursors live in a [`CursorState`] with the invariant that it always holds at least
+/// one selection; single-cursor editing is simply `selections.len() == 1` and remains
+/// the common fast path, while secondary carets are additive (multi-cursor).
 ///
 /// The viewport height is cached at each render so motions and
 /// [`scroll_to`](Self::scroll_to) know how far a page is without re-deriving it.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct EditorState {
     /// The first visible buffer line (top of the viewport).
     pub scroll_line: u32,
     /// The first visible column (horizontal scroll, counted in `char`s).
     pub scroll_col: u32,
-    /// The cursor position.
-    pub cursor: LineCol,
-    /// The fixed end of the selection, if a selection is active. The moving end is
-    /// the [`cursor`](Self::cursor).
-    pub selection_anchor: Option<LineCol>,
+    /// The cursor/selection set (never empty). The moving end of each selection is its
+    /// `head`; the primary selection's head is the main caret.
+    cursors: CursorState,
     /// The viewport height captured at the last render.
     last_height: u16,
+}
+
+impl Default for EditorState {
+    fn default() -> Self {
+        Self {
+            scroll_line: 0,
+            scroll_col: 0,
+            cursors: CursorState::single(Selection::caret(LineCol::new(0, 0))),
+            last_height: 0,
+        }
+    }
 }
 
 impl EditorState {
@@ -55,6 +87,24 @@ impl EditorState {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The primary caret (the moving head of the primary selection).
+    #[must_use]
+    pub fn cursor(&self) -> LineCol {
+        self.cursors.primary().head
+    }
+
+    /// The full cursor/selection set, for rendering every caret and selection.
+    #[must_use]
+    pub fn cursors(&self) -> &CursorState {
+        &self.cursors
+    }
+
+    /// Whether more than one caret is currently active.
+    #[must_use]
+    pub fn has_multiple_cursors(&self) -> bool {
+        self.cursors.selections.len() > 1
     }
 
     /// Scroll vertically so that `pos` is within the viewport.
@@ -99,136 +149,339 @@ impl EditorState {
         self.scroll_line = self.scroll_line.saturating_sub(height);
     }
 
-    /// Move the cursor down one line, clamping to the buffer and keeping it in view.
-    pub fn move_down(&mut self, buffer: &TextBuffer) {
-        self.cursor.line = (self.cursor.line + 1).min(last_line(buffer));
-        self.clamp_col(buffer);
-        self.scroll_to(self.cursor);
-    }
-
-    /// Move the cursor up one line.
-    pub fn move_up(&mut self, buffer: &TextBuffer) {
-        self.cursor.line = self.cursor.line.saturating_sub(1);
-        self.clamp_col(buffer);
-        self.scroll_to(self.cursor);
-    }
-
-    /// Move the cursor left one column, wrapping to the previous line's end.
-    pub fn move_left(&mut self, buffer: &TextBuffer) {
-        if self.cursor.col > 0 {
-            self.cursor.col -= 1;
-        } else if self.cursor.line > 0 {
-            self.cursor.line -= 1;
-            self.cursor.col = line_len(buffer, self.cursor.line);
-        }
-        self.scroll_to(self.cursor);
-    }
-
-    /// Move the cursor right one column, wrapping to the next line's start.
-    pub fn move_right(&mut self, buffer: &TextBuffer) {
-        if self.cursor.col < line_len(buffer, self.cursor.line) {
-            self.cursor.col += 1;
-        } else if self.cursor.line < last_line(buffer) {
-            self.cursor.line += 1;
-            self.cursor.col = 0;
-        }
-        self.scroll_to(self.cursor);
-    }
-
-    /// Move the cursor down one page.
-    pub fn page_down(&mut self, buffer: &TextBuffer) {
-        let height = u32::from(self.last_height.max(1));
-        self.cursor.line = (self.cursor.line + height).min(last_line(buffer));
-        self.clamp_col(buffer);
-        self.scroll_to(self.cursor);
-    }
-
-    /// Move the cursor up one page.
-    pub fn page_up(&mut self, buffer: &TextBuffer) {
-        let height = u32::from(self.last_height.max(1));
-        self.cursor.line = self.cursor.line.saturating_sub(height);
-        self.clamp_col(buffer);
-        self.scroll_to(self.cursor);
-    }
-
-    /// Move the cursor to `pos`, clamped to the buffer, keeping it in view.
-    pub fn goto(&mut self, buffer: &TextBuffer, pos: LineCol) {
-        self.cursor.line = pos.line.min(last_line(buffer));
-        self.cursor.col = pos.col.min(line_len(buffer, self.cursor.line));
-        self.scroll_to(self.cursor);
-    }
-
-    /// Clear any active selection (leaving the cursor where it is).
-    pub fn clear_selection(&mut self) {
-        self.selection_anchor = None;
-    }
-
-    /// Start a selection at the cursor if none is active (for shift-extension).
-    pub fn ensure_anchor(&mut self) {
-        if self.selection_anchor.is_none() {
-            self.selection_anchor = Some(self.cursor);
-        }
-    }
-
-    /// The active selection as a normalized range, or `None` when empty.
+    /// The primary selection as a normalized range, or `None` when it is a bare
+    /// caret. This reports the *primary* selection, matching the pre-multi-cursor API.
     #[must_use]
     pub fn selection_range(&self) -> Option<Range> {
-        let anchor = self.selection_anchor?;
-        if anchor == self.cursor {
-            return None;
+        let p = self.cursors.primary();
+        (!p.is_empty()).then(|| p.range())
+    }
+
+    /// Every non-empty selection as a normalized range, in the order stored, for
+    /// painting all selections.
+    #[must_use]
+    pub fn selection_ranges(&self) -> Vec<Range> {
+        self.cursors
+            .selections
+            .iter()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.range())
+            .collect()
+    }
+
+    /// Move every caret's head with `motion`, then merge coincident carets and keep
+    /// the primary head in view. This is how multi-caret motions stay consistent.
+    fn map_heads(&mut self, motion: impl Fn(LineCol) -> LineCol) {
+        for s in &mut self.cursors.selections {
+            s.head = motion(s.head);
         }
-        let (start, end) = if (anchor.line, anchor.col) <= (self.cursor.line, self.cursor.col) {
-            (anchor, self.cursor)
-        } else {
-            (self.cursor, anchor)
-        };
-        Some(Range { start, end })
+        self.after_motion();
     }
 
-    /// Place the caret at `pos` (clamped), clearing any selection.
+    /// Normalize the cursor set after a motion and scroll to the primary head.
+    fn after_motion(&mut self) {
+        self.cursors.normalize();
+        let head = self.cursor();
+        self.scroll_to(head);
+    }
+
+    /// Move every caret down one line, clamping to the buffer and keeping the primary
+    /// in view.
+    pub fn move_down(&mut self, buffer: &TextBuffer) {
+        self.map_heads(|h| {
+            let line = (h.line + 1).min(last_line(buffer));
+            LineCol::new(line, h.col.min(line_len(buffer, line)))
+        });
+    }
+
+    /// Move every caret up one line.
+    pub fn move_up(&mut self, buffer: &TextBuffer) {
+        self.map_heads(|h| {
+            let line = h.line.saturating_sub(1);
+            LineCol::new(line, h.col.min(line_len(buffer, line)))
+        });
+    }
+
+    /// Move every caret left one column, wrapping to the previous line's end.
+    pub fn move_left(&mut self, buffer: &TextBuffer) {
+        self.map_heads(|h| {
+            if h.col > 0 {
+                LineCol::new(h.line, h.col - 1)
+            } else if h.line > 0 {
+                let line = h.line - 1;
+                LineCol::new(line, line_len(buffer, line))
+            } else {
+                h
+            }
+        });
+    }
+
+    /// Move every caret right one column, wrapping to the next line's start.
+    pub fn move_right(&mut self, buffer: &TextBuffer) {
+        self.map_heads(|h| {
+            if h.col < line_len(buffer, h.line) {
+                LineCol::new(h.line, h.col + 1)
+            } else if h.line < last_line(buffer) {
+                LineCol::new(h.line + 1, 0)
+            } else {
+                h
+            }
+        });
+    }
+
+    /// Move every caret down one page.
+    pub fn page_down(&mut self, buffer: &TextBuffer) {
+        let height = u32::from(self.last_height.max(1));
+        self.map_heads(|h| {
+            let line = (h.line + height).min(last_line(buffer));
+            LineCol::new(line, h.col.min(line_len(buffer, line)))
+        });
+    }
+
+    /// Move every caret up one page.
+    pub fn page_up(&mut self, buffer: &TextBuffer) {
+        let height = u32::from(self.last_height.max(1));
+        self.map_heads(|h| {
+            let line = h.line.saturating_sub(height);
+            LineCol::new(line, h.col.min(line_len(buffer, line)))
+        });
+    }
+
+    /// Move every caret to the start of its line (column 0).
+    pub fn move_line_start(&mut self, _buffer: &TextBuffer) {
+        self.map_heads(|h| LineCol::new(h.line, 0));
+    }
+
+    /// Move every caret to the end of its line.
+    pub fn move_line_end(&mut self, buffer: &TextBuffer) {
+        self.map_heads(|h| LineCol::new(h.line, line_len(buffer, h.line)));
+    }
+
+    /// Move every caret to the start of the document.
+    pub fn move_doc_start(&mut self, _buffer: &TextBuffer) {
+        self.map_heads(|_| LineCol::new(0, 0));
+    }
+
+    /// Move every caret to the end of the document.
+    pub fn move_doc_end(&mut self, buffer: &TextBuffer) {
+        let last = last_line(buffer);
+        let end = LineCol::new(last, line_len(buffer, last));
+        self.map_heads(move |_| end);
+    }
+
+    /// Move every caret to the start of the previous word (wrapping across lines).
+    pub fn move_word_left(&mut self, buffer: &TextBuffer) {
+        self.map_heads(|h| prev_word_boundary(buffer, h));
+    }
+
+    /// Move every caret to the end of the next word (wrapping across lines).
+    pub fn move_word_right(&mut self, buffer: &TextBuffer) {
+        self.map_heads(|h| next_word_boundary(buffer, h));
+    }
+
+    /// Select the entire buffer as a single selection, caret at the end (Ctrl+A).
+    pub fn select_all(&mut self, buffer: &TextBuffer) {
+        let last = last_line(buffer);
+        let end = LineCol::new(last, line_len(buffer, last));
+        self.cursors = CursorState::single(Selection {
+            anchor: LineCol::new(0, 0),
+            head: end,
+        });
+        self.scroll_to(end);
+    }
+
+    /// Jump the caret to `pos` (clamped), collapsing to a single bare caret there.
+    /// Used to place the caret at a target (search match, go-to-line).
+    pub fn goto(&mut self, buffer: &TextBuffer, pos: LineCol) {
+        let p = clamp_to_buffer(buffer, pos);
+        self.cursors = CursorState::single(Selection::caret(p));
+        self.scroll_to(p);
+    }
+
+    /// Collapse every selection to a bare caret at its head (a non-extending motion).
+    pub fn clear_selection(&mut self) {
+        for s in &mut self.cursors.selections {
+            s.anchor = s.head;
+        }
+        self.cursors.normalize();
+    }
+
+    /// Place the caret at `pos` (clamped), collapsing to a single bare caret there and
+    /// clearing any selection or secondary carets.
     pub fn set_caret(&mut self, buffer: &TextBuffer, pos: LineCol) {
-        self.clear_selection();
         self.goto(buffer, pos);
     }
 
-    /// Extend the selection so its moving end is `pos`, anchoring at the current
-    /// cursor if no selection is active yet.
+    /// Replace the cursor set with a single bare caret at exactly `pos` (no clamping);
+    /// used after applying an edit and by tests.
+    pub fn place_caret(&mut self, pos: LineCol) {
+        self.cursors = CursorState::single(Selection::caret(pos));
+    }
+
+    /// Replace the cursor set with a bare caret at each `position` (post-edit),
+    /// merging any that coincide and keeping the primary index in range. A no-op when
+    /// `positions` is empty (the invariant of a non-empty set is preserved).
+    pub fn set_carets(&mut self, positions: &[LineCol]) {
+        if positions.is_empty() {
+            return;
+        }
+        let selections: Vec<Selection> = positions.iter().copied().map(Selection::caret).collect();
+        let primary = self.cursors.primary.min(selections.len() - 1);
+        self.cursors = CursorState {
+            selections,
+            primary,
+        };
+        self.cursors.normalize();
+    }
+
+    /// Extend the primary selection so its moving end is `pos` (clamped), keeping the
+    /// primary anchor fixed and leaving any secondary carets in place.
     pub fn extend_to(&mut self, buffer: &TextBuffer, pos: LineCol) {
-        self.ensure_anchor();
-        self.goto(buffer, pos);
+        let p = clamp_to_buffer(buffer, pos);
+        if let Some(s) = self.cursors.selections.get_mut(self.cursors.primary) {
+            s.head = p;
+        }
+        self.after_motion();
     }
 
-    /// Set the selection to span `anchor`..`head` (both clamped), placing the
-    /// caret at `head`.
+    /// Collapse to a single selection spanning `anchor`..`head` (both clamped), with
+    /// the caret at `head`. Used by double/triple-click word/line selection.
     pub fn set_selection(&mut self, buffer: &TextBuffer, anchor: LineCol, head: LineCol) {
-        let anchor = LineCol::new(
-            anchor.line.min(last_line(buffer)),
-            anchor
-                .col
-                .min(line_len(buffer, anchor.line.min(last_line(buffer)))),
-        );
-        self.selection_anchor = Some(anchor);
-        self.goto(buffer, head);
+        let anchor = clamp_to_buffer(buffer, anchor);
+        let head = clamp_to_buffer(buffer, head);
+        self.cursors = CursorState::single(Selection { anchor, head });
+        self.scroll_to(head);
+    }
+
+    /// Collapse the cursor set to just the primary selection (the `Esc` fold-back).
+    pub fn collapse_to_primary(&mut self) {
+        self.cursors.collapse_to_primary();
+    }
+
+    /// Add a bare caret one line above the primary (column clamped to the shorter
+    /// line), merging if it collides. A no-op when the primary is already on line 0.
+    pub fn add_caret_above(&mut self, buffer: &TextBuffer) {
+        let h = self.cursor();
+        if h.line == 0 {
+            return;
+        }
+        let p = clamp_to_buffer(buffer, LineCol::new(h.line - 1, h.col));
+        self.cursors.push(Selection::caret(p));
+        self.scroll_to(self.cursor());
+    }
+
+    /// Add a bare caret one line below the primary. A no-op on the last line.
+    pub fn add_caret_below(&mut self, buffer: &TextBuffer) {
+        let h = self.cursor();
+        if h.line >= last_line(buffer) {
+            return;
+        }
+        let p = clamp_to_buffer(buffer, LineCol::new(h.line + 1, h.col));
+        self.cursors.push(Selection::caret(p));
+        self.scroll_to(self.cursor());
+    }
+
+    /// Toggle a caret at `pos` (Alt+click): remove a coincident bare caret unless it is
+    /// the only one, otherwise add one as the new primary.
+    pub fn add_caret(&mut self, buffer: &TextBuffer, pos: LineCol) {
+        let p = clamp_to_buffer(buffer, pos);
+        if let Some(i) = self
+            .cursors
+            .selections
+            .iter()
+            .position(|s| s.is_empty() && s.head == p)
+            && self.cursors.selections.len() > 1
+        {
+            self.cursors.selections.remove(i);
+            self.cursors.primary = self.cursors.primary.min(self.cursors.selections.len() - 1);
+            return;
+        }
+        self.cursors.push(Selection::caret(p));
+        self.scroll_to(p);
+    }
+
+    /// `Ctrl+D`: if the primary is a bare caret, select the word under it; otherwise
+    /// add a caret selecting the next occurrence (wrapping) of the primary selection's
+    /// text.
+    pub fn add_next_occurrence(&mut self, buffer: &TextBuffer) {
+        let primary = self.cursors.primary();
+        if primary.is_empty() {
+            let (anchor, head) = word_bounds(buffer, primary.head);
+            if let Some(s) = self.cursors.selections.get_mut(self.cursors.primary) {
+                *s = Selection { anchor, head };
+            }
+            self.scroll_to(self.cursor());
+            return;
+        }
+        let Some(needle) = slice_text(buffer, primary.range()) else {
+            return;
+        };
+        if needle.is_empty() {
+            return;
+        }
+        let hay = buffer.text();
+        let from = self
+            .cursors
+            .selections
+            .iter()
+            .filter_map(|s| buffer.line_col_to_byte(s.range().end).ok())
+            .map(|b| b.0)
+            .max()
+            .unwrap_or(0);
+        if let Some(byte) = find_next(&hay, &needle, from) {
+            let start = buffer.byte_to_line_col(BytePos(byte));
+            let end = buffer.byte_to_line_col(BytePos(byte + needle.len()));
+            self.cursors.push(Selection {
+                anchor: start,
+                head: end,
+            });
+            self.scroll_to(self.cursor());
+        }
     }
 
     /// The buffer position under the screen cell `(col, row)`, given the editor's
-    /// render `area`. Accounts for the gutter width and the scroll offsets.
+    /// render `area` and the `folds` in effect. Accounts for the gutter width, the
+    /// scroll offsets, and any collapsed folds that hide lines between the viewport
+    /// top and the click.
     #[must_use]
-    pub fn pos_at(&self, area: Rect, buffer: &TextBuffer, col: u16, row: u16) -> LineCol {
+    pub fn pos_at(
+        &self,
+        area: Rect,
+        buffer: &TextBuffer,
+        folds: &[Fold],
+        col: u16,
+        row: u16,
+    ) -> LineCol {
         let line_count = buffer.line_count().max(1) as u32;
         let rel_row = u32::from(row.saturating_sub(area.y));
-        let line = (self.scroll_line + rel_row).min(line_count - 1);
+        // Walk visible lines from the (clamped) viewport top to the clicked row.
+        let mut line = self.scroll_line;
+        while line < line_count && hidden_in(folds, line) {
+            line += 1;
+        }
+        for _ in 0..rel_row {
+            let mut next = line + 1;
+            while next < line_count && hidden_in(folds, next) {
+                next += 1;
+            }
+            if next >= line_count {
+                break;
+            }
+            line = next;
+        }
+        let line = line.min(line_count - 1);
         let gutter = 1 + digit_count(line_count) as u16 + 1;
         let content_x = area.x.saturating_add(gutter);
         let rel_col = u32::from(col.saturating_sub(content_x));
         let want = self.scroll_col + rel_col;
         LineCol::new(line, want.min(line_len(buffer, line)))
     }
+}
 
-    /// Clamp the cursor column to the current line's length.
-    fn clamp_col(&mut self, buffer: &TextBuffer) {
-        self.cursor.col = self.cursor.col.min(line_len(buffer, self.cursor.line));
-    }
+/// Clamp `pos` to a valid position within `buffer` (line, then column).
+fn clamp_to_buffer(buffer: &TextBuffer, pos: LineCol) -> LineCol {
+    let line = pos.line.min(last_line(buffer));
+    LineCol::new(line, pos.col.min(line_len(buffer, line)))
 }
 
 /// The editor widget: a builder over the buffer and the (borrowed) data layers
@@ -243,8 +496,7 @@ pub struct Editor<'a> {
     decorations: &'a [Decoration],
     diagnostics: &'a [Diagnostic],
     inlay_hints: &'a [InlayHint],
-    folds: Option<&'a FoldRegions>,
-    selection: Option<Range>,
+    folds: &'a [Fold],
     focused: bool,
     read_only: bool,
 }
@@ -260,18 +512,10 @@ impl<'a> Editor<'a> {
             decorations: &[],
             diagnostics: &[],
             inlay_hints: &[],
-            folds: None,
-            selection: None,
+            folds: &[],
             focused: false,
             read_only: false,
         }
-    }
-
-    /// Supply the active selection range to paint.
-    #[must_use]
-    pub fn selection(mut self, selection: Option<Range>) -> Self {
-        self.selection = selection;
-        self
     }
 
     /// Mark the editor focused, so the caret cell is drawn.
@@ -326,11 +570,30 @@ impl<'a> Editor<'a> {
         self
     }
 
-    /// Supply fold regions.
+    /// Supply the resolved fold regions to render (collapsed folds hide their
+    /// interior lines and mark their header).
     #[must_use]
-    pub fn folds(mut self, folds: &'a FoldRegions) -> Self {
-        self.folds = Some(folds);
+    pub fn folds(mut self, folds: &'a [Fold]) -> Self {
+        self.folds = folds;
         self
+    }
+
+    /// Whether buffer line `l` is hidden inside a collapsed fold's interior.
+    fn is_hidden(&self, l: u32) -> bool {
+        hidden_in(self.folds, l)
+    }
+
+    /// The fold whose header is line `l`, if any.
+    fn fold_at(&self, l: u32) -> Option<Fold> {
+        self.folds.iter().copied().find(|f| f.start == l)
+    }
+
+    /// The first visible line at or after `l` (skipping collapsed-fold interiors).
+    fn first_visible(&self, mut l: u32, line_count: u32) -> u32 {
+        while l < line_count && self.is_hidden(l) {
+            l += 1;
+        }
+        l
     }
 }
 
@@ -365,13 +628,8 @@ impl Editor<'_> {
         None
     }
 
-    /// Whether the cell at line `l`, column `col` lies within the active selection.
-    fn in_selection(&self, l: u32, col: u32) -> bool {
-        self.selection.is_some_and(|r| col_in_range(l, col, r))
-    }
-
     /// Append the syntax-colored content spans for line `l`, honoring horizontal
-    /// scroll and text-background decorations.
+    /// scroll, active selections, and text-background decorations.
     fn push_content_spans(
         &self,
         spans: &mut Vec<Span<'static>>,
@@ -379,6 +637,7 @@ impl Editor<'_> {
         theme: &Theme,
         default_fg: Rgba,
         scroll_col: u32,
+        selections: &[Range],
     ) {
         let Some(content) = self.buffer.line(l as usize) else {
             return;
@@ -399,7 +658,7 @@ impl Editor<'_> {
             }
             let fg = fg_for(line_start + boff, hl, theme, default_fg);
             let mut style = Style::default().fg(fg.to_ratatui());
-            let bg = if self.in_selection(l, col) {
+            let bg = if in_any(selections, l, col) {
                 Some(theme.role(ThemeRole::Selection))
             } else {
                 self.decoration_bg(l, col, theme)
@@ -420,6 +679,51 @@ impl Editor<'_> {
         }
         if let Some(prev) = run_style {
             spans.push(Span::styled(run, prev));
+        }
+    }
+
+    /// Draw the caret at buffer position `at` as a reversed cell, when it falls within
+    /// the visible, non-folded region of `area`. Called once per caret so multi-cursor
+    /// renders every head.
+    fn draw_caret(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        digits: usize,
+        state: &EditorState,
+        line_count: u32,
+        at: LineCol,
+    ) {
+        let top = self.first_visible(state.scroll_line, line_count);
+        if at.line < top || self.is_hidden(at.line) || at.col < state.scroll_col {
+            return;
+        }
+        // The caret's screen row is the count of visible lines from the viewport top up
+        // to its line (folds between them collapse the gap).
+        let mut vis_row: u16 = 0;
+        let mut ll = top;
+        while ll < at.line {
+            if !self.is_hidden(ll) {
+                vis_row = vis_row.saturating_add(1);
+            }
+            ll += 1;
+        }
+        if vis_row >= area.height {
+            return;
+        }
+        let gutter = 1 + digits as u16 + 1;
+        let cx = area.x + gutter + u16::try_from(at.col - state.scroll_col).unwrap_or(u16::MAX);
+        let cy = area.y + vis_row;
+        if cx < area.right() && cy < area.bottom() {
+            buf.set_style(
+                Rect {
+                    x: cx,
+                    y: cy,
+                    width: 1,
+                    height: 1,
+                },
+                Style::default().add_modifier(Modifier::REVERSED),
+            );
         }
     }
 }
@@ -450,17 +754,29 @@ impl StatefulWidget for Editor<'_> {
         state.last_height = area.height;
         state.scroll_line = state.scroll_line.min(line_count.saturating_sub(1));
 
+        // Snapshot the cursor set for painting: every non-empty selection's range and
+        // the line of every caret (each caret's line gets the cursor-line emphasis).
+        let selections = state.selection_ranges();
+        let caret_lines: Vec<u32> = state
+            .cursors()
+            .selections
+            .iter()
+            .map(|s| s.head.line)
+            .collect();
+
         // Base background for the whole editor area (covers rows past end-of-file).
         buf.set_style(area, Style::default().bg(background.to_ratatui()));
 
+        // Walk visible lines only: start at the first non-hidden line at/after the
+        // scroll top, and after each rendered line skip any collapsed-fold interior.
+        let mut l = self.first_visible(state.scroll_line, line_count);
         for row in 0..area.height {
-            let l = state.scroll_line + u32::from(row);
             if l >= line_count {
                 break;
             }
             let y = area.y + row;
             // In read-only (pager) mode there is no active cursor line to emphasize.
-            let is_cursor = !self.read_only && l == state.cursor.line;
+            let is_cursor = !self.read_only && caret_lines.contains(&l);
             let row_bg = if is_cursor {
                 cursor_line_bg
             } else {
@@ -476,9 +792,18 @@ impl StatefulWidget for Editor<'_> {
                 Style::default().bg(row_bg.to_ratatui()),
             );
 
-            let (marker_ch, marker_color) = self
-                .gutter_marker(l, theme, default_fg)
-                .unwrap_or((' ', default_fg));
+            // A fold header shows a collapse/expand chevron in the marker column;
+            // other lines show their usual decoration marker (git/diagnostic).
+            let fold = self.fold_at(l);
+            let (marker_ch, marker_color) = match fold {
+                Some(f) => (
+                    if f.collapsed { '\u{25b8}' } else { '\u{25be}' },
+                    theme.role(ThemeRole::LineNumberActive),
+                ),
+                None => self
+                    .gutter_marker(l, theme, default_fg)
+                    .unwrap_or((' ', default_fg)),
+            };
             let number_color = if is_cursor {
                 theme.role(ThemeRole::LineNumberActive)
             } else {
@@ -494,37 +819,154 @@ impl StatefulWidget for Editor<'_> {
                     Style::default().fg(number_color.to_ratatui()),
                 ),
             ];
-            self.push_content_spans(&mut spans, l, theme, default_fg, state.scroll_col);
+            self.push_content_spans(
+                &mut spans,
+                l,
+                theme,
+                default_fg,
+                state.scroll_col,
+                &selections,
+            );
+            // A collapsed header hints at the hidden lines it conceals.
+            if fold.is_some_and(|f| f.collapsed) {
+                spans.push(Span::styled(
+                    " \u{22ef}", // ⋯
+                    Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
+                ));
+            }
             buf.set_line(area.x, y, &Line::from(spans), area.width);
+
+            l = self.first_visible(l + 1, line_count);
         }
 
-        // Draw the caret as a reversed cell when the editor is focused and editable.
+        // Draw a reversed caret cell for every head when focused and editable.
         if self.focused && !self.read_only {
-            let cl = state.cursor.line;
-            let top = state.scroll_line;
-            if cl >= top
-                && cl < top + u32::from(area.height)
-                && state.cursor.col >= state.scroll_col
-            {
-                let gutter = 1 + digits as u16 + 1;
-                let cx = area.x
-                    + gutter
-                    + u16::try_from(state.cursor.col - state.scroll_col).unwrap_or(u16::MAX);
-                let cy = area.y + u16::try_from(cl - top).unwrap_or(0);
-                if cx < area.right() && cy < area.bottom() {
-                    buf.set_style(
-                        Rect {
-                            x: cx,
-                            y: cy,
-                            width: 1,
-                            height: 1,
-                        },
-                        Style::default().add_modifier(Modifier::REVERSED),
-                    );
-                }
+            for sel in &state.cursors().selections {
+                self.draw_caret(buf, area, digits, state, line_count, sel.head);
             }
         }
     }
+}
+
+/// Whether the cell at line `l`, column `col` lies within any of `selections`.
+fn in_any(selections: &[Range], l: u32, col: u32) -> bool {
+    selections.iter().any(|r| col_in_range(l, col, *r))
+}
+
+/// Whether `c` is part of a word (alphanumeric or underscore), for word motions.
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// The `(start, end)` of the word (alphanumeric + `_`) around `pos` on its line, or a
+/// single-character span when `pos` is not on a word character. Mirrors the span a
+/// double-click selects; reused by the app's click handling.
+#[must_use]
+pub fn word_bounds(buffer: &TextBuffer, pos: LineCol) -> (LineCol, LineCol) {
+    let chars: Vec<char> = buffer
+        .line(pos.line as usize)
+        .unwrap_or_default()
+        .chars()
+        .collect();
+    let n = chars.len() as u32;
+    let col = pos.col.min(n);
+    let mut start = col;
+    while start > 0 && is_word_char(chars[start as usize - 1]) {
+        start -= 1;
+    }
+    let mut end = col;
+    while end < n && is_word_char(chars[end as usize]) {
+        end += 1;
+    }
+    if start == end {
+        (
+            LineCol::new(pos.line, col),
+            LineCol::new(pos.line, (col + 1).min(n)),
+        )
+    } else {
+        (LineCol::new(pos.line, start), LineCol::new(pos.line, end))
+    }
+}
+
+/// The text within `range`, or `None` if either end can't be resolved to a byte.
+fn slice_text(buffer: &TextBuffer, range: Range) -> Option<String> {
+    let start = buffer.line_col_to_byte(range.start).ok()?.0;
+    let end = buffer.line_col_to_byte(range.end).ok()?.0;
+    buffer.text().get(start..end).map(str::to_string)
+}
+
+/// The byte offset of the next occurrence of `needle` in `hay` at or after `from`,
+/// wrapping around to the start of the buffer.
+fn find_next(hay: &str, needle: &str, from: usize) -> Option<usize> {
+    let from = from.min(hay.len());
+    hay.get(from..)
+        .and_then(|tail| tail.find(needle).map(|i| from + i))
+        .or_else(|| hay.get(..from).and_then(|head| head.find(needle)))
+}
+
+/// The start of the word before `pos`, wrapping to the previous line's end when at
+/// column 0. Skips trailing whitespace, then a single word/punctuation run.
+fn prev_word_boundary(buffer: &TextBuffer, pos: LineCol) -> LineCol {
+    if pos.col == 0 {
+        return if pos.line > 0 {
+            let line = pos.line - 1;
+            LineCol::new(line, line_len(buffer, line))
+        } else {
+            pos
+        };
+    }
+    let chars: Vec<char> = buffer
+        .line(pos.line as usize)
+        .unwrap_or_default()
+        .chars()
+        .collect();
+    let mut i = (pos.col as usize).min(chars.len());
+    while i > 0 && chars[i - 1].is_whitespace() {
+        i -= 1;
+    }
+    if i > 0 {
+        let word = is_word_char(chars[i - 1]);
+        while i > 0 && !chars[i - 1].is_whitespace() && is_word_char(chars[i - 1]) == word {
+            i -= 1;
+        }
+    }
+    LineCol::new(pos.line, i as u32)
+}
+
+/// The end of the word after `pos`, wrapping to the next line's start at end of line.
+/// Skips leading whitespace, then a single word/punctuation run.
+fn next_word_boundary(buffer: &TextBuffer, pos: LineCol) -> LineCol {
+    let chars: Vec<char> = buffer
+        .line(pos.line as usize)
+        .unwrap_or_default()
+        .chars()
+        .collect();
+    let n = chars.len();
+    if pos.col as usize >= n {
+        return if pos.line < last_line(buffer) {
+            LineCol::new(pos.line + 1, 0)
+        } else {
+            pos
+        };
+    }
+    let mut i = pos.col as usize;
+    while i < n && chars[i].is_whitespace() {
+        i += 1;
+    }
+    if i < n {
+        let word = is_word_char(chars[i]);
+        while i < n && !chars[i].is_whitespace() && is_word_char(chars[i]) == word {
+            i += 1;
+        }
+    }
+    LineCol::new(pos.line, i as u32)
+}
+
+/// Whether line `l` is hidden inside the interior of a collapsed fold in `folds`.
+fn hidden_in(folds: &[Fold], l: u32) -> bool {
+    folds
+        .iter()
+        .any(|f| f.collapsed && l > f.start && l <= f.end)
 }
 
 /// The index of the last line in `buffer` (0 for an empty buffer).
@@ -626,9 +1068,9 @@ mod tests {
         state.move_down(&buffer);
         state.move_down(&buffer);
         state.move_down(&buffer); // past the end clamps to the last line
-        assert_eq!(state.cursor.line, 2);
+        assert_eq!(state.cursor().line, 2);
         state.goto(&buffer, LineCol::new(1, 99)); // col clamps to the line length
-        assert_eq!(state.cursor, LineCol::new(1, 3));
+        assert_eq!(state.cursor(), LineCol::new(1, 3));
     }
 
     #[test]
@@ -638,12 +1080,35 @@ mod tests {
         state.last_height = 3;
         let area = Rect::new(0, 0, 20, 3);
         // gutter = marker(1) + 1 digit + space = 3; column 5 -> content col 2.
-        assert_eq!(state.pos_at(area, &buffer, 5, 0), LineCol::new(0, 2));
+        assert_eq!(state.pos_at(area, &buffer, &[], 5, 0), LineCol::new(0, 2));
         // A click past the line end clamps to the line length.
-        assert_eq!(state.pos_at(area, &buffer, 100, 0), LineCol::new(0, 5));
+        assert_eq!(state.pos_at(area, &buffer, &[], 100, 0), LineCol::new(0, 5));
         // Vertical scroll shifts the mapped line.
         state.scroll_line = 1;
-        assert_eq!(state.pos_at(area, &buffer, 3, 0), LineCol::new(1, 0));
+        assert_eq!(state.pos_at(area, &buffer, &[], 3, 0), LineCol::new(1, 0));
+    }
+
+    #[test]
+    fn pos_at_skips_collapsed_fold_interiors() {
+        let buffer = TextBuffer::from_text("l0\nl1\nl2\nl3\nl4");
+        let mut state = EditorState::new();
+        state.last_height = 5;
+        let area = Rect::new(0, 0, 20, 5);
+        // Collapse lines 1..=3 under a fold headered on line 0. Visible order is now
+        // l0, l4 — so screen row 1 maps to buffer line 4, not line 1.
+        let folds = [Fold {
+            start: 0,
+            end: 3,
+            collapsed: true,
+        }];
+        assert_eq!(
+            state.pos_at(area, &buffer, &folds, 3, 0),
+            LineCol::new(0, 0)
+        );
+        assert_eq!(
+            state.pos_at(area, &buffer, &folds, 3, 1),
+            LineCol::new(4, 0)
+        );
     }
 
     #[test]
@@ -684,7 +1149,7 @@ mod tests {
         let buffer = TextBuffer::from_text("alpha\nbeta\ngamma");
         let theme = Theme::dark();
         let mut state = EditorState::new();
-        state.cursor = LineCol::new(1, 0);
+        state.place_caret(LineCol::new(1, 0));
         let area = Rect::new(0, 0, 20, 3);
         let mut buf = Buffer::empty(area);
         Editor::new(&buffer)
@@ -709,11 +1174,150 @@ mod tests {
     }
 
     #[test]
+    fn line_word_and_doc_motions() {
+        let buffer = TextBuffer::from_text("foo bar\nbaz");
+        let mut state = EditorState::new();
+        state.last_height = 4;
+        state.move_line_end(&buffer);
+        assert_eq!(state.cursor(), LineCol::new(0, 7));
+        state.move_line_start(&buffer);
+        assert_eq!(state.cursor(), LineCol::new(0, 0));
+        // Word-right lands at the end of each word, then wraps to the next line.
+        state.move_word_right(&buffer);
+        assert_eq!(state.cursor(), LineCol::new(0, 3));
+        state.move_word_right(&buffer);
+        assert_eq!(state.cursor(), LineCol::new(0, 7));
+        state.move_word_right(&buffer);
+        assert_eq!(state.cursor(), LineCol::new(1, 0));
+        // Word-left from column 0 wraps to the previous line's end.
+        state.move_word_left(&buffer);
+        assert_eq!(state.cursor(), LineCol::new(0, 7));
+        state.move_doc_end(&buffer);
+        assert_eq!(state.cursor(), LineCol::new(1, 3));
+        state.move_doc_start(&buffer);
+        assert_eq!(state.cursor(), LineCol::new(0, 0));
+    }
+
+    #[test]
+    fn select_all_spans_the_whole_buffer() {
+        let buffer = TextBuffer::from_text("ab\ncde");
+        let mut state = EditorState::new();
+        state.last_height = 4;
+        state.select_all(&buffer);
+        assert_eq!(
+            state.selection_range(),
+            Some(Range {
+                start: LineCol::new(0, 0),
+                end: LineCol::new(1, 3),
+            })
+        );
+    }
+
+    #[test]
+    fn render_draws_a_caret_for_every_cursor() {
+        let buffer = TextBuffer::from_text("alpha\nbeta\ngamma");
+        let theme = Theme::dark();
+        let mut state = EditorState::new();
+        state.set_carets(&[LineCol::new(0, 0), LineCol::new(2, 0)]);
+        assert!(state.has_multiple_cursors());
+        let area = Rect::new(0, 0, 20, 3);
+        let mut buf = Buffer::empty(area);
+        Editor::new(&buffer)
+            .theme(&theme)
+            .focused(true)
+            .render(area, &mut buf, &mut state);
+        // Gutter is 1 marker + 1 digit + 1 space = 3; both caret rows get a caret cell.
+        let gutter = 3;
+        assert!(buf[(gutter, 0)].modifier.contains(Modifier::REVERSED));
+        assert!(buf[(gutter, 2)].modifier.contains(Modifier::REVERSED));
+        // The caret-free middle line has no reversed cell.
+        let row1_caret = (0..area.width).any(|x| buf[(x, 1)].modifier.contains(Modifier::REVERSED));
+        assert!(!row1_caret, "line 1 has no caret");
+    }
+
+    #[test]
+    fn set_carets_preserves_count_and_merges_coincident() {
+        let mut state = EditorState::new();
+        state.set_carets(&[LineCol::new(0, 0), LineCol::new(1, 2)]);
+        assert_eq!(state.cursors().selections.len(), 2);
+        // Two carets at the same spot collapse back to one.
+        state.set_carets(&[LineCol::new(3, 3), LineCol::new(3, 3)]);
+        assert!(!state.has_multiple_cursors());
+        assert_eq!(state.cursor(), LineCol::new(3, 3));
+    }
+
+    #[test]
+    fn add_caret_below_clamps_to_short_line() {
+        let buffer = TextBuffer::from_text("longline\nab");
+        let mut state = EditorState::new();
+        state.last_height = 4;
+        state.place_caret(LineCol::new(0, 6));
+        state.add_caret_below(&buffer);
+        let heads: Vec<LineCol> = state.cursors().selections.iter().map(|s| s.head).collect();
+        assert_eq!(heads, vec![LineCol::new(0, 6), LineCol::new(1, 2)]);
+    }
+
+    #[test]
+    fn add_caret_above_is_noop_on_the_top_line() {
+        let buffer = TextBuffer::from_text("ab\ncd");
+        let mut state = EditorState::new();
+        state.last_height = 4;
+        state.place_caret(LineCol::new(0, 1));
+        state.add_caret_above(&buffer);
+        assert!(!state.has_multiple_cursors());
+    }
+
+    #[test]
+    fn add_caret_toggles_a_coincident_caret() {
+        let buffer = TextBuffer::from_text("abcdef");
+        let mut state = EditorState::new();
+        state.last_height = 4;
+        state.place_caret(LineCol::new(0, 0));
+        state.add_caret(&buffer, LineCol::new(0, 3));
+        assert_eq!(state.cursors().selections.len(), 2);
+        // Alt-adding at the same spot removes it, leaving the original.
+        state.add_caret(&buffer, LineCol::new(0, 3));
+        assert!(!state.has_multiple_cursors());
+        assert_eq!(state.cursor(), LineCol::new(0, 0));
+    }
+
+    #[test]
+    fn add_next_occurrence_selects_word_then_next_match() {
+        let buffer = TextBuffer::from_text("foo bar foo");
+        let mut state = EditorState::new();
+        state.last_height = 4;
+        state.place_caret(LineCol::new(0, 1)); // inside the first "foo"
+        state.add_next_occurrence(&buffer);
+        assert_eq!(
+            state.selection_range(),
+            Some(Range {
+                start: LineCol::new(0, 0),
+                end: LineCol::new(0, 3),
+            })
+        );
+        state.add_next_occurrence(&buffer);
+        assert!(state.has_multiple_cursors());
+        assert!(state.selection_ranges().contains(&Range {
+            start: LineCol::new(0, 8),
+            end: LineCol::new(0, 11),
+        }));
+    }
+
+    #[test]
+    fn word_bounds_spans_the_word_under_pos() {
+        let buffer = TextBuffer::from_text("foo bar");
+        assert_eq!(
+            word_bounds(&buffer, LineCol::new(0, 5)),
+            (LineCol::new(0, 4), LineCol::new(0, 7))
+        );
+    }
+
+    #[test]
     fn read_only_suppresses_cursor_line_and_caret() {
         let buffer = TextBuffer::from_text("alpha\nbeta\ngamma");
         let theme = Theme::dark();
         let mut state = EditorState::new();
-        state.cursor = LineCol::new(1, 0);
+        state.place_caret(LineCol::new(1, 0));
         let area = Rect::new(0, 0, 20, 3);
         let mut buf = Buffer::empty(area);
         Editor::new(&buffer)
@@ -745,7 +1349,7 @@ mod tests {
         assert_eq!(state.scroll_line, 35);
         state.scroll_page_down();
         assert_eq!(state.scroll_line, 45);
-        assert_eq!(state.cursor.line, 0, "paging never moves the cursor");
+        assert_eq!(state.cursor().line, 0, "paging never moves the cursor");
         // Centering near the top saturates at 0.
         state.center_on(2);
         assert_eq!(state.scroll_line, 0);

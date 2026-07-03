@@ -2,6 +2,7 @@
 //! setup. The shell composes the engine/widget crates — it owns the open tabs and
 //! the sidebar, and applies [`Command`]s resolved from key events.
 
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::Write;
@@ -30,6 +31,7 @@ use crossterm::event::PopKeyboardEnhancementFlags;
 use crossterm::event::PushKeyboardEnhancementFlags;
 use crossterm::event::{self};
 use karet_core::BytePos;
+use karet_core::Change;
 use karet_core::Decoration;
 use karet_core::DecorationKind;
 use karet_core::LineCol;
@@ -38,8 +40,10 @@ use karet_core::NotificationId;
 use karet_core::NotificationKind;
 use karet_core::Range;
 use karet_core::Severity;
+use karet_core::TextEdit;
 use karet_core::ThemeRole;
 use karet_editor::EditorState;
+use karet_editor::Fold;
 use karet_filetype::FileKind;
 use karet_filetype::IconStyle;
 use karet_fileview::image::GraphicsProtocol;
@@ -61,6 +65,7 @@ use karet_session::SessionConfig;
 use karet_session::SnapshotRx;
 use karet_session::ViewId;
 use karet_session::local;
+use karet_syntax::FoldRegions;
 use karet_text::TextBuffer;
 use karet_theme::Theme;
 use karet_vcs::Commit;
@@ -70,6 +75,7 @@ use karet_widgets::FileTreeState;
 use karet_widgets::ListSelection;
 use karet_widgets::PaneId;
 use karet_widgets::PaneLayout;
+use karet_widgets::PendingEdit;
 use karet_widgets::SplitDir;
 use karet_widgets::drop_zone;
 use ratatui::layout::Rect;
@@ -88,6 +94,8 @@ use crate::keymap::Resolved;
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
 use crate::notify::NotificationCenter;
+use crate::outline::OutlineRow;
+use crate::outline::OutlineTarget;
 use crate::overlay::Overlay;
 use crate::overlay::OverlayEvent;
 use crate::render::FileView;
@@ -146,28 +154,104 @@ pub(crate) struct StoredPane {
     pub(crate) active: usize,
 }
 
-/// The find-in-file bar state: the query and the match cursor.
+/// The find-in-file bar state: the query, the match cursor, and the replace field
+/// (mirroring the workspace Search panel's model for a consistent UI).
 #[derive(Default)]
 pub(crate) struct FindState {
     /// The search query.
     pub(crate) query: String,
+    /// The replacement text.
+    pub(crate) replace: String,
     /// The number of matches.
     pub(crate) count: usize,
     /// The current match (0-based).
     pub(crate) current: usize,
+    /// Which field is being edited (find / replace).
+    pub(crate) field: SearchField,
+    /// Whether the replace field is shown (collapsible; hidden by default).
+    pub(crate) replace_visible: bool,
+    /// Interpret the query as a regular expression.
+    pub(crate) regex: bool,
+    /// Match case-sensitively.
+    pub(crate) case_sensitive: bool,
+    /// Match whole words only.
+    pub(crate) whole_word: bool,
+}
+
+impl FindState {
+    /// The [`SearchQuery`] for the current query text and option toggles.
+    fn query_spec(&self) -> SearchQuery {
+        SearchQuery {
+            pattern: self.query.clone(),
+            regex: self.regex,
+            case_sensitive: self.case_sensitive,
+            whole_word: self.whole_word,
+            ..Default::default()
+        }
+    }
+}
+
+/// Which field of a find/replace surface is being edited.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SearchField {
+    /// The find query.
+    #[default]
+    Find,
+    /// The replacement text.
+    Replace,
+}
+
+/// A toggleable match option shared by the Search panel and the in-file find bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SearchOption {
+    /// Interpret the query as a regular expression.
+    Regex,
+    /// Match case-sensitively.
+    Case,
+    /// Match whole words only.
+    Word,
 }
 
 /// The workspace-search panel state.
-#[derive(Default)]
 pub(crate) struct SearchPanel {
     /// The query being typed/run.
     pub(crate) query: String,
+    /// The replacement text.
+    pub(crate) replace: String,
     /// The streamed results (one entry per matching file).
     pub(crate) results: Vec<FileHit>,
     /// The selected result.
     pub(crate) selected: usize,
-    /// Whether the query input is active (vs. browsing results).
+    /// Whether a field is being edited (vs. browsing results).
     pub(crate) input: bool,
+    /// Which field the input edits (find / replace).
+    pub(crate) field: SearchField,
+    /// Whether the replace field is shown (collapsible; shown by default).
+    pub(crate) replace_visible: bool,
+    /// Interpret the query as a regular expression.
+    pub(crate) regex: bool,
+    /// Match case-sensitively.
+    pub(crate) case_sensitive: bool,
+    /// Match whole words only.
+    pub(crate) whole_word: bool,
+}
+
+impl Default for SearchPanel {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            replace: String::new(),
+            results: Vec::new(),
+            selected: 0,
+            input: false,
+            field: SearchField::Find,
+            // The replace field is shown by default (collapsible via keybinding).
+            replace_visible: true,
+            regex: false,
+            case_sensitive: false,
+            whole_word: false,
+        }
+    }
 }
 
 /// The maximum number of matching files the workspace search panel collects.
@@ -175,6 +259,27 @@ const SEARCH_RESULT_CAP: usize = 500;
 
 /// How many commits the source-control log fetches per lazily-loaded page.
 const SCM_LOG_PAGE: usize = 25;
+
+/// The default height (rows) of the pinned Source-Control commit-log region.
+const DEFAULT_SCM_COMMITS_H: u16 = 8;
+
+/// The minimum height (rows) each Source-Control region keeps when both the changes
+/// and the pinned commit-log region are shown.
+pub(crate) const MIN_SCM_REGION: u16 = 3;
+
+/// The default sidebar width in columns (before the user drags the divider).
+pub(crate) const DEFAULT_SIDEBAR_WIDTH: u16 = 30;
+
+/// The minimum sidebar width in columns; dragging the divider narrower than this
+/// collapses the sidebar entirely.
+pub(crate) const SIDEBAR_MIN_WIDTH: u16 = 16;
+
+/// The width of the right-side outline panel in columns.
+pub(crate) const OUTLINE_WIDTH: u16 = 30;
+
+/// Load the next commit page once the Source-Control viewport comes within this many
+/// rows of the end of the loaded log.
+const COMMIT_AUTOLOAD_THRESHOLD: usize = 3;
 
 /// A clickable tab region in the tab strip, recorded during the last render.
 #[derive(Clone, Copy)]
@@ -275,6 +380,15 @@ pub struct App {
     pub(crate) sidebar_rect: Rect,
     /// The main content rect from the last frame.
     pub(crate) main_rect: Rect,
+    /// The user-controlled sidebar width in columns (draggable; clamped responsively
+    /// to the terminal width each frame).
+    pub(crate) sidebar_width: u16,
+    /// The x column of the sidebar's drag divider from the last frame (hit-testing).
+    pub(crate) sidebar_divider_x: u16,
+    /// Whether a sidebar-resize drag is currently in progress.
+    pub(crate) sidebar_resizing: bool,
+    /// The last-used diff layout; newly-opened diffs adopt it so the choice sticks.
+    pub(crate) diff_layout: ViewMode,
     /// Per-pane clickable regions from the last frame (mouse hit-testing).
     pub(crate) pane_frames: Vec<PaneFrame>,
     /// The in-progress tab drag, if the pointer is dragging a tab.
@@ -286,16 +400,55 @@ pub struct App {
     pub(crate) hover: Option<(u16, u16)>,
     /// The header panel-switcher cells (`1 2 3`) from the last frame.
     pub(crate) panel_hits: Vec<(u16, u16, SidebarPanel)>,
-    /// Source-Control display-row → change-index map from the last frame.
+    /// Whether the right-side outline panel is shown.
+    pub(crate) outline_visible: bool,
+    /// The outline panel's row selection, driving keyboard navigation.
+    pub(crate) outline_sel: ListSelection,
+    /// The outline panel rect from the last frame (mouse hit-testing).
+    pub(crate) outline_rect: Rect,
+    /// The outline panel's content area (below its header) from the last frame.
+    pub(crate) outline_content_rect: Rect,
+    /// The outline panel width in columns.
+    pub(crate) outline_width: u16,
+    /// The outline list's scroll offset (first visible row) from the last frame, so a
+    /// click maps to the correct entry even when the list is scrolled.
+    pub(crate) outline_scroll: usize,
+    /// The explorer header toolbar-button cells `(start, end, command)` from the last
+    /// frame (new file / new folder / refresh / collapse all).
+    pub(crate) header_action_hits: Vec<(u16, u16, Command)>,
+    /// Source-Control *changes* display-row → change-index map from the last frame.
     pub(crate) scm_row_map: Vec<Option<usize>>,
-    /// The Source-Control list scroll offset from the last frame.
+    /// The changes-region scroll offset (top region; wheel + selection-follow).
     pub(crate) scm_offset: usize,
-    /// The display row of the commit-log "load more" affordance, if shown.
+    /// The changes-region viewport rect from the last frame (hit-testing/hover).
+    pub(crate) scm_changes_rect: Rect,
+    /// The total number of changes display rows from the last frame.
+    pub(crate) scm_total_rows: usize,
+    /// The commit-log region scroll offset (bottom pinned region; wheel + autoload).
+    pub(crate) scm_commits_offset: usize,
+    /// The commit-log region viewport rect from the last frame (hit-testing).
+    pub(crate) scm_commits_rect: Rect,
+    /// The total number of commit-log display rows from the last frame.
+    pub(crate) scm_commits_total: usize,
+    /// The display row *within the commit-log region* of the "load more" affordance.
     pub(crate) scm_more_row: Option<usize>,
+    /// User-controlled height (rows) of the pinned commit-log region (draggable).
+    pub(crate) scm_commits_h: u16,
+    /// The y of the changes/commits drag divider from the last frame (0 = not shown).
+    pub(crate) scm_divider_y: u16,
+    /// Whether a commits-divider resize drag is in progress.
+    pub(crate) scm_resizing: bool,
     /// The search-results area from the last frame.
     pub(crate) search_results_rect: Rect,
     /// The search-results list scroll offset from the last frame.
     pub(crate) search_offset: usize,
+    /// The Search panel's find-field row y from the last frame (click to edit).
+    pub(crate) search_query_row: u16,
+    /// The Search panel's replace-field row y from the last frame, if shown.
+    pub(crate) search_replace_row: Option<u16>,
+    /// The Search panel's clickable header buttons `(start, end, row, command)` from
+    /// the last frame (option toggles and replace-all).
+    pub(crate) search_action_hits: Vec<(u16, u16, u16, Command)>,
     /// The status bar rect from the last frame (mouse hit-testing).
     pub(crate) status_rect: Rect,
     /// Clickable status-bar segments `(start, end, command)` from the last frame.
@@ -383,16 +536,38 @@ impl App {
             toast_hits: Vec::new(),
             sidebar_rect: Rect::default(),
             main_rect: Rect::default(),
+            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
+            sidebar_divider_x: 0,
+            sidebar_resizing: false,
+            diff_layout: ViewMode::Unified,
             pane_frames: Vec::new(),
             tab_drag: None,
             sidebar_content_rect: Rect::default(),
             hover: None,
             panel_hits: Vec::new(),
+            outline_visible: false,
+            outline_sel: ListSelection::new(0),
+            outline_rect: Rect::default(),
+            outline_content_rect: Rect::default(),
+            outline_width: OUTLINE_WIDTH,
+            outline_scroll: 0,
+            header_action_hits: Vec::new(),
             scm_row_map: Vec::new(),
             scm_offset: 0,
+            scm_changes_rect: Rect::default(),
+            scm_total_rows: 0,
+            scm_commits_offset: 0,
+            scm_commits_rect: Rect::default(),
+            scm_commits_total: 0,
             scm_more_row: None,
+            scm_commits_h: DEFAULT_SCM_COMMITS_H,
+            scm_divider_y: 0,
+            scm_resizing: false,
             search_results_rect: Rect::default(),
             search_offset: 0,
+            search_query_row: 0,
+            search_replace_row: None,
+            search_action_hits: Vec::new(),
             status_rect: Rect::default(),
             status_hits: Vec::new(),
             editor_rect: Rect::default(),
@@ -488,6 +663,8 @@ impl App {
             Some(Modal::DiscardConfirm)
         } else if self.find.is_some() {
             Some(Modal::Find)
+        } else if self.explorer.is_editing() {
+            Some(Modal::ExplorerEdit)
         } else if self.focus == Focus::Sidebar && self.sidebar_panel == SidebarPanel::Search {
             Some(if self.search.input {
                 Modal::SearchInput
@@ -544,9 +721,26 @@ impl App {
             Modal::Overlay => self.overlay_input(key),
             Modal::Find => self.find_input(key),
             Modal::CommitInput => self.commit_edit(key),
+            Modal::ExplorerEdit => self.explorer_edit(key),
             Modal::SearchInput => self.search_edit(key),
             Modal::SearchList => {},
             Modal::DiscardConfirm => self.resolve_discard(false),
+        }
+    }
+
+    /// Feed a key to the explorer inline name editor: printable characters extend the
+    /// name, Backspace trims it (Enter/Esc are handled as bound commands).
+    fn explorer_edit(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Backspace => self.explorer.edit_backspace(),
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.explorer.edit_push(c);
+            },
+            _ => {},
         }
     }
 
@@ -617,31 +811,39 @@ impl App {
     /// the search. Command keys (Esc / Enter / Ctrl+G / arrows) resolve via the
     /// keymap's `Find` layer instead.
     fn find_input(&mut self, key: KeyEvent) {
+        let Some(find) = self.find.as_mut() else {
+            return;
+        };
+        let editing_query = find.field == SearchField::Find;
+        let target = if editing_query {
+            &mut find.query
+        } else {
+            &mut find.replace
+        };
         match key.code {
             KeyCode::Backspace => {
-                if let Some(find) = self.find.as_mut() {
-                    find.query.pop();
-                }
-                self.run_find();
+                target.pop();
             },
             KeyCode::Char(c)
                 if !key
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                if let Some(find) = self.find.as_mut() {
-                    find.query.push(c);
-                }
-                self.run_find();
+                target.push(c);
             },
-            _ => {},
+            _ => return,
+        }
+        // Only re-run the search when the query changed (the replacement doesn't
+        // affect what matches).
+        if editing_query {
+            self.run_find();
         }
     }
 
     /// Re-run the in-file search and rebuild the active tab's match decorations.
     fn run_find(&mut self) {
-        let query = match &self.find {
-            Some(find) => find.query.clone(),
+        let q = match &self.find {
+            Some(find) => find.query_spec(),
             None => return,
         };
         let mut count = 0;
@@ -657,14 +859,9 @@ impl App {
             ..
         }) = self.tabs.get_mut(self.active)
         {
-            if query.is_empty() {
+            if q.pattern.is_empty() {
                 decos.clear();
             } else {
-                let q = SearchQuery {
-                    pattern: query,
-                    case_sensitive: false,
-                    ..Default::default()
-                };
                 let matches = search_in_file(text, &q).unwrap_or_default();
                 *decos = matches
                     .iter()
@@ -715,6 +912,111 @@ impl App {
         }
     }
 
+    /// Enter in the find bar: advance to the next match, or (in the replace field)
+    /// replace the current match.
+    fn find_submit(&mut self) {
+        if self.find.as_ref().map(|f| f.field) == Some(SearchField::Replace) {
+            self.find_replace_current();
+        } else {
+            self.find_step(1);
+        }
+    }
+
+    /// Replace the current in-file match with the replacement text. The edit is
+    /// applied through the document (undoable); find re-runs when the snapshot lands.
+    fn find_replace_current(&mut self) {
+        let Some(find) = self.find.as_ref() else {
+            return;
+        };
+        if find.count == 0 {
+            return;
+        }
+        let current = find.current;
+        let replacement = find.replace.clone();
+        let range = match self.tabs.get(self.active) {
+            Some(Tab {
+                kind: TabKind::Code { decos, .. },
+                ..
+            }) => decos.get(current).map(|d| d.range),
+            _ => None,
+        };
+        let Some(range) = range else {
+            return;
+        };
+        self.submit_edit(move |caret, _sel, _buf, base| {
+            Some(editing::insert(caret, Some(range), base, &replacement))
+        });
+    }
+
+    /// Replace every in-file match at once by rewriting the whole buffer through a
+    /// single undoable edit (offset-safe via `karet_search::apply_replacements`).
+    fn find_replace_all(&mut self) {
+        let Some(find) = self.find.as_ref() else {
+            return;
+        };
+        let query = find.query_spec();
+        let replacement = find.replace.clone();
+        if query.pattern.is_empty() {
+            return;
+        }
+        let (text, whole) = match self.tabs.get(self.active) {
+            Some(Tab {
+                kind: TabKind::Code { text, buffer, .. },
+                ..
+            }) => (
+                text.clone(),
+                Range {
+                    start: LineCol::new(0, 0),
+                    end: buffer.byte_to_line_col(BytePos(text.len())),
+                },
+            ),
+            _ => return,
+        };
+        let plan = karet_search::plan_replacements(&text, &query, &replacement).unwrap_or_default();
+        if plan.is_empty() {
+            return;
+        }
+        let updated = karet_search::apply_replacements(&text, &plan);
+        self.submit_edit(move |caret, _sel, _buf, base| {
+            Some(editing::insert(caret, Some(whole), base, &updated))
+        });
+    }
+
+    /// Show or hide the find bar's replace field (collapsing returns to the query).
+    fn find_toggle_replace(&mut self) {
+        if let Some(find) = self.find.as_mut() {
+            find.replace_visible = !find.replace_visible;
+            if !find.replace_visible {
+                find.field = SearchField::Find;
+            }
+        }
+    }
+
+    /// Switch the edited find-bar field between find and replace.
+    fn find_toggle_field(&mut self) {
+        if let Some(find) = self.find.as_mut() {
+            find.field = match find.field {
+                SearchField::Find => {
+                    find.replace_visible = true;
+                    SearchField::Replace
+                },
+                SearchField::Replace => SearchField::Find,
+            };
+        }
+    }
+
+    /// Toggle a find-bar match option (regex / case / whole-word) and refresh matches.
+    fn find_toggle_option(&mut self, option: SearchOption) {
+        if let Some(find) = self.find.as_mut() {
+            match option {
+                SearchOption::Regex => find.regex = !find.regex,
+                SearchOption::Case => find.case_sensitive = !find.case_sensitive,
+                SearchOption::Word => find.whole_word = !find.whole_word,
+            }
+        }
+        self.run_find();
+    }
+
     /// Focus the Search panel and (re)start the query input.
     fn start_global_search(&mut self) {
         self.sidebar_panel = SidebarPanel::Search;
@@ -727,16 +1029,20 @@ impl App {
     /// `SearchInput` modal is active. Navigation and mode keys resolve via the
     /// keymap's `SearchInput` / `SearchList` layers instead.
     fn search_edit(&mut self, key: KeyEvent) {
+        let target = match self.search.field {
+            SearchField::Find => &mut self.search.query,
+            SearchField::Replace => &mut self.search.replace,
+        };
         match key.code {
             KeyCode::Backspace => {
-                self.search.query.pop();
+                target.pop();
             },
             KeyCode::Char(c)
                 if !key
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                self.search.query.push(c);
+                target.push(c);
             },
             _ => {},
         }
@@ -744,8 +1050,98 @@ impl App {
 
     /// Run the Search query and return to the results list.
     fn run_search_query(&mut self) {
+        // Enter runs the find search; while editing the replace field it applies the
+        // replacement across the current matches instead.
+        if self.search.field == SearchField::Replace {
+            self.search_replace_all();
+        } else {
+            self.run_global_search();
+            self.search.input = false;
+        }
+    }
+
+    /// Build a [`SearchQuery`] from the panel's query text and option toggles.
+    fn build_search_query(&self) -> SearchQuery {
+        SearchQuery {
+            pattern: self.search.query.clone(),
+            regex: self.search.regex,
+            case_sensitive: self.search.case_sensitive,
+            whole_word: self.search.whole_word,
+            ..Default::default()
+        }
+    }
+
+    /// Toggle the visibility of the replace field (collapsing it returns focus to the
+    /// find field).
+    fn search_toggle_replace(&mut self) {
+        self.search.replace_visible = !self.search.replace_visible;
+        if !self.search.replace_visible {
+            self.search.field = SearchField::Find;
+        }
+    }
+
+    /// Switch the edited field between find and replace (revealing the replace field
+    /// when moving to it), keeping the panel in input mode.
+    fn search_toggle_field(&mut self) {
+        self.search.input = true;
+        self.search.field = match self.search.field {
+            SearchField::Find => {
+                self.search.replace_visible = true;
+                SearchField::Replace
+            },
+            SearchField::Replace => SearchField::Find,
+        };
+    }
+
+    /// Apply the replacement across every match in the workspace, then refresh the
+    /// results. Open buffers pick up the change through the file watcher.
+    fn search_replace_all(&mut self) {
+        if self.search.query.is_empty() {
+            return;
+        }
+        let query = self.build_search_query();
+        let replacement = self.search.replace.clone();
+        let summary = WorkspaceSearch::new()
+            .replace(&self.root, &query, &replacement)
+            .unwrap_or_default();
+        self.notify(
+            Severity::Information,
+            NotificationKind::System,
+            format!(
+                "replaced {} occurrence(s) in {} file(s)",
+                summary.replacements, summary.files_changed
+            ),
+        );
+        // Re-run the search so the (now empty, unless the replacement re-matches)
+        // results reflect the edited files.
         self.run_global_search();
         self.search.input = false;
+    }
+
+    /// Re-run the workspace search if there is a non-empty query (after an option
+    /// toggle changes what matches).
+    fn rerun_search(&mut self) {
+        if !self.search.query.is_empty() {
+            self.run_global_search();
+        }
+    }
+
+    /// Toggle the regex option and refresh results.
+    fn search_toggle_regex(&mut self) {
+        self.search.regex = !self.search.regex;
+        self.rerun_search();
+    }
+
+    /// Toggle case-sensitivity and refresh results.
+    fn search_toggle_case(&mut self) {
+        self.search.case_sensitive = !self.search.case_sensitive;
+        self.rerun_search();
+    }
+
+    /// Toggle whole-word matching and refresh results.
+    fn search_toggle_word(&mut self) {
+        self.search.whole_word = !self.search.whole_word;
+        self.rerun_search();
     }
 
     /// Run the workspace search for the current query, collecting up to the cap.
@@ -755,11 +1151,7 @@ impl App {
         if self.search.query.is_empty() {
             return;
         }
-        let query = SearchQuery {
-            pattern: self.search.query.clone(),
-            case_sensitive: false,
-            ..Default::default()
-        };
+        let query = self.build_search_query();
         let mut results = Vec::new();
         let _ = WorkspaceSearch::new().run(&self.root, &query, |hit| {
             if results.len() < SEARCH_RESULT_CAP {
@@ -843,6 +1235,11 @@ impl App {
             Command::SidebarActivate => self.sidebar_activate(),
             Command::SidebarCollapse => self.sidebar_collapse(),
             Command::SidebarToggleExpand => self.sidebar_toggle_expand(),
+            Command::ToggleOutline => self.toggle_outline(),
+            Command::OutlineUp => self.outline_step(-1),
+            Command::OutlineDown => self.outline_step(1),
+            Command::OutlineActivate => self.outline_activate(),
+            Command::OutlineCollapse => self.outline_collapse(),
             Command::CaretUp => self.caret_motion(false, EditorState::move_up),
             Command::CaretDown => self.caret_motion(false, EditorState::move_down),
             Command::CaretLeft => self.caret_motion(false, EditorState::move_left),
@@ -851,6 +1248,25 @@ impl App {
             Command::SelectDown => self.caret_motion(true, EditorState::move_down),
             Command::SelectLeft => self.caret_motion(true, EditorState::move_left),
             Command::SelectRight => self.caret_motion(true, EditorState::move_right),
+            Command::CaretWordLeft => self.caret_motion(false, EditorState::move_word_left),
+            Command::CaretWordRight => self.caret_motion(false, EditorState::move_word_right),
+            Command::CaretLineStart => self.caret_motion(false, EditorState::move_line_start),
+            Command::CaretLineEnd => self.caret_motion(false, EditorState::move_line_end),
+            Command::CaretDocStart => self.caret_motion(false, EditorState::move_doc_start),
+            Command::CaretDocEnd => self.caret_motion(false, EditorState::move_doc_end),
+            Command::SelectWordLeft => self.caret_motion(true, EditorState::move_word_left),
+            Command::SelectWordRight => self.caret_motion(true, EditorState::move_word_right),
+            Command::SelectLineStart => self.caret_motion(true, EditorState::move_line_start),
+            Command::SelectLineEnd => self.caret_motion(true, EditorState::move_line_end),
+            Command::SelectDocStart => self.caret_motion(true, EditorState::move_doc_start),
+            Command::SelectDocEnd => self.caret_motion(true, EditorState::move_doc_end),
+            Command::SelectPageUp => self.caret_motion(true, EditorState::page_up),
+            Command::SelectPageDown => self.caret_motion(true, EditorState::page_down),
+            Command::EditorSelectAll => self.editor_select_all(),
+            Command::AddCursorAbove => self.add_cursor_vertical(true),
+            Command::AddCursorBelow => self.add_cursor_vertical(false),
+            Command::AddCursorNextOccurrence => self.add_cursor_next_occurrence(),
+            Command::CollapseCarets => self.collapse_carets_or_unfocus(),
             Command::ScrollUp => self.scroll_lines(-1),
             Command::ScrollDown => self.scroll_lines(1),
             Command::PageUp => self.scroll_lines(-i32::from(self.main_rect.height.max(1))),
@@ -858,6 +1274,7 @@ impl App {
             Command::Top => self.scroll_edge(true),
             Command::Bottom => self.scroll_edge(false),
             Command::ToggleDiffLayout => self.toggle_diff_layout(),
+            Command::ToggleFold => self.toggle_fold(),
             Command::NextChangedFile => self.step_changed_file(1),
             Command::PrevChangedFile => self.step_changed_file(-1),
             Command::InsertChar(c) => {
@@ -898,6 +1315,11 @@ impl App {
             Command::ScmRefresh => self.send_vcs(SessionCommand::RefreshVcs),
             Command::ShowBlame => self.open_blame(false),
             Command::BlameFunction => self.open_blame(true),
+            Command::ExplorerNewFile => self.explorer_begin_new(false),
+            Command::ExplorerNewFolder => self.explorer_begin_new(true),
+            Command::ExplorerRename => self.explorer_begin_rename(),
+            Command::ExplorerRefresh => self.explorer_refresh(),
+            Command::ExplorerCollapseAll => self.explorer.collapse_all(),
 
             // Modal-scoped commands (resolved only while a modal context is active).
             Command::OverlayUp => {
@@ -915,8 +1337,17 @@ impl App {
             Command::FindNext => self.find_step(1),
             Command::FindPrev => self.find_step(-1),
             Command::FindCancel => self.close_find(),
+            Command::FindSubmit => self.find_submit(),
+            Command::FindReplaceAll => self.find_replace_all(),
+            Command::FindToggleReplace => self.find_toggle_replace(),
+            Command::FindToggleField => self.find_toggle_field(),
+            Command::FindToggleRegex => self.find_toggle_option(SearchOption::Regex),
+            Command::FindToggleCase => self.find_toggle_option(SearchOption::Case),
+            Command::FindToggleWord => self.find_toggle_option(SearchOption::Word),
             Command::CommitSubmit => self.commit_submit(),
             Command::CommitCancel => self.commit_cancel(),
+            Command::ExplorerEditSubmit => self.explorer_commit_edit(),
+            Command::ExplorerEditCancel => self.explorer.cancel_edit(),
             Command::ConfirmDiscard => self.resolve_discard(true),
             Command::SearchSelectUp => self.search_select(-1),
             Command::SearchSelectDown => self.search_select(1),
@@ -925,6 +1356,12 @@ impl App {
             Command::SearchQuit => self.should_quit = true,
             Command::SearchRun => self.run_search_query(),
             Command::SearchEndInput => self.search.input = false,
+            Command::SearchToggleReplace => self.search_toggle_replace(),
+            Command::SearchToggleField => self.search_toggle_field(),
+            Command::SearchReplaceAll => self.search_replace_all(),
+            Command::SearchToggleRegex => self.search_toggle_regex(),
+            Command::SearchToggleCase => self.search_toggle_case(),
+            Command::SearchToggleWord => self.search_toggle_word(),
         }
     }
 
@@ -933,7 +1370,128 @@ impl App {
         self.focus = match self.focus {
             Focus::Sidebar => Focus::Editor,
             Focus::Editor => Focus::Sidebar,
+            // Toggling out of the outline returns to the editor it annotates.
+            Focus::Outline => Focus::Editor,
         };
+    }
+
+    /// The flattened outline rows for the active tab, or empty when it has none.
+    pub(crate) fn active_outline_rows(&self) -> Vec<OutlineRow> {
+        match self.tabs.get(self.active).map(|t| &t.kind) {
+            Some(TabKind::Document { outline, .. }) => {
+                crate::outline::flatten(&crate::outline::from_pdf(outline))
+            },
+            _ => Vec::new(),
+        }
+    }
+
+    /// Keep the outline row selection's length in step with the active tab's outline.
+    fn sync_outline_selection(&mut self) {
+        let n = self.active_outline_rows().len();
+        self.outline_sel.set_len(n);
+    }
+
+    /// Show or hide the right-side outline panel. Showing it focuses the panel (so it
+    /// is navigable at once); hiding it returns focus to the editor.
+    fn toggle_outline(&mut self) {
+        self.outline_visible = !self.outline_visible;
+        if self.outline_visible {
+            self.sync_outline_selection();
+            // Focus the panel for immediate navigation, but only when it has content —
+            // an empty "No outline" panel should not steal focus from the editor.
+            if !self.active_outline_rows().is_empty() {
+                self.focus = Focus::Outline;
+            }
+        } else if self.focus == Focus::Outline {
+            self.focus = Focus::Editor;
+        }
+    }
+
+    /// Move the outline selection by `delta` rows.
+    fn outline_step(&mut self, delta: i32) {
+        self.sync_outline_selection();
+        self.outline_sel.move_by(delta);
+    }
+
+    /// Leave the outline panel, returning focus to the editor (the panel stays open).
+    fn outline_collapse(&mut self) {
+        self.focus = Focus::Editor;
+    }
+
+    /// Navigate to the selected outline entry: jump a document to its page, or move
+    /// the editor caret to its position.
+    fn outline_activate(&mut self) {
+        let rows = self.active_outline_rows();
+        let Some(target) = rows.get(self.outline_sel.cursor()).and_then(|r| r.target) else {
+            return;
+        };
+        match target {
+            OutlineTarget::Page(page) => self.set_document_page(page),
+            OutlineTarget::Text(pos) => {
+                // Clone the buffer (O(1) rope share) so the editor borrow is free of the
+                // tab-kind borrow.
+                let buffer = match self.tabs.get(self.active).map(|t| &t.kind) {
+                    Some(TabKind::Code { buffer, .. }) => Some(buffer.clone()),
+                    _ => None,
+                };
+                if let (Some(buffer), Some(tab)) = (buffer, self.tabs.get_mut(self.active)) {
+                    tab.editor.goto(&buffer, pos);
+                }
+            },
+        }
+    }
+
+    /// Route a left-click in the outline panel: focus it, select the clicked row, and
+    /// navigate to it. `outline_scroll` (recorded during draw) maps the screen row to
+    /// the right entry even when the list is scrolled.
+    fn handle_outline_click(&mut self, row_y: u16) {
+        self.focus = Focus::Outline;
+        let top = self.outline_content_rect.y;
+        if row_y < top {
+            return; // a click on the header just focuses the panel
+        }
+        let rows = self.active_outline_rows();
+        self.outline_sel.set_len(rows.len());
+        let idx = self.outline_scroll + usize::from(row_y - top);
+        if idx >= rows.len() {
+            return;
+        }
+        self.outline_sel.move_to(idx);
+        self.outline_activate();
+    }
+
+    /// Set the active document tab's current page (clamped to the page range).
+    fn set_document_page(&mut self, page: usize) {
+        if let Some(Tab {
+            kind:
+                TabKind::Document {
+                    page: current,
+                    page_count,
+                    ..
+                },
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            *current = page.min(page_count.saturating_sub(1));
+        }
+    }
+
+    /// Route a mouse-wheel notch over the sidebar: the Source-Control panel scrolls
+    /// its list (so the commit log is reachable), while the explorer and search move
+    /// their selection one step per notch.
+    fn sidebar_wheel(&mut self, delta: i32, at_row: u16) {
+        match self.sidebar_panel {
+            // Route to whichever Source-Control region the pointer is over: the pinned
+            // commit-log at the bottom, or the changes list above it.
+            SidebarPanel::SourceControl => {
+                if row_in_rect(self.scm_commits_rect, at_row) {
+                    self.scm_scroll_commits(delta);
+                } else {
+                    self.scm_scroll_changes(delta);
+                }
+            },
+            _ => self.sidebar_step(delta.signum()),
+        }
     }
 
     /// Move the sidebar selection within the active panel.
@@ -947,9 +1505,75 @@ impl App {
                     self.explorer.select_prev();
                 }
             },
-            // A plain move collapses any range or multi-selection.
-            SidebarPanel::SourceControl => self.scm.selection.move_by(delta),
+            // A plain move collapses any range or multi-selection; the viewport then
+            // follows the change cursor so it stays visible.
+            SidebarPanel::SourceControl => {
+                self.scm.selection.move_by(delta);
+                self.scm_follow_cursor();
+            },
             SidebarPanel::Search => self.search_select(delta),
+        }
+    }
+
+    /// The display row of the Source-Control change cursor. Both section headers are
+    /// always drawn, and an empty section reserves one placeholder line, so the
+    /// staged block is `1` header + `max(staged, 1)` rows regardless of contents.
+    fn scm_cursor_display_row(&self) -> usize {
+        let i = self.scm.selection.cursor();
+        let staged = self.scm.staged_count;
+        if i < staged {
+            // In the staged section: the "STAGED CHANGES" header sits above it.
+            1 + i
+        } else {
+            // In the working section: the full staged block plus the "CHANGES" header.
+            let staged_block = 1 + staged.max(1);
+            staged_block + 1 + (i - staged)
+        }
+    }
+
+    /// Scroll the changes region so the change cursor stays visible.
+    fn scm_follow_cursor(&mut self) {
+        let h = self.scm_changes_rect.height as usize;
+        if h == 0 {
+            return;
+        }
+        let row = self.scm_cursor_display_row();
+        if row < self.scm_offset {
+            self.scm_offset = row;
+        } else if row >= self.scm_offset + h {
+            self.scm_offset = row + 1 - h;
+        }
+    }
+
+    /// Scroll the changes region by `delta` rows, clamped to its content.
+    fn scm_scroll_changes(&mut self, delta: i32) {
+        let max = self
+            .scm_total_rows
+            .saturating_sub(self.scm_changes_rect.height as usize);
+        let next = (self.scm_offset as i64 + i64::from(delta)).clamp(0, max as i64);
+        self.scm_offset = next as usize;
+    }
+
+    /// Scroll the pinned commit-log region by `delta` rows, clamped to its content,
+    /// and lazily load more commits near the bottom.
+    fn scm_scroll_commits(&mut self, delta: i32) {
+        let max = self
+            .scm_commits_total
+            .saturating_sub(self.scm_commits_rect.height as usize);
+        let next = (self.scm_commits_offset as i64 + i64::from(delta)).clamp(0, max as i64);
+        self.scm_commits_offset = next as usize;
+        self.maybe_autoload_commits();
+    }
+
+    /// Request the next commit page once the commit-log region nears the end of what
+    /// is loaded.
+    fn maybe_autoload_commits(&mut self) {
+        if !self.scm.log_has_more || self.scm.log_loading {
+            return;
+        }
+        let bottom = self.scm_commits_offset + self.scm_commits_rect.height as usize;
+        if bottom + COMMIT_AUTOLOAD_THRESHOLD >= self.scm_commits_total {
+            self.load_more_scm_log();
         }
     }
 
@@ -990,6 +1614,78 @@ impl App {
         }
     }
 
+    /// Begin creating a new file (or folder) in the explorer, ensuring the panel is
+    /// visible and focused so its inline name editor is shown.
+    fn explorer_begin_new(&mut self, folder: bool) {
+        self.sidebar_panel = SidebarPanel::Explorer;
+        self.sidebar_visible = true;
+        self.focus = Focus::Sidebar;
+        self.explorer.ensure_built(&self.root);
+        self.explorer.begin_new(folder);
+    }
+
+    /// Begin renaming the selected explorer entry (no-op unless the Explorer panel is
+    /// the active sidebar panel).
+    fn explorer_begin_rename(&mut self) {
+        if self.sidebar_panel != SidebarPanel::Explorer {
+            return;
+        }
+        self.explorer.ensure_built(&self.root);
+        self.explorer.begin_rename();
+    }
+
+    /// Hard-reload the explorer tree and re-request VCS status — a bullet-proof
+    /// refresh that drops every cached row and re-reads the filesystem.
+    fn explorer_refresh(&mut self) {
+        self.explorer.rebuild(&self.root);
+        self.send_vcs(SessionCommand::RefreshVcs);
+    }
+
+    /// Apply the explorer inline edit: create the file/folder or rename on disk, then
+    /// reload the tree (and open a newly-created file).
+    fn explorer_commit_edit(&mut self) {
+        let Some(pending) = self.explorer.take_edit() else {
+            return;
+        };
+        match pending {
+            PendingEdit::Create { path, folder } => {
+                let result = if folder {
+                    std::fs::create_dir_all(&path)
+                } else {
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    std::fs::File::create(&path).map(|_| ())
+                };
+                match result {
+                    Ok(()) => {
+                        self.explorer.rebuild(&self.root);
+                        if !folder {
+                            self.open_path(&path);
+                        }
+                    },
+                    Err(e) => {
+                        self.notify(
+                            Severity::Error,
+                            NotificationKind::Io,
+                            format!("create failed: {e}"),
+                        );
+                    },
+                }
+            },
+            PendingEdit::Rename { from, to } => match std::fs::rename(&from, &to) {
+                Ok(()) => self.explorer.rebuild(&self.root),
+                Err(e) => {
+                    self.notify(
+                        Severity::Error,
+                        NotificationKind::Io,
+                        format!("rename failed: {e}"),
+                    );
+                },
+            },
+        }
+    }
+
     /// Open a diff tab for the selected Source-Control entry.
     fn open_selected_diff(&mut self) {
         let cursor = self.scm.selection.cursor();
@@ -1008,7 +1704,7 @@ impl App {
             title,
             TabKind::Diff {
                 file: Box::new(file),
-                view: ViewMode::Unified,
+                view: self.diff_layout,
                 scroll: 0,
             },
         );
@@ -1219,9 +1915,31 @@ impl App {
         self.scm.log_loading = false;
         self.scm.log_has_more = has_more;
         if skip == 0 {
+            // A fresh first page (initial load or a reconciliation reset) replaces the
+            // log; scroll back to the top so the newest commits are in view.
             self.scm.log = commits;
+            self.scm_commits_offset = 0;
         } else if skip == self.scm.log.len() {
             self.scm.log.extend(commits);
+        }
+    }
+
+    /// Prepend newly-observed commits reported by the backend (an external commit
+    /// picked up via file-watching). Duplicates are dropped, and the viewport is
+    /// nudged so the user's position in the older history is preserved.
+    fn apply_vcs_commits_prepended(&mut self, mut commits: Vec<Commit>) {
+        let known: HashSet<&str> = self.scm.log.iter().map(|c| c.hash.as_str()).collect();
+        commits.retain(|c| !known.contains(c.hash.as_str()));
+        let inserted = commits.len();
+        if inserted == 0 {
+            return;
+        }
+        commits.append(&mut self.scm.log);
+        self.scm.log = commits;
+        // If the user had scrolled into the log, shift down so the same commits stay
+        // put; at the top (offset 0) keep them at the newest.
+        if self.scm_commits_offset > 0 {
+            self.scm_commits_offset += inserted;
         }
     }
 
@@ -1379,7 +2097,7 @@ impl App {
         // Snapshot the inputs and release the borrow before mutating `self`.
         let input = self.tabs.get(self.active).and_then(|t| match &t.kind {
             TabKind::Code { path, text, .. } => {
-                Some((path.clone(), text.clone(), t.editor.cursor.line))
+                Some((path.clone(), text.clone(), t.editor.cursor().line))
             },
             _ => None,
         });
@@ -1613,6 +2331,8 @@ impl App {
                     buffer,
                     text,
                     highlights,
+                    folds,
+                    folded,
                     decos,
                 } => Tab::new(
                     t.title.clone(),
@@ -1624,6 +2344,8 @@ impl App {
                         buffer: buffer.clone(),
                         text: text.clone(),
                         highlights: highlights.clone(),
+                        folds: folds.clone(),
+                        folded: folded.clone(),
                         decos: decos.clone(),
                     },
                 ),
@@ -1828,6 +2550,50 @@ impl App {
                 ViewMode::SideBySide => ViewMode::Unified,
             };
             *scroll = 0;
+            // Remember the choice so subsequently-opened diffs adopt it.
+            self.diff_layout = *view;
+        }
+    }
+
+    /// Fold or unfold the code region at the cursor: prefer a fold headered on the
+    /// cursor line, else the innermost fold containing it. Collapsing a region the
+    /// cursor sits inside relocates the caret to the (visible) header line.
+    fn toggle_fold(&mut self) {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let line = tab.editor.cursor().line;
+        let TabKind::Code {
+            buffer,
+            folds,
+            folded,
+            ..
+        } = &mut tab.kind
+        else {
+            return;
+        };
+        let target = folds
+            .regions()
+            .iter()
+            .find(|r| r.start == line)
+            .or_else(|| {
+                folds
+                    .regions()
+                    .iter()
+                    .filter(|r| r.start <= line && line <= r.end)
+                    .min_by_key(|r| r.end - r.start)
+            })
+            .copied();
+        let Some(region) = target else {
+            return;
+        };
+        // `remove` returns whether it was collapsed: toggle by remove-or-insert.
+        if !folded.remove(&region.start) {
+            folded.insert(region.start);
+            if line > region.start {
+                let pos = LineCol::new(region.start, tab.editor.cursor().col);
+                tab.editor.set_caret(buffer, pos);
+            }
         }
     }
 
@@ -1952,6 +2718,33 @@ impl App {
 
     /// Handle a mouse event: the tab strip (switch / close / cycle), wheel scrolls
     /// (the sidebar or the active tab), and a left click moves focus.
+    /// Resize the sidebar so its right edge sits at column `col`. Dragging narrower
+    /// than [`SIDEBAR_MIN_WIDTH`] is read as intent to collapse. The responsive upper
+    /// bound (terminal width) is applied when the layout is next computed.
+    fn resize_sidebar_to(&mut self, col: u16) {
+        let width = col.saturating_sub(self.sidebar_rect.x);
+        if width < SIDEBAR_MIN_WIDTH {
+            self.sidebar_visible = false;
+            self.sidebar_resizing = false;
+        } else {
+            self.sidebar_width = width;
+        }
+    }
+
+    /// Resize the pinned Source-Control commit-log region so its top edge (the drag
+    /// divider) sits at `row`. The list area's bottom is fixed, so the commit region
+    /// grows as the divider moves up; both regions keep at least [`MIN_SCM_REGION`].
+    fn resize_scm_commits_to(&mut self, row: u16) {
+        let content = self.sidebar_content_rect;
+        let bottom = content.y + content.height;
+        let list_top = self.scm_changes_rect.y;
+        let total = bottom.saturating_sub(list_top);
+        // Reserve MIN for the changes region plus the 1-row divider.
+        let max_commits = total.saturating_sub(MIN_SCM_REGION + 1).max(MIN_SCM_REGION);
+        let h = bottom.saturating_sub(row).saturating_sub(1);
+        self.scm_commits_h = h.clamp(MIN_SCM_REGION, max_commits);
+    }
+
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         // Toasts float above everything (including the overlay), so hit-test them
         // first: a left click on a card dismisses it.
@@ -1968,6 +2761,24 @@ impl App {
                     self.drag_tab_update(mouse.column, mouse.row);
                 },
                 MouseEventKind::Up(MouseButton::Left) => self.drag_tab_drop(),
+                _ => {},
+            }
+            return;
+        }
+        // An in-progress sidebar resize captures motion until the button is released.
+        if self.sidebar_resizing {
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left) => self.resize_sidebar_to(mouse.column),
+                MouseEventKind::Up(MouseButton::Left) => self.sidebar_resizing = false,
+                _ => {},
+            }
+            return;
+        }
+        // An in-progress Source-Control commit-divider resize captures motion likewise.
+        if self.scm_resizing {
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left) => self.resize_scm_commits_to(mouse.row),
+                MouseEventKind::Up(MouseButton::Left) => self.scm_resizing = false,
                 _ => {},
             }
             return;
@@ -1991,13 +2802,29 @@ impl App {
         }
         let point = (mouse.column, mouse.row);
         let in_sidebar = self.sidebar_visible && rect_contains(self.sidebar_rect, point);
+        let in_outline = self.outline_visible && rect_contains(self.outline_rect, point);
         match mouse.kind {
-            MouseEventKind::ScrollDown if in_sidebar => self.sidebar_step(1),
-            MouseEventKind::ScrollUp if in_sidebar => self.sidebar_step(-1),
+            MouseEventKind::ScrollDown if in_outline => self.outline_step(1),
+            MouseEventKind::ScrollUp if in_outline => self.outline_step(-1),
+            MouseEventKind::ScrollDown if in_sidebar => self.sidebar_wheel(3, mouse.row),
+            MouseEventKind::ScrollUp if in_sidebar => self.sidebar_wheel(-3, mouse.row),
             MouseEventKind::ScrollDown => self.scroll_lines(3),
             MouseEventKind::ScrollUp => self.scroll_lines(-3),
+            MouseEventKind::Down(MouseButton::Left) if in_outline => {
+                self.handle_outline_click(mouse.row);
+            },
             MouseEventKind::Down(MouseButton::Left) => {
-                if in_sidebar {
+                if self.sidebar_visible && mouse.column == self.sidebar_divider_x {
+                    // Grab the sidebar-width divider to start a resize drag.
+                    self.sidebar_resizing = true;
+                } else if in_sidebar
+                    && self.sidebar_panel == SidebarPanel::SourceControl
+                    && self.scm_divider_y != 0
+                    && mouse.row == self.scm_divider_y
+                {
+                    // Grab the Source-Control changes/commits divider.
+                    self.scm_resizing = true;
+                } else if in_sidebar {
                     self.handle_sidebar_click(mouse.column, mouse.row, mouse.modifiers);
                 } else {
                     self.handle_editor_click(mouse);
@@ -2023,11 +2850,11 @@ impl App {
     /// The source-control change index under the hover cursor, if any (mirrors the
     /// SCM click hit-testing, using the last frame's row map).
     pub(crate) fn hovered_scm_change(&self) -> Option<usize> {
-        let (_, hy) = self.hover?;
-        if hy < self.sidebar_content_rect.y {
+        let point = self.hover?;
+        if !rect_contains(self.scm_changes_rect, point) {
             return None;
         }
-        let display = self.scm_offset + usize::from(hy - self.sidebar_content_rect.y);
+        let display = self.scm_offset + usize::from(point.1 - self.scm_changes_rect.y);
         self.scm_row_map.get(display).copied().flatten()
     }
 
@@ -2047,6 +2874,16 @@ impl App {
     /// (neither activates).
     fn handle_sidebar_click(&mut self, col: u16, row_y: u16, modifiers: KeyModifiers) {
         self.focus = Focus::Sidebar;
+        // Explorer header toolbar buttons sit on the header row alongside the switcher.
+        if row_y == self.sidebar_rect.y
+            && let Some(cmd) = self
+                .header_action_hits
+                .iter()
+                .find_map(|&(start, end, cmd)| (col >= start && col < end).then_some(cmd))
+        {
+            self.dispatch(cmd);
+            return;
+        }
         if let Some(panel) = self.panel_at(col, row_y) {
             self.dispatch(Command::SelectPanel(panel));
             return;
@@ -2071,13 +2908,21 @@ impl App {
                 }
             },
             SidebarPanel::SourceControl => {
-                if !rect_contains(self.sidebar_content_rect, (col, row_y)) {
+                // The pinned commit-log region: rows aren't selectable; only the
+                // "load more" affordance is clickable.
+                if rect_contains(self.scm_commits_rect, (col, row_y)) {
+                    let display =
+                        self.scm_commits_offset + (row_y - self.scm_commits_rect.y) as usize;
+                    if self.scm_more_row == Some(display) {
+                        self.load_more_scm_log();
+                    }
                     return;
                 }
-                let display = self.scm_offset + (row_y - self.sidebar_content_rect.y) as usize;
-                if self.scm_more_row == Some(display) {
-                    self.load_more_scm_log();
-                } else if let Some(Some(idx)) = self.scm_row_map.get(display).copied() {
+                if !rect_contains(self.scm_changes_rect, (col, row_y)) {
+                    return;
+                }
+                let display = self.scm_offset + (row_y - self.scm_changes_rect.y) as usize;
+                if let Some(Some(idx)) = self.scm_row_map.get(display).copied() {
                     if ctrl {
                         self.scm.selection.toggle(idx);
                     } else if shift {
@@ -2089,8 +2934,27 @@ impl App {
                 }
             },
             SidebarPanel::Search => {
-                // The query line sits just above the results; click it to type.
-                if row_y == self.sidebar_content_rect.y {
+                // Header buttons: option toggles on the find row, replace-all on the
+                // replace row.
+                if let Some(cmd) =
+                    self.search_action_hits
+                        .iter()
+                        .find_map(|&(start, end, ry, cmd)| {
+                            (row_y == ry && col >= start && col < end).then_some(cmd)
+                        })
+                {
+                    self.dispatch(cmd);
+                    return;
+                }
+                // Click a field to edit it.
+                if row_y == self.search_query_row {
+                    self.search.field = SearchField::Find;
+                    self.search.input = true;
+                    return;
+                }
+                if Some(row_y) == self.search_replace_row {
+                    self.search.field = SearchField::Replace;
+                    self.search.replace_visible = true;
                     self.search.input = true;
                     return;
                 }
@@ -2125,7 +2989,7 @@ impl App {
             }) => editor.selection_range().map_or_else(
                 || {
                     buffer
-                        .line(editor.cursor.line as usize)
+                        .line(editor.cursor().line as usize)
                         .map(|l| format!("{l}\n"))
                 },
                 |range| selection_text(buffer, text, range),
@@ -2162,12 +3026,74 @@ impl App {
             ..
         }) = self.tabs.get_mut(self.active)
         {
-            if extend {
-                editor.ensure_anchor();
-            } else {
+            // The motion moves every caret's head; a non-extending motion then
+            // collapses each selection onto its new head, while an extending one keeps
+            // the anchors so the selection grows.
+            motion(editor, buffer);
+            if !extend {
                 editor.clear_selection();
             }
-            motion(editor, buffer);
+        }
+    }
+
+    /// Select the whole buffer in the active editor tab (Ctrl+A).
+    fn editor_select_all(&mut self) {
+        if let Some(Tab {
+            kind: TabKind::Code { buffer, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            editor.select_all(buffer);
+        }
+    }
+
+    /// Add a caret one line above or below the primary caret (Ctrl+Alt+Up/Down).
+    fn add_cursor_vertical(&mut self, above: bool) {
+        if let Some(Tab {
+            kind: TabKind::Code { buffer, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            if above {
+                editor.add_caret_above(buffer);
+            } else {
+                editor.add_caret_below(buffer);
+            }
+        }
+    }
+
+    /// Select the word under the caret, then add a caret at the next occurrence
+    /// (Ctrl+D).
+    fn add_cursor_next_occurrence(&mut self) {
+        if let Some(Tab {
+            kind: TabKind::Code { buffer, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            editor.add_next_occurrence(buffer);
+        }
+    }
+
+    /// Esc in the editor: collapse multiple carets to the primary; with a single caret
+    /// it preserves the former behavior of returning focus to the sidebar.
+    fn collapse_carets_or_unfocus(&mut self) {
+        let multi = matches!(
+            self.tabs.get(self.active),
+            Some(Tab {
+                kind: TabKind::Code { .. },
+                editor,
+                ..
+            }) if editor.has_multiple_cursors()
+        );
+        if multi {
+            if let Some(Tab { editor, .. }) = self.tabs.get_mut(self.active) {
+                editor.collapse_to_primary();
+            }
+        } else {
+            self.toggle_focus();
         }
     }
 
@@ -2204,14 +3130,22 @@ impl App {
         self.focus_pane_switch(pane);
         self.focus = Focus::Editor;
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+        let alt = mouse.modifiers.contains(KeyModifiers::ALT);
         let streak = self.click_streak(mouse.column, mouse.row);
         if let Some(Tab {
-            kind: TabKind::Code { buffer, .. },
+            kind:
+                TabKind::Code {
+                    buffer,
+                    folds,
+                    folded,
+                    ..
+                },
             editor,
             ..
         }) = self.tabs.get_mut(self.active)
         {
-            let pos = editor.pos_at(area, buffer, mouse.column, mouse.row);
+            let fold_lines = resolve_folds(folds, folded);
+            let pos = editor.pos_at(area, buffer, &fold_lines, mouse.column, mouse.row);
             match streak {
                 2 => {
                     let (anchor, head) = word_at(buffer, pos);
@@ -2221,10 +3155,14 @@ impl App {
                     let (anchor, head) = line_span(buffer, pos.line);
                     editor.set_selection(buffer, anchor, head);
                 },
-                // Shift+click extends the selection from the current caret to the
-                // click point (VS Code style); a plain click places the caret.
+                // Alt+click adds (or toggles off) a caret at the click, building a
+                // multi-cursor set.
+                _ if alt => editor.add_caret(buffer, pos),
+                // Shift+click extends the selection from the current caret to the click
+                // point (VS Code style); a plain click places the caret, discarding any
+                // secondary carets.
                 _ if shift => {
-                    editor.ensure_anchor();
+                    editor.collapse_to_primary();
                     editor.extend_to(buffer, pos);
                 },
                 _ => editor.set_caret(buffer, pos),
@@ -2239,12 +3177,19 @@ impl App {
     fn drag_select_to(&mut self, col: u16, row: u16) {
         let area = self.editor_rect;
         if let Some(Tab {
-            kind: TabKind::Code { buffer, .. },
+            kind:
+                TabKind::Code {
+                    buffer,
+                    folds,
+                    folded,
+                    ..
+                },
             editor,
             ..
         }) = self.tabs.get_mut(self.active)
         {
-            let pos = editor.pos_at(area, buffer, col, row);
+            let fold_lines = resolve_folds(folds, folded);
+            let pos = editor.pos_at(area, buffer, &fold_lines, col, row);
             editor.extend_to(buffer, pos);
         }
     }
@@ -2334,13 +3279,17 @@ impl App {
     /// submit it through the session, moving the caret optimistically.
     fn submit_edit<F>(&mut self, build: F)
     where
-        F: FnOnce(LineCol, Option<Range>, &TextBuffer, u64) -> Option<editing::Edit>,
+        F: Fn(LineCol, Option<Range>, &TextBuffer, u64) -> Option<editing::Edit>,
     {
         if self.backend.is_none() {
             return;
         }
         let idx = self.active;
-        let (doc, edit) = match self.tabs.get(idx) {
+        // Build one edit per selection against the same base version, then flatten to a
+        // single non-overlapping batch (the buffer applies it bottom-up). Each caret is
+        // repositioned by the edits that fall strictly before its selection. With a
+        // single cursor this collapses to exactly the former single-edit behavior.
+        let (doc, base, edits, carets) = match self.tabs.get(idx) {
             Some(Tab {
                 kind:
                     TabKind::Code {
@@ -2351,19 +3300,35 @@ impl App {
                     },
                 editor,
                 ..
-            }) => (
-                *doc,
-                build(
-                    editor.cursor,
-                    editor.selection_range(),
-                    buffer,
-                    *next_version,
-                ),
-            ),
+            }) => {
+                let base = *next_version;
+                let mut per: Vec<(LineCol, Vec<TextEdit>, LineCol)> = Vec::new();
+                for sel in &editor.cursors().selections {
+                    let range = sel.range();
+                    let selection = (!range.is_empty()).then_some(range);
+                    if let Some(e) = build(sel.head, selection, buffer, base) {
+                        per.push((range.start, e.change.edits, e.caret));
+                    }
+                }
+                if per.is_empty() {
+                    return;
+                }
+                per.sort_by_key(|(start, ..)| *start);
+                let flat: Vec<TextEdit> = per.iter().flat_map(|(.., e, _)| e.clone()).collect();
+                let carets: Vec<LineCol> = per
+                    .iter()
+                    .map(|(start, _, local)| {
+                        let earlier: Vec<TextEdit> = flat
+                            .iter()
+                            .filter(|te| te.range.start < *start)
+                            .cloned()
+                            .collect();
+                        editing::reflow_caret(*local, &earlier)
+                    })
+                    .collect();
+                (*doc, base, flat, carets)
+            },
             _ => return,
-        };
-        let Some(edit) = edit else {
-            return;
         };
         if let Some(backend) = &self.backend {
             let id = backend.next_id();
@@ -2371,7 +3336,7 @@ impl App {
                 id,
                 SessionCommand::ApplyChange {
                     doc,
-                    change: edit.change,
+                    change: Change::new(base, edits),
                 },
             );
         }
@@ -2382,9 +3347,9 @@ impl App {
         }) = self.tabs.get_mut(idx)
         {
             *next_version += 1;
-            editor.cursor = edit.caret;
-            editor.selection_anchor = None;
-            editor.scroll_to(edit.caret);
+            editor.set_carets(&carets);
+            let head = editor.cursor();
+            editor.scroll_to(head);
         }
     }
 
@@ -2586,6 +3551,9 @@ impl App {
                 commits,
                 has_more,
             } => self.apply_vcs_log(skip, commits, has_more),
+            SessionEvent::VcsCommitsPrepended { commits } => {
+                self.apply_vcs_commits_prepended(commits);
+            },
             SessionEvent::Committed { oid } => {
                 self.commit_input = None;
                 let short: String = oid.chars().take(7).collect();
@@ -2611,6 +3579,8 @@ impl App {
             if let TabKind::Code {
                 buffer,
                 highlights,
+                folds,
+                folded,
                 text,
                 next_version,
                 ..
@@ -2618,17 +3588,55 @@ impl App {
             {
                 *buffer = snap.buffer.clone();
                 *highlights = (*snap.highlights).clone();
+                *folds = (*snap.folds).clone();
                 *text = snap.buffer.text();
                 *next_version = (*next_version).max(snap.version);
+                // Drop collapsed markers whose fold no longer starts where it did (an
+                // edit shifted or removed it), so stale hidden lines can't linger.
+                let starts: HashSet<u32> = folds.regions().iter().map(|r| r.start).collect();
+                folded.retain(|line| starts.contains(line));
             }
             tab.dirty = snap.dirty;
+            // Undo/redo snapshots carry the caret to jump to; ordinary edits carry
+            // `None` so the optimistic placement from `submit_edit` is preserved.
+            if let Some(cursor) = &snap.cursor {
+                let heads: Vec<LineCol> = cursor.selections.iter().map(|s| s.head).collect();
+                if !heads.is_empty() {
+                    tab.editor.set_carets(&heads);
+                    tab.editor.scroll_to(cursor.primary().head);
+                }
+            }
+        }
+        // If the find bar is open, an edit (e.g. a replace) just changed the buffer,
+        // so recompute the match highlights against the fresh text.
+        if self.find.is_some() {
+            self.run_find();
         }
     }
+}
+
+/// Resolve a snapshot's fold regions plus the view's collapsed set into the
+/// line-based [`Fold`]s the editor renders and hit-tests against.
+pub(crate) fn resolve_folds(folds: &FoldRegions, folded: &BTreeSet<u32>) -> Vec<Fold> {
+    folds
+        .regions()
+        .iter()
+        .map(|r| Fold {
+            start: r.start,
+            end: r.end,
+            collapsed: folded.contains(&r.start),
+        })
+        .collect()
 }
 
 /// Whether the screen point `(x, y)` lies inside `r`.
 fn rect_contains(r: Rect, (x, y): (u16, u16)) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
+}
+
+/// Whether screen row `y` lies within `r`'s vertical span (column ignored).
+fn row_in_rect(r: Rect, y: u16) -> bool {
+    r.height > 0 && y >= r.y && y < r.bottom()
 }
 
 /// The tab at column `x` among `hits`, and whether `x` is on its close glyph.
@@ -2645,29 +3653,10 @@ fn canonical(path: &Path) -> PathBuf {
 }
 
 /// The (anchor, head) span of the word under `pos`, or the single character there
-/// when the cursor is not on a word character.
+/// when the cursor is not on a word character. Delegates to the widget's
+/// [`karet_editor::word_bounds`] so double-click and word motions agree.
 fn word_at(buffer: &TextBuffer, pos: LineCol) -> (LineCol, LineCol) {
-    let line = buffer.line(pos.line as usize).unwrap_or_default();
-    let chars: Vec<char> = line.chars().collect();
-    let n = chars.len() as u32;
-    let col = pos.col.min(n);
-    let is_word = |c: char| c.is_alphanumeric() || c == '_';
-    let mut start = col;
-    while start > 0 && is_word(chars[start as usize - 1]) {
-        start -= 1;
-    }
-    let mut end = col;
-    while end < n && is_word(chars[end as usize]) {
-        end += 1;
-    }
-    if start == end {
-        (
-            LineCol::new(pos.line, col),
-            LineCol::new(pos.line, (col + 1).min(n)),
-        )
-    } else {
-        (LineCol::new(pos.line, start), LineCol::new(pos.line, end))
-    }
+    karet_editor::word_bounds(buffer, pos)
 }
 
 /// The text within `range`, sliced from the tab's `source` using byte offsets
@@ -2913,6 +3902,96 @@ mod tests {
     }
 
     #[test]
+    fn outline_panel_toggles_and_jumps_to_a_bookmarked_page() {
+        // A 2-page PDF whose single bookmark targets the second page (index 1). Like
+        // the karet-pdf fixtures, it has no xref table, so hayro parses it via its
+        // brute-force fallback.
+        const PDF: &[u8] = b"%PDF-1.4\n\
+1 0 obj<</Type/Catalog/Pages 2 0 R/Outlines 5 0 R>>endobj\n\
+2 0 obj<</Type/Pages/Kids[3 0 R 4 0 R]/Count 2>>endobj\n\
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n\
+4 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n\
+5 0 obj<</Type/Outlines/First 6 0 R/Last 6 0 R/Count 1>>endobj\n\
+6 0 obj<</Title(Page Two)/Parent 5 0 R/Dest[4 0 R/Fit]>>endobj\n\
+trailer<</Size 7/Root 1 0 R>>\n%%EOF";
+        let Ok(doc) = karet_pdf::Document::load(PDF.to_vec()) else {
+            return;
+        };
+        let page_count = doc.page_count();
+        let outline = doc.outline();
+        let mut app = app();
+        app.tabs.push(Tab::new(
+            "doc.pdf",
+            TabKind::Document {
+                path: PathBuf::from("doc.pdf"),
+                doc,
+                page_count,
+                page: 0,
+                rendered: None,
+                outline,
+            },
+        ));
+        app.active = app.tabs.len() - 1;
+
+        // The panel is populated from the bookmark.
+        let rows = app.active_outline_rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows.first().map(|r| r.label.as_str()), Some("Page Two"));
+
+        // Toggling shows and focuses the panel (it has content).
+        app.dispatch(Command::ToggleOutline);
+        assert!(app.outline_visible);
+        assert_eq!(app.focus, Focus::Outline);
+
+        // Activating the bookmark jumps the document to its page.
+        app.dispatch(Command::OutlineActivate);
+        let page = match app.tabs.get(app.active).map(|t| &t.kind) {
+            Some(TabKind::Document { page, .. }) => Some(*page),
+            _ => None,
+        };
+        assert_eq!(page, Some(1));
+
+        // Toggling again hides the panel and returns focus to the editor.
+        app.dispatch(Command::ToggleOutline);
+        assert!(!app.outline_visible);
+        assert_eq!(app.focus, Focus::Editor);
+    }
+
+    #[test]
+    fn sidebar_resize_sets_width_and_collapses_below_min() {
+        let mut app = app();
+        app.sidebar_rect = Rect::new(0, 0, DEFAULT_SIDEBAR_WIDTH, 20);
+        app.sidebar_resizing = true;
+        // Dragging the divider to column 45 widens the sidebar.
+        app.resize_sidebar_to(45);
+        assert_eq!(app.sidebar_width, 45);
+        assert!(app.sidebar_visible);
+        // Dragging narrower than the minimum collapses it and ends the drag, leaving
+        // the last valid width intact so re-showing restores a sensible size.
+        app.resize_sidebar_to(SIDEBAR_MIN_WIDTH - 1);
+        assert!(!app.sidebar_visible);
+        assert!(!app.sidebar_resizing);
+        assert_eq!(app.sidebar_width, 45);
+    }
+
+    #[test]
+    fn scm_commit_divider_resizes_and_clamps() {
+        let mut app = app();
+        // A 20-row list area (rows 2..22); the changes list starts at row 2.
+        app.sidebar_content_rect = Rect::new(0, 2, 30, 20);
+        app.scm_changes_rect = Rect::new(0, 2, 30, 10);
+        // Drag the divider up to row 12 → commits region = rows 13..22 = 9 rows.
+        app.resize_scm_commits_to(12);
+        assert_eq!(app.scm_commits_h, 9);
+        // Dragging past the bottom clamps so the commits region keeps the minimum.
+        app.resize_scm_commits_to(30);
+        assert_eq!(app.scm_commits_h, MIN_SCM_REGION);
+        // Dragging to the very top clamps so the changes region keeps room too.
+        app.resize_scm_commits_to(0);
+        assert_eq!(app.scm_commits_h, 20 - (MIN_SCM_REGION + 1));
+    }
+
+    #[test]
     fn pending_save_drives_the_animation_tick() {
         let mut app = app();
         assert!(app.next_wake().is_none());
@@ -2992,7 +4071,14 @@ mod tests {
         app.hover = Some((5, 1));
         assert_eq!(app.hovered_explorer_row(), None);
 
-        // Source control: display 0 is a section header, 1 and 2 are changes.
+        // Source control: display 0 is a section header, 1 and 2 are changes. Hover
+        // maps against the changes region rect.
+        app.scm_changes_rect = Rect {
+            x: 0,
+            y: 2,
+            width: 20,
+            height: 10,
+        };
         app.scm_offset = 0;
         app.scm_row_map = vec![None, Some(0), Some(1)];
         app.hover = Some((5, 3)); // display = 0 + (3 - 2) = 1 → change 0
@@ -3097,6 +4183,105 @@ mod tests {
         app.handle_key(KeyEvent::new(code, mods));
     }
 
+    fn commit(hash: &str, summary: &str) -> Commit {
+        Commit {
+            hash: hash.to_string(),
+            short_hash: hash.chars().take(7).collect(),
+            summary: summary.to_string(),
+            author: "T".to_string(),
+            time: 0,
+        }
+    }
+
+    #[test]
+    fn toggle_fold_collapses_at_cursor_and_relocates_caret() {
+        use karet_treesitter::ParserPool;
+        use karet_treesitter::SyntaxTree;
+        use karet_treesitter::language_id_from_path;
+
+        let Some(lang) = language_id_from_path(Path::new("f.rs")) else {
+            return; // rust grammar not compiled in
+        };
+        let src = "fn main() {\n    let x = 1;\n    let y = 2;\n}\n";
+        let mut pool = ParserPool::new();
+        let tree = SyntaxTree::parse(&mut pool, lang, src).expect("parse");
+        let regions = karet_syntax::fold(&tree);
+        let start = regions.regions()[0].start;
+        assert_eq!(start, 0, "the function body folds from line 0");
+
+        let mut app = app();
+        app.push_tab(text_tab("f.rs", src));
+        if let TabKind::Code { folds, .. } = &mut app.tabs[app.active].kind {
+            *folds = regions;
+        }
+        // Cursor inside the region: toggling collapses it and moves the caret to the
+        // (still visible) header line.
+        app.tabs[app.active].editor.place_caret(LineCol::new(1, 0));
+        app.toggle_fold();
+        assert_eq!(app.tabs[app.active].editor.cursor().line, 0);
+        if let TabKind::Code { folded, .. } = &app.tabs[app.active].kind {
+            assert!(folded.contains(&0));
+        }
+        // Toggling again (cursor now on the header) expands it.
+        app.toggle_fold();
+        if let TabKind::Code { folded, .. } = &app.tabs[app.active].kind {
+            assert!(!folded.contains(&0));
+        }
+    }
+
+    #[test]
+    fn prepended_commits_dedupe_and_preserve_scroll() {
+        let mut app = app();
+        app.scm.log = vec![commit("aaaaaaa1", "old top"), commit("bbbbbbb2", "older")];
+        app.scm_commits_offset = 5;
+        // A genuinely-new commit plus a duplicate of the current top: only the new
+        // one prepends, and the viewport shifts down by that one inserted row.
+        app.apply_vcs_commits_prepended(vec![
+            commit("ccccccc3", "new"),
+            commit("aaaaaaa1", "old top"),
+        ]);
+        assert_eq!(app.scm.log.len(), 3);
+        assert_eq!(app.scm.log[0].summary, "new");
+        assert_eq!(app.scm.log[1].summary, "old top");
+        assert_eq!(app.scm_commits_offset, 6);
+    }
+
+    #[test]
+    fn scm_wheel_scrolls_the_region_under_the_pointer() {
+        let mut app = app();
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        // Changes region on top (rows 0..10), commit-log region below (rows 10..15).
+        app.scm_changes_rect = Rect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 10,
+        };
+        app.scm_total_rows = 20;
+        app.scm_commits_rect = Rect {
+            x: 0,
+            y: 10,
+            width: 20,
+            height: 5,
+        };
+        app.scm_commits_total = 12;
+
+        // Wheeling over the changes region scrolls it, clamped to total - height.
+        app.sidebar_wheel(5, 3);
+        assert_eq!(app.scm_offset, 5);
+        app.sidebar_wheel(100, 3);
+        assert_eq!(app.scm_offset, 10);
+        app.sidebar_wheel(-100, 3);
+        assert_eq!(app.scm_offset, 0);
+
+        // Wheeling over the commit-log region scrolls it independently.
+        app.sidebar_wheel(4, 11);
+        assert_eq!(app.scm_commits_offset, 4);
+        assert_eq!(app.scm_offset, 0); // changes untouched
+        app.sidebar_wheel(100, 11);
+        assert_eq!(app.scm_commits_offset, 7); // clamps to 12 - 5
+    }
+
     #[test]
     fn command_palette_keys_route_through_the_overlay_layer() {
         let mut app = app();
@@ -3183,6 +4368,47 @@ mod tests {
     }
 
     #[test]
+    fn scm_cursor_display_row_accounts_for_both_permanent_headers() {
+        let mut app = app();
+        app.apply_vcs_status(
+            vec![
+                change("a.rs", StatusKind::Added),
+                change("b.rs", StatusKind::Added),
+            ],
+            vec![
+                change("c.rs", StatusKind::Modified),
+                change("d.rs", StatusKind::Modified),
+            ],
+        );
+        // Layout rows: 0 "STAGED CHANGES", 1-2 staged, 3 "CHANGES", 4-5 working.
+        let rows: Vec<usize> = (0..4)
+            .map(|i| {
+                app.scm.selection.move_to(i);
+                app.scm_cursor_display_row()
+            })
+            .collect();
+        assert_eq!(rows, vec![1, 2, 4, 5]);
+    }
+
+    #[test]
+    fn scm_cursor_display_row_reserves_line_for_empty_staged_section() {
+        let mut app = app();
+        // With nothing staged, the staged section still reserves its header plus one
+        // placeholder line, so the first working row lands at display row 3.
+        app.apply_vcs_status(
+            Vec::new(),
+            vec![
+                change("c.rs", StatusKind::Modified),
+                change("d.rs", StatusKind::Modified),
+            ],
+        );
+        app.scm.selection.move_to(0);
+        assert_eq!(app.scm_cursor_display_row(), 3);
+        app.scm.selection.move_to(1);
+        assert_eq!(app.scm_cursor_display_row(), 4);
+    }
+
+    #[test]
     fn commit_input_requires_staged_changes() {
         let mut app = app();
         // a.rs is staged, so the input opens.
@@ -3243,6 +4469,17 @@ mod tests {
             }
         );
         assert!(before && after);
+        // The choice persists: the next opened diff adopts the remembered layout.
+        assert_eq!(app.diff_layout, ViewMode::SideBySide);
+        app.scm.selection.move_to(1);
+        app.dispatch(Command::SidebarActivate);
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::Diff {
+                view: ViewMode::SideBySide,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -3304,6 +4541,8 @@ mod tests {
                 buffer: TextBuffer::from_text("foo bar foo"),
                 text: "foo bar foo".to_string(),
                 highlights: Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
                 decos: Vec::new(),
             },
         ));
@@ -3382,6 +4621,8 @@ mod tests {
                 buffer: TextBuffer::from_text("fn main() {}\n"),
                 text: "fn main() {}\n".to_string(),
                 highlights: Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
                 decos: Vec::new(),
             },
         ));
@@ -3423,6 +4664,8 @@ mod tests {
                 buffer: TextBuffer::from_text("x\n"),
                 text: "x\n".to_string(),
                 highlights: Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
                 decos: Vec::new(),
             },
         )
@@ -3471,6 +4714,8 @@ mod tests {
                 buffer: TextBuffer::from_text(text),
                 text: text.to_string(),
                 highlights: Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
                 decos: Vec::new(),
             },
         )
@@ -3499,6 +4744,87 @@ mod tests {
         app.dispatch(Command::SelectRight);
         app.dispatch(Command::Copy);
         assert_eq!(app.status.as_deref(), Some("copied selection"));
+    }
+
+    #[test]
+    fn select_line_end_then_select_all_dispatch_in_editor() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "hello world\nsecond"));
+        app.focus = Focus::Editor;
+        // Shift+End selects from the caret to the end of the line.
+        app.dispatch(Command::SelectLineEnd);
+        assert_eq!(
+            app.tabs[app.active].editor.selection_range(),
+            Some(Range {
+                start: LineCol::new(0, 0),
+                end: LineCol::new(0, 11),
+            })
+        );
+        // Ctrl+A selects the whole buffer.
+        app.dispatch(Command::EditorSelectAll);
+        assert_eq!(
+            app.tabs[app.active].editor.selection_range(),
+            Some(Range {
+                start: LineCol::new(0, 0),
+                end: LineCol::new(1, 6),
+            })
+        );
+    }
+
+    #[test]
+    fn caret_line_end_moves_without_selecting() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "hello"));
+        app.focus = Focus::Editor;
+        app.dispatch(Command::CaretLineEnd);
+        assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 5));
+        assert_eq!(app.tabs[app.active].editor.selection_range(), None);
+    }
+
+    #[test]
+    fn add_cursor_below_then_esc_collapses() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "ab\ncd"));
+        app.focus = Focus::Editor;
+        app.dispatch(Command::AddCursorBelow);
+        assert!(app.tabs[app.active].editor.has_multiple_cursors());
+        // Esc with several carets collapses to the primary, keeping editor focus.
+        app.dispatch(Command::CollapseCarets);
+        assert!(!app.tabs[app.active].editor.has_multiple_cursors());
+        assert_eq!(app.focus, Focus::Editor);
+    }
+
+    #[test]
+    fn esc_with_a_single_caret_returns_focus_to_the_sidebar() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "ab"));
+        app.focus = Focus::Editor;
+        app.dispatch(Command::CollapseCarets);
+        assert_eq!(app.focus, Focus::Sidebar);
+    }
+
+    #[test]
+    fn alt_click_adds_a_second_caret() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "foo bar baz"));
+        app.pane_frames = vec![content_frame(
+            &app,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 40,
+                height: 5,
+            },
+        )];
+        let click = |col, mods| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row: 0,
+            modifiers: mods,
+        };
+        app.handle_editor_click(click(3, KeyModifiers::NONE));
+        app.handle_editor_click(click(8, KeyModifiers::ALT));
+        assert!(app.tabs[app.active].editor.has_multiple_cursors());
     }
 
     #[test]
@@ -3669,6 +4995,13 @@ mod tests {
             width: 30,
             height: 8,
         };
+        // Clicks hit-test against the changes region rect.
+        app.scm_changes_rect = Rect {
+            x: 0,
+            y: 2,
+            width: 30,
+            height: 8,
+        };
         app.scm_offset = 0;
         // Display rows: 0 header, 1 a.rs(0), 2 header, 3 b.rs(1).
         app.scm_row_map = vec![None, Some(0), None, Some(1)];
@@ -3805,6 +5138,152 @@ mod tests {
         assert!(app.tabs.iter().any(|t| t.path() == Some(file.as_path())));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explorer_header_toolbar_click_begins_new_file() {
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+        app.sidebar_rect = Rect {
+            x: 0,
+            y: 1,
+            width: 30,
+            height: 10,
+        };
+        app.header_action_hits = vec![
+            (20, 22, Command::ExplorerNewFile),
+            (22, 24, Command::ExplorerNewFolder),
+            (24, 26, Command::ExplorerRefresh),
+            (26, 28, Command::ExplorerCollapseAll),
+        ];
+        // Clicking the "new file" button on the header row starts an inline edit.
+        app.handle_sidebar_click(20, 1, KeyModifiers::NONE);
+        assert!(app.explorer.is_editing());
+    }
+
+    #[test]
+    fn explorer_commit_edit_creates_a_file() {
+        let dir = std::env::temp_dir().join(format!("karet-newfile-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+        app.explorer_begin_new(false);
+        for c in "hello.txt".chars() {
+            app.explorer.edit_push(c);
+        }
+        app.explorer_commit_edit();
+        assert!(dir.join("hello.txt").exists());
+        assert!(!app.explorer.is_editing());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn find_bar_toggle_field_reveals_and_switches_replace() {
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        app.find = Some(FindState::default());
+        assert!(app.find.as_ref().is_some_and(|f| !f.replace_visible));
+        app.find_toggle_field();
+        assert!(
+            app.find
+                .as_ref()
+                .is_some_and(|f| f.replace_visible && f.field == SearchField::Replace)
+        );
+        app.find_toggle_field();
+        assert!(
+            app.find
+                .as_ref()
+                .is_some_and(|f| f.field == SearchField::Find)
+        );
+    }
+
+    #[test]
+    fn find_input_edits_the_active_field() {
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        app.find = Some(FindState::default());
+        app.find_input(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        app.find_toggle_field(); // switch to the replace field
+        app.find_input(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        assert!(
+            app.find
+                .as_ref()
+                .is_some_and(|f| f.query == "a" && f.replace == "b")
+        );
+    }
+
+    #[test]
+    fn find_toggle_option_flips_the_flags() {
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        app.find = Some(FindState::default());
+        app.find_toggle_option(SearchOption::Regex);
+        app.find_toggle_option(SearchOption::Word);
+        assert!(
+            app.find
+                .as_ref()
+                .is_some_and(|f| f.regex && !f.case_sensitive && f.whole_word)
+        );
+    }
+
+    #[test]
+    fn search_toggle_field_reveals_and_switches_replace() {
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        assert_eq!(app.search.field, SearchField::Find);
+        // Collapse the replace field, then Tab reveals it and moves focus to it.
+        app.search_toggle_replace();
+        assert!(!app.search.replace_visible);
+        app.search_toggle_field();
+        assert!(app.search.replace_visible);
+        assert_eq!(app.search.field, SearchField::Replace);
+        assert!(app.search.input);
+        // Tab again returns to the find field.
+        app.search_toggle_field();
+        assert_eq!(app.search.field, SearchField::Find);
+    }
+
+    #[test]
+    fn search_edit_targets_the_active_field() {
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        app.search.field = SearchField::Find;
+        app.search_edit(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        app.search.field = SearchField::Replace;
+        app.search_edit(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        assert_eq!(app.search.query, "a");
+        assert_eq!(app.search.replace, "b");
+    }
+
+    #[test]
+    fn search_replace_all_rewrites_matching_files() {
+        let dir = std::env::temp_dir().join(format!("karet-replace-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("a.txt"), "needle and needle\n");
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Search;
+        app.search.query = "needle".to_string();
+        app.search.case_sensitive = true;
+        app.search.replace = "pin".to_string();
+        app.search_replace_all();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap_or_default(),
+            "pin and pin\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_option_toggle_button_click_dispatches() {
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Search;
+        app.sidebar_rect = Rect {
+            x: 0,
+            y: 1,
+            width: 30,
+            height: 10,
+        };
+        // A "regex" toggle button on row 2, columns 20..22.
+        app.search_action_hits = vec![(20, 22, 2, Command::SearchToggleRegex)];
+        assert!(!app.search.regex);
+        app.handle_sidebar_click(20, 2, KeyModifiers::NONE);
+        assert!(app.search.regex);
     }
 
     // --- full-stack Source-Control action tests ------------------------------

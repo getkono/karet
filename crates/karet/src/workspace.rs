@@ -5,12 +5,14 @@
 //! `karet-syntax`, `karet-fileview`). Routing through `karet-session` is a deferred
 //! step; its `Command`/`Event` variants already map onto this flow.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 
 use karet_fileview::image;
 use karet_fileview::viewer::FileKind;
 use karet_fileview::viewer::{self};
+use karet_syntax::FoldRegions;
 use karet_syntax::Highlighter;
 use karet_syntax::Highlights;
 use karet_text::TextBuffer;
@@ -107,6 +109,8 @@ fn open_text(path: &Path, bytes: &[u8], syntax: bool) -> Tab {
             buffer,
             text,
             highlights,
+            folds: FoldRegions::default(),
+            folded: BTreeSet::new(),
             decos: Vec::new(),
         },
     )
@@ -129,6 +133,8 @@ fn open_cbor(path: &Path, bytes: &[u8]) -> Tab {
                     buffer,
                     text,
                     highlights: Highlights::default(),
+                    folds: FoldRegions::default(),
+                    folded: BTreeSet::new(),
                     decos: Vec::new(),
                 },
             )
@@ -165,6 +171,7 @@ fn open_document(path: &Path, bytes: Vec<u8>, len: u64) -> Tab {
     match karet_pdf::Document::load(bytes) {
         Ok(doc) => {
             let page_count = doc.page_count();
+            let outline = doc.outline();
             Tab::new(
                 title(path),
                 TabKind::Document {
@@ -173,6 +180,7 @@ fn open_document(path: &Path, bytes: Vec<u8>, len: u64) -> Tab {
                     page_count,
                     page: 0,
                     rendered: None,
+                    outline,
                 },
             )
         },

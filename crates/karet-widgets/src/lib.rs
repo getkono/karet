@@ -26,6 +26,7 @@ pub mod select;
 pub use file_tree::FileTree;
 pub use file_tree::FileTreeRow;
 pub use file_tree::FileTreeState;
+pub use file_tree::PendingEdit;
 pub use glyph::UiIcon;
 pub use karet_filetype::IconStyle;
 pub use notify::Corner;

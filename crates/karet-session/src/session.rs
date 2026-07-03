@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use karet_core::BytePos;
 use karet_core::Change;
 use karet_core::CursorState;
 use karet_core::Decoration;
@@ -20,6 +21,7 @@ use karet_core::Selection;
 use karet_core::Severity;
 use karet_filetype::FileKind;
 use karet_filetype::classify_ignoring_size;
+use karet_syntax::FoldRegions;
 use karet_syntax::Highlighter;
 use karet_syntax::Highlights;
 use karet_text::AppliedEdit;
@@ -137,6 +139,7 @@ struct Document {
     format: DocFormat,
     tree: Option<SyntaxTree>,
     highlights: Arc<Highlights>,
+    folds: Arc<FoldRegions>,
     decorations: Vec<Decoration>,
     /// Open reference count (a path opened in N views shares one document).
     refs: u32,
@@ -174,7 +177,17 @@ pub struct Session {
     /// filesystem events) emit only when this changes, which absorbs the feedback
     /// from the session's own index writes.
     last_vcs: Option<(Vec<FileChange>, Vec<FileChange>)>,
+    /// The last observed `HEAD` commit hash. A filesystem event that moves the tip
+    /// away from this triggers an incremental commit-log reconciliation.
+    last_head: Option<String>,
 }
+
+/// The most new commits [`Session::reconcile_vcs_log`] will prepend at once. Beyond
+/// this the history is assumed rewritten (rebase/force-push) and the log is reloaded.
+const LOG_RECONCILE_CAP: usize = 256;
+
+/// The first-page size used when a reconciliation falls back to a full log reload.
+const LOG_RELOAD_PAGE: usize = 25;
 
 impl Session {
     /// Create a session and its paired event and snapshot receivers.
@@ -203,6 +216,8 @@ impl Session {
                 Err(_) => (None, None),
             }
         };
+        // Seed the tip so the first ref change reconciles against a known baseline.
+        let last_head = vcs.as_ref().and_then(|r| r.head_hash().ok().flatten());
         let mut session = Self {
             config,
             events,
@@ -218,6 +233,7 @@ impl Session {
             fs_rx,
             vcs,
             last_vcs: None,
+            last_head,
         };
         // Seed the client with the initial status; it buffers until the UI reads it.
         session.emit_vcs_status(None);
@@ -244,7 +260,7 @@ impl Session {
             Command::UnstageAll => self.vcs_write(id, Repository::unstage_all),
             Command::Commit { message } => self.commit(id, &message),
             Command::RefreshVcs => self.emit_vcs_status(Some(id)),
-            Command::VcsLog { skip, limit } => self.emit_vcs_log(id, skip, limit),
+            Command::VcsLog { skip, limit } => self.emit_vcs_log(Some(id), skip, limit),
             // Language-intelligence and search commands are wired in later milestones.
             _ => {},
         }
@@ -254,7 +270,9 @@ impl Session {
 
     /// Fetch a page of the commit log and emit it. Requests one extra commit to
     /// detect whether more remain, then trims to `limit`. A no-op without a repo.
-    fn emit_vcs_log(&mut self, id: RequestId, skip: usize, limit: usize) {
+    /// A requested page tags the answering event with `id`; a spontaneous reload
+    /// (`id` is `None`) makes the client reset its loaded log to this first page.
+    fn emit_vcs_log(&mut self, id: Option<RequestId>, skip: usize, limit: usize) {
         let Some(repo) = self.vcs.as_ref() else {
             return;
         };
@@ -263,7 +281,7 @@ impl Session {
                 let has_more = commits.len() > limit;
                 commits.truncate(limit);
                 self.emit(
-                    Some(id),
+                    id,
                     Event::VcsLog {
                         skip,
                         commits,
@@ -272,13 +290,47 @@ impl Session {
                 );
             },
             Err(e) => self.emit(
-                Some(id),
+                id,
                 Event::Notification {
                     severity: Severity::Error,
                     kind: NotificationKind::Vcs,
                     message: e.to_string(),
                 },
             ),
+        }
+    }
+
+    /// Reconcile the commit log after a filesystem event. Reads the (cheap) `HEAD`
+    /// hash; if the tip moved, prepends only the new commits, falling back to a fresh
+    /// first page when history was rewritten or too many commits arrived at once.
+    fn reconcile_vcs_log(&mut self) {
+        let Some(repo) = self.vcs.as_ref() else {
+            return;
+        };
+        let head = repo.head_hash().ok().flatten();
+        if head == self.last_head {
+            return; // The tip is unchanged — nothing to do.
+        }
+        let prev = self.last_head.take();
+        self.last_head = head.clone();
+        // The branch became unborn (e.g. a hard reset to before the first commit):
+        // there is nothing to prepend, and the client's next open will refetch.
+        if head.is_none() {
+            return;
+        }
+        match repo.commits_since(prev.as_deref(), LOG_RECONCILE_CAP) {
+            // A clean, bounded set of new commits anchored on a known tip → prepend.
+            Ok(commits)
+                if prev.is_some() && !commits.is_empty() && commits.len() < LOG_RECONCILE_CAP =>
+            {
+                self.emit(None, Event::VcsCommitsPrepended { commits });
+            },
+            // No prior anchor, or history was rewritten / a large batch arrived:
+            // emit a fresh first page so the client resets its log cleanly.
+            Ok(commits) if !commits.is_empty() => self.emit_vcs_log(None, 0, LOG_RELOAD_PAGE),
+            // Tip moved but no newer commits (e.g. checkout to an ancestor): refresh.
+            Ok(_) => self.emit_vcs_log(None, 0, LOG_RELOAD_PAGE),
+            Err(_) => {},
         }
     }
 
@@ -387,6 +439,9 @@ impl Session {
         // event is already debounced and the emit is change-gated, so a burst (and
         // the session's own index writes) collapse to at most one update.
         self.emit_vcs_status(None);
+        // A watched `refs/**` / `HEAD` change may mean new commits; reconcile the log
+        // incrementally. The head read is cheap and this early-returns when unchanged.
+        self.reconcile_vcs_log();
     }
 
     /// Borrow a read-only view of a document for local-mode rendering or tests.
@@ -415,7 +470,7 @@ impl Session {
                         version,
                     },
                 );
-                self.publish(existing);
+                self.publish(existing, None);
             }
             return;
         }
@@ -447,6 +502,7 @@ impl Session {
             format,
             tree: None,
             highlights: Arc::new(Highlights::default()),
+            folds: Arc::new(FoldRegions::default()),
             decorations: Vec::new(),
             refs: 1,
         };
@@ -461,7 +517,7 @@ impl Session {
                 version,
             },
         );
-        self.publish(doc_id);
+        self.publish(doc_id, None);
     }
 
     fn apply(&mut self, id: RequestId, doc_id: DocumentId, change: &Change) {
@@ -492,11 +548,11 @@ impl Session {
                 version,
             },
         );
-        self.publish(doc_id);
+        self.publish(doc_id, None);
     }
 
     fn undo_redo(&mut self, id: RequestId, doc_id: DocumentId, undo: bool) {
-        let version = {
+        let (version, cursor) = {
             let pool = &mut self.pool;
             let highlighters = &mut self.highlighters;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
@@ -511,7 +567,20 @@ impl Session {
                 return; // nothing to undo/redo
             };
             update_syntax(pool, highlighters, doc, Some(&applied.edits));
-            applied.version
+            // Jump the caret to the change: undo restores the exact pre-edit cursor;
+            // redo (which records none) lands at the end of the re-applied edit that
+            // reaches furthest into the document.
+            let cursor = applied.restored_cursor.clone().or_else(|| {
+                applied
+                    .edits
+                    .iter()
+                    .max_by_key(|e| e.new_end_byte)
+                    .map(|e| {
+                        let pos = doc.buffer.byte_to_line_col(BytePos(e.new_end_byte));
+                        CursorState::single(Selection::caret(pos))
+                    })
+            });
+            (applied.version, cursor)
         };
         self.emit(
             Some(id),
@@ -520,7 +589,7 @@ impl Session {
                 version,
             },
         );
-        self.publish(doc_id);
+        self.publish(doc_id, cursor);
     }
 
     fn save(&mut self, id: RequestId, doc_id: DocumentId) {
@@ -606,7 +675,7 @@ impl Session {
                 version,
             },
         );
-        self.publish(doc_id);
+        self.publish(doc_id, None);
     }
 
     // --- helpers ----------------------------------------------------------
@@ -619,15 +688,20 @@ impl Session {
         self.events.send((id, event)).ok();
     }
 
-    fn publish(&self, doc_id: DocumentId) {
+    /// Push a render-only snapshot of `doc_id` on the snapshot stream. `cursor` is
+    /// `Some` only for undo/redo, carrying the caret the editor should jump to; every
+    /// other publish passes `None` and leaves the UI's cursor untouched.
+    fn publish(&self, doc_id: DocumentId, cursor: Option<CursorState>) {
         if let Some(doc) = self.store.docs.get(&doc_id) {
             let snapshot = Arc::new(DocSnapshot {
                 version: doc.buffer.version(),
                 buffer: doc.buffer.content_snapshot(),
                 highlights: doc.highlights.clone(),
+                folds: doc.folds.clone(),
                 decorations: Arc::new(doc.decorations.clone()),
                 language: doc.language,
                 dirty: doc.buffer.is_dirty(),
+                cursor,
             });
             self.snapshots.send((doc_id, snapshot)).ok();
         }
@@ -650,6 +724,7 @@ fn update_syntax(
     let Some(lang) = doc.lang_id else {
         doc.tree = None;
         doc.highlights = Arc::new(Highlights::default());
+        doc.folds = Arc::new(FoldRegions::default());
         return;
     };
 
@@ -672,6 +747,12 @@ fn update_syntax(
     doc.highlights = match (doc.tree.as_ref(), highlighters.get(&lang)) {
         (Some(tree), Some(hl)) => Arc::new(hl.highlight(tree, &text).unwrap_or_default()),
         _ => Arc::new(Highlights::default()),
+    };
+    // Fold regions are grammar-agnostic (any multi-line node), so they come straight
+    // off the tree with no per-language highlighter.
+    doc.folds = match doc.tree.as_ref() {
+        Some(tree) => Arc::new(karet_syntax::fold(tree)),
+        None => Arc::new(FoldRegions::default()),
     };
 }
 
@@ -909,6 +990,66 @@ mod tests {
             session
                 .document(doc)
                 .is_some_and(|v| v.buffer().line_count() == 2)
+        );
+    }
+
+    #[test]
+    fn undo_redo_snapshot_carries_caret_but_edits_do_not() {
+        let Some((_dir, path)) = write_temp("main.rs", "fn main() {}\n") else {
+            return;
+        };
+        let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let Some(doc) = opened_doc(&mut events) else {
+            return;
+        };
+
+        // Helper: drain the snapshot stream and return the most recent snapshot.
+        fn drain(snaps: &mut SnapshotRx) -> Option<std::sync::Arc<DocSnapshot>> {
+            let mut last = None;
+            while let Some((_, s)) = snaps.try_recv() {
+                last = Some(s);
+            }
+            last
+        }
+        let _ = drain(&mut snaps); // discard the open snapshot
+
+        // An ordinary edit publishes a snapshot with no caret (the UI owns the caret).
+        let change = Change::new(
+            0,
+            vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(1, 0),
+                    end: LineCol::new(1, 0),
+                },
+                new_text: "fn x() {}\n".to_string(),
+            }],
+        );
+        session.handle(RequestId(2), Command::ApplyChange { doc, change });
+        assert_eq!(
+            drain(&mut snaps).and_then(|s| s.cursor.clone()),
+            None,
+            "an ordinary edit must not carry a caret"
+        );
+
+        // Undo publishes a snapshot that carries the caret to jump to.
+        session.handle(RequestId(3), Command::Undo { doc });
+        assert!(
+            drain(&mut snaps).is_some_and(|s| s.cursor.is_some()),
+            "undo must carry a caret so the editor jumps to the change"
+        );
+
+        // Redo (which records no cursor) still carries a derived caret at the edit.
+        session.handle(RequestId(4), Command::Redo { doc });
+        assert!(
+            drain(&mut snaps).is_some_and(|s| s.cursor.is_some()),
+            "redo must carry a caret derived from the re-applied edit"
         );
     }
 

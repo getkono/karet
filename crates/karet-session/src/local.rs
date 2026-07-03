@@ -13,7 +13,9 @@
 
 use std::sync::Arc;
 
+use karet_core::CursorState;
 use karet_core::Decoration;
+use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
 use karet_text::TextBuffer;
 use tokio::sync::mpsc;
@@ -29,12 +31,18 @@ pub struct DocSnapshot {
     pub buffer: TextBuffer,
     /// Syntax highlights for this version.
     pub highlights: Arc<Highlights>,
+    /// Foldable regions for this version (tree-sitter fold ranges).
+    pub folds: Arc<FoldRegions>,
     /// Decorations merged across producers (empty until producers attach).
     pub decorations: Arc<Vec<Decoration>>,
     /// The display language name, if detected.
     pub language: Option<&'static str>,
     /// Whether the buffer has unsaved changes.
     pub dirty: bool,
+    /// A caret to move the editor to when this snapshot is applied. Set only for
+    /// undo/redo (so the caret jumps to the edit site); `None` for ordinary
+    /// publishes, which leave the editor's cursor where the UI placed it.
+    pub cursor: Option<CursorState>,
 }
 
 /// The receiving half of the local snapshot stream (one entry per renderable

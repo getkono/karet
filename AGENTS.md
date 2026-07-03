@@ -47,7 +47,7 @@ published to crates.io (everything else is `publish = false`).
 |---|---|---|---|
 | `karet-core` | foundation | ✓ | shared vocabulary: geometry, text coords, neutral models (Diagnostic/Decoration/Symbol/Completion/Hover/…), neutral edits, `SymbolProvider`, `TokenId` |
 | `karet-filetype` | engine | ✓ | single registry: path → file type (name, category, per-`IconStyle` icon) + renderer routing (`FileKind`/`classify`); dependency-free |
-| `karet-text` | engine | ✓ | rope buffer, undo/redo, dirty/save, large-file mmap, cursors & selections (module) |
+| `karet-text` | engine | ✓ | rope buffer, undo/redo, dirty/save, large-file mmap |
 | `karet-treesitter` | engine | ✓ | shared tree-sitter parse host (parser pool, incremental trees, queries) |
 | `karet-syntax` | engine | ✓ | tree-sitter highlighting, fold regions, bracket pairs, structural selection |
 | `karet-theme` | engine | ✓ | token palette, .tmTheme + VS Code JSON loaders, contrast (`view` feat) |

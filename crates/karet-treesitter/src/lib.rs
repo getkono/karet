@@ -209,6 +209,59 @@ impl SyntaxTree {
         }
         out
     }
+
+    /// Every *named* node that begins and ends on different lines, in a pre-order
+    /// walk (outermost before inner). This is the neutral raw material for deriving
+    /// fold regions — the grammar-agnostic tree geometry, with no tree-sitter types
+    /// leaking into the public API.
+    #[must_use]
+    pub fn multiline_named_spans(&self) -> Vec<MultilineSpan> {
+        let mut out = Vec::new();
+        let mut cursor = self.tree.walk();
+        'walk: loop {
+            let node = cursor.node();
+            if node.is_named() {
+                let start = node.start_position().row;
+                let end = node.end_position().row;
+                if end > start {
+                    out.push(MultilineSpan {
+                        span: Span {
+                            start: BytePos(node.start_byte()),
+                            end: BytePos(node.end_byte()),
+                        },
+                        start_row: start as u32,
+                        end_row: end as u32,
+                    });
+                }
+            }
+            // Descend to the first child, else advance to the next sibling, else climb
+            // until a sibling exists — standard iterative pre-order DFS.
+            if cursor.goto_first_child() {
+                continue;
+            }
+            loop {
+                if cursor.goto_next_sibling() {
+                    continue 'walk;
+                }
+                if !cursor.goto_parent() {
+                    break 'walk;
+                }
+            }
+        }
+        out
+    }
+}
+
+/// A named syntax node that spans more than one line — the raw input to fold-region
+/// computation. Rows are 0-based line numbers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MultilineSpan {
+    /// The node's byte range.
+    pub span: Span,
+    /// The 0-based start line.
+    pub start_row: u32,
+    /// The 0-based end line.
+    pub end_row: u32,
 }
 
 /// One capture from [`SyntaxTree::captures`]: a query capture index plus the byte

@@ -86,6 +86,7 @@ use KeyCode::Down;
 use KeyCode::End;
 use KeyCode::Enter;
 use KeyCode::Esc;
+use KeyCode::F;
 use KeyCode::Home;
 use KeyCode::Left;
 use KeyCode::PageDown;
@@ -97,8 +98,11 @@ use Layer::CommitInput;
 use Layer::DiffEditor;
 use Layer::DiscardConfirm;
 use Layer::Editor;
+use Layer::Explorer;
+use Layer::ExplorerEdit;
 use Layer::Find;
 use Layer::Global;
+use Layer::Outline;
 use Layer::Overlay;
 use Layer::Oversize;
 use Layer::SearchInput;
@@ -117,9 +121,13 @@ static BINDINGS: &[Binding] = &[
     b(Global, true,  false, false, Char('c'), Command::Copy),
     b(Global, true,  false, false, Char('p'), Command::OpenQuickOpen),
     b(Global, true,  true,  false, Char('p'), Command::OpenCommandPalette),
+    // F1 is a terminal-safe alternate for the command palette: some emulators
+    // capture Ctrl+Shift+P before it reaches the app (see the app README).
+    b(Global, false, false, false, F(1),      Command::OpenCommandPalette),
     b(Global, true,  false, false, Char('f'), Command::OpenFind),
     b(Global, true,  true,  false, Char('f'), Command::OpenGlobalSearch),
     b(Global, true,  false, false, Char('b'), Command::ToggleSidebar),
+    b(Global, true,  true,  false, Char('o'), Command::ToggleOutline),
     b(Global, true,  false, false, Char('w'), Command::CloseTab),
     b(Global, true,  false, false, Char('1'), Command::SelectPanel(SidebarPanel::Explorer)),
     b(Global, true,  false, false, Char('2'), Command::SelectPanel(SidebarPanel::Search)),
@@ -166,6 +174,18 @@ static BINDINGS: &[Binding] = &[
     b(SourceControl, false, false, false, Char('d'), Command::ScmDiscard),
     b(SourceControl, false, false, false, Char('r'), Command::ScmRefresh),
 
+    // Explorer panel (sidebar focus, Explorer active). Listed before the generic
+    // sidebar bindings so its keys win. New file/folder, rename, refresh; collapse-all
+    // and new file/folder are also on the panel's toolbar buttons and in the palette.
+    b(Explorer, false, false, false, Char('a'), Command::ExplorerNewFile),
+    b(Explorer, false, false, false, Char('A'), Command::ExplorerNewFolder),
+    b(Explorer, false, false, false, F(2),      Command::ExplorerRename),
+    b(Explorer, false, false, false, F(5),      Command::ExplorerRefresh),
+
+    // Explorer inline name editor (new file/folder or rename).
+    b(ExplorerEdit, false, false, false, Esc,   Command::ExplorerEditCancel),
+    b(ExplorerEdit, false, false, false, Enter, Command::ExplorerEditSubmit),
+
     // Sidebar focus. Selection verbs are shared across every list panel (explorer
     // and source control) — they route to the focused panel's selection in dispatch.
     b(Sidebar, false, true,  false, Down,      Command::SelectExtendDown),
@@ -185,10 +205,26 @@ static BINDINGS: &[Binding] = &[
     b(Sidebar, false, false, false, Left,      Command::SidebarCollapse),
     b(Sidebar, false, false, false, Char(' '), Command::SidebarToggleExpand),
 
+    // Right-side outline panel focus. Same list-navigation shape as the sidebar:
+    // j/k or arrows move the selection, Enter/l/→ jumps to the entry, h/←/Esc leaves.
+    b(Outline, false, false, false, Char('j'), Command::OutlineDown),
+    b(Outline, false, false, false, Down,      Command::OutlineDown),
+    b(Outline, false, false, false, Char('k'), Command::OutlineUp),
+    b(Outline, false, false, false, Up,        Command::OutlineUp),
+    b(Outline, false, false, false, Enter,     Command::OutlineActivate),
+    b(Outline, false, false, false, Char('l'), Command::OutlineActivate),
+    b(Outline, false, false, false, Right,     Command::OutlineActivate),
+    b(Outline, false, false, false, Char('h'), Command::OutlineCollapse),
+    b(Outline, false, false, false, Left,      Command::OutlineCollapse),
+    b(Outline, false, false, false, Esc,       Command::OutlineCollapse),
+    b(Outline, false, false, false, Char('q'), Command::Quit),
+
     // Editor focus. The editor is non-modal: arrows/Home/End/PageUp-Down navigate,
     // and any unbound printable is text input (the shell inserts it after the keymap
     // declines). Bare-letter motions are intentionally gone so letters can be typed.
-    b(Editor, false, false, false, Esc,       Command::ToggleFocus),
+    // Esc collapses multiple carets to the primary; with a single caret the dispatch
+    // falls back to returning focus to the sidebar (the former behavior).
+    b(Editor, false, false, false, Esc,       Command::CollapseCarets),
     b(Editor, false, false, false, Down,      Command::CaretDown),
     b(Editor, false, false, false, Up,        Command::CaretUp),
     b(Editor, false, false, false, Left,      Command::CaretLeft),
@@ -199,8 +235,30 @@ static BINDINGS: &[Binding] = &[
     b(Editor, false, true,  false, Right,     Command::SelectRight),
     b(Editor, false, false, false, PageDown,  Command::PageDown),
     b(Editor, false, false, false, PageUp,    Command::PageUp),
-    b(Editor, false, false, false, Home,      Command::Top),
-    b(Editor, false, false, false, End,       Command::Bottom),
+    // Word- and line-wise caret motion (VS Code parity). Home/End move to the line
+    // edges; Ctrl+Home/End jump the caret to the document edges (moving it, not just
+    // scrolling); Ctrl+Left/Right step by word.
+    b(Editor, false, false, false, Home,      Command::CaretLineStart),
+    b(Editor, false, false, false, End,       Command::CaretLineEnd),
+    b(Editor, true,  false, false, Home,      Command::CaretDocStart),
+    b(Editor, true,  false, false, End,       Command::CaretDocEnd),
+    b(Editor, true,  false, false, Left,      Command::CaretWordLeft),
+    b(Editor, true,  false, false, Right,     Command::CaretWordRight),
+    // Selection: Shift extends each motion; Ctrl adds word/document granularity.
+    b(Editor, false, true,  false, Home,      Command::SelectLineStart),
+    b(Editor, false, true,  false, End,       Command::SelectLineEnd),
+    b(Editor, true,  true,  false, Home,      Command::SelectDocStart),
+    b(Editor, true,  true,  false, End,       Command::SelectDocEnd),
+    b(Editor, true,  true,  false, Left,      Command::SelectWordLeft),
+    b(Editor, true,  true,  false, Right,     Command::SelectWordRight),
+    b(Editor, false, true,  false, PageDown,  Command::SelectPageDown),
+    b(Editor, false, true,  false, PageUp,    Command::SelectPageUp),
+    b(Editor, true,  false, false, Char('a'), Command::EditorSelectAll),
+    // Multi-cursor (VS Code parity): Ctrl+Alt+Up/Down stack carets vertically, Ctrl+D
+    // grows the selection to the next occurrence of the word / current selection.
+    b(Editor, true,  false, true,  Up,        Command::AddCursorAbove),
+    b(Editor, true,  false, true,  Down,      Command::AddCursorBelow),
+    b(Editor, true,  false, false, Char('d'), Command::AddCursorNextOccurrence),
     // Editing.
     b(Editor, false, false, false, Enter,     Command::InsertNewline),
     b(Editor, false, false, false, Backspace, Command::DeleteBackward),
@@ -215,6 +273,9 @@ static BINDINGS: &[Binding] = &[
     // Semantic blame (blameline): whole file, or the function under the caret.
     b(Editor, true,  true,  false, Char('b'), Command::ShowBlame),
     b(Editor, false, false, true,  Char('b'), Command::BlameFunction),
+
+    // Code folding (VS Code parity): `Ctrl+K Ctrl+L` toggles the fold at the cursor.
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('l'))], Command::ToggleFold),
 
     // Editor focus, diff tab only.
     b(DiffEditor, false, false, false, Char('\\'), Command::ToggleDiffLayout),
@@ -236,13 +297,19 @@ static BINDINGS: &[Binding] = &[
     b(Overlay, true,  false, false, Char('p'), Command::OverlayUp),
     b(Overlay, false, false, false, Down,      Command::OverlayDown),
     b(Overlay, true,  false, false, Char('n'), Command::OverlayDown),
-    // In-file find bar.
+    // In-file find bar (find + replace, mirroring the workspace Search panel).
     b(Find, false, false, false, Esc,       Command::FindCancel),
-    b(Find, false, false, false, Enter,     Command::FindNext),
+    b(Find, false, false, false, Enter,     Command::FindSubmit),
     b(Find, false, false, false, Down,      Command::FindNext),
     b(Find, false, false, false, Up,        Command::FindPrev),
     b(Find, true,  false, false, Char('g'), Command::FindNext),
     b(Find, true,  true,  false, Char('g'), Command::FindPrev),
+    b(Find, false, false, false, Tab,       Command::FindToggleField),
+    b(Find, false, false, true,  Enter,     Command::FindReplaceAll),
+    b(Find, false, false, true,  Char('h'), Command::FindToggleReplace),
+    b(Find, false, false, true,  Char('r'), Command::FindToggleRegex),
+    b(Find, false, false, true,  Char('c'), Command::FindToggleCase),
+    b(Find, false, false, true,  Char('w'), Command::FindToggleWord),
     // Commit-message input.
     b(CommitInput, false, false, false, Esc,   Command::CommitCancel),
     b(CommitInput, false, false, false, Enter, Command::CommitSubmit),
@@ -258,9 +325,19 @@ static BINDINGS: &[Binding] = &[
     b(SearchList, false, false, false, Up,        Command::SearchSelectUp),
     b(SearchList, false, false, false, Char('k'), Command::SearchSelectUp),
     b(SearchList, false, false, false, Char('/'), Command::SearchBeginInput),
-    // Workspace Search: editing the query.
+    b(SearchList, false, false, false, Char('r'), Command::SearchReplaceAll),
+    b(SearchList, false, false, true,  Char('h'), Command::SearchToggleReplace),
+    b(SearchList, false, false, true,  Char('r'), Command::SearchToggleRegex),
+    b(SearchList, false, false, true,  Char('c'), Command::SearchToggleCase),
+    b(SearchList, false, false, true,  Char('w'), Command::SearchToggleWord),
+    // Workspace Search: editing the query / replacement.
     b(SearchInput, false, false, false, Esc,   Command::SearchEndInput),
     b(SearchInput, false, false, false, Enter, Command::SearchRun),
+    b(SearchInput, false, false, false, Tab,   Command::SearchToggleField),
+    b(SearchInput, false, false, true,  Char('h'), Command::SearchToggleReplace),
+    b(SearchInput, false, false, true,  Char('r'), Command::SearchToggleRegex),
+    b(SearchInput, false, false, true,  Char('c'), Command::SearchToggleCase),
+    b(SearchInput, false, false, true,  Char('w'), Command::SearchToggleWord),
 ];
 
 /// Resolve a key press into a [`Command`], given the focus, the active sidebar
@@ -503,6 +580,12 @@ mod tests {
             ),
             Some(Command::OpenCommandPalette)
         );
+        // F1 is a terminal-safe alternate for the command palette (some emulators
+        // capture Ctrl+Shift+P). It works regardless of focus.
+        assert_eq!(
+            res(Focus::Editor, false, key(KeyCode::F(1), KeyModifiers::NONE)),
+            Some(Command::OpenCommandPalette)
+        );
     }
 
     #[test]
@@ -549,14 +632,90 @@ mod tests {
     }
 
     #[test]
-    fn home_and_end_jump_to_edges() {
+    fn home_end_move_to_line_edges_ctrl_to_document() {
         assert_eq!(
             res(Focus::Editor, false, key(KeyCode::Home, KeyModifiers::NONE)),
-            Some(Command::Top)
+            Some(Command::CaretLineStart)
         );
         assert_eq!(
             res(Focus::Editor, false, key(KeyCode::End, KeyModifiers::NONE)),
-            Some(Command::Bottom)
+            Some(Command::CaretLineEnd)
+        );
+        assert_eq!(
+            res(
+                Focus::Editor,
+                false,
+                key(KeyCode::Home, KeyModifiers::CONTROL)
+            ),
+            Some(Command::CaretDocStart)
+        );
+        assert_eq!(
+            res(
+                Focus::Editor,
+                false,
+                key(KeyCode::End, KeyModifiers::CONTROL)
+            ),
+            Some(Command::CaretDocEnd)
+        );
+    }
+
+    #[test]
+    fn word_motion_and_select_all_bind_in_editor() {
+        assert_eq!(
+            res(
+                Focus::Editor,
+                false,
+                key(KeyCode::Left, KeyModifiers::CONTROL)
+            ),
+            Some(Command::CaretWordLeft)
+        );
+        assert_eq!(
+            res(
+                Focus::Editor,
+                false,
+                key(KeyCode::Right, KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+            ),
+            Some(Command::SelectWordRight)
+        );
+        assert_eq!(
+            res(
+                Focus::Editor,
+                false,
+                key(KeyCode::Char('a'), KeyModifiers::CONTROL)
+            ),
+            Some(Command::EditorSelectAll)
+        );
+    }
+
+    #[test]
+    fn multi_cursor_chords_bind_in_editor() {
+        assert_eq!(
+            res(
+                Focus::Editor,
+                false,
+                key(KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::ALT)
+            ),
+            Some(Command::AddCursorAbove)
+        );
+        assert_eq!(
+            res(
+                Focus::Editor,
+                false,
+                key(KeyCode::Down, KeyModifiers::CONTROL | KeyModifiers::ALT)
+            ),
+            Some(Command::AddCursorBelow)
+        );
+        assert_eq!(
+            res(
+                Focus::Editor,
+                false,
+                key(KeyCode::Char('d'), KeyModifiers::CONTROL)
+            ),
+            Some(Command::AddCursorNextOccurrence)
+        );
+        assert_eq!(
+            res(Focus::Editor, false, key(KeyCode::Esc, KeyModifiers::NONE)),
+            Some(Command::CollapseCarets)
         );
     }
 

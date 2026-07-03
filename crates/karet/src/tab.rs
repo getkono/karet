@@ -4,6 +4,7 @@
 //! [`EditorState`] used by code tabs for scroll/cursor. Diff and hex tabs keep
 //! their own scroll inside the kind.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -15,13 +16,14 @@ use karet_fileview::viewer::FileKind;
 use karet_pdf::Document as PdfDocument;
 use karet_session::DocumentId;
 use karet_session::ViewId;
+use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
 use karet_text::TextBuffer;
 
 use crate::render::FileView;
 
 /// How a diff tab is laid out.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewMode {
     /// One column: removals then additions.
     Unified,
@@ -55,6 +57,10 @@ pub enum TabKind {
         text: String,
         /// Syntax highlight spans (empty when no grammar / disabled).
         highlights: Highlights,
+        /// Foldable line regions from the latest snapshot (empty when no grammar).
+        folds: FoldRegions,
+        /// The set of collapsed fold header lines (per-view UI state).
+        folded: BTreeSet<u32>,
         /// Find-in-file match decorations (empty when not searching).
         decos: Vec<Decoration>,
     },
@@ -79,6 +85,9 @@ pub enum TabKind {
         /// Cache of the most recently rasterized page — `(page index, image)` — so a
         /// redraw at the same page does not re-rasterize.
         rendered: Option<(usize, Image)>,
+        /// The document's navigation outline (bookmarks), extracted once at open;
+        /// empty when the PDF has none. Drives the right-side outline panel.
+        outline: Vec<karet_pdf::OutlineItem>,
     },
     /// A hex dump of binary content.
     Hex {
@@ -224,6 +233,8 @@ mod tests {
                 buffer: TextBuffer::from_text("fn main() {}"),
                 text: "fn main() {}".to_string(),
                 highlights: Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
                 decos: Vec::new(),
             },
         );

@@ -38,10 +38,15 @@ use ratatui::widgets::List;
 use ratatui::widgets::ListItem;
 use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
+use ratatui::widgets::Scrollbar;
+use ratatui::widgets::ScrollbarOrientation;
+use ratatui::widgets::ScrollbarState;
 use ratatui::widgets::Wrap;
 
 use crate::app::App;
 use crate::app::FindState;
+use crate::app::MIN_SCM_REGION;
+use crate::app::SIDEBAR_MIN_WIDTH;
 use crate::app::TabDrag;
 use crate::app::TabHit;
 use crate::app::ToastHit;
@@ -52,7 +57,6 @@ use crate::keymap::Focus;
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
 use crate::overlay::Overlay;
-use crate::render::Section;
 use crate::render::{self};
 use crate::tab::Tab;
 use crate::tab::TabKind;
@@ -69,20 +73,54 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let body = rows[0];
 
     let sidebar = if app.sidebar_visible {
-        let width = sidebar_width(area.width);
-        let cols = Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).split(body);
+        // Responsive clamp: the sidebar can grow to nearly the full width, but always
+        // leaves one column for the drag divider. The stored width is written back so
+        // a subsequent drag starts from what's actually shown after a terminal resize.
+        let max = body.width.saturating_sub(1).max(1);
+        let lo = SIDEBAR_MIN_WIDTH.min(max);
+        let width = app.sidebar_width.clamp(lo, max);
+        app.sidebar_width = width;
+        let cols = Layout::horizontal([
+            Constraint::Length(width),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(body);
         app.sidebar_rect = cols[0];
-        app.main_rect = cols[1];
-        Some(cols[0])
+        app.sidebar_divider_x = cols[1].x;
+        app.main_rect = cols[2];
+        Some((cols[0], cols[1]))
     } else {
         app.sidebar_rect = Rect::default();
+        app.sidebar_divider_x = 0;
         app.main_rect = body;
         None
     };
 
-    if let Some(rect) = sidebar {
+    if let Some((rect, divider)) = sidebar {
         draw_sidebar(f, app, &theme, rect);
+        draw_sidebar_divider(f, &theme, divider, app.sidebar_resizing);
     }
+
+    // Reserve a right-side column for the outline panel, carved from the main region.
+    // Skipped on a terminal too narrow to keep the editor usable.
+    if app.outline_visible && app.main_rect.width > app.outline_width + 8 {
+        let region = app.main_rect;
+        let cols = Layout::horizontal([
+            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(app.outline_width),
+        ])
+        .split(region);
+        app.main_rect = cols[0];
+        app.outline_rect = cols[2];
+        draw_sidebar_divider(f, &theme, cols[1], false);
+        draw_outline(f, app, &theme, cols[2]);
+    } else {
+        app.outline_rect = Rect::default();
+        app.outline_content_rect = Rect::default();
+    }
+
     draw_panes(f, app, &theme, app.main_rect);
     draw_drop_preview(f, app, &theme);
     draw_status(f, app, &theme, rows[1]);
@@ -185,14 +223,17 @@ fn render_pane(
     }
     let mut content = parts[2];
     if let Some(find) = ctx.find {
+        // One row for find; a second when the replace field is shown.
+        let want = if find.replace_visible { 2 } else { 1 };
+        let h = want.min(content.height);
         let bar = Rect {
-            height: 1.min(content.height),
+            height: h,
             ..content
         };
         draw_find_bar(f, find, ctx.theme, bar);
         content = Rect {
-            y: content.y.saturating_add(1),
-            height: content.height.saturating_sub(1),
+            y: content.y.saturating_add(h),
+            height: content.height.saturating_sub(h),
             ..content
         };
     }
@@ -249,27 +290,79 @@ fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     f.render_widget(toasts, area);
 }
 
-/// Draw the one-line find-in-file bar.
+/// Draw the find-in-file bar: a find row (query, match count, option toggles) and,
+/// when the replace field is shown, a replace row. Mirrors the workspace Search
+/// panel's model on the status-bar strip for a consistent find/replace experience.
 fn draw_find_bar(f: &mut Frame, find: &FindState, theme: &Theme, area: Rect) {
-    let style = Style::default()
+    use crate::app::SearchField;
+
+    let base = Style::default()
         .bg(theme.role(ThemeRole::StatusBarBackground).to_ratatui())
         .fg(theme.role(ThemeRole::StatusBarForeground).to_ratatui());
-    let label = if find.query.is_empty() {
-        " Find: ".to_string()
+    let accent = theme.role(ThemeRole::LineNumberActive).to_ratatui();
+    let dim = theme.role(ThemeRole::LineNumber).to_ratatui();
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+
+    // Find row.
+    let editing_find = find.field == SearchField::Find;
+    let count = if find.query.is_empty() {
+        String::new()
     } else if find.count == 0 {
-        format!(" Find: {}   no results ", find.query)
+        "  no results".to_string()
     } else {
-        // The next/close chords are derived from the keymap's Find layer.
-        let next = keymap::hint_for(Command::FindNext, ChordStyle::Verbose).unwrap_or_default();
-        let close = keymap::hint_for(Command::FindCancel, ChordStyle::Verbose).unwrap_or_default();
-        format!(
-            " Find: {}   {}/{}   ({next} next · {close} close) ",
-            find.query,
-            find.current + 1,
-            find.count
+        format!("  {}/{}", find.current + 1, find.count)
+    };
+    let toggle = |label: &'static str, on: bool| {
+        Span::styled(
+            label,
+            if on {
+                base.fg(accent).add_modifier(Modifier::BOLD)
+            } else {
+                base.fg(dim)
+            },
         )
     };
-    f.render_widget(Paragraph::new(label).style(style), area);
+    let find_spans = vec![
+        Span::styled(" Find: ", base),
+        Span::styled(
+            find.query.clone(),
+            if editing_find { base.fg(accent) } else { base },
+        ),
+        Span::styled(if editing_find { "_" } else { "" }, base),
+        Span::styled(count, base.fg(dim)),
+        Span::styled("   ", base),
+        toggle(".*", find.regex),
+        Span::styled(" ", base),
+        toggle("Aa", find.case_sensitive),
+        Span::styled(" ", base),
+        toggle("\\b", find.whole_word),
+    ];
+    f.render_widget(Paragraph::new(Line::from(find_spans)).style(base), rows[0]);
+
+    // Replace row (only when shown and there is room).
+    if find.replace_visible && rows[1].height >= 1 {
+        let editing_replace = find.field == SearchField::Replace;
+        let replace_spans = vec![
+            Span::styled(" Repl: ", base),
+            Span::styled(
+                find.replace.clone(),
+                if editing_replace {
+                    base.fg(accent)
+                } else {
+                    base
+                },
+            ),
+            Span::styled(if editing_replace { "_" } else { "" }, base),
+            Span::styled(
+                "   (Enter replace · Alt+Enter all · Tab find)",
+                base.fg(dim),
+            ),
+        ];
+        f.render_widget(
+            Paragraph::new(Line::from(replace_spans)).style(base),
+            rows[1],
+        );
+    }
 }
 
 /// Draw a centered modal overlay (quick-open / command palette).
@@ -346,10 +439,19 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
-/// The sidebar width: 30 columns, capped at ~40% of a narrow terminal.
-fn sidebar_width(total: u16) -> u16 {
-    let cap = (total * 2 / 5).max(12);
-    30.min(cap)
+/// Draw the vertical divider between the sidebar and the main area. It doubles as
+/// the drag handle for resizing the sidebar; it brightens while a resize is active.
+fn draw_sidebar_divider(f: &mut Frame, theme: &Theme, area: Rect, active: bool) {
+    let role = if active {
+        ThemeRole::LineNumberActive
+    } else {
+        ThemeRole::IndentGuide
+    };
+    let style = Style::default().fg(theme.role(role).to_ratatui());
+    let buf = f.buffer_mut();
+    for y in area.y..area.bottom() {
+        buf.set_string(area.x, y, "\u{2502}", style); // │
+    }
 }
 
 /// Draw a pane's tab strip and return its rect plus per-tab clickable regions. The
@@ -443,6 +545,64 @@ fn draw_pane_breadcrumb(f: &mut Frame, tab: Option<&Tab>, theme: &Theme, area: R
     f.render_widget(Paragraph::new(Line::styled(crumbs, style)), area);
 }
 
+/// Draw the right-side outline panel: a header over the active tab's navigation
+/// outline (a depth-indented, selectable list). Records the content rect and syncs
+/// the selection length for keyboard navigation and mouse hit-testing.
+fn draw_outline(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    let header = rows[0];
+    let content = rows[1];
+    app.outline_content_rect = content;
+
+    f.render_widget(
+        Block::default().style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui())),
+        area,
+    );
+    f.render_widget(
+        Paragraph::new(" OUTLINE").style(
+            Style::default()
+                .fg(theme.role(ThemeRole::LineNumber).to_ratatui())
+                .add_modifier(Modifier::BOLD),
+        ),
+        header,
+    );
+
+    let entries = app.active_outline_rows();
+    app.outline_sel.set_len(entries.len());
+    if entries.is_empty() {
+        f.render_widget(
+            Paragraph::new(" No outline")
+                .style(Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui())),
+            content,
+        );
+        return;
+    }
+
+    let focused = app.focus == Focus::Outline;
+    let cursor = app.outline_sel.cursor();
+    let sel_bg = if focused {
+        ThemeRole::Selection
+    } else {
+        ThemeRole::HoverHighlight
+    };
+    let items: Vec<ListItem> = entries
+        .iter()
+        .map(|row| {
+            let indent = "  ".repeat(row.depth);
+            ListItem::new(format!(" {indent}{}", row.label))
+        })
+        .collect();
+    let list = List::new(items)
+        .style(Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui()))
+        .highlight_style(Style::default().bg(theme.role(sel_bg).to_ratatui()));
+    let mut state = ListState::default();
+    *state.offset_mut() = app.outline_scroll;
+    state.select(Some(cursor));
+    f.render_stateful_widget(list, content, &mut state);
+    // Remember where the list settled so a click maps to the right entry next frame.
+    app.outline_scroll = state.offset();
+}
+
 fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
     app.sidebar_content_rect = rows[1];
@@ -451,24 +611,34 @@ fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         SidebarPanel::Explorer => {
             let root = app.root.clone();
             let icon_style = app.icon_style;
-            // Highlight files open in tabs, with the active one emphasized.
-            let open: Vec<PathBuf> = app
-                .tabs
-                .iter()
-                .filter_map(|t| t.path().map(Path::to_path_buf))
-                .collect();
+            // The explorer highlight tracks which editors *show* a file, not which
+            // are merely open: the focused pane's active tab is the strong "active"
+            // marker; every other pane's active tab is a weaker "visible" marker.
             let active = app
                 .tabs
                 .get(app.active)
                 .and_then(Tab::path)
                 .map(Path::to_path_buf);
+            let visible: Vec<PathBuf> = app
+                .stored
+                .values()
+                .filter_map(|p| {
+                    p.tabs
+                        .get(p.active)
+                        .and_then(Tab::path)
+                        .map(Path::to_path_buf)
+                })
+                .collect();
+            let explorer_focused =
+                app.focus == Focus::Sidebar && app.sidebar_panel == SidebarPanel::Explorer;
             let hover = app.hovered_explorer_row();
             f.render_stateful_widget(
                 FileTree::new(&root)
                     .theme(theme)
                     .icons(icon_style)
-                    .open(&open)
+                    .visible(&visible)
                     .active(active.as_deref())
+                    .explorer_focused(explorer_focused)
                     .hover(hover),
                 rows[1],
                 &mut app.explorer,
@@ -485,20 +655,74 @@ fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
         SidebarPanel::Search => "SEARCH",
         SidebarPanel::SourceControl => "SOURCE CONTROL",
     };
-    let cols = Layout::horizontal([Constraint::Min(0), Constraint::Length(7)]).split(area);
+    // Header columns: a small "karet" brand at the far left, the panel title, an
+    // optional Explorer toolbar, then the activity-bar switcher (7 cells). The
+    // toolbar (Explorer only) and then the brand are dropped on a narrow sidebar so
+    // the title and switcher always fit.
+    const BRAND: &str = "karet";
+    const BRAND_W: u16 = BRAND.len() as u16 + 1; // one leading space
+    const ACTIONS_W: u16 = 8; // four buttons × 2 cells
+    let icon_style = app.icon_style;
+    let explorer = app.sidebar_panel == SidebarPanel::Explorer;
+    let actions_w = if explorer && area.width >= 9 + ACTIONS_W + 7 {
+        ACTIONS_W
+    } else {
+        0
+    };
+    let show_brand = area.width >= BRAND_W + 9 + actions_w + 7;
+    let brand_w = if show_brand { BRAND_W } else { 0 };
+    let cols = Layout::horizontal([
+        Constraint::Length(brand_w),
+        Constraint::Min(0),
+        Constraint::Length(actions_w),
+        Constraint::Length(7),
+    ])
+    .split(area);
+    if show_brand {
+        let brand_style = Style::default()
+            .fg(theme.role(ThemeRole::Muted).to_ratatui())
+            .add_modifier(Modifier::BOLD);
+        f.render_widget(
+            Paragraph::new(Line::styled(format!(" {BRAND}"), brand_style)),
+            cols[0],
+        );
+    }
     let title = Style::default()
         .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
         .add_modifier(Modifier::BOLD);
     f.render_widget(
         Paragraph::new(Line::styled(format!(" {name}"), title)),
-        cols[0],
+        cols[1],
     );
+
+    // The Explorer toolbar (new file / new folder / refresh / collapse all), each
+    // glyph occupying 2 cells; hit regions march in twos like the switcher.
+    app.header_action_hits = Vec::new();
+    if actions_w > 0 {
+        let a = cols[2];
+        let action_style = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+        let actions = [
+            (UiIcon::NewFile, Command::ExplorerNewFile),
+            (UiIcon::NewFolder, Command::ExplorerNewFolder),
+            (UiIcon::Refresh, Command::ExplorerRefresh),
+            (UiIcon::CollapseAll, Command::ExplorerCollapseAll),
+        ];
+        let mut spans = Vec::with_capacity(actions.len());
+        for (i, (ui_icon, cmd)) in actions.into_iter().enumerate() {
+            let x = a.x + i as u16 * 2;
+            app.header_action_hits.push((x, x + 2, cmd));
+            spans.push(Span::styled(
+                format!("{} ", ui_icon.glyph(icon_style)),
+                action_style,
+            ));
+        }
+        f.render_widget(Paragraph::new(Line::from(spans)), a);
+    }
 
     // The activity-bar switcher: an icon per panel. Each glyph occupies one cell
     // plus the space after it (2 cells), so the hit regions march in twos.
-    let switch = cols[1];
+    let switch = cols[3];
     let active = app.sidebar_panel;
-    let icon_style = app.icon_style;
     app.panel_hits = vec![
         (switch.x, switch.x + 2, SidebarPanel::Explorer),
         (switch.x + 2, switch.x + 4, SidebarPanel::Search),
@@ -534,110 +758,184 @@ fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         area
     };
 
+    // A scrollable changes region on top; when there is commit history and room for
+    // it, a resizable commit-log region pinned to the bottom with a drag divider.
+    let has_log = !app.scm.log.is_empty() || app.scm.log_has_more;
+    let (changes_area, commits_area) = if has_log && list_area.height > MIN_SCM_REGION * 2 + 1 {
+        let commits_h = app.scm_commits_h.clamp(
+            MIN_SCM_REGION,
+            list_area.height.saturating_sub(MIN_SCM_REGION + 1),
+        );
+        let parts = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(commits_h),
+        ])
+        .split(list_area);
+        app.scm_divider_y = parts[1].y;
+        draw_scm_divider(f, theme, parts[1], app.scm_resizing);
+        (parts[0], Some(parts[2]))
+    } else {
+        app.scm_divider_y = 0;
+        (list_area, None)
+    };
+
+    draw_scm_changes(f, app, theme, changes_area);
+    if let Some(commits_area) = commits_area {
+        draw_scm_commits(f, app, theme, commits_area);
+    } else {
+        // No pinned region this frame: clear its state so stale hit-testing can't fire.
+        app.scm_commits_rect = Rect::default();
+        app.scm_commits_total = 0;
+        app.scm_more_row = None;
+    }
+}
+
+/// Draw the horizontal drag divider between the changes and commit-log regions. It
+/// brightens while a resize is active (mirrors the sidebar-width divider).
+fn draw_scm_divider(f: &mut Frame, theme: &Theme, area: Rect, active: bool) {
+    let role = if active {
+        ThemeRole::LineNumberActive
+    } else {
+        ThemeRole::IndentGuide
+    };
+    let style = Style::default().fg(theme.role(role).to_ratatui());
+    let rule = "\u{2500}".repeat(area.width as usize); // ─
+    f.render_widget(Paragraph::new(Line::styled(rule, style)), area);
+}
+
+/// Draw the changes region. Both the staged and working sections are always shown;
+/// an empty section renders a greyed placeholder line rather than collapsing, so the
+/// layout stays stable as files move between them.
+fn draw_scm_changes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let selection_bg = theme.role(ThemeRole::Selection).to_ratatui();
     let hover_bg = theme.role(ThemeRole::HoverHighlight).to_ratatui();
     let hovered = app.hovered_scm_change();
     let cursor = app.scm.selection.cursor();
+    let header_style = Style::default()
+        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+        .add_modifier(Modifier::BOLD);
+    let placeholder_style = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
     let mut items: Vec<ListItem> = Vec::new();
     let mut row_map: Vec<Option<usize>> = Vec::new();
-    let mut selected_row = 0;
-    let mut last: Option<Section> = None;
-    for (i, change) in app.scm.changes.iter().enumerate() {
-        let section = if i < app.scm.staged_count {
-            Section::Staged
-        } else {
-            Section::Working
-        };
-        if last != Some(section) {
-            let label = match section {
-                Section::Staged => "STAGED CHANGES",
-                Section::Working => "CHANGES",
-            };
+
+    // Both sections are always drawn, in order. Each reserves at least one line — a
+    // greyed placeholder when empty — so staging a single file (moving it between the
+    // two sections) never makes a header appear or disappear and shift the layout.
+    let staged = app.scm.staged_count;
+    let total_changes = app.scm.changes.len();
+    let sections = [
+        ("STAGED CHANGES", "No staged changes", 0..staged),
+        ("CHANGES", "No changes", staged..total_changes),
+    ];
+    for (label, empty_hint, range) in sections {
+        items.push(ListItem::new(Line::styled(
+            format!(" {label}"),
+            header_style,
+        )));
+        row_map.push(None);
+        if range.is_empty() {
             items.push(ListItem::new(Line::styled(
-                format!(" {label}"),
-                Style::default()
-                    .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
-                    .add_modifier(Modifier::BOLD),
+                format!("   {empty_hint}"),
+                placeholder_style,
             )));
             row_map.push(None);
-            last = Some(section);
+            continue;
         }
-        if i == cursor {
-            selected_row = items.len();
+        for i in range {
+            let change = &app.scm.changes[i];
+            let (glyph, role) = status_glyph(change.status);
+            // Filename front and centre; the parent directory trails in dim grey and
+            // is omitted entirely for files at the repo root.
+            let name = change.path.file_name().map_or_else(
+                || change.path.to_string_lossy().into_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            let parent = change
+                .path
+                .parent()
+                .map(|p| p.to_string_lossy().into_owned())
+                .filter(|p| !p.is_empty());
+            let mut spans = vec![
+                Span::styled(
+                    format!(" {glyph} "),
+                    Style::default().fg(theme.role(role).to_ratatui()),
+                ),
+                Span::raw(name),
+            ];
+            if let Some(parent) = parent {
+                spans.push(Span::styled(
+                    format!("  {parent}"),
+                    Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
+                ));
+            }
+            let item = ListItem::new(Line::from(spans));
+            // Every selected row (a contiguous range or a scattered toggle-set) gets
+            // the selection background; the cursor row additionally gets a bold
+            // highlight. A hovered-but-unselected row gets the secondary hover accent.
+            let mut style = Style::default();
+            if app.scm.selection.is_selected(i) {
+                style = style.bg(selection_bg);
+            } else if hovered == Some(i) {
+                style = style.bg(hover_bg);
+            }
+            if i == cursor {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            items.push(item.style(style));
+            row_map.push(Some(i));
         }
-        let (glyph, role) = status_glyph(change.status);
-        let mut item = ListItem::new(Line::from(vec![
-            Span::styled(
-                format!(" {glyph} "),
-                Style::default().fg(theme.role(role).to_ratatui()),
-            ),
-            Span::raw(change.path.to_string_lossy().into_owned()),
-        ]));
-        // Every selected row (a contiguous range or a scattered toggle-set) gets the
-        // selection background; the cursor row additionally gets the bold highlight
-        // below. A hovered-but-unselected row gets the secondary hover accent.
-        if app.scm.selection.is_selected(i) {
-            item = item.style(Style::default().bg(selection_bg));
-        } else if hovered == Some(i) {
-            item = item.style(Style::default().bg(hover_bg));
-        }
-        items.push(item);
-        row_map.push(Some(i));
     }
 
-    // The commit-history log (lazily loaded), below the change sections. Its rows
-    // are not selectable (row_map None); only the "load more" affordance is clickable.
+    app.scm_changes_rect = area;
+    let total = items.len();
+    let height = area.height as usize;
+    let offset = app.scm_offset.min(total.saturating_sub(height));
+    let mut state = ListState::default();
+    *state.offset_mut() = offset;
+    f.render_stateful_widget(List::new(items), area, &mut state);
+    app.scm_row_map = row_map;
+    app.scm_offset = state.offset();
+    app.scm_total_rows = total;
+}
+
+/// Draw the pinned commit-log region (header, lazily-loaded commits, "load more").
+/// Its rows aren't selectable; only the "load more" affordance is clickable.
+fn draw_scm_commits(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     app.scm_more_row = None;
     let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
     let header_style = Style::default()
         .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
         .add_modifier(Modifier::BOLD);
-    if !app.scm.log.is_empty() || app.scm.log_has_more {
-        if !app.scm.changes.is_empty() {
-            items.push(ListItem::new(Line::raw("")));
-            row_map.push(None);
-        }
-        items.push(ListItem::new(Line::styled(" COMMITS", header_style)));
-        row_map.push(None);
-        let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
-        for commit in &app.scm.log {
-            items.push(ListItem::new(Line::from(vec![
-                Span::styled(format!(" {} ", commit.short_hash), hash_style),
-                Span::raw(commit.summary.clone()),
-                Span::styled(format!("  {}", relative_time(commit.time)), dim),
-            ])));
-            row_map.push(None);
-        }
-        if app.scm.log_has_more {
-            app.scm_more_row = Some(items.len());
-            let label = if app.scm.log_loading {
-                " loading…"
-            } else {
-                " ⋯ load more"
-            };
-            items.push(ListItem::new(Line::styled(label, dim)));
-            row_map.push(None);
-        }
+    let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
+    let mut items: Vec<ListItem> = vec![ListItem::new(Line::styled(" COMMITS", header_style))];
+    for commit in &app.scm.log {
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled(format!(" {} ", commit.short_hash), hash_style),
+            Span::raw(commit.summary.clone()),
+            Span::styled(format!("  {}", relative_time(commit.time)), dim),
+        ])));
+    }
+    if app.scm.log_has_more {
+        // The "load more" display row is relative to the commit region's top.
+        app.scm_more_row = Some(items.len());
+        let label = if app.scm.log_loading {
+            " loading…"
+        } else {
+            " ⋯ load more"
+        };
+        items.push(ListItem::new(Line::styled(label, dim)));
     }
 
-    if items.is_empty() {
-        app.scm_row_map = Vec::new();
-        app.scm_offset = 0;
-        f.render_widget(Paragraph::new(Line::raw(" no changes")), list_area);
-        return;
-    }
+    let total = items.len();
+    let height = area.height as usize;
+    let offset = app.scm_commits_offset.min(total.saturating_sub(height));
     let mut state = ListState::default();
-    // Highlight the selected change (auto-scrolls to it); with no changes, the log
-    // is shown without a highlighted row.
-    state.select((!app.scm.changes.is_empty()).then_some(selected_row));
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .bg(selection_bg)
-            .add_modifier(Modifier::BOLD),
-    );
-    f.render_stateful_widget(list, list_area, &mut state);
-    app.scm_row_map = row_map;
-    app.scm_offset = state.offset();
+    *state.offset_mut() = offset;
+    f.render_stateful_widget(List::new(items), area, &mut state);
+    app.scm_commits_offset = state.offset();
+    app.scm_commits_total = total;
+    app.scm_commits_rect = area;
 }
 
 /// A terse `git log`-style relative time (e.g. `3d ago`) for a Unix timestamp.
@@ -686,28 +984,102 @@ fn draw_commit_input(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
 }
 
 fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
-    app.search_results_rect = rows[1];
-    app.search_offset = 0;
-    let search = &app.search;
+    use crate::app::SearchField;
 
-    // Query line: prefixed with a caret, highlighted while the input is active.
-    let cursor = if search.input { "_" } else { "" };
-    let query_style = if search.input {
-        Style::default()
-            .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
-            .add_modifier(Modifier::BOLD)
+    // Right-hand slot on the find/replace rows for the option toggles / replace-all.
+    const SLOT_W: u16 = 10;
+    let replace_visible = app.search.replace_visible;
+    let replace_h = u16::from(replace_visible);
+    let rows = Layout::vertical([
+        Constraint::Length(1),         // find field
+        Constraint::Length(replace_h), // replace field (collapsible)
+        Constraint::Min(0),            // results
+    ])
+    .split(area);
+    app.search_results_rect = rows[2];
+    app.search_offset = 0;
+    app.search_query_row = rows[0].y;
+    app.search_replace_row = replace_visible.then_some(rows[1].y);
+    app.search_action_hits = Vec::new();
+
+    let accent = theme.role(ThemeRole::LineNumberActive).to_ratatui();
+    let dim = theme.role(ThemeRole::LineNumber).to_ratatui();
+    let fg = theme.role(ThemeRole::Foreground).to_ratatui();
+    let editing_find = app.search.input && app.search.field == SearchField::Find;
+    let editing_replace = app.search.input && app.search.field == SearchField::Replace;
+
+    // Find row: query on the left, the option toggles (.* Aa \b) on the right.
+    let find_cols =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(SLOT_W)]).split(rows[0]);
+    let find_style = if editing_find {
+        Style::default().fg(accent).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui())
+        Style::default().fg(fg)
     };
+    let find_cursor = if editing_find { "_" } else { "" };
     f.render_widget(
         Paragraph::new(Line::styled(
-            format!(" › {}{cursor}", search.query),
-            query_style,
+            format!(" › {}{find_cursor}", app.search.query),
+            find_style,
         )),
-        rows[0],
+        find_cols[0],
     );
+    let toggles = [
+        (".*", app.search.regex, Command::SearchToggleRegex),
+        ("Aa", app.search.case_sensitive, Command::SearchToggleCase),
+        ("\\b", app.search.whole_word, Command::SearchToggleWord),
+    ];
+    let mut toggle_spans = Vec::with_capacity(toggles.len());
+    for (i, (label, on, cmd)) in toggles.into_iter().enumerate() {
+        let x = find_cols[1].x + i as u16 * 3;
+        app.search_action_hits.push((x, x + 2, rows[0].y, cmd));
+        let style = if on {
+            Style::default().fg(accent).add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default().fg(dim)
+        };
+        toggle_spans.push(Span::styled(label, style));
+        toggle_spans.push(Span::raw(" "));
+    }
+    f.render_widget(Paragraph::new(Line::from(toggle_spans)), find_cols[1]);
 
+    // Replace row (collapsible): replacement on the left, a replace-all button right.
+    if replace_visible {
+        let rep_cols =
+            Layout::horizontal([Constraint::Min(0), Constraint::Length(SLOT_W)]).split(rows[1]);
+        let rep_style = if editing_replace {
+            Style::default().fg(accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(fg)
+        };
+        let rep_cursor = if editing_replace { "_" } else { "" };
+        f.render_widget(
+            Paragraph::new(Line::styled(
+                format!(" ⇄ {}{rep_cursor}", app.search.replace),
+                rep_style,
+            )),
+            rep_cols[0],
+        );
+        // "replace all" button, active only when there are results to replace.
+        let has_results = !app.search.results.is_empty();
+        let btn_style = if has_results {
+            Style::default().fg(accent)
+        } else {
+            Style::default().fg(dim)
+        };
+        app.search_action_hits.push((
+            rep_cols[1].x,
+            rep_cols[1].x + SLOT_W,
+            rows[1].y,
+            Command::SearchReplaceAll,
+        ));
+        f.render_widget(
+            Paragraph::new(Line::styled(" ⟳ all", btn_style)),
+            rep_cols[1],
+        );
+    }
+
+    let search = &app.search;
     if search.results.is_empty() {
         let hint = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
         let msg = if search.query.is_empty() {
@@ -715,7 +1087,7 @@ fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         } else {
             "  no results"
         };
-        f.render_widget(Paragraph::new(Line::styled(msg, hint)), rows[1]);
+        f.render_widget(Paragraph::new(Line::styled(msg, hint)), rows[2]);
         return;
     }
 
@@ -745,7 +1117,7 @@ fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             .bg(theme.role(ThemeRole::Selection).to_ratatui())
             .add_modifier(Modifier::BOLD),
     );
-    f.render_stateful_widget(list, rows[1], &mut state);
+    f.render_stateful_widget(list, rows[2], &mut state);
     app.search_offset = state.offset();
 }
 
@@ -766,15 +1138,17 @@ fn draw_pane_content(
         TabKind::Code {
             buffer,
             highlights,
+            folds,
+            folded,
             decos,
             ..
         } => {
-            let selection = tab.editor.selection_range();
+            let fold_lines = crate::app::resolve_folds(folds, folded);
             let editor = Editor::new(buffer)
                 .highlights(highlights)
                 .theme(theme)
                 .decorations(decos)
-                .selection(selection)
+                .folds(&fold_lines)
                 .focused(ctx.editor_focused);
             f.render_stateful_widget(editor, area, &mut tab.editor);
         },
@@ -804,6 +1178,7 @@ fn draw_pane_content(
             page_count,
             page,
             rendered,
+            ..
         } => {
             let page_count = (*page_count).max(1);
             let idx = (*page).min(page_count - 1);
@@ -822,9 +1197,12 @@ fn draw_pane_content(
                         .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui())),
                     area,
                 );
-                // Reserve a one-row footer for the page indicator when there is room.
+                // Reserve a one-row footer for the page indicator and a one-column
+                // vertical scroll bar (page position), each only when there is room.
                 let footer_h = u16::from(page_count > 1 && area.height > 3);
+                let scrollbar_w = u16::from(page_count > 1 && area.width > 3);
                 let content = Rect {
+                    width: area.width - scrollbar_w,
                     height: area.height - footer_h,
                     ..area
                 };
@@ -834,6 +1212,30 @@ fn draw_pane_content(
                 } else {
                     // Parsed, but this page failed to rasterize — show a neutral note.
                     f.render_widget(Placeholder::new(path, FileKind::Pdf, None, 0), content);
+                }
+                if scrollbar_w == 1 {
+                    // The scroll bar tracks the current page's position in the document.
+                    let track = Rect {
+                        x: area.x + area.width - 1,
+                        y: area.y,
+                        width: 1,
+                        height: area.height - footer_h,
+                    };
+                    let mut sb = ScrollbarState::new(page_count).position(idx);
+                    f.render_stateful_widget(
+                        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                            .begin_symbol(None)
+                            .end_symbol(None)
+                            .track_style(
+                                Style::default()
+                                    .fg(theme.role(ThemeRole::IndentGuide).to_ratatui()),
+                            )
+                            .thumb_style(
+                                Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui()),
+                            ),
+                        track,
+                        &mut sb,
+                    );
                 }
                 if footer_h == 1 {
                     let footer = Rect {
@@ -1076,6 +1478,7 @@ fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let focus = match app.focus {
         Focus::Sidebar => "SIDEBAR",
         Focus::Editor => "EDITOR",
+        Focus::Outline => "OUTLINE",
     };
     let bar = Style::default()
         .bg(theme.role(ThemeRole::StatusBarBackground).to_ratatui())
