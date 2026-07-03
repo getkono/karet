@@ -1680,4 +1680,35 @@ mod tests {
         // The swap is consumed once recovered.
         assert!(scan(swapdir.path()).is_empty());
     }
+
+    #[test]
+    fn new_session_announces_swaps_left_in_its_swap_dir() {
+        let Some(swapdir) = tempfile::tempdir().ok() else {
+            return;
+        };
+        let store = SwapStore::with_dir(swapdir.path().to_path_buf(), 5);
+        if store
+            .write(Path::new("/work/x.rs"), "unsaved\n", None, None, 1)
+            .is_err()
+        {
+            return;
+        }
+        // A session pointed at that swap dir scans it on construction and announces.
+        let (_session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: Vec::new(),
+            settings: crate::config::Settings::default(),
+            swap_dir: Some(swapdir.path().to_path_buf()),
+        });
+        let mut found = None;
+        while let Some((_, ev)) = events.try_recv() {
+            if let Event::SwapsFound { swaps } = ev {
+                found = Some(swaps);
+            }
+        }
+        assert!(found.is_some(), "startup announces recoverable swaps");
+        if let Some(swaps) = found {
+            assert_eq!(swaps.len(), 1);
+            assert_eq!(swaps[0].original, PathBuf::from("/work/x.rs"));
+        }
+    }
 }
