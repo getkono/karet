@@ -181,6 +181,24 @@ pub enum Command {
         /// The maximum number of commits to return.
         limit: usize,
     },
+    /// Recover the crash-recovery swaps announced by [`Event::SwapsFound`]: restore
+    /// each backed-up buffer as an unsaved (dirty) document.
+    RecoverSwaps,
+    /// Discard the crash-recovery swaps announced by [`Event::SwapsFound`] without
+    /// recovering them.
+    DiscardSwaps,
+}
+
+/// A crash-recovery swap offered to the UI on startup (see [`Event::SwapsFound`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SwapInfo {
+    /// The document the swap backs up.
+    pub original: PathBuf,
+    /// When the swap was last written (milliseconds since the Unix epoch).
+    pub updated_unix_ms: u128,
+    /// Whether the original file changed on disk since the swap was written —
+    /// recovering would discard those on-disk changes.
+    pub conflict: bool,
 }
 
 /// A message emitted by the backend to the presentation layer. When it answers a
@@ -323,6 +341,12 @@ pub enum Event {
     VcsCommitsPrepended {
         /// The new commits, newest first.
         commits: Vec<Commit>,
+    },
+    /// Crash-recovery swaps from a previous session were found on startup. The UI
+    /// prompts the user to [`Command::RecoverSwaps`] or [`Command::DiscardSwaps`].
+    SwapsFound {
+        /// The recoverable swaps.
+        swaps: Vec<SwapInfo>,
     },
 }
 
