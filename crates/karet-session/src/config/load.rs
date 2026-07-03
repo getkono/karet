@@ -325,6 +325,25 @@ mod tests {
     }
 
     #[test]
+    fn project_layer_is_discovered_under_the_git_root() {
+        let Some(tmp) = tempfile::tempdir().ok() else {
+            return;
+        };
+        let root = tmp.path().join("repo");
+        let nested = root.join("crates").join("thing");
+        if std::fs::create_dir_all(&nested).is_err()
+            || std::fs::create_dir_all(root.join(".git")).is_err()
+        {
+            return;
+        }
+        // From a nested workspace root, the project layer resolves to the git root.
+        assert_eq!(
+            project_config_path(&[nested]),
+            Some(root.join(".karet").join("setting.jsonc"))
+        );
+    }
+
+    #[test]
     fn git_root_is_found_by_ascending() {
         let Some(tmp) = tempfile::tempdir().ok() else {
             return;
