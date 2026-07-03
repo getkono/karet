@@ -2720,6 +2720,7 @@ dependencies = [
  "karet-filetype",
  "karet-fileview",
  "karet-fuzzy",
+ "karet-graph",
  "karet-markdown",
  "karet-pdf",
  "karet-search",

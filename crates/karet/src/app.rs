@@ -4402,6 +4402,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 summary: summary.to_string(),
                 author: "a".to_string(),
                 time: 0,
+                parents: Vec::new(),
             }
         }
         let mut app = app();
@@ -4555,6 +4556,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
             summary: summary.to_string(),
             author: "T".to_string(),
             time: 0,
+            parents: Vec::new(),
         }
     }
 
