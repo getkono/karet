@@ -65,10 +65,23 @@ pub enum SessionError {
 pub struct SessionConfig {
     /// Workspace root directories.
     pub roots: Vec<PathBuf>,
-    /// Run format-on-save.
-    pub format_on_save: bool,
-    /// Enable spell-checking of comments/strings.
-    pub spellcheck: bool,
+    /// The loaded, verified settings (see [`crate::config`]). Producers read editing
+    /// behaviour (format-on-save, spell-check, …) from here.
+    pub settings: crate::config::Settings,
+}
+
+impl SessionConfig {
+    /// Whether format-on-save is enabled (`editor.formatOnSave`).
+    #[must_use]
+    pub fn format_on_save(&self) -> bool {
+        self.settings.editor.format_on_save
+    }
+
+    /// Whether spell-checking is enabled (`spellcheck.enabled`).
+    #[must_use]
+    pub fn spellcheck(&self) -> bool {
+        self.settings.spellcheck.enabled
+    }
 }
 
 /// How a document's edit buffer maps to its on-disk bytes.

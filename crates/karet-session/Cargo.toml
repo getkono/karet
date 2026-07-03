@@ -34,6 +34,10 @@ thiserror.workspace = true
 ec4rs.workspace = true                # settings / editorconfig precedence (migrated from the app)
 spellbook.workspace = true            # spell-check → diagnostics (migrated from the app)
 directories.workspace = true          # server-side config / session paths
+serde = { workspace = true }          # derive Deserialize/Serialize for the Settings schema
+serde_json.workspace = true           # the merge/deserialize target for JSONC config
+jsonc-parser.workspace = true         # parse JSONC config files (byte-span diagnostics)
+schemars.workspace = true             # generate the external JSON Schema from `Settings`
 
 [dev-dependencies]
 tempfile.workspace = true             # temp files for open/save flow tests

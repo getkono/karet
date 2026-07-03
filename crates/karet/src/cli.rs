@@ -69,17 +69,15 @@ impl From<IconChoice> for IconStyle {
 }
 
 impl Cli {
-    /// Resolve the icon style: an explicit `--icons` flag wins, then the
-    /// `KARET_ICONS` env var, else the default (Nerd Font).
+    /// The explicitly-requested icon style, if any: an `--icons` flag wins, then the
+    /// `KARET_ICONS` env var. `None` when neither is set, so the configured
+    /// `workbench.iconStyle` (else the Nerd Font default) is left in place.
     #[must_use]
-    pub fn icon_style(&self) -> IconStyle {
-        self.icons
-            .map(IconStyle::from)
-            .or_else(|| {
-                std::env::var("KARET_ICONS")
-                    .ok()
-                    .and_then(|v| IconStyle::from_name(&v))
-            })
-            .unwrap_or_default()
+    pub fn explicit_icon_style(&self) -> Option<IconStyle> {
+        self.icons.map(IconStyle::from).or_else(|| {
+            std::env::var("KARET_ICONS")
+                .ok()
+                .and_then(|v| IconStyle::from_name(&v))
+        })
     }
 }

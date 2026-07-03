@@ -20,6 +20,7 @@
 
 pub mod api;
 pub mod backend;
+pub mod config;
 pub mod local;
 pub mod session;
 
@@ -33,6 +34,8 @@ pub use backend::Backend;
 pub use backend::BackendError;
 pub use backend::LocalBackend;
 pub use backend::local;
+pub use config::ConfigDiagnostic;
+pub use config::Settings;
 pub use local::DocSnapshot;
 pub use local::SnapshotRx;
 pub use session::DocumentView;

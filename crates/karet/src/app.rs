@@ -55,6 +55,7 @@ use karet_search::search_in_file;
 use karet_session::Backend;
 use karet_session::BackendError;
 use karet_session::Command as SessionCommand;
+use karet_session::ConfigDiagnostic;
 use karet_session::DocSnapshot;
 use karet_session::DocumentId;
 use karet_session::Event as SessionEvent;
@@ -62,6 +63,7 @@ use karet_session::EventRx;
 use karet_session::RequestId;
 use karet_session::Session;
 use karet_session::SessionConfig;
+use karet_session::Settings;
 use karet_session::SnapshotRx;
 use karet_session::ViewId;
 use karet_session::local;
@@ -329,6 +331,11 @@ pub(crate) struct ToastHit {
 pub struct App {
     /// The workspace root.
     pub(crate) root: PathBuf,
+    /// The loaded, verified configuration (see `karet_session::config`). Applied to
+    /// the UI at startup and handed to the session backend.
+    pub(crate) settings: Settings,
+    /// Config-load diagnostics awaiting display as startup notifications.
+    pub(crate) config_diagnostics: Vec<ConfigDiagnostic>,
     /// The active color theme.
     pub(crate) theme: Theme,
     /// Whether syntax highlighting is enabled.
@@ -504,6 +511,8 @@ impl App {
         changes.extend(working);
         Self {
             root,
+            settings: Settings::default(),
+            config_diagnostics: Vec::new(),
             theme: Theme::dark(),
             syntax,
             icon_style: IconStyle::default(),
@@ -591,6 +600,53 @@ impl App {
     #[must_use]
     pub fn with_icons(mut self, style: IconStyle) -> Self {
         self.icon_style = style;
+        self
+    }
+
+    /// Apply the loaded configuration to the UI shell (builder-style). Stores the
+    /// settings (later handed to the session backend) and any load diagnostics (shown
+    /// as startup notifications), and applies the `workbench.*` slice: colour theme,
+    /// icon style, and the startup sidebar panel.
+    #[must_use]
+    pub fn with_settings(mut self, settings: Settings, diagnostics: Vec<ConfigDiagnostic>) -> Self {
+        use karet_session::config::schema::IconStyleSetting;
+        use karet_session::config::schema::StartupPanel;
+
+        self.config_diagnostics = diagnostics;
+
+        // Theme: the built-in "dark", or a path to a .tmTheme / VS Code .json theme.
+        match load_theme(&settings.workbench.color_theme) {
+            Ok(theme) => self.theme = theme,
+            Err(message) => self.config_diagnostics.push(ConfigDiagnostic {
+                path: PathBuf::from(&settings.workbench.color_theme),
+                message,
+                severity: Severity::Warning,
+            }),
+        }
+
+        self.icon_style = match settings.workbench.icon_style {
+            IconStyleSetting::NerdFont => IconStyle::NerdFont,
+            IconStyleSetting::Unicode => IconStyle::Unicode,
+            IconStyleSetting::Ascii => IconStyle::Ascii,
+        };
+
+        match settings.workbench.startup_panel {
+            StartupPanel::Explorer => {
+                self.sidebar_panel = SidebarPanel::Explorer;
+                self.sidebar_visible = true;
+            },
+            StartupPanel::Search => {
+                self.sidebar_panel = SidebarPanel::Search;
+                self.sidebar_visible = true;
+            },
+            StartupPanel::SourceControl => {
+                self.sidebar_panel = SidebarPanel::SourceControl;
+                self.sidebar_visible = true;
+            },
+            StartupPanel::None => self.sidebar_visible = false,
+        }
+
+        self.settings = settings;
         self
     }
 
@@ -3741,6 +3797,29 @@ fn probe_kitty_graphics(timeout: Duration) -> Option<bool> {
 ///
 /// karet targets modern terminals, so a terminal without kitty keyboard support is
 /// a hard error rather than a degraded fallback.
+/// Resolve a `workbench.colorTheme` setting to a [`Theme`]: the built-in `"dark"`
+/// (also the empty string), or a path to a `.tmTheme` or VS Code `.json` theme file.
+/// Returns a human-readable message on a read/parse failure so the caller can warn
+/// and fall back to the default.
+fn load_theme(name: &str) -> Result<Theme, String> {
+    if name.is_empty() || name == "dark" {
+        return Ok(Theme::dark());
+    }
+    let path = Path::new(name);
+    let bytes = std::fs::read(path).map_err(|e| format!("theme `{name}`: {e}"))?;
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext == "json" {
+        let text = String::from_utf8(bytes).map_err(|e| format!("theme `{name}`: {e}"))?;
+        Theme::load_vscode(&text).map_err(|e| format!("theme `{name}`: {e}"))
+    } else {
+        Theme::load_tmtheme(&bytes).map_err(|e| format!("theme `{name}`: {e}"))
+    }
+}
+
 pub fn run(mut app: App) -> color_eyre::Result<()> {
     if !matches!(
         crossterm::terminal::supports_keyboard_enhancement(),
@@ -3757,7 +3836,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     let runtime = tokio::runtime::Runtime::new().map_err(|e| eyre!("tokio runtime: {e}"))?;
     let (session, events, snaps) = Session::new(SessionConfig {
         roots: vec![app.root.clone()],
-        ..SessionConfig::default()
+        settings: app.settings.clone(),
     });
 
     let mut terminal = ratatui::init();
@@ -3787,6 +3866,15 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
         let backend: Arc<dyn Backend> = Arc::new(local(session));
         app.backend = Some(backend);
         app.register_open_tabs();
+        // Surface any configuration-load problems as startup notifications, now that
+        // the notification center will render on the first frame.
+        for diag in std::mem::take(&mut app.config_diagnostics) {
+            app.notify(
+                diag.severity,
+                NotificationKind::System,
+                format!("config: {}", diag.message),
+            );
+        }
         event_loop(&mut terminal, &mut app, events, snaps).await
     });
 
@@ -3899,6 +3987,52 @@ mod tests {
             vec![change("b.rs", StatusKind::Modified)],
             false,
         )
+    }
+
+    #[test]
+    fn with_settings_applies_the_workbench_slice() {
+        use karet_session::config::schema::IconStyleSetting;
+        use karet_session::config::schema::StartupPanel;
+
+        let mut settings = Settings::default();
+        settings.workbench.icon_style = IconStyleSetting::Ascii;
+        settings.workbench.startup_panel = StartupPanel::SourceControl;
+
+        let app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false)
+            .with_settings(settings, Vec::new());
+
+        assert_eq!(app.icon_style, IconStyle::Ascii);
+        assert_eq!(app.sidebar_panel, SidebarPanel::SourceControl);
+        assert!(app.sidebar_visible);
+    }
+
+    #[test]
+    fn with_settings_none_panel_collapses_the_sidebar() {
+        use karet_session::config::schema::StartupPanel;
+
+        let mut settings = Settings::default();
+        settings.workbench.startup_panel = StartupPanel::None;
+        let app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false)
+            .with_settings(settings, Vec::new());
+        assert!(!app.sidebar_visible);
+    }
+
+    #[test]
+    fn bad_theme_path_becomes_a_diagnostic_and_keeps_default() {
+        let mut settings = Settings::default();
+        settings.workbench.color_theme = "/no/such/theme.json".to_string();
+        let app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false)
+            .with_settings(settings, Vec::new());
+        // The default (dark) theme is retained and the failure is queued as a warning.
+        assert_eq!(app.config_diagnostics.len(), 1);
+        assert!(app.config_diagnostics[0].message.contains("theme"));
+    }
+
+    #[test]
+    fn load_theme_resolves_the_builtin_dark() {
+        assert!(load_theme("dark").is_ok());
+        assert!(load_theme("").is_ok());
+        assert!(load_theme("/definitely/missing.tmTheme").is_err());
     }
 
     #[test]
