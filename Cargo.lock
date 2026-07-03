@@ -2825,6 +2825,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "karet-graph"
+version = "0.1.0"
+dependencies = [
+ "karet-core",
+ "ratatui",
+]
+
+[[package]]
 name = "karet-lsp"
 version = "0.1.0"
 dependencies = [

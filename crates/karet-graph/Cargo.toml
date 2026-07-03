@@ -1,0 +1,27 @@
+[package]
+name        = "karet-graph"
+description = "Lane-assignment DAG layout and a ratatui rail renderer for karet visualizations."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+publish = false                       # karet-internal for now (model lives in karet-core)
+
+[features]
+default = []
+# The ratatui rail renderer; off by default so the headless layout stays ratatui-free.
+# It takes a lane→Style closure, so it does not depend on any particular theme crate.
+view = ["dep:ratatui"]
+
+[dependencies]
+karet-core.workspace = true
+ratatui = { workspace = true, optional = true }
+
+[lints]
+workspace = true
