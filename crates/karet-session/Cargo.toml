@@ -38,6 +38,7 @@ serde = { workspace = true }          # derive Deserialize/Serialize for the Set
 serde_json.workspace = true           # the merge/deserialize target for JSONC config
 jsonc-parser.workspace = true         # parse JSONC config files (byte-span diagnostics)
 schemars.workspace = true             # generate the external JSON Schema from `Settings`
+dependable-core.workspace = true      # Cargo.lock → package dependency graph (offline)
 tempfile.workspace = true             # atomic swap-file writes + open/save flow tests
 
 [lints]

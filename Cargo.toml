@@ -147,6 +147,9 @@ directories = "6.0.0"
 # and JSON Schema generation from the typed `Settings` for editor autocomplete.
 jsonc-parser = { version = "0.32.4", features = ["serde"] }
 schemars     = "1.2.1"
+# Package dependency-graph backend (karet-session viz): the pure-Rust core of
+# `dependable` parses a Cargo.lock into a resolved graph offline (no network stack).
+dependable-core = "0.1.2"
 # Application-only
 clap               = { version = "4.6.1", features = ["derive"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
