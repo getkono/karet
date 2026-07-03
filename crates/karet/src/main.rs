@@ -50,10 +50,20 @@ fn main() -> color_eyre::Result<()> {
         (path.clone(), None)
     };
 
+    // Load the layered JSONC configuration for this workspace (project/user/system,
+    // over sane defaults). Diagnostics are handed to the app to surface as startup
+    // notifications; loading itself never fails.
+    let (settings, diagnostics) = karet_session::config::load(std::slice::from_ref(&root));
+
     // The Source-Control panel is populated by the session's `VcsStatus` event
     // (seeded on startup and refreshed on filesystem changes), so the shell starts
     // with an empty panel rather than computing status here.
-    let mut app = app::App::new(root, Vec::new(), Vec::new(), syntax).with_icons(cli.icon_style());
+    let mut app =
+        app::App::new(root, Vec::new(), Vec::new(), syntax).with_settings(settings, diagnostics);
+    // An explicit `--icons` flag (or `KARET_ICONS`) overrides `workbench.iconStyle`.
+    if let Some(style) = cli.explicit_icon_style() {
+        app = app.with_icons(style);
+    }
     if let Some(file) = initial_file {
         app.open_initial(&file);
     }
