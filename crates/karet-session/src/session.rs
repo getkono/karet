@@ -16,9 +16,12 @@ use karet_core::BytePos;
 use karet_core::Change;
 use karet_core::CursorState;
 use karet_core::Decoration;
+use karet_core::LineCol;
 use karet_core::NotificationKind;
+use karet_core::Range;
 use karet_core::Selection;
 use karet_core::Severity;
+use karet_core::TextEdit;
 use karet_filetype::FileKind;
 use karet_filetype::classify_ignoring_size;
 use karet_syntax::FoldRegions;
@@ -45,6 +48,11 @@ use crate::api::Command;
 use crate::api::DocumentId;
 use crate::api::Event;
 use crate::api::RequestId;
+use crate::api::SwapInfo;
+use crate::backup::SwapRecord;
+use crate::backup::SwapStore;
+use crate::backup::discard;
+use crate::backup::scan;
 use crate::local::DocSnapshot;
 use crate::local::SnapshotRx;
 
@@ -68,6 +76,10 @@ pub struct SessionConfig {
     /// The loaded, verified settings (see [`crate::config`]). Producers read editing
     /// behaviour (format-on-save, spell-check, …) from here.
     pub settings: crate::config::Settings,
+    /// Directory for crash-recovery swap files. The application sets this to the real
+    /// user data directory ([`crate::backup::default_swap_dir`]); left `None` (as in
+    /// tests) the session keeps no backups and never touches the user's data dir.
+    pub swap_dir: Option<PathBuf>,
 }
 
 impl SessionConfig {
@@ -156,6 +168,28 @@ struct Document {
     decorations: Vec<Decoration>,
     /// Open reference count (a path opened in N views shares one document).
     refs: u32,
+    /// When the buffer first became dirty (session-clock ms), or `None` when clean.
+    /// Drives the backup interval.
+    dirty_since: Option<u64>,
+    /// The buffer version last written to a crash-recovery swap, so a tick does not
+    /// rewrite an unchanged buffer.
+    backed_up_version: Option<u64>,
+}
+
+impl Document {
+    /// Reconcile the backup bookkeeping with the buffer's dirty state after an edit:
+    /// arm `dirty_since` on the clean→dirty transition, and disarm (dropping any
+    /// pending backup) once the buffer is clean again (e.g. undone to the save point).
+    fn sync_dirty_since(&mut self, tick: u64) {
+        if self.buffer.is_dirty() {
+            if self.dirty_since.is_none() {
+                self.dirty_since = Some(tick);
+            }
+        } else {
+            self.dirty_since = None;
+            self.backed_up_version = None;
+        }
+    }
 }
 
 /// The set of open documents, indexed by id and by path (for de-duplication).
@@ -193,6 +227,10 @@ pub struct Session {
     /// The last observed `HEAD` commit hash. A filesystem event that moves the tip
     /// away from this triggers an incremental commit-log reconciliation.
     last_head: Option<String>,
+    /// This session's crash-recovery swap store (`None` if no data directory).
+    swaps: Option<SwapStore>,
+    /// Swaps found on startup awaiting the user's recover/discard decision.
+    pending_swaps: Vec<SwapRecord>,
 }
 
 /// The most new commits [`Session::reconcile_vcs_log`] will prepend at once. Beyond
@@ -231,6 +269,18 @@ impl Session {
         };
         // Seed the tip so the first ref change reconciles against a known baseline.
         let last_head = vcs.as_ref().and_then(|r| r.head_hash().ok().flatten());
+        // Open this session's swap store and scan for swaps a previous run left behind
+        // (a crash, or a save that failed). They are offered to the UI for recovery.
+        let session_id = u64::from(std::process::id());
+        let swaps = config
+            .swap_dir
+            .clone()
+            .filter(|_| config.settings.files.backup)
+            .map(|dir| SwapStore::with_dir(dir, session_id));
+        let pending_swaps = swaps
+            .as_ref()
+            .map(|store| scan(store.dir()))
+            .unwrap_or_default();
         let mut session = Self {
             config,
             events,
@@ -247,9 +297,13 @@ impl Session {
             vcs,
             last_vcs: None,
             last_head,
+            swaps,
+            pending_swaps,
         };
         // Seed the client with the initial status; it buffers until the UI reads it.
         session.emit_vcs_status(None);
+        // Announce any recoverable swaps so the UI can prompt on the first frame.
+        session.announce_pending_swaps();
         (session, EventRx(erx), SnapshotRx(srx))
     }
 
@@ -274,6 +328,8 @@ impl Session {
             Command::Commit { message } => self.commit(id, &message),
             Command::RefreshVcs => self.emit_vcs_status(Some(id)),
             Command::VcsLog { skip, limit } => self.emit_vcs_log(Some(id), skip, limit),
+            Command::RecoverSwaps => self.recover_swaps(id),
+            Command::DiscardSwaps => self.discard_swaps(),
             // Language-intelligence and search commands are wired in later milestones.
             _ => {},
         }
@@ -518,6 +574,8 @@ impl Session {
             folds: Arc::new(FoldRegions::default()),
             decorations: Vec::new(),
             refs: 1,
+            dirty_since: None,
+            backed_up_version: None,
         };
         update_syntax(&mut self.pool, &mut self.highlighters, &mut doc, None);
         let version = doc.buffer.version();
@@ -548,6 +606,8 @@ impl Session {
                 Err(_) => return, // stale or overlapping; the caller will resync
             };
             update_syntax(pool, highlighters, doc, Some(&applied.edits));
+            // Arm the backup clock on the clean→dirty transition (see `backup_tick`).
+            doc.sync_dirty_since(tick);
             // LSP seam: this is the single apply site. When a server is attached for
             // `doc.lang_id`, forward an incremental `did_change(&doc.path, version,
             // change.edits)` here (translated to the negotiated encoding); a no-op
@@ -565,6 +625,7 @@ impl Session {
     }
 
     fn undo_redo(&mut self, id: RequestId, doc_id: DocumentId, undo: bool) {
+        let tick = self.elapsed_ms();
         let (version, cursor) = {
             let pool = &mut self.pool;
             let highlighters = &mut self.highlighters;
@@ -580,6 +641,8 @@ impl Session {
                 return; // nothing to undo/redo
             };
             update_syntax(pool, highlighters, doc, Some(&applied.edits));
+            // Undoing back to the save point clears dirtiness (and any pending backup).
+            doc.sync_dirty_since(tick);
             // Jump the caret to the change: undo restores the exact pre-edit cursor;
             // redo (which records none) lands at the end of the re-applied edit that
             // reaches furthest into the document.
@@ -608,15 +671,31 @@ impl Session {
     fn save(&mut self, id: RequestId, doc_id: DocumentId) {
         let result = self.store.docs.get_mut(&doc_id).map(save_document);
         match result {
-            Some(Ok(_)) => self.emit(Some(id), Event::Saved { doc: doc_id }),
-            Some(Err(e)) => self.emit(
-                Some(id),
-                Event::Notification {
-                    severity: Severity::Error,
-                    kind: NotificationKind::Io,
-                    message: format!("save failed: {e}"),
-                },
-            ),
+            Some(Ok(_)) => {
+                // The file is safely on disk: drop the backup and disarm the clock.
+                if let Some(doc) = self.store.docs.get_mut(&doc_id) {
+                    doc.dirty_since = None;
+                    doc.backed_up_version = None;
+                    let path = doc.path.clone();
+                    if let Some(store) = self.swaps.as_ref() {
+                        store.remove(&path);
+                    }
+                }
+                self.emit(Some(id), Event::Saved { doc: doc_id });
+            },
+            Some(Err(e)) => {
+                // A failed save is exactly when a backup matters most: capture the
+                // unsaved buffer to a swap immediately, then surface the error.
+                self.write_swap(doc_id);
+                self.emit(
+                    Some(id),
+                    Event::Notification {
+                        severity: Severity::Error,
+                        kind: NotificationKind::Io,
+                        message: format!("save failed (unsaved changes backed up): {e}"),
+                    },
+                );
+            },
             None => self.emit(Some(id), unknown_document(doc_id)),
         }
     }
@@ -632,8 +711,131 @@ impl Session {
         if removed {
             if let Some(doc) = self.store.docs.remove(&doc_id) {
                 self.store.by_path.remove(&doc.path);
+                // The document is gone from the editor: skipping a save is an explicit
+                // decision, so clean up its swap.
+                if let Some(store) = self.swaps.as_ref() {
+                    store.remove(&doc.path);
+                }
             }
             self.emit(Some(id), Event::Closed { doc: doc_id });
+        }
+    }
+
+    // --- crash-recovery swaps ---------------------------------------------
+
+    /// Announce the swaps left by previous sessions so the UI can prompt the user to
+    /// recover or discard them. A no-op when there are none.
+    fn announce_pending_swaps(&mut self) {
+        if self.pending_swaps.is_empty() {
+            return;
+        }
+        let swaps = self
+            .pending_swaps
+            .iter()
+            .map(|record| SwapInfo {
+                original: record.meta.original.clone(),
+                updated_unix_ms: record.meta.updated_unix_ms,
+                conflict: record.conflicts_with_disk(),
+            })
+            .collect();
+        self.emit(None, Event::SwapsFound { swaps });
+    }
+
+    /// Recover every pending swap: open its document and replace the buffer with the
+    /// backed-up (unsaved) content, leaving it dirty so the user re-saves. Each swap
+    /// file is removed once its content is restored; a swap whose original cannot be
+    /// opened is left on disk for a later attempt.
+    fn recover_swaps(&mut self, id: RequestId) {
+        for record in std::mem::take(&mut self.pending_swaps) {
+            self.open(id, record.meta.original.clone(), None);
+            let Some(&doc_id) = self.store.by_path.get(&record.meta.original) else {
+                continue;
+            };
+            let change = self
+                .store
+                .docs
+                .get(&doc_id)
+                .and_then(|doc| whole_document_change(doc, record.content.clone()));
+            if let Some(change) = change {
+                self.apply(id, doc_id, &change);
+                discard(&record.swap_path);
+            }
+        }
+    }
+
+    /// Discard every pending swap without recovering (the user declined).
+    fn discard_swaps(&mut self) {
+        for record in std::mem::take(&mut self.pending_swaps) {
+            discard(&record.swap_path);
+        }
+    }
+
+    /// Write a crash-recovery swap for `doc_id` immediately (used when a save fails).
+    fn write_swap(&mut self, doc_id: DocumentId) {
+        let Session { swaps, store, .. } = self;
+        let Some(swap_store) = swaps.as_ref() else {
+            return;
+        };
+        let Some(doc) = store.docs.get_mut(&doc_id) else {
+            return;
+        };
+        let (hash, size) = doc
+            .buffer
+            .saved_state()
+            .map(|s| (Some(s.hash), Some(s.size)))
+            .unwrap_or((None, None));
+        let version = doc.buffer.version();
+        if swap_store
+            .write(&doc.path, &doc.buffer.text(), hash, size, version)
+            .is_ok()
+        {
+            doc.backed_up_version = Some(version);
+        }
+    }
+
+    /// Back up every document that has been dirty past the configured backup interval
+    /// (and changed since its last swap). Called on a timer by the backend actor.
+    pub(crate) fn backup_tick(&mut self) {
+        let Session {
+            swaps,
+            store,
+            config,
+            clock,
+            ..
+        } = self;
+        if !config.settings.files.backup {
+            return;
+        }
+        let Some(store_ref) = swaps.as_ref() else {
+            return;
+        };
+        let interval = config.settings.files.backup_interval;
+        let now = u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX);
+        for doc in store.docs.values_mut() {
+            if !doc.buffer.is_dirty() {
+                continue;
+            }
+            let Some(since) = doc.dirty_since else {
+                continue;
+            };
+            if now.saturating_sub(since) < interval {
+                continue;
+            }
+            let version = doc.buffer.version();
+            if doc.backed_up_version == Some(version) {
+                continue; // already backed up at this version
+            }
+            let (hash, size) = doc
+                .buffer
+                .saved_state()
+                .map(|s| (Some(s.hash), Some(s.size)))
+                .unwrap_or((None, None));
+            if store_ref
+                .write(&doc.path, &doc.buffer.text(), hash, size, version)
+                .is_ok()
+            {
+                doc.backed_up_version = Some(version);
+            }
         }
     }
 
@@ -784,6 +986,18 @@ fn ensure_highlighter(highlighters: &mut HashMap<LanguageId, Highlighter>, lang:
 /// [`EditCause::Type`] (so consecutive typing coalesces into one undo step), and the
 /// pre-edit caret is the first edit's start (so coalescing's adjacency check works
 /// without the client reporting the cursor on every keystroke).
+/// Build a [`Change`] that replaces the entirety of `doc`'s buffer with `new_text`,
+/// based on the buffer's current version. Used to restore a recovered swap's content
+/// as a dirty edit (undo returns to the on-disk version).
+fn whole_document_change(doc: &Document, new_text: String) -> Option<Change> {
+    let end = doc.buffer.byte_to_line_col(BytePos(doc.buffer.len_bytes()));
+    let range = Range::new(LineCol::new(0, 0), end).ok()?;
+    Some(Change::new(
+        doc.buffer.version(),
+        vec![TextEdit { range, new_text }],
+    ))
+}
+
 fn edit_context(tick_ms: u64, change: &Change) -> EditContext {
     let cursor_before = change.edits.first().map_or_else(CursorState::default, |e| {
         CursorState::single(Selection::caret(e.range.start))
@@ -1372,6 +1586,129 @@ mod tests {
         assert!(refreshed.is_some(), "fs event should refresh the status");
         if let Some((_staged, working)) = refreshed {
             assert_eq!(working.len(), 2);
+        }
+    }
+
+    /// A whole-buffer insertion at the start of the document (base version 0).
+    fn insert_change(text: &str) -> Change {
+        Change::new(
+            0,
+            vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(0, 0),
+                    end: LineCol::new(0, 0),
+                },
+                new_text: text.to_string(),
+            }],
+        )
+    }
+
+    #[test]
+    fn backup_tick_writes_a_swap_for_a_dirty_doc_and_save_removes_it() {
+        let Some((_dir, path)) = write_temp("main.rs", "fn main() {}\n") else {
+            return;
+        };
+        let Some(swapdir) = tempfile::tempdir().ok() else {
+            return;
+        };
+        let mut settings = crate::config::Settings::default();
+        settings.files.backup_interval = 0; // any dirty doc is immediately due
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: Vec::new(),
+            settings,
+            swap_dir: None,
+        });
+        // Redirect swaps to a temp directory instead of the real data dir.
+        session.swaps = Some(SwapStore::with_dir(swapdir.path().to_path_buf(), 1));
+
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let Some(doc) = opened_doc(&mut events) else {
+            return;
+        };
+        session.handle(
+            RequestId(2),
+            Command::ApplyChange {
+                doc,
+                change: insert_change("x"),
+            },
+        );
+
+        // No swap until the tick decides the doc is due.
+        assert!(scan(swapdir.path()).is_empty());
+        session.backup_tick();
+        assert_eq!(scan(swapdir.path()).len(), 1, "dirty doc backed up");
+
+        // A successful save clears the swap.
+        session.handle(RequestId(3), Command::Save { doc });
+        assert!(scan(swapdir.path()).is_empty(), "save removes the swap");
+    }
+
+    #[test]
+    fn recover_swaps_restores_a_dirty_buffer() {
+        let Some((_dir, path)) = write_temp("r.rs", "on disk\n") else {
+            return;
+        };
+        let Some(swapdir) = tempfile::tempdir().ok() else {
+            return;
+        };
+        let store = SwapStore::with_dir(swapdir.path().to_path_buf(), 9);
+        // A swap left by a previous session holds unsaved content.
+        if store.write(&path, "recovered!\n", None, None, 1).is_err() {
+            return;
+        }
+
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+        session.swaps = Some(SwapStore::with_dir(swapdir.path().to_path_buf(), 9));
+        session.pending_swaps = scan(swapdir.path());
+        assert_eq!(session.pending_swaps.len(), 1);
+
+        session.recover_swaps(RequestId(1));
+        let Some(doc) = opened_doc(&mut events) else {
+            return;
+        };
+        let Some(document) = session.store.docs.get(&doc) else {
+            return;
+        };
+        assert_eq!(document.buffer.text(), "recovered!\n");
+        assert!(document.buffer.is_dirty(), "recovered content is unsaved");
+        // The swap is consumed once recovered.
+        assert!(scan(swapdir.path()).is_empty());
+    }
+
+    #[test]
+    fn new_session_announces_swaps_left_in_its_swap_dir() {
+        let Some(swapdir) = tempfile::tempdir().ok() else {
+            return;
+        };
+        let store = SwapStore::with_dir(swapdir.path().to_path_buf(), 5);
+        if store
+            .write(Path::new("/work/x.rs"), "unsaved\n", None, None, 1)
+            .is_err()
+        {
+            return;
+        }
+        // A session pointed at that swap dir scans it on construction and announces.
+        let (_session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: Vec::new(),
+            settings: crate::config::Settings::default(),
+            swap_dir: Some(swapdir.path().to_path_buf()),
+        });
+        let mut found = None;
+        while let Some((_, ev)) = events.try_recv() {
+            if let Event::SwapsFound { swaps } = ev {
+                found = Some(swaps);
+            }
+        }
+        assert!(found.is_some(), "startup announces recoverable swaps");
+        if let Some(swaps) = found {
+            assert_eq!(swaps.len(), 1);
+            assert_eq!(swaps[0].original, PathBuf::from("/work/x.rs"));
         }
     }
 }

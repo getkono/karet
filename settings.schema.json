@@ -163,6 +163,23 @@
           "default": 1000,
           "minimum": 0
         },
+        "backup": {
+          "description": "Keep crash-recovery backups (swap files) of unsaved buffers.",
+          "type": "boolean",
+          "default": true
+        },
+        "backupInterval": {
+          "description": "How long a buffer stays dirty (milliseconds) before its swap is written.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 30000,
+          "minimum": 0
+        },
+        "confirmOnExit": {
+          "description": "Prompt to save unsaved changes when quitting (rather than discarding them).",
+          "type": "boolean",
+          "default": true
+        },
         "encoding": {
           "description": "Default text encoding label (informational; karet edits UTF-8).",
           "type": "string",

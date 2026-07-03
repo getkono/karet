@@ -3,9 +3,14 @@
 
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use karet_watch::FsEvent;
 use tokio::sync::mpsc;
+
+/// How often the actor sweeps for buffers due to be backed up. The per-document
+/// dirty threshold is `files.backupInterval`; this only bounds detection latency.
+const BACKUP_TICK: Duration = Duration::from_secs(2);
 
 use crate::api::Command;
 use crate::api::RequestId;
@@ -80,6 +85,10 @@ pub fn local(mut session: Session) -> LocalBackend {
     tokio::spawn(async move {
         // Hold the watcher alive for exactly as long as the actor consumes events.
         let _watcher = watcher;
+        // A steady tick drives the crash-recovery backup sweep; the session decides
+        // per-document whether the configured dirty interval has elapsed.
+        let mut backup = tokio::time::interval(BACKUP_TICK);
+        backup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 command = rx.recv() => match command {
@@ -90,6 +99,7 @@ pub fn local(mut session: Session) -> LocalBackend {
                     Some(event) => session.handle_fs_event(event),
                     None => fs_rx = None, // the watcher stopped; stop selecting it
                 },
+                _ = backup.tick() => session.backup_tick(),
             }
         }
     });

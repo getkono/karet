@@ -102,6 +102,12 @@ pub struct Files {
     pub exclude: Vec<String>,
     /// Glob patterns excluded from the filesystem watcher.
     pub watcher_exclude: Vec<String>,
+    /// Keep crash-recovery backups (swap files) of unsaved buffers.
+    pub backup: bool,
+    /// How long a buffer stays dirty (milliseconds) before its swap is written.
+    pub backup_interval: u64,
+    /// Prompt to save unsaved changes when quitting (rather than discarding them).
+    pub confirm_on_exit: bool,
 }
 
 impl Default for Files {
@@ -113,6 +119,9 @@ impl Default for Files {
             eol: Eol::Auto,
             exclude: Vec::new(),
             watcher_exclude: Vec::new(),
+            backup: true,
+            backup_interval: 30_000,
+            confirm_on_exit: true,
         }
     }
 }

@@ -20,6 +20,7 @@
 
 pub mod api;
 pub mod backend;
+pub mod backup;
 pub mod config;
 pub mod local;
 pub mod session;
@@ -29,6 +30,7 @@ pub use api::DecorationLayer;
 pub use api::DocumentId;
 pub use api::Event;
 pub use api::RequestId;
+pub use api::SwapInfo;
 pub use api::ViewId;
 pub use backend::Backend;
 pub use backend::BackendError;

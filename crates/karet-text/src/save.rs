@@ -125,7 +125,10 @@ fn write_atomic(dir: &Path, target: &Path, bytes: &[u8]) -> Result<(), TextError
     }
 }
 
-/// A fast, non-cryptographic fingerprint of `bytes` (no extra dependency).
+/// A fast, non-cryptographic fingerprint of `bytes` (no extra dependency). This is
+/// the exact function backing [`SavedState::hash`], exposed as
+/// [`crate::content_fingerprint`] so callers can recompute a file's fingerprint and
+/// compare it against a recorded one (e.g. backup/swap conflict detection).
 pub(crate) fn hash_bytes(bytes: &[u8]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     bytes.hash(&mut hasher);

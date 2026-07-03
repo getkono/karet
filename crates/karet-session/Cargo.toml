@@ -28,7 +28,7 @@ karet-search.workspace = true
 karet-fuzzy.workspace = true
 karet-terminal.workspace = true       # PTY host is server-side business logic
 karet-watch.workspace = true          # centralized filesystem watching
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "macros", "process"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "macros", "process", "time"] }
 tracing.workspace = true
 thiserror.workspace = true
 ec4rs.workspace = true                # settings / editorconfig precedence (migrated from the app)
@@ -38,9 +38,7 @@ serde = { workspace = true }          # derive Deserialize/Serialize for the Set
 serde_json.workspace = true           # the merge/deserialize target for JSONC config
 jsonc-parser.workspace = true         # parse JSONC config files (byte-span diagnostics)
 schemars.workspace = true             # generate the external JSON Schema from `Settings`
-
-[dev-dependencies]
-tempfile.workspace = true             # temp files for open/save flow tests
+tempfile.workspace = true             # atomic swap-file writes + open/save flow tests
 
 [lints]
 workspace = true

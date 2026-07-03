@@ -105,10 +105,12 @@ use Layer::Global;
 use Layer::Outline;
 use Layer::Overlay;
 use Layer::Oversize;
+use Layer::QuitConfirm;
 use Layer::SearchInput;
 use Layer::SearchList;
 use Layer::Sidebar;
 use Layer::SourceControl;
+use Layer::SwapRecover;
 
 /// The single source of truth for key bindings. Within a [`Layer`] the first
 /// matching binding wins (and [`hint_for`] returns the first binding for a command,
@@ -317,6 +319,16 @@ static BINDINGS: &[Binding] = &[
     b(DiscardConfirm, false, false, false, Enter,     Command::ConfirmDiscard),
     b(DiscardConfirm, false, false, false, Char('y'), Command::ConfirmDiscard),
     b(DiscardConfirm, false, false, false, Char('Y'), Command::ConfirmDiscard),
+    // Quit confirmation (unsaved changes): save-all, discard, or (any other key) cancel.
+    b(QuitConfirm, false, false, false, Char('s'), Command::QuitSaveAll),
+    b(QuitConfirm, false, false, false, Char('S'), Command::QuitSaveAll),
+    b(QuitConfirm, false, false, false, Char('d'), Command::QuitDiscard),
+    b(QuitConfirm, false, false, false, Char('D'), Command::QuitDiscard),
+    // Startup crash-recovery prompt: recover, discard, or (any other key) dismiss.
+    b(SwapRecover, false, false, false, Char('r'), Command::RecoverSwaps),
+    b(SwapRecover, false, false, false, Char('R'), Command::RecoverSwaps),
+    b(SwapRecover, false, false, false, Char('d'), Command::DiscardSwaps),
+    b(SwapRecover, false, false, false, Char('D'), Command::DiscardSwaps),
     // Workspace Search: navigating the results list.
     b(SearchList, false, false, false, Esc,       Command::SearchQuit),
     b(SearchList, false, false, false, Enter,     Command::SearchOpen),

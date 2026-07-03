@@ -66,6 +66,9 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 | `eol` | `"auto"`\|`"lf"`\|`"crlf"` | `"auto"` | Line-ending style on save. |
 | `exclude` | string[] | `[]` | Globs hidden from the file explorer. |
 | `watcherExclude` | string[] | `[]` | Globs excluded from the filesystem watcher. |
+| `backup` | bool | `true` | Keep crash-recovery backups of unsaved buffers (see below). |
+| `backupInterval` | number | `30000` | Milliseconds a buffer stays dirty before its backup is written. |
+| `confirmOnExit` | bool | `true` | Prompt to save unsaved changes when quitting. |
 
 ### `workbench`
 
@@ -100,6 +103,25 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 
 > An explicit `--icons` flag (or the `KARET_ICONS` environment variable) overrides
 > `workbench.iconStyle`.
+
+## Crash recovery (unsaved-change backups)
+
+karet keeps your unsaved work safe even if it crashes or a save fails. When a buffer
+has been dirty for `files.backupInterval` (and immediately whenever a save fails), its
+contents are written to a **swap file** in the platform data directory
+(`…/karet/swaps`). Each swap records the original path and a fingerprint of the file it
+would overwrite.
+
+- **On a successful save**, the swap is removed.
+- **On close** (skipping a save), the swap is removed.
+- **On quit with unsaved changes** (when `files.confirmOnExit` is on), karet asks
+  whether to save all and quit, discard and quit, or cancel.
+- **On the next launch**, if any swaps were left behind (a crash, or a discard-and-quit),
+  karet offers to recover them — restoring each buffer as unsaved. If the underlying
+  file changed on disk in the meantime, the prompt says so, since recovering would
+  discard those on-disk changes.
+
+Set `files.backup` to `false` to disable the whole mechanism.
 
 ## Regenerating the schema
 

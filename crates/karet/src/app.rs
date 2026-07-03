@@ -65,6 +65,7 @@ use karet_session::Session;
 use karet_session::SessionConfig;
 use karet_session::Settings;
 use karet_session::SnapshotRx;
+use karet_session::SwapInfo;
 use karet_session::ViewId;
 use karet_session::local;
 use karet_syntax::FoldRegions;
@@ -373,6 +374,13 @@ pub struct App {
     /// Paths awaiting a discard confirmation (set after pressing discard; cleared
     /// when the user confirms or cancels).
     pub(crate) pending_discard: Option<Vec<PathBuf>>,
+    /// Whether the quit-confirmation prompt (unsaved changes) is armed.
+    pub(crate) pending_quit: bool,
+    /// Whether a "save all & quit" is in flight: exit once the saves drain.
+    pub(crate) quitting: bool,
+    /// Crash-recovery swaps offered by the backend at startup, awaiting the user's
+    /// recover/discard decision.
+    pub(crate) pending_swaps: Option<Vec<SwapInfo>>,
     /// Chords typed so far toward a multi-key binding (empty when not mid-sequence).
     pub(crate) pending: Vec<KeyChord>,
     /// The workspace-search panel state.
@@ -538,6 +546,9 @@ impl App {
             find: None,
             commit_input: None,
             pending_discard: None,
+            pending_quit: false,
+            quitting: false,
+            pending_swaps: None,
             pending: Vec::new(),
             search: SearchPanel::default(),
             status: None,
@@ -711,7 +722,12 @@ impl App {
     /// The precedence mirrors how the shell stacks these overlays. Also drives the
     /// context-aware status hints bar ([`crate::ui`]).
     pub(crate) fn input_context(&self) -> Context {
-        let modal = if self.overlay.is_some() {
+        let modal = if self.pending_swaps.is_some() {
+            // A startup recovery decision blocks everything else until made.
+            Some(Modal::SwapRecover)
+        } else if self.pending_quit {
+            Some(Modal::QuitConfirm)
+        } else if self.overlay.is_some() {
             Some(Modal::Overlay)
         } else if self.commit_input.is_some() {
             Some(Modal::CommitInput)
@@ -781,6 +797,16 @@ impl App {
             Modal::SearchInput => self.search_edit(key),
             Modal::SearchList => {},
             Modal::DiscardConfirm => self.resolve_discard(false),
+            // An unbound key cancels the quit prompt (stay in the editor)…
+            Modal::QuitConfirm => {
+                self.pending_quit = false;
+                self.status = Some("quit cancelled".to_string());
+            },
+            // …and dismisses the recovery prompt, keeping the swaps for a later launch.
+            Modal::SwapRecover => {
+                self.pending_swaps = None;
+                self.status = Some("recovery dismissed (backups kept)".to_string());
+            },
         }
     }
 
@@ -1250,7 +1276,7 @@ impl App {
     /// Apply a resolved [`Command`].
     fn dispatch(&mut self, command: Command) {
         match command {
-            Command::Quit => self.should_quit = true,
+            Command::Quit => self.request_quit(),
             Command::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
             Command::ToggleFocus => self.toggle_focus(),
             Command::SelectPanel(panel) => {
@@ -1405,6 +1431,26 @@ impl App {
             Command::ExplorerEditSubmit => self.explorer_commit_edit(),
             Command::ExplorerEditCancel => self.explorer.cancel_edit(),
             Command::ConfirmDiscard => self.resolve_discard(true),
+            Command::QuitSaveAll => self.quit_save_all(),
+            Command::QuitDiscard => {
+                self.pending_quit = false;
+                self.should_quit = true;
+            },
+            Command::RecoverSwaps => {
+                // Open a tab for each backed-up file first (so the recovered content
+                // has somewhere to land), then ask the backend to restore the buffers.
+                if let Some(swaps) = self.pending_swaps.take() {
+                    for info in &swaps {
+                        self.open_path(&info.original);
+                    }
+                    self.status = Some(format!("recovering {} file(s)…", swaps.len()));
+                }
+                self.send_command(SessionCommand::RecoverSwaps);
+            },
+            Command::DiscardSwaps => {
+                self.pending_swaps = None;
+                self.send_command(SessionCommand::DiscardSwaps);
+            },
             Command::SearchSelectUp => self.search_select(-1),
             Command::SearchSelectDown => self.search_select(1),
             Command::SearchOpen => self.open_selected_result(),
@@ -1797,6 +1843,12 @@ impl App {
 
     /// Send a fire-and-forget command to the backend (no document context).
     fn send_vcs(&mut self, command: SessionCommand) {
+        self.send_command(command);
+    }
+
+    /// Submit a fire-and-forget backend command (the answering event, if any, is
+    /// handled generically), surfacing a dropped-backend error as a notification.
+    fn send_command(&mut self, command: SessionCommand) {
         let result = self.backend.as_ref().map(|backend| {
             let id = backend.next_id();
             backend.send(id, command)
@@ -3436,6 +3488,71 @@ impl App {
 
     /// Save the active document, or report that there is no file to save. Tracks the
     /// in-flight save so a slow write shows a spinner in the tab.
+    /// Handle a quit request: prompt when there are unsaved changes and
+    /// `files.confirmOnExit` is set, otherwise exit immediately. Crash-recovery
+    /// backups remain the safety net regardless of the choice.
+    fn request_quit(&mut self) {
+        let has_unsaved = self.all_tabs().any(|tab| tab.dirty);
+        if has_unsaved && self.settings.files.confirm_on_exit {
+            self.pending_quit = true;
+            self.status = Some(
+                "unsaved changes — press s to save all & quit, d to discard & quit, \
+                 any other key to cancel"
+                    .to_string(),
+            );
+        } else {
+            self.should_quit = true;
+        }
+    }
+
+    /// At the quit prompt: save every unsaved document, then exit once the saves
+    /// drain (see [`App::on_backend_event`]). Exits immediately if nothing is dirty.
+    fn quit_save_all(&mut self) {
+        self.pending_quit = false;
+        let saved = self.save_all_dirty();
+        if saved == 0 {
+            self.should_quit = true;
+        } else {
+            self.quitting = true;
+            self.status = Some(format!("saving {saved} file(s) before quitting…"));
+        }
+    }
+
+    /// Save every dirty code document across all panes (deduplicated by document),
+    /// returning how many saves were issued. Each is tracked in `pending_saves`.
+    fn save_all_dirty(&mut self) -> usize {
+        let Some(backend) = self.backend.clone() else {
+            return 0;
+        };
+        let mut docs: Vec<DocumentId> = Vec::new();
+        for tab in self.all_tabs() {
+            if tab.dirty
+                && let TabKind::Code { doc: Some(d), .. } = &tab.kind
+                && !docs.contains(d)
+            {
+                docs.push(*d);
+            }
+        }
+        let now = Instant::now();
+        let mut issued = 0;
+        for doc in docs {
+            let id = backend.next_id();
+            match backend.send(id, SessionCommand::Save { doc }) {
+                Ok(()) => {
+                    self.pending_saves.insert(id, doc);
+                    issued += 1;
+                    for tab in self.all_tabs_mut() {
+                        if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
+                            tab.saving_since = Some(now);
+                        }
+                    }
+                },
+                Err(e) => self.notify_backend_error(e),
+            }
+        }
+        issued
+    }
+
     fn save_active(&mut self) {
         let Some(doc) = self.active_code_doc() else {
             self.status = Some("save: open a text file".to_string());
@@ -3550,6 +3667,10 @@ impl App {
                 }
             }
         }
+        // A "save all & quit" exits once every issued save has been answered.
+        if self.quitting && self.pending_saves.is_empty() {
+            self.should_quit = true;
+        }
         match event {
             SessionEvent::Opened { doc, .. } => {
                 self.open_docs.insert(doc);
@@ -3619,8 +3740,28 @@ impl App {
                     format!("committed {short}"),
                 );
             },
+            SessionEvent::SwapsFound { swaps } => self.arm_swap_recovery(swaps),
             _ => {},
         }
+    }
+
+    /// Arm the startup crash-recovery prompt for `swaps` left by a previous session.
+    fn arm_swap_recovery(&mut self, swaps: Vec<SwapInfo>) {
+        if swaps.is_empty() {
+            return;
+        }
+        let conflicts = swaps.iter().filter(|s| s.conflict).count();
+        let suffix = if conflicts > 0 {
+            format!(" ({conflicts} changed on disk)")
+        } else {
+            String::new()
+        };
+        self.status = Some(format!(
+            "recovered {} unsaved file(s) from a previous session{suffix} — \
+             press r to recover, d to discard, any other key to dismiss",
+            swaps.len()
+        ));
+        self.pending_swaps = Some(swaps);
     }
 
     /// Apply a document snapshot to the matching code tab(s): the snapshot is the
@@ -3837,6 +3978,9 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     let (session, events, snaps) = Session::new(SessionConfig {
         roots: vec![app.root.clone()],
         settings: app.settings.clone(),
+        // The real app persists crash-recovery swaps to the user data directory;
+        // headless/test sessions leave this unset and keep no backups.
+        swap_dir: karet_session::backup::default_swap_dir(),
     });
 
     let mut terminal = ratatui::init();
@@ -3987,6 +4131,93 @@ mod tests {
             vec![change("b.rs", StatusKind::Modified)],
             false,
         )
+    }
+
+    #[test]
+    fn quit_with_unsaved_changes_arms_the_prompt() {
+        let mut app = app();
+        app.tabs[app.active].dirty = true;
+        app.dispatch(Command::Quit);
+        assert!(app.pending_quit, "unsaved changes arm the quit prompt");
+        assert!(!app.should_quit);
+        assert_eq!(
+            app.input_context().modal,
+            Some(crate::keymap::Modal::QuitConfirm)
+        );
+
+        // Discarding exits.
+        app.dispatch(Command::QuitDiscard);
+        assert!(!app.pending_quit);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn quit_without_unsaved_changes_exits_immediately() {
+        let mut app = app();
+        app.dispatch(Command::Quit);
+        assert!(!app.pending_quit);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn quit_prompt_disabled_by_confirm_on_exit_setting() {
+        let mut app = app();
+        app.settings.files.confirm_on_exit = false;
+        app.tabs[app.active].dirty = true;
+        app.dispatch(Command::Quit);
+        assert!(
+            app.should_quit,
+            "confirmOnExit=false quits without prompting"
+        );
+    }
+
+    #[test]
+    fn quit_save_all_with_nothing_dirty_exits() {
+        let mut app = app();
+        app.pending_quit = true;
+        app.dispatch(Command::QuitSaveAll);
+        assert!(app.should_quit);
+        assert!(!app.quitting, "no saves in flight");
+    }
+
+    #[test]
+    fn recover_swaps_opens_a_tab_for_each_backed_up_file() {
+        let path = std::env::temp_dir().join(format!("karet-recover-{}.rs", std::process::id()));
+        if std::fs::write(&path, "fn main() {}\n").is_err() {
+            return;
+        }
+        let mut app = app();
+        app.pending_swaps = Some(vec![SwapInfo {
+            original: path.clone(),
+            updated_unix_ms: 0,
+            conflict: false,
+        }]);
+        app.dispatch(Command::RecoverSwaps);
+        assert!(app.pending_swaps.is_none());
+        assert!(
+            app.all_tabs().any(|t| t.path().is_some_and(|p| p == path)),
+            "recovery opens a tab for the backed-up file"
+        );
+    }
+
+    #[test]
+    fn swaps_found_arms_the_recovery_prompt() {
+        let mut app = app();
+        app.on_backend_event(
+            None,
+            SessionEvent::SwapsFound {
+                swaps: vec![SwapInfo {
+                    original: PathBuf::from("/work/a.rs"),
+                    updated_unix_ms: 0,
+                    conflict: false,
+                }],
+            },
+        );
+        assert!(app.pending_swaps.is_some());
+        assert_eq!(
+            app.input_context().modal,
+            Some(crate::keymap::Modal::SwapRecover)
+        );
     }
 
     #[test]
