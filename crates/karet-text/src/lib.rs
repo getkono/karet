@@ -34,6 +34,14 @@ pub use load::Eol;
 pub use load::LoadError;
 pub use save::SavedState;
 
+/// The non-cryptographic fingerprint used for [`SavedState::hash`]: hashing a file's
+/// bytes with this yields the same value karet records on save/load, so a caller can
+/// detect whether a file changed under it (e.g. backup/swap conflict detection).
+#[must_use]
+pub fn content_fingerprint(bytes: &[u8]) -> u64 {
+    save::hash_bytes(bytes)
+}
+
 /// Errors produced by [`TextBuffer`] operations.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
