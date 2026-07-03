@@ -102,6 +102,7 @@ use Layer::Explorer;
 use Layer::ExplorerEdit;
 use Layer::Find;
 use Layer::Global;
+use Layer::Outline;
 use Layer::Overlay;
 use Layer::Oversize;
 use Layer::SearchInput;
@@ -126,6 +127,7 @@ static BINDINGS: &[Binding] = &[
     b(Global, true,  false, false, Char('f'), Command::OpenFind),
     b(Global, true,  true,  false, Char('f'), Command::OpenGlobalSearch),
     b(Global, true,  false, false, Char('b'), Command::ToggleSidebar),
+    b(Global, true,  true,  false, Char('o'), Command::ToggleOutline),
     b(Global, true,  false, false, Char('w'), Command::CloseTab),
     b(Global, true,  false, false, Char('1'), Command::SelectPanel(SidebarPanel::Explorer)),
     b(Global, true,  false, false, Char('2'), Command::SelectPanel(SidebarPanel::Search)),
@@ -202,6 +204,20 @@ static BINDINGS: &[Binding] = &[
     b(Sidebar, false, false, false, Char('h'), Command::SidebarCollapse),
     b(Sidebar, false, false, false, Left,      Command::SidebarCollapse),
     b(Sidebar, false, false, false, Char(' '), Command::SidebarToggleExpand),
+
+    // Right-side outline panel focus. Same list-navigation shape as the sidebar:
+    // j/k or arrows move the selection, Enter/l/→ jumps to the entry, h/←/Esc leaves.
+    b(Outline, false, false, false, Char('j'), Command::OutlineDown),
+    b(Outline, false, false, false, Down,      Command::OutlineDown),
+    b(Outline, false, false, false, Char('k'), Command::OutlineUp),
+    b(Outline, false, false, false, Up,        Command::OutlineUp),
+    b(Outline, false, false, false, Enter,     Command::OutlineActivate),
+    b(Outline, false, false, false, Char('l'), Command::OutlineActivate),
+    b(Outline, false, false, false, Right,     Command::OutlineActivate),
+    b(Outline, false, false, false, Char('h'), Command::OutlineCollapse),
+    b(Outline, false, false, false, Left,      Command::OutlineCollapse),
+    b(Outline, false, false, false, Esc,       Command::OutlineCollapse),
+    b(Outline, false, false, false, Char('q'), Command::Quit),
 
     // Editor focus. The editor is non-modal: arrows/Home/End/PageUp-Down navigate,
     // and any unbound printable is text input (the shell inserts it after the keymap

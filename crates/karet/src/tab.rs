@@ -85,6 +85,9 @@ pub enum TabKind {
         /// Cache of the most recently rasterized page — `(page index, image)` — so a
         /// redraw at the same page does not re-rasterize.
         rendered: Option<(usize, Image)>,
+        /// The document's navigation outline (bookmarks), extracted once at open;
+        /// empty when the PDF has none. Drives the right-side outline panel.
+        outline: Vec<karet_pdf::OutlineItem>,
     },
     /// A hex dump of binary content.
     Hex {

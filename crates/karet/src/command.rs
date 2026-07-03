@@ -83,6 +83,16 @@ pub enum Command {
     SidebarCollapse,
     /// Toggle expansion of the selected directory.
     SidebarToggleExpand,
+    /// Show or hide the right-side outline panel (and focus it when shown).
+    ToggleOutline,
+    /// Move the outline selection up.
+    OutlineUp,
+    /// Move the outline selection down.
+    OutlineDown,
+    /// Navigate to the selected outline entry (jump to its page / position).
+    OutlineActivate,
+    /// Leave the outline panel, returning focus to the editor.
+    OutlineCollapse,
     /// Move the caret up one line.
     CaretUp,
     /// Move the caret down one line.
@@ -328,6 +338,11 @@ impl Command {
             Self::SidebarActivate => "Sidebar: Open Selected",
             Self::SidebarCollapse => "Sidebar: Collapse",
             Self::SidebarToggleExpand => "Sidebar: Toggle Expand",
+            Self::ToggleOutline => "View: Toggle Outline",
+            Self::OutlineUp => "Outline: Select Previous",
+            Self::OutlineDown => "Outline: Select Next",
+            Self::OutlineActivate => "Outline: Go to Selected",
+            Self::OutlineCollapse => "Outline: Close",
             Self::CaretUp => "Cursor Up",
             Self::CaretDown => "Cursor Down",
             Self::CaretLeft => "Cursor Left",
@@ -441,6 +456,7 @@ impl Command {
             // Global.
             Self::Quit => "quit",
             Self::ToggleSidebar => "sidebar",
+            Self::ToggleOutline => "outline",
             Self::ToggleFocus => "focus",
             Self::SelectPanel(SidebarPanel::Explorer) => "explorer",
             Self::SelectPanel(SidebarPanel::Search) => "search",
@@ -464,6 +480,8 @@ impl Command {
             Self::SidebarToggleExpand => "expand",
             Self::SelectToggle => "select",
             Self::SelectAll => "select all",
+            // Outline.
+            Self::OutlineActivate => "go to",
             // Editor.
             Self::Undo => "undo",
             Self::Redo => "redo",
@@ -536,6 +554,9 @@ impl Command {
             | Self::CopyRelativePath
             | Self::SidebarUp
             | Self::SidebarDown
+            | Self::OutlineUp
+            | Self::OutlineDown
+            | Self::OutlineCollapse
             | Self::CaretUp
             | Self::CaretDown
             | Self::CaretLeft
@@ -590,6 +611,7 @@ impl Command {
             self,
             Self::Quit
                 | Self::ToggleSidebar
+                | Self::ToggleOutline
                 | Self::ToggleFocus
                 | Self::SelectPanel(_)
                 | Self::OpenQuickOpen
@@ -647,6 +669,7 @@ pub fn palette() -> Vec<Command> {
         Command::SelectPanel(SidebarPanel::Search),
         Command::SelectPanel(SidebarPanel::SourceControl),
         Command::ToggleSidebar,
+        Command::ToggleOutline,
         Command::ToggleFocus,
         Command::OpenFind,
         Command::OpenGlobalSearch,

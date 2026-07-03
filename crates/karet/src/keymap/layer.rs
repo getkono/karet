@@ -13,6 +13,8 @@ pub enum Focus {
     Sidebar,
     /// The active editor tab.
     Editor,
+    /// The right-side outline panel.
+    Outline,
 }
 
 /// The sidebar's active panel.
@@ -63,6 +65,8 @@ pub enum FocusTarget {
     Search,
     /// The source-control panel.
     SourceControl,
+    /// The right-side outline panel.
+    Outline,
 }
 
 impl FocusTarget {
@@ -71,6 +75,7 @@ impl FocusTarget {
     #[must_use]
     pub fn from(focus: Focus, panel: SidebarPanel, tab: EditorTab) -> Self {
         match focus {
+            Focus::Outline => FocusTarget::Outline,
             Focus::Editor => match tab {
                 EditorTab::Diff => FocusTarget::DiffEditor,
                 EditorTab::Oversize => FocusTarget::Oversize,
@@ -97,6 +102,8 @@ pub enum Layer {
     Explorer,
     /// Active when the Source-Control panel has focus.
     SourceControl,
+    /// Active when the right-side outline panel has focus.
+    Outline,
     /// Active when a code or diff editor tab has focus.
     Editor,
     /// Active when a diff editor tab has focus.
@@ -187,6 +194,7 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
         Some(Modal::SearchInput) => &[L::SearchInput, L::Global],
         Some(Modal::SearchList) => &[L::SearchList, L::Global],
         None => match ctx.target {
+            FocusTarget::Outline => &[L::Outline, L::Global],
             FocusTarget::Editor => &[L::Editor, L::Global],
             FocusTarget::DiffEditor => &[L::DiffEditor, L::Editor, L::Global],
             FocusTarget::Oversize => &[L::Oversize, L::Global],

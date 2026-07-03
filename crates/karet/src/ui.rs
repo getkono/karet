@@ -101,6 +101,26 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_sidebar(f, app, &theme, rect);
         draw_sidebar_divider(f, &theme, divider, app.sidebar_resizing);
     }
+
+    // Reserve a right-side column for the outline panel, carved from the main region.
+    // Skipped on a terminal too narrow to keep the editor usable.
+    if app.outline_visible && app.main_rect.width > app.outline_width + 8 {
+        let region = app.main_rect;
+        let cols = Layout::horizontal([
+            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(app.outline_width),
+        ])
+        .split(region);
+        app.main_rect = cols[0];
+        app.outline_rect = cols[2];
+        draw_sidebar_divider(f, &theme, cols[1], false);
+        draw_outline(f, app, &theme, cols[2]);
+    } else {
+        app.outline_rect = Rect::default();
+        app.outline_content_rect = Rect::default();
+    }
+
     draw_panes(f, app, &theme, app.main_rect);
     draw_drop_preview(f, app, &theme);
     draw_status(f, app, &theme, rows[1]);
@@ -523,6 +543,64 @@ fn draw_pane_breadcrumb(f: &mut Frame, tab: Option<&Tab>, theme: &Theme, area: R
         .unwrap_or_default();
     let style = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
     f.render_widget(Paragraph::new(Line::styled(crumbs, style)), area);
+}
+
+/// Draw the right-side outline panel: a header over the active tab's navigation
+/// outline (a depth-indented, selectable list). Records the content rect and syncs
+/// the selection length for keyboard navigation and mouse hit-testing.
+fn draw_outline(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    let header = rows[0];
+    let content = rows[1];
+    app.outline_content_rect = content;
+
+    f.render_widget(
+        Block::default().style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui())),
+        area,
+    );
+    f.render_widget(
+        Paragraph::new(" OUTLINE").style(
+            Style::default()
+                .fg(theme.role(ThemeRole::LineNumber).to_ratatui())
+                .add_modifier(Modifier::BOLD),
+        ),
+        header,
+    );
+
+    let entries = app.active_outline_rows();
+    app.outline_sel.set_len(entries.len());
+    if entries.is_empty() {
+        f.render_widget(
+            Paragraph::new(" No outline")
+                .style(Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui())),
+            content,
+        );
+        return;
+    }
+
+    let focused = app.focus == Focus::Outline;
+    let cursor = app.outline_sel.cursor();
+    let sel_bg = if focused {
+        ThemeRole::Selection
+    } else {
+        ThemeRole::HoverHighlight
+    };
+    let items: Vec<ListItem> = entries
+        .iter()
+        .map(|row| {
+            let indent = "  ".repeat(row.depth);
+            ListItem::new(format!(" {indent}{}", row.label))
+        })
+        .collect();
+    let list = List::new(items)
+        .style(Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui()))
+        .highlight_style(Style::default().bg(theme.role(sel_bg).to_ratatui()));
+    let mut state = ListState::default();
+    *state.offset_mut() = app.outline_scroll;
+    state.select(Some(cursor));
+    f.render_stateful_widget(list, content, &mut state);
+    // Remember where the list settled so a click maps to the right entry next frame.
+    app.outline_scroll = state.offset();
 }
 
 fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
@@ -1100,6 +1178,7 @@ fn draw_pane_content(
             page_count,
             page,
             rendered,
+            ..
         } => {
             let page_count = (*page_count).max(1);
             let idx = (*page).min(page_count - 1);
@@ -1399,6 +1478,7 @@ fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let focus = match app.focus {
         Focus::Sidebar => "SIDEBAR",
         Focus::Editor => "EDITOR",
+        Focus::Outline => "OUTLINE",
     };
     let bar = Style::default()
         .bg(theme.role(ThemeRole::StatusBarBackground).to_ratatui())

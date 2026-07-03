@@ -171,6 +171,7 @@ fn open_document(path: &Path, bytes: Vec<u8>, len: u64) -> Tab {
     match karet_pdf::Document::load(bytes) {
         Ok(doc) => {
             let page_count = doc.page_count();
+            let outline = doc.outline();
             Tab::new(
                 title(path),
                 TabKind::Document {
@@ -179,6 +180,7 @@ fn open_document(path: &Path, bytes: Vec<u8>, len: u64) -> Tab {
                     page_count,
                     page: 0,
                     rendered: None,
+                    outline,
                 },
             )
         },

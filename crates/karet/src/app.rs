@@ -94,6 +94,8 @@ use crate::keymap::Resolved;
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
 use crate::notify::NotificationCenter;
+use crate::outline::OutlineRow;
+use crate::outline::OutlineTarget;
 use crate::overlay::Overlay;
 use crate::overlay::OverlayEvent;
 use crate::render::FileView;
@@ -272,6 +274,9 @@ pub(crate) const DEFAULT_SIDEBAR_WIDTH: u16 = 30;
 /// collapses the sidebar entirely.
 pub(crate) const SIDEBAR_MIN_WIDTH: u16 = 16;
 
+/// The width of the right-side outline panel in columns.
+pub(crate) const OUTLINE_WIDTH: u16 = 30;
+
 /// Load the next commit page once the Source-Control viewport comes within this many
 /// rows of the end of the loaded log.
 const COMMIT_AUTOLOAD_THRESHOLD: usize = 3;
@@ -395,6 +400,19 @@ pub struct App {
     pub(crate) hover: Option<(u16, u16)>,
     /// The header panel-switcher cells (`1 2 3`) from the last frame.
     pub(crate) panel_hits: Vec<(u16, u16, SidebarPanel)>,
+    /// Whether the right-side outline panel is shown.
+    pub(crate) outline_visible: bool,
+    /// The outline panel's row selection, driving keyboard navigation.
+    pub(crate) outline_sel: ListSelection,
+    /// The outline panel rect from the last frame (mouse hit-testing).
+    pub(crate) outline_rect: Rect,
+    /// The outline panel's content area (below its header) from the last frame.
+    pub(crate) outline_content_rect: Rect,
+    /// The outline panel width in columns.
+    pub(crate) outline_width: u16,
+    /// The outline list's scroll offset (first visible row) from the last frame, so a
+    /// click maps to the correct entry even when the list is scrolled.
+    pub(crate) outline_scroll: usize,
     /// The explorer header toolbar-button cells `(start, end, command)` from the last
     /// frame (new file / new folder / refresh / collapse all).
     pub(crate) header_action_hits: Vec<(u16, u16, Command)>,
@@ -527,6 +545,12 @@ impl App {
             sidebar_content_rect: Rect::default(),
             hover: None,
             panel_hits: Vec::new(),
+            outline_visible: false,
+            outline_sel: ListSelection::new(0),
+            outline_rect: Rect::default(),
+            outline_content_rect: Rect::default(),
+            outline_width: OUTLINE_WIDTH,
+            outline_scroll: 0,
             header_action_hits: Vec::new(),
             scm_row_map: Vec::new(),
             scm_offset: 0,
@@ -1211,6 +1235,11 @@ impl App {
             Command::SidebarActivate => self.sidebar_activate(),
             Command::SidebarCollapse => self.sidebar_collapse(),
             Command::SidebarToggleExpand => self.sidebar_toggle_expand(),
+            Command::ToggleOutline => self.toggle_outline(),
+            Command::OutlineUp => self.outline_step(-1),
+            Command::OutlineDown => self.outline_step(1),
+            Command::OutlineActivate => self.outline_activate(),
+            Command::OutlineCollapse => self.outline_collapse(),
             Command::CaretUp => self.caret_motion(false, EditorState::move_up),
             Command::CaretDown => self.caret_motion(false, EditorState::move_down),
             Command::CaretLeft => self.caret_motion(false, EditorState::move_left),
@@ -1341,7 +1370,110 @@ impl App {
         self.focus = match self.focus {
             Focus::Sidebar => Focus::Editor,
             Focus::Editor => Focus::Sidebar,
+            // Toggling out of the outline returns to the editor it annotates.
+            Focus::Outline => Focus::Editor,
         };
+    }
+
+    /// The flattened outline rows for the active tab, or empty when it has none.
+    pub(crate) fn active_outline_rows(&self) -> Vec<OutlineRow> {
+        match self.tabs.get(self.active).map(|t| &t.kind) {
+            Some(TabKind::Document { outline, .. }) => {
+                crate::outline::flatten(&crate::outline::from_pdf(outline))
+            },
+            _ => Vec::new(),
+        }
+    }
+
+    /// Keep the outline row selection's length in step with the active tab's outline.
+    fn sync_outline_selection(&mut self) {
+        let n = self.active_outline_rows().len();
+        self.outline_sel.set_len(n);
+    }
+
+    /// Show or hide the right-side outline panel. Showing it focuses the panel (so it
+    /// is navigable at once); hiding it returns focus to the editor.
+    fn toggle_outline(&mut self) {
+        self.outline_visible = !self.outline_visible;
+        if self.outline_visible {
+            self.sync_outline_selection();
+            // Focus the panel for immediate navigation, but only when it has content —
+            // an empty "No outline" panel should not steal focus from the editor.
+            if !self.active_outline_rows().is_empty() {
+                self.focus = Focus::Outline;
+            }
+        } else if self.focus == Focus::Outline {
+            self.focus = Focus::Editor;
+        }
+    }
+
+    /// Move the outline selection by `delta` rows.
+    fn outline_step(&mut self, delta: i32) {
+        self.sync_outline_selection();
+        self.outline_sel.move_by(delta);
+    }
+
+    /// Leave the outline panel, returning focus to the editor (the panel stays open).
+    fn outline_collapse(&mut self) {
+        self.focus = Focus::Editor;
+    }
+
+    /// Navigate to the selected outline entry: jump a document to its page, or move
+    /// the editor caret to its position.
+    fn outline_activate(&mut self) {
+        let rows = self.active_outline_rows();
+        let Some(target) = rows.get(self.outline_sel.cursor()).and_then(|r| r.target) else {
+            return;
+        };
+        match target {
+            OutlineTarget::Page(page) => self.set_document_page(page),
+            OutlineTarget::Text(pos) => {
+                // Clone the buffer (O(1) rope share) so the editor borrow is free of the
+                // tab-kind borrow.
+                let buffer = match self.tabs.get(self.active).map(|t| &t.kind) {
+                    Some(TabKind::Code { buffer, .. }) => Some(buffer.clone()),
+                    _ => None,
+                };
+                if let (Some(buffer), Some(tab)) = (buffer, self.tabs.get_mut(self.active)) {
+                    tab.editor.goto(&buffer, pos);
+                }
+            },
+        }
+    }
+
+    /// Route a left-click in the outline panel: focus it, select the clicked row, and
+    /// navigate to it. `outline_scroll` (recorded during draw) maps the screen row to
+    /// the right entry even when the list is scrolled.
+    fn handle_outline_click(&mut self, row_y: u16) {
+        self.focus = Focus::Outline;
+        let top = self.outline_content_rect.y;
+        if row_y < top {
+            return; // a click on the header just focuses the panel
+        }
+        let rows = self.active_outline_rows();
+        self.outline_sel.set_len(rows.len());
+        let idx = self.outline_scroll + usize::from(row_y - top);
+        if idx >= rows.len() {
+            return;
+        }
+        self.outline_sel.move_to(idx);
+        self.outline_activate();
+    }
+
+    /// Set the active document tab's current page (clamped to the page range).
+    fn set_document_page(&mut self, page: usize) {
+        if let Some(Tab {
+            kind:
+                TabKind::Document {
+                    page: current,
+                    page_count,
+                    ..
+                },
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            *current = page.min(page_count.saturating_sub(1));
+        }
     }
 
     /// Route a mouse-wheel notch over the sidebar: the Source-Control panel scrolls
@@ -2670,11 +2802,17 @@ impl App {
         }
         let point = (mouse.column, mouse.row);
         let in_sidebar = self.sidebar_visible && rect_contains(self.sidebar_rect, point);
+        let in_outline = self.outline_visible && rect_contains(self.outline_rect, point);
         match mouse.kind {
+            MouseEventKind::ScrollDown if in_outline => self.outline_step(1),
+            MouseEventKind::ScrollUp if in_outline => self.outline_step(-1),
             MouseEventKind::ScrollDown if in_sidebar => self.sidebar_wheel(3, mouse.row),
             MouseEventKind::ScrollUp if in_sidebar => self.sidebar_wheel(-3, mouse.row),
             MouseEventKind::ScrollDown => self.scroll_lines(3),
             MouseEventKind::ScrollUp => self.scroll_lines(-3),
+            MouseEventKind::Down(MouseButton::Left) if in_outline => {
+                self.handle_outline_click(mouse.row);
+            },
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.sidebar_visible && mouse.column == self.sidebar_divider_x {
                     // Grab the sidebar-width divider to start a resize drag.
@@ -3761,6 +3899,62 @@ mod tests {
             vec![change("b.rs", StatusKind::Modified)],
             false,
         )
+    }
+
+    #[test]
+    fn outline_panel_toggles_and_jumps_to_a_bookmarked_page() {
+        // A 2-page PDF whose single bookmark targets the second page (index 1). Like
+        // the karet-pdf fixtures, it has no xref table, so hayro parses it via its
+        // brute-force fallback.
+        const PDF: &[u8] = b"%PDF-1.4\n\
+1 0 obj<</Type/Catalog/Pages 2 0 R/Outlines 5 0 R>>endobj\n\
+2 0 obj<</Type/Pages/Kids[3 0 R 4 0 R]/Count 2>>endobj\n\
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n\
+4 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n\
+5 0 obj<</Type/Outlines/First 6 0 R/Last 6 0 R/Count 1>>endobj\n\
+6 0 obj<</Title(Page Two)/Parent 5 0 R/Dest[4 0 R/Fit]>>endobj\n\
+trailer<</Size 7/Root 1 0 R>>\n%%EOF";
+        let Ok(doc) = karet_pdf::Document::load(PDF.to_vec()) else {
+            return;
+        };
+        let page_count = doc.page_count();
+        let outline = doc.outline();
+        let mut app = app();
+        app.tabs.push(Tab::new(
+            "doc.pdf",
+            TabKind::Document {
+                path: PathBuf::from("doc.pdf"),
+                doc,
+                page_count,
+                page: 0,
+                rendered: None,
+                outline,
+            },
+        ));
+        app.active = app.tabs.len() - 1;
+
+        // The panel is populated from the bookmark.
+        let rows = app.active_outline_rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows.first().map(|r| r.label.as_str()), Some("Page Two"));
+
+        // Toggling shows and focuses the panel (it has content).
+        app.dispatch(Command::ToggleOutline);
+        assert!(app.outline_visible);
+        assert_eq!(app.focus, Focus::Outline);
+
+        // Activating the bookmark jumps the document to its page.
+        app.dispatch(Command::OutlineActivate);
+        let page = match app.tabs.get(app.active).map(|t| &t.kind) {
+            Some(TabKind::Document { page, .. }) => Some(*page),
+            _ => None,
+        };
+        assert_eq!(page, Some(1));
+
+        // Toggling again hides the panel and returns focus to the editor.
+        app.dispatch(Command::ToggleOutline);
+        assert!(!app.outline_visible);
+        assert_eq!(app.focus, Focus::Editor);
     }
 
     #[test]
