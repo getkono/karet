@@ -1190,6 +1190,11 @@ fn draw_pane_content(
         },
         TabKind::Diff { file, view, scroll } => draw_diff(f, theme, area, file, *view, scroll),
         TabKind::Blame { groups, scroll, .. } => draw_blame(f, theme, area, groups, scroll),
+        TabKind::Graph {
+            title,
+            view,
+            scroll,
+        } => draw_graph(f, theme, area, title, view, scroll),
         TabKind::Hex { bytes, scroll, .. } => {
             let rows = bytes.len().div_ceil(16);
             *scroll = (*scroll).min(rows.saturating_sub(1));
@@ -1354,6 +1359,73 @@ fn draw_diff(
 
 /// Render the semantic-blame view: each commit group as a header (line range, short
 /// hash, author, date) followed by its full commit message — the "why".
+/// Draw a code-visualization graph as a scrollable indented tree: a DFS from the
+/// graph's roots along dependency edges, with box-drawing depth guides. Cycles and
+/// already-expanded nodes are shown once and marked `⟲` rather than re-expanded.
+fn draw_graph(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    title: &str,
+    view: &karet_core::GraphView,
+    scroll: &mut u16,
+) {
+    use karet_core::GraphEdgeKind;
+
+    let header_style = Style::default()
+        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+        .add_modifier(Modifier::BOLD);
+    let guide = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let name_style = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
+    let badge_style = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let revisit_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
+
+    // Flatten the graph to indented rows (DFS from roots, cycle-safe).
+    let mut rows: Vec<Line> = vec![Line::styled(
+        format!(" ⧉ {title} — dependency graph"),
+        header_style,
+    )];
+    let mut expanded: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut stack: Vec<(&str, usize)> = view
+        .roots
+        .iter()
+        .rev()
+        .map(|r| (r.as_str(), 0usize))
+        .collect();
+    while let Some((id, depth)) = stack.pop() {
+        let Some(node) = view.nodes.iter().find(|n| n.id == id) else {
+            continue;
+        };
+        let first_visit = expanded.insert(id);
+        let children = view.successors(id, GraphEdgeKind::Dependency);
+        let mut spans = vec![Span::raw(" ")];
+        for _ in 0..depth {
+            spans.push(Span::styled("\u{2502} ", guide));
+        }
+        spans.push(Span::styled("\u{25CF} ", guide));
+        spans.push(Span::styled(node.label.clone(), name_style));
+        if let Some(badge) = &node.badge {
+            spans.push(Span::styled(format!("  {badge}"), badge_style));
+        }
+        if !first_visit && !children.is_empty() {
+            // Already expanded elsewhere (or a cycle): show but don't recurse again.
+            spans.push(Span::styled("  \u{27F2}", revisit_style));
+        }
+        rows.push(Line::from(spans));
+        if first_visit {
+            for child in children.iter().rev() {
+                stack.push((child, depth + 1));
+            }
+        }
+    }
+
+    let height = area.height as usize;
+    let max_scroll = rows.len().saturating_sub(height);
+    *scroll = (*scroll).min(max_scroll as u16);
+    let para = Paragraph::new(rows).scroll((*scroll, 0));
+    f.render_widget(para, area);
+}
+
 fn draw_blame(
     f: &mut Frame,
     theme: &Theme,

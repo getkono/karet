@@ -1451,6 +1451,10 @@ impl App {
                 self.pending_swaps = None;
                 self.send_command(SessionCommand::DiscardSwaps);
             },
+            Command::ShowDependencyGraph => {
+                self.status = Some("building dependency graph…".to_string());
+                self.send_command(SessionCommand::DependencyGraph);
+            },
             Command::SearchSelectUp => self.search_select(-1),
             Command::SearchSelectDown => self.search_select(1),
             Command::SearchOpen => self.open_selected_result(),
@@ -2591,7 +2595,9 @@ impl App {
                 let next = (i64::from(tab.editor.scroll_line) + i64::from(delta)).clamp(0, max);
                 tab.editor.scroll_line = next as u32;
             },
-            TabKind::Diff { scroll, .. } | TabKind::Blame { scroll, .. } => {
+            TabKind::Diff { scroll, .. }
+            | TabKind::Blame { scroll, .. }
+            | TabKind::Graph { scroll, .. } => {
                 let next = (i64::from(*scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
                 *scroll = next as u16;
             },
@@ -2625,7 +2631,9 @@ impl App {
                     buffer.line_count().saturating_sub(1) as u32
                 };
             },
-            TabKind::Diff { scroll, .. } | TabKind::Blame { scroll, .. } => {
+            TabKind::Diff { scroll, .. }
+            | TabKind::Blame { scroll, .. }
+            | TabKind::Graph { scroll, .. } => {
                 *scroll = if top { 0 } else { u16::MAX };
             },
             TabKind::Hex { bytes, scroll, .. } => {
@@ -3741,6 +3749,11 @@ impl App {
                 );
             },
             SessionEvent::SwapsFound { swaps } => self.arm_swap_recovery(swaps),
+            SessionEvent::GraphReady { title, view, .. } => {
+                let count = view.nodes.len();
+                self.push_tab(Tab::graph(title, view));
+                self.status = Some(format!("dependency graph: {count} package(s)"));
+            },
             _ => {},
         }
     }

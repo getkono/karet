@@ -128,6 +128,16 @@ pub enum TabKind {
         /// Vertical scroll offset (display rows).
         scroll: u16,
     },
+    /// A read-only code-visualization graph (dependency or usage), rendered as an
+    /// indented tree.
+    Graph {
+        /// A short title for the view (workspace or symbol name).
+        title: String,
+        /// The neutral graph to render.
+        view: karet_core::GraphView,
+        /// Vertical scroll offset (display rows).
+        scroll: u16,
+    },
 }
 
 /// An open tab: a title, its content, and per-view editor state.
@@ -173,6 +183,20 @@ impl Tab {
         Self::new("Welcome", TabKind::Welcome)
     }
 
+    /// A read-only visualization tab rendering `view` as an indented tree.
+    #[must_use]
+    pub fn graph(title: impl Into<String>, view: karet_core::GraphView) -> Self {
+        let title = title.into();
+        Self::new(
+            title.clone(),
+            TabKind::Graph {
+                title,
+                view,
+                scroll: 0,
+            },
+        )
+    }
+
     /// The file path backing this tab, if any.
     #[must_use]
     pub fn path(&self) -> Option<&Path> {
@@ -184,7 +208,7 @@ impl Tab {
             | TabKind::Placeholder { path, .. }
             | TabKind::Blame { path, .. } => Some(path),
             TabKind::Diff { file, .. } => Some(&file.change.path),
-            TabKind::Welcome => None,
+            TabKind::Welcome | TabKind::Graph { .. } => None,
         }
     }
 
@@ -205,6 +229,7 @@ impl Tab {
             TabKind::Placeholder { .. } => "preview",
             TabKind::Diff { file, .. } => file.language,
             TabKind::Blame { .. } => "blame",
+            TabKind::Graph { .. } => "graph",
             TabKind::Welcome => "",
         }
     }
