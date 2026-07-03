@@ -1,0 +1,350 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Settings",
+  "description": "The full, validated karet configuration. Load it with\n[`crate::config::load`]; the sane baseline is [`Settings::default`].",
+  "type": "object",
+  "properties": {
+    "editor": {
+      "description": "Text-editing behaviour (indentation, gutters, on-save fixups).",
+      "$ref": "#/$defs/Editor"
+    },
+    "files": {
+      "description": "File handling (auto-save, encoding, line endings, exclusions).",
+      "$ref": "#/$defs/Files"
+    },
+    "git": {
+      "description": "Source-control integration.",
+      "$ref": "#/$defs/Git"
+    },
+    "search": {
+      "description": "Workspace search behaviour.",
+      "$ref": "#/$defs/Search"
+    },
+    "spellcheck": {
+      "description": "Spell-checking of comments and strings.",
+      "$ref": "#/$defs/Spellcheck"
+    },
+    "workbench": {
+      "description": "UI shell appearance (theme, icons, startup panel).",
+      "$ref": "#/$defs/Workbench"
+    }
+  },
+  "required": [
+    "editor",
+    "files",
+    "workbench",
+    "search",
+    "spellcheck",
+    "git"
+  ],
+  "$defs": {
+    "AutoSave": {
+      "description": "When dirty buffers are written back to disk automatically.",
+      "oneOf": [
+        {
+          "description": "Never auto-save; the user saves explicitly.",
+          "type": "string",
+          "const": "off"
+        },
+        {
+          "description": "Save after `autoSaveDelay` milliseconds of inactivity.",
+          "type": "string",
+          "const": "afterDelay"
+        },
+        {
+          "description": "Save when the editor loses focus / the active document changes.",
+          "type": "string",
+          "const": "onFocusChange"
+        }
+      ]
+    },
+    "Editor": {
+      "description": "`editor.*` — text-editing behaviour.",
+      "type": "object",
+      "properties": {
+        "cursorLine": {
+          "description": "Highlight the line the caret is on.",
+          "type": "boolean",
+          "default": true
+        },
+        "formatOnSave": {
+          "description": "Run the configured formatter on save.",
+          "type": "boolean",
+          "default": false
+        },
+        "insertFinalNewline": {
+          "description": "Ensure the file ends with a single trailing newline on save.",
+          "type": "boolean",
+          "default": true
+        },
+        "insertSpaces": {
+          "description": "Insert spaces instead of a hard tab when indenting.",
+          "type": "boolean",
+          "default": true
+        },
+        "lineNumbers": {
+          "description": "How the line-number gutter is numbered.",
+          "$ref": "#/$defs/LineNumbers",
+          "default": "on"
+        },
+        "rulers": {
+          "description": "Columns to draw vertical rulers at (empty = none).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "integer",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0
+          }
+        },
+        "scrollOff": {
+          "description": "Keep at least this many lines visible above and below the caret.",
+          "type": "integer",
+          "format": "uint16",
+          "default": 3,
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "tabSize": {
+          "description": "Number of columns a tab renders as / spaces inserted for one indent level.",
+          "type": "integer",
+          "format": "uint8",
+          "default": 4,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "trimTrailingWhitespace": {
+          "description": "Strip trailing whitespace from each line on save.",
+          "type": "boolean",
+          "default": true
+        },
+        "wordWrap": {
+          "description": "Soft-wrap long lines instead of scrolling horizontally.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "Eol": {
+      "description": "Line-ending style used when saving.",
+      "oneOf": [
+        {
+          "description": "Preserve the file's existing endings (LF for new files).",
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "description": "Line feed (`\\n`).",
+          "type": "string",
+          "const": "lf"
+        },
+        {
+          "description": "Carriage return + line feed (`\\r\\n`).",
+          "type": "string",
+          "const": "crlf"
+        }
+      ]
+    },
+    "Files": {
+      "description": "`files.*` — file handling.",
+      "type": "object",
+      "properties": {
+        "autoSave": {
+          "description": "When to write dirty buffers back to disk automatically.",
+          "$ref": "#/$defs/AutoSave",
+          "default": "off"
+        },
+        "autoSaveDelay": {
+          "description": "Delay in milliseconds before `afterDelay` auto-save fires.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 1000,
+          "minimum": 0
+        },
+        "encoding": {
+          "description": "Default text encoding label (informational; karet edits UTF-8).",
+          "type": "string",
+          "default": "utf-8"
+        },
+        "eol": {
+          "description": "Line-ending style used when saving.",
+          "$ref": "#/$defs/Eol",
+          "default": "auto"
+        },
+        "exclude": {
+          "description": "Glob patterns hidden from the file explorer.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "watcherExclude": {
+          "description": "Glob patterns excluded from the filesystem watcher.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Git": {
+      "description": "`git.*` — source-control integration.",
+      "type": "object",
+      "properties": {
+        "blame": {
+          "description": "Show inline blame for the current line.",
+          "type": "boolean",
+          "default": false
+        },
+        "decorations": {
+          "description": "Show gutter change decorations and file-tree status colouring.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "IconStyleSetting": {
+      "description": "Icon glyph set (mirrors `karet_filetype::IconStyle`).",
+      "oneOf": [
+        {
+          "description": "Rich Nerd Font glyphs (needs a patched font).",
+          "type": "string",
+          "const": "nerdFont"
+        },
+        {
+          "description": "1-cell Unicode geometric glyphs.",
+          "type": "string",
+          "const": "unicode"
+        },
+        {
+          "description": "Plain ASCII (maximally portable).",
+          "type": "string",
+          "const": "ascii"
+        }
+      ]
+    },
+    "LineNumbers": {
+      "description": "How the line-number gutter is numbered.",
+      "oneOf": [
+        {
+          "description": "Absolute line numbers.",
+          "type": "string",
+          "const": "on"
+        },
+        {
+          "description": "No line-number gutter.",
+          "type": "string",
+          "const": "off"
+        },
+        {
+          "description": "Numbers relative to the caret line (the caret line shows its absolute number).",
+          "type": "string",
+          "const": "relative"
+        }
+      ]
+    },
+    "Search": {
+      "description": "`search.*` — workspace search behaviour.",
+      "type": "object",
+      "properties": {
+        "exclude": {
+          "description": "Glob patterns excluded from workspace search.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "smartCase": {
+          "description": "Case-insensitive unless the query contains an uppercase letter.",
+          "type": "boolean",
+          "default": true
+        },
+        "useIgnoreFiles": {
+          "description": "Honour `.gitignore` / `.ignore` files when searching.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "Spellcheck": {
+      "description": "`spellcheck.*` — spell-checking of comments and strings.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable spell-checking.",
+          "type": "boolean",
+          "default": false
+        },
+        "language": {
+          "description": "Dictionary language (e.g. `\"en_US\"`).",
+          "type": "string",
+          "default": "en_US"
+        },
+        "words": {
+          "description": "Extra words treated as correctly spelled.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "StartupPanel": {
+      "description": "Which sidebar panel is shown at startup.",
+      "oneOf": [
+        {
+          "description": "The file explorer.",
+          "type": "string",
+          "const": "explorer"
+        },
+        {
+          "description": "The search panel.",
+          "type": "string",
+          "const": "search"
+        },
+        {
+          "description": "The source-control panel.",
+          "type": "string",
+          "const": "sourceControl"
+        },
+        {
+          "description": "Start with the sidebar collapsed.",
+          "type": "string",
+          "const": "none"
+        }
+      ]
+    },
+    "Workbench": {
+      "description": "`workbench.*` — UI shell appearance.",
+      "type": "object",
+      "properties": {
+        "colorTheme": {
+          "description": "Colour theme: the built-in name `\"dark\"`, or a path to a `.tmTheme` /\nVS Code `.json` theme file.",
+          "type": "string",
+          "default": "dark"
+        },
+        "iconStyle": {
+          "description": "Icon glyph set for the file tree and activity bar.",
+          "$ref": "#/$defs/IconStyleSetting",
+          "default": "nerdFont"
+        },
+        "startupPanel": {
+          "description": "Which sidebar panel is shown at startup (`none` starts collapsed).",
+          "$ref": "#/$defs/StartupPanel",
+          "default": "explorer"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
