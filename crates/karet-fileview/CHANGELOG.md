@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/getkono/karet/compare/karet-fileview-v0.1.0...karet-fileview-v0.2.0) - 2026-07-04
+
+### Added
+
+- *(fileview)* render PDF pages via Kitty graphics
+
 ## [0.1.0](https://github.com/getkono/karet/releases/tag/karet-fileview-v0.1.0) - 2026-07-02
 
 ### Added

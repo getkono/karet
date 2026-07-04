@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/getkono/karet/compare/karet-vcs-v0.1.0...karet-vcs-v0.2.0) - 2026-07-04
+
+### Added
+
+- *(vcs)* capture commit parents for DAG rendering
+- *(app)* remember diff layout for new diffs
+- *(vcs,session)* incremental commit-log reconciliation on ref change
+- *(karet-vcs)* expose paginated commit log
+
 ## [0.1.0](https://github.com/getkono/karet/releases/tag/karet-vcs-v0.1.0) - 2026-07-02
 
 ### Added

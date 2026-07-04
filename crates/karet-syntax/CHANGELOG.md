@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/getkono/karet/compare/karet-syntax-v0.1.0...karet-syntax-v0.2.0) - 2026-07-04
+
+### Added
+
+- *(editor,session,app)* render + toggle code folds
+- *(syntax)* language-agnostic tree-sitter fold regions
+
 ## [0.1.0](https://github.com/getkono/karet/releases/tag/karet-syntax-v0.1.0) - 2026-07-02
 
 ### Added

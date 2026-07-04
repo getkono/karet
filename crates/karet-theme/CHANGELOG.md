@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/getkono/karet/compare/karet-theme-v0.1.0...karet-theme-v0.2.0) - 2026-07-04
+
+### Added
+
+- *(core,theme,widgets,app)* explorer highlights track active/focused editors
+- *(theme)* add Muted + file-icon category roles
+- *(karet)* hover highlight in explorer and source control
+
 ## [0.1.0](https://github.com/getkono/karet/releases/tag/karet-theme-v0.1.0) - 2026-07-02
 
 ### Added
