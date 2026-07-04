@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/getkono/karet/compare/karet-search-v0.1.0...karet-search-v0.2.0) - 2026-07-04
+
+### Added
+
+- *(search)* implement literal and regex find/replace
+
 ## [0.1.0](https://github.com/getkono/karet/releases/tag/karet-search-v0.1.0) - 2026-07-02
 
 ### Added
