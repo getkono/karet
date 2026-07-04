@@ -24,7 +24,14 @@ keywords     = ["tui", "editor", "ratatui", "terminal"]
 categories   = ["text-editors", "command-line-utilities"]
 
 [workspace.dependencies]
-# --- internal crates: path + version → publishable AND version-synced ---
+# --- internal crates ---
+# Published crates use `path + version` so they are independently publishable yet
+# version-synced. The `publish = false` internal crates are `path` only (no version):
+# every crate shares one lockstep version via `version.workspace = true`, and release-plz
+# rewrites the `version =` pin here only for crates it releases — so a pin on an
+# unpublished crate would go stale on the next bump (`karet-cbor = "^0.1.0"` can't match
+# the bumped `0.2.0` package) and break `cargo update`. Path-only keeps them resolvable.
+# (`karet-pdf` keeps its version: it IS published — `karet-fileview` depends on it.)
 karet-core       = { path = "crates/karet-core",       version = "0.1.0" }
 karet-filetype   = { path = "crates/karet-filetype",   version = "0.1.0" }
 karet-text       = { path = "crates/karet-text",       version = "0.1.0" }
@@ -32,21 +39,21 @@ karet-treesitter = { path = "crates/karet-treesitter", version = "0.1.0" }
 karet-syntax     = { path = "crates/karet-syntax",     version = "0.1.0" }
 karet-theme      = { path = "crates/karet-theme",      version = "0.1.0" }
 karet-diff       = { path = "crates/karet-diff",       version = "0.1.0" }
-karet-markdown   = { path = "crates/karet-markdown",   version = "0.1.0" }
-karet-cbor       = { path = "crates/karet-cbor",       version = "0.1.0" }
-karet-terminal   = { path = "crates/karet-terminal",   version = "0.1.0" }
+karet-markdown   = { path = "crates/karet-markdown" }
+karet-cbor       = { path = "crates/karet-cbor" }
+karet-terminal   = { path = "crates/karet-terminal" }
 karet-lsp        = { path = "crates/karet-lsp",        version = "0.1.0" }
 karet-dap        = { path = "crates/karet-dap",        version = "0.1.0" }
 karet-vcs        = { path = "crates/karet-vcs",        version = "0.1.0" }
 karet-search     = { path = "crates/karet-search",     version = "0.1.0" }
-karet-fuzzy      = { path = "crates/karet-fuzzy",      version = "0.1.0" }
-karet-widgets    = { path = "crates/karet-widgets",    version = "0.1.0" }
+karet-fuzzy      = { path = "crates/karet-fuzzy" }
+karet-widgets    = { path = "crates/karet-widgets" }
 karet-editor     = { path = "crates/karet-editor",     version = "0.1.0" }
 karet-fileview   = { path = "crates/karet-fileview",   version = "0.1.0" }
 karet-pdf        = { path = "crates/karet-pdf",        version = "0.1.0" }
-karet-session    = { path = "crates/karet-session",    version = "0.1.0" }
-karet-watch      = { path = "crates/karet-watch",      version = "0.1.0" }
-karet-graph      = { path = "crates/karet-graph",      version = "0.1.0" }
+karet-session    = { path = "crates/karet-session" }
+karet-watch      = { path = "crates/karet-watch" }
+karet-graph      = { path = "crates/karet-graph" }
 # blameline is a standalone library on its OWN SemVer line (NOT the workspace lockstep);
 # pin its independent version here. See crates/blameline/README.md.
 blameline        = { path = "crates/blameline",         version = "1.0.0" }
