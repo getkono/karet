@@ -1,7 +1,6 @@
 [package]
 name        = "karet-pdf"
 description = "Headless, pure-Rust PDF page rasterization (via hayro) producing RGBA pixels for terminal image rendering."
-publish     = false
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

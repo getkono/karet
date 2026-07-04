@@ -27,8 +27,8 @@ pulling in unrelated heavy deps. Only the **app** is exempt from these rules.
   own crate — e.g. terminal-image rendering, the keymap engine, the clipboard.
 - **Published to crates.io**: `karet-core`, `karet-filetype`, `karet-treesitter`,
   `karet-diff`, `karet-lsp`, `karet-dap`, `karet-vcs`, `karet-search`, `karet-text`,
-  `karet-syntax`, `karet-theme`, `karet-editor`, `karet-fileview`. Everything else
-  is `publish = false`.
+  `karet-syntax`, `karet-theme`, `karet-editor`, `karet-fileview`, `karet-pdf`.
+  Everything else is `publish = false`.
 
 ## Versioning
 
@@ -55,7 +55,7 @@ published to crates.io (everything else is `publish = false`).
 | `karet-graph` | engine | — | DAG lane-assignment layout + rail renderer (`view` feat) for the commit graph & code visualizations; consumes `karet_core::GraphView` |
 | `karet-markdown` | engine | — | markdown render model (`view` + `highlight` feats) |
 | `karet-cbor` | engine | — | CBOR decode/encode ↔ editable diagnostic-notation text (via `ciborium`); no presentation |
-| `karet-pdf` | engine | — | pure-Rust PDF page → RGBA rasterization (via `hayro`); no presentation |
+| `karet-pdf` | engine | ✓ | pure-Rust PDF page → RGBA rasterization (via `hayro`); no presentation |
 | `karet-terminal` | engine | — | VT/PTY emulator, scrollback, OSC 133 (`view` feat) |
 | `karet-lsp` | engine | ✓ | async LSP client → core models (headless; ratatui popups live in `karet-widgets`) |
 | `karet-dap` | engine | ✓ | async DAP client → breakpoint decorations (`view` feat = panels) |
