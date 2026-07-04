@@ -1,9 +1,20 @@
 name: Release-plz
 
 # Automates version bumps, CHANGELOGs, git tags, GitHub Releases, and crates.io
-# publishing. On every push to master:
-#   * release-plz-pr     opens/updates a "release" PR (version bumps + CHANGELOG)
-#   * release-plz-release publishes crates whose version isn't on crates.io yet
+# publishing — and then fans out to prebuilt binaries + the Homebrew tap.
+#
+# On every push to master (or a manual `workflow_dispatch`):
+#   * release-plz-release  publishes crates whose version isn't on crates.io yet,
+#                          cutting each one's git tag + GitHub Release
+#   * release-plz-pr       opens/updates the next "release" PR (version bump + CHANGELOG)
+#   * build / create-release / update-tap  — only when a release was actually cut —
+#                          cross-compile the `karet` binary for four targets, cut a
+#                          single `v{version}` tag + GitHub Release for the app, attach
+#                          the binaries, and refresh Formula/karet.rb in getkono/homebrew-tap.
+#
+# release-plz does NOT tag the `karet` app itself (it is `publish = false`); the
+# `create-release` job below owns the `v{version}` tag/Release that the Homebrew
+# binaries attach to.
 #
 # ONE-TIME BOOTSTRAP required before the release job can publish (see issue #6):
 #   1. Publish each crate once from a local CLI (`cargo publish`) — Trusted
@@ -13,17 +24,58 @@ name: Release-plz
 #   3. (Recommended) add a RELEASE_PLZ_TOKEN secret (fine-grained PAT or GitHub
 #      App token, Contents + Pull-requests: write) so the release PR triggers CI.
 #      Without it the workflow falls back to GITHUB_TOKEN (release PR won't run CI).
+#   4. (Homebrew) add a HOMEBREW_TAP_TOKEN secret (fine-grained PAT, Contents:
+#      write on getkono/homebrew-tap). Until it exists the update-tap job is a
+#      clean no-op, so releases never fail on account of it.
 
 on:
   push:
     branches: [master]
+  # Lets the very first release — or any re-run — be kicked off by hand from the
+  # Actions tab without waiting for a release PR.
+  workflow_dispatch:
 
 permissions: {}
 
 jobs:
+  # Publish unreleased versions (creates each crate's tag + GitHub Release when its
+  # version in Cargo.toml has no matching tag on crates.io yet).
+  release-plz-release:
+    name: Release
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'getkono' }}
+    permissions:
+      contents: write # push tags, create the GitHub Releases
+      pull-requests: read
+      id-token: write # crates.io Trusted Publishing (OIDC) — no CARGO_REGISTRY_TOKEN
+    # Surfaced to the binary/Homebrew jobs so they only run when a release was
+    # actually cut (not on every push to master).
+    outputs:
+      releases_created: ${{ steps.release-plz.outputs.releases_created }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - id: release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          # Prefer a PAT/App token (so the Release shows the maintainer as author);
+          # fall back to the built-in token so the workflow still works before the
+          # secret exists. crates.io auth is OIDC (id-token), not this token.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+
+  # Open/update the release PR (bumped version + changelog) for the next release.
+  # Runs AFTER the release job: release-plz derives the next version by diffing the
+  # working tree against the last released tag, so that tag must already exist.
   release-plz-pr:
     name: Release PR
+    needs: release-plz-release
     runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'getkono' && github.event_name == 'push' }}
     permissions:
       contents: write
       pull-requests: write
@@ -34,29 +86,187 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: release-plz/action@v0.5
         with:
           command: release-pr
         env:
-          # Prefer a PAT/App token (so the release PR runs CI); fall back to the
-          # built-in token so the workflow still works before the secret exists.
+          # A PAT (not the built-in GITHUB_TOKEN) lets CI run on the release PR so
+          # branch protection can gate it. Falls back until the secret is added.
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
 
-  release-plz-release:
-    name: Release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: read
-      id-token: write # crates.io Trusted Publishing (OIDC) — no CARGO_REGISTRY_TOKEN
+  # ── Prebuilt binaries + Homebrew tap ──────────────────────────────────────
+  # Only run when the release job above actually cut a release.
+
+  # Cross-compile the `karet` binary for each Homebrew target.
+  build:
+    name: Build ${{ matrix.target }}
+    needs: release-plz-release
+    if: ${{ needs.release-plz-release.outputs.releases_created == 'true' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, use_cross: true }
+          - { os: ubuntu-latest, target: aarch64-unknown-linux-musl, use_cross: true }
+          - { os: macos-latest, target: x86_64-apple-darwin, use_cross: false }
+          - { os: macos-latest, target: aarch64-apple-darwin, use_cross: false }
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - uses: release-plz/action@v0.5
         with:
-          command: release
+          targets: ${{ matrix.target }}
+      # Key the cache by target. Both musl targets run on the same ubuntu-latest
+      # runner, and rust-cache's default key omits the target — sharing one cache
+      # would let the aarch64 job restore the x86_64 job's host-compiled build
+      # scripts and fail in the older aarch64 `cross` container (cross-rs/cross#724).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Install cross
+        if: matrix.use_cross
+        uses: taiki-e/install-action@cross
+      - name: Build
+        shell: bash
+        run: |
+          # build.rs reads git provenance directly via `gix` (no `git` binary), so the
+          # `cross` container needs no help; if it can't read .git it degrades to
+          # KARET_GIT_SHA=unknown rather than failing.
+          if [[ "${{ matrix.use_cross }}" == "true" ]]; then
+            cross build --release --locked -p karet --target ${{ matrix.target }}
+          else
+            cargo build --release --locked -p karet --target ${{ matrix.target }}
+          fi
+      - name: Package
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../karet-${{ matrix.target }}.tar.gz karet
+      - uses: actions/upload-artifact@v4
+        with:
+          name: karet-${{ matrix.target }}
+          path: karet-${{ matrix.target }}.tar.gz
+
+  # Cut the app's `v{version}` tag + GitHub Release and attach the binaries.
+  # release-plz does not tag the publish=false app, so this job creates that tag.
+  create-release:
+    name: Create app release
+    needs: [release-plz-release, build]
+    if: ${{ needs.release-plz-release.outputs.releases_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the Release + tag, upload assets
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The merged release PR bumped the shared [workspace.package] version, the
+          # first top-level `version =` in the root Cargo.toml — no toolchain needed.
+          VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/^version *= *"([^"]+)".*/\1/')"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Create release and upload binaries
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Create the tag/Release at this exact commit; on a re-run the tag already
+          # exists, so fall back to (re-)uploading the assets.
+          if gh release create "v${VERSION}" \
+              --target "$GITHUB_SHA" \
+              --title "karet v${VERSION}" \
+              --generate-notes \
+              karet-*.tar.gz; then
+            echo "Created release v${VERSION}."
+          else
+            echo "Release v${VERSION} exists — uploading assets."
+            gh release upload "v${VERSION}" karet-*.tar.gz --clobber
+          fi
+
+  # Render Formula/karet.rb from the release SHA-256s and push it to the tap.
+  update-tap:
+    name: Update Homebrew tap
+    needs: [release-plz-release, create-release]
+    # Canonical repo only; forks lack the secret. Together with the token check
+    # below this keeps the job a clean no-op until the secret is added, so releases
+    # never fail on account of it.
+    if: ${{ needs.release-plz-release.outputs.releases_created == 'true' && github.repository == 'getkono/karet' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Render formula
+        id: render
+        shell: bash
+        env:
+          HAVE_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$HAVE_TOKEN" != "true" ]]; then
+            echo "HOMEBREW_TAP_TOKEN not set — skipping Homebrew tap update."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # SHA-256 of each release tarball, computed from the local build artifacts
+          # (correct regardless of CDN propagation). set -e aborts if any tarball is
+          # missing, so an empty hash can't slip into the formula.
+          sha() { sha256sum "karet-$1.tar.gz" | cut -d' ' -f1; }
+          mkdir -p rendered
+          sed \
+            -e "s/__VERSION__/${VERSION}/g" \
+            -e "s/__SHA256_X86_64_UNKNOWN_LINUX_MUSL__/$(sha x86_64-unknown-linux-musl)/g" \
+            -e "s/__SHA256_AARCH64_UNKNOWN_LINUX_MUSL__/$(sha aarch64-unknown-linux-musl)/g" \
+            -e "s/__SHA256_X86_64_APPLE_DARWIN__/$(sha x86_64-apple-darwin)/g" \
+            -e "s/__SHA256_AARCH64_APPLE_DARWIN__/$(sha aarch64-apple-darwin)/g" \
+            .github/homebrew/karet.rb > rendered/karet.rb
+
+          # Fail loudly if any placeholder survived (e.g. an artifact was renamed in
+          # the build job) rather than pushing a broken formula to the tap.
+          if grep -q "__" rendered/karet.rb; then
+            echo "::error::Unsubstituted placeholder remains in the rendered formula"
+            grep -n "__" rendered/karet.rb
+            exit 1
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+      - name: Check out the Homebrew tap
+        if: steps.render.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: getkono/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+      - name: Commit and push the updated formula
+        if: steps.render.outputs.skip != 'true'
+        shell: bash
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p tap/Formula
+          cp rendered/karet.rb tap/Formula/karet.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/karet.rb
+          if git diff --cached --quiet; then
+            echo "Formula already up to date — nothing to commit."
+            exit 0
+          fi
+          git commit -m "karet ${VERSION}"
+          git push
