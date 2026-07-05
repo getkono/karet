@@ -3754,6 +3754,31 @@ impl App {
                     "file changed on disk — you have unsaved changes",
                 );
             },
+            // Full non-UTF-8 editing isn't supported: the tab requested a document
+            // that will never arrive (no `Opened` follows), so leaving it as a
+            // `doc: None` code tab would make every keystroke silently no-op. Fall
+            // back to the same read-only hex view a corrupt CBOR file already uses.
+            SessionEvent::NotUtf8 { path } => {
+                if let Some(req) = id {
+                    self.pending_open.remove(&req);
+                }
+                for tab in self.all_tabs_mut() {
+                    let is_pending_for_path =
+                        matches!(&tab.kind, TabKind::Code { path: p, doc: None, .. } if *p == path);
+                    if is_pending_for_path && let Ok(bytes) = std::fs::read(&path) {
+                        tab.kind = TabKind::Hex {
+                            path: path.clone(),
+                            bytes,
+                            scroll: 0,
+                        };
+                    }
+                }
+                self.notify(
+                    Severity::Warning,
+                    NotificationKind::Io,
+                    format!("opened {} read-only: not valid UTF-8", path.display()),
+                );
+            },
             SessionEvent::Progress { message, .. } => self.status = Some(message),
             // The single high-up funnel: every backend-reported condition becomes a
             // notification, so nothing is silently dropped.
@@ -5825,6 +5850,40 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
             "ab",
             "two backspaces fired before any snapshot arrives must still land on the \
              locally-applied text"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_non_utf8_file_opens_read_only_instead_of_a_silently_dead_tab() {
+        let dir =
+            std::env::temp_dir().join(format!("karet-nonutf8-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("bad.rs");
+        // A long valid-ASCII prefix (longer than the classifier's 8 KiB head sample)
+        // followed by one invalid byte: the workspace-level classifier sees only
+        // clean text and opens a normal code tab, but the session's full-file strict
+        // UTF-8 load then fails — this is exactly the "misses a genuinely non-UTF-8
+        // file" gap this fallback exists for, not the earlier (already-handled)
+        // "obviously binary within the head sample" case.
+        let mut bytes = vec![b'a'; 9000];
+        bytes.push(0xff);
+        std::fs::write(&path, &bytes).expect("write invalid-utf8 file");
+
+        let (session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![dir.clone()],
+            ..SessionConfig::default()
+        });
+        let backend: Arc<dyn Backend> = Arc::new(local(session));
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend);
+        app.open_path(&path);
+        pump(&mut app, &mut events).await;
+
+        assert!(
+            matches!(app.tabs[app.active].kind, TabKind::Hex { .. }),
+            "a non-UTF-8 file must fall back to the read-only hex view, not a dead \
+             code tab with doc: None"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

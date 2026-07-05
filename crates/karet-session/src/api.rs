@@ -256,6 +256,14 @@ pub enum Event {
         /// The document with the conflict.
         doc: DocumentId,
     },
+    /// An `OpenDocument` failed because the file's contents are not valid UTF-8.
+    /// No document is registered for `path` — full non-UTF-8 editing isn't
+    /// supported, so the client should fall back to a read-only view instead of
+    /// leaving the tab's document unset forever.
+    NotUtf8 {
+        /// The path that could not be opened as text.
+        path: PathBuf,
+    },
     /// New diagnostics were published for a document.
     DiagnosticsPublished {
         /// The document.

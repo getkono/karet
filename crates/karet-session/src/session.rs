@@ -30,6 +30,7 @@ use karet_syntax::Highlights;
 use karet_text::AppliedEdit;
 use karet_text::EditCause;
 use karet_text::EditContext;
+use karet_text::LoadError;
 use karet_text::TextBuffer;
 use karet_text::TextError;
 use karet_treesitter::LanguageId;
@@ -115,20 +116,20 @@ const CLASSIFY_HEAD: usize = 8192;
 ///
 /// The buffer records the on-disk fingerprint of the *original* bytes so the
 /// file-watcher can still recognize the editor's own writes.
-fn load_document(path: &Path) -> Result<(TextBuffer, DocFormat), String> {
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+fn load_document(path: &Path) -> Result<(TextBuffer, DocFormat), LoadError> {
+    let bytes = std::fs::read(path).map_err(|e| LoadError::Io(e.to_string()))?;
     let head = &bytes[..bytes.len().min(CLASSIFY_HEAD)];
     // Format detection ignores the size guard: once the session is asked to open a
     // document it must decode it correctly regardless of size (the guard is an
     // app-level *routing* choice), so a large CBOR still decodes rather than being
     // mistaken for plain text.
     if classify_ignoring_size(path, head) == FileKind::Cbor {
-        let text = karet_cbor::decode_to_text(&bytes).map_err(|e| e.to_string())?;
+        let text = karet_cbor::decode_to_text(&bytes).map_err(|e| LoadError::Io(e.to_string()))?;
         let mut buffer = TextBuffer::from_text(&text);
         buffer.record_disk_state(path, &bytes);
         Ok((buffer, DocFormat::Cbor))
     } else {
-        let mut buffer = TextBuffer::from_bytes(&bytes).map_err(|e| e.to_string())?;
+        let mut buffer = TextBuffer::from_bytes(&bytes)?;
         buffer.record_disk_state(path, &bytes);
         Ok((buffer, DocFormat::Text))
     }
@@ -552,6 +553,13 @@ impl Session {
         }
         let (buffer, format) = match load_document(&path) {
             Ok(loaded) => loaded,
+            Err(LoadError::NotUtf8 { .. }) => {
+                // Full non-UTF-8 editing isn't supported; tell the client so it can
+                // fall back to a read-only view instead of leaving this path's tab
+                // registered with no document forever.
+                self.emit(Some(id), Event::NotUtf8 { path });
+                return;
+            },
             Err(e) => {
                 self.emit(
                     Some(id),
@@ -1206,6 +1214,39 @@ mod tests {
     #[test]
     fn session_constructs_with_streams() {
         let (_session, _events, _snaps) = Session::new(SessionConfig::default());
+    }
+
+    #[test]
+    fn opening_a_non_utf8_file_reports_not_utf8_instead_of_a_generic_error() {
+        let Some((_dir, path)) = write_temp("bad.rs", "") else {
+            return;
+        };
+        if std::fs::write(&path, [0x66, 0x6e, 0xff, 0x00]).is_err() {
+            return;
+        }
+        let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let mut not_utf8_path = None;
+        let mut opened = false;
+        while let Some((_, ev)) = events.try_recv() {
+            match ev {
+                Event::NotUtf8 { path } => not_utf8_path = Some(path),
+                Event::Opened { .. } => opened = true,
+                _ => {},
+            }
+        }
+        assert_eq!(not_utf8_path, Some(path));
+        assert!(!opened, "a non-UTF-8 file must not report as Opened");
+        assert!(
+            snaps.try_recv().is_none(),
+            "no document was registered, so no snapshot should follow"
+        );
     }
 
     #[test]
