@@ -85,6 +85,10 @@ fn classify_content(path: &Path, head: &[u8]) -> FileKind {
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase);
+    // Markdown is text-shaped (unlike image/PDF/DOCX/CBOR below), so its extension
+    // alone must not skip the binary sniff below — a non-UTF-8 `.md` file needs to
+    // still route to `Binary`, not silently open as broken editable text.
+    let is_markdown_ext = matches!(ext.as_deref(), Some("md" | "markdown" | "mdown" | "mkd"));
     if let Some(ext) = ext.as_deref() {
         match ext {
             "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "tiff" | "tif" => {
@@ -94,7 +98,6 @@ fn classify_content(path: &Path, head: &[u8]) -> FileKind {
             // DOCX is a ZIP container (`PK\x03\x04`, ambiguous with any archive), so it is
             // routed by extension only — there is no cheap magic-byte signal in the head.
             "docx" => return FileKind::Docx,
-            "md" | "markdown" | "mdown" | "mkd" => return FileKind::Markdown,
             "cbor" => return FileKind::Cbor,
             _ => {},
         }
@@ -110,6 +113,9 @@ fn classify_content(path: &Path, head: &[u8]) -> FileKind {
     }
     if looks_binary(head) {
         return FileKind::Binary;
+    }
+    if is_markdown_ext {
+        return FileKind::Markdown;
     }
     FileKind::Text
 }
@@ -186,6 +192,15 @@ mod tests {
             classify(Path::new("x.bin"), &[0xD9, 0xD9, 0xF7, 0x01], 4),
             FileKind::Cbor
         );
+    }
+
+    #[test]
+    fn non_utf8_markdown_is_binary_not_broken_text() {
+        // Regression: the `.md` extension arm used to return `Markdown`
+        // unconditionally, bypassing the binary sniff that every other
+        // text-shaped extension (or extensionless file) goes through.
+        assert_eq!(classify(Path::new("a.md"), b"a\x00b", 3), FileKind::Binary);
+        assert_eq!(classify(Path::new("a.md"), b"# hi", 4), FileKind::Markdown);
     }
 
     #[test]
