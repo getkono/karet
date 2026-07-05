@@ -810,6 +810,51 @@ impl App {
         }
     }
 
+    /// Feed pasted text to the active modal's text field, mirroring `modal_text`
+    /// for keys. Without this, paste always landed in the main editor buffer
+    /// regardless of which text field was actually focused — corrupting the
+    /// editor's selection with clipboard text meant for Find/Search/Commit/the
+    /// explorer rename box/the quick-open query. A no-op for non-text modals.
+    fn modal_paste(&mut self, modal: Modal, text: &str) {
+        match modal {
+            Modal::Overlay => {
+                if let Some(overlay) = self.overlay.as_mut() {
+                    overlay.push_str(text);
+                }
+            },
+            Modal::Find => {
+                let Some(find) = self.find.as_mut() else {
+                    return;
+                };
+                let editing_query = find.field == SearchField::Find;
+                let target = if editing_query {
+                    &mut find.query
+                } else {
+                    &mut find.replace
+                };
+                target.push_str(text);
+                if editing_query {
+                    self.run_find();
+                }
+            },
+            Modal::CommitInput => {
+                if let Some(message) = self.commit_input.as_mut() {
+                    message.push_str(text);
+                }
+            },
+            Modal::ExplorerEdit => self.explorer.edit_paste(text),
+            Modal::SearchInput => {
+                let target = match self.search.field {
+                    SearchField::Find => &mut self.search.query,
+                    SearchField::Replace => &mut self.search.replace,
+                };
+                target.push_str(text);
+            },
+            Modal::SearchList | Modal::DiscardConfirm | Modal::QuitConfirm | Modal::SwapRecover => {
+            },
+        }
+    }
+
     /// Feed a key to the explorer inline name editor: printable characters extend the
     /// name, Backspace trims it (Enter/Esc are handled as bound commands).
     fn explorer_edit(&mut self, key: KeyEvent) {
@@ -3630,7 +3675,7 @@ impl App {
         self.submit_edit(editing::backspace);
     }
 
-    /// Paste the system clipboard at the caret.
+    /// Paste the system clipboard at the caret (or the active modal's text field).
     fn paste_from_clipboard(&mut self) {
         match self.clipboard.get() {
             Ok(text) => self.handle_paste(text),
@@ -3638,11 +3683,17 @@ impl App {
         }
     }
 
-    /// Insert pasted text as a single edit (one undo group). Shared by the paste
-    /// command and bracketed paste, so pasted text is never interpreted as keys.
+    /// Route pasted text (from the paste command or bracketed paste) to whatever
+    /// actually owns text input right now: the active modal's field if one is
+    /// open, else the editor buffer. Shared by both paste sources, so pasted text
+    /// is never interpreted as keys and never lands in the wrong place.
     fn handle_paste(&mut self, text: String) {
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
         if normalized.is_empty() {
+            return;
+        }
+        if let Some(modal) = self.input_context().modal {
+            self.modal_paste(modal, &normalized);
             return;
         }
         self.submit_edit(move |caret, sel, _b, base| {
@@ -5850,6 +5901,49 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
             "ab",
             "two backspaces fired before any snapshot arrives must still land on the \
              locally-applied text"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn paste_while_find_is_open_targets_the_find_query_not_the_editor() {
+        // Regression: paste used to always land in the main editor buffer
+        // regardless of which text field was actually focused, so pasting while
+        // Find was open silently replaced the editor's content/selection instead
+        // of the find query.
+        let dir = std::env::temp_dir().join(format!(
+            "karet-pastefind-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "hello world").expect("write temp file");
+
+        let (session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![dir.clone()],
+            ..SessionConfig::default()
+        });
+        let backend: Arc<dyn Backend> = Arc::new(local(session));
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend);
+        app.open_path(&path);
+        pump(&mut app, &mut events).await;
+
+        app.open_find();
+        assert!(app.find.is_some());
+
+        app.handle_paste("needle".to_string());
+
+        assert_eq!(
+            app.find.as_ref().map(|f| f.query.as_str()),
+            Some("needle"),
+            "pasted text must land in the find query"
+        );
+        assert_eq!(
+            code_tab_text(&app),
+            "hello world",
+            "paste while Find is open must not touch the editor buffer"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
