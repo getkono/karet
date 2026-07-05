@@ -300,11 +300,20 @@ impl Session {
             swaps,
             pending_swaps,
         };
-        // Seed the client with the initial status; it buffers until the UI reads it.
-        session.emit_vcs_status(None);
         // Announce any recoverable swaps so the UI can prompt on the first frame.
         session.announce_pending_swaps();
         (session, EventRx(erx), SnapshotRx(srx))
+    }
+
+    /// Kick off the work deferred until the session is actually being driven: the
+    /// initial VCS status. Computing it eagerly in [`Session::new`] would run a full
+    /// `git status` on the construction thread — for a huge repository that can stall
+    /// the caller before the UI ever renders. Call this once, from the actor task that
+    /// drives [`Session::handle`]/[`Session::handle_fs_event`], so it runs
+    /// concurrently with the first frame instead of blocking it.
+    pub(crate) fn start(&mut self) {
+        // Seed the client with the initial status; it buffers until the UI reads it.
+        self.emit_vcs_status(None);
     }
 
     /// Handle one request. The editing fast paths resolve inline; the answering
@@ -1564,6 +1573,8 @@ mod tests {
             roots: vec![root],
             ..SessionConfig::default()
         });
+        // The actor normally calls this; here we drive the session directly.
+        session.start();
 
         // The session seeds an initial status: the file is untracked in `working`.
         let Some((staged, working)) = latest_vcs_status(&mut events) else {
@@ -1602,6 +1613,8 @@ mod tests {
             roots: vec![root.clone()],
             ..SessionConfig::default()
         });
+        // The actor normally calls this; here we drive the session directly.
+        session.start();
         // Initial status: just the seeded `a.txt`.
         let Some((_staged, working)) = latest_vcs_status(&mut events) else {
             return;

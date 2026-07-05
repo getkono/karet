@@ -3019,8 +3019,10 @@ dependencies = [
 name = "karet-watch"
 version = "0.2.0"
 dependencies = [
+ "ignore",
  "notify",
  "notify-debouncer-full",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

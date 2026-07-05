@@ -85,6 +85,10 @@ pub fn local(mut session: Session) -> LocalBackend {
     tokio::spawn(async move {
         // Hold the watcher alive for exactly as long as the actor consumes events.
         let _watcher = watcher;
+        // Compute the initial VCS status here, on the actor task, rather than on the
+        // construction thread — a large repository's `git status` then runs
+        // concurrently with the first frame instead of blocking it.
+        session.start();
         // A steady tick drives the crash-recovery backup sweep; the session decides
         // per-document whether the configured dirty interval has elapsed.
         let mut backup = tokio::time::interval(BACKUP_TICK);
