@@ -233,6 +233,22 @@ impl Tab {
             TabKind::Welcome => "",
         }
     }
+
+    /// The text encoding and line-ending label for the status bar (e.g.
+    /// `"UTF-8 · LF"`, with a `"mixed EOL"` suffix when the file mixes `\n` and
+    /// `\r\n`), for code tabs; `None` for anything else (images, hex dumps, …
+    /// have no encoding/line-ending concept).
+    #[must_use]
+    pub fn encoding_label(&self) -> Option<String> {
+        let TabKind::Code { buffer, .. } = &self.kind else {
+            return None;
+        };
+        let mut label = format!("{} · {}", buffer.encoding(), buffer.eol());
+        if buffer.has_mixed_eol() {
+            label.push_str(" · mixed EOL");
+        }
+        Some(label)
+    }
 }
 
 #[cfg(test)]
@@ -265,5 +281,27 @@ mod tests {
         );
         assert_eq!(tab.path(), Some(Path::new("/x/a.rs")));
         assert_eq!(tab.language(), "Rust");
+    }
+
+    #[test]
+    fn encoding_label_reports_encoding_and_eol_for_code_tabs_only() {
+        let buffer = TextBuffer::from_bytes(b"a\r\nb\r\n").unwrap_or_default();
+        let tab = Tab::new(
+            "a.rs",
+            TabKind::Code {
+                path: PathBuf::from("/x/a.rs"),
+                language: "Rust",
+                doc: None,
+                next_version: 0,
+                buffer,
+                text: "a\nb\n".to_string(),
+                highlights: Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
+                decos: Vec::new(),
+            },
+        );
+        assert_eq!(tab.encoding_label().as_deref(), Some("UTF-8 · CRLF"));
+        assert_eq!(Tab::welcome().encoding_label(), None);
     }
 }

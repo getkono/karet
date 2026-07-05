@@ -35,6 +35,15 @@ impl Eol {
     }
 }
 
+impl std::fmt::Display for Eol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Eol::Lf => "LF",
+            Eol::Crlf => "CRLF",
+        })
+    }
+}
+
 /// The detected encoding. Only UTF-8 is supported; the variant records whether the
 /// file carried a byte-order mark, which is re-emitted on save.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -44,6 +53,15 @@ pub enum Encoding {
     Utf8,
     /// UTF-8 with a leading `EF BB BF` byte-order mark.
     Utf8Bom,
+}
+
+impl std::fmt::Display for Encoding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Encoding::Utf8 => "UTF-8",
+            Encoding::Utf8Bom => "UTF-8 BOM",
+        })
+    }
 }
 
 /// Why a file could not be loaded as a karet text buffer.

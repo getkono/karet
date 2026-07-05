@@ -1593,9 +1593,24 @@ fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         .fg(theme.role(ThemeRole::StatusBarForeground).to_ratatui());
     let key = bar.add_modifier(Modifier::BOLD);
 
-    // The language label is a fixed-width right column; the hints get everything else.
+    // The right column is a fixed-width strip: cursor position (code tabs only),
+    // encoding/EOL, then the language/kind label — the hints get everything else.
     let language = app.tabs.get(app.active).map_or("", Tab::language);
-    let right = format!(" {language} ");
+    let right = match app.tabs.get(app.active) {
+        Some(
+            tab @ Tab {
+                kind: TabKind::Code { .. },
+                ..
+            },
+        ) => {
+            let cursor_label = cursor_status_label(tab);
+            match tab.encoding_label() {
+                Some(enc) => format!(" {cursor_label} · {enc} · {language} "),
+                None => format!(" {cursor_label} · {language} "),
+            }
+        },
+        _ => format!(" {language} "),
+    };
     let cols = Layout::horizontal([Constraint::Min(0), Constraint::Length(cell_width(&right))])
         .split(area);
     let left = cols[0];
@@ -1659,6 +1674,26 @@ fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     );
 }
 
+/// The status bar's cursor-position label for a code tab: `"Ln {line}, Col
+/// {col}"` (1-based), with a `"(N selected)"` / `"(N lines selected)"` suffix
+/// when the primary selection is non-empty.
+fn cursor_status_label(tab: &Tab) -> String {
+    let primary = tab.editor.cursors().primary();
+    let head = primary.head;
+    let mut label = format!("Ln {}, Col {}", head.line + 1, head.col + 1);
+    let range = primary.range();
+    if range.start != range.end {
+        if range.start.line == range.end.line {
+            let n = range.end.col.saturating_sub(range.start.col);
+            label.push_str(&format!(" ({n} selected)"));
+        } else {
+            let lines = range.end.line - range.start.line + 1;
+            label.push_str(&format!(" ({lines} lines selected)"));
+        }
+    }
+    label
+}
+
 /// The single-letter status glyph and its color role for a changed file.
 fn status_glyph(kind: StatusKind) -> (char, ThemeRole) {
     match kind {
@@ -1675,6 +1710,42 @@ fn status_glyph(kind: StatusKind) -> (char, ThemeRole) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cursor_status_label_reports_position_and_selection_extent() {
+        use karet_core::LineCol;
+        use karet_text::TextBuffer;
+
+        let buffer = TextBuffer::from_text("hello\nworld\n");
+        let mut tab = Tab::new(
+            "a.txt",
+            TabKind::Code {
+                path: std::path::PathBuf::from("/x/a.txt"),
+                language: "plaintext",
+                doc: None,
+                next_version: 0,
+                buffer: buffer.clone(),
+                text: "hello\nworld\n".to_string(),
+                highlights: karet_syntax::Highlights::default(),
+                folds: karet_syntax::FoldRegions::default(),
+                folded: std::collections::BTreeSet::new(),
+                decos: Vec::new(),
+            },
+        );
+
+        tab.editor.place_caret(LineCol::new(1, 2));
+        assert_eq!(cursor_status_label(&tab), "Ln 2, Col 3");
+
+        // A same-line selection reports the selected character count.
+        tab.editor
+            .set_selection(&buffer, LineCol::new(0, 1), LineCol::new(0, 4));
+        assert_eq!(cursor_status_label(&tab), "Ln 1, Col 5 (3 selected)");
+
+        // A multi-line selection reports the line count instead.
+        tab.editor
+            .set_selection(&buffer, LineCol::new(0, 0), LineCol::new(1, 2));
+        assert_eq!(cursor_status_label(&tab), "Ln 2, Col 3 (2 lines selected)");
+    }
 
     #[test]
     fn welcome_hints_are_all_bound() {
