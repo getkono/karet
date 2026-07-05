@@ -604,6 +604,10 @@ impl Session {
     fn apply(&mut self, id: RequestId, doc_id: DocumentId, change: &Change) {
         let tick = self.elapsed_ms();
         let ctx = edit_context(tick, change);
+        // `None` means the change was stale or overlapping (the client's local
+        // speculative state has diverged from ours); either way we still publish
+        // below so the authoritative buffer flows back down to the client instead
+        // of leaving it stuck rejecting every future edit forever.
         let version = {
             let pool = &mut self.pool;
             let highlighters = &mut self.highlighters;
@@ -611,26 +615,39 @@ impl Session {
                 self.events.send((Some(id), unknown_document(doc_id))).ok();
                 return;
             };
-            let applied = match doc.buffer.apply(change, ctx) {
-                Ok(a) => a,
-                Err(_) => return, // stale or overlapping; the caller will resync
-            };
-            update_syntax(pool, highlighters, doc, Some(&applied.edits));
-            // Arm the backup clock on the clean→dirty transition (see `backup_tick`).
-            doc.sync_dirty_since(tick);
-            // LSP seam: this is the single apply site. When a server is attached for
-            // `doc.lang_id`, forward an incremental `did_change(&doc.path, version,
-            // change.edits)` here (translated to the negotiated encoding); a no-op
-            // while no server is attached.
-            applied.version
+            match doc.buffer.apply(change, ctx) {
+                Ok(applied) => {
+                    update_syntax(pool, highlighters, doc, Some(&applied.edits));
+                    // Arm the backup clock on the clean→dirty transition (see
+                    // `backup_tick`).
+                    doc.sync_dirty_since(tick);
+                    // LSP seam: this is the single apply site. When a server is
+                    // attached for `doc.lang_id`, forward an incremental
+                    // `did_change(&doc.path, version, change.edits)` here
+                    // (translated to the negotiated encoding); a no-op while no
+                    // server is attached.
+                    Some(applied.version)
+                },
+                Err(_) => None,
+            }
         };
-        self.emit(
-            Some(id),
-            Event::Applied {
-                doc: doc_id,
-                version,
-            },
-        );
+        match version {
+            Some(version) => self.emit(
+                Some(id),
+                Event::Applied {
+                    doc: doc_id,
+                    version,
+                },
+            ),
+            None => self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Warning,
+                    kind: NotificationKind::Io,
+                    message: "edit couldn't be applied — refreshing from disk".to_string(),
+                },
+            ),
+        }
         self.publish(doc_id, None);
     }
 
@@ -1262,6 +1279,65 @@ mod tests {
             session
                 .document(doc)
                 .is_some_and(|v| v.buffer().line_count() == 2)
+        );
+    }
+
+    #[test]
+    fn apply_against_a_stale_version_resyncs_instead_of_dropping_silently() {
+        // Regression: a client whose local speculative version has diverged from
+        // the backend's (e.g. after a dropped/duplicate message) used to have its
+        // edit silently discarded with no way to recover — every subsequent edit
+        // on that document would then fail the same way forever. It must instead
+        // be told and get a fresh snapshot back so it can resync.
+        let Some((_dir, path)) = write_temp("main.rs", "fn main() {}\n") else {
+            return;
+        };
+        let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let Some(doc) = opened_doc(&mut events) else {
+            return;
+        };
+        let _ = snaps.try_recv(); // drain the open snapshot
+
+        // Base the change on a version that doesn't exist yet (the real base is 0).
+        let change = Change::new(
+            7,
+            vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(0, 0),
+                    end: LineCol::new(0, 0),
+                },
+                new_text: "!".to_string(),
+            }],
+        );
+        session.handle(RequestId(2), Command::ApplyChange { doc, change });
+
+        let mut notified = false;
+        let mut applied = false;
+        while let Some((_, ev)) = events.try_recv() {
+            match ev {
+                Event::Notification { .. } => notified = true,
+                Event::Applied { .. } => applied = true,
+                _ => {},
+            }
+        }
+        assert!(notified, "a stale-version conflict must notify the client");
+        assert!(!applied, "the rejected edit must not report as Applied");
+        assert!(
+            snaps.try_recv().is_some(),
+            "the client must still get a fresh snapshot to resync from, not be left stuck"
+        );
+        // The document itself is untouched by the rejected edit.
+        assert!(
+            session
+                .document(doc)
+                .is_some_and(|v| v.buffer().text() == "fn main() {}\n")
         );
     }
 

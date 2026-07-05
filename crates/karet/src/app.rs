@@ -3430,14 +3430,30 @@ impl App {
                     return;
                 }
                 per.sort_by_key(|(start, ..)| *start);
-                let flat: Vec<TextEdit> = per.iter().flat_map(|(.., e, _)| e.clone()).collect();
+                // Track which per-entry (cursor) each flattened edit belongs to, so
+                // "earlier" below can mean "from a cursor before this one" rather
+                // than a byte-position comparison — a backward-deleting edit (e.g.
+                // backspace) starts *before* its own original caret, so comparing
+                // positions would wrongly count an edit as "earlier than itself"
+                // and double-shift that same cursor's landing caret by one extra
+                // position on every backspace.
+                let mut flat: Vec<TextEdit> = Vec::new();
+                let mut owner: Vec<usize> = Vec::new();
+                for (i, (_, es, _)) in per.iter().enumerate() {
+                    for e in es {
+                        flat.push(e.clone());
+                        owner.push(i);
+                    }
+                }
                 let carets: Vec<LineCol> = per
                     .iter()
-                    .map(|(start, _, local)| {
+                    .enumerate()
+                    .map(|(i, (_, _, local))| {
                         let earlier: Vec<TextEdit> = flat
                             .iter()
-                            .filter(|te| te.range.start < *start)
-                            .cloned()
+                            .zip(&owner)
+                            .filter(|&(_, &o)| o < i)
+                            .map(|(e, _)| e.clone())
                             .collect();
                         editing::reflow_caret(*local, &earlier)
                     })
@@ -3446,23 +3462,39 @@ impl App {
             },
             _ => return,
         };
+        let change = Change::new(base, edits);
         if let Some(backend) = &self.backend {
             let id = backend.next_id();
             let _ = backend.send(
                 id,
                 SessionCommand::ApplyChange {
                     doc,
-                    change: Change::new(base, edits),
+                    change: change.clone(),
                 },
             );
         }
         if let Some(Tab {
-            kind: TabKind::Code { next_version, .. },
+            kind:
+                TabKind::Code {
+                    buffer,
+                    text,
+                    next_version,
+                    ..
+                },
             editor,
             ..
         }) = self.tabs.get_mut(idx)
         {
-            *next_version += 1;
+            // Apply the same change locally so the displayed text advances in
+            // lockstep with the caret instead of lagging behind the async
+            // snapshot echo (the prior cause of "backspace skips characters"
+            // under fast/held input). `base` was just read from this same
+            // buffer above, so this should never fail; if it somehow does,
+            // leave `buffer`/`text` alone and let the next snapshot resync.
+            if let Ok(applied) = buffer.apply(&change, karet_text::EditContext::default()) {
+                *next_version = applied.version;
+                *text = buffer.text();
+            }
             editor.set_carets(&carets);
             let head = editor.cursor();
             editor.scroll_to(head);
@@ -3796,10 +3828,16 @@ impl App {
                 ..
             } = &mut tab.kind
             {
-                *buffer = snap.buffer.clone();
+                // A slow-arriving snapshot must not regress a tab that has since
+                // advanced further via `submit_edit`'s local speculative apply —
+                // only the buffer/text catch up when the snapshot is at least as
+                // new as what's already applied locally.
+                if snap.version >= buffer.version() {
+                    *buffer = snap.buffer.clone();
+                    *text = snap.buffer.text();
+                }
                 *highlights = (*snap.highlights).clone();
                 *folds = (*snap.folds).clone();
-                *text = snap.buffer.text();
                 *next_version = (*next_version).max(snap.version);
                 // Drop collapsed markers whose fold no longer starts where it did (an
                 // edit shifted or removed it), so stale hidden lines can't linger.
@@ -5742,6 +5780,53 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         app.sidebar_panel = SidebarPanel::SourceControl;
         app.focus = Focus::Sidebar;
         (app, events)
+    }
+
+    fn code_tab_text(app: &App) -> String {
+        match &app.tabs[app.active].kind {
+            TabKind::Code { text, .. } => text.clone(),
+            _ => panic!("expected the active tab to be a code tab"),
+        }
+    }
+
+    #[tokio::test]
+    async fn backspace_and_insert_apply_to_the_local_buffer_without_waiting_for_a_snapshot() {
+        // Regression for "editor jumps back / skips characters on backspace": edits
+        // used to only move the caret optimistically while the displayed text
+        // waited on an async snapshot echo, so a fast burst of keys raced ahead of
+        // what was actually applied. Every edit below is dispatched back-to-back
+        // with no `pump` in between, so this fails if `submit_edit` regresses to
+        // only updating the caret again.
+        let dir =
+            std::env::temp_dir().join(format!("karet-edit-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "ab").expect("write temp file");
+
+        let (session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![dir.clone()],
+            ..SessionConfig::default()
+        });
+        let backend: Arc<dyn Backend> = Arc::new(local(session));
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend);
+        app.open_path(&path);
+        pump(&mut app, &mut events).await; // registers the doc so submit_edit can act
+
+        app.dispatch(Command::InsertChar('x'));
+        assert_eq!(code_tab_text(&app), "xab");
+        app.dispatch(Command::InsertChar('y'));
+        assert_eq!(code_tab_text(&app), "xyab");
+        app.dispatch(Command::DeleteBackward);
+        assert_eq!(code_tab_text(&app), "xab");
+        app.dispatch(Command::DeleteBackward);
+        assert_eq!(
+            code_tab_text(&app),
+            "ab",
+            "two backspaces fired before any snapshot arrives must still land on the \
+             locally-applied text"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
