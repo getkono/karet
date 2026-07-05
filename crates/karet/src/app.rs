@@ -103,6 +103,8 @@ use crate::overlay::Overlay;
 use crate::overlay::OverlayEvent;
 use crate::render::FileView;
 use crate::render::Section;
+use crate::tab::FindState;
+use crate::tab::SearchField;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 use crate::tab::ViewMode;
@@ -155,53 +157,6 @@ pub(crate) struct StoredPane {
     pub(crate) tabs: Vec<Tab>,
     /// The pane's active tab index.
     pub(crate) active: usize,
-}
-
-/// The find-in-file bar state: the query, the match cursor, and the replace field
-/// (mirroring the workspace Search panel's model for a consistent UI).
-#[derive(Default)]
-pub(crate) struct FindState {
-    /// The search query.
-    pub(crate) query: String,
-    /// The replacement text.
-    pub(crate) replace: String,
-    /// The number of matches.
-    pub(crate) count: usize,
-    /// The current match (0-based).
-    pub(crate) current: usize,
-    /// Which field is being edited (find / replace).
-    pub(crate) field: SearchField,
-    /// Whether the replace field is shown (collapsible; hidden by default).
-    pub(crate) replace_visible: bool,
-    /// Interpret the query as a regular expression.
-    pub(crate) regex: bool,
-    /// Match case-sensitively.
-    pub(crate) case_sensitive: bool,
-    /// Match whole words only.
-    pub(crate) whole_word: bool,
-}
-
-impl FindState {
-    /// The [`SearchQuery`] for the current query text and option toggles.
-    fn query_spec(&self) -> SearchQuery {
-        SearchQuery {
-            pattern: self.query.clone(),
-            regex: self.regex,
-            case_sensitive: self.case_sensitive,
-            whole_word: self.whole_word,
-            ..Default::default()
-        }
-    }
-}
-
-/// Which field of a find/replace surface is being edited.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum SearchField {
-    /// The find query.
-    #[default]
-    Find,
-    /// The replacement text.
-    Replace,
 }
 
 /// A toggleable match option shared by the Search panel and the in-file find bar.
@@ -367,8 +322,11 @@ pub struct App {
     pub(crate) closed: Vec<PathBuf>,
     /// The open modal overlay (quick-open / command palette), if any.
     pub(crate) overlay: Option<Overlay>,
-    /// The find-in-file bar, if open.
-    pub(crate) find: Option<FindState>,
+    /// Whether the find-in-file bar is currently shown. The query/toggle data
+    /// itself lives on the active tab (`Tab::find`), so this only tracks
+    /// visibility — closing the bar (Esc) clears this without discarding that
+    /// data, and it is reset whenever the active tab changes.
+    pub(crate) find_open: bool,
     /// The in-progress commit message while the Source-Control commit input is open.
     pub(crate) commit_input: Option<String>,
     /// Paths awaiting a discard confirmation (set after pressing discard; cleared
@@ -543,7 +501,7 @@ impl App {
             stored: HashMap::new(),
             closed: Vec::new(),
             overlay: None,
-            find: None,
+            find_open: false,
             commit_input: None,
             pending_discard: None,
             pending_quit: false,
@@ -733,7 +691,7 @@ impl App {
             Some(Modal::CommitInput)
         } else if self.pending_discard.is_some() {
             Some(Modal::DiscardConfirm)
-        } else if self.find.is_some() {
+        } else if self.find_open {
             Some(Modal::Find)
         } else if self.explorer.is_editing() {
             Some(Modal::ExplorerEdit)
@@ -823,7 +781,7 @@ impl App {
                 }
             },
             Modal::Find => {
-                let Some(find) = self.find.as_mut() else {
+                let Some(find) = self.active_find_mut() else {
                     return;
                 };
                 let editing_query = find.field == SearchField::Find;
@@ -909,22 +867,31 @@ impl App {
         self.overlay = Some(Overlay::quick_open(files));
     }
 
-    /// Open the find-in-file bar (only over a text/code tab).
+    /// Open the find-in-file bar (only over a text/code tab). Restores this tab's
+    /// last query/toggles if it has one (from a previous open-then-Esc on the same
+    /// tab) instead of always starting blank.
     fn open_find(&mut self) {
-        if matches!(
-            self.tabs.get(self.active).map(|t| &t.kind),
-            Some(TabKind::Code { .. })
-        ) {
-            self.find = Some(FindState::default());
+        if let Some(Tab {
+            kind: TabKind::Code { .. },
+            find,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            find.get_or_insert_with(FindState::default);
+            self.find_open = true;
             self.focus = Focus::Editor;
+            // Rebuild decorations against the current buffer — cheap no-op for a
+            // blank query, necessary to refresh a restored non-empty one.
+            self.run_find();
         } else {
             self.status = Some("find: open a text file first".to_string());
         }
     }
 
-    /// Close the find bar and clear the active tab's match highlights.
+    /// Close the find bar (but keep this tab's query/toggles for next time) and
+    /// clear the active tab's match highlights (cheap to rebuild on reopen).
     fn close_find(&mut self) {
-        self.find = None;
+        self.find_open = false;
         if let Some(Tab {
             kind: TabKind::Code { decos, .. },
             ..
@@ -938,7 +905,7 @@ impl App {
     /// the search. Command keys (Esc / Enter / Ctrl+G / arrows) resolve via the
     /// keymap's `Find` layer instead.
     fn find_input(&mut self, key: KeyEvent) {
-        let Some(find) = self.find.as_mut() else {
+        let Some(find) = self.active_find_mut() else {
             return;
         };
         let editing_query = find.field == SearchField::Find;
@@ -969,7 +936,7 @@ impl App {
 
     /// Re-run the in-file search and rebuild the active tab's match decorations.
     fn run_find(&mut self) {
-        let q = match &self.find {
+        let q = match self.active_find() {
             Some(find) => find.query_spec(),
             None => return,
         };
@@ -1008,7 +975,7 @@ impl App {
                 }
             }
         }
-        if let Some(find) = self.find.as_mut() {
+        if let Some(find) = self.active_find_mut() {
             find.count = count;
             find.current = 0;
         }
@@ -1016,7 +983,7 @@ impl App {
 
     /// Move to the next/previous match (wrapping) and scroll it into view.
     fn find_step(&mut self, delta: i32) {
-        let (count, current) = match &self.find {
+        let (count, current) = match self.active_find() {
             Some(find) => (find.count, find.current),
             None => return,
         };
@@ -1024,7 +991,7 @@ impl App {
             return;
         }
         let next = (current as i64 + i64::from(delta)).rem_euclid(count as i64) as usize;
-        if let Some(find) = self.find.as_mut() {
+        if let Some(find) = self.active_find_mut() {
             find.current = next;
         }
         if let Some(Tab {
@@ -1042,7 +1009,7 @@ impl App {
     /// Enter in the find bar: advance to the next match, or (in the replace field)
     /// replace the current match.
     fn find_submit(&mut self) {
-        if self.find.as_ref().map(|f| f.field) == Some(SearchField::Replace) {
+        if self.active_find().map(|f| f.field) == Some(SearchField::Replace) {
             self.find_replace_current();
         } else {
             self.find_step(1);
@@ -1052,7 +1019,7 @@ impl App {
     /// Replace the current in-file match with the replacement text. The edit is
     /// applied through the document (undoable); find re-runs when the snapshot lands.
     fn find_replace_current(&mut self) {
-        let Some(find) = self.find.as_ref() else {
+        let Some(find) = self.active_find() else {
             return;
         };
         if find.count == 0 {
@@ -1078,7 +1045,7 @@ impl App {
     /// Replace every in-file match at once by rewriting the whole buffer through a
     /// single undoable edit (offset-safe via `karet_search::apply_replacements`).
     fn find_replace_all(&mut self) {
-        let Some(find) = self.find.as_ref() else {
+        let Some(find) = self.active_find() else {
             return;
         };
         let query = find.query_spec();
@@ -1111,7 +1078,7 @@ impl App {
 
     /// Show or hide the find bar's replace field (collapsing returns to the query).
     fn find_toggle_replace(&mut self) {
-        if let Some(find) = self.find.as_mut() {
+        if let Some(find) = self.active_find_mut() {
             find.replace_visible = !find.replace_visible;
             if !find.replace_visible {
                 find.field = SearchField::Find;
@@ -1121,7 +1088,7 @@ impl App {
 
     /// Switch the edited find-bar field between find and replace.
     fn find_toggle_field(&mut self) {
-        if let Some(find) = self.find.as_mut() {
+        if let Some(find) = self.active_find_mut() {
             find.field = match find.field {
                 SearchField::Find => {
                     find.replace_visible = true;
@@ -1134,7 +1101,7 @@ impl App {
 
     /// Toggle a find-bar match option (regex / case / whole-word) and refresh matches.
     fn find_toggle_option(&mut self, option: SearchOption) {
-        if let Some(find) = self.find.as_mut() {
+        if let Some(find) = self.active_find_mut() {
             match option {
                 SearchOption::Regex => find.regex = !find.regex,
                 SearchOption::Case => find.case_sensitive = !find.case_sensitive,
@@ -2154,6 +2121,8 @@ impl App {
             self.active = self.tabs.len() - 1;
         }
         self.focus = Focus::Editor;
+        // A newly-focused tab never inherits another tab's open find bar.
+        self.find_open = false;
         self.register_doc(self.active);
     }
 
@@ -2310,6 +2279,9 @@ impl App {
         if index < self.tabs.len() {
             self.active = index;
             self.focus = Focus::Editor;
+            // The find bar is keyed to whichever tab it was opened over; switching
+            // tabs must not show it over a different file.
+            self.find_open = false;
         }
     }
 
@@ -2581,6 +2553,10 @@ impl App {
                 self.active = self.tabs.len() - 1;
             }
         }
+        // The closed tab's own `find` data goes with it; the flag may now be
+        // pointing at a different tab, so drop it too rather than risk showing
+        // the bar over whatever tab ends up active.
+        self.find_open = false;
         self.reconcile_open_docs();
     }
 
@@ -2596,6 +2572,7 @@ impl App {
         }
         self.tabs = vec![self.tabs.remove(self.active)];
         self.active = 0;
+        self.find_open = false;
         self.reconcile_open_docs();
     }
 
@@ -2616,6 +2593,7 @@ impl App {
         self.tabs = vec![Tab::welcome()];
         self.active = 0;
         self.focus = Focus::Sidebar;
+        self.find_open = false;
         self.reconcile_open_docs();
     }
 
@@ -3557,6 +3535,17 @@ impl App {
         }
     }
 
+    /// The active tab's find-in-file state, if any (find-in-file lives per tab so
+    /// it survives closing the bar, but not closing the tab).
+    fn active_find(&self) -> Option<&FindState> {
+        self.tabs.get(self.active)?.find.as_ref()
+    }
+
+    /// A mutable handle to the active tab's find-in-file state.
+    fn active_find_mut(&mut self) -> Option<&mut FindState> {
+        self.tabs.get_mut(self.active)?.find.as_mut()
+    }
+
     /// Send a document command for the active code tab, if any.
     fn send_doc_command(&mut self, make: impl FnOnce(DocumentId) -> SessionCommand) {
         let Some(doc) = self.active_code_doc() else {
@@ -3933,7 +3922,7 @@ impl App {
         }
         // If the find bar is open, an edit (e.g. a replace) just changed the buffer,
         // so recompute the match highlights against the fresh text.
-        if self.find.is_some() {
+        if self.find_open {
             self.run_find();
         }
     }
@@ -5041,11 +5030,11 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
             },
         ));
         app.dispatch(Command::OpenFind);
-        if let Some(find) = app.find.as_mut() {
+        if let Some(find) = app.active_find_mut() {
             find.query = "foo".to_string();
         }
         app.run_find();
-        assert_eq!(app.find.as_ref().map(|f| f.count), Some(2));
+        assert_eq!(app.active_find().map(|f| f.count), Some(2));
         if let TabKind::Code { decos, .. } = &app.tabs[app.active].kind {
             assert_eq!(decos.len(), 2);
         } else {
@@ -5671,49 +5660,130 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Push a minimal empty code tab and open Find over it, for tests that only
+    /// exercise the find-bar state machine (not real match content).
+    fn app_with_find_open() -> App {
+        use karet_syntax::Highlights;
+        use karet_text::TextBuffer;
+
+        let mut app = app();
+        app.push_tab(Tab::new(
+            "t.rs",
+            TabKind::Code {
+                path: PathBuf::from("t.rs"),
+                language: "Rust",
+                doc: None,
+                next_version: 0,
+                buffer: TextBuffer::from_text(""),
+                text: String::new(),
+                highlights: Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
+                decos: Vec::new(),
+            },
+        ));
+        app.dispatch(Command::OpenFind);
+        app
+    }
+
     #[test]
     fn find_bar_toggle_field_reveals_and_switches_replace() {
-        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
-        app.find = Some(FindState::default());
-        assert!(app.find.as_ref().is_some_and(|f| !f.replace_visible));
+        let mut app = app_with_find_open();
+        assert!(app.active_find().is_some_and(|f| !f.replace_visible));
         app.find_toggle_field();
         assert!(
-            app.find
-                .as_ref()
+            app.active_find()
                 .is_some_and(|f| f.replace_visible && f.field == SearchField::Replace)
         );
         app.find_toggle_field();
         assert!(
-            app.find
-                .as_ref()
+            app.active_find()
                 .is_some_and(|f| f.field == SearchField::Find)
         );
     }
 
     #[test]
     fn find_input_edits_the_active_field() {
-        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
-        app.find = Some(FindState::default());
+        let mut app = app_with_find_open();
         app.find_input(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         app.find_toggle_field(); // switch to the replace field
         app.find_input(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
         assert!(
-            app.find
-                .as_ref()
+            app.active_find()
                 .is_some_and(|f| f.query == "a" && f.replace == "b")
         );
     }
 
     #[test]
     fn find_toggle_option_flips_the_flags() {
-        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
-        app.find = Some(FindState::default());
+        let mut app = app_with_find_open();
         app.find_toggle_option(SearchOption::Regex);
         app.find_toggle_option(SearchOption::Word);
         assert!(
-            app.find
-                .as_ref()
+            app.active_find()
                 .is_some_and(|f| f.regex && !f.case_sensitive && f.whole_word)
+        );
+    }
+
+    #[test]
+    fn find_state_survives_esc_and_is_restored_on_reopen() {
+        // Regression: closing Find (Esc) used to discard the query/toggles;
+        // reopening Find on the same tab must restore them instead of starting
+        // blank.
+        let mut app = app_with_find_open();
+        if let Some(find) = app.active_find_mut() {
+            find.query = "needle".to_string();
+            find.regex = true;
+        }
+        app.close_find();
+        assert_eq!(
+            app.input_context().modal,
+            None,
+            "closing find must hide the bar"
+        );
+        assert!(
+            app.active_find()
+                .is_some_and(|f| f.query == "needle" && f.regex),
+            "the tab's find data must survive Esc"
+        );
+
+        app.open_find();
+        assert_eq!(app.input_context().modal, Some(crate::keymap::Modal::Find));
+        assert!(
+            app.active_find()
+                .is_some_and(|f| f.query == "needle" && f.regex),
+            "reopening find on the same tab must restore the prior query/toggles"
+        );
+    }
+
+    #[test]
+    fn switching_tabs_does_not_show_a_stale_find_bar() {
+        let mut app = app_with_find_open();
+        app.push_tab(Tab::new(
+            "u.rs",
+            TabKind::Code {
+                path: PathBuf::from("u.rs"),
+                language: "Rust",
+                doc: None,
+                next_version: 0,
+                buffer: karet_text::TextBuffer::from_text(""),
+                text: String::new(),
+                highlights: karet_syntax::Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
+                decos: Vec::new(),
+            },
+        ));
+        assert_eq!(
+            app.input_context().modal,
+            None,
+            "opening a second tab must not carry the first tab's open find bar over"
+        );
+        app.select_tab(0);
+        assert_eq!(
+            app.input_context().modal,
+            None,
+            "switching back must not resurrect the find bar either — only reopening it should"
         );
     }
 
@@ -5931,12 +6001,12 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         pump(&mut app, &mut events).await;
 
         app.open_find();
-        assert!(app.find.is_some());
+        assert!(app.find_open);
 
         app.handle_paste("needle".to_string());
 
         assert_eq!(
-            app.find.as_ref().map(|f| f.query.as_str()),
+            app.active_find().map(|f| f.query.as_str()),
             Some("needle"),
             "pasted text must land in the find query"
         );

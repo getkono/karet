@@ -14,6 +14,7 @@ use karet_editor::EditorState;
 use karet_fileview::image::Image;
 use karet_fileview::viewer::FileKind;
 use karet_pdf::Document as PdfDocument;
+use karet_search::SearchQuery;
 use karet_session::DocumentId;
 use karet_session::ViewId;
 use karet_syntax::FoldRegions;
@@ -21,6 +22,55 @@ use karet_syntax::Highlights;
 use karet_text::TextBuffer;
 
 use crate::render::FileView;
+
+/// The find-in-file bar state: the query, the match cursor, and the replace field
+/// (mirroring the workspace Search panel's model for a consistent UI). Lives on
+/// the [`Tab`] it was opened over, so closing the find bar (but not the tab)
+/// doesn't lose the query.
+#[derive(Clone, Default)]
+pub(crate) struct FindState {
+    /// The search query.
+    pub(crate) query: String,
+    /// The replacement text.
+    pub(crate) replace: String,
+    /// The number of matches.
+    pub(crate) count: usize,
+    /// The current match (0-based).
+    pub(crate) current: usize,
+    /// Which field is being edited (find / replace).
+    pub(crate) field: SearchField,
+    /// Whether the replace field is shown (collapsible; hidden by default).
+    pub(crate) replace_visible: bool,
+    /// Interpret the query as a regular expression.
+    pub(crate) regex: bool,
+    /// Match case-sensitively.
+    pub(crate) case_sensitive: bool,
+    /// Match whole words only.
+    pub(crate) whole_word: bool,
+}
+
+impl FindState {
+    /// The [`SearchQuery`] for the current query text and option toggles.
+    pub(crate) fn query_spec(&self) -> SearchQuery {
+        SearchQuery {
+            pattern: self.query.clone(),
+            regex: self.regex,
+            case_sensitive: self.case_sensitive,
+            whole_word: self.whole_word,
+            ..Default::default()
+        }
+    }
+}
+
+/// Which field of a find/replace surface is being edited.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SearchField {
+    /// The find query.
+    #[default]
+    Find,
+    /// The replacement text.
+    Replace,
+}
 
 /// How a diff tab is laid out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -161,6 +211,10 @@ pub struct Tab {
     /// When the in-flight save began, if a save is writing to disk. Drives the tab's
     /// saving spinner once the write exceeds a short threshold; `None` when idle.
     pub saving_since: Option<Instant>,
+    /// This tab's find-in-file query/toggles, kept for its lifetime (not reset by
+    /// closing the find bar) so reopening Find over the same file restores the
+    /// last search rather than starting blank. Dropped when the tab itself closes.
+    pub(crate) find: Option<FindState>,
 }
 
 impl Tab {
@@ -174,6 +228,7 @@ impl Tab {
             view: ViewId(0),
             dirty: false,
             saving_since: None,
+            find: None,
         }
     }
 

@@ -48,7 +48,6 @@ use ratatui::widgets::ScrollbarState;
 use ratatui::widgets::Wrap;
 
 use crate::app::App;
-use crate::app::FindState;
 use crate::app::MIN_SCM_REGION;
 use crate::app::SIDEBAR_MIN_WIDTH;
 use crate::app::TabDrag;
@@ -62,6 +61,7 @@ use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
 use crate::overlay::Overlay;
 use crate::render::{self};
+use crate::tab::FindState;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 use crate::tab::ViewMode;
@@ -147,7 +147,9 @@ struct PaneCtx<'a> {
     /// Whether the editor should draw its caret as focused.
     editor_focused: bool,
     /// The find bar to draw atop this pane's content, if any (focused pane only).
-    find: Option<&'a FindState>,
+    /// Owned (not borrowed): it now lives on the active `Tab` itself, and
+    /// `render_pane` needs a mutable borrow of the tabs slice at the same time.
+    find: Option<FindState>,
 }
 
 /// What a rendered pane reported back for hit-testing and image placement.
@@ -175,7 +177,11 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                 graphics,
                 pane_focused: true,
                 editor_focused,
-                find: app.find.as_ref(),
+                find: app
+                    .find_open
+                    .then(|| app.tabs.get(app.active))
+                    .flatten()
+                    .and_then(|t| t.find.clone()),
             };
             render_pane(f, &mut app.tabs, app.active, rect, &ctx)
         } else if let Some(stored) = app.stored.get_mut(&pane) {
@@ -226,7 +232,7 @@ fn render_pane(
         draw_pane_breadcrumb(f, tabs.get(active), ctx.theme, parts[1]);
     }
     let mut content = parts[2];
-    if let Some(find) = ctx.find {
+    if let Some(find) = ctx.find.as_ref() {
         // One row for find; a second when the replace field is shown.
         let want = if find.replace_visible { 2 } else { 1 };
         let h = want.min(content.height);
@@ -298,7 +304,7 @@ fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
 /// when the replace field is shown, a replace row. Mirrors the workspace Search
 /// panel's model on the status-bar strip for a consistent find/replace experience.
 fn draw_find_bar(f: &mut Frame, find: &FindState, theme: &Theme, area: Rect) {
-    use crate::app::SearchField;
+    use crate::tab::SearchField;
 
     let base = Style::default()
         .bg(theme.role(ThemeRole::StatusBarBackground).to_ratatui())
@@ -1020,7 +1026,7 @@ fn draw_commit_input(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
 }
 
 fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
-    use crate::app::SearchField;
+    use crate::tab::SearchField;
 
     // Right-hand slot on the find/replace rows for the option toggles / replace-all.
     const SLOT_W: u16 = 10;
