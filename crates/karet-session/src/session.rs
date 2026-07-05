@@ -31,6 +31,7 @@ use karet_text::AppliedEdit;
 use karet_text::EditCause;
 use karet_text::EditContext;
 use karet_text::TextBuffer;
+use karet_text::TextError;
 use karet_treesitter::LanguageId;
 use karet_treesitter::ParserPool;
 use karet_treesitter::SyntaxTree;
@@ -135,21 +136,17 @@ fn load_document(path: &Path) -> Result<(TextBuffer, DocFormat), String> {
 
 /// Save `doc` to disk, re-encoding a decoded binary format (CBOR) from its edit
 /// text. A CBOR encode error (e.g. malformed diagnostic notation after editing)
-/// leaves the file untouched and surfaces as a save failure.
-fn save_document(doc: &mut Document) -> Result<(), String> {
+/// leaves the file untouched and surfaces as a save failure. Returns
+/// [`TextError::Conflict`] distinctly (rather than a generic IO error) so the
+/// caller can prompt the user instead of just reporting a failure.
+fn save_document(doc: &mut Document) -> Result<(), TextError> {
     match doc.format {
-        DocFormat::Text => doc
-            .buffer
-            .save(&doc.path)
-            .map(|_| ())
-            .map_err(|e| e.to_string()),
+        DocFormat::Text => doc.buffer.save(&doc.path).map(|_| ()),
         DocFormat::Cbor => {
             let text = doc.buffer.text();
-            let bytes = karet_cbor::encode_from_text(&text).map_err(|e| e.to_string())?;
-            doc.buffer
-                .save_bytes(&doc.path, &bytes)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
+            let bytes =
+                karet_cbor::encode_from_text(&text).map_err(|e| TextError::Io(e.to_string()))?;
+            doc.buffer.save_bytes(&doc.path, &bytes).map(|_| ())
         },
     }
 }
@@ -709,6 +706,15 @@ impl Session {
                     }
                 }
                 self.emit(Some(id), Event::Saved { doc: doc_id });
+            },
+            Some(Err(TextError::Conflict)) => {
+                // The file changed on disk since it was last read — writing now would
+                // silently clobber someone else's change. Back up the in-memory edits
+                // (same as any other failed save) and let the client prompt the user,
+                // reusing the same event an external change to a dirty doc already
+                // triggers reactively.
+                self.write_swap(doc_id);
+                self.emit(Some(id), Event::ExternalConflict { doc: doc_id });
             },
             Some(Err(e)) => {
                 // A failed save is exactly when a backup matters most: capture the
@@ -1280,6 +1286,68 @@ mod tests {
                 .document(doc)
                 .is_some_and(|v| v.buffer().line_count() == 2)
         );
+    }
+
+    #[test]
+    fn save_refuses_to_overwrite_a_file_changed_on_disk_since_it_was_read() {
+        let Some((_dir, path)) = write_temp("main.rs", "fn main() {}\n") else {
+            return;
+        };
+        let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let Some(doc) = opened_doc(&mut events) else {
+            return;
+        };
+        let _ = snaps.try_recv();
+
+        // Dirty the in-memory buffer without touching the file yet.
+        let change = Change::new(
+            0,
+            vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(0, 0),
+                    end: LineCol::new(0, 0),
+                },
+                new_text: "// edited\n".to_string(),
+            }],
+        );
+        session.handle(RequestId(2), Command::ApplyChange { doc, change });
+        while events.try_recv().is_some() {}
+        let _ = snaps.try_recv();
+
+        // Someone else changes the file on disk before we save.
+        if std::fs::write(&path, "fn main() { /* external */ }\n").is_err() {
+            return;
+        }
+
+        session.handle(RequestId(3), Command::Save { doc });
+        let mut conflict = false;
+        let mut saved = false;
+        while let Some((_, ev)) = events.try_recv() {
+            match ev {
+                Event::ExternalConflict { .. } => conflict = true,
+                Event::Saved { .. } => saved = true,
+                _ => {},
+            }
+        }
+        assert!(
+            conflict,
+            "save must report an ExternalConflict, not just fail silently"
+        );
+        assert!(!saved, "a conflicting save must not report as Saved");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "fn main() { /* external */ }\n",
+            "a refused save must not overwrite the externally-changed file"
+        );
+        // The in-memory edit is still there (unsaved, not discarded).
+        assert!(session.document(doc).is_some_and(|v| v.buffer().is_dirty()));
     }
 
     #[test]
