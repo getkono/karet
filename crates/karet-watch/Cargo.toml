@@ -16,9 +16,13 @@ publish = false                       # karet-internal infrastructure
 [dependencies]
 notify.workspace = true
 notify-debouncer-full.workspace = true
+ignore.workspace = true               # gitignore-aware directory enumeration to watch
 tokio = { workspace = true, features = ["sync"] }
 thiserror.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true             # scratch trees for the watcher integration tests
 
 [lints]
 workspace = true
