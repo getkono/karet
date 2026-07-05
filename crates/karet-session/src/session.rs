@@ -512,6 +512,16 @@ impl Session {
                 self.on_external_change(doc_id, path);
             }
         }
+        // A generic "something changed" signal for anything else the client
+        // derives from the workspace (e.g. a live-updating search) — distinct
+        // from the specific reactions below, which only cover open documents and
+        // VCS state.
+        self.emit(
+            None,
+            Event::FsChanged {
+                paths: event.paths.clone(),
+            },
+        );
         // Any worktree edit or watched git-metadata change can alter status. The
         // event is already debounced and the emit is change-gated, so a burst (and
         // the session's own index writes) collapse to at most one update.
@@ -1821,6 +1831,23 @@ mod tests {
         if let Some((_staged, working)) = refreshed {
             assert_eq!(working.len(), 2);
         }
+    }
+
+    #[test]
+    fn filesystem_event_emits_fs_changed_with_the_affected_paths() {
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+        let path = PathBuf::from("/work/touched.rs");
+        session.handle_fs_event(karet_watch::FsEvent {
+            kind: karet_watch::FsEventKind::Modified,
+            paths: vec![path.clone()],
+        });
+        let mut seen = None;
+        while let Some((_, ev)) = events.try_recv() {
+            if let Event::FsChanged { paths } = ev {
+                seen = Some(paths);
+            }
+        }
+        assert_eq!(seen, Some(vec![path]));
     }
 
     /// A whole-buffer insertion at the start of the document (base version 0).

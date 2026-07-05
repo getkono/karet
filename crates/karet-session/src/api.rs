@@ -264,6 +264,15 @@ pub enum Event {
         /// The path that could not be opened as text.
         path: PathBuf,
     },
+    /// A debounced filesystem change was observed (see `karet-watch`). Distinct
+    /// from the specific `Reloaded`/`VcsStatus`/`VcsLog` reactions the backend
+    /// already performs on the same event — this tells the client something on
+    /// disk changed so it can refresh anything else it derives from the
+    /// workspace (e.g. re-run a live workspace search).
+    FsChanged {
+        /// The affected paths, as reported by the debounced watcher.
+        paths: Vec<PathBuf>,
+    },
     /// New diagnostics were published for a document.
     DiagnosticsPublished {
         /// The document.
