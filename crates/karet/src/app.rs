@@ -1243,6 +1243,7 @@ impl App {
         self.search.results.clear();
         self.search.selected = 0;
         if self.search.query.is_empty() {
+            self.refresh_search_decorations();
             return;
         }
         let query = self.build_search_query();
@@ -1253,6 +1254,48 @@ impl App {
             }
         });
         self.search.results = results;
+        self.refresh_search_decorations();
+    }
+
+    /// Recompute global-search match decorations for every open tab across every
+    /// pane, from the current Search panel query and result set — this is what
+    /// makes matches highlight inline in any already-open pane, not just the
+    /// flat results list. Matches are recomputed against each tab's own **live**
+    /// buffer (not the on-disk `FileHit` byte offsets), so a dirty/unsaved tab's
+    /// highlights stay correct even though its content differs from disk.
+    fn refresh_search_decorations(&mut self) {
+        let query = self.build_search_query();
+        // Owned, not borrowed: `all_tabs_mut()` below needs `&mut self`, which a
+        // set of `&Path` borrowed from `self.search.results` would conflict with.
+        let hit_paths: HashSet<PathBuf> =
+            self.search.results.iter().map(|h| h.path.clone()).collect();
+        for tab in self.all_tabs_mut() {
+            if let TabKind::Code {
+                path,
+                buffer,
+                text,
+                search_decos,
+                ..
+            } = &mut tab.kind
+            {
+                *search_decos = if !query.pattern.is_empty() && hit_paths.contains(path.as_path()) {
+                    search_in_file(text, &query)
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|m| Decoration {
+                            range: Range {
+                                start: buffer.byte_to_line_col(BytePos(m.start)),
+                                end: buffer.byte_to_line_col(BytePos(m.end)),
+                            },
+                            kind: DecorationKind::TextBackground,
+                            role: Some(ThemeRole::SearchMatch),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+            }
+        }
     }
 
     /// Move the selection within the search results.
@@ -2463,6 +2506,7 @@ impl App {
                     folds,
                     folded,
                     decos,
+                    search_decos,
                 } => Tab::new(
                     t.title.clone(),
                     TabKind::Code {
@@ -2476,6 +2520,7 @@ impl App {
                         folds: folds.clone(),
                         folded: folded.clone(),
                         decos: decos.clone(),
+                        search_decos: search_decos.clone(),
                     },
                 ),
                 _ => Tab::welcome(),
@@ -3819,6 +3864,15 @@ impl App {
                     format!("opened {} read-only: not valid UTF-8", path.display()),
                 );
             },
+            // Keep a live workspace search current: re-run it (which also
+            // refreshes open-pane highlights) whenever something changes on
+            // disk. No extra debouncing needed here — the watcher already
+            // debounces at the source, and the result cap keeps a re-run cheap.
+            SessionEvent::FsChanged { .. } => {
+                if !self.search.query.is_empty() {
+                    self.run_global_search();
+                }
+            },
             SessionEvent::Progress { message, .. } => self.status = Some(message),
             // The single high-up funnel: every backend-reported condition becomes a
             // notification, so nothing is silently dropped.
@@ -3924,6 +3978,12 @@ impl App {
         // so recompute the match highlights against the fresh text.
         if self.find_open {
             self.run_find();
+        }
+        // Likewise for global search matches: a newly-opened or just-edited tab
+        // should show its highlights immediately, not only after the next
+        // explicit search re-run.
+        if !self.search.query.is_empty() {
+            self.refresh_search_decorations();
         }
     }
 }
@@ -5027,6 +5087,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
+                search_decos: Vec::new(),
             },
         ));
         app.dispatch(Command::OpenFind);
@@ -5064,6 +5125,69 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         app.run_global_search();
         assert_eq!(app.search.results.len(), 1);
         assert!(app.search.results[0].path.ends_with("a.txt"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn global_search_highlights_matches_in_an_already_open_tab() {
+        let n = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "karet-app-search-decos-{}-{}",
+            std::process::id(),
+            n.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("a.txt");
+        let _ = std::fs::write(&file, "needle here\n");
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.open_path(&file);
+
+        app.search.query = "needle".to_string();
+        app.run_global_search();
+        assert_eq!(app.search.results.len(), 1);
+        match &app.tabs[app.active].kind {
+            TabKind::Code { search_decos, .. } => assert_eq!(search_decos.len(), 1),
+            _ => unreachable!("expected a code tab"),
+        }
+
+        // Clearing the query must clear the highlights too, not leave them stale.
+        app.search.query.clear();
+        app.run_global_search();
+        match &app.tabs[app.active].kind {
+            TabKind::Code { search_decos, .. } => assert!(search_decos.is_empty()),
+            _ => unreachable!("expected a code tab"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fs_changed_event_reruns_a_live_global_search() {
+        let n = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "karet-app-fschanged-{}-{}",
+            std::process::id(),
+            n.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.search.query = "needle".to_string();
+        app.run_global_search();
+        assert_eq!(app.search.results.len(), 0, "no matching file exists yet");
+
+        // A file matching the live query appears on disk...
+        let file = dir.join("new.txt");
+        let _ = std::fs::write(&file, "needle here\n");
+        // ...and the watcher's debounced event is what tells the app to look again.
+        app.on_backend_event(None, SessionEvent::FsChanged { paths: vec![file] });
+        assert_eq!(
+            app.search.results.len(),
+            1,
+            "FsChanged must re-run the live search"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -5107,6 +5231,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
+                search_decos: Vec::new(),
             },
         ));
         app.dispatch(Command::ShowBlame);
@@ -5150,6 +5275,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
+                search_decos: Vec::new(),
             },
         )
     }
@@ -5200,6 +5326,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
+                search_decos: Vec::new(),
             },
         )
     }
@@ -5680,6 +5807,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
+                search_decos: Vec::new(),
             },
         ));
         app.dispatch(Command::OpenFind);
@@ -5772,6 +5900,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
+                search_decos: Vec::new(),
             },
         ));
         assert_eq!(

@@ -113,6 +113,10 @@ pub enum TabKind {
         folded: BTreeSet<u32>,
         /// Find-in-file match decorations (empty when not searching).
         decos: Vec<Decoration>,
+        /// Global (workspace) search match decorations, kept separate from
+        /// `decos` so closing/rerunning local find can't wipe them (or vice
+        /// versa). Empty unless this tab's path is a current search result.
+        search_decos: Vec<Decoration>,
     },
     /// A raster image.
     Image {
@@ -332,6 +336,7 @@ mod tests {
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
+                search_decos: Vec::new(),
             },
         );
         assert_eq!(tab.path(), Some(Path::new("/x/a.rs")));
@@ -354,6 +359,7 @@ mod tests {
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
+                search_decos: Vec::new(),
             },
         );
         assert_eq!(tab.encoding_label().as_deref(), Some("UTF-8 · CRLF"));

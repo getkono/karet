@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use karet_core::Decoration;
 use karet_core::ThemeRole;
 use karet_editor::Editor;
 use karet_filetype::FileKind;
@@ -1183,13 +1184,19 @@ fn draw_pane_content(
             folds,
             folded,
             decos,
+            search_decos,
             ..
         } => {
             let fold_lines = crate::app::resolve_folds(folds, folded);
+            // Local find and global search highlights are kept in separate
+            // fields (so closing/rerunning one can't wipe the other) and
+            // combined only here, at render time.
+            let combined: Vec<Decoration> =
+                decos.iter().chain(search_decos.iter()).cloned().collect();
             let editor = Editor::new(buffer)
                 .highlights(highlights)
                 .theme(theme)
-                .decorations(decos)
+                .decorations(&combined)
                 .folds(&fold_lines)
                 .focused(ctx.editor_focused);
             f.render_stateful_widget(editor, area, &mut tab.editor);
@@ -1736,6 +1743,7 @@ mod tests {
                 folds: karet_syntax::FoldRegions::default(),
                 folded: std::collections::BTreeSet::new(),
                 decos: Vec::new(),
+                search_decos: Vec::new(),
             },
         );
 
