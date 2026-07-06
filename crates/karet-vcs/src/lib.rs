@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use karet_core::Decoration;
 
 mod changes;
+mod detail;
 mod log;
 mod repo;
 mod selection;
@@ -21,6 +22,10 @@ mod selection;
 mod write;
 
 pub use changes::FileChange;
+pub use detail::CommitDetail;
+pub use detail::CommitSignature;
+pub use detail::Identity;
+pub use detail::SignatureKind;
 pub use log::Commit;
 pub use selection::Selection;
 

@@ -132,6 +132,10 @@ gix = { version = "0.85.0", default-features = false, features = ["status", "max
 # Optional libgit2 write backend for karet-vcs staging (no ssh/https system deps;
 # libgit2-sys still vendors and builds libgit2 via a C toolchain when enabled).
 git2 = { version = "0.20", default-features = false }
+# SSH commit-signature parsing (karet-vcs `signature` feature): decode an SSHSIG
+# armored blob to recover the signer's public key + SHA256 fingerprint. Pure-Rust
+# (RustCrypto), no C deps — we trim the optional cipher/curve features we don't use.
+ssh-key = { version = "0.6.7", default-features = false, features = ["alloc", "std"] }
 # Filesystem watching (karet-watch)
 notify                 = "8.2"
 notify-debouncer-full  = "0.7"
