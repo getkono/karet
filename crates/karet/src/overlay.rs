@@ -115,6 +115,12 @@ impl<T> Picker<T> {
         self.query.pop();
         self.refilter();
     }
+
+    /// Append pasted text to the query and refilter.
+    fn push_str(&mut self, text: &str) {
+        self.query.push_str(text);
+        self.refilter();
+    }
 }
 
 /// A modal overlay.
@@ -221,6 +227,14 @@ impl Overlay {
         match self {
             Self::QuickOpen(p) => p.pop_char(),
             Self::CommandPalette(p) => p.pop_char(),
+        }
+    }
+
+    /// Append pasted text to the query.
+    pub fn push_str(&mut self, text: &str) {
+        match self {
+            Self::QuickOpen(p) => p.push_str(text),
+            Self::CommandPalette(p) => p.push_str(text),
         }
     }
 

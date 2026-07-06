@@ -301,6 +301,14 @@ impl FileTreeState {
         }
     }
 
+    /// Append pasted text to the inline edit buffer (no-op when not editing).
+    pub fn edit_paste(&mut self, text: &str) {
+        if let Some(edit) = self.editing.as_mut() {
+            edit.buffer.push_str(text);
+            self.needs_rebuild = true;
+        }
+    }
+
     /// Cancel any in-progress inline edit.
     pub fn cancel_edit(&mut self) {
         if self.editing.take().is_some() {
@@ -1066,6 +1074,37 @@ mod tests {
                 folder: true,
             })
         );
+    }
+
+    #[test]
+    fn edit_paste_appends_to_the_inline_edit_buffer() {
+        let dir = temp_dir();
+        write(&dir.path, "old.txt", b"o");
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+        state.select_visible(0);
+        state.begin_rename();
+        for _ in 0.."old.txt".len() {
+            state.edit_backspace();
+        }
+        state.edit_paste("pasted.txt");
+        state.ensure_built(&dir.path);
+        assert!(
+            state
+                .rows()
+                .iter()
+                .any(|r| r.editing && r.label == "pasted.txt")
+        );
+    }
+
+    #[test]
+    fn edit_paste_is_a_no_op_when_not_editing() {
+        let dir = temp_dir();
+        write(&dir.path, "old.txt", b"o");
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+        state.edit_paste("should not appear anywhere");
+        assert!(!state.is_editing());
     }
 
     #[test]
