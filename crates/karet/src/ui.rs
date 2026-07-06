@@ -480,7 +480,7 @@ fn draw_pane_tabs(
     let mut spans = Vec::new();
     let mut x = area.x;
     for (i, tab) in tabs.iter().enumerate() {
-        let style = if i == active && pane_focused {
+        let mut style = if i == active && pane_focused {
             Style::default()
                 .fg(theme.role(ThemeRole::Foreground).to_ratatui())
                 .add_modifier(Modifier::BOLD | Modifier::REVERSED)
@@ -492,6 +492,11 @@ fn draw_pane_tabs(
         } else {
             Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())
         };
+        // The preview tab (VS Code-style single-reused-slot tab) renders
+        // italicized so it reads as provisional until edited or promoted.
+        if tab.is_preview {
+            style = style.add_modifier(Modifier::ITALIC);
+        }
         // A pre-allocated 1-cell status slot keeps the layout stable: `●` for
         // unsaved changes (a spinner frame while a slow save writes), else blank.
         let mark = save_mark(tab);

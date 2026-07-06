@@ -1748,12 +1748,44 @@ impl App {
                     if row.is_dir {
                         self.explorer.toggle(&path);
                     } else {
-                        self.open_path(&path);
+                        self.open_path_preview(&path);
                     }
                 }
             },
             SidebarPanel::SourceControl => self.open_selected_diff(),
             SidebarPanel::Search => {},
+        }
+    }
+
+    /// Double-click on a file in the tree: promote it to a permanent tab instead
+    /// of the single-click/Enter preview behavior. If it's already open (as the
+    /// preview tab or otherwise), just clears its preview flag in place; if not
+    /// yet open, opens it as a new permanent tab via [`open_path`](Self::open_path).
+    fn sidebar_promote_or_open_permanent(&mut self) {
+        if self.sidebar_panel != SidebarPanel::Explorer {
+            return;
+        }
+        self.explorer.ensure_built(&self.root);
+        let Some(row) = self.explorer.selected() else {
+            return;
+        };
+        if row.is_dir {
+            self.explorer.toggle(&row.path.clone());
+            return;
+        }
+        let path = row.path.clone();
+        let target = canonical(&path);
+        if let Some(idx) = self
+            .tabs
+            .iter()
+            .position(|t| !t.is_diff() && t.path().is_some_and(|p| canonical(p) == target))
+        {
+            if let Some(tab) = self.tabs.get_mut(idx) {
+                tab.is_preview = false;
+            }
+            self.select_tab(idx);
+        } else {
+            self.open_path(&path);
         }
     }
 
@@ -2127,6 +2159,42 @@ impl App {
         }
         let tab = workspace::open_file(path, self.syntax);
         self.push_tab(tab);
+    }
+
+    /// Open `path` into the focused pane's reusable "preview" tab slot (VS
+    /// Code-style): used only by file-tree navigation (single click / arrow +
+    /// activate). A file already open (preview or permanent) is just focused,
+    /// same as [`open_path`](Self::open_path). Otherwise the current preview
+    /// tab, if this pane has one, is replaced in place; if not, a new preview
+    /// tab is opened. Every other caller of `open_path` (LSP jumps, the
+    /// overlay, reopen-closed, CLI-provided files) keeps opening permanent
+    /// tabs — only tree navigation opens previews.
+    fn open_path_preview(&mut self, path: &Path) {
+        let target = canonical(path);
+        if let Some(idx) = self
+            .tabs
+            .iter()
+            .position(|t| !t.is_diff() && t.path().is_some_and(|p| canonical(p) == target))
+        {
+            self.select_tab(idx);
+            return;
+        }
+        let mut tab = workspace::open_file(path, self.syntax);
+        tab.is_preview = true;
+        match self.tabs.iter().position(|t| t.is_preview) {
+            Some(idx) => {
+                tab.view = self.alloc_view();
+                self.tabs[idx] = tab;
+                self.active = idx;
+                self.focus = Focus::Editor;
+                self.find_open = false;
+                self.register_doc(self.active);
+                // The replaced tab's document (if any) is no longer referenced by
+                // any tab; this closes it on the session side.
+                self.reconcile_open_docs();
+            },
+            None => self.push_tab(tab),
+        }
     }
 
     /// The "open anyway" override: re-open the active too-large placeholder's file
@@ -3087,8 +3155,13 @@ impl App {
                 } else if shift {
                     self.explorer.extend_visible(view_row);
                 } else {
+                    let streak = self.click_streak(col, row_y);
                     self.explorer.select_visible(view_row);
-                    self.sidebar_activate();
+                    if streak >= 2 {
+                        self.sidebar_promote_or_open_permanent();
+                    } else {
+                        self.sidebar_activate();
+                    }
                 }
             },
             SidebarPanel::SourceControl => {
@@ -3962,6 +4035,12 @@ impl App {
                 // edit shifted or removed it), so stale hidden lines can't linger.
                 let starts: HashSet<u32> = folds.regions().iter().map(|r| r.start).collect();
                 folded.retain(|line| starts.contains(line));
+            }
+            // The clean→dirty transition permanently promotes a preview tab (VS
+            // Code behavior): once edited, it survives being navigated away from
+            // instead of getting silently replaced by the next preview-opened file.
+            if snap.dirty && !tab.dirty {
+                tab.is_preview = false;
             }
             tab.dirty = snap.dirty;
             // Undo/redo snapshots carry the caret to jump to; ordinary edits carry
@@ -5064,6 +5143,155 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         app.open_path(&a); // focuses a's existing tab rather than appending
         assert_eq!(app.tabs.len(), 2);
         assert_eq!(app.active, 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preview_open_replaces_the_current_preview_tab_in_place() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "karet-preview-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let a = dir.join("a.rs");
+        let b = dir.join("b.rs");
+        let _ = std::fs::write(&a, "fn a() {}\n");
+        let _ = std::fs::write(&b, "fn b() {}\n");
+
+        let mut app = app();
+        app.open_path_preview(&a);
+        assert_eq!(app.tabs.len(), 1);
+        assert!(
+            app.tabs[0].is_preview,
+            "a preview-opened file is marked preview"
+        );
+        assert_eq!(app.tabs[0].path(), Some(a.as_path()));
+
+        // Navigating to a second file replaces the preview tab in place — no
+        // second tab, and the old one's path is gone.
+        app.open_path_preview(&b);
+        assert_eq!(
+            app.tabs.len(),
+            1,
+            "opening another preview must replace, not append"
+        );
+        assert!(app.tabs[0].is_preview);
+        assert_eq!(app.tabs[0].path(), Some(b.as_path()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preview_open_on_an_already_open_permanent_tab_just_focuses_it() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "karet-preview-focus-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let a = dir.join("a.rs");
+        let _ = std::fs::write(&a, "fn a() {}\n");
+
+        let mut app = app();
+        app.open_path(&a); // permanent open (not preview)
+        assert!(!app.tabs[0].is_preview);
+
+        app.open_path_preview(&a);
+        assert_eq!(app.tabs.len(), 1, "must not duplicate an already-open file");
+        assert!(
+            !app.tabs[0].is_preview,
+            "focusing an already-open permanent tab must not turn it into a preview"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn double_click_promotes_the_preview_tab_without_duplicating_it() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "karet-preview-promote-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let a = dir.join("a.rs");
+        let _ = std::fs::write(&a, "fn a() {}\n");
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+        app.explorer.ensure_built(&dir);
+        app.explorer.select_visible(
+            app.explorer
+                .rows()
+                .iter()
+                .position(|r| r.label == "a.rs")
+                .expect("a.rs is listed"),
+        );
+        app.sidebar_promote_or_open_permanent();
+        assert_eq!(app.tabs.len(), 1, "not yet open: opens one permanent tab");
+        assert!(!app.tabs[0].is_preview);
+
+        // Re-open as preview, then double-click-promote the existing tab: still
+        // exactly one tab, now permanent.
+        app.close_all_tabs();
+        app.open_path_preview(&a);
+        assert!(app.tabs[0].is_preview);
+        app.sidebar_promote_or_open_permanent();
+        assert_eq!(app.tabs.len(), 1, "promoting must not open a duplicate tab");
+        assert!(
+            !app.tabs[0].is_preview,
+            "double-click clears the preview flag"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn editing_a_preview_tab_promotes_it_permanently() {
+        let dir = std::env::temp_dir().join(format!(
+            "karet-preview-edit-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "ab").expect("write temp file");
+
+        let (session, mut events, mut snaps) = Session::new(SessionConfig {
+            roots: vec![dir.clone()],
+            ..SessionConfig::default()
+        });
+        let backend: Arc<dyn Backend> = Arc::new(local(session));
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend);
+        app.open_path_preview(&path);
+        pump(&mut app, &mut events).await;
+        assert!(app.tabs[app.active].is_preview);
+
+        app.dispatch(Command::InsertChar('x'));
+        pump(&mut app, &mut events).await;
+        // The dirty flag (and thus the promote-on-edit hook) is only ever set from
+        // a document snapshot, not from the optimistic local apply in submit_edit.
+        while let Ok(Some((doc, snap))) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), snaps.recv()).await
+        {
+            app.on_snapshot(doc, &snap);
+        }
+        assert!(
+            !app.tabs[app.active].is_preview,
+            "the first edit must permanently promote the preview tab"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

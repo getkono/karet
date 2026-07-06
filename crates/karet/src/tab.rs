@@ -219,6 +219,11 @@ pub struct Tab {
     /// closing the find bar) so reopening Find over the same file restores the
     /// last search rather than starting blank. Dropped when the tab itself closes.
     pub(crate) find: Option<FindState>,
+    /// Whether this is the pane's reusable "preview" tab (VS Code-style):
+    /// navigating to another file replaces it in place instead of opening a new
+    /// tab. Cleared permanently on the first edit (clean→dirty transition) or by
+    /// double-clicking the file in the tree.
+    pub(crate) is_preview: bool,
 }
 
 impl Tab {
@@ -233,6 +238,7 @@ impl Tab {
             dirty: false,
             saving_since: None,
             find: None,
+            is_preview: false,
         }
     }
 
