@@ -153,6 +153,9 @@ pub enum TabKind {
     /// The full-screen commit graph browser: a scrollable DAG commit log on the left
     /// and the selected commit's detail on the right.
     CommitGraph {
+        /// When set, the browser shows the history of this file (`git log -- <path>`)
+        /// rather than the whole-repository log; paging uses the same source.
+        history_path: Option<PathBuf>,
         /// The loaded commits, newest first (its own paged history).
         commits: Vec<karet_vcs::Commit>,
         /// Whether older commits remain to be paged in.
@@ -244,12 +247,14 @@ impl Tab {
         )
     }
 
-    /// An empty commit graph browser, to be filled as its history pages arrive.
+    /// An empty commit graph browser, to be filled as its history pages arrive. Pass
+    /// `history_path` to scope it to one file's history; `None` browses the whole log.
     #[must_use]
-    pub fn commit_graph() -> Self {
+    pub fn commit_graph(history_path: Option<PathBuf>, title: impl Into<String>) -> Self {
         Self::new(
-            "Commits",
+            title,
             TabKind::CommitGraph {
+                history_path,
                 commits: Vec::new(),
                 has_more: false,
                 loading: true,

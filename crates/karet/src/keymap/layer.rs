@@ -129,6 +129,8 @@ pub enum Layer {
     SearchList,
     /// Active while the commit-message input is open.
     CommitInput,
+    /// Active while the go-to-commit (revision) input is open.
+    RevInput,
     /// Active while the discard-confirmation prompt is up.
     DiscardConfirm,
     /// Active while the quit-confirmation prompt (unsaved changes) is up.
@@ -154,6 +156,8 @@ pub enum Modal {
     SearchList,
     /// The Source-Control commit-message input.
     CommitInput,
+    /// The go-to-commit (revision) input.
+    RevInput,
     /// The discard-confirmation prompt.
     DiscardConfirm,
     /// The quit-confirmation prompt shown when quitting with unsaved changes.
@@ -204,6 +208,7 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
         Some(Modal::Overlay) => &[L::Overlay],
         Some(Modal::Find) => &[L::Find],
         Some(Modal::CommitInput) => &[L::CommitInput],
+        Some(Modal::RevInput) => &[L::RevInput],
         Some(Modal::DiscardConfirm) => &[L::DiscardConfirm],
         Some(Modal::QuitConfirm) => &[L::QuitConfirm],
         Some(Modal::SwapRecover) => &[L::SwapRecover],

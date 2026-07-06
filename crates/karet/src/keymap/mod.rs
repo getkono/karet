@@ -107,6 +107,7 @@ use Layer::Outline;
 use Layer::Overlay;
 use Layer::Oversize;
 use Layer::QuitConfirm;
+use Layer::RevInput;
 use Layer::SearchInput;
 use Layer::SearchList;
 use Layer::Sidebar;
@@ -328,6 +329,9 @@ static BINDINGS: &[Binding] = &[
     // Commit-message input.
     b(CommitInput, false, false, false, Esc,   Command::CommitCancel),
     b(CommitInput, false, false, false, Enter, Command::CommitSubmit),
+    // Go-to-commit (revision) input.
+    b(RevInput, false, false, false, Esc,   Command::RevInputCancel),
+    b(RevInput, false, false, false, Enter, Command::RevInputSubmit),
     // Discard confirmation: only the confirm keys are bound; anything else cancels.
     b(DiscardConfirm, false, false, false, Enter,     Command::ConfirmDiscard),
     b(DiscardConfirm, false, false, false, Char('y'), Command::ConfirmDiscard),

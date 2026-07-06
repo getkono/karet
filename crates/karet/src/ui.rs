@@ -132,9 +132,38 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if let Some(overlay) = &app.overlay {
         draw_overlay(f, overlay, &theme, area);
     }
+    if let Some(rev) = &app.rev_input {
+        draw_rev_input(f, rev, &theme, area);
+    }
 
     // Toasts float above everything, including the modal overlay.
     draw_toasts(f, app, &theme, area);
+}
+
+/// Draw the centered go-to-commit (revision) input prompt.
+fn draw_rev_input(f: &mut Frame, rev: &str, theme: &Theme, area: Rect) {
+    let width = area.width.clamp(20, 60);
+    let rect = centered(area, width, 3);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Go to commit")
+        .border_style(Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui()))
+        .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui()));
+    let inner = block.inner(rect);
+    f.render_widget(Clear, rect);
+    f.render_widget(block, rect);
+    let line = Line::from(vec![
+        Span::styled(
+            "› ",
+            Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
+        ),
+        Span::styled(
+            rev.to_string(),
+            Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui()),
+        ),
+        Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
+    ]);
+    f.render_widget(Paragraph::new(line), inner);
 }
 
 /// Immutable per-pane render inputs, bundled to keep the render helpers' signatures
@@ -1202,6 +1231,7 @@ fn draw_pane_content(
             scroll,
         } => draw_commit(f, theme, area, detail, files, verification.as_ref(), scroll),
         TabKind::CommitGraph {
+            history_path: _,
             commits,
             has_more,
             loading,

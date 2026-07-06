@@ -381,6 +381,8 @@ pub struct App {
     pub(crate) find: Option<FindState>,
     /// The in-progress commit message while the Source-Control commit input is open.
     pub(crate) commit_input: Option<String>,
+    /// The in-progress revision text while the go-to-commit input is open.
+    pub(crate) rev_input: Option<String>,
     /// Paths awaiting a discard confirmation (set after pressing discard; cleared
     /// when the user confirms or cancels).
     pub(crate) pending_discard: Option<Vec<PathBuf>>,
@@ -561,6 +563,7 @@ impl App {
             overlay: None,
             find: None,
             commit_input: None,
+            rev_input: None,
             pending_discard: None,
             pending_quit: false,
             quitting: false,
@@ -750,6 +753,8 @@ impl App {
             Some(Modal::Overlay)
         } else if self.commit_input.is_some() {
             Some(Modal::CommitInput)
+        } else if self.rev_input.is_some() {
+            Some(Modal::RevInput)
         } else if self.pending_discard.is_some() {
             Some(Modal::DiscardConfirm)
         } else if self.find.is_some() {
@@ -812,6 +817,7 @@ impl App {
             Modal::Overlay => self.overlay_input(key),
             Modal::Find => self.find_input(key),
             Modal::CommitInput => self.commit_edit(key),
+            Modal::RevInput => self.rev_edit(key),
             Modal::ExplorerEdit => self.explorer_edit(key),
             Modal::SearchInput => self.search_edit(key),
             Modal::SearchList => {},
@@ -1478,6 +1484,10 @@ impl App {
             Command::CommitGraphNext => self.graph_select(1),
             Command::CommitGraphPrev => self.graph_select(-1),
             Command::CommitGraphOpen => self.graph_open_selected(),
+            Command::OpenCommitByHash => self.open_rev_input(),
+            Command::RevInputSubmit => self.rev_submit(),
+            Command::RevInputCancel => self.rev_cancel(),
+            Command::ShowFileHistory => self.open_file_history(),
             Command::SearchSelectUp => self.search_select(-1),
             Command::SearchSelectDown => self.search_select(1),
             Command::SearchOpen => self.open_selected_result(),
@@ -1878,11 +1888,78 @@ impl App {
 
     /// Open the full-screen commit graph browser and request its first history page.
     fn open_commit_graph(&mut self) {
-        self.push_tab(Tab::commit_graph());
+        self.push_tab(Tab::commit_graph(None, "Commits"));
         self.graph_log_req = self.send_command_id(SessionCommand::VcsLog {
             skip: 0,
             limit: SCM_LOG_PAGE,
         });
+    }
+
+    /// Open the graph browser scoped to the active file's history (`git log -- file`).
+    fn open_file_history(&mut self) {
+        let Some(path) = self
+            .tabs
+            .get(self.active)
+            .and_then(Tab::path)
+            .map(Path::to_path_buf)
+        else {
+            self.status = Some("file history: open a file first".to_string());
+            return;
+        };
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("history")
+            .to_string();
+        self.push_tab(Tab::commit_graph(Some(path.clone()), format!("⌥ {name}")));
+        self.graph_log_req = self.send_command_id(SessionCommand::FileHistory {
+            path,
+            skip: 0,
+            limit: SCM_LOG_PAGE,
+        });
+    }
+
+    /// Open the go-to-commit input; the typed revision resolves via [`open_commit`].
+    fn open_rev_input(&mut self) {
+        self.rev_input = Some(String::new());
+    }
+
+    /// Cancel the go-to-commit input.
+    fn rev_cancel(&mut self) {
+        self.rev_input = None;
+        self.status = Some("go to commit cancelled".to_string());
+    }
+
+    /// Submit the typed revision: resolve and open it, or re-prompt when empty.
+    fn rev_submit(&mut self) {
+        let rev = self.rev_input.take().unwrap_or_default().trim().to_string();
+        if rev.is_empty() {
+            self.rev_input = Some(String::new());
+            self.status = Some("go to commit: enter a hash or ref".to_string());
+        } else {
+            self.open_commit(rev);
+        }
+    }
+
+    /// Edit the go-to-commit revision with an unbound key (backspace / printable).
+    fn rev_edit(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Backspace => {
+                if let Some(rev) = self.rev_input.as_mut() {
+                    rev.pop();
+                }
+            },
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                if let Some(rev) = self.rev_input.as_mut() {
+                    rev.push(c);
+                }
+            },
+            _ => {},
+        }
     }
 
     /// The active tab's commit graph browser, if it is one.
@@ -1895,6 +1972,7 @@ impl App {
     /// selected commit's detail if it isn't already shown.
     fn graph_select(&mut self, delta: i32) {
         let Some(TabKind::CommitGraph {
+            history_path,
             commits,
             selected,
             has_more,
@@ -1910,19 +1988,30 @@ impl App {
         let last = commits.len() - 1;
         let next = (*selected as i64 + i64::from(delta)).clamp(0, last as i64) as usize;
         *selected = next;
-        // Page in more history when nearing the end.
+        // Page in more history when nearing the end, from the same source (whole-repo
+        // log or a single file's history).
         let near_end = next + COMMIT_AUTOLOAD_THRESHOLD >= commits.len();
-        let (want_more, loaded) = (*has_more && !*loading && near_end, commits.len());
+        let want_more = *has_more && !*loading && near_end;
+        let loaded = commits.len();
+        let path = history_path.clone();
         let hash = commits[next].hash.clone();
         self.graph_request_detail(hash);
         if want_more {
             if let Some(TabKind::CommitGraph { loading, .. }) = self.active_commit_graph() {
                 *loading = true;
             }
-            self.graph_log_req = self.send_command_id(SessionCommand::VcsLog {
-                skip: loaded,
-                limit: SCM_LOG_PAGE,
-            });
+            let command = match path {
+                Some(path) => SessionCommand::FileHistory {
+                    path,
+                    skip: loaded,
+                    limit: SCM_LOG_PAGE,
+                },
+                None => SessionCommand::VcsLog {
+                    skip: loaded,
+                    limit: SCM_LOG_PAGE,
+                },
+            };
+            self.graph_log_req = self.send_command_id(command);
         }
     }
 
@@ -3972,6 +4061,18 @@ impl App {
                     self.apply_vcs_log(skip, commits, has_more);
                 }
             },
+            SessionEvent::FileHistory {
+                skip,
+                commits,
+                has_more,
+                ..
+            } => {
+                // File history only ever fills the graph browser it was opened for.
+                if id.is_some() && id == self.graph_log_req {
+                    self.graph_log_req = None;
+                    self.apply_graph_log(skip, commits, has_more);
+                }
+            },
             SessionEvent::VcsCommitsPrepended { commits } => {
                 self.apply_vcs_commits_prepended(commits);
             },
@@ -5208,6 +5309,31 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         assert!(app.search.results[0].path.ends_with("a.txt"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn go_to_commit_input_opens_reprompts_and_cancels() {
+        let mut app = app();
+        app.dispatch(Command::OpenCommitByHash);
+        assert_eq!(app.rev_input.as_deref(), Some(""));
+        // Submitting an empty revision re-prompts rather than closing.
+        app.dispatch(Command::RevInputSubmit);
+        assert_eq!(app.rev_input.as_deref(), Some(""));
+        // Cancel clears the input.
+        app.dispatch(Command::RevInputCancel);
+        assert!(app.rev_input.is_none());
+    }
+
+    #[test]
+    fn file_history_requires_an_open_file() {
+        let mut app = app();
+        // The Welcome tab has no path — file history has nothing to show.
+        app.dispatch(Command::ShowFileHistory);
+        assert_eq!(
+            app.status.as_deref(),
+            Some("file history: open a file first")
+        );
+        assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
     }
 
     #[test]

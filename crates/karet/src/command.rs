@@ -288,6 +288,14 @@ pub enum Command {
     CommitGraphPrev,
     /// Open the browser's selected commit as a standalone commit view.
     CommitGraphOpen,
+    /// Open the go-to-commit input to view any commit by hash or ref.
+    OpenCommitByHash,
+    /// Submit the go-to-commit revision.
+    RevInputSubmit,
+    /// Cancel the go-to-commit input.
+    RevInputCancel,
+    /// Show the history of the active file (its commits) in the graph browser.
+    ShowFileHistory,
     /// Move the Search results selection up.
     SearchSelectUp,
     /// Move the Search results selection down.
@@ -457,6 +465,10 @@ impl Command {
             Self::CommitGraphNext => "Commit Graph: Next Commit",
             Self::CommitGraphPrev => "Commit Graph: Previous Commit",
             Self::CommitGraphOpen => "Commit Graph: Open Commit",
+            Self::OpenCommitByHash => "Source Control: Go to Commit…",
+            Self::RevInputSubmit => "Go to Commit: Submit",
+            Self::RevInputCancel => "Go to Commit: Cancel",
+            Self::ShowFileHistory => "Source Control: File History",
             Self::SearchSelectUp => "Search: Select Previous",
             Self::SearchSelectDown => "Search: Select Next",
             Self::SearchOpen => "Search: Open Selected Result",
@@ -566,6 +578,8 @@ impl Command {
             Self::CommitGraphNext => "next",
             Self::CommitGraphPrev => "prev",
             Self::CommitGraphOpen => "open",
+            Self::RevInputSubmit => "go",
+            Self::RevInputCancel => "cancel",
             Self::SearchOpen => "open",
             Self::SearchBeginInput => "edit",
             Self::SearchQuit => "close",
@@ -637,7 +651,9 @@ impl Command {
             | Self::OverlayUp
             | Self::OverlayDown
             | Self::SearchSelectUp
-            | Self::SearchSelectDown => return None,
+            | Self::SearchSelectDown
+            | Self::OpenCommitByHash
+            | Self::ShowFileHistory => return None,
         })
     }
 
@@ -695,6 +711,8 @@ impl Command {
                 | Self::FocusPrevPane
                 | Self::ShowDependencyGraph
                 | Self::ShowCommitGraph
+                | Self::OpenCommitByHash
+                | Self::ShowFileHistory
         )
     }
 }
@@ -714,6 +732,8 @@ pub fn palette() -> Vec<Command> {
         Command::OpenGlobalSearch,
         Command::ShowBlame,
         Command::ShowCommitGraph,
+        Command::OpenCommitByHash,
+        Command::ShowFileHistory,
         Command::BlameFunction,
         Command::ShowDependencyGraph,
         Command::ExplorerNewFile,
