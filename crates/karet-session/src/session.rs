@@ -337,6 +337,10 @@ impl Session {
             Command::Commit { message } => self.commit(id, &message),
             Command::RefreshVcs => self.emit_vcs_status(Some(id)),
             Command::VcsLog { skip, limit } => self.emit_vcs_log(Some(id), skip, limit),
+            Command::CommitDetail { rev } => self.emit_commit_detail(id, &rev),
+            Command::FileHistory { path, skip, limit } => {
+                self.emit_file_history(id, path, skip, limit)
+            },
             Command::RecoverSwaps => self.recover_swaps(id),
             Command::DiscardSwaps => self.discard_swaps(),
             Command::DependencyGraph => self.emit_dependency_graph(id),
@@ -370,6 +374,65 @@ impl Session {
             },
             Err(e) => self.emit(
                 id,
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::Vcs,
+                    message: e.to_string(),
+                },
+            ),
+        }
+    }
+
+    /// Load one commit's full detail plus the files it changed, and emit them together.
+    /// A read failure (e.g. an unknown revision) becomes a VCS notification. No-op
+    /// without a repository.
+    fn emit_commit_detail(&mut self, id: RequestId, rev: &str) {
+        let Some(repo) = self.vcs.as_ref() else {
+            return;
+        };
+        match (repo.commit_detail(rev), repo.commit_changes(rev)) {
+            (Ok(detail), Ok(changes)) => {
+                self.emit(
+                    Some(id),
+                    Event::CommitReady {
+                        detail: Box::new(detail),
+                        changes,
+                    },
+                );
+            },
+            (Err(e), _) | (_, Err(e)) => self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::Vcs,
+                    message: e.to_string(),
+                },
+            ),
+        }
+    }
+
+    /// Fetch a page of a file's history and emit it, requesting one extra commit to
+    /// detect whether more remain. No-op without a repository.
+    fn emit_file_history(&mut self, id: RequestId, path: PathBuf, skip: usize, limit: usize) {
+        let Some(repo) = self.vcs.as_ref() else {
+            return;
+        };
+        match repo.file_history(&path, skip, limit.saturating_add(1)) {
+            Ok(mut commits) => {
+                let has_more = commits.len() > limit;
+                commits.truncate(limit);
+                self.emit(
+                    Some(id),
+                    Event::FileHistory {
+                        path,
+                        skip,
+                        commits,
+                        has_more,
+                    },
+                );
+            },
+            Err(e) => self.emit(
+                Some(id),
                 Event::Notification {
                     severity: Severity::Error,
                     kind: NotificationKind::Vcs,
@@ -1602,6 +1665,79 @@ mod tests {
                 .iter()
                 .any(|c| c.path == file && c.status == karet_vcs::StatusKind::Added)
         );
+    }
+
+    #[test]
+    fn commit_detail_and_file_history_round_trip() {
+        let Some((_dir, root, file)) = init_temp_repo() else {
+            return;
+        };
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .status()
+                .ok()
+                .filter(std::process::ExitStatus::success)
+        };
+        // One commit touching a.txt, one touching only b.txt.
+        if run(&["add", "a.txt"]).is_none() || run(&["commit", "-q", "-m", "add a"]).is_none() {
+            return;
+        }
+        std::fs::write(root.join("b.txt"), "b\n").ok();
+        run(&["add", "b.txt"]);
+        run(&["commit", "-q", "-m", "add b"]);
+        // The app passes the file's absolute path (a relative path would resolve
+        // against the process CWD, not the repo root — see `Repository::file_history`).
+        let file_abs = root.join(&file);
+
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root],
+            ..SessionConfig::default()
+        });
+        session.start();
+        while events.try_recv().is_some() {} // drain the seeded status/log
+
+        // CommitDetail(HEAD) answers with the "add b" commit and its single change.
+        session.handle(
+            RequestId(1),
+            Command::CommitDetail {
+                rev: "HEAD".to_string(),
+            },
+        );
+        let mut ready = None;
+        while let Some((_, ev)) = events.try_recv() {
+            if let Event::CommitReady { detail, changes } = ev {
+                ready = Some((detail, changes));
+            }
+        }
+        let Some((detail, changes)) = ready else {
+            return;
+        };
+        assert_eq!(detail.summary, "add b");
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, PathBuf::from("b.txt"));
+
+        // FileHistory(a.txt) answers with exactly the "add a" commit.
+        session.handle(
+            RequestId(2),
+            Command::FileHistory {
+                path: file_abs,
+                skip: 0,
+                limit: 10,
+            },
+        );
+        let mut hist = None;
+        while let Some((_, ev)) = events.try_recv() {
+            if let Event::FileHistory { commits, .. } = ev {
+                hist = Some(commits);
+            }
+        }
+        let Some(commits) = hist else {
+            return;
+        };
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].summary, "add a");
     }
 
     #[test]

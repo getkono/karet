@@ -22,6 +22,7 @@ use karet_search::FileHit;
 use karet_search::SearchQuery;
 use karet_syntax::HighlightSpan;
 use karet_vcs::Commit;
+use karet_vcs::CommitDetail;
 use karet_vcs::FileChange;
 
 /// Identifies an open document within a session.
@@ -177,6 +178,20 @@ pub enum Command {
     /// Fetch a page of the commit-history log (newest first), for lazy loading.
     VcsLog {
         /// How many commits to skip from `HEAD`.
+        skip: usize,
+        /// The maximum number of commits to return.
+        limit: usize,
+    },
+    /// Load the full detail of a single commit (answered by [`Event::CommitReady`]).
+    CommitDetail {
+        /// The revision to resolve: a hash, a ref name, `HEAD`, `HEAD~3`, ….
+        rev: String,
+    },
+    /// Fetch a page of a single file's history (answered by [`Event::FileHistory`]).
+    FileHistory {
+        /// The file whose history to walk.
+        path: PathBuf,
+        /// How many matching commits to skip.
         skip: usize,
         /// The maximum number of commits to return.
         limit: usize,
@@ -353,6 +368,25 @@ pub enum Event {
     VcsCommitsPrepended {
         /// The new commits, newest first.
         commits: Vec<Commit>,
+    },
+    /// A commit's full detail plus its file changes, answering [`Command::CommitDetail`].
+    CommitReady {
+        /// The commit metadata (message, author/committer, parents, signature). Boxed
+        /// to keep this large payload from bloating every other [`Event`] variant.
+        detail: Box<CommitDetail>,
+        /// The files this commit changed relative to its first parent, for the diff view.
+        changes: Vec<FileChange>,
+    },
+    /// A page of a file's history, answering [`Command::FileHistory`].
+    FileHistory {
+        /// The file the history is for.
+        path: PathBuf,
+        /// How many commits were skipped (the page offset).
+        skip: usize,
+        /// The commits touching the file in this page, newest first.
+        commits: Vec<Commit>,
+        /// Whether more commits exist beyond this page.
+        has_more: bool,
     },
     /// Crash-recovery swaps from a previous session were found on startup. The UI
     /// prompts the user to [`Command::RecoverSwaps`] or [`Command::DiscardSwaps`].
