@@ -3,6 +3,20 @@
 A Cargo workspace of reusable primitives ("engines") for building TUI code editors,
 plus the `karet` application that composes them.
 
+## Design principles
+
+One idea runs through the workspace: **accommodate where it counts, and be
+opinionated where a sane default serves everyone.** We stay flexible on what a
+downstream consumer actually feels — engines are **headless** (no `ratatui` unless
+you opt into a `view` feature), keep a **minimal dependency footprint** so you can
+pick a small subset, emit **neutral models** that any renderer can consume, and
+depend only on **pure-Rust** crates. And we stay opinionated where choice is just
+surface area — a crate must **earn its existence** through real standalone reuse,
+**publishing** is a stricter bar than merely being a separate crate, we **commit to
+one best backend** (tree-sitter for syntax), and the quality floor (nightly rustfmt,
+no `unwrap`/`expect`/`panic` in libraries) is **non-negotiable**. See
+[`AGENTS.md`](AGENTS.md) for the full treatment.
+
 ## `karet` — terminal git-diff viewer
 
 The `karet` binary is a fast terminal viewer for your git diff:
@@ -54,6 +68,11 @@ of recognized file types, icons, and syntax-highlighting support.
 | `mise run lint-fix` | Lint and auto-fix    |
 | `mise run coverage` | Report coverage      |
 
+Tests live in-file (`#[cfg(test)] mod tests`); test every new public item. Headless
+engines carry the bulk of the coverage, widget crates render-test into a ratatui
+`Buffer`, and coverage is a signal rather than a merge gate. See the per-package
+[testing policy](AGENTS.md#testing-policy) in `AGENTS.md`.
+
 ## Tech Stack
 
 - **Language:** Rust (edition 2024)
@@ -99,10 +118,11 @@ Version bumps, CHANGELOGs, git tags, and crates.io publishing are automated by
 Two release lines coexist:
 
 - **The `karet-*` crates release in lockstep** under one synchronized workspace version
-  (`version.workspace = true`). Eight of them are published to crates.io — `karet-core`,
-  `karet-filetype`, `karet-treesitter`, `karet-diff`, `karet-lsp`, `karet-dap`, `karet-vcs`,
-  `karet-search` — and the rest are `publish = false`. See the crate table in
-  [`AGENTS.md`](AGENTS.md) for the full breakdown.
+  (`version.workspace = true`). Fourteen of them are published to crates.io — `karet-core`,
+  `karet-text`, `karet-treesitter`, `karet-syntax`, `karet-theme`, `karet-diff`,
+  `karet-filetype`, `karet-pdf`, `karet-lsp`, `karet-dap`, `karet-vcs`, `karet-search`,
+  `karet-editor`, `karet-fileview` — and the rest are `publish = false`. See the crate
+  table in [`AGENTS.md`](AGENTS.md) for the full breakdown.
 - **[`blameline`](crates/blameline) is a standalone library on its own SemVer line** (from
   `1.0.0`), published on an independent cadence; see [its README](crates/blameline/README.md).
 
