@@ -280,6 +280,14 @@ pub enum Command {
     DiscardSwaps,
     /// Open the workspace package-dependency graph visualization.
     ShowDependencyGraph,
+    /// Open the full-screen commit graph browser.
+    ShowCommitGraph,
+    /// Move the commit graph browser's selection to the next (older) commit.
+    CommitGraphNext,
+    /// Move the commit graph browser's selection to the previous (newer) commit.
+    CommitGraphPrev,
+    /// Open the browser's selected commit as a standalone commit view.
+    CommitGraphOpen,
     /// Move the Search results selection up.
     SearchSelectUp,
     /// Move the Search results selection down.
@@ -445,6 +453,10 @@ impl Command {
             Self::RecoverSwaps => "Recover Unsaved Changes",
             Self::DiscardSwaps => "Discard Unsaved Backups",
             Self::ShowDependencyGraph => "Visualize: Dependency Graph",
+            Self::ShowCommitGraph => "Source Control: Commit Graph",
+            Self::CommitGraphNext => "Commit Graph: Next Commit",
+            Self::CommitGraphPrev => "Commit Graph: Previous Commit",
+            Self::CommitGraphOpen => "Commit Graph: Open Commit",
             Self::SearchSelectUp => "Search: Select Previous",
             Self::SearchSelectDown => "Search: Select Next",
             Self::SearchOpen => "Search: Open Selected Result",
@@ -550,6 +562,10 @@ impl Command {
             Self::RecoverSwaps => "recover",
             Self::DiscardSwaps => "discard",
             Self::ShowDependencyGraph => "deps",
+            Self::ShowCommitGraph => "graph",
+            Self::CommitGraphNext => "next",
+            Self::CommitGraphPrev => "prev",
+            Self::CommitGraphOpen => "open",
             Self::SearchOpen => "open",
             Self::SearchBeginInput => "edit",
             Self::SearchQuit => "close",
@@ -678,6 +694,7 @@ impl Command {
                 | Self::FocusNextPane
                 | Self::FocusPrevPane
                 | Self::ShowDependencyGraph
+                | Self::ShowCommitGraph
         )
     }
 }
@@ -696,6 +713,7 @@ pub fn palette() -> Vec<Command> {
         Command::OpenFind,
         Command::OpenGlobalSearch,
         Command::ShowBlame,
+        Command::ShowCommitGraph,
         Command::BlameFunction,
         Command::ShowDependencyGraph,
         Command::ExplorerNewFile,

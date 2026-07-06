@@ -330,6 +330,14 @@ pub(crate) struct ToastHit {
     pub(crate) id: NotificationId,
 }
 
+/// Where a resolved commit detail should be shown.
+enum CommitDest {
+    /// Open it as a new standalone commit tab.
+    Tab,
+    /// Fill the graph browser's detail pane.
+    Browser,
+}
+
 /// The IDE shell state.
 pub struct App {
     /// The workspace root.
@@ -497,6 +505,12 @@ pub struct App {
     /// In-flight save requests, mapping request id → document, so the tab's saving
     /// spinner clears when the answering event (saved or error) arrives.
     pending_saves: HashMap<RequestId, DocumentId>,
+    /// In-flight commit-detail requests, mapping request id → where its result goes
+    /// (a new standalone commit tab, or the graph browser's detail pane).
+    pending_commit_detail: HashMap<RequestId, CommitDest>,
+    /// The graph browser's in-flight history-page request, so its answering
+    /// [`SessionEvent::VcsLog`] fills the browser rather than the sidebar log.
+    graph_log_req: Option<RequestId>,
     /// Session documents the app has opened, so closing the last tab for a document
     /// can release it (the session ref-counts; the app must balance opens/closes).
     open_docs: HashSet<DocumentId>,
@@ -604,6 +618,8 @@ impl App {
             backend: None,
             pending_open: HashMap::new(),
             pending_saves: HashMap::new(),
+            pending_commit_detail: HashMap::new(),
+            graph_log_req: None,
             open_docs: HashSet::new(),
             next_view: 1,
         }
@@ -680,6 +696,7 @@ impl App {
     fn active_editor_tab(&self) -> EditorTab {
         match self.tabs.get(self.active).map(|t| &t.kind) {
             Some(TabKind::Diff { .. }) => EditorTab::Diff,
+            Some(TabKind::CommitGraph { .. }) => EditorTab::CommitGraph,
             Some(TabKind::Placeholder {
                 kind: FileKind::TooLarge { .. },
                 ..
@@ -1457,6 +1474,10 @@ impl App {
                 self.status = Some("building dependency graph…".to_string());
                 self.send_command(SessionCommand::DependencyGraph);
             },
+            Command::ShowCommitGraph => self.open_commit_graph(),
+            Command::CommitGraphNext => self.graph_select(1),
+            Command::CommitGraphPrev => self.graph_select(-1),
+            Command::CommitGraphOpen => self.graph_open_selected(),
             Command::SearchSelectUp => self.search_select(-1),
             Command::SearchSelectDown => self.search_select(1),
             Command::SearchOpen => self.open_selected_result(),
@@ -1850,7 +1871,142 @@ impl App {
     /// Open the commit view for `rev` (a hash or ref). The detail + diff arrive
     /// asynchronously as [`SessionEvent::CommitReady`], which builds the tab.
     fn open_commit(&mut self, rev: String) {
-        self.send_vcs(SessionCommand::CommitDetail { rev });
+        if let Some(id) = self.send_command_id(SessionCommand::CommitDetail { rev }) {
+            self.pending_commit_detail.insert(id, CommitDest::Tab);
+        }
+    }
+
+    /// Open the full-screen commit graph browser and request its first history page.
+    fn open_commit_graph(&mut self) {
+        self.push_tab(Tab::commit_graph());
+        self.graph_log_req = self.send_command_id(SessionCommand::VcsLog {
+            skip: 0,
+            limit: SCM_LOG_PAGE,
+        });
+    }
+
+    /// The active tab's commit graph browser, if it is one.
+    fn active_commit_graph(&mut self) -> Option<&mut TabKind> {
+        let tab = self.tabs.get_mut(self.active)?;
+        matches!(tab.kind, TabKind::CommitGraph { .. }).then_some(&mut tab.kind)
+    }
+
+    /// Move the browser's selection by `delta` (clamped), and request the newly
+    /// selected commit's detail if it isn't already shown.
+    fn graph_select(&mut self, delta: i32) {
+        let Some(TabKind::CommitGraph {
+            commits,
+            selected,
+            has_more,
+            loading,
+            ..
+        }) = self.active_commit_graph()
+        else {
+            return;
+        };
+        if commits.is_empty() {
+            return;
+        }
+        let last = commits.len() - 1;
+        let next = (*selected as i64 + i64::from(delta)).clamp(0, last as i64) as usize;
+        *selected = next;
+        // Page in more history when nearing the end.
+        let near_end = next + COMMIT_AUTOLOAD_THRESHOLD >= commits.len();
+        let (want_more, loaded) = (*has_more && !*loading && near_end, commits.len());
+        let hash = commits[next].hash.clone();
+        self.graph_request_detail(hash);
+        if want_more {
+            if let Some(TabKind::CommitGraph { loading, .. }) = self.active_commit_graph() {
+                *loading = true;
+            }
+            self.graph_log_req = self.send_command_id(SessionCommand::VcsLog {
+                skip: loaded,
+                limit: SCM_LOG_PAGE,
+            });
+        }
+    }
+
+    /// Request `hash`'s detail for the browser pane, unless it is already the shown
+    /// detail (avoids re-fetching when re-selecting the same commit).
+    fn graph_request_detail(&mut self, hash: String) {
+        if let Some(TabKind::CommitGraph { detail, .. }) = self.active_commit_graph()
+            && detail.as_ref().is_some_and(|d| d.hash == hash)
+        {
+            return;
+        }
+        if let Some(id) = self.send_command_id(SessionCommand::CommitDetail { rev: hash }) {
+            self.pending_commit_detail.insert(id, CommitDest::Browser);
+        }
+    }
+
+    /// Open the browser's selected commit as a standalone commit tab.
+    fn graph_open_selected(&mut self) {
+        if let Some(TabKind::CommitGraph {
+            commits, selected, ..
+        }) = self.active_commit_graph()
+            && let Some(commit) = commits.get(*selected)
+        {
+            let hash = commit.hash.clone();
+            self.open_commit(hash);
+        }
+    }
+
+    /// Fill the graph browser's detail pane from a resolved commit, and fire the lazy
+    /// GitHub verification fetch. A no-op if no browser is open.
+    fn fill_graph_detail(&mut self, detail: Box<CommitDetail>, changes: Vec<FileChange>) {
+        let syntax = self.syntax;
+        let hash = detail.hash.clone();
+        let mut filled = false;
+        for tab in self.all_tabs_mut() {
+            if let TabKind::CommitGraph {
+                detail: slot,
+                files,
+                verification,
+                ..
+            } = &mut tab.kind
+            {
+                *files = changes
+                    .iter()
+                    .cloned()
+                    .map(|c| FileView::new(c, Section::Staged, syntax))
+                    .collect();
+                *slot = Some(detail.clone());
+                *verification = None;
+                filled = true;
+            }
+        }
+        if filled {
+            self.send_vcs(SessionCommand::FetchCommitVerification { hash });
+        }
+    }
+
+    /// Apply a fetched history page to the graph browser: replace on the first page,
+    /// append otherwise. On the first page, select the top commit and load its detail.
+    fn apply_graph_log(&mut self, skip: usize, commits: Vec<Commit>, has_more: bool) {
+        let mut first_hash = None;
+        for tab in self.all_tabs_mut() {
+            if let TabKind::CommitGraph {
+                commits: loaded,
+                has_more: more,
+                loading,
+                selected,
+                ..
+            } = &mut tab.kind
+            {
+                *loading = false;
+                *more = has_more;
+                if skip == 0 {
+                    *loaded = commits.clone();
+                    *selected = 0;
+                    first_hash = loaded.first().map(|c| c.hash.clone());
+                } else if skip == loaded.len() {
+                    loaded.extend(commits.clone());
+                }
+            }
+        }
+        if let Some(hash) = first_hash {
+            self.graph_request_detail(hash);
+        }
     }
 
     /// Build and open a commit tab from a resolved [`CommitDetail`] and its changes,
@@ -1865,17 +2021,22 @@ impl App {
         self.send_vcs(SessionCommand::FetchCommitVerification { hash });
     }
 
-    /// Apply the forge's verification verdict to every open commit tab for `hash`.
+    /// Apply the forge's verification verdict to every open commit view for `hash` —
+    /// both standalone commit tabs and the graph browser's shown detail.
     fn apply_commit_verification(&mut self, hash: &str, status: GithubVerification) {
         for tab in self.all_tabs_mut() {
-            if let TabKind::Commit {
-                detail,
-                verification,
-                ..
-            } = &mut tab.kind
-                && detail.hash == hash
-            {
-                *verification = Some(status.clone());
+            match &mut tab.kind {
+                TabKind::Commit {
+                    detail,
+                    verification,
+                    ..
+                } if detail.hash == hash => *verification = Some(status.clone()),
+                TabKind::CommitGraph {
+                    detail: Some(detail),
+                    verification,
+                    ..
+                } if detail.hash == hash => *verification = Some(status.clone()),
+                _ => {},
             }
         }
     }
@@ -1894,6 +2055,24 @@ impl App {
         });
         if let Some(Err(e)) = result {
             self.notify_backend_error(e);
+        }
+    }
+
+    /// Submit a backend command and return its [`RequestId`], so the answering event
+    /// can be correlated (e.g. to route a commit detail to the right destination).
+    /// Returns `None` when there is no backend or the submission failed.
+    fn send_command_id(&mut self, command: SessionCommand) -> Option<RequestId> {
+        let (id, result) = {
+            let backend = self.backend.as_ref()?;
+            let id = backend.next_id();
+            (id, backend.send(id, command))
+        };
+        match result {
+            Ok(()) => Some(id),
+            Err(e) => {
+                self.notify_backend_error(e);
+                None
+            },
         }
     }
 
@@ -2621,6 +2800,14 @@ impl App {
 
     /// Scroll the active tab by `delta` lines/rows (clamped to its content).
     fn scroll_lines(&mut self, delta: i32) {
+        // The browser has no free scroll: a wheel notch moves the commit selection.
+        if matches!(
+            self.tabs.get(self.active).map(|t| &t.kind),
+            Some(TabKind::CommitGraph { .. })
+        ) {
+            self.graph_select(delta.signum());
+            return;
+        }
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
@@ -3775,7 +3962,16 @@ impl App {
                 skip,
                 commits,
                 has_more,
-            } => self.apply_vcs_log(skip, commits, has_more),
+            } => {
+                // A page requested by the graph browser fills it; anything else is the
+                // sidebar log.
+                if id.is_some() && id == self.graph_log_req {
+                    self.graph_log_req = None;
+                    self.apply_graph_log(skip, commits, has_more);
+                } else {
+                    self.apply_vcs_log(skip, commits, has_more);
+                }
+            },
             SessionEvent::VcsCommitsPrepended { commits } => {
                 self.apply_vcs_commits_prepended(commits);
             },
@@ -3790,7 +3986,10 @@ impl App {
             },
             SessionEvent::SwapsFound { swaps } => self.arm_swap_recovery(swaps),
             SessionEvent::CommitReady { detail, changes } => {
-                self.open_commit_tab(detail, changes);
+                match id.and_then(|i| self.pending_commit_detail.remove(&i)) {
+                    Some(CommitDest::Browser) => self.fill_graph_detail(detail, changes),
+                    _ => self.open_commit_tab(detail, changes),
+                }
             },
             SessionEvent::CommitVerification { hash, status } => {
                 self.apply_commit_verification(&hash, status);
@@ -5009,6 +5208,53 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         assert!(app.search.results[0].path.ends_with("a.txt"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn commit_graph_browser_opens_fills_and_clamps_navigation() {
+        let mut app = app();
+        app.dispatch(Command::ShowCommitGraph);
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::CommitGraph { .. }
+        ));
+
+        // Backend is None in unit tests, so feed a history page directly.
+        let commit = |hash: &str, summary: &str, parents: Vec<String>| Commit {
+            hash: hash.to_string(),
+            short_hash: hash.chars().take(7).collect(),
+            summary: summary.to_string(),
+            author: "Tester".to_string(),
+            time: 0,
+            parents,
+        };
+        app.apply_graph_log(
+            0,
+            vec![
+                commit("aaaa", "c1", vec!["bbbb".to_string()]),
+                commit("bbbb", "c0", Vec::new()),
+            ],
+            false,
+        );
+        if let TabKind::CommitGraph { commits, .. } = &app.tabs[app.active].kind {
+            assert_eq!(commits.len(), 2);
+        }
+        assert!(matches!(
+            &app.tabs[app.active].kind,
+            TabKind::CommitGraph { selected: 0, .. }
+        ));
+        // Down twice clamps at the last commit; up past the top clamps at 0.
+        app.graph_select(1);
+        app.graph_select(1);
+        assert!(matches!(
+            &app.tabs[app.active].kind,
+            TabKind::CommitGraph { selected: 1, .. }
+        ));
+        app.graph_select(-5);
+        assert!(matches!(
+            &app.tabs[app.active].kind,
+            TabKind::CommitGraph { selected: 0, .. }
+        ));
     }
 
     #[test]

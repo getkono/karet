@@ -150,6 +150,26 @@ pub enum TabKind {
         /// Vertical scroll offset (display rows).
         scroll: u16,
     },
+    /// The full-screen commit graph browser: a scrollable DAG commit log on the left
+    /// and the selected commit's detail on the right.
+    CommitGraph {
+        /// The loaded commits, newest first (its own paged history).
+        commits: Vec<karet_vcs::Commit>,
+        /// Whether older commits remain to be paged in.
+        has_more: bool,
+        /// Whether a history page is currently in flight.
+        loading: bool,
+        /// The selected commit's index into `commits`.
+        selected: usize,
+        /// The selected commit's loaded detail, if the fetch has answered.
+        detail: Option<Box<karet_vcs::CommitDetail>>,
+        /// The selected commit's changed files, diffed for the detail pane.
+        files: Vec<FileView>,
+        /// The forge's verdict for the selected commit, once fetched.
+        verification: Option<karet_session::GithubVerification>,
+        /// The commit-list scroll offset (first visible row).
+        list_offset: u16,
+    },
 }
 
 /// An open tab: a title, its content, and per-view editor state.
@@ -224,6 +244,24 @@ impl Tab {
         )
     }
 
+    /// An empty commit graph browser, to be filled as its history pages arrive.
+    #[must_use]
+    pub fn commit_graph() -> Self {
+        Self::new(
+            "Commits",
+            TabKind::CommitGraph {
+                commits: Vec::new(),
+                has_more: false,
+                loading: true,
+                selected: 0,
+                detail: None,
+                files: Vec::new(),
+                verification: None,
+                list_offset: 0,
+            },
+        )
+    }
+
     /// The file path backing this tab, if any.
     #[must_use]
     pub fn path(&self) -> Option<&Path> {
@@ -235,7 +273,10 @@ impl Tab {
             | TabKind::Placeholder { path, .. }
             | TabKind::Blame { path, .. } => Some(path),
             TabKind::Diff { file, .. } => Some(&file.change.path),
-            TabKind::Welcome | TabKind::Graph { .. } | TabKind::Commit { .. } => None,
+            TabKind::Welcome
+            | TabKind::Graph { .. }
+            | TabKind::Commit { .. }
+            | TabKind::CommitGraph { .. } => None,
         }
     }
 
@@ -258,6 +299,7 @@ impl Tab {
             TabKind::Blame { .. } => "blame",
             TabKind::Graph { .. } => "graph",
             TabKind::Commit { .. } => "commit",
+            TabKind::CommitGraph { .. } => "commits",
             TabKind::Welcome => "",
         }
     }

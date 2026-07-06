@@ -40,6 +40,8 @@ pub enum EditorTab {
     Plain,
     /// A diff tab.
     Diff,
+    /// The full-screen commit graph browser.
+    CommitGraph,
     /// A too-large-file placeholder, which offers an "open anyway" override.
     Oversize,
 }
@@ -57,6 +59,8 @@ pub enum FocusTarget {
     Editor,
     /// A diff editor tab.
     DiffEditor,
+    /// The full-screen commit graph browser.
+    CommitGraph,
     /// A too-large-file placeholder, which offers an "open anyway" override.
     Oversize,
     /// The file explorer panel.
@@ -78,6 +82,7 @@ impl FocusTarget {
             Focus::Outline => FocusTarget::Outline,
             Focus::Editor => match tab {
                 EditorTab::Diff => FocusTarget::DiffEditor,
+                EditorTab::CommitGraph => FocusTarget::CommitGraph,
                 EditorTab::Oversize => FocusTarget::Oversize,
                 EditorTab::Plain => FocusTarget::Editor,
             },
@@ -108,6 +113,8 @@ pub enum Layer {
     Editor,
     /// Active when a diff editor tab has focus.
     DiffEditor,
+    /// Active when the full-screen commit graph browser has focus.
+    CommitGraph,
     /// Active when a too-large-file placeholder has focus (the "open anyway"
     /// override). A placeholder is not editable, so this does not stack the
     /// [`Editor`](Layer::Editor) layer.
@@ -207,6 +214,9 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
             FocusTarget::Outline => &[L::Outline, L::Global],
             FocusTarget::Editor => &[L::Editor, L::Global],
             FocusTarget::DiffEditor => &[L::DiffEditor, L::Editor, L::Global],
+            // The browser is a self-contained list/detail view — its own layer stacks
+            // straight onto Global, never the editor's editing/motion keys.
+            FocusTarget::CommitGraph => &[L::CommitGraph, L::Global],
             FocusTarget::Oversize => &[L::Oversize, L::Global],
             FocusTarget::Explorer => &[L::Explorer, L::Sidebar, L::Global],
             FocusTarget::Search => &[L::Sidebar, L::Global],

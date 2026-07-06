@@ -1201,6 +1201,28 @@ fn draw_pane_content(
             verification,
             scroll,
         } => draw_commit(f, theme, area, detail, files, verification.as_ref(), scroll),
+        TabKind::CommitGraph {
+            commits,
+            has_more,
+            loading,
+            selected,
+            detail,
+            files,
+            verification,
+            list_offset,
+        } => draw_commit_graph(
+            f,
+            theme,
+            area,
+            commits,
+            *has_more,
+            *loading,
+            *selected,
+            detail.as_deref(),
+            files,
+            verification.as_ref(),
+            list_offset,
+        ),
         TabKind::Hex { bytes, scroll, .. } => {
             let rows = bytes.len().div_ceil(16);
             *scroll = (*scroll).min(rows.saturating_sub(1));
@@ -1574,6 +1596,117 @@ fn commit_detail_lines(
         lines.extend(render::unified_lines(file, theme));
     }
     lines
+}
+
+/// Draw the full-screen commit graph browser: a DAG commit list on the left and the
+/// selected commit's detail on the right.
+#[allow(clippy::too_many_arguments)] // a browser pane genuinely has many independent inputs
+fn draw_commit_graph(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    commits: &[karet_vcs::Commit],
+    has_more: bool,
+    loading: bool,
+    selected: usize,
+    detail: Option<&karet_vcs::CommitDetail>,
+    files: &[render::FileView],
+    verification: Option<&karet_session::GithubVerification>,
+    list_offset: &mut u16,
+) {
+    let cols = Layout::horizontal([
+        Constraint::Percentage(42),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .split(area);
+    let (list_area, detail_area) = (cols[0], cols[2]);
+    f.render_widget(Block::new().borders(Borders::LEFT), cols[1]);
+
+    // Left: the DAG commit list (same rail palette as the SCM sidebar log).
+    const LANE_COLORS: [Color; 6] = [
+        Color::Cyan,
+        Color::Green,
+        Color::Yellow,
+        Color::Magenta,
+        Color::Blue,
+        Color::Red,
+    ];
+    let lane_style = |lane: u8| Style::default().fg(LANE_COLORS[lane as usize % LANE_COLORS.len()]);
+    let header_style = Style::default()
+        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+        .add_modifier(Modifier::BOLD);
+    let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
+    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let sel_bg = theme.role(ThemeRole::Selection).to_ratatui();
+
+    let inputs: Vec<LaneInput> = commits
+        .iter()
+        .enumerate()
+        .map(|(i, c)| LaneInput {
+            id: c.hash.clone(),
+            parents: c.parents.clone(),
+            head: i == 0,
+        })
+        .collect();
+    let rails = assign_lanes(&inputs);
+    let mut items: Vec<ListItem> = vec![ListItem::new(Line::styled(" COMMITS", header_style))];
+    for (i, (commit, rail)) in commits.iter().zip(rails.iter()).enumerate() {
+        let mut spans = vec![Span::raw(" ")];
+        spans.extend(render_rail(rail, lane_style).spans);
+        spans.push(Span::styled(format!(" {} ", commit.short_hash), hash_style));
+        spans.push(Span::raw(commit.summary.clone()));
+        spans.push(Span::styled(
+            format!("  {}", relative_time(commit.time)),
+            dim,
+        ));
+        let mut line = Line::from(spans);
+        if i == selected {
+            line = line.style(Style::default().bg(sel_bg));
+        }
+        items.push(ListItem::new(line));
+    }
+    if loading && commits.is_empty() {
+        items.push(ListItem::new(Line::styled(" loading\u{2026}", dim)));
+    } else if has_more {
+        items.push(ListItem::new(Line::styled(" \u{22ef} more", dim)));
+    }
+
+    // Keep the selected row (offset by the header) visible.
+    let height = list_area.height as usize;
+    let sel_row = selected + 1;
+    let mut off = *list_offset as usize;
+    if sel_row < off {
+        off = sel_row;
+    } else if height > 0 && sel_row >= off + height {
+        off = sel_row + 1 - height;
+    }
+    *list_offset = u16::try_from(off).unwrap_or(u16::MAX);
+    let mut state = ListState::default();
+    *state.offset_mut() = off;
+    f.render_stateful_widget(List::new(items), list_area, &mut state);
+
+    // Right: the selected commit's detail (once its fetch answers).
+    let sel_hash = commits.get(selected).map(|c| c.hash.as_str());
+    match detail {
+        Some(d) if Some(d.hash.as_str()) == sel_hash => {
+            f.render_widget(
+                Paragraph::new(commit_detail_lines(theme, d, files, verification)),
+                detail_area,
+            );
+        },
+        _ => {
+            let msg = if commits.is_empty() {
+                "loading commits\u{2026}"
+            } else {
+                "loading commit\u{2026}"
+            };
+            f.render_widget(
+                Paragraph::new(Line::styled(format!("  {msg}"), dim)),
+                detail_area,
+            );
+        },
+    }
 }
 
 /// Render the semantic-blame view: each commit group as a header (line range, short

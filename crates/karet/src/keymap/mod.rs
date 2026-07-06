@@ -94,6 +94,7 @@ use KeyCode::PageUp;
 use KeyCode::Right;
 use KeyCode::Tab;
 use KeyCode::Up;
+use Layer::CommitGraph;
 use Layer::CommitInput;
 use Layer::DiffEditor;
 use Layer::DiscardConfirm;
@@ -175,6 +176,7 @@ static BINDINGS: &[Binding] = &[
     b(SourceControl, false, false, false, Char('c'), Command::ScmCommit),
     b(SourceControl, false, false, false, Char('d'), Command::ScmDiscard),
     b(SourceControl, false, false, false, Char('r'), Command::ScmRefresh),
+    b(SourceControl, false, false, false, Char('g'), Command::ShowCommitGraph),
 
     // Explorer panel (sidebar focus, Explorer active). Listed before the generic
     // sidebar bindings so its keys win. New file/folder, rename, refresh; collapse-all
@@ -283,6 +285,17 @@ static BINDINGS: &[Binding] = &[
     b(DiffEditor, false, false, false, Char('\\'), Command::ToggleDiffLayout),
     b(DiffEditor, false, false, false, Char(']'),  Command::NextChangedFile),
     b(DiffEditor, false, false, false, Char('['),  Command::PrevChangedFile),
+
+    // The full-screen commit graph browser: j/k or arrows move the selection, Enter
+    // opens the selected commit as a standalone view, Esc returns focus to the sidebar.
+    b(CommitGraph, false, false, false, Char('j'), Command::CommitGraphNext),
+    b(CommitGraph, false, false, false, Down,      Command::CommitGraphNext),
+    b(CommitGraph, false, false, false, Char('k'), Command::CommitGraphPrev),
+    b(CommitGraph, false, false, false, Up,        Command::CommitGraphPrev),
+    b(CommitGraph, false, false, false, Enter,     Command::CommitGraphOpen),
+    b(CommitGraph, false, false, false, Char('l'), Command::CommitGraphOpen),
+    b(CommitGraph, false, false, false, Right,     Command::CommitGraphOpen),
+    b(CommitGraph, false, false, false, Esc,       Command::ToggleFocus),
 
     // Editor focus, a too-large-file placeholder: bypass the size guard on demand.
     // Enter loads it anyway; Esc returns focus to the sidebar (as it does in the
