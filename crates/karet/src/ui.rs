@@ -1195,6 +1195,12 @@ fn draw_pane_content(
             view,
             scroll,
         } => draw_graph(f, theme, area, title, view, scroll),
+        TabKind::Commit {
+            detail,
+            files,
+            verification,
+            scroll,
+        } => draw_commit(f, theme, area, detail, files, verification.as_ref(), scroll),
         TabKind::Hex { bytes, scroll, .. } => {
             let rows = bytes.len().div_ceil(16);
             *scroll = (*scroll).min(rows.saturating_sub(1));
@@ -1355,6 +1361,219 @@ fn draw_diff(
             f.render_widget(Paragraph::new(right).scroll((*scroll, 0)), panes[2]);
         },
     }
+}
+
+/// Draw the commit view (metadata header + changed-file list + per-file diffs) as one
+/// scrollable paragraph.
+fn draw_commit(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    detail: &karet_vcs::CommitDetail,
+    files: &[render::FileView],
+    verification: Option<&karet_session::GithubVerification>,
+    scroll: &mut u16,
+) {
+    let lines = commit_detail_lines(theme, detail, files, verification);
+    let max = u16::try_from(lines.len())
+        .unwrap_or(u16::MAX)
+        .saturating_sub(area.height);
+    *scroll = (*scroll).min(max);
+    f.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), area);
+}
+
+/// The commit's signature badge as `(glyph, label, role)`. Prefers the forge's verdict
+/// once fetched; otherwise reports only what the local object records ("Signed" /
+/// "Unsigned"), never claiming a verification result the tool did not compute.
+fn verified_badge(
+    verification: Option<&karet_session::GithubVerification>,
+    signature: Option<&karet_vcs::CommitSignature>,
+) -> (&'static str, &'static str, ThemeRole) {
+    match verification {
+        Some(v) if v.verified => ("\u{2714}", "Verified", ThemeRole::VcsVerified),
+        Some(_) => ("\u{26a0}", "Unverified", ThemeRole::VcsUnverified),
+        None if signature.is_some() => ("\u{25cf}", "Signed", ThemeRole::Foreground),
+        None => ("", "Unsigned", ThemeRole::Muted),
+    }
+}
+
+/// Format a Unix timestamp (with its timezone `offset` in seconds) as
+/// `YYYY-MM-DD HH:MM`, without pulling in a date library (civil-from-days).
+fn format_datetime(secs: i64, offset: i32) -> String {
+    let t = secs + i64::from(offset);
+    let days = t.div_euclid(86_400);
+    let tod = t.rem_euclid(86_400);
+    let (hour, minute) = (tod / 3600, (tod % 3600) / 60);
+    // Howard Hinnant's civil_from_days: days since 1970-01-01 -> (y, m, d).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
+}
+
+/// Build the commit view's scrollable lines. Shared by the standalone [`TabKind::Commit`]
+/// tab and the graph browser's detail pane.
+fn commit_detail_lines(
+    theme: &Theme,
+    detail: &karet_vcs::CommitDetail,
+    files: &[render::FileView],
+    verification: Option<&karet_session::GithubVerification>,
+) -> Vec<Line<'static>> {
+    let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
+    let subject = fg.add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let muted = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
+    let accent = Style::default().fg(theme.role(ThemeRole::DiffModified).to_ratatui());
+    let label = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
+    let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
+    let add_fg = Style::default().fg(theme.role(ThemeRole::DiagnosticHint).to_ratatui());
+    let rem_fg = Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui());
+    let bar = || Span::styled("\u{258c} ", accent);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    // Subject + body.
+    lines.push(Line::styled(format!(" {}", detail.summary), subject));
+    if !detail.body.is_empty() {
+        lines.push(Line::raw(""));
+        for l in detail.body.lines() {
+            lines.push(Line::styled(format!(" {l}"), muted));
+        }
+    }
+    lines.push(Line::raw(""));
+
+    // Commit hash + verified badge.
+    let (glyph, badge, badge_role) = verified_badge(verification, detail.signature.as_ref());
+    let badge_style = Style::default()
+        .fg(theme.role(badge_role).to_ratatui())
+        .add_modifier(Modifier::BOLD);
+    let mut hash_spans = vec![
+        bar(),
+        Span::styled(format!("{:<10} ", "commit"), label),
+        Span::styled(detail.hash.clone(), hash_style),
+        Span::raw("   "),
+    ];
+    if !glyph.is_empty() {
+        hash_spans.push(Span::styled(format!("{glyph} "), badge_style));
+    }
+    hash_spans.push(Span::styled(badge, badge_style));
+    lines.push(Line::from(hash_spans));
+
+    // Author, and committer only when it differs.
+    let ident_line = |role_label: &str, id: &karet_vcs::Identity, verb: &str| {
+        Line::from(vec![
+            bar(),
+            Span::styled(format!("{role_label:<10} "), label),
+            Span::styled(format!("{} <{}>", id.name, id.email), fg),
+            Span::styled(
+                format!("   {verb} {}", format_datetime(id.time, id.offset)),
+                dim,
+            ),
+        ])
+    };
+    lines.push(ident_line("author", &detail.author, "authored"));
+    if detail.committer.name != detail.author.name
+        || detail.committer.email != detail.author.email
+        || detail.committer.time != detail.author.time
+    {
+        lines.push(ident_line("committer", &detail.committer, "committed"));
+    }
+
+    // Parents.
+    if !detail.parents.is_empty() {
+        let mut spans = vec![bar(), Span::styled(format!("{:<10} ", "parents"), label)];
+        for (i, p) in detail.parents.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw("  "));
+            }
+            spans.push(Span::styled(
+                p.chars().take(7).collect::<String>(),
+                hash_style,
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    // Signature detail (type · key, plus the forge reason once known).
+    if let Some(sig) = &detail.signature {
+        let kind = match sig.kind {
+            karet_vcs::SignatureKind::Ssh => "SSH",
+            karet_vcs::SignatureKind::OpenPgp => "GPG",
+            karet_vcs::SignatureKind::X509 => "X.509",
+            _ => "signature",
+        };
+        let mut text = kind.to_string();
+        if let Some(key) = &sig.signer_key {
+            text.push_str(&format!(" \u{b7} {key}"));
+        }
+        if let Some(v) = verification {
+            if v.reason != "valid" {
+                text.push_str(&format!("  ({})", v.reason));
+            }
+            if let Some(s) = &v.signer {
+                text.push_str(&format!("  {s}"));
+            }
+        }
+        lines.push(Line::from(vec![
+            bar(),
+            Span::styled(format!("{:<10} ", "signature"), label),
+            Span::styled(text, muted),
+        ]));
+    }
+
+    // Summary: N files changed, +added −removed.
+    let (mut added, mut removed) = (0usize, 0usize);
+    for file in files {
+        let (a, r) = file.line_stats();
+        added += a;
+        removed += r;
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!(
+                " {} file{} changed",
+                files.len(),
+                if files.len() == 1 { "" } else { "s" }
+            ),
+            label,
+        ),
+        Span::raw("   "),
+        Span::styled(format!("+{added}"), add_fg),
+        Span::raw(" "),
+        Span::styled(format!("\u{2212}{removed}"), rem_fg),
+    ]));
+
+    // Changed-file list.
+    for file in files {
+        let (a, r) = file.line_stats();
+        let (g, role) = status_glyph(file.change.status);
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {g}  "),
+                Style::default().fg(theme.role(role).to_ratatui()),
+            ),
+            Span::styled(file.change.path.to_string_lossy().into_owned(), fg),
+            Span::styled(format!("   +{a}"), add_fg),
+            Span::styled(format!(" \u{2212}{r}"), rem_fg),
+        ]));
+    }
+
+    // Per-file unified diffs.
+    for file in files {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            format!(" {}", file.change.path.to_string_lossy()),
+            label.add_modifier(Modifier::BOLD),
+        ));
+        lines.extend(render::unified_lines(file, theme));
+    }
+    lines
 }
 
 /// Render the semantic-blame view: each commit group as a header (line range, short
@@ -1675,6 +1894,39 @@ fn status_glyph(kind: StatusKind) -> (char, ThemeRole) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_datetime_is_correct_and_applies_offset() {
+        assert_eq!(format_datetime(0, 0), "1970-01-01 00:00");
+        assert_eq!(format_datetime(0, 3600), "1970-01-01 01:00");
+        // 1_700_000_000 = 2023-11-14 22:13:20 UTC.
+        assert_eq!(format_datetime(1_700_000_000, 0), "2023-11-14 22:13");
+    }
+
+    #[test]
+    fn verified_badge_reflects_forge_and_signature() {
+        use karet_vcs::CommitSignature;
+        use karet_vcs::SignatureKind;
+        let verified = karet_session::GithubVerification {
+            verified: true,
+            reason: "valid".to_string(),
+            signer: None,
+        };
+        let unverified = karet_session::GithubVerification {
+            verified: false,
+            reason: "unsigned".to_string(),
+            signer: None,
+        };
+        let sig = CommitSignature {
+            kind: SignatureKind::Ssh,
+            signer_key: None,
+            raw: String::new(),
+        };
+        assert_eq!(verified_badge(Some(&verified), None).1, "Verified");
+        assert_eq!(verified_badge(Some(&unverified), None).1, "Unverified");
+        assert_eq!(verified_badge(None, Some(&sig)).1, "Signed");
+        assert_eq!(verified_badge(None, None).1, "Unsigned");
+    }
 
     #[test]
     fn welcome_hints_are_all_bound() {

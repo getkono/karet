@@ -30,6 +30,7 @@ pub use api::Command;
 pub use api::DecorationLayer;
 pub use api::DocumentId;
 pub use api::Event;
+pub use api::GithubVerification;
 pub use api::GraphKind;
 pub use api::RequestId;
 pub use api::SwapInfo;

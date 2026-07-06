@@ -60,6 +60,7 @@ use karet_session::DocSnapshot;
 use karet_session::DocumentId;
 use karet_session::Event as SessionEvent;
 use karet_session::EventRx;
+use karet_session::GithubVerification;
 use karet_session::RequestId;
 use karet_session::Session;
 use karet_session::SessionConfig;
@@ -72,6 +73,7 @@ use karet_syntax::FoldRegions;
 use karet_text::TextBuffer;
 use karet_theme::Theme;
 use karet_vcs::Commit;
+use karet_vcs::CommitDetail;
 use karet_vcs::FileChange;
 use karet_widgets::DropZone;
 use karet_widgets::FileTreeState;
@@ -1845,6 +1847,39 @@ impl App {
         }
     }
 
+    /// Open the commit view for `rev` (a hash or ref). The detail + diff arrive
+    /// asynchronously as [`SessionEvent::CommitReady`], which builds the tab.
+    fn open_commit(&mut self, rev: String) {
+        self.send_vcs(SessionCommand::CommitDetail { rev });
+    }
+
+    /// Build and open a commit tab from a resolved [`CommitDetail`] and its changes,
+    /// then fire the lazy GitHub verification fetch to upgrade the signature badge.
+    fn open_commit_tab(&mut self, detail: Box<CommitDetail>, changes: Vec<FileChange>) {
+        let files = changes
+            .into_iter()
+            .map(|c| FileView::new(c, Section::Staged, self.syntax))
+            .collect();
+        let hash = detail.hash.clone();
+        self.push_tab(Tab::commit(detail, files));
+        self.send_vcs(SessionCommand::FetchCommitVerification { hash });
+    }
+
+    /// Apply the forge's verification verdict to every open commit tab for `hash`.
+    fn apply_commit_verification(&mut self, hash: &str, status: GithubVerification) {
+        for tab in self.all_tabs_mut() {
+            if let TabKind::Commit {
+                detail,
+                verification,
+                ..
+            } = &mut tab.kind
+                && detail.hash == hash
+            {
+                *verification = Some(status.clone());
+            }
+        }
+    }
+
     /// Send a fire-and-forget command to the backend (no document context).
     fn send_vcs(&mut self, command: SessionCommand) {
         self.send_command(command);
@@ -3024,13 +3059,18 @@ impl App {
                 }
             },
             SidebarPanel::SourceControl => {
-                // The pinned commit-log region: rows aren't selectable; only the
-                // "load more" affordance is clickable.
+                // The pinned commit-log region: click a commit row to open its commit
+                // view; the trailing "load more" affordance pages in older history.
                 if rect_contains(self.scm_commits_rect, (col, row_y)) {
                     let display =
                         self.scm_commits_offset + (row_y - self.scm_commits_rect.y) as usize;
                     if self.scm_more_row == Some(display) {
                         self.load_more_scm_log();
+                    } else if let Some(commit) =
+                        display.checked_sub(1).and_then(|i| self.scm.log.get(i))
+                    {
+                        // Row 0 is the " COMMITS" header; commits begin at display 1.
+                        self.open_commit(commit.hash.clone());
                     }
                     return;
                 }
@@ -3749,6 +3789,12 @@ impl App {
                 );
             },
             SessionEvent::SwapsFound { swaps } => self.arm_swap_recovery(swaps),
+            SessionEvent::CommitReady { detail, changes } => {
+                self.open_commit_tab(detail, changes);
+            },
+            SessionEvent::CommitVerification { hash, status } => {
+                self.apply_commit_verification(&hash, status);
+            },
             SessionEvent::GraphReady { title, view, .. } => {
                 let count = view.nodes.len();
                 self.push_tab(Tab::graph(title, view));

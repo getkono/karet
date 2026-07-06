@@ -91,6 +91,24 @@ impl FileView {
         }
     }
 
+    /// The count of `(added, removed)` lines across this file's diff, for the commit
+    /// view's per-file `+N −M` summary.
+    #[must_use]
+    pub fn line_stats(&self) -> (usize, usize) {
+        let mut added = 0;
+        let mut removed = 0;
+        for hunk in &self.diff.hunks {
+            for line in &hunk.lines {
+                match line.kind {
+                    LineKind::Add => added += 1,
+                    LineKind::Remove => removed += 1,
+                    LineKind::Context => {},
+                }
+            }
+        }
+        (added, removed)
+    }
+
     fn tokens_for(
         &self,
         kind: LineKind,

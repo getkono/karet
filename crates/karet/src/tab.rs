@@ -138,6 +138,18 @@ pub enum TabKind {
         /// Vertical scroll offset (display rows).
         scroll: u16,
     },
+    /// A read-only, GitHub-parity commit view: the message, author/committer, parents,
+    /// signature badge, changed-file list, and per-file semantic diffs.
+    Commit {
+        /// The commit metadata (message, author/committer, parents, signature).
+        detail: Box<karet_vcs::CommitDetail>,
+        /// Each changed file (vs the first parent), diffed and highlighted for display.
+        files: Vec<FileView>,
+        /// The forge's "Verified" verdict, once fetched (lazily, over the network).
+        verification: Option<karet_session::GithubVerification>,
+        /// Vertical scroll offset (display rows).
+        scroll: u16,
+    },
 }
 
 /// An open tab: a title, its content, and per-view editor state.
@@ -197,6 +209,21 @@ impl Tab {
         )
     }
 
+    /// A read-only commit view for `detail` and its changed `files`.
+    #[must_use]
+    pub fn commit(detail: Box<karet_vcs::CommitDetail>, files: Vec<FileView>) -> Self {
+        let title = format!("● {}", detail.short_hash);
+        Self::new(
+            title,
+            TabKind::Commit {
+                detail,
+                files,
+                verification: None,
+                scroll: 0,
+            },
+        )
+    }
+
     /// The file path backing this tab, if any.
     #[must_use]
     pub fn path(&self) -> Option<&Path> {
@@ -208,7 +235,7 @@ impl Tab {
             | TabKind::Placeholder { path, .. }
             | TabKind::Blame { path, .. } => Some(path),
             TabKind::Diff { file, .. } => Some(&file.change.path),
-            TabKind::Welcome | TabKind::Graph { .. } => None,
+            TabKind::Welcome | TabKind::Graph { .. } | TabKind::Commit { .. } => None,
         }
     }
 
@@ -230,6 +257,7 @@ impl Tab {
             TabKind::Diff { file, .. } => file.language,
             TabKind::Blame { .. } => "blame",
             TabKind::Graph { .. } => "graph",
+            TabKind::Commit { .. } => "commit",
             TabKind::Welcome => "",
         }
     }
