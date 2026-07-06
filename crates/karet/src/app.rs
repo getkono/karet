@@ -300,6 +300,13 @@ pub struct App {
     pub(crate) icon_style: IconStyle,
     /// The detected terminal graphics protocol.
     pub(crate) graphics: GraphicsProtocol,
+    /// Whether the terminal was confirmed (via a startup handshake) to support
+    /// OSC 22 mouse-pointer-shape hints. `false` means every pointer-shape hint
+    /// is a no-op — never assumed, only confirmed, mirroring `graphics`.
+    pub(crate) pointer_shapes_supported: bool,
+    /// The last OSC 22 pointer shape sent (so hover doesn't re-send every mouse
+    /// event), or `None` for the terminal's default shape.
+    pub(crate) pointer_shape: Option<&'static str>,
     /// Which area has keyboard focus.
     pub(crate) focus: Focus,
     /// The active sidebar panel.
@@ -483,6 +490,8 @@ impl App {
             syntax,
             icon_style: IconStyle::default(),
             graphics: image::detect_protocol(),
+            pointer_shapes_supported: false,
+            pointer_shape: None,
             focus: Focus::Sidebar,
             sidebar_panel: SidebarPanel::Explorer,
             sidebar_visible: true,
@@ -2997,7 +3006,41 @@ impl App {
         self.scm_commits_h = h.clamp(MIN_SCM_REGION, max_commits);
     }
 
+    /// Hint the terminal's mouse pointer shape (OSC 22) over a draggable
+    /// divider — `col-resize` over the sidebar-width divider, `row-resize` over
+    /// the Source-Control commit-log divider, the default shape everywhere
+    /// else — mirroring how a GUI editor shows a resize cursor on hover. A
+    /// complete no-op when the terminal wasn't confirmed to support it at
+    /// startup, and only writes when the shape actually changes (never spams
+    /// an escape sequence per mouse-move event).
+    fn update_pointer_shape_hint(&mut self, mouse: &MouseEvent) {
+        if !self.pointer_shapes_supported {
+            return;
+        }
+        let over_sidebar_divider = self.sidebar_resizing
+            || (self.sidebar_visible && mouse.column == self.sidebar_divider_x);
+        let over_scm_divider = self.scm_resizing
+            || (self.sidebar_panel == SidebarPanel::SourceControl
+                && self.scm_divider_y != 0
+                && mouse.row == self.scm_divider_y
+                && rect_contains(self.sidebar_rect, (mouse.column, mouse.row)));
+        let shape = if over_sidebar_divider {
+            Some("col-resize")
+        } else if over_scm_divider {
+            Some("row-resize")
+        } else {
+            None
+        };
+        if shape == self.pointer_shape {
+            return;
+        }
+        let _ = write!(io::stdout(), "\x1b]22;{}\x1b\\", shape.unwrap_or("default"));
+        let _ = io::stdout().flush();
+        self.pointer_shape = shape;
+    }
+
     fn handle_mouse(&mut self, mouse: MouseEvent) {
+        self.update_pointer_shape_hint(&mouse);
         // Toasts float above everything (including the overlay), so hit-test them
         // first: a left click on a card dismisses it.
         if self.handle_toast_mouse(mouse) {
@@ -4188,6 +4231,50 @@ fn probe_kitty_graphics(timeout: Duration) -> Option<bool> {
     Some(ok)
 }
 
+/// Probe whether the terminal supports OSC 22 (mouse pointer-shape hints, e.g.
+/// hovering a resize divider showing the OS's resize cursor) by sending its
+/// query form (`ESC ] 22 ; ? ESC \`) and checking for an OSC 22 reply before
+/// the DA1 terminator. `Some(true)`/`Some(false)` when the terminal answered
+/// before `timeout`, `None` on timeout or I/O error — in which case the
+/// caller must not send pointer-shape hints (they'd be silently ignored at
+/// best, or misinterpreted at worst). Same raw-mode/before-input-thread
+/// constraint and terminating-DA1 trick as [`probe_kitty_graphics`].
+fn probe_osc22_pointer_shape(timeout: Duration) -> Option<bool> {
+    use std::io::Read;
+
+    let query = "\x1b]22;?\x1b\\\x1b[c";
+    let mut stdout = std::io::stdout();
+    write!(stdout, "{query}").ok()?;
+    stdout.flush().ok()?;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut stdin = std::io::stdin();
+        let mut buf = Vec::new();
+        let mut byte = [0u8; 1];
+        let mut saw_csi = false;
+        loop {
+            match stdin.read(&mut byte) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let b = byte[0];
+                    buf.push(b);
+                    saw_csi |= b == b'[';
+                    if saw_csi && b == b'c' {
+                        break;
+                    }
+                },
+            }
+        }
+        let _ = tx.send(buf);
+    });
+
+    let buf = rx.recv_timeout(timeout).ok()?;
+    // An OSC 22 reply contains its own introducer echoed back: ESC ] 22 ; ...
+    let ok = buf.windows(3).any(|w| w == b"]22");
+    Some(ok)
+}
+
 /// Run the IDE shell: require the kitty keyboard protocol, set up the terminal,
 /// loop until quit, then restore it.
 ///
@@ -4259,6 +4346,11 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     // the heuristic already trusts.
     if probe_kitty_graphics(Duration::from_millis(200)) == Some(true) {
         app.graphics = GraphicsProtocol::Kitty;
+    }
+    // Same handshake for OSC 22 pointer-shape hints (col-resize/row-resize over
+    // the sidebar/SCM dividers) — confirmed support only, never assumed.
+    if probe_osc22_pointer_shape(Duration::from_millis(200)) == Some(true) {
+        app.pointer_shapes_supported = true;
     }
 
     let result = runtime.block_on(async move {
@@ -4609,6 +4701,47 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         // Dragging to the very top clamps so the changes region keeps room too.
         app.resize_scm_commits_to(0);
         assert_eq!(app.scm_commits_h, 20 - (MIN_SCM_REGION + 1));
+    }
+
+    #[test]
+    fn pointer_shape_hint_tracks_divider_hover_when_supported() {
+        let mut app = app();
+        app.pointer_shapes_supported = true;
+        app.sidebar_visible = true;
+        app.sidebar_divider_x = 30;
+
+        let moved = |col, row| MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.update_pointer_shape_hint(&moved(30, 5));
+        assert_eq!(app.pointer_shape, Some("col-resize"));
+
+        app.update_pointer_shape_hint(&moved(10, 5));
+        assert_eq!(
+            app.pointer_shape, None,
+            "moving off the divider resets to the default shape"
+        );
+    }
+
+    #[test]
+    fn pointer_shape_hint_is_a_no_op_when_unsupported() {
+        let mut app = app();
+        // `pointer_shapes_supported` defaults to false (never confirmed at startup).
+        app.sidebar_visible = true;
+        app.sidebar_divider_x = 30;
+        app.update_pointer_shape_hint(&MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 30,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(
+            app.pointer_shape, None,
+            "an unconfirmed terminal must never get a pointer-shape hint"
+        );
     }
 
     #[test]
