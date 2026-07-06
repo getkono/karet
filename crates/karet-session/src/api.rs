@@ -256,6 +256,23 @@ pub enum Event {
         /// The document with the conflict.
         doc: DocumentId,
     },
+    /// An `OpenDocument` failed because the file's contents are not valid UTF-8.
+    /// No document is registered for `path` — full non-UTF-8 editing isn't
+    /// supported, so the client should fall back to a read-only view instead of
+    /// leaving the tab's document unset forever.
+    NotUtf8 {
+        /// The path that could not be opened as text.
+        path: PathBuf,
+    },
+    /// A debounced filesystem change was observed (see `karet-watch`). Distinct
+    /// from the specific `Reloaded`/`VcsStatus`/`VcsLog` reactions the backend
+    /// already performs on the same event — this tells the client something on
+    /// disk changed so it can refresh anything else it derives from the
+    /// workspace (e.g. re-run a live workspace search).
+    FsChanged {
+        /// The affected paths, as reported by the debounced watcher.
+        paths: Vec<PathBuf>,
+    },
     /// New diagnostics were published for a document.
     DiagnosticsPublished {
         /// The document.

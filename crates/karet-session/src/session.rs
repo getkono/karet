@@ -30,7 +30,9 @@ use karet_syntax::Highlights;
 use karet_text::AppliedEdit;
 use karet_text::EditCause;
 use karet_text::EditContext;
+use karet_text::LoadError;
 use karet_text::TextBuffer;
+use karet_text::TextError;
 use karet_treesitter::LanguageId;
 use karet_treesitter::ParserPool;
 use karet_treesitter::SyntaxTree;
@@ -114,20 +116,20 @@ const CLASSIFY_HEAD: usize = 8192;
 ///
 /// The buffer records the on-disk fingerprint of the *original* bytes so the
 /// file-watcher can still recognize the editor's own writes.
-fn load_document(path: &Path) -> Result<(TextBuffer, DocFormat), String> {
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+fn load_document(path: &Path) -> Result<(TextBuffer, DocFormat), LoadError> {
+    let bytes = std::fs::read(path).map_err(|e| LoadError::Io(e.to_string()))?;
     let head = &bytes[..bytes.len().min(CLASSIFY_HEAD)];
     // Format detection ignores the size guard: once the session is asked to open a
     // document it must decode it correctly regardless of size (the guard is an
     // app-level *routing* choice), so a large CBOR still decodes rather than being
     // mistaken for plain text.
     if classify_ignoring_size(path, head) == FileKind::Cbor {
-        let text = karet_cbor::decode_to_text(&bytes).map_err(|e| e.to_string())?;
+        let text = karet_cbor::decode_to_text(&bytes).map_err(|e| LoadError::Io(e.to_string()))?;
         let mut buffer = TextBuffer::from_text(&text);
         buffer.record_disk_state(path, &bytes);
         Ok((buffer, DocFormat::Cbor))
     } else {
-        let mut buffer = TextBuffer::from_bytes(&bytes).map_err(|e| e.to_string())?;
+        let mut buffer = TextBuffer::from_bytes(&bytes)?;
         buffer.record_disk_state(path, &bytes);
         Ok((buffer, DocFormat::Text))
     }
@@ -135,21 +137,17 @@ fn load_document(path: &Path) -> Result<(TextBuffer, DocFormat), String> {
 
 /// Save `doc` to disk, re-encoding a decoded binary format (CBOR) from its edit
 /// text. A CBOR encode error (e.g. malformed diagnostic notation after editing)
-/// leaves the file untouched and surfaces as a save failure.
-fn save_document(doc: &mut Document) -> Result<(), String> {
+/// leaves the file untouched and surfaces as a save failure. Returns
+/// [`TextError::Conflict`] distinctly (rather than a generic IO error) so the
+/// caller can prompt the user instead of just reporting a failure.
+fn save_document(doc: &mut Document) -> Result<(), TextError> {
     match doc.format {
-        DocFormat::Text => doc
-            .buffer
-            .save(&doc.path)
-            .map(|_| ())
-            .map_err(|e| e.to_string()),
+        DocFormat::Text => doc.buffer.save(&doc.path).map(|_| ()),
         DocFormat::Cbor => {
             let text = doc.buffer.text();
-            let bytes = karet_cbor::encode_from_text(&text).map_err(|e| e.to_string())?;
-            doc.buffer
-                .save_bytes(&doc.path, &bytes)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
+            let bytes =
+                karet_cbor::encode_from_text(&text).map_err(|e| TextError::Io(e.to_string()))?;
+            doc.buffer.save_bytes(&doc.path, &bytes).map(|_| ())
         },
     }
 }
@@ -514,6 +512,16 @@ impl Session {
                 self.on_external_change(doc_id, path);
             }
         }
+        // A generic "something changed" signal for anything else the client
+        // derives from the workspace (e.g. a live-updating search) — distinct
+        // from the specific reactions below, which only cover open documents and
+        // VCS state.
+        self.emit(
+            None,
+            Event::FsChanged {
+                paths: event.paths.clone(),
+            },
+        );
         // Any worktree edit or watched git-metadata change can alter status. The
         // event is already debounced and the emit is change-gated, so a burst (and
         // the session's own index writes) collapse to at most one update.
@@ -555,6 +563,13 @@ impl Session {
         }
         let (buffer, format) = match load_document(&path) {
             Ok(loaded) => loaded,
+            Err(LoadError::NotUtf8 { .. }) => {
+                // Full non-UTF-8 editing isn't supported; tell the client so it can
+                // fall back to a read-only view instead of leaving this path's tab
+                // registered with no document forever.
+                self.emit(Some(id), Event::NotUtf8 { path });
+                return;
+            },
             Err(e) => {
                 self.emit(
                     Some(id),
@@ -604,6 +619,10 @@ impl Session {
     fn apply(&mut self, id: RequestId, doc_id: DocumentId, change: &Change) {
         let tick = self.elapsed_ms();
         let ctx = edit_context(tick, change);
+        // `None` means the change was stale or overlapping (the client's local
+        // speculative state has diverged from ours); either way we still publish
+        // below so the authoritative buffer flows back down to the client instead
+        // of leaving it stuck rejecting every future edit forever.
         let version = {
             let pool = &mut self.pool;
             let highlighters = &mut self.highlighters;
@@ -611,26 +630,39 @@ impl Session {
                 self.events.send((Some(id), unknown_document(doc_id))).ok();
                 return;
             };
-            let applied = match doc.buffer.apply(change, ctx) {
-                Ok(a) => a,
-                Err(_) => return, // stale or overlapping; the caller will resync
-            };
-            update_syntax(pool, highlighters, doc, Some(&applied.edits));
-            // Arm the backup clock on the clean→dirty transition (see `backup_tick`).
-            doc.sync_dirty_since(tick);
-            // LSP seam: this is the single apply site. When a server is attached for
-            // `doc.lang_id`, forward an incremental `did_change(&doc.path, version,
-            // change.edits)` here (translated to the negotiated encoding); a no-op
-            // while no server is attached.
-            applied.version
+            match doc.buffer.apply(change, ctx) {
+                Ok(applied) => {
+                    update_syntax(pool, highlighters, doc, Some(&applied.edits));
+                    // Arm the backup clock on the clean→dirty transition (see
+                    // `backup_tick`).
+                    doc.sync_dirty_since(tick);
+                    // LSP seam: this is the single apply site. When a server is
+                    // attached for `doc.lang_id`, forward an incremental
+                    // `did_change(&doc.path, version, change.edits)` here
+                    // (translated to the negotiated encoding); a no-op while no
+                    // server is attached.
+                    Some(applied.version)
+                },
+                Err(_) => None,
+            }
         };
-        self.emit(
-            Some(id),
-            Event::Applied {
-                doc: doc_id,
-                version,
-            },
-        );
+        match version {
+            Some(version) => self.emit(
+                Some(id),
+                Event::Applied {
+                    doc: doc_id,
+                    version,
+                },
+            ),
+            None => self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Warning,
+                    kind: NotificationKind::Io,
+                    message: "edit couldn't be applied — refreshing from disk".to_string(),
+                },
+            ),
+        }
         self.publish(doc_id, None);
     }
 
@@ -692,6 +724,15 @@ impl Session {
                     }
                 }
                 self.emit(Some(id), Event::Saved { doc: doc_id });
+            },
+            Some(Err(TextError::Conflict)) => {
+                // The file changed on disk since it was last read — writing now would
+                // silently clobber someone else's change. Back up the in-memory edits
+                // (same as any other failed save) and let the client prompt the user,
+                // reusing the same event an external change to a dirty doc already
+                // triggers reactively.
+                self.write_swap(doc_id);
+                self.emit(Some(id), Event::ExternalConflict { doc: doc_id });
             },
             Some(Err(e)) => {
                 // A failed save is exactly when a backup matters most: capture the
@@ -1186,6 +1227,39 @@ mod tests {
     }
 
     #[test]
+    fn opening_a_non_utf8_file_reports_not_utf8_instead_of_a_generic_error() {
+        let Some((_dir, path)) = write_temp("bad.rs", "") else {
+            return;
+        };
+        if std::fs::write(&path, [0x66, 0x6e, 0xff, 0x00]).is_err() {
+            return;
+        }
+        let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let mut not_utf8_path = None;
+        let mut opened = false;
+        while let Some((_, ev)) = events.try_recv() {
+            match ev {
+                Event::NotUtf8 { path } => not_utf8_path = Some(path),
+                Event::Opened { .. } => opened = true,
+                _ => {},
+            }
+        }
+        assert_eq!(not_utf8_path, Some(path));
+        assert!(!opened, "a non-UTF-8 file must not report as Opened");
+        assert!(
+            snaps.try_recv().is_none(),
+            "no document was registered, so no snapshot should follow"
+        );
+    }
+
+    #[test]
     fn open_apply_save_undo_flow() {
         let Some((_dir, path)) = write_temp("main.rs", "fn main() {}\n") else {
             return;
@@ -1262,6 +1336,127 @@ mod tests {
             session
                 .document(doc)
                 .is_some_and(|v| v.buffer().line_count() == 2)
+        );
+    }
+
+    #[test]
+    fn save_refuses_to_overwrite_a_file_changed_on_disk_since_it_was_read() {
+        let Some((_dir, path)) = write_temp("main.rs", "fn main() {}\n") else {
+            return;
+        };
+        let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let Some(doc) = opened_doc(&mut events) else {
+            return;
+        };
+        let _ = snaps.try_recv();
+
+        // Dirty the in-memory buffer without touching the file yet.
+        let change = Change::new(
+            0,
+            vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(0, 0),
+                    end: LineCol::new(0, 0),
+                },
+                new_text: "// edited\n".to_string(),
+            }],
+        );
+        session.handle(RequestId(2), Command::ApplyChange { doc, change });
+        while events.try_recv().is_some() {}
+        let _ = snaps.try_recv();
+
+        // Someone else changes the file on disk before we save.
+        if std::fs::write(&path, "fn main() { /* external */ }\n").is_err() {
+            return;
+        }
+
+        session.handle(RequestId(3), Command::Save { doc });
+        let mut conflict = false;
+        let mut saved = false;
+        while let Some((_, ev)) = events.try_recv() {
+            match ev {
+                Event::ExternalConflict { .. } => conflict = true,
+                Event::Saved { .. } => saved = true,
+                _ => {},
+            }
+        }
+        assert!(
+            conflict,
+            "save must report an ExternalConflict, not just fail silently"
+        );
+        assert!(!saved, "a conflicting save must not report as Saved");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "fn main() { /* external */ }\n",
+            "a refused save must not overwrite the externally-changed file"
+        );
+        // The in-memory edit is still there (unsaved, not discarded).
+        assert!(session.document(doc).is_some_and(|v| v.buffer().is_dirty()));
+    }
+
+    #[test]
+    fn apply_against_a_stale_version_resyncs_instead_of_dropping_silently() {
+        // Regression: a client whose local speculative version has diverged from
+        // the backend's (e.g. after a dropped/duplicate message) used to have its
+        // edit silently discarded with no way to recover — every subsequent edit
+        // on that document would then fail the same way forever. It must instead
+        // be told and get a fresh snapshot back so it can resync.
+        let Some((_dir, path)) = write_temp("main.rs", "fn main() {}\n") else {
+            return;
+        };
+        let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let Some(doc) = opened_doc(&mut events) else {
+            return;
+        };
+        let _ = snaps.try_recv(); // drain the open snapshot
+
+        // Base the change on a version that doesn't exist yet (the real base is 0).
+        let change = Change::new(
+            7,
+            vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(0, 0),
+                    end: LineCol::new(0, 0),
+                },
+                new_text: "!".to_string(),
+            }],
+        );
+        session.handle(RequestId(2), Command::ApplyChange { doc, change });
+
+        let mut notified = false;
+        let mut applied = false;
+        while let Some((_, ev)) = events.try_recv() {
+            match ev {
+                Event::Notification { .. } => notified = true,
+                Event::Applied { .. } => applied = true,
+                _ => {},
+            }
+        }
+        assert!(notified, "a stale-version conflict must notify the client");
+        assert!(!applied, "the rejected edit must not report as Applied");
+        assert!(
+            snaps.try_recv().is_some(),
+            "the client must still get a fresh snapshot to resync from, not be left stuck"
+        );
+        // The document itself is untouched by the rejected edit.
+        assert!(
+            session
+                .document(doc)
+                .is_some_and(|v| v.buffer().text() == "fn main() {}\n")
         );
     }
 
@@ -1636,6 +1831,23 @@ mod tests {
         if let Some((_staged, working)) = refreshed {
             assert_eq!(working.len(), 2);
         }
+    }
+
+    #[test]
+    fn filesystem_event_emits_fs_changed_with_the_affected_paths() {
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+        let path = PathBuf::from("/work/touched.rs");
+        session.handle_fs_event(karet_watch::FsEvent {
+            kind: karet_watch::FsEventKind::Modified,
+            paths: vec![path.clone()],
+        });
+        let mut seen = None;
+        while let Some((_, ev)) = events.try_recv() {
+            if let Event::FsChanged { paths } = ev {
+                seen = Some(paths);
+            }
+        }
+        assert_eq!(seen, Some(vec![path]));
     }
 
     /// A whole-buffer insertion at the start of the document (base version 0).
