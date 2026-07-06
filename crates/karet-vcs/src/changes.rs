@@ -361,6 +361,147 @@ impl Repository {
     }
 }
 
+impl Repository {
+    /// Collect one [`FileChange`] per file this commit changed, each with the full
+    /// before/after text so the caller can diff it (via `karet-diff`).
+    ///
+    /// The commit's tree is diffed against its **first parent** — GitHub's default view
+    /// of a merge. A root commit (no parents) diffs against the empty tree, so every
+    /// file reads as an addition. Rename detection is forced on (as in the staged view),
+    /// and submodule/tree entries are skipped. The result is sorted by
+    /// [`FileChange::path`].
+    ///
+    /// # Errors
+    /// Returns [`VcsError::Git`] if `rev` does not resolve to a commit, or on failure.
+    pub fn commit_changes(&self, rev: &str) -> Result<Vec<FileChange>, VcsError> {
+        use gix::bstr::ByteSlice;
+        let id = self
+            .inner
+            .rev_parse_single(rev.as_bytes().as_bstr())
+            .map_err(to_git)?;
+        let commit = self.inner.find_commit(id).map_err(to_git)?;
+        let new_tree = commit.tree().map_err(to_git)?;
+        let parent_tree = match commit.parent_ids().next() {
+            Some(pid) => Some(
+                self.inner
+                    .find_commit(pid)
+                    .map_err(to_git)?
+                    .tree()
+                    .map_err(to_git)?,
+            ),
+            None => None,
+        };
+        // Force rename detection on regardless of the user's `diff.renames` config, so a
+        // rename always shows as `R` (matching how the staged view detects renames).
+        let opts = gix::diff::Options::default().with_rewrites(Some(Default::default()));
+        let raw = self
+            .inner
+            .diff_tree_to_tree(parent_tree.as_ref(), Some(&new_tree), Some(opts))
+            .map_err(to_git)?;
+        let mut out = Vec::with_capacity(raw.len());
+        for change in raw {
+            if let Some(fc) = self.tree_change(change)? {
+                out.push(fc);
+            }
+        }
+        out.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(out)
+    }
+
+    /// Convert one tree-to-tree change into a [`FileChange`] (or `None` to skip a
+    /// submodule/tree entry), reading both blob sides from the object database.
+    fn tree_change(
+        &self,
+        change: gix::object::tree::diff::ChangeDetached,
+    ) -> Result<Option<FileChange>, VcsError> {
+        use gix::object::tree::diff::ChangeDetached as C;
+        let fc = match change {
+            C::Addition {
+                location,
+                entry_mode,
+                id,
+                ..
+            } => {
+                if !entry_mode.is_blob_or_symlink() {
+                    return Ok(None);
+                }
+                let (bin, new) = self.read_object_text(id)?;
+                let (is_binary, old, new) = finalize(bin, String::new(), new);
+                FileChange {
+                    path: bstr_to_path(location.as_ref()),
+                    old_path: None,
+                    status: StatusKind::Added,
+                    is_binary,
+                    old,
+                    new,
+                }
+            },
+            C::Deletion {
+                location,
+                entry_mode,
+                id,
+                ..
+            } => {
+                if !entry_mode.is_blob_or_symlink() {
+                    return Ok(None);
+                }
+                let (bin, old) = self.read_object_text(id)?;
+                let (is_binary, old, new) = finalize(bin, old, String::new());
+                FileChange {
+                    path: bstr_to_path(location.as_ref()),
+                    old_path: None,
+                    status: StatusKind::Deleted,
+                    is_binary,
+                    old,
+                    new,
+                }
+            },
+            C::Modification {
+                location,
+                entry_mode,
+                previous_id,
+                id,
+                ..
+            } => {
+                if !entry_mode.is_blob_or_symlink() {
+                    return Ok(None);
+                }
+                let (b1, old) = self.read_object_text(previous_id)?;
+                let (b2, new) = self.read_object_text(id)?;
+                let (is_binary, old, new) = finalize(b1 || b2, old, new);
+                FileChange {
+                    path: bstr_to_path(location.as_ref()),
+                    old_path: None,
+                    status: StatusKind::Modified,
+                    is_binary,
+                    old,
+                    new,
+                }
+            },
+            C::Rewrite {
+                source_location,
+                source_id,
+                location,
+                id,
+                ..
+            } => {
+                let (b1, old) = self.read_object_text(source_id)?;
+                let (b2, new) = self.read_object_text(id)?;
+                let (is_binary, old, new) = finalize(b1 || b2, old, new);
+                FileChange {
+                    path: bstr_to_path(location.as_ref()),
+                    old_path: Some(bstr_to_path(source_location.as_ref())),
+                    status: StatusKind::Renamed,
+                    is_binary,
+                    old,
+                    new,
+                }
+            },
+        };
+        Ok(Some(fc))
+    }
+}
+
 /// Convert a repo-relative byte path into a [`PathBuf`].
 fn bstr_to_path(location: &gix::bstr::BStr) -> PathBuf {
     gix::path::from_bstr(location).into_owned()
@@ -407,7 +548,7 @@ fn pathspec_patterns(repo: &gix::Repository, pathspec: Option<&Path>) -> Vec<gix
 /// current-directory-relative path that points at or inside the worktree maps
 /// correctly. Returns `None` — treated by the callers as "no filter" — when `path`
 /// lies outside the worktree or cannot be resolved.
-fn repo_relative(repo: &gix::Repository, path: &Path) -> Option<PathBuf> {
+pub(crate) fn repo_relative(repo: &gix::Repository, path: &Path) -> Option<PathBuf> {
     let workdir = repo.workdir()?;
     let abs_path = std::fs::canonicalize(path).ok()?;
     let abs_workdir = std::fs::canonicalize(workdir).ok()?;
@@ -712,6 +853,73 @@ mod tests {
         // The conflict is still surfaced on the unstaged side.
         let unstaged = r.changes(Selection::Unstaged, None)?;
         assert!(unstaged.iter().any(|c| c.status == StatusKind::Conflicted));
+        Ok(())
+    }
+
+    #[test]
+    fn commit_changes_diffs_against_first_parent() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        write(&repo.path, "a.txt", b"one\n")?;
+        git(&repo.path, &["add", "."])?;
+        git(&repo.path, &["commit", "-q", "-m", "init"])?;
+        write(&repo.path, "a.txt", b"one\ntwo\n")?;
+        write(&repo.path, "b.txt", b"new file\n")?;
+        git(&repo.path, &["add", "."])?;
+        git(&repo.path, &["commit", "-q", "-m", "second"])?;
+        let r = Repository::discover(&repo.path)?;
+
+        let changes = r.commit_changes("HEAD")?;
+        assert_eq!(changes.len(), 2);
+        let a = changes
+            .iter()
+            .find(|c| c.path == PathBuf::from("a.txt"))
+            .ok_or_else(|| VcsError::Git("a.txt missing".into()))?;
+        assert_eq!(a.status, StatusKind::Modified);
+        assert_eq!(a.old, "one\n");
+        assert_eq!(a.new, "one\ntwo\n");
+        let b = changes
+            .iter()
+            .find(|c| c.path == PathBuf::from("b.txt"))
+            .ok_or_else(|| VcsError::Git("b.txt missing".into()))?;
+        assert_eq!(b.status, StatusKind::Added);
+        assert_eq!(b.new, "new file\n");
+        Ok(())
+    }
+
+    #[test]
+    fn commit_changes_on_root_are_all_additions() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        write(&repo.path, "a.txt", b"one\n")?;
+        git(&repo.path, &["add", "."])?;
+        git(&repo.path, &["commit", "-q", "-m", "root"])?;
+        let r = Repository::discover(&repo.path)?;
+
+        let changes = r.commit_changes("HEAD")?;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].status, StatusKind::Added);
+        assert_eq!(changes[0].old, "");
+        assert_eq!(changes[0].new, "one\n");
+        Ok(())
+    }
+
+    #[test]
+    fn commit_changes_detect_renames() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        git(&repo.path, &["config", "diff.renames", "false"])?;
+        write(&repo.path, "old.txt", b"one\ntwo\nthree\nfour\nfive\n")?;
+        git(&repo.path, &["add", "."])?;
+        git(&repo.path, &["commit", "-q", "-m", "init"])?;
+        git(&repo.path, &["mv", "old.txt", "new.txt"])?;
+        git(&repo.path, &["commit", "-q", "-m", "rename"])?;
+        let r = Repository::discover(&repo.path)?;
+
+        let changes = r.commit_changes("HEAD")?;
+        let fc = changes
+            .iter()
+            .find(|c| c.path == PathBuf::from("new.txt"))
+            .ok_or_else(|| VcsError::Git("renamed file not reported".into()))?;
+        assert_eq!(fc.status, StatusKind::Renamed);
+        assert_eq!(fc.old_path.as_deref(), Some(Path::new("old.txt")));
         Ok(())
     }
 
