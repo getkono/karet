@@ -196,6 +196,13 @@ pub enum Command {
         /// The maximum number of commits to return.
         limit: usize,
     },
+    /// Lazily fetch a commit's GitHub "Verified" status (answered by
+    /// [`Event::CommitVerification`]). A no-op unless the backend was built with the
+    /// `github` feature and the `origin` remote is a GitHub repository.
+    FetchCommitVerification {
+        /// The full commit hash to look up.
+        hash: String,
+    },
     /// Recover the crash-recovery swaps announced by [`Event::SwapsFound`]: restore
     /// each backed-up buffer as an unsaved (dirty) document.
     RecoverSwaps,
@@ -214,6 +221,20 @@ pub enum GraphKind {
     Dependency,
     /// The usage/call graph of a symbol.
     Usage,
+}
+
+/// A forge's verification verdict for a commit signature (see
+/// [`Event::CommitVerification`]). Mirrors GitHub's `commit.verification`; defined here
+/// (rather than re-exported from `karet-github`) so the seam stays stable whether or not
+/// the `github` feature is compiled in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GithubVerification {
+    /// Whether the forge considers the signature verified.
+    pub verified: bool,
+    /// The forge's machine reason (`valid`, `unsigned`, `unknown_key`, …).
+    pub reason: String,
+    /// The signer the forge attributes the commit to, when present.
+    pub signer: Option<String>,
 }
 
 /// A crash-recovery swap offered to the UI on startup (see [`Event::SwapsFound`]).
@@ -387,6 +408,14 @@ pub enum Event {
         commits: Vec<Commit>,
         /// Whether more commits exist beyond this page.
         has_more: bool,
+    },
+    /// A commit's GitHub verification status, answering
+    /// [`Command::FetchCommitVerification`]. Emitted only on a successful fetch.
+    CommitVerification {
+        /// The commit this verdict is for.
+        hash: String,
+        /// The forge's verification verdict.
+        status: GithubVerification,
     },
     /// Crash-recovery swaps from a previous session were found on startup. The UI
     /// prompts the user to [`Command::RecoverSwaps`] or [`Command::DiscardSwaps`].

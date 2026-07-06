@@ -13,6 +13,13 @@ keywords.workspace     = true
 categories.workspace   = true
 publish = false                       # karet-internal backend — pulls the whole logic tree
 
+[features]
+default = ["github"]
+# Lazily fetch a commit's "Verified" status from the GitHub REST API (the commit
+# view's signature badge). On by default; turn it off for a fully offline / pure-Rust
+# build (drops the reqwest + rustls dependency tree). The badge then stays "Signed".
+github = ["dep:karet-github"]
+
 [dependencies]
 karet-core = { workspace = true, features = ["serde"] }   # serde-ready seam models
 karet-text.workspace = true
@@ -24,6 +31,7 @@ karet-diff.workspace = true
 karet-lsp.workspace = true            # headless
 karet-dap.workspace = true            # headless
 karet-vcs = { workspace = true, features = ["git2"] }   # headless; git2 = staging writes
+karet-github = { workspace = true, optional = true }    # GitHub commit-verification (feature `github`)
 karet-search.workspace = true
 karet-fuzzy.workspace = true
 karet-terminal.workspace = true       # PTY host is server-side business logic

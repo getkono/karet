@@ -47,6 +47,17 @@ impl Repository {
         })
     }
 
+    /// The URL of the `origin` remote, if one is configured. Used to derive the
+    /// `owner/repo` for forge lookups (e.g. GitHub commit verification).
+    #[must_use]
+    pub fn origin_url(&self) -> Option<String> {
+        use gix::bstr::ByteSlice;
+        self.inner
+            .config_snapshot()
+            .string("remote.origin.url")
+            .map(|v| v.to_str_lossy().into_owned())
+    }
+
     /// The git-metadata directories whose contents a file watcher should observe to
     /// keep status fresh: the per-worktree git directory (holding `index`, `HEAD`,
     /// `MERGE_HEAD`) and, for a linked worktree, the common directory (holding

@@ -47,6 +47,8 @@ use tokio::sync::mpsc;
 use crate::api::Command;
 use crate::api::DocumentId;
 use crate::api::Event;
+#[cfg(feature = "github")]
+use crate::api::GithubVerification;
 use crate::api::RequestId;
 use crate::api::SwapInfo;
 use crate::backup::SwapRecord;
@@ -341,6 +343,7 @@ impl Session {
             Command::FileHistory { path, skip, limit } => {
                 self.emit_file_history(id, path, skip, limit)
             },
+            Command::FetchCommitVerification { hash } => self.fetch_commit_verification(id, hash),
             Command::RecoverSwaps => self.recover_swaps(id),
             Command::DiscardSwaps => self.discard_swaps(),
             Command::DependencyGraph => self.emit_dependency_graph(id),
@@ -441,6 +444,38 @@ impl Session {
             ),
         }
     }
+
+    /// Lazily fetch a commit's GitHub "Verified" status on a worker thread, emitting an
+    /// [`Event::CommitVerification`] on success. Silent on any failure (offline, no
+    /// GitHub remote, rate-limited): the client simply keeps the offline "Signed" badge.
+    /// A no-op when the `github` feature is disabled.
+    #[cfg(feature = "github")]
+    fn fetch_commit_verification(&mut self, id: RequestId, hash: String) {
+        let Some(url) = self.vcs.as_ref().and_then(Repository::origin_url) else {
+            return;
+        };
+        let Some((owner, repo)) = karet_github::parse_remote(&url) else {
+            return;
+        };
+        let events = self.events.clone();
+        // Blocking HTTP off the actor thread; drop the handle (fire-and-forget).
+        std::thread::spawn(move || {
+            if let Ok(v) = karet_github::commit_verification(&owner, &repo, &hash) {
+                let status = GithubVerification {
+                    verified: v.verified,
+                    reason: v.reason,
+                    signer: v.signer,
+                };
+                events
+                    .send((Some(id), Event::CommitVerification { hash, status }))
+                    .ok();
+            }
+        });
+    }
+
+    /// Without the `github` feature, commit verification is unavailable — a no-op.
+    #[cfg(not(feature = "github"))]
+    fn fetch_commit_verification(&mut self, _id: RequestId, _hash: String) {}
 
     /// Reconcile the commit log after a filesystem event. Reads the (cheap) `HEAD`
     /// hash; if the tip moved, prepends only the new commits, falling back to a fresh

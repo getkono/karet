@@ -54,6 +54,7 @@ karet-pdf        = { path = "crates/karet-pdf", version = "0.2.0" }
 karet-session    = { path = "crates/karet-session" }
 karet-watch      = { path = "crates/karet-watch" }
 karet-graph      = { path = "crates/karet-graph" }
+karet-github     = { path = "crates/karet-github" }
 # blameline is a standalone library on its OWN SemVer line (NOT the workspace lockstep);
 # pin its independent version here. See crates/blameline/README.md.
 blameline        = { path = "crates/blameline", version = "1.0.1" }
@@ -161,6 +162,9 @@ schemars     = "1.2.1"
 # Package dependency-graph backend (karet-session viz): the pure-Rust core of
 # `dependable` parses a Cargo.lock into a resolved graph offline (no network stack).
 dependable-core = "0.1.2"
+# GitHub REST client (karet-github). Pure-Rust TLS via rustls (ring), no OpenSSL /
+# native-tls system dependency. Blocking API so callers need no async runtime.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 # Application-only
 clap               = { version = "4.6.1", features = ["derive"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

@@ -1,0 +1,22 @@
+[package]
+name        = "karet-github"
+description = "Minimal GitHub REST client for karet (commit signature verification, and the single home for GitHub-specific networking)."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme = "README.md"
+keywords.workspace     = true
+categories.workspace   = true
+publish = false
+
+[dependencies]
+reqwest.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
