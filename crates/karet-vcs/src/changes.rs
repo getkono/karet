@@ -374,12 +374,7 @@ impl Repository {
     /// # Errors
     /// Returns [`VcsError::Git`] if `rev` does not resolve to a commit, or on failure.
     pub fn commit_changes(&self, rev: &str) -> Result<Vec<FileChange>, VcsError> {
-        use gix::bstr::ByteSlice;
-        let id = self
-            .inner
-            .rev_parse_single(rev.as_bytes().as_bstr())
-            .map_err(to_git)?;
-        let commit = self.inner.find_commit(id).map_err(to_git)?;
+        let commit = self.inner.find_commit(self.resolve(rev)?).map_err(to_git)?;
         let new_tree = commit.tree().map_err(to_git)?;
         let parent_tree = match commit.parent_ids().next() {
             Some(pid) => Some(
@@ -391,12 +386,64 @@ impl Repository {
             ),
             None => None,
         };
-        // Force rename detection on regardless of the user's `diff.renames` config, so a
-        // rename always shows as `R` (matching how the staged view detects renames).
+        self.diff_trees(parent_tree.as_ref(), Some(&new_tree))
+    }
+
+    /// Collect one [`FileChange`] per file that differs between two arbitrary revisions,
+    /// each carrying full before/after text so the caller can diff it (via `karet-diff`).
+    ///
+    /// The diff runs from `base_rev` (the "before" side) to `head_rev` (the "after"
+    /// side): a two-dot `base..head`. When `merge_base` is set it is a three-dot
+    /// `base...head` — the base is replaced with the [merge base](Self::merge_base) of the
+    /// two revisions, so the result is exactly what `head` introduced since it diverged
+    /// from `base` (a pull-request-style diff), ignoring anything `base` gained meanwhile.
+    /// Rename detection is forced on and submodule/tree entries are skipped, as in
+    /// [`commit_changes`](Self::commit_changes). The result is sorted by
+    /// [`FileChange::path`].
+    ///
+    /// # Errors
+    /// Returns [`VcsError::Git`] if either revision does not resolve, if `merge_base` is
+    /// set but the two revisions share no common ancestor, or on read failure.
+    pub fn range_changes(
+        &self,
+        base_rev: &str,
+        head_rev: &str,
+        merge_base: bool,
+    ) -> Result<Vec<FileChange>, VcsError> {
+        let head_id = self.resolve(head_rev)?;
+        let base_id = if merge_base {
+            self.merge_base_id(self.resolve(base_rev)?, head_id)?
+                .ok_or_else(|| VcsError::Git("the revisions share no common ancestor".into()))?
+        } else {
+            self.resolve(base_rev)?
+        };
+        let base_tree = self
+            .inner
+            .find_commit(base_id)
+            .map_err(to_git)?
+            .tree()
+            .map_err(to_git)?;
+        let head_tree = self
+            .inner
+            .find_commit(head_id)
+            .map_err(to_git)?
+            .tree()
+            .map_err(to_git)?;
+        self.diff_trees(Some(&base_tree), Some(&head_tree))
+    }
+
+    /// Diff two optional trees (`None` = the empty tree) into sorted [`FileChange`]s,
+    /// reading both blob sides from the object database. Rename detection is forced on
+    /// regardless of the user's `diff.renames` config, so a rename always shows as `R`.
+    fn diff_trees(
+        &self,
+        old: Option<&gix::Tree<'_>>,
+        new: Option<&gix::Tree<'_>>,
+    ) -> Result<Vec<FileChange>, VcsError> {
         let opts = gix::diff::Options::default().with_rewrites(Some(Default::default()));
         let raw = self
             .inner
-            .diff_tree_to_tree(parent_tree.as_ref(), Some(&new_tree), Some(opts))
+            .diff_tree_to_tree(old, new, Some(opts))
             .map_err(to_git)?;
         let mut out = Vec::with_capacity(raw.len());
         for change in raw {
@@ -406,6 +453,90 @@ impl Repository {
         }
         out.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(out)
+    }
+
+    /// Resolve a revision spec (a hash, ref, `HEAD`, `HEAD~2`, `@{upstream}`, …) to its
+    /// object id.
+    fn resolve(&self, rev: &str) -> Result<gix::ObjectId, VcsError> {
+        use gix::bstr::ByteSlice;
+        Ok(self
+            .inner
+            .rev_parse_single(rev.as_bytes().as_bstr())
+            .map_err(to_git)?
+            .detach())
+    }
+
+    /// The best merge base of two object ids, or `None` when their histories are
+    /// unrelated (no common ancestor).
+    fn merge_base_id(
+        &self,
+        a: gix::ObjectId,
+        b: gix::ObjectId,
+    ) -> Result<Option<gix::ObjectId>, VcsError> {
+        Ok(self
+            .inner
+            .merge_bases_many(a, &[b])
+            .map_err(to_git)?
+            .first()
+            .map(|id| id.detach()))
+    }
+
+    /// The full hex hash of the best merge base of two revisions (their common ancestor),
+    /// or `None` when they share no common ancestor.
+    ///
+    /// # Errors
+    /// Returns [`VcsError::Git`] if either revision does not resolve, or on failure.
+    pub fn merge_base(&self, a_rev: &str, b_rev: &str) -> Result<Option<String>, VcsError> {
+        let a = self.resolve(a_rev)?;
+        let b = self.resolve(b_rev)?;
+        Ok(self.merge_base_id(a, b)?.map(|id| id.to_hex().to_string()))
+    }
+
+    /// The short name of the current branch's upstream (tracking) branch — e.g.
+    /// `origin/main` — resolved from `branch.<name>.remote` / `.merge`, or `None` when
+    /// `HEAD` is detached or the branch has no configured upstream. The returned name is
+    /// itself a valid revision (it resolves to the remote-tracking ref), so it can be
+    /// passed straight back to [`range_changes`](Self::range_changes).
+    ///
+    /// # Errors
+    /// Returns [`VcsError::Git`] on failure to read the head or the tracking ref.
+    pub fn upstream_of_head(&self) -> Result<Option<String>, VcsError> {
+        use gix::bstr::ByteSlice;
+        let Some(head) = self.inner.head_name().map_err(to_git)? else {
+            return Ok(None); // detached HEAD
+        };
+        match self
+            .inner
+            .branch_remote_tracking_ref_name(head.as_ref(), gix::remote::Direction::Fetch)
+        {
+            Some(Ok(name)) => Ok(Some(name.shorten().to_str_lossy().into_owned())),
+            Some(Err(e)) => Err(to_git(e)),
+            None => Ok(None),
+        }
+    }
+
+    /// A best-guess base branch to compare the current branch against, for a
+    /// "changes since base" diff: the first of `main`, `master`, `develop`,
+    /// `origin/main`, `origin/master` that exists and is not the current branch, or
+    /// `None` when none apply. The returned name is a valid revision.
+    #[must_use]
+    pub fn default_base_branch(&self) -> Option<String> {
+        use gix::bstr::ByteSlice;
+        let current = self
+            .inner
+            .head_name()
+            .ok()
+            .flatten()
+            .map(|n| n.shorten().to_str_lossy().into_owned());
+        for cand in ["main", "master", "develop", "origin/main", "origin/master"] {
+            if current.as_deref() == Some(cand) {
+                continue;
+            }
+            if self.resolve(cand).is_ok() {
+                return Some(cand.to_string());
+            }
+        }
+        None
     }
 
     /// Convert one tree-to-tree change into a [`FileChange`] (or `None` to skip a
@@ -872,14 +1003,14 @@ mod tests {
         assert_eq!(changes.len(), 2);
         let a = changes
             .iter()
-            .find(|c| c.path == PathBuf::from("a.txt"))
+            .find(|c| c.path.as_path() == Path::new("a.txt"))
             .ok_or_else(|| VcsError::Git("a.txt missing".into()))?;
         assert_eq!(a.status, StatusKind::Modified);
         assert_eq!(a.old, "one\n");
         assert_eq!(a.new, "one\ntwo\n");
         let b = changes
             .iter()
-            .find(|c| c.path == PathBuf::from("b.txt"))
+            .find(|c| c.path.as_path() == Path::new("b.txt"))
             .ok_or_else(|| VcsError::Git("b.txt missing".into()))?;
         assert_eq!(b.status, StatusKind::Added);
         assert_eq!(b.new, "new file\n");
@@ -916,7 +1047,7 @@ mod tests {
         let changes = r.commit_changes("HEAD")?;
         let fc = changes
             .iter()
-            .find(|c| c.path == PathBuf::from("new.txt"))
+            .find(|c| c.path.as_path() == Path::new("new.txt"))
             .ok_or_else(|| VcsError::Git("renamed file not reported".into()))?;
         assert_eq!(fc.status, StatusKind::Renamed);
         assert_eq!(fc.old_path.as_deref(), Some(Path::new("old.txt")));
@@ -946,6 +1077,112 @@ mod tests {
             .find(|c| c.path.as_path() == Path::new("a.txt"))
             .ok_or_else(|| VcsError::Git("conflicted file not reported".into()))?;
         assert_eq!(fc.status, StatusKind::Conflicted);
+        Ok(())
+    }
+
+    /// A repo whose `main` forks into `feature`, with `main` also advancing afterwards.
+    /// Returns the repo so callers can diff `main` against `feature` two ways.
+    fn forked_repo() -> Result<TempRepo, VcsError> {
+        let repo = init_repo()?;
+        write(&repo.path, "base.txt", b"base\n")?;
+        git(&repo.path, &["add", "."])?;
+        git(&repo.path, &["commit", "-q", "-m", "base"])?;
+        git(&repo.path, &["branch", "-M", "main"])?;
+        // feature adds feature.txt on top of the fork point.
+        git(&repo.path, &["checkout", "-q", "-b", "feature"])?;
+        write(&repo.path, "feature.txt", b"feature\n")?;
+        git(&repo.path, &["add", "."])?;
+        git(&repo.path, &["commit", "-q", "-m", "add feature"])?;
+        // main advances independently, changing base.txt after the fork.
+        git(&repo.path, &["checkout", "-q", "main"])?;
+        write(&repo.path, "base.txt", b"base changed on main\n")?;
+        git(&repo.path, &["commit", "-q", "-am", "advance main"])?;
+        Ok(repo)
+    }
+
+    #[test]
+    fn range_changes_two_dot_diffs_the_two_tips() -> Result<(), VcsError> {
+        let repo = forked_repo()?;
+        let r = Repository::discover(&repo.path)?;
+        // main..feature is the raw tree diff between the tips: feature adds feature.txt,
+        // and (relative to main's newer tip) reverts main's change to base.txt.
+        let changes = r.range_changes("main", "feature", false)?;
+        let paths: Vec<_> = changes.iter().map(|c| c.path.clone()).collect();
+        assert!(paths.contains(&PathBuf::from("feature.txt")));
+        assert!(
+            paths.contains(&PathBuf::from("base.txt")),
+            "two-dot reflects main's later change to base.txt"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn range_changes_three_dot_uses_the_merge_base() -> Result<(), VcsError> {
+        let repo = forked_repo()?;
+        let r = Repository::discover(&repo.path)?;
+        // main...feature diffs from the fork point, so only feature's own change shows;
+        // main's later change to base.txt is excluded.
+        let changes = r.range_changes("main", "feature", true)?;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, PathBuf::from("feature.txt"));
+        assert_eq!(changes[0].status, StatusKind::Added);
+        Ok(())
+    }
+
+    #[test]
+    fn merge_base_finds_the_fork_point() -> Result<(), VcsError> {
+        let repo = forked_repo()?;
+        let r = Repository::discover(&repo.path)?;
+        let base = r
+            .merge_base("main", "feature")?
+            .ok_or_else(|| VcsError::Git("expected a merge base".into()))?;
+        // The fork point is the "base" commit — the first-parent of feature's tip.
+        let expected = r.commit_detail("feature~1")?.hash;
+        assert_eq!(base, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn merge_base_is_none_for_unrelated_histories() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        write(&repo.path, "a.txt", b"a\n")?;
+        git(&repo.path, &["add", "."])?;
+        git(&repo.path, &["commit", "-q", "-m", "first"])?;
+        git(&repo.path, &["branch", "-M", "main"])?;
+        // An orphan branch has no common ancestor with main.
+        git(&repo.path, &["checkout", "-q", "--orphan", "other"])?;
+        write(&repo.path, "b.txt", b"b\n")?;
+        git(&repo.path, &["add", "."])?;
+        git(&repo.path, &["commit", "-q", "-m", "orphan"])?;
+        let r = Repository::discover(&repo.path)?;
+        assert!(r.merge_base("main", "other")?.is_none());
+        // A three-dot range over unrelated histories is an error, not a silent success.
+        assert!(r.range_changes("main", "other", true).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn default_base_branch_skips_the_current_branch() -> Result<(), VcsError> {
+        let repo = forked_repo()?; // leaves us on `main`
+        let r = Repository::discover(&repo.path)?;
+        // On main, main is excluded and no other candidate exists.
+        assert_eq!(r.default_base_branch(), None);
+        // On feature, main is the detected base.
+        git(&repo.path, &["checkout", "-q", "feature"])?;
+        let r = Repository::discover(&repo.path)?;
+        assert_eq!(r.default_base_branch().as_deref(), Some("main"));
+        Ok(())
+    }
+
+    #[test]
+    fn upstream_of_head_is_none_without_a_tracking_branch() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        write(&repo.path, "a.txt", b"a\n")?;
+        git(&repo.path, &["add", "."])?;
+        git(&repo.path, &["commit", "-q", "-m", "first"])?;
+        let r = Repository::discover(&repo.path)?;
+        // A fresh local repo has no remote, so the branch has no upstream.
+        assert!(r.upstream_of_head()?.is_none());
         Ok(())
     }
 }
