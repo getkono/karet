@@ -1426,7 +1426,7 @@ fn draw_commit(
     verification: Option<&karet_session::GithubVerification>,
     scroll: &mut u16,
 ) {
-    let lines = commit_detail_lines(theme, detail, files, verification);
+    let lines = commit_detail_lines(theme, detail, files, verification, area.width);
     let max = u16::try_from(lines.len())
         .unwrap_or(u16::MAX)
         .saturating_sub(area.height);
@@ -1476,6 +1476,7 @@ fn commit_detail_lines(
     detail: &karet_vcs::CommitDetail,
     files: &[render::FileView],
     verification: Option<&karet_session::GithubVerification>,
+    width: u16,
 ) -> Vec<Line<'static>> {
     let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
     let subject = fg.add_modifier(Modifier::BOLD);
@@ -1484,8 +1485,6 @@ fn commit_detail_lines(
     let accent = Style::default().fg(theme.role(ThemeRole::DiffModified).to_ratatui());
     let label = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
     let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
-    let add_fg = Style::default().fg(theme.role(ThemeRole::DiagnosticHint).to_ratatui());
-    let rem_fg = Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui());
     let bar = || Span::styled("\u{258c} ", accent);
 
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -1578,6 +1577,28 @@ fn commit_detail_lines(
         ]));
     }
 
+    // The summary, the changed-file table of contents, and the per-file diff cards —
+    // shared verbatim with the compare view.
+    lines.extend(changed_files_lines(theme, files, width));
+    lines
+}
+
+/// Build the shared "changed files" block: a `N files changed +a −b` summary, a
+/// changed-file table of contents, then one boxed diff card per file. Used by both the
+/// commit view ([`commit_detail_lines`]) and the compare view so the two render files
+/// identically. `width` is the render width, used to size the card rules.
+fn changed_files_lines(
+    theme: &Theme,
+    files: &[render::FileView],
+    width: u16,
+) -> Vec<Line<'static>> {
+    let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
+    let label = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
+    let add_fg = Style::default().fg(theme.role(ThemeRole::DiagnosticHint).to_ratatui());
+    let rem_fg = Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui());
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
     // Summary: N files changed, +added −removed.
     let (mut added, mut removed) = (0usize, 0usize);
     for file in files {
@@ -1601,7 +1622,7 @@ fn commit_detail_lines(
         Span::styled(format!("\u{2212}{removed}"), rem_fg),
     ]));
 
-    // Changed-file list.
+    // Changed-file table of contents.
     for file in files {
         let (a, r) = file.line_stats();
         let (g, role) = status_glyph(file.change.status);
@@ -1616,16 +1637,64 @@ fn commit_detail_lines(
         ]));
     }
 
-    // Per-file unified diffs.
+    // Per-file diff cards.
     for file in files {
         lines.push(Line::raw(""));
-        lines.push(Line::styled(
-            format!(" {}", file.change.path.to_string_lossy()),
-            label.add_modifier(Modifier::BOLD),
-        ));
-        lines.extend(render::unified_lines(file, theme));
+        lines.extend(file_card(theme, file, width));
     }
     lines
+}
+
+/// Render one file's diff as a boxed "card": a top rule carrying the status glyph, the
+/// path (and the old path for renames), and the `+a −b` stats; each diff line prefixed
+/// with a left rail; then a bottom rule. `width` sizes the rules (a small floor keeps a
+/// narrow pane from producing a degenerate box).
+fn file_card(theme: &Theme, file: &render::FileView, width: u16) -> Vec<Line<'static>> {
+    let border = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
+    let add_fg = Style::default().fg(theme.role(ThemeRole::DiagnosticHint).to_ratatui());
+    let rem_fg = Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui());
+    let (glyph, role) = status_glyph(file.change.status);
+    let glyph_style = Style::default().fg(theme.role(role).to_ratatui());
+    let (a, r) = file.line_stats();
+
+    // A small floor keeps a narrow pane from underflowing into a degenerate rule.
+    let w = usize::from(width).max(24);
+    let mut path = file.change.path.to_string_lossy().into_owned();
+    if let Some(old) = &file.change.old_path {
+        path.push_str(&format!(" \u{2190} {}", old.to_string_lossy()));
+    }
+    let (add, rem) = (format!("+{a}"), format!("\u{2212}{r}"));
+
+    // Top rule: "╭─ {g} path " + dashes + " +a −b ─╮", padded so the row is `w` columns.
+    // Column counts assume 1-wide cells (paths are ~ASCII; box/±/− glyphs are 1 wide).
+    let fixed =
+        3 + 2 + path.chars().count() + 1 + 1 + add.chars().count() + 1 + rem.chars().count() + 3;
+    let dashes = w.saturating_sub(fixed).max(1);
+    let top: Vec<Span<'static>> = vec![
+        Span::styled("\u{256d}\u{2500} ", border),
+        Span::styled(format!("{glyph} "), glyph_style),
+        Span::styled(path, fg.add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" {} ", "\u{2500}".repeat(dashes)), border),
+        Span::styled(add, add_fg),
+        Span::raw(" "),
+        Span::styled(rem, rem_fg),
+        Span::styled(" \u{2500}\u{256e}", border),
+    ];
+
+    let mut out = vec![Line::from(top)];
+    // Body: each diff line behind a left rail.
+    for line in render::unified_lines(file, theme) {
+        let mut spans = vec![Span::styled("\u{2502} ", border)];
+        spans.extend(line.spans);
+        out.push(Line::from(spans));
+    }
+    // Bottom rule: "╰" + dashes + "╯", `w` columns wide.
+    out.push(Line::styled(
+        format!("\u{2570}{}\u{256f}", "\u{2500}".repeat(w.saturating_sub(2))),
+        border,
+    ));
+    out
 }
 
 /// Draw the full-screen commit graph browser: a DAG commit list on the left and the
@@ -1721,7 +1790,13 @@ fn draw_commit_graph(
     match detail {
         Some(d) if Some(d.hash.as_str()) == sel_hash => {
             f.render_widget(
-                Paragraph::new(commit_detail_lines(theme, d, files, verification)),
+                Paragraph::new(commit_detail_lines(
+                    theme,
+                    d,
+                    files,
+                    verification,
+                    detail_area.width,
+                )),
                 detail_area,
             );
         },
@@ -2089,6 +2164,54 @@ mod tests {
         assert_eq!(verified_badge(Some(&unverified), None).1, "Unverified");
         assert_eq!(verified_badge(None, Some(&sig)).1, "Signed");
         assert_eq!(verified_badge(None, None).1, "Unsigned");
+    }
+
+    #[test]
+    fn file_cards_are_boxed_and_width_sized() {
+        use karet_vcs::FileChange;
+        use karet_vcs::StatusKind;
+        let change = FileChange {
+            path: std::path::PathBuf::from("src/main.rs"),
+            old_path: None,
+            status: StatusKind::Modified,
+            is_binary: false,
+            old: "fn a() {}\n".to_string(),
+            new: "fn b() {}\n".to_string(),
+        };
+        let files = vec![render::FileView::new(
+            change,
+            render::Section::Staged,
+            false,
+        )];
+        let width = 60u16;
+        let lines = changed_files_lines(&Theme::dark(), &files, width);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+
+        // A rounded top rule (corners) and a bottom rule bound the card.
+        let top = text
+            .iter()
+            .find(|t| t.starts_with('\u{256d}'))
+            .expect("a top rule");
+        assert!(top.contains("src/main.rs"), "top rule carries the path");
+        assert!(top.ends_with('\u{256e}'), "top rule closes with a corner");
+        assert_eq!(
+            top.chars().count(),
+            usize::from(width),
+            "the top rule spans the pane width"
+        );
+        let bottom = text
+            .iter()
+            .find(|t| t.starts_with('\u{2570}') && t.ends_with('\u{256f}'))
+            .expect("a bottom rule");
+        assert_eq!(bottom.chars().count(), usize::from(width));
+        // Diff body lines sit behind a left rail.
+        assert!(
+            text.iter().any(|t| t.starts_with("\u{2502} ")),
+            "diff lines are railed"
+        );
     }
 
     #[test]
