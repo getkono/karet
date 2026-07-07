@@ -106,6 +106,7 @@ use Layer::Global;
 use Layer::Outline;
 use Layer::Overlay;
 use Layer::Oversize;
+use Layer::Pager;
 use Layer::QuitConfirm;
 use Layer::RevInput;
 use Layer::SearchInput;
@@ -286,6 +287,16 @@ static BINDINGS: &[Binding] = &[
     b(DiffEditor, false, false, false, Char('\\'), Command::ToggleDiffLayout),
     b(DiffEditor, false, false, false, Char(']'),  Command::NextChangedFile),
     b(DiffEditor, false, false, false, Char('['),  Command::PrevChangedFile),
+
+    // Read-only scrollable views (commit / compare / blame / graph / hex): arrows and
+    // PageUp/Down scroll, Home/End jump to the edges, `q` closes the tab. No caret.
+    b(Pager, false, false, false, Down,      Command::ScrollDown),
+    b(Pager, false, false, false, Up,        Command::ScrollUp),
+    b(Pager, false, false, false, PageDown,  Command::PageDown),
+    b(Pager, false, false, false, PageUp,    Command::PageUp),
+    b(Pager, false, false, false, Home,      Command::Top),
+    b(Pager, false, false, false, End,       Command::Bottom),
+    b(Pager, false, false, false, Char('q'), Command::CloseTab),
 
     // The full-screen commit graph browser: j/k or arrows move the selection, Enter
     // opens the selected commit as a standalone view, Esc returns focus to the sidebar.
@@ -657,6 +668,38 @@ mod tests {
                 key(KeyCode::Char('\\'), KeyModifiers::NONE)
             ),
             None
+        );
+    }
+
+    #[test]
+    fn pager_view_scrolls_on_arrows_and_edges() {
+        let res_pager = |key: KeyEvent| {
+            let ctx = Context::focus(FocusTarget::Pager);
+            match resolve(ctx, &[KeyChord::from_event(key)]) {
+                Resolved::Command(c) => Some(c),
+                _ => None,
+            }
+        };
+        // Arrows scroll (not caret motion), Home/End jump to the edges, `q` closes.
+        assert_eq!(
+            res_pager(key(KeyCode::Down, KeyModifiers::NONE)),
+            Some(Command::ScrollDown)
+        );
+        assert_eq!(
+            res_pager(key(KeyCode::Up, KeyModifiers::NONE)),
+            Some(Command::ScrollUp)
+        );
+        assert_eq!(
+            res_pager(key(KeyCode::Home, KeyModifiers::NONE)),
+            Some(Command::Top)
+        );
+        assert_eq!(
+            res_pager(key(KeyCode::End, KeyModifiers::NONE)),
+            Some(Command::Bottom)
+        );
+        assert_eq!(
+            res_pager(key(KeyCode::Char('q'), KeyModifiers::NONE)),
+            Some(Command::CloseTab)
         );
     }
 

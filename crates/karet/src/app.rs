@@ -693,12 +693,19 @@ impl App {
     }
 
     /// The content kind of the active editor tab, mapping the shell's tab model
-    /// down to the coarse [`EditorTab`] the keymap layers on. Only a too-large
-    /// placeholder gets its own layer (for the "open anyway" override); every
-    /// other tab is [`EditorTab::Plain`] except a diff.
+    /// down to the coarse [`EditorTab`] the keymap layers on. Read-only scrollable
+    /// views ([`EditorTab::Pager`]) scroll on the arrows; a too-large placeholder
+    /// gets its own "open anyway" layer; a diff its layout/next-change keys; every
+    /// other tab is [`EditorTab::Plain`].
     fn active_editor_tab(&self) -> EditorTab {
         match self.tabs.get(self.active).map(|t| &t.kind) {
             Some(TabKind::Diff { .. }) => EditorTab::Diff,
+            Some(
+                TabKind::Commit { .. }
+                | TabKind::Blame { .. }
+                | TabKind::Graph { .. }
+                | TabKind::Hex { .. },
+            ) => EditorTab::Pager,
             Some(TabKind::CommitGraph { .. }) => EditorTab::CommitGraph,
             Some(TabKind::Placeholder {
                 kind: FileKind::TooLarge { .. },
