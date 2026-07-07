@@ -4,6 +4,7 @@
 
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
@@ -185,6 +186,15 @@ struct RenderedPane {
     tab_hits: Vec<TabHit>,
     content_rect: Rect,
     image_area: Option<Rect>,
+    commit_badge_rect: Option<Rect>,
+}
+
+/// Geometry a tab's content reported for post-draw use: a reserved Kitty image rect
+/// and the commit view's signature-badge rect (for double-click hit-testing).
+#[derive(Default)]
+struct PaneContent {
+    image_area: Option<Rect>,
+    badge_rect: Option<Rect>,
 }
 
 /// Draw every pane (tab strip + breadcrumb + content) tiled across `area`, recording
@@ -193,6 +203,7 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     app.pane_frames.clear();
     app.image_area = None;
     app.editor_rect = Rect::default();
+    app.commit_badge_rect = None;
     let focused = app.focus_pane();
     let editor_focused = app.focus == Focus::Editor;
     let graphics = app.graphics;
@@ -222,6 +233,7 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         if is_focused {
             app.editor_rect = rendered.content_rect;
             app.image_area = rendered.image_area;
+            app.commit_badge_rect = rendered.commit_badge_rect;
         }
         app.pane_frames.push(crate::app::PaneFrame {
             pane,
@@ -270,12 +282,13 @@ fn render_pane(
             ..content
         };
     }
-    let image_area = draw_pane_content(f, tabs, active, ctx, content);
+    let painted = draw_pane_content(f, tabs, active, ctx, content);
     RenderedPane {
         tabstrip_rect,
         tab_hits,
         content_rect: content,
-        image_area,
+        image_area: painted.image_area,
+        commit_badge_rect: painted.badge_rect,
     }
 }
 
@@ -1194,10 +1207,13 @@ fn draw_pane_content(
     active: usize,
     ctx: &PaneCtx,
     area: Rect,
-) -> Option<Rect> {
+) -> PaneContent {
     let theme = ctx.theme;
-    let tab = tabs.get_mut(active)?;
+    let Some(tab) = tabs.get_mut(active) else {
+        return PaneContent::default();
+    };
     let mut image_area = None;
+    let mut badge_rect = None;
     match &mut tab.kind {
         TabKind::Welcome => draw_welcome(f, theme, area),
         TabKind::Code {
@@ -1228,8 +1244,20 @@ fn draw_pane_content(
             detail,
             files,
             verification,
+            explain_since,
             scroll,
-        } => draw_commit(f, theme, area, detail, files, verification.as_ref(), scroll),
+        } => {
+            badge_rect = draw_commit(
+                f,
+                theme,
+                area,
+                detail,
+                files,
+                verification.as_ref(),
+                *explain_since,
+                scroll,
+            );
+        },
         TabKind::Compare {
             base_label,
             head_label,
@@ -1392,7 +1420,10 @@ fn draw_pane_content(
             f.render_widget(widget, area);
         },
     }
-    image_area
+    PaneContent {
+        image_area,
+        badge_rect,
+    }
 }
 
 fn draw_diff(
@@ -1434,6 +1465,7 @@ fn draw_diff(
 
 /// Draw the commit view (metadata header + changed-file list + per-file diffs) as one
 /// scrollable paragraph.
+#[allow(clippy::too_many_arguments)] // a commit view has several independent inputs
 fn draw_commit(
     f: &mut Frame,
     theme: &Theme,
@@ -1441,14 +1473,28 @@ fn draw_commit(
     detail: &karet_vcs::CommitDetail,
     files: &[render::FileView],
     verification: Option<&karet_session::GithubVerification>,
+    explain_since: Option<Instant>,
     scroll: &mut u16,
-) {
-    let lines = commit_detail_lines(theme, detail, files, verification, area.width);
+) -> Option<Rect> {
+    let reveal = explain_since.is_some_and(|t| t.elapsed() < crate::app::COMMIT_REVEAL);
+    let (lines, badge) =
+        commit_detail_lines(theme, detail, files, verification, reveal, area.width);
     let max = u16::try_from(lines.len())
         .unwrap_or(u16::MAX)
         .saturating_sub(area.height);
     *scroll = (*scroll).min(max);
     f.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), area);
+    // Translate the badge's content-row into a screen rect for click hit-testing,
+    // dropping it when scrolled out of view.
+    badge.and_then(|b| {
+        let row = b.line.checked_sub(*scroll)?;
+        (row < area.height).then_some(Rect {
+            x: area.x.saturating_add(b.col),
+            y: area.y.saturating_add(row),
+            width: b.width,
+            height: 1,
+        })
+    })
 }
 
 /// Draw the compare view (a range header + changed-file cards) as one scrollable
@@ -1509,6 +1555,44 @@ fn compare_lines(
     lines
 }
 
+/// Where the signature badge sits within the commit view's line list, so a click can
+/// be hit-tested against it: its row index and horizontal column span.
+#[derive(Clone, Copy)]
+struct BadgeHit {
+    /// Row index into the commit view's line list (before scrolling).
+    line: u16,
+    /// First column of the badge glyph/label, relative to the render area's left.
+    col: u16,
+    /// The badge's width in columns (glyph + label).
+    width: u16,
+}
+
+/// A short, plain-language explanation of what the signature badge means, keyed on the
+/// same four states as [`verified_badge`]. Revealed under the badge on a double-click.
+fn badge_explanation(
+    verification: Option<&karet_session::GithubVerification>,
+    signature: Option<&karet_vcs::CommitSignature>,
+) -> &'static [&'static str] {
+    match verification {
+        Some(v) if v.verified => &[
+            "Verified \u{2014} a key the forge trusts for this author signed the",
+            "commit and the forge confirmed it, proving who wrote it.",
+        ],
+        Some(_) => &[
+            "Unverified \u{2014} this commit is signed, but the forge could not",
+            "confirm the signature (see the reason on the signature line below).",
+        ],
+        None if signature.is_some() => &[
+            "Signed \u{2014} this commit carries a cryptographic signature, but it",
+            "has not been checked with the forge, so its authenticity is unconfirmed.",
+        ],
+        None => &[
+            "Unsigned \u{2014} no signature is attached, so the author cannot be",
+            "cryptographically confirmed beyond the recorded name and email.",
+        ],
+    }
+}
+
 /// The commit's signature badge as `(glyph, label, role)`. Prefers the forge's verdict
 /// once fetched; otherwise reports only what the local object records ("Signed" /
 /// "Unsigned"), never claiming a verification result the tool did not compute.
@@ -1546,13 +1630,17 @@ fn format_datetime(secs: i64, offset: i32) -> String {
 
 /// Build the commit view's scrollable lines. Shared by the standalone [`TabKind::Commit`]
 /// tab and the graph browser's detail pane.
+/// When `reveal` is set, the signature badge's explanation is inserted under the badge
+/// (a transient tooltip). The returned [`BadgeHit`], if any, locates the badge for
+/// click hit-testing.
 fn commit_detail_lines(
     theme: &Theme,
     detail: &karet_vcs::CommitDetail,
     files: &[render::FileView],
     verification: Option<&karet_session::GithubVerification>,
+    reveal: bool,
     width: u16,
-) -> Vec<Line<'static>> {
+) -> (Vec<Line<'static>>, Option<BadgeHit>) {
     let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
     let subject = fg.add_modifier(Modifier::BOLD);
     let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
@@ -1584,11 +1672,36 @@ fn commit_detail_lines(
         Span::styled(detail.hash.clone(), hash_style),
         Span::raw("   "),
     ];
+    // The badge's row and column span, derived from the spans already on the line so
+    // hit-testing can't drift from the layout. The badge starts after everything built
+    // above (bar + label + hash + gap); its width is the glyph (with a space) + label.
+    let badge_col: usize = hash_spans.iter().map(|s| s.content.chars().count()).sum();
+    let badge_width = if glyph.is_empty() {
+        0
+    } else {
+        glyph.chars().count() + 1
+    } + badge.chars().count();
+    let badge_hit = BadgeHit {
+        line: u16::try_from(lines.len()).unwrap_or(u16::MAX),
+        col: u16::try_from(badge_col).unwrap_or(u16::MAX),
+        width: u16::try_from(badge_width).unwrap_or(u16::MAX),
+    };
     if !glyph.is_empty() {
         hash_spans.push(Span::styled(format!("{glyph} "), badge_style));
     }
     hash_spans.push(Span::styled(badge, badge_style));
     lines.push(Line::from(hash_spans));
+
+    // On a double-click of the badge, reveal its meaning right beneath it.
+    if reveal {
+        for text in badge_explanation(verification, detail.signature.as_ref()) {
+            lines.push(Line::from(vec![
+                bar(),
+                Span::styled((*text).to_string(), muted),
+            ]));
+        }
+        lines.push(Line::raw(""));
+    }
 
     // Author, and committer only when it differs.
     let ident_line = |role_label: &str, id: &karet_vcs::Identity, verb: &str| {
@@ -1655,7 +1768,7 @@ fn commit_detail_lines(
     // The summary, the changed-file table of contents, and the per-file diff cards —
     // shared verbatim with the compare view.
     lines.extend(changed_files_lines(theme, files, width));
-    lines
+    (lines, Some(badge_hit))
 }
 
 /// Build the shared "changed files" block: a `N files changed +a −b` summary, a
@@ -1865,13 +1978,9 @@ fn draw_commit_graph(
     match detail {
         Some(d) if Some(d.hash.as_str()) == sel_hash => {
             f.render_widget(
-                Paragraph::new(commit_detail_lines(
-                    theme,
-                    d,
-                    files,
-                    verification,
-                    detail_area.width,
-                )),
+                Paragraph::new(
+                    commit_detail_lines(theme, d, files, verification, false, detail_area.width).0,
+                ),
                 detail_area,
             );
         },
@@ -2286,6 +2395,65 @@ mod tests {
         assert!(
             text.iter().any(|t| t.starts_with("\u{2502} ")),
             "diff lines are railed"
+        );
+    }
+
+    #[test]
+    fn badge_hit_spans_the_badge_and_reveal_explains_it() {
+        use karet_vcs::CommitDetail;
+        use karet_vcs::CommitSignature;
+        use karet_vcs::Identity;
+        use karet_vcs::SignatureKind;
+
+        let id = || Identity {
+            name: "Tester".to_string(),
+            email: "t@example.com".to_string(),
+            time: 0,
+            offset: 0,
+        };
+        let detail = CommitDetail {
+            hash: "a".repeat(40),
+            short_hash: "aaaaaaa".to_string(),
+            summary: "subject".to_string(),
+            body: String::new(),
+            author: id(),
+            committer: id(),
+            parents: Vec::new(),
+            signature: Some(CommitSignature {
+                kind: SignatureKind::Ssh,
+                signer_key: None,
+                raw: String::new(),
+            }),
+        };
+        let files: Vec<render::FileView> = Vec::new();
+        let flat = |l: &Line| -> String { l.spans.iter().map(|s| s.content.as_ref()).collect() };
+
+        // Without a forge verdict, a signed commit reads "Signed"; the reported hit
+        // must land exactly on that badge text within its line.
+        let (lines, hit) = commit_detail_lines(&Theme::dark(), &detail, &files, None, false, 80);
+        let hit = hit.expect("a signed commit has a badge");
+        let chars: Vec<char> = flat(&lines[hit.line as usize]).chars().collect();
+        let span: String = chars[hit.col as usize..(hit.col + hit.width) as usize]
+            .iter()
+            .collect();
+        assert!(
+            span.contains("Signed"),
+            "the hit span covers the badge: {span:?}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| flat(l).contains("cryptographic signature")),
+            "no explanation is shown until revealed"
+        );
+
+        // Revealing inserts the badge's plain-language meaning.
+        let (revealed, _) = commit_detail_lines(&Theme::dark(), &detail, &files, None, true, 80);
+        assert!(
+            revealed
+                .iter()
+                .any(|l| flat(l).contains("cryptographic signature")),
+            "the reveal explains what Signed means"
         );
     }
 

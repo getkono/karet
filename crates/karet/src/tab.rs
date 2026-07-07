@@ -147,6 +147,9 @@ pub enum TabKind {
         files: Vec<FileView>,
         /// The forge's "Verified" verdict, once fetched (lazily, over the network).
         verification: Option<karet_session::GithubVerification>,
+        /// When the signature badge was last double-clicked, if its explanatory
+        /// tooltip is being revealed. The reveal auto-hides a few seconds later.
+        explain_since: Option<Instant>,
         /// Vertical scroll offset (display rows).
         scroll: u16,
     },
@@ -261,6 +264,7 @@ impl Tab {
                 detail,
                 files,
                 verification: None,
+                explain_since: None,
                 scroll: 0,
             },
         )

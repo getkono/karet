@@ -287,6 +287,10 @@ pub(crate) const OUTLINE_WIDTH: u16 = 30;
 /// rows of the end of the loaded log.
 const COMMIT_AUTOLOAD_THRESHOLD: usize = 3;
 
+/// How long the commit view's signature-badge explanation stays revealed after a
+/// double-click before it auto-hides.
+pub(crate) const COMMIT_REVEAL: Duration = Duration::from_secs(5);
+
 /// A clickable tab region in the tab strip, recorded during the last render.
 #[derive(Clone, Copy)]
 pub(crate) struct TabHit {
@@ -483,6 +487,9 @@ pub struct App {
     pub(crate) status_hits: Vec<(u16, u16, Command)>,
     /// The active code tab's editor content area from the last frame.
     pub(crate) editor_rect: Rect,
+    /// The focused commit view's signature-badge rect (screen coords) from the last
+    /// frame, for double-click hit-testing. `None` when no badge is on screen.
+    pub(crate) commit_badge_rect: Option<Rect>,
     /// Whether a mouse text-selection drag is in progress in the editor.
     pub(crate) editor_selecting: bool,
     /// The last left-click `(time, column, row)`, for multi-click detection.
@@ -611,6 +618,7 @@ impl App {
             status_rect: Rect::default(),
             status_hits: Vec::new(),
             editor_rect: Rect::default(),
+            commit_badge_rect: None,
             editor_selecting: false,
             last_click: None,
             click_streak: 0,
@@ -3668,6 +3676,21 @@ impl App {
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         let alt = mouse.modifiers.contains(KeyModifiers::ALT);
         let streak = self.click_streak(mouse.column, mouse.row);
+        // Double-clicking the commit view's signature badge reveals, for a few seconds,
+        // what its "Verified" / "Signed" state means.
+        if streak == 2
+            && self
+                .commit_badge_rect
+                .is_some_and(|r| rect_contains(r, point))
+            && let Some(Tab {
+                kind: TabKind::Commit { explain_since, .. },
+                ..
+            }) = self.tabs.get_mut(self.active)
+        {
+            *explain_since = Some(Instant::now());
+            self.editor_selecting = false;
+            return;
+        }
         if let Some(Tab {
             kind:
                 TabKind::Code {
@@ -4044,10 +4067,15 @@ impl App {
     fn next_wake(&self) -> Option<Duration> {
         let notif = self.notifications.next_deadline(Instant::now());
         let spinner = (!self.pending_saves.is_empty()).then(|| Duration::from_millis(100));
-        match (notif, spinner) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        // Wake to repaint (hiding the tooltip) when the commit-badge reveal expires.
+        let reveal = match self.tabs.get(self.active).map(|t| &t.kind) {
+            Some(TabKind::Commit {
+                explain_since: Some(since),
+                ..
+            }) => COMMIT_REVEAL.checked_sub(since.elapsed()),
+            _ => None,
+        };
+        [notif, spinner, reveal].into_iter().flatten().min()
     }
 
     /// Push a notification onto the center. Errors and warnings persist until
@@ -5671,6 +5699,79 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
             app.tabs[app.active].kind,
             TabKind::Commit { scroll: 0, .. }
         ));
+    }
+
+    #[test]
+    fn double_click_badge_reveals_and_wakes_to_hide() {
+        let mut app = app();
+        let id = || karet_vcs::Identity {
+            name: "Tester".to_string(),
+            email: "t@example.com".to_string(),
+            time: 0,
+            offset: 0,
+        };
+        let detail = CommitDetail {
+            hash: "a".repeat(40),
+            short_hash: "aaaaaaa".to_string(),
+            summary: "subject".to_string(),
+            body: String::new(),
+            author: id(),
+            committer: id(),
+            parents: Vec::new(),
+            signature: None,
+        };
+        let files = vec![FileView::new(
+            change("a.rs", StatusKind::Modified),
+            crate::render::Section::Staged,
+            false,
+        )];
+        app.push_tab(Tab::commit(Box::new(detail), files));
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 20,
+        };
+        app.pane_frames = vec![content_frame(&app, area)];
+        // Pretend the last frame placed the badge here.
+        let badge = Rect {
+            x: 20,
+            y: 3,
+            width: 8,
+            height: 1,
+        };
+        app.commit_badge_rect = Some(badge);
+        let click = |col, row| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        // A single click on the badge does not reveal (needs a double-click).
+        app.handle_editor_click(click(22, 3));
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::Commit {
+                explain_since: None,
+                ..
+            }
+        ));
+
+        // A second, quick click over the same cell reveals the explanation.
+        app.handle_editor_click(click(22, 3));
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::Commit {
+                explain_since: Some(_),
+                ..
+            }
+        ));
+
+        // The loop is now scheduled to wake within the reveal window so it can repaint
+        // and hide the tooltip.
+        let wake = app.next_wake().expect("a reveal is pending");
+        assert!(wake <= COMMIT_REVEAL && wake > Duration::ZERO);
     }
 
     #[test]
