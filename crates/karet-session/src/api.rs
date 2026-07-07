@@ -52,6 +52,33 @@ pub enum DecorationLayer {
     Lsp,
 }
 
+/// Which diff-between-two-points a [`Command::RangeChanges`] asks for. The backend
+/// resolves the endpoints against the repository (upstream, base branch, merge base) so
+/// ref resolution stays with the repo, and answers with [`Event::RangeReady`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RangeSpec {
+    /// The current branch's unpushed work: `@{upstream}...HEAD` (three-dot) — what the
+    /// local commits change since they diverged from the tracking branch.
+    Unpushed,
+    /// The current branch's changes since it forked from a base branch:
+    /// `base...HEAD` (three-dot). `base` is auto-detected when `None`.
+    SinceBase {
+        /// The base branch/ref to compare against, or `None` to auto-detect.
+        base: Option<String>,
+    },
+    /// An explicit comparison between two revisions. `merge_base` selects three-dot
+    /// (`base...head`, from their merge base) over two-dot (`base..head`, the raw tips).
+    Between {
+        /// The "before" revision.
+        base: String,
+        /// The "after" revision.
+        head: String,
+        /// Whether to diff from the merge base (three-dot) rather than the tips.
+        merge_base: bool,
+    },
+}
+
 /// A request submitted by the presentation layer to the backend.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -186,6 +213,13 @@ pub enum Command {
     CommitDetail {
         /// The revision to resolve: a hash, a ref name, `HEAD`, `HEAD~3`, ….
         rev: String,
+    },
+    /// Compute the diff between two points (answered by [`Event::RangeReady`], or an
+    /// [`Event::Notification`] when the range cannot be resolved — e.g. no upstream, no
+    /// base branch, a bad revision, or unrelated histories).
+    RangeChanges {
+        /// Which comparison to compute.
+        spec: RangeSpec,
     },
     /// Fetch a page of a single file's history (answered by [`Event::FileHistory`]).
     FileHistory {
@@ -396,6 +430,18 @@ pub enum Event {
         /// to keep this large payload from bloating every other [`Event`] variant.
         detail: Box<CommitDetail>,
         /// The files this commit changed relative to its first parent, for the diff view.
+        changes: Vec<FileChange>,
+    },
+    /// The diff between two points, answering [`Command::RangeChanges`].
+    RangeReady {
+        /// The resolved "before" endpoint, for the compare header (e.g. `origin/main`,
+        /// or a short hash).
+        base_label: String,
+        /// The resolved "after" endpoint, for the compare header (e.g. `HEAD`).
+        head_label: String,
+        /// Whether the diff was taken from the merge base (three-dot) rather than the tips.
+        merge_base: bool,
+        /// The files that differ between the two points, for the diff view.
         changes: Vec<FileChange>,
     },
     /// A page of a file's history, answering [`Command::FileHistory`].
