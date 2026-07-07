@@ -1230,6 +1230,22 @@ fn draw_pane_content(
             verification,
             scroll,
         } => draw_commit(f, theme, area, detail, files, verification.as_ref(), scroll),
+        TabKind::Compare {
+            base_label,
+            head_label,
+            merge_base,
+            files,
+            scroll,
+        } => draw_compare(
+            f,
+            theme,
+            area,
+            base_label,
+            head_label,
+            *merge_base,
+            files,
+            scroll,
+        ),
         TabKind::CommitGraph {
             history_path: _,
             commits,
@@ -1239,6 +1255,7 @@ fn draw_pane_content(
             detail,
             files,
             verification,
+            compare_base: _,
             list_offset,
         } => draw_commit_graph(
             f,
@@ -1432,6 +1449,64 @@ fn draw_commit(
         .saturating_sub(area.height);
     *scroll = (*scroll).min(max);
     f.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), area);
+}
+
+/// Draw the compare view (a range header + changed-file cards) as one scrollable
+/// paragraph, reusing the commit view's file rendering.
+#[allow(clippy::too_many_arguments)] // a range view has several independent inputs
+fn draw_compare(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    base_label: &str,
+    head_label: &str,
+    merge_base: bool,
+    files: &[render::FileView],
+    scroll: &mut u16,
+) {
+    let lines = compare_lines(theme, base_label, head_label, merge_base, files, area.width);
+    let max = u16::try_from(lines.len())
+        .unwrap_or(u16::MAX)
+        .saturating_sub(area.height);
+    *scroll = (*scroll).min(max);
+    f.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), area);
+}
+
+/// Build the compare view's scrollable lines: a range header, then the shared
+/// changed-files block ([`changed_files_lines`]).
+fn compare_lines(
+    theme: &Theme,
+    base_label: &str,
+    head_label: &str,
+    merge_base: bool,
+    files: &[render::FileView],
+    width: u16,
+) -> Vec<Line<'static>> {
+    let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
+    let label = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
+    let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
+    let muted = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled(" Comparing ", fg.add_modifier(Modifier::BOLD)),
+        Span::styled(base_label.to_string(), hash_style),
+        Span::styled(if merge_base { " \u{2026} " } else { " .. " }, muted),
+        Span::styled(head_label.to_string(), hash_style),
+    ]));
+    lines.push(Line::styled(
+        format!(
+            "  {}",
+            if merge_base {
+                "changes since the two diverged (merge base)"
+            } else {
+                "changes from the first to the second"
+            }
+        ),
+        label,
+    ));
+    lines.extend(changed_files_lines(theme, files, width));
+    lines
 }
 
 /// The commit's signature badge as `(glyph, label, role)`. Prefers the forge's verdict

@@ -32,6 +32,7 @@ pub use api::DocumentId;
 pub use api::Event;
 pub use api::GithubVerification;
 pub use api::GraphKind;
+pub use api::RangeSpec;
 pub use api::RequestId;
 pub use api::SwapInfo;
 pub use api::ViewId;

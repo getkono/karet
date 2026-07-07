@@ -150,6 +150,22 @@ pub enum TabKind {
         /// Vertical scroll offset (display rows).
         scroll: u16,
     },
+    /// A read-only "compare" view: the diff between two points (a range), with the same
+    /// summary + table-of-contents + per-file cards as the commit view, but a range
+    /// header instead of commit metadata.
+    Compare {
+        /// The resolved "before" endpoint label (e.g. `origin/main`, or a short hash).
+        base_label: String,
+        /// The resolved "after" endpoint label (e.g. `HEAD`).
+        head_label: String,
+        /// Whether the diff was taken from the merge base (three-dot, `base...head`)
+        /// rather than the two tips (two-dot, `base..head`).
+        merge_base: bool,
+        /// Each changed file between the two points, diffed and highlighted for display.
+        files: Vec<FileView>,
+        /// Vertical scroll offset (display rows).
+        scroll: u16,
+    },
     /// The full-screen commit graph browser: a scrollable DAG commit log on the left
     /// and the selected commit's detail on the right.
     CommitGraph {
@@ -170,6 +186,9 @@ pub enum TabKind {
         files: Vec<FileView>,
         /// The forge's verdict for the selected commit, once fetched.
         verification: Option<karet_session::GithubVerification>,
+        /// A commit hash marked as the base for a two-commit comparison, if any. Set by
+        /// "mark base"; the next "compare" diffs it against the current selection.
+        compare_base: Option<String>,
         /// The commit-list scroll offset (first visible row).
         list_offset: u16,
     },
@@ -262,7 +281,30 @@ impl Tab {
                 detail: None,
                 files: Vec::new(),
                 verification: None,
+                compare_base: None,
                 list_offset: 0,
+            },
+        )
+    }
+
+    /// A read-only compare view for the diff between two points.
+    #[must_use]
+    pub fn compare(
+        base_label: String,
+        head_label: String,
+        merge_base: bool,
+        files: Vec<FileView>,
+    ) -> Self {
+        let sep = if merge_base { "\u{2026}" } else { ".." };
+        let title = format!("\u{21c4} {base_label}{sep}{head_label}");
+        Self::new(
+            title,
+            TabKind::Compare {
+                base_label,
+                head_label,
+                merge_base,
+                files,
+                scroll: 0,
             },
         )
     }
@@ -281,6 +323,7 @@ impl Tab {
             TabKind::Welcome
             | TabKind::Graph { .. }
             | TabKind::Commit { .. }
+            | TabKind::Compare { .. }
             | TabKind::CommitGraph { .. } => None,
         }
     }
@@ -304,6 +347,7 @@ impl Tab {
             TabKind::Blame { .. } => "blame",
             TabKind::Graph { .. } => "graph",
             TabKind::Commit { .. } => "commit",
+            TabKind::Compare { .. } => "compare",
             TabKind::CommitGraph { .. } => "commits",
             TabKind::Welcome => "",
         }

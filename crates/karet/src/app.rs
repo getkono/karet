@@ -61,6 +61,7 @@ use karet_session::DocumentId;
 use karet_session::Event as SessionEvent;
 use karet_session::EventRx;
 use karet_session::GithubVerification;
+use karet_session::RangeSpec;
 use karet_session::RequestId;
 use karet_session::Session;
 use karet_session::SessionConfig;
@@ -702,6 +703,7 @@ impl App {
             Some(TabKind::Diff { .. }) => EditorTab::Diff,
             Some(
                 TabKind::Commit { .. }
+                | TabKind::Compare { .. }
                 | TabKind::Blame { .. }
                 | TabKind::Graph { .. }
                 | TabKind::Hex { .. },
@@ -1495,6 +1497,14 @@ impl App {
             Command::RevInputSubmit => self.rev_submit(),
             Command::RevInputCancel => self.rev_cancel(),
             Command::ShowFileHistory => self.open_file_history(),
+            Command::DiffUnpushed => self.open_range(SessionCommand::RangeChanges {
+                spec: RangeSpec::Unpushed,
+            }),
+            Command::DiffSinceBase => self.open_range(SessionCommand::RangeChanges {
+                spec: RangeSpec::SinceBase { base: None },
+            }),
+            Command::CommitGraphMarkBase => self.graph_mark_base(),
+            Command::CommitGraphCompare => self.graph_compare(),
             Command::SearchSelectUp => self.search_select(-1),
             Command::SearchSelectDown => self.search_select(1),
             Command::SearchOpen => self.open_selected_result(),
@@ -1937,12 +1947,22 @@ impl App {
         self.status = Some("go to commit cancelled".to_string());
     }
 
-    /// Submit the typed revision: resolve and open it, or re-prompt when empty.
+    /// Submit the typed revision: open a range when it contains `..`/`...`, otherwise the
+    /// single commit; re-prompt when empty.
     fn rev_submit(&mut self) {
         let rev = self.rev_input.take().unwrap_or_default().trim().to_string();
         if rev.is_empty() {
             self.rev_input = Some(String::new());
-            self.status = Some("go to commit: enter a hash or ref".to_string());
+            self.status =
+                Some("go to commit: enter a hash, ref, or range (a..b, a...b)".to_string());
+        } else if let Some((base, head, merge_base)) = parse_rev_range(&rev) {
+            self.open_range(SessionCommand::RangeChanges {
+                spec: RangeSpec::Between {
+                    base,
+                    head,
+                    merge_base,
+                },
+            });
         } else {
             self.open_commit(rev);
         }
@@ -2047,6 +2067,60 @@ impl App {
         }
     }
 
+    /// Request a range diff; the answering [`SessionEvent::RangeReady`] opens the compare
+    /// tab, and an unresolvable range answers with a VCS notification instead.
+    fn open_range(&mut self, command: SessionCommand) {
+        self.status = Some("computing diff…".to_string());
+        self.send_vcs(command);
+    }
+
+    /// Mark the browser's selected commit as the base for a two-commit comparison.
+    fn graph_mark_base(&mut self) {
+        if let Some(TabKind::CommitGraph {
+            commits,
+            selected,
+            compare_base,
+            ..
+        }) = self.active_commit_graph()
+            && let Some(commit) = commits.get(*selected)
+        {
+            let short = commit.short_hash.clone();
+            *compare_base = Some(commit.hash.clone());
+            self.status = Some(format!(
+                "compare base marked: {short} (select another, then compare)"
+            ));
+        }
+    }
+
+    /// Compare the browser's marked base commit against the current selection (a two-dot
+    /// `base..selected` diff). Reports a status when no base has been marked yet.
+    fn graph_compare(&mut self) {
+        let Some(TabKind::CommitGraph {
+            commits,
+            selected,
+            compare_base,
+            ..
+        }) = self.active_commit_graph()
+        else {
+            return;
+        };
+        let Some(base) = compare_base.clone() else {
+            self.status =
+                Some("mark a compare base first (Commit Graph: Mark Compare Base)".to_string());
+            return;
+        };
+        let Some(head) = commits.get(*selected).map(|c| c.hash.clone()) else {
+            return;
+        };
+        self.open_range(SessionCommand::RangeChanges {
+            spec: RangeSpec::Between {
+                base,
+                head,
+                merge_base: false,
+            },
+        });
+    }
+
     /// Fill the graph browser's detail pane from a resolved commit, and fire the lazy
     /// GitHub verification fetch. A no-op if no browser is open.
     fn fill_graph_detail(&mut self, detail: Box<CommitDetail>, changes: Vec<FileChange>) {
@@ -2115,6 +2189,25 @@ impl App {
         let hash = detail.hash.clone();
         self.push_tab(Tab::commit(detail, files));
         self.send_vcs(SessionCommand::FetchCommitVerification { hash });
+    }
+
+    /// Build and open a compare tab from a resolved range and its changes. An empty
+    /// range (identical endpoints) opens with a "no changes" state rather than nothing.
+    fn open_compare_tab(
+        &mut self,
+        base_label: String,
+        head_label: String,
+        merge_base: bool,
+        changes: Vec<FileChange>,
+    ) {
+        if changes.is_empty() {
+            self.status = Some(format!("no changes between {base_label} and {head_label}"));
+        }
+        let files = changes
+            .into_iter()
+            .map(|c| FileView::new(c, Section::Staged, self.syntax))
+            .collect();
+        self.push_tab(Tab::compare(base_label, head_label, merge_base, files));
     }
 
     /// Apply the forge's verification verdict to every open commit view for `hash` —
@@ -2916,7 +3009,8 @@ impl App {
             TabKind::Diff { scroll, .. }
             | TabKind::Blame { scroll, .. }
             | TabKind::Graph { scroll, .. }
-            | TabKind::Commit { scroll, .. } => {
+            | TabKind::Commit { scroll, .. }
+            | TabKind::Compare { scroll, .. } => {
                 let next = (i64::from(*scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
                 *scroll = next as u16;
             },
@@ -2953,7 +3047,8 @@ impl App {
             TabKind::Diff { scroll, .. }
             | TabKind::Blame { scroll, .. }
             | TabKind::Graph { scroll, .. }
-            | TabKind::Commit { scroll, .. } => {
+            | TabKind::Commit { scroll, .. }
+            | TabKind::Compare { scroll, .. } => {
                 *scroll = if top { 0 } else { u16::MAX };
             },
             TabKind::Hex { bytes, scroll, .. } => {
@@ -4101,6 +4196,12 @@ impl App {
                     _ => self.open_commit_tab(detail, changes),
                 }
             },
+            SessionEvent::RangeReady {
+                base_label,
+                head_label,
+                merge_base,
+                changes,
+            } => self.open_compare_tab(base_label, head_label, merge_base, changes),
             SessionEvent::CommitVerification { hash, status } => {
                 self.apply_commit_verification(&hash, status);
             },
@@ -4222,6 +4323,28 @@ fn canonical(path: &Path) -> PathBuf {
 /// [`karet_editor::word_bounds`] so double-click and word motions agree.
 fn word_at(buffer: &TextBuffer, pos: LineCol) -> (LineCol, LineCol) {
     karet_editor::word_bounds(buffer, pos)
+}
+
+/// Parse a revision-range spec typed into the go-to-commit input into
+/// `(base, head, merge_base)`, or `None` when it is a single revision.
+///
+/// A three-dot `a...b` selects the merge-base range; a two-dot `a..b` the raw tips. An
+/// omitted side defaults to `HEAD` (matching git: `..b`, `a..`). Whitespace is trimmed.
+fn parse_rev_range(input: &str) -> Option<(String, String, bool)> {
+    // Three-dot first: "..." also contains "..".
+    let (sep, merge_base) = if input.contains("...") {
+        ("...", true)
+    } else if input.contains("..") {
+        ("..", false)
+    } else {
+        return None;
+    };
+    let (base, head) = input.split_once(sep)?;
+    let side = |s: &str| {
+        let s = s.trim();
+        if s.is_empty() { "HEAD" } else { s }.to_string()
+    };
+    Some((side(base), side(head), merge_base))
 }
 
 /// The text within `range`, sliced from the tab's `source` using byte offsets
@@ -5389,6 +5512,105 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         assert!(matches!(
             &app.tabs[app.active].kind,
             TabKind::CommitGraph { selected: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn parse_rev_range_distinguishes_two_and_three_dot() {
+        assert_eq!(
+            parse_rev_range("main..feature"),
+            Some(("main".to_string(), "feature".to_string(), false))
+        );
+        assert_eq!(
+            parse_rev_range("main...feature"),
+            Some(("main".to_string(), "feature".to_string(), true))
+        );
+        // An omitted side defaults to HEAD, and whitespace is trimmed.
+        assert_eq!(
+            parse_rev_range("origin/main.. "),
+            Some(("origin/main".to_string(), "HEAD".to_string(), false))
+        );
+        assert_eq!(
+            parse_rev_range("...HEAD"),
+            Some(("HEAD".to_string(), "HEAD".to_string(), true))
+        );
+        // A plain revision is not a range.
+        assert_eq!(parse_rev_range("HEAD~2"), None);
+        assert_eq!(parse_rev_range("abc123"), None);
+    }
+
+    #[test]
+    fn open_compare_tab_builds_a_compare_tab() {
+        let mut app = app();
+        app.open_compare_tab(
+            "main".to_string(),
+            "HEAD".to_string(),
+            true,
+            vec![change("a.rs", StatusKind::Modified)],
+        );
+        match &app.tabs[app.active].kind {
+            TabKind::Compare {
+                base_label,
+                head_label,
+                merge_base,
+                files,
+                scroll,
+            } => {
+                assert_eq!(base_label, "main");
+                assert_eq!(head_label, "HEAD");
+                assert!(*merge_base);
+                assert_eq!(files.len(), 1);
+                assert_eq!(*scroll, 0);
+            },
+            _ => panic!("expected a compare tab"),
+        }
+        // A compare tab scrolls via the shared pager arm.
+        app.scroll_lines(2);
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::Compare { scroll: 2, .. }
+        ));
+    }
+
+    #[test]
+    fn graph_compare_requires_a_marked_base() {
+        let mut app = app();
+        app.dispatch(Command::ShowCommitGraph);
+        app.apply_graph_log(
+            0,
+            vec![
+                Commit {
+                    hash: "aaaa".to_string(),
+                    short_hash: "aaaa".to_string(),
+                    summary: "c1".to_string(),
+                    author: "T".to_string(),
+                    time: 0,
+                    parents: vec!["bbbb".to_string()],
+                },
+                Commit {
+                    hash: "bbbb".to_string(),
+                    short_hash: "bbbb".to_string(),
+                    summary: "c0".to_string(),
+                    author: "T".to_string(),
+                    time: 0,
+                    parents: Vec::new(),
+                },
+            ],
+            false,
+        );
+        // Comparing before marking a base only reports a status hint.
+        app.dispatch(Command::CommitGraphCompare);
+        assert!(
+            app.status
+                .as_deref()
+                .is_some_and(|s| s.contains("mark a compare base")),
+            "compare without a base nudges the user"
+        );
+        // Marking a base records it on the browser tab.
+        app.dispatch(Command::CommitGraphMarkBase);
+        assert!(matches!(
+            &app.tabs[app.active].kind,
+            TabKind::CommitGraph { compare_base: Some(b), .. } if b == "aaaa"
         ));
     }
 

@@ -296,6 +296,14 @@ pub enum Command {
     RevInputCancel,
     /// Show the history of the active file (its commits) in the graph browser.
     ShowFileHistory,
+    /// Compare the current branch's unpushed work against its upstream (`@{u}...HEAD`).
+    DiffUnpushed,
+    /// Compare the current branch against its base branch (`base...HEAD`).
+    DiffSinceBase,
+    /// Mark the commit graph browser's selected commit as the comparison base.
+    CommitGraphMarkBase,
+    /// Compare the browser's marked base commit against the current selection.
+    CommitGraphCompare,
     /// Move the Search results selection up.
     SearchSelectUp,
     /// Move the Search results selection down.
@@ -469,6 +477,10 @@ impl Command {
             Self::RevInputSubmit => "Go to Commit: Submit",
             Self::RevInputCancel => "Go to Commit: Cancel",
             Self::ShowFileHistory => "Source Control: File History",
+            Self::DiffUnpushed => "Source Control: Diff Unpushed Changes",
+            Self::DiffSinceBase => "Source Control: Diff vs Base Branch",
+            Self::CommitGraphMarkBase => "Commit Graph: Mark Compare Base",
+            Self::CommitGraphCompare => "Commit Graph: Compare with Marked",
             Self::SearchSelectUp => "Search: Select Previous",
             Self::SearchSelectDown => "Search: Select Next",
             Self::SearchOpen => "Search: Open Selected Result",
@@ -578,6 +590,8 @@ impl Command {
             Self::CommitGraphNext => "next",
             Self::CommitGraphPrev => "prev",
             Self::CommitGraphOpen => "open",
+            Self::CommitGraphMarkBase => "mark base",
+            Self::CommitGraphCompare => "compare",
             Self::RevInputSubmit => "go",
             Self::RevInputCancel => "cancel",
             Self::SearchOpen => "open",
@@ -653,7 +667,9 @@ impl Command {
             | Self::SearchSelectUp
             | Self::SearchSelectDown
             | Self::OpenCommitByHash
-            | Self::ShowFileHistory => return None,
+            | Self::ShowFileHistory
+            | Self::DiffUnpushed
+            | Self::DiffSinceBase => return None,
         })
     }
 
@@ -713,6 +729,8 @@ impl Command {
                 | Self::ShowCommitGraph
                 | Self::OpenCommitByHash
                 | Self::ShowFileHistory
+                | Self::DiffUnpushed
+                | Self::DiffSinceBase
         )
     }
 }
@@ -734,6 +752,8 @@ pub fn palette() -> Vec<Command> {
         Command::ShowCommitGraph,
         Command::OpenCommitByHash,
         Command::ShowFileHistory,
+        Command::DiffUnpushed,
+        Command::DiffSinceBase,
         Command::BlameFunction,
         Command::ShowDependencyGraph,
         Command::ExplorerNewFile,

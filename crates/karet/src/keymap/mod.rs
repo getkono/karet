@@ -307,6 +307,10 @@ static BINDINGS: &[Binding] = &[
     b(CommitGraph, false, false, false, Enter,     Command::CommitGraphOpen),
     b(CommitGraph, false, false, false, Char('l'), Command::CommitGraphOpen),
     b(CommitGraph, false, false, false, Right,     Command::CommitGraphOpen),
+    // Two-commit compare: `m` marks the selected commit as the base, `c` compares the
+    // current selection against it.
+    b(CommitGraph, false, false, false, Char('m'), Command::CommitGraphMarkBase),
+    b(CommitGraph, false, false, false, Char('c'), Command::CommitGraphCompare),
     b(CommitGraph, false, false, false, Esc,       Command::ToggleFocus),
 
     // Editor focus, a too-large-file placeholder: bypass the size guard on demand.
