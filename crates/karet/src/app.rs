@@ -2908,7 +2908,8 @@ impl App {
             },
             TabKind::Diff { scroll, .. }
             | TabKind::Blame { scroll, .. }
-            | TabKind::Graph { scroll, .. } => {
+            | TabKind::Graph { scroll, .. }
+            | TabKind::Commit { scroll, .. } => {
                 let next = (i64::from(*scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
                 *scroll = next as u16;
             },
@@ -2944,7 +2945,8 @@ impl App {
             },
             TabKind::Diff { scroll, .. }
             | TabKind::Blame { scroll, .. }
-            | TabKind::Graph { scroll, .. } => {
+            | TabKind::Graph { scroll, .. }
+            | TabKind::Commit { scroll, .. } => {
                 *scroll = if top { 0 } else { u16::MAX };
             },
             TabKind::Hex { bytes, scroll, .. } => {
@@ -5380,6 +5382,65 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         assert!(matches!(
             &app.tabs[app.active].kind,
             TabKind::CommitGraph { selected: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn commit_view_scrolls_by_wheel_and_page_and_edges() {
+        let mut app = app();
+        // Build a standalone commit view with one changed file.
+        let detail = CommitDetail {
+            hash: "a".repeat(40),
+            short_hash: "aaaaaaa".to_string(),
+            summary: "subject".to_string(),
+            body: String::new(),
+            author: karet_vcs::Identity {
+                name: "Tester".to_string(),
+                email: "t@example.com".to_string(),
+                time: 0,
+                offset: 0,
+            },
+            committer: karet_vcs::Identity {
+                name: "Tester".to_string(),
+                email: "t@example.com".to_string(),
+                time: 0,
+                offset: 0,
+            },
+            parents: Vec::new(),
+            signature: None,
+        };
+        let files = vec![FileView::new(
+            change("a.rs", StatusKind::Modified),
+            crate::render::Section::Staged,
+            false,
+        )];
+        app.push_tab(Tab::commit(Box::new(detail), files));
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::Commit { scroll: 0, .. }
+        ));
+
+        // A wheel notch / ScrollDown advances the offset (the draw-time clamp caps it).
+        app.scroll_lines(3);
+        let scrolled = match app.tabs[app.active].kind {
+            TabKind::Commit { scroll, .. } => scroll,
+            _ => unreachable!(),
+        };
+        assert_eq!(scrolled, 3, "the commit view scrolls on a wheel notch");
+
+        // Bottom pins to u16::MAX (clamped against content only during draw); Top returns to 0.
+        app.scroll_edge(false);
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::Commit {
+                scroll: u16::MAX,
+                ..
+            }
+        ));
+        app.scroll_edge(true);
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::Commit { scroll: 0, .. }
         ));
     }
 
