@@ -91,14 +91,23 @@ fn open_classified(path: &Path, syntax: bool, kind: FileKind, bytes: Vec<u8>, le
 
 /// Build a read-only code/text tab, highlighting when a grammar is available.
 fn open_text(path: &Path, bytes: &[u8], syntax: bool) -> Tab {
-    let text = String::from_utf8_lossy(bytes).into_owned();
+    let Ok(buffer) = TextBuffer::from_bytes(bytes) else {
+        return Tab::new(
+            title(path),
+            TabKind::Hex {
+                path: path.to_path_buf(),
+                bytes: bytes.to_vec(),
+                scroll: 0,
+            },
+        );
+    };
+    let text = buffer.text();
     let language = language_name_from_path(path).unwrap_or("plaintext");
     let highlights = if syntax {
         highlight(path, &text)
     } else {
         Highlights::default()
     };
-    let buffer = TextBuffer::from_text(&text);
     Tab::new(
         title(path),
         TabKind::Code {
@@ -277,6 +286,15 @@ mod tests {
         let _ = std::fs::write(&file, "fn main() {}\n");
         let tab = open_file(&file, true);
         assert!(matches!(tab.kind, TabKind::Code { .. }));
+    }
+
+    #[test]
+    fn invalid_utf8_text_opens_as_hex() {
+        let dir = temp_dir();
+        let file = dir.path.join("bad.rs");
+        let _ = std::fs::write(&file, b"fn main() {}\n\xff");
+        let tab = open_file(&file, true);
+        assert!(matches!(tab.kind, TabKind::Hex { .. }));
     }
 
     #[test]
