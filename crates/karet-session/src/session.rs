@@ -49,6 +49,9 @@ use tokio::sync::mpsc;
 use crate::api::Command;
 use crate::api::DocumentId;
 use crate::api::Event;
+#[cfg(feature = "github")]
+use crate::api::GithubVerification;
+use crate::api::RangeSpec;
 use crate::api::RequestId;
 use crate::api::SwapInfo;
 use crate::backup::SwapRecord;
@@ -335,6 +338,12 @@ impl Session {
             Command::Commit { message } => self.commit(id, &message),
             Command::RefreshVcs => self.emit_vcs_status(Some(id)),
             Command::VcsLog { skip, limit } => self.emit_vcs_log(Some(id), skip, limit),
+            Command::CommitDetail { rev } => self.emit_commit_detail(id, &rev),
+            Command::RangeChanges { spec } => self.emit_range_changes(id, spec),
+            Command::FileHistory { path, skip, limit } => {
+                self.emit_file_history(id, path, skip, limit)
+            },
+            Command::FetchCommitVerification { hash } => self.fetch_commit_verification(id, hash),
             Command::RecoverSwaps => self.recover_swaps(id),
             Command::DiscardSwaps => self.discard_swaps(),
             Command::DependencyGraph => self.emit_dependency_graph(id),
@@ -376,6 +385,166 @@ impl Session {
             ),
         }
     }
+
+    /// Load one commit's full detail plus the files it changed, and emit them together.
+    /// A read failure (e.g. an unknown revision) becomes a VCS notification. No-op
+    /// without a repository.
+    fn emit_commit_detail(&mut self, id: RequestId, rev: &str) {
+        let Some(repo) = self.vcs.as_ref() else {
+            return;
+        };
+        match (repo.commit_detail(rev), repo.commit_changes(rev)) {
+            (Ok(detail), Ok(changes)) => {
+                self.emit(
+                    Some(id),
+                    Event::CommitReady {
+                        detail: Box::new(detail),
+                        changes,
+                    },
+                );
+            },
+            (Err(e), _) | (_, Err(e)) => self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::Vcs,
+                    message: e.to_string(),
+                },
+            ),
+        }
+    }
+
+    /// Resolve a [`RangeSpec`] against the repository (upstream / base branch / merge
+    /// base) and emit the diff between the two points as [`Event::RangeReady`]. A
+    /// resolution failure — no upstream, no detectable base, a bad revision, or unrelated
+    /// histories — becomes a VCS notification. No-op without a repository.
+    fn emit_range_changes(&mut self, id: RequestId, spec: RangeSpec) {
+        let Some(repo) = self.vcs.as_ref() else {
+            return;
+        };
+        // Resolve and compute everything that needs the repo borrow up front, into owned
+        // data, so the `self.emit` below is free to borrow `self` mutably.
+        let outcome: Result<(String, String, bool, Vec<FileChange>), String> = (|| {
+            let (base_rev, head_rev, merge_base, base_label, head_label) = match &spec {
+                RangeSpec::Unpushed => {
+                    let up = repo
+                        .upstream_of_head()
+                        .map_err(|e| e.to_string())?
+                        .ok_or_else(|| {
+                            "no upstream branch is set for the current branch".to_string()
+                        })?;
+                    (up.clone(), "HEAD".to_string(), true, up, "HEAD".to_string())
+                },
+                RangeSpec::SinceBase { base } => {
+                    let b = base
+                        .clone()
+                        .or_else(|| repo.default_base_branch())
+                        .ok_or_else(|| {
+                            "could not determine a base branch; use a range like main...HEAD"
+                                .to_string()
+                        })?;
+                    (b.clone(), "HEAD".to_string(), true, b, "HEAD".to_string())
+                },
+                RangeSpec::Between {
+                    base,
+                    head,
+                    merge_base,
+                } => (
+                    base.clone(),
+                    head.clone(),
+                    *merge_base,
+                    base.clone(),
+                    head.clone(),
+                ),
+            };
+            let changes = repo
+                .range_changes(&base_rev, &head_rev, merge_base)
+                .map_err(|e| e.to_string())?;
+            Ok((base_label, head_label, merge_base, changes))
+        })();
+        match outcome {
+            Ok((base_label, head_label, merge_base, changes)) => self.emit(
+                Some(id),
+                Event::RangeReady {
+                    base_label,
+                    head_label,
+                    merge_base,
+                    changes,
+                },
+            ),
+            Err(message) => self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::Vcs,
+                    message,
+                },
+            ),
+        }
+    }
+
+    /// Fetch a page of a file's history and emit it, requesting one extra commit to
+    /// detect whether more remain. No-op without a repository.
+    fn emit_file_history(&mut self, id: RequestId, path: PathBuf, skip: usize, limit: usize) {
+        let Some(repo) = self.vcs.as_ref() else {
+            return;
+        };
+        match repo.file_history(&path, skip, limit.saturating_add(1)) {
+            Ok(mut commits) => {
+                let has_more = commits.len() > limit;
+                commits.truncate(limit);
+                self.emit(
+                    Some(id),
+                    Event::FileHistory {
+                        path,
+                        skip,
+                        commits,
+                        has_more,
+                    },
+                );
+            },
+            Err(e) => self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::Vcs,
+                    message: e.to_string(),
+                },
+            ),
+        }
+    }
+
+    /// Lazily fetch a commit's GitHub "Verified" status on a worker thread, emitting an
+    /// [`Event::CommitVerification`] on success. Silent on any failure (offline, no
+    /// GitHub remote, rate-limited): the client simply keeps the offline "Signed" badge.
+    /// A no-op when the `github` feature is disabled.
+    #[cfg(feature = "github")]
+    fn fetch_commit_verification(&mut self, id: RequestId, hash: String) {
+        let Some(url) = self.vcs.as_ref().and_then(Repository::origin_url) else {
+            return;
+        };
+        let Some((owner, repo)) = karet_github::parse_remote(&url) else {
+            return;
+        };
+        let events = self.events.clone();
+        // Blocking HTTP off the actor thread; drop the handle (fire-and-forget).
+        std::thread::spawn(move || {
+            if let Ok(v) = karet_github::commit_verification(&owner, &repo, &hash) {
+                let status = GithubVerification {
+                    verified: v.verified,
+                    reason: v.reason,
+                    signer: v.signer,
+                };
+                events
+                    .send((Some(id), Event::CommitVerification { hash, status }))
+                    .ok();
+            }
+        });
+    }
+
+    /// Without the `github` feature, commit verification is unavailable — a no-op.
+    #[cfg(not(feature = "github"))]
+    fn fetch_commit_verification(&mut self, _id: RequestId, _hash: String) {}
 
     /// Reconcile the commit log after a filesystem event. Reads the (cheap) `HEAD`
     /// hash; if the tip moved, prepends only the new commits, falling back to a fresh
@@ -1797,6 +1966,165 @@ mod tests {
                 .iter()
                 .any(|c| c.path == file && c.status == karet_vcs::StatusKind::Added)
         );
+    }
+
+    #[test]
+    fn commit_detail_and_file_history_round_trip() {
+        let Some((_dir, root, file)) = init_temp_repo() else {
+            return;
+        };
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .status()
+                .ok()
+                .filter(std::process::ExitStatus::success)
+        };
+        // One commit touching a.txt, one touching only b.txt.
+        if run(&["add", "a.txt"]).is_none() || run(&["commit", "-q", "-m", "add a"]).is_none() {
+            return;
+        }
+        std::fs::write(root.join("b.txt"), "b\n").ok();
+        run(&["add", "b.txt"]);
+        run(&["commit", "-q", "-m", "add b"]);
+        // The app passes the file's absolute path (a relative path would resolve
+        // against the process CWD, not the repo root — see `Repository::file_history`).
+        let file_abs = root.join(&file);
+
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root],
+            ..SessionConfig::default()
+        });
+        session.start();
+        while events.try_recv().is_some() {} // drain the seeded status/log
+
+        // CommitDetail(HEAD) answers with the "add b" commit and its single change.
+        session.handle(
+            RequestId(1),
+            Command::CommitDetail {
+                rev: "HEAD".to_string(),
+            },
+        );
+        let mut ready = None;
+        while let Some((_, ev)) = events.try_recv() {
+            if let Event::CommitReady { detail, changes } = ev {
+                ready = Some((detail, changes));
+            }
+        }
+        let Some((detail, changes)) = ready else {
+            return;
+        };
+        assert_eq!(detail.summary, "add b");
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, PathBuf::from("b.txt"));
+
+        // FileHistory(a.txt) answers with exactly the "add a" commit.
+        session.handle(
+            RequestId(2),
+            Command::FileHistory {
+                path: file_abs,
+                skip: 0,
+                limit: 10,
+            },
+        );
+        let mut hist = None;
+        while let Some((_, ev)) = events.try_recv() {
+            if let Event::FileHistory { commits, .. } = ev {
+                hist = Some(commits);
+            }
+        }
+        let Some(commits) = hist else {
+            return;
+        };
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].summary, "add a");
+    }
+
+    #[test]
+    fn range_changes_between_two_revs_round_trip() {
+        let Some((_dir, root, _file)) = init_temp_repo() else {
+            return;
+        };
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .status()
+                .ok()
+                .filter(std::process::ExitStatus::success)
+        };
+        // c0 adds a.txt; c1 modifies a.txt and adds b.txt.
+        if run(&["add", "a.txt"]).is_none() || run(&["commit", "-q", "-m", "c0"]).is_none() {
+            return;
+        }
+        std::fs::write(root.join("a.txt"), "hello\nworld\n").ok();
+        std::fs::write(root.join("b.txt"), "b\n").ok();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "c1"]);
+
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root],
+            ..SessionConfig::default()
+        });
+        session.start();
+        while events.try_recv().is_some() {} // drain the seeded status/log
+
+        // A two-dot HEAD~1..HEAD range answers with a.txt (modified) and b.txt (added).
+        session.handle(
+            RequestId(1),
+            Command::RangeChanges {
+                spec: RangeSpec::Between {
+                    base: "HEAD~1".to_string(),
+                    head: "HEAD".to_string(),
+                    merge_base: false,
+                },
+            },
+        );
+        let mut ready = None;
+        while let Some((_, ev)) = events.try_recv() {
+            if let Event::RangeReady {
+                base_label,
+                head_label,
+                changes,
+                ..
+            } = ev
+            {
+                ready = Some((base_label, head_label, changes));
+            }
+        }
+        let Some((base_label, head_label, changes)) = ready else {
+            return;
+        };
+        assert_eq!(base_label, "HEAD~1");
+        assert_eq!(head_label, "HEAD");
+        let paths: Vec<_> = changes.iter().map(|c| c.path.clone()).collect();
+        assert!(paths.contains(&PathBuf::from("a.txt")));
+        assert!(paths.contains(&PathBuf::from("b.txt")));
+
+        // Unpushed with no configured upstream is a graceful notification, not a panic.
+        session.handle(
+            RequestId(2),
+            Command::RangeChanges {
+                spec: RangeSpec::Unpushed,
+            },
+        );
+        let mut notified = false;
+        let mut range_ready = false;
+        while let Some((_, ev)) = events.try_recv() {
+            match ev {
+                Event::Notification {
+                    kind: NotificationKind::Vcs,
+                    ..
+                } => {
+                    notified = true;
+                },
+                Event::RangeReady { .. } => range_ready = true,
+                _ => {},
+            }
+        }
+        assert!(notified, "no upstream yields a VCS notification");
+        assert!(!range_ready, "an unresolvable range emits no RangeReady");
     }
 
     #[test]

@@ -280,6 +280,30 @@ pub enum Command {
     DiscardSwaps,
     /// Open the workspace package-dependency graph visualization.
     ShowDependencyGraph,
+    /// Open the full-screen commit graph browser.
+    ShowCommitGraph,
+    /// Move the commit graph browser's selection to the next (older) commit.
+    CommitGraphNext,
+    /// Move the commit graph browser's selection to the previous (newer) commit.
+    CommitGraphPrev,
+    /// Open the browser's selected commit as a standalone commit view.
+    CommitGraphOpen,
+    /// Open the go-to-commit input to view any commit by hash or ref.
+    OpenCommitByHash,
+    /// Submit the go-to-commit revision.
+    RevInputSubmit,
+    /// Cancel the go-to-commit input.
+    RevInputCancel,
+    /// Show the history of the active file (its commits) in the graph browser.
+    ShowFileHistory,
+    /// Compare the current branch's unpushed work against its upstream (`@{u}...HEAD`).
+    DiffUnpushed,
+    /// Compare the current branch against its base branch (`base...HEAD`).
+    DiffSinceBase,
+    /// Mark the commit graph browser's selected commit as the comparison base.
+    CommitGraphMarkBase,
+    /// Compare the browser's marked base commit against the current selection.
+    CommitGraphCompare,
     /// Move the Search results selection up.
     SearchSelectUp,
     /// Move the Search results selection down.
@@ -445,6 +469,18 @@ impl Command {
             Self::RecoverSwaps => "Recover Unsaved Changes",
             Self::DiscardSwaps => "Discard Unsaved Backups",
             Self::ShowDependencyGraph => "Visualize: Dependency Graph",
+            Self::ShowCommitGraph => "Source Control: Commit Graph",
+            Self::CommitGraphNext => "Commit Graph: Next Commit",
+            Self::CommitGraphPrev => "Commit Graph: Previous Commit",
+            Self::CommitGraphOpen => "Commit Graph: Open Commit",
+            Self::OpenCommitByHash => "Source Control: Go to Commit…",
+            Self::RevInputSubmit => "Go to Commit: Submit",
+            Self::RevInputCancel => "Go to Commit: Cancel",
+            Self::ShowFileHistory => "Source Control: File History",
+            Self::DiffUnpushed => "Source Control: Diff Unpushed Changes",
+            Self::DiffSinceBase => "Source Control: Diff vs Base Branch",
+            Self::CommitGraphMarkBase => "Commit Graph: Mark Compare Base",
+            Self::CommitGraphCompare => "Commit Graph: Compare with Marked",
             Self::SearchSelectUp => "Search: Select Previous",
             Self::SearchSelectDown => "Search: Select Next",
             Self::SearchOpen => "Search: Open Selected Result",
@@ -550,6 +586,14 @@ impl Command {
             Self::RecoverSwaps => "recover",
             Self::DiscardSwaps => "discard",
             Self::ShowDependencyGraph => "deps",
+            Self::ShowCommitGraph => "graph",
+            Self::CommitGraphNext => "next",
+            Self::CommitGraphPrev => "prev",
+            Self::CommitGraphOpen => "open",
+            Self::CommitGraphMarkBase => "mark base",
+            Self::CommitGraphCompare => "compare",
+            Self::RevInputSubmit => "go",
+            Self::RevInputCancel => "cancel",
             Self::SearchOpen => "open",
             Self::SearchBeginInput => "edit",
             Self::SearchQuit => "close",
@@ -621,7 +665,11 @@ impl Command {
             | Self::OverlayUp
             | Self::OverlayDown
             | Self::SearchSelectUp
-            | Self::SearchSelectDown => return None,
+            | Self::SearchSelectDown
+            | Self::OpenCommitByHash
+            | Self::ShowFileHistory
+            | Self::DiffUnpushed
+            | Self::DiffSinceBase => return None,
         })
     }
 
@@ -678,6 +726,11 @@ impl Command {
                 | Self::FocusNextPane
                 | Self::FocusPrevPane
                 | Self::ShowDependencyGraph
+                | Self::ShowCommitGraph
+                | Self::OpenCommitByHash
+                | Self::ShowFileHistory
+                | Self::DiffUnpushed
+                | Self::DiffSinceBase
         )
     }
 }
@@ -696,6 +749,11 @@ pub fn palette() -> Vec<Command> {
         Command::OpenFind,
         Command::OpenGlobalSearch,
         Command::ShowBlame,
+        Command::ShowCommitGraph,
+        Command::OpenCommitByHash,
+        Command::ShowFileHistory,
+        Command::DiffUnpushed,
+        Command::DiffSinceBase,
         Command::BlameFunction,
         Command::ShowDependencyGraph,
         Command::ExplorerNewFile,

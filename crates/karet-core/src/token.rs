@@ -222,6 +222,10 @@ pub enum ThemeRole {
     FileIconMedia,
     /// Explorer icon tint for opaque binaries and archives.
     FileIconBinary,
+    /// A commit signature the forge reports as verified (the "Verified" badge).
+    VcsVerified,
+    /// A commit signature that is present but not verified, or verification failed.
+    VcsUnverified,
 }
 
 #[cfg(test)]

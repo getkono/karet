@@ -60,6 +60,8 @@ use karet_session::DocSnapshot;
 use karet_session::DocumentId;
 use karet_session::Event as SessionEvent;
 use karet_session::EventRx;
+use karet_session::GithubVerification;
+use karet_session::RangeSpec;
 use karet_session::RequestId;
 use karet_session::Session;
 use karet_session::SessionConfig;
@@ -72,6 +74,7 @@ use karet_syntax::FoldRegions;
 use karet_text::TextBuffer;
 use karet_theme::Theme;
 use karet_vcs::Commit;
+use karet_vcs::CommitDetail;
 use karet_vcs::FileChange;
 use karet_widgets::DropZone;
 use karet_widgets::FileTreeState;
@@ -239,6 +242,10 @@ pub(crate) const OUTLINE_WIDTH: u16 = 30;
 /// rows of the end of the loaded log.
 const COMMIT_AUTOLOAD_THRESHOLD: usize = 3;
 
+/// How long the commit view's signature-badge explanation stays revealed after a
+/// double-click before it auto-hides.
+pub(crate) const COMMIT_REVEAL: Duration = Duration::from_secs(5);
+
 /// A clickable tab region in the tab strip, recorded during the last render.
 #[derive(Clone, Copy)]
 pub(crate) struct TabHit {
@@ -281,6 +288,14 @@ pub(crate) struct ToastHit {
     pub(crate) rect: Rect,
     /// The notification the card shows.
     pub(crate) id: NotificationId,
+}
+
+/// Where a resolved commit detail should be shown.
+enum CommitDest {
+    /// Open it as a new standalone commit tab.
+    Tab,
+    /// Fill the graph browser's detail pane.
+    Browser,
 }
 
 /// The IDE shell state.
@@ -336,6 +351,8 @@ pub struct App {
     pub(crate) find_open: bool,
     /// The in-progress commit message while the Source-Control commit input is open.
     pub(crate) commit_input: Option<String>,
+    /// The in-progress revision text while the go-to-commit input is open.
+    pub(crate) rev_input: Option<String>,
     /// Paths awaiting a discard confirmation (set after pressing discard; cleared
     /// when the user confirms or cancels).
     pub(crate) pending_discard: Option<Vec<PathBuf>>,
@@ -435,6 +452,9 @@ pub struct App {
     pub(crate) status_hits: Vec<(u16, u16, Command)>,
     /// The active code tab's editor content area from the last frame.
     pub(crate) editor_rect: Rect,
+    /// The focused commit view's signature-badge rect (screen coords) from the last
+    /// frame, for double-click hit-testing. `None` when no badge is on screen.
+    pub(crate) commit_badge_rect: Option<Rect>,
     /// Whether a mouse text-selection drag is in progress in the editor.
     pub(crate) editor_selecting: bool,
     /// The last left-click `(time, column, row)`, for multi-click detection.
@@ -460,6 +480,12 @@ pub struct App {
     /// In-flight save requests, mapping request id → document, so the tab's saving
     /// spinner clears when the answering event (saved or error) arrives.
     pending_saves: HashMap<RequestId, DocumentId>,
+    /// In-flight commit-detail requests, mapping request id → where its result goes
+    /// (a new standalone commit tab, or the graph browser's detail pane).
+    pending_commit_detail: HashMap<RequestId, CommitDest>,
+    /// The graph browser's in-flight history-page request, so its answering
+    /// [`SessionEvent::VcsLog`] fills the browser rather than the sidebar log.
+    graph_log_req: Option<RequestId>,
     /// Session documents the app has opened, so closing the last tab for a document
     /// can release it (the session ref-counts; the app must balance opens/closes).
     open_docs: HashSet<DocumentId>,
@@ -512,6 +538,7 @@ impl App {
             overlay: None,
             find_open: false,
             commit_input: None,
+            rev_input: None,
             pending_discard: None,
             pending_quit: false,
             quitting: false,
@@ -558,6 +585,7 @@ impl App {
             status_rect: Rect::default(),
             status_hits: Vec::new(),
             editor_rect: Rect::default(),
+            commit_badge_rect: None,
             editor_selecting: false,
             last_click: None,
             click_streak: 0,
@@ -569,6 +597,8 @@ impl App {
             backend: None,
             pending_open: HashMap::new(),
             pending_saves: HashMap::new(),
+            pending_commit_detail: HashMap::new(),
+            graph_log_req: None,
             open_docs: HashSet::new(),
             next_view: 1,
         }
@@ -639,12 +669,21 @@ impl App {
     }
 
     /// The content kind of the active editor tab, mapping the shell's tab model
-    /// down to the coarse [`EditorTab`] the keymap layers on. Only a too-large
-    /// placeholder gets its own layer (for the "open anyway" override); every
-    /// other tab is [`EditorTab::Plain`] except a diff.
+    /// down to the coarse [`EditorTab`] the keymap layers on. Read-only scrollable
+    /// views ([`EditorTab::Pager`]) scroll on the arrows; a too-large placeholder
+    /// gets its own "open anyway" layer; a diff its layout/next-change keys; every
+    /// other tab is [`EditorTab::Plain`].
     fn active_editor_tab(&self) -> EditorTab {
         match self.tabs.get(self.active).map(|t| &t.kind) {
             Some(TabKind::Diff { .. }) => EditorTab::Diff,
+            Some(
+                TabKind::Commit { .. }
+                | TabKind::Compare { .. }
+                | TabKind::Blame { .. }
+                | TabKind::Graph { .. }
+                | TabKind::Hex { .. },
+            ) => EditorTab::Pager,
+            Some(TabKind::CommitGraph { .. }) => EditorTab::CommitGraph,
             Some(TabKind::Placeholder {
                 kind: FileKind::TooLarge { .. },
                 ..
@@ -698,6 +737,8 @@ impl App {
             Some(Modal::Overlay)
         } else if self.commit_input.is_some() {
             Some(Modal::CommitInput)
+        } else if self.rev_input.is_some() {
+            Some(Modal::RevInput)
         } else if self.pending_discard.is_some() {
             Some(Modal::DiscardConfirm)
         } else if self.find_open {
@@ -760,6 +801,7 @@ impl App {
             Modal::Overlay => self.overlay_input(key),
             Modal::Find => self.find_input(key),
             Modal::CommitInput => self.commit_edit(key),
+            Modal::RevInput => self.rev_edit(key),
             Modal::ExplorerEdit => self.explorer_edit(key),
             Modal::SearchInput => self.search_edit(key),
             Modal::SearchList => {},
@@ -1519,6 +1561,22 @@ impl App {
                 self.status = Some("building dependency graph…".to_string());
                 self.send_command(SessionCommand::DependencyGraph);
             },
+            Command::ShowCommitGraph => self.open_commit_graph(),
+            Command::CommitGraphNext => self.graph_select(1),
+            Command::CommitGraphPrev => self.graph_select(-1),
+            Command::CommitGraphOpen => self.graph_open_selected(),
+            Command::OpenCommitByHash => self.open_rev_input(),
+            Command::RevInputSubmit => self.rev_submit(),
+            Command::RevInputCancel => self.rev_cancel(),
+            Command::ShowFileHistory => self.open_file_history(),
+            Command::DiffUnpushed => self.open_range(SessionCommand::RangeChanges {
+                spec: RangeSpec::Unpushed,
+            }),
+            Command::DiffSinceBase => self.open_range(SessionCommand::RangeChanges {
+                spec: RangeSpec::SinceBase { base: None },
+            }),
+            Command::CommitGraphMarkBase => self.graph_mark_base(),
+            Command::CommitGraphCompare => self.graph_compare(),
             Command::SearchSelectUp => self.search_select(-1),
             Command::SearchSelectDown => self.search_select(1),
             Command::SearchOpen => self.open_selected_result(),
@@ -1941,6 +1999,341 @@ impl App {
         }
     }
 
+    /// Open the commit view for `rev` (a hash or ref). The detail + diff arrive
+    /// asynchronously as [`SessionEvent::CommitReady`], which builds the tab.
+    fn open_commit(&mut self, rev: String) {
+        if let Some(id) = self.send_command_id(SessionCommand::CommitDetail { rev }) {
+            self.pending_commit_detail.insert(id, CommitDest::Tab);
+        }
+    }
+
+    /// Open the full-screen commit graph browser and request its first history page.
+    fn open_commit_graph(&mut self) {
+        self.push_tab(Tab::commit_graph(None, "Commits"));
+        self.graph_log_req = self.send_command_id(SessionCommand::VcsLog {
+            skip: 0,
+            limit: SCM_LOG_PAGE,
+        });
+    }
+
+    /// Open the graph browser scoped to the active file's history (`git log -- file`).
+    fn open_file_history(&mut self) {
+        let Some(path) = self
+            .tabs
+            .get(self.active)
+            .and_then(Tab::path)
+            .map(Path::to_path_buf)
+        else {
+            self.status = Some("file history: open a file first".to_string());
+            return;
+        };
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("history")
+            .to_string();
+        self.push_tab(Tab::commit_graph(Some(path.clone()), format!("⌥ {name}")));
+        self.graph_log_req = self.send_command_id(SessionCommand::FileHistory {
+            path,
+            skip: 0,
+            limit: SCM_LOG_PAGE,
+        });
+    }
+
+    /// Open the go-to-commit input; the typed revision resolves via [`open_commit`].
+    fn open_rev_input(&mut self) {
+        self.rev_input = Some(String::new());
+    }
+
+    /// Cancel the go-to-commit input.
+    fn rev_cancel(&mut self) {
+        self.rev_input = None;
+        self.status = Some("go to commit cancelled".to_string());
+    }
+
+    /// Submit the typed revision: open a range when it contains `..`/`...`, otherwise the
+    /// single commit; re-prompt when empty.
+    fn rev_submit(&mut self) {
+        let rev = self.rev_input.take().unwrap_or_default().trim().to_string();
+        if rev.is_empty() {
+            self.rev_input = Some(String::new());
+            self.status =
+                Some("go to commit: enter a hash, ref, or range (a..b, a...b)".to_string());
+        } else if let Some((base, head, merge_base)) = parse_rev_range(&rev) {
+            self.open_range(SessionCommand::RangeChanges {
+                spec: RangeSpec::Between {
+                    base,
+                    head,
+                    merge_base,
+                },
+            });
+        } else {
+            self.open_commit(rev);
+        }
+    }
+
+    /// Edit the go-to-commit revision with an unbound key (backspace / printable).
+    fn rev_edit(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Backspace => {
+                if let Some(rev) = self.rev_input.as_mut() {
+                    rev.pop();
+                }
+            },
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                if let Some(rev) = self.rev_input.as_mut() {
+                    rev.push(c);
+                }
+            },
+            _ => {},
+        }
+    }
+
+    /// The active tab's commit graph browser, if it is one.
+    fn active_commit_graph(&mut self) -> Option<&mut TabKind> {
+        let tab = self.tabs.get_mut(self.active)?;
+        matches!(tab.kind, TabKind::CommitGraph { .. }).then_some(&mut tab.kind)
+    }
+
+    /// Move the browser's selection by `delta` (clamped), and request the newly
+    /// selected commit's detail if it isn't already shown.
+    fn graph_select(&mut self, delta: i32) {
+        let Some(TabKind::CommitGraph {
+            history_path,
+            commits,
+            selected,
+            has_more,
+            loading,
+            ..
+        }) = self.active_commit_graph()
+        else {
+            return;
+        };
+        if commits.is_empty() {
+            return;
+        }
+        let last = commits.len() - 1;
+        let next = (*selected as i64 + i64::from(delta)).clamp(0, last as i64) as usize;
+        *selected = next;
+        // Page in more history when nearing the end, from the same source (whole-repo
+        // log or a single file's history).
+        let near_end = next + COMMIT_AUTOLOAD_THRESHOLD >= commits.len();
+        let want_more = *has_more && !*loading && near_end;
+        let loaded = commits.len();
+        let path = history_path.clone();
+        let hash = commits[next].hash.clone();
+        self.graph_request_detail(hash);
+        if want_more {
+            if let Some(TabKind::CommitGraph { loading, .. }) = self.active_commit_graph() {
+                *loading = true;
+            }
+            let command = match path {
+                Some(path) => SessionCommand::FileHistory {
+                    path,
+                    skip: loaded,
+                    limit: SCM_LOG_PAGE,
+                },
+                None => SessionCommand::VcsLog {
+                    skip: loaded,
+                    limit: SCM_LOG_PAGE,
+                },
+            };
+            self.graph_log_req = self.send_command_id(command);
+        }
+    }
+
+    /// Request `hash`'s detail for the browser pane, unless it is already the shown
+    /// detail (avoids re-fetching when re-selecting the same commit).
+    fn graph_request_detail(&mut self, hash: String) {
+        if let Some(TabKind::CommitGraph { detail, .. }) = self.active_commit_graph()
+            && detail.as_ref().is_some_and(|d| d.hash == hash)
+        {
+            return;
+        }
+        if let Some(id) = self.send_command_id(SessionCommand::CommitDetail { rev: hash }) {
+            self.pending_commit_detail.insert(id, CommitDest::Browser);
+        }
+    }
+
+    /// Open the browser's selected commit as a standalone commit tab.
+    fn graph_open_selected(&mut self) {
+        if let Some(TabKind::CommitGraph {
+            commits, selected, ..
+        }) = self.active_commit_graph()
+            && let Some(commit) = commits.get(*selected)
+        {
+            let hash = commit.hash.clone();
+            self.open_commit(hash);
+        }
+    }
+
+    /// Request a range diff; the answering [`SessionEvent::RangeReady`] opens the compare
+    /// tab, and an unresolvable range answers with a VCS notification instead.
+    fn open_range(&mut self, command: SessionCommand) {
+        self.status = Some("computing diff…".to_string());
+        self.send_vcs(command);
+    }
+
+    /// Mark the browser's selected commit as the base for a two-commit comparison.
+    fn graph_mark_base(&mut self) {
+        if let Some(TabKind::CommitGraph {
+            commits,
+            selected,
+            compare_base,
+            ..
+        }) = self.active_commit_graph()
+            && let Some(commit) = commits.get(*selected)
+        {
+            let short = commit.short_hash.clone();
+            *compare_base = Some(commit.hash.clone());
+            self.status = Some(format!(
+                "compare base marked: {short} (select another, then compare)"
+            ));
+        }
+    }
+
+    /// Compare the browser's marked base commit against the current selection (a two-dot
+    /// `base..selected` diff). Reports a status when no base has been marked yet.
+    fn graph_compare(&mut self) {
+        let Some(TabKind::CommitGraph {
+            commits,
+            selected,
+            compare_base,
+            ..
+        }) = self.active_commit_graph()
+        else {
+            return;
+        };
+        let Some(base) = compare_base.clone() else {
+            self.status =
+                Some("mark a compare base first (Commit Graph: Mark Compare Base)".to_string());
+            return;
+        };
+        let Some(head) = commits.get(*selected).map(|c| c.hash.clone()) else {
+            return;
+        };
+        self.open_range(SessionCommand::RangeChanges {
+            spec: RangeSpec::Between {
+                base,
+                head,
+                merge_base: false,
+            },
+        });
+    }
+
+    /// Fill the graph browser's detail pane from a resolved commit, and fire the lazy
+    /// GitHub verification fetch. A no-op if no browser is open.
+    fn fill_graph_detail(&mut self, detail: Box<CommitDetail>, changes: Vec<FileChange>) {
+        let syntax = self.syntax;
+        let hash = detail.hash.clone();
+        let mut filled = false;
+        for tab in self.all_tabs_mut() {
+            if let TabKind::CommitGraph {
+                detail: slot,
+                files,
+                verification,
+                ..
+            } = &mut tab.kind
+            {
+                *files = changes
+                    .iter()
+                    .cloned()
+                    .map(|c| FileView::new(c, Section::Staged, syntax))
+                    .collect();
+                *slot = Some(detail.clone());
+                *verification = None;
+                filled = true;
+            }
+        }
+        if filled {
+            self.send_vcs(SessionCommand::FetchCommitVerification { hash });
+        }
+    }
+
+    /// Apply a fetched history page to the graph browser: replace on the first page,
+    /// append otherwise. On the first page, select the top commit and load its detail.
+    fn apply_graph_log(&mut self, skip: usize, commits: Vec<Commit>, has_more: bool) {
+        let mut first_hash = None;
+        for tab in self.all_tabs_mut() {
+            if let TabKind::CommitGraph {
+                commits: loaded,
+                has_more: more,
+                loading,
+                selected,
+                ..
+            } = &mut tab.kind
+            {
+                *loading = false;
+                *more = has_more;
+                if skip == 0 {
+                    *loaded = commits.clone();
+                    *selected = 0;
+                    first_hash = loaded.first().map(|c| c.hash.clone());
+                } else if skip == loaded.len() {
+                    loaded.extend(commits.clone());
+                }
+            }
+        }
+        if let Some(hash) = first_hash {
+            self.graph_request_detail(hash);
+        }
+    }
+
+    /// Build and open a commit tab from a resolved [`CommitDetail`] and its changes,
+    /// then fire the lazy GitHub verification fetch to upgrade the signature badge.
+    fn open_commit_tab(&mut self, detail: Box<CommitDetail>, changes: Vec<FileChange>) {
+        let files = changes
+            .into_iter()
+            .map(|c| FileView::new(c, Section::Staged, self.syntax))
+            .collect();
+        let hash = detail.hash.clone();
+        self.push_tab(Tab::commit(detail, files));
+        self.send_vcs(SessionCommand::FetchCommitVerification { hash });
+    }
+
+    /// Build and open a compare tab from a resolved range and its changes. An empty
+    /// range (identical endpoints) opens with a "no changes" state rather than nothing.
+    fn open_compare_tab(
+        &mut self,
+        base_label: String,
+        head_label: String,
+        merge_base: bool,
+        changes: Vec<FileChange>,
+    ) {
+        if changes.is_empty() {
+            self.status = Some(format!("no changes between {base_label} and {head_label}"));
+        }
+        let files = changes
+            .into_iter()
+            .map(|c| FileView::new(c, Section::Staged, self.syntax))
+            .collect();
+        self.push_tab(Tab::compare(base_label, head_label, merge_base, files));
+    }
+
+    /// Apply the forge's verification verdict to every open commit view for `hash` —
+    /// both standalone commit tabs and the graph browser's shown detail.
+    fn apply_commit_verification(&mut self, hash: &str, status: GithubVerification) {
+        for tab in self.all_tabs_mut() {
+            match &mut tab.kind {
+                TabKind::Commit {
+                    detail,
+                    verification,
+                    ..
+                } if detail.hash == hash => *verification = Some(status.clone()),
+                TabKind::CommitGraph {
+                    detail: Some(detail),
+                    verification,
+                    ..
+                } if detail.hash == hash => *verification = Some(status.clone()),
+                _ => {},
+            }
+        }
+    }
+
     /// Send a fire-and-forget command to the backend (no document context).
     fn send_vcs(&mut self, command: SessionCommand) {
         self.send_command(command);
@@ -1955,6 +2348,24 @@ impl App {
         });
         if let Some(Err(e)) = result {
             self.notify_backend_error(e);
+        }
+    }
+
+    /// Submit a backend command and return its [`RequestId`], so the answering event
+    /// can be correlated (e.g. to route a commit detail to the right destination).
+    /// Returns `None` when there is no backend or the submission failed.
+    fn send_command_id(&mut self, command: SessionCommand) -> Option<RequestId> {
+        let (id, result) = {
+            let backend = self.backend.as_ref()?;
+            let id = backend.next_id();
+            (id, backend.send(id, command))
+        };
+        match result {
+            Ok(()) => Some(id),
+            Err(e) => {
+                self.notify_backend_error(e);
+                None
+            },
         }
     }
 
@@ -2731,6 +3142,14 @@ impl App {
 
     /// Scroll the active tab by `delta` lines/rows (clamped to its content).
     fn scroll_lines(&mut self, delta: i32) {
+        // The browser has no free scroll: a wheel notch moves the commit selection.
+        if matches!(
+            self.tabs.get(self.active).map(|t| &t.kind),
+            Some(TabKind::CommitGraph { .. })
+        ) {
+            self.graph_select(delta.signum());
+            return;
+        }
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
@@ -2742,7 +3161,9 @@ impl App {
             },
             TabKind::Diff { scroll, .. }
             | TabKind::Blame { scroll, .. }
-            | TabKind::Graph { scroll, .. } => {
+            | TabKind::Graph { scroll, .. }
+            | TabKind::Commit { scroll, .. }
+            | TabKind::Compare { scroll, .. } => {
                 let next = (i64::from(*scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
                 *scroll = next as u16;
             },
@@ -2778,7 +3199,9 @@ impl App {
             },
             TabKind::Diff { scroll, .. }
             | TabKind::Blame { scroll, .. }
-            | TabKind::Graph { scroll, .. } => {
+            | TabKind::Graph { scroll, .. }
+            | TabKind::Commit { scroll, .. }
+            | TabKind::Compare { scroll, .. } => {
                 *scroll = if top { 0 } else { u16::MAX };
             },
             TabKind::Hex { bytes, scroll, .. } => {
@@ -3208,13 +3631,18 @@ impl App {
                 }
             },
             SidebarPanel::SourceControl => {
-                // The pinned commit-log region: rows aren't selectable; only the
-                // "load more" affordance is clickable.
+                // The pinned commit-log region: click a commit row to open its commit
+                // view; the trailing "load more" affordance pages in older history.
                 if rect_contains(self.scm_commits_rect, (col, row_y)) {
                     let display =
                         self.scm_commits_offset + (row_y - self.scm_commits_rect.y) as usize;
                     if self.scm_more_row == Some(display) {
                         self.load_more_scm_log();
+                    } else if let Some(commit) =
+                        display.checked_sub(1).and_then(|i| self.scm.log.get(i))
+                    {
+                        // Row 0 is the " COMMITS" header; commits begin at display 1.
+                        self.open_commit(commit.hash.clone());
                     }
                     return;
                 }
@@ -3432,6 +3860,21 @@ impl App {
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         let alt = mouse.modifiers.contains(KeyModifiers::ALT);
         let streak = self.click_streak(mouse.column, mouse.row);
+        // Double-clicking the commit view's signature badge reveals, for a few seconds,
+        // what its "Verified" / "Signed" state means.
+        if streak == 2
+            && self
+                .commit_badge_rect
+                .is_some_and(|r| rect_contains(r, point))
+            && let Some(Tab {
+                kind: TabKind::Commit { explain_since, .. },
+                ..
+            }) = self.tabs.get_mut(self.active)
+        {
+            *explain_since = Some(Instant::now());
+            self.editor_selecting = false;
+            return;
+        }
         if let Some(Tab {
             kind:
                 TabKind::Code {
@@ -3857,10 +4300,15 @@ impl App {
     fn next_wake(&self) -> Option<Duration> {
         let notif = self.notifications.next_deadline(Instant::now());
         let spinner = (!self.pending_saves.is_empty()).then(|| Duration::from_millis(100));
-        match (notif, spinner) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        // Wake to repaint (hiding the tooltip) when the commit-badge reveal expires.
+        let reveal = match self.tabs.get(self.active).map(|t| &t.kind) {
+            Some(TabKind::Commit {
+                explain_since: Some(since),
+                ..
+            }) => COMMIT_REVEAL.checked_sub(since.elapsed()),
+            _ => None,
+        };
+        [notif, spinner, reveal].into_iter().flatten().min()
     }
 
     /// Push a notification onto the center. Errors and warnings persist until
@@ -4002,7 +4450,28 @@ impl App {
                 skip,
                 commits,
                 has_more,
-            } => self.apply_vcs_log(skip, commits, has_more),
+            } => {
+                // A page requested by the graph browser fills it; anything else is the
+                // sidebar log.
+                if id.is_some() && id == self.graph_log_req {
+                    self.graph_log_req = None;
+                    self.apply_graph_log(skip, commits, has_more);
+                } else {
+                    self.apply_vcs_log(skip, commits, has_more);
+                }
+            },
+            SessionEvent::FileHistory {
+                skip,
+                commits,
+                has_more,
+                ..
+            } => {
+                // File history only ever fills the graph browser it was opened for.
+                if id.is_some() && id == self.graph_log_req {
+                    self.graph_log_req = None;
+                    self.apply_graph_log(skip, commits, has_more);
+                }
+            },
             SessionEvent::VcsCommitsPrepended { commits } => {
                 self.apply_vcs_commits_prepended(commits);
             },
@@ -4016,6 +4485,21 @@ impl App {
                 );
             },
             SessionEvent::SwapsFound { swaps } => self.arm_swap_recovery(swaps),
+            SessionEvent::CommitReady { detail, changes } => {
+                match id.and_then(|i| self.pending_commit_detail.remove(&i)) {
+                    Some(CommitDest::Browser) => self.fill_graph_detail(detail, changes),
+                    _ => self.open_commit_tab(detail, changes),
+                }
+            },
+            SessionEvent::RangeReady {
+                base_label,
+                head_label,
+                merge_base,
+                changes,
+            } => self.open_compare_tab(base_label, head_label, merge_base, changes),
+            SessionEvent::CommitVerification { hash, status } => {
+                self.apply_commit_verification(&hash, status);
+            },
             SessionEvent::GraphReady { title, view, .. } => {
                 let count = view.nodes.len();
                 self.push_tab(Tab::graph(title, view));
@@ -4152,6 +4636,28 @@ fn canonical(path: &Path) -> PathBuf {
 /// [`karet_editor::word_bounds`] so double-click and word motions agree.
 fn word_at(buffer: &TextBuffer, pos: LineCol) -> (LineCol, LineCol) {
     karet_editor::word_bounds(buffer, pos)
+}
+
+/// Parse a revision-range spec typed into the go-to-commit input into
+/// `(base, head, merge_base)`, or `None` when it is a single revision.
+///
+/// A three-dot `a...b` selects the merge-base range; a two-dot `a..b` the raw tips. An
+/// omitted side defaults to `HEAD` (matching git: `..b`, `a..`). Whitespace is trimmed.
+fn parse_rev_range(input: &str) -> Option<(String, String, bool)> {
+    // Three-dot first: "..." also contains "..".
+    let (sep, merge_base) = if input.contains("...") {
+        ("...", true)
+    } else if input.contains("..") {
+        ("..", false)
+    } else {
+        return None;
+    };
+    let (base, head) = input.split_once(sep)?;
+    let side = |s: &str| {
+        let s = s.trim();
+        if s.is_empty() { "HEAD" } else { s }.to_string()
+    };
+    Some((side(base), side(head), merge_base))
 }
 
 /// The text within `range`, sliced from the tab's `source` using byte offsets
@@ -5488,6 +5994,309 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         assert!(app.search.results[0].path.ends_with("a.txt"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn go_to_commit_input_opens_reprompts_and_cancels() {
+        let mut app = app();
+        app.dispatch(Command::OpenCommitByHash);
+        assert_eq!(app.rev_input.as_deref(), Some(""));
+        // Submitting an empty revision re-prompts rather than closing.
+        app.dispatch(Command::RevInputSubmit);
+        assert_eq!(app.rev_input.as_deref(), Some(""));
+        // Cancel clears the input.
+        app.dispatch(Command::RevInputCancel);
+        assert!(app.rev_input.is_none());
+    }
+
+    #[test]
+    fn file_history_requires_an_open_file() {
+        let mut app = app();
+        // The Welcome tab has no path — file history has nothing to show.
+        app.dispatch(Command::ShowFileHistory);
+        assert_eq!(
+            app.status.as_deref(),
+            Some("file history: open a file first")
+        );
+        assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
+    }
+
+    #[test]
+    fn commit_graph_browser_opens_fills_and_clamps_navigation() {
+        let mut app = app();
+        app.dispatch(Command::ShowCommitGraph);
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::CommitGraph { .. }
+        ));
+
+        // Backend is None in unit tests, so feed a history page directly.
+        let commit = |hash: &str, summary: &str, parents: Vec<String>| Commit {
+            hash: hash.to_string(),
+            short_hash: hash.chars().take(7).collect(),
+            summary: summary.to_string(),
+            author: "Tester".to_string(),
+            time: 0,
+            parents,
+        };
+        app.apply_graph_log(
+            0,
+            vec![
+                commit("aaaa", "c1", vec!["bbbb".to_string()]),
+                commit("bbbb", "c0", Vec::new()),
+            ],
+            false,
+        );
+        if let TabKind::CommitGraph { commits, .. } = &app.tabs[app.active].kind {
+            assert_eq!(commits.len(), 2);
+        }
+        assert!(matches!(
+            &app.tabs[app.active].kind,
+            TabKind::CommitGraph { selected: 0, .. }
+        ));
+        // Down twice clamps at the last commit; up past the top clamps at 0.
+        app.graph_select(1);
+        app.graph_select(1);
+        assert!(matches!(
+            &app.tabs[app.active].kind,
+            TabKind::CommitGraph { selected: 1, .. }
+        ));
+        app.graph_select(-5);
+        assert!(matches!(
+            &app.tabs[app.active].kind,
+            TabKind::CommitGraph { selected: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn parse_rev_range_distinguishes_two_and_three_dot() {
+        assert_eq!(
+            parse_rev_range("main..feature"),
+            Some(("main".to_string(), "feature".to_string(), false))
+        );
+        assert_eq!(
+            parse_rev_range("main...feature"),
+            Some(("main".to_string(), "feature".to_string(), true))
+        );
+        // An omitted side defaults to HEAD, and whitespace is trimmed.
+        assert_eq!(
+            parse_rev_range("origin/main.. "),
+            Some(("origin/main".to_string(), "HEAD".to_string(), false))
+        );
+        assert_eq!(
+            parse_rev_range("...HEAD"),
+            Some(("HEAD".to_string(), "HEAD".to_string(), true))
+        );
+        // A plain revision is not a range.
+        assert_eq!(parse_rev_range("HEAD~2"), None);
+        assert_eq!(parse_rev_range("abc123"), None);
+    }
+
+    #[test]
+    fn open_compare_tab_builds_a_compare_tab() {
+        let mut app = app();
+        app.open_compare_tab(
+            "main".to_string(),
+            "HEAD".to_string(),
+            true,
+            vec![change("a.rs", StatusKind::Modified)],
+        );
+        match &app.tabs[app.active].kind {
+            TabKind::Compare {
+                base_label,
+                head_label,
+                merge_base,
+                files,
+                scroll,
+            } => {
+                assert_eq!(base_label, "main");
+                assert_eq!(head_label, "HEAD");
+                assert!(*merge_base);
+                assert_eq!(files.len(), 1);
+                assert_eq!(*scroll, 0);
+            },
+            _ => panic!("expected a compare tab"),
+        }
+        // A compare tab scrolls via the shared pager arm.
+        app.scroll_lines(2);
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::Compare { scroll: 2, .. }
+        ));
+    }
+
+    #[test]
+    fn graph_compare_requires_a_marked_base() {
+        let mut app = app();
+        app.dispatch(Command::ShowCommitGraph);
+        app.apply_graph_log(
+            0,
+            vec![
+                Commit {
+                    hash: "aaaa".to_string(),
+                    short_hash: "aaaa".to_string(),
+                    summary: "c1".to_string(),
+                    author: "T".to_string(),
+                    time: 0,
+                    parents: vec!["bbbb".to_string()],
+                },
+                Commit {
+                    hash: "bbbb".to_string(),
+                    short_hash: "bbbb".to_string(),
+                    summary: "c0".to_string(),
+                    author: "T".to_string(),
+                    time: 0,
+                    parents: Vec::new(),
+                },
+            ],
+            false,
+        );
+        // Comparing before marking a base only reports a status hint.
+        app.dispatch(Command::CommitGraphCompare);
+        assert!(
+            app.status
+                .as_deref()
+                .is_some_and(|s| s.contains("mark a compare base")),
+            "compare without a base nudges the user"
+        );
+        // Marking a base records it on the browser tab.
+        app.dispatch(Command::CommitGraphMarkBase);
+        assert!(matches!(
+            &app.tabs[app.active].kind,
+            TabKind::CommitGraph { compare_base: Some(b), .. } if b == "aaaa"
+        ));
+    }
+
+    #[test]
+    fn commit_view_scrolls_by_wheel_and_page_and_edges() {
+        let mut app = app();
+        // Build a standalone commit view with one changed file.
+        let detail = CommitDetail {
+            hash: "a".repeat(40),
+            short_hash: "aaaaaaa".to_string(),
+            summary: "subject".to_string(),
+            body: String::new(),
+            author: karet_vcs::Identity {
+                name: "Tester".to_string(),
+                email: "t@example.com".to_string(),
+                time: 0,
+                offset: 0,
+            },
+            committer: karet_vcs::Identity {
+                name: "Tester".to_string(),
+                email: "t@example.com".to_string(),
+                time: 0,
+                offset: 0,
+            },
+            parents: Vec::new(),
+            signature: None,
+        };
+        let files = vec![FileView::new(
+            change("a.rs", StatusKind::Modified),
+            crate::render::Section::Staged,
+            false,
+        )];
+        app.push_tab(Tab::commit(Box::new(detail), files));
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::Commit { scroll: 0, .. }
+        ));
+
+        // A wheel notch / ScrollDown advances the offset (the draw-time clamp caps it).
+        app.scroll_lines(3);
+        let scrolled = match app.tabs[app.active].kind {
+            TabKind::Commit { scroll, .. } => scroll,
+            _ => unreachable!(),
+        };
+        assert_eq!(scrolled, 3, "the commit view scrolls on a wheel notch");
+
+        // Bottom pins to u16::MAX (clamped against content only during draw); Top returns to 0.
+        app.scroll_edge(false);
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::Commit {
+                scroll: u16::MAX,
+                ..
+            }
+        ));
+        app.scroll_edge(true);
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::Commit { scroll: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn double_click_badge_reveals_and_wakes_to_hide() {
+        let mut app = app();
+        let id = || karet_vcs::Identity {
+            name: "Tester".to_string(),
+            email: "t@example.com".to_string(),
+            time: 0,
+            offset: 0,
+        };
+        let detail = CommitDetail {
+            hash: "a".repeat(40),
+            short_hash: "aaaaaaa".to_string(),
+            summary: "subject".to_string(),
+            body: String::new(),
+            author: id(),
+            committer: id(),
+            parents: Vec::new(),
+            signature: None,
+        };
+        let files = vec![FileView::new(
+            change("a.rs", StatusKind::Modified),
+            crate::render::Section::Staged,
+            false,
+        )];
+        app.push_tab(Tab::commit(Box::new(detail), files));
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 20,
+        };
+        app.pane_frames = vec![content_frame(&app, area)];
+        // Pretend the last frame placed the badge here.
+        let badge = Rect {
+            x: 20,
+            y: 3,
+            width: 8,
+            height: 1,
+        };
+        app.commit_badge_rect = Some(badge);
+        let click = |col, row| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        // A single click on the badge does not reveal (needs a double-click).
+        app.handle_editor_click(click(22, 3));
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::Commit {
+                explain_since: None,
+                ..
+            }
+        ));
+
+        // A second, quick click over the same cell reveals the explanation.
+        app.handle_editor_click(click(22, 3));
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::Commit {
+                explain_since: Some(_),
+                ..
+            }
+        ));
+
+        // The loop is now scheduled to wake within the reveal window so it can repaint
+        // and hide the tooltip.
+        let wake = app.next_wake().expect("a reveal is pending");
+        assert!(wake <= COMMIT_REVEAL && wake > Duration::ZERO);
     }
 
     #[test]

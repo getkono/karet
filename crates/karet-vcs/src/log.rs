@@ -1,5 +1,7 @@
 //! Commit-history log: a paginated `git log`-style walk from `HEAD`.
 
+use std::path::Path;
+
 use crate::Repository;
 use crate::VcsError;
 use crate::repo::to_git;
@@ -94,6 +96,82 @@ impl Repository {
             out.push(self.build_commit(info.id, hash)?);
         }
         Ok(out)
+    }
+
+    /// Walk the history of a single file, newest first: the commits that changed the
+    /// blob at `path` (added, modified, or removed it relative to their first parent),
+    /// like `git log -- <path>`. Skips the first `skip` matches and returns up to
+    /// `limit` more.
+    ///
+    /// `path` is resolved the same way as [`changes`](Self::changes): a relative path is
+    /// relative to the process's current directory. A path outside the worktree, or an
+    /// unborn branch, yields an empty vector.
+    ///
+    /// # Errors
+    /// Returns [`VcsError::Git`] on failure.
+    pub fn file_history(
+        &self,
+        path: &Path,
+        skip: usize,
+        limit: usize,
+    ) -> Result<Vec<Commit>, VcsError> {
+        let Some(rel) = crate::changes::repo_relative(&self.inner, path) else {
+            return Ok(Vec::new());
+        };
+        let Ok(head) = self.inner.head_id() else {
+            return Ok(Vec::new());
+        };
+        let walk = self
+            .inner
+            .rev_walk(Some(head.detach()))
+            .all()
+            .map_err(to_git)?;
+
+        let mut out = Vec::with_capacity(limit.min(64));
+        let mut skipped = 0usize;
+        for info in walk {
+            let info = info.map_err(to_git)?;
+            let commit = self.inner.find_commit(info.id).map_err(to_git)?;
+            // The blob id at `rel` in this commit's tree.
+            let here = self.blob_at(&commit, &rel)?;
+            // The blob id at `rel` in the first parent (None => root, treat as absent).
+            let parent = match commit.parent_ids().next() {
+                Some(pid) => {
+                    let pc = self.inner.find_commit(pid).map_err(to_git)?;
+                    self.blob_at(&pc, &rel)?
+                },
+                None => None,
+            };
+            // The commit touched the file when the blob id differs from the parent's
+            // (an add, a modification, or a deletion). Unchanged => skip.
+            if here == parent {
+                continue;
+            }
+            if skipped < skip {
+                skipped += 1;
+                continue;
+            }
+            let hash = info.id.to_hex().to_string();
+            out.push(self.build_commit(info.id, hash)?);
+            if out.len() >= limit {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// The object id of the blob at repo-relative `rel` in `commit`'s tree, or `None`
+    /// when the path is absent (or names a tree/submodule rather than a file).
+    fn blob_at(
+        &self,
+        commit: &gix::Commit<'_>,
+        rel: &Path,
+    ) -> Result<Option<gix::ObjectId>, VcsError> {
+        let tree = commit.tree().map_err(to_git)?;
+        let entry = tree.lookup_entry_by_path(rel).map_err(to_git)?;
+        Ok(entry
+            .filter(|e| e.mode().is_blob_or_symlink())
+            .map(|e| e.id().detach()))
     }
 
     /// Build a [`Commit`] from a resolved object id and its precomputed hex hash.
@@ -258,6 +336,38 @@ mod tests {
         // The newest commit's single parent is the older commit; the root has none.
         assert_eq!(log[0].parents, vec![log[1].hash.clone()]);
         assert!(log[1].parents.is_empty(), "root commit has no parents");
+        Ok(())
+    }
+
+    #[test]
+    fn file_history_lists_only_commits_touching_the_path() -> Result<(), VcsError> {
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("karet-vcs-hist-{}-{id}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(io)?;
+        let _guard = TempDir(dir.clone());
+        git(&dir, &["init", "-q"]);
+        git(&dir, &["config", "user.name", "Tester"]);
+        git(&dir, &["config", "user.email", "t@example.com"]);
+        // c0 creates a.txt; c1 touches only b.txt; c2 modifies a.txt again.
+        std::fs::write(dir.join("a.txt"), "a0\n").map_err(io)?;
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-q", "-m", "c0 add a"]);
+        std::fs::write(dir.join("b.txt"), "b0\n").map_err(io)?;
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-q", "-m", "c1 add b"]);
+        std::fs::write(dir.join("a.txt"), "a1\n").map_err(io)?;
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-q", "-m", "c2 modify a"]);
+
+        let repo = Repository::discover(&dir)?;
+        let hist = repo.file_history(&dir.join("a.txt"), 0, 10)?;
+        let summaries: Vec<&str> = hist.iter().map(|c| c.summary.as_str()).collect();
+        assert_eq!(summaries, vec!["c2 modify a", "c0 add a"]);
+        // Paging: skip the newest, take one.
+        let page = repo.file_history(&dir.join("a.txt"), 1, 1)?;
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].summary, "c0 add a");
         Ok(())
     }
 

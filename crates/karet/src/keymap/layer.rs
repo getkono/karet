@@ -35,11 +35,16 @@ pub enum SidebarPanel {
 /// model down to this, so the keymap need not know about documents or file kinds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EditorTab {
-    /// A code/text tab, or any tab with no dedicated layer (image, hex, blame, …).
+    /// A code/text tab, or any tab with no dedicated layer (image, …).
     #[default]
     Plain,
     /// A diff tab.
     Diff,
+    /// A read-only scrollable view driven purely by scroll keys — the commit and
+    /// compare views, blame, the dependency graph, and the hex dump.
+    Pager,
+    /// The full-screen commit graph browser.
+    CommitGraph,
     /// A too-large-file placeholder, which offers an "open anyway" override.
     Oversize,
 }
@@ -57,6 +62,10 @@ pub enum FocusTarget {
     Editor,
     /// A diff editor tab.
     DiffEditor,
+    /// A read-only scrollable view (commit / compare / blame / graph / hex).
+    Pager,
+    /// The full-screen commit graph browser.
+    CommitGraph,
     /// A too-large-file placeholder, which offers an "open anyway" override.
     Oversize,
     /// The file explorer panel.
@@ -78,6 +87,8 @@ impl FocusTarget {
             Focus::Outline => FocusTarget::Outline,
             Focus::Editor => match tab {
                 EditorTab::Diff => FocusTarget::DiffEditor,
+                EditorTab::Pager => FocusTarget::Pager,
+                EditorTab::CommitGraph => FocusTarget::CommitGraph,
                 EditorTab::Oversize => FocusTarget::Oversize,
                 EditorTab::Plain => FocusTarget::Editor,
             },
@@ -108,6 +119,11 @@ pub enum Layer {
     Editor,
     /// Active when a diff editor tab has focus.
     DiffEditor,
+    /// Active when a read-only scrollable view (commit / compare / blame / graph /
+    /// hex) has focus: scroll keys only, never the editor's editing/motion keys.
+    Pager,
+    /// Active when the full-screen commit graph browser has focus.
+    CommitGraph,
     /// Active when a too-large-file placeholder has focus (the "open anyway"
     /// override). A placeholder is not editable, so this does not stack the
     /// [`Editor`](Layer::Editor) layer.
@@ -122,6 +138,8 @@ pub enum Layer {
     SearchList,
     /// Active while the commit-message input is open.
     CommitInput,
+    /// Active while the go-to-commit (revision) input is open.
+    RevInput,
     /// Active while the discard-confirmation prompt is up.
     DiscardConfirm,
     /// Active while the quit-confirmation prompt (unsaved changes) is up.
@@ -147,6 +165,8 @@ pub enum Modal {
     SearchList,
     /// The Source-Control commit-message input.
     CommitInput,
+    /// The go-to-commit (revision) input.
+    RevInput,
     /// The discard-confirmation prompt.
     DiscardConfirm,
     /// The quit-confirmation prompt shown when quitting with unsaved changes.
@@ -197,6 +217,7 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
         Some(Modal::Overlay) => &[L::Overlay],
         Some(Modal::Find) => &[L::Find],
         Some(Modal::CommitInput) => &[L::CommitInput],
+        Some(Modal::RevInput) => &[L::RevInput],
         Some(Modal::DiscardConfirm) => &[L::DiscardConfirm],
         Some(Modal::QuitConfirm) => &[L::QuitConfirm],
         Some(Modal::SwapRecover) => &[L::SwapRecover],
@@ -206,7 +227,15 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
         None => match ctx.target {
             FocusTarget::Outline => &[L::Outline, L::Global],
             FocusTarget::Editor => &[L::Editor, L::Global],
-            FocusTarget::DiffEditor => &[L::DiffEditor, L::Editor, L::Global],
+            // A diff is read-only: its own keys (layout toggle, next/prev change) stack
+            // over the shared Pager scroll keys, never the editor's editing/motion keys.
+            FocusTarget::DiffEditor => &[L::DiffEditor, L::Pager, L::Global],
+            // A pager view is self-contained — its scroll layer stacks straight onto
+            // Global, so arrows scroll rather than falling back to caret motion.
+            FocusTarget::Pager => &[L::Pager, L::Global],
+            // The browser is a self-contained list/detail view — its own layer stacks
+            // straight onto Global, never the editor's editing/motion keys.
+            FocusTarget::CommitGraph => &[L::CommitGraph, L::Global],
             FocusTarget::Oversize => &[L::Oversize, L::Global],
             FocusTarget::Explorer => &[L::Explorer, L::Sidebar, L::Global],
             FocusTarget::Search => &[L::Sidebar, L::Global],
@@ -230,14 +259,29 @@ mod tests {
     }
 
     #[test]
-    fn diff_editor_falls_through_to_editor() {
+    fn diff_editor_falls_through_to_pager() {
+        // A diff stacks its own keys over the shared Pager scroll keys, not the
+        // editor's editing/motion keys (it is read-only).
         assert_eq!(
             active_layers(Context::focus(FocusTarget::DiffEditor)),
-            &[Layer::DiffEditor, Layer::Editor, Layer::Global]
+            &[Layer::DiffEditor, Layer::Pager, Layer::Global]
         );
         assert_eq!(
             active_layers(Context::focus(FocusTarget::Editor)),
             &[Layer::Editor, Layer::Global]
+        );
+    }
+
+    #[test]
+    fn pager_stacks_straight_onto_global() {
+        // A pager view scrolls with its own layer over Global — no caret motion.
+        assert_eq!(
+            active_layers(Context::focus(FocusTarget::Pager)),
+            &[Layer::Pager, Layer::Global]
+        );
+        assert_eq!(
+            FocusTarget::from(Focus::Editor, SidebarPanel::Explorer, EditorTab::Pager),
+            FocusTarget::Pager
         );
     }
 
@@ -261,6 +305,7 @@ mod tests {
         for target in [
             FocusTarget::Editor,
             FocusTarget::DiffEditor,
+            FocusTarget::Pager,
             FocusTarget::Oversize,
             FocusTarget::Explorer,
             FocusTarget::Search,

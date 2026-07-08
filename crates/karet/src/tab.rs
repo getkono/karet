@@ -192,6 +192,63 @@ pub enum TabKind {
         /// Vertical scroll offset (display rows).
         scroll: u16,
     },
+    /// A read-only, GitHub-parity commit view: the message, author/committer, parents,
+    /// signature badge, changed-file list, and per-file semantic diffs.
+    Commit {
+        /// The commit metadata (message, author/committer, parents, signature).
+        detail: Box<karet_vcs::CommitDetail>,
+        /// Each changed file (vs the first parent), diffed and highlighted for display.
+        files: Vec<FileView>,
+        /// The forge's "Verified" verdict, once fetched (lazily, over the network).
+        verification: Option<karet_session::GithubVerification>,
+        /// When the signature badge was last double-clicked, if its explanatory
+        /// tooltip is being revealed. The reveal auto-hides a few seconds later.
+        explain_since: Option<Instant>,
+        /// Vertical scroll offset (display rows).
+        scroll: u16,
+    },
+    /// A read-only "compare" view: the diff between two points (a range), with the same
+    /// summary + table-of-contents + per-file cards as the commit view, but a range
+    /// header instead of commit metadata.
+    Compare {
+        /// The resolved "before" endpoint label (e.g. `origin/main`, or a short hash).
+        base_label: String,
+        /// The resolved "after" endpoint label (e.g. `HEAD`).
+        head_label: String,
+        /// Whether the diff was taken from the merge base (three-dot, `base...head`)
+        /// rather than the two tips (two-dot, `base..head`).
+        merge_base: bool,
+        /// Each changed file between the two points, diffed and highlighted for display.
+        files: Vec<FileView>,
+        /// Vertical scroll offset (display rows).
+        scroll: u16,
+    },
+    /// The full-screen commit graph browser: a scrollable DAG commit log on the left
+    /// and the selected commit's detail on the right.
+    CommitGraph {
+        /// When set, the browser shows the history of this file (`git log -- <path>`)
+        /// rather than the whole-repository log; paging uses the same source.
+        history_path: Option<PathBuf>,
+        /// The loaded commits, newest first (its own paged history).
+        commits: Vec<karet_vcs::Commit>,
+        /// Whether older commits remain to be paged in.
+        has_more: bool,
+        /// Whether a history page is currently in flight.
+        loading: bool,
+        /// The selected commit's index into `commits`.
+        selected: usize,
+        /// The selected commit's loaded detail, if the fetch has answered.
+        detail: Option<Box<karet_vcs::CommitDetail>>,
+        /// The selected commit's changed files, diffed for the detail pane.
+        files: Vec<FileView>,
+        /// The forge's verdict for the selected commit, once fetched.
+        verification: Option<karet_session::GithubVerification>,
+        /// A commit hash marked as the base for a two-commit comparison, if any. Set by
+        /// "mark base"; the next "compare" diffs it against the current selection.
+        compare_base: Option<String>,
+        /// The commit-list scroll offset (first visible row).
+        list_offset: u16,
+    },
 }
 
 /// An open tab: a title, its content, and per-view editor state.
@@ -262,6 +319,65 @@ impl Tab {
         )
     }
 
+    /// A read-only commit view for `detail` and its changed `files`.
+    #[must_use]
+    pub fn commit(detail: Box<karet_vcs::CommitDetail>, files: Vec<FileView>) -> Self {
+        let title = format!("● {}", detail.short_hash);
+        Self::new(
+            title,
+            TabKind::Commit {
+                detail,
+                files,
+                verification: None,
+                explain_since: None,
+                scroll: 0,
+            },
+        )
+    }
+
+    /// An empty commit graph browser, to be filled as its history pages arrive. Pass
+    /// `history_path` to scope it to one file's history; `None` browses the whole log.
+    #[must_use]
+    pub fn commit_graph(history_path: Option<PathBuf>, title: impl Into<String>) -> Self {
+        Self::new(
+            title,
+            TabKind::CommitGraph {
+                history_path,
+                commits: Vec::new(),
+                has_more: false,
+                loading: true,
+                selected: 0,
+                detail: None,
+                files: Vec::new(),
+                verification: None,
+                compare_base: None,
+                list_offset: 0,
+            },
+        )
+    }
+
+    /// A read-only compare view for the diff between two points.
+    #[must_use]
+    pub fn compare(
+        base_label: String,
+        head_label: String,
+        merge_base: bool,
+        files: Vec<FileView>,
+    ) -> Self {
+        let sep = if merge_base { "\u{2026}" } else { ".." };
+        let title = format!("\u{21c4} {base_label}{sep}{head_label}");
+        Self::new(
+            title,
+            TabKind::Compare {
+                base_label,
+                head_label,
+                merge_base,
+                files,
+                scroll: 0,
+            },
+        )
+    }
+
     /// The file path backing this tab, if any.
     #[must_use]
     pub fn path(&self) -> Option<&Path> {
@@ -273,7 +389,11 @@ impl Tab {
             | TabKind::Placeholder { path, .. }
             | TabKind::Blame { path, .. } => Some(path),
             TabKind::Diff { file, .. } => Some(&file.change.path),
-            TabKind::Welcome | TabKind::Graph { .. } => None,
+            TabKind::Welcome
+            | TabKind::Graph { .. }
+            | TabKind::Commit { .. }
+            | TabKind::Compare { .. }
+            | TabKind::CommitGraph { .. } => None,
         }
     }
 
@@ -295,6 +415,9 @@ impl Tab {
             TabKind::Diff { file, .. } => file.language,
             TabKind::Blame { .. } => "blame",
             TabKind::Graph { .. } => "graph",
+            TabKind::Commit { .. } => "commit",
+            TabKind::Compare { .. } => "compare",
+            TabKind::CommitGraph { .. } => "commits",
             TabKind::Welcome => "",
         }
     }

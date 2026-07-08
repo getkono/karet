@@ -77,6 +77,10 @@ pub(crate) fn dark() -> Theme {
     role(ThemeRole::FileIconText, rgb(0x7a, 0xa2, 0xf7));
     role(ThemeRole::FileIconMedia, rgb(0x9e, 0xce, 0x6a));
     role(ThemeRole::FileIconBinary, rgb(0xe0, 0xaf, 0x68));
+    // Commit-signature badge accents: green for a forge-verified signature, amber for
+    // one that is present but unverified (mirroring the diagnostic hint/warning hues).
+    role(ThemeRole::VcsVerified, rgb(0x1a, 0xbc, 0x9c));
+    role(ThemeRole::VcsUnverified, rgb(0xe0, 0xaf, 0x68));
 
     Theme {
         tokens,

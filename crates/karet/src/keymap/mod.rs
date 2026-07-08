@@ -94,6 +94,7 @@ use KeyCode::PageUp;
 use KeyCode::Right;
 use KeyCode::Tab;
 use KeyCode::Up;
+use Layer::CommitGraph;
 use Layer::CommitInput;
 use Layer::DiffEditor;
 use Layer::DiscardConfirm;
@@ -105,7 +106,9 @@ use Layer::Global;
 use Layer::Outline;
 use Layer::Overlay;
 use Layer::Oversize;
+use Layer::Pager;
 use Layer::QuitConfirm;
+use Layer::RevInput;
 use Layer::SearchInput;
 use Layer::SearchList;
 use Layer::Sidebar;
@@ -175,6 +178,7 @@ static BINDINGS: &[Binding] = &[
     b(SourceControl, false, false, false, Char('c'), Command::ScmCommit),
     b(SourceControl, false, false, false, Char('d'), Command::ScmDiscard),
     b(SourceControl, false, false, false, Char('r'), Command::ScmRefresh),
+    b(SourceControl, false, false, false, Char('g'), Command::ShowCommitGraph),
 
     // Explorer panel (sidebar focus, Explorer active). Listed before the generic
     // sidebar bindings so its keys win. New file/folder, rename, refresh; collapse-all
@@ -284,6 +288,31 @@ static BINDINGS: &[Binding] = &[
     b(DiffEditor, false, false, false, Char(']'),  Command::NextChangedFile),
     b(DiffEditor, false, false, false, Char('['),  Command::PrevChangedFile),
 
+    // Read-only scrollable views (commit / compare / blame / graph / hex): arrows and
+    // PageUp/Down scroll, Home/End jump to the edges, `q` closes the tab. No caret.
+    b(Pager, false, false, false, Down,      Command::ScrollDown),
+    b(Pager, false, false, false, Up,        Command::ScrollUp),
+    b(Pager, false, false, false, PageDown,  Command::PageDown),
+    b(Pager, false, false, false, PageUp,    Command::PageUp),
+    b(Pager, false, false, false, Home,      Command::Top),
+    b(Pager, false, false, false, End,       Command::Bottom),
+    b(Pager, false, false, false, Char('q'), Command::CloseTab),
+
+    // The full-screen commit graph browser: j/k or arrows move the selection, Enter
+    // opens the selected commit as a standalone view, Esc returns focus to the sidebar.
+    b(CommitGraph, false, false, false, Char('j'), Command::CommitGraphNext),
+    b(CommitGraph, false, false, false, Down,      Command::CommitGraphNext),
+    b(CommitGraph, false, false, false, Char('k'), Command::CommitGraphPrev),
+    b(CommitGraph, false, false, false, Up,        Command::CommitGraphPrev),
+    b(CommitGraph, false, false, false, Enter,     Command::CommitGraphOpen),
+    b(CommitGraph, false, false, false, Char('l'), Command::CommitGraphOpen),
+    b(CommitGraph, false, false, false, Right,     Command::CommitGraphOpen),
+    // Two-commit compare: `m` marks the selected commit as the base, `c` compares the
+    // current selection against it.
+    b(CommitGraph, false, false, false, Char('m'), Command::CommitGraphMarkBase),
+    b(CommitGraph, false, false, false, Char('c'), Command::CommitGraphCompare),
+    b(CommitGraph, false, false, false, Esc,       Command::ToggleFocus),
+
     // Editor focus, a too-large-file placeholder: bypass the size guard on demand.
     // Enter loads it anyway; Esc returns focus to the sidebar (as it does in the
     // editor, whose layer is not stacked here).
@@ -315,6 +344,9 @@ static BINDINGS: &[Binding] = &[
     // Commit-message input.
     b(CommitInput, false, false, false, Esc,   Command::CommitCancel),
     b(CommitInput, false, false, false, Enter, Command::CommitSubmit),
+    // Go-to-commit (revision) input.
+    b(RevInput, false, false, false, Esc,   Command::RevInputCancel),
+    b(RevInput, false, false, false, Enter, Command::RevInputSubmit),
     // Discard confirmation: only the confirm keys are bound; anything else cancels.
     b(DiscardConfirm, false, false, false, Enter,     Command::ConfirmDiscard),
     b(DiscardConfirm, false, false, false, Char('y'), Command::ConfirmDiscard),
@@ -640,6 +672,38 @@ mod tests {
                 key(KeyCode::Char('\\'), KeyModifiers::NONE)
             ),
             None
+        );
+    }
+
+    #[test]
+    fn pager_view_scrolls_on_arrows_and_edges() {
+        let res_pager = |key: KeyEvent| {
+            let ctx = Context::focus(FocusTarget::Pager);
+            match resolve(ctx, &[KeyChord::from_event(key)]) {
+                Resolved::Command(c) => Some(c),
+                _ => None,
+            }
+        };
+        // Arrows scroll (not caret motion), Home/End jump to the edges, `q` closes.
+        assert_eq!(
+            res_pager(key(KeyCode::Down, KeyModifiers::NONE)),
+            Some(Command::ScrollDown)
+        );
+        assert_eq!(
+            res_pager(key(KeyCode::Up, KeyModifiers::NONE)),
+            Some(Command::ScrollUp)
+        );
+        assert_eq!(
+            res_pager(key(KeyCode::Home, KeyModifiers::NONE)),
+            Some(Command::Top)
+        );
+        assert_eq!(
+            res_pager(key(KeyCode::End, KeyModifiers::NONE)),
+            Some(Command::Bottom)
+        );
+        assert_eq!(
+            res_pager(key(KeyCode::Char('q'), KeyModifiers::NONE)),
+            Some(Command::CloseTab)
         );
     }
 
