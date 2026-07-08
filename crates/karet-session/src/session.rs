@@ -676,6 +676,17 @@ impl Session {
     /// React to a debounced filesystem event by reloading or flagging any open
     /// document whose file changed underneath it.
     pub(crate) fn handle_fs_event(&mut self, event: FsEvent) {
+        if event.kind == karet_watch::FsEventKind::WatchDegraded {
+            self.emit(
+                None,
+                Event::Notification {
+                    severity: Severity::Warning,
+                    kind: NotificationKind::Io,
+                    message: "filesystem watch limit reached; some paths are polled".to_string(),
+                },
+            );
+            return;
+        }
         for path in &event.paths {
             if let Some(&doc_id) = self.store.by_path.get(path) {
                 self.on_external_change(doc_id, path);
