@@ -71,6 +71,7 @@ use karet_session::SwapInfo;
 use karet_session::ViewId;
 use karet_session::local;
 use karet_syntax::FoldRegions;
+use karet_text::EditCause;
 use karet_text::TextBuffer;
 use karet_theme::Theme;
 use karet_vcs::Commit;
@@ -851,6 +852,11 @@ impl App {
                     message.push_str(text);
                 }
             },
+            Modal::RevInput => {
+                if let Some(rev) = self.rev_input.as_mut() {
+                    rev.push_str(text);
+                }
+            },
             Modal::ExplorerEdit => self.explorer.edit_paste(text),
             Modal::SearchInput => {
                 let target = match self.search.field {
@@ -1467,17 +1473,21 @@ impl App {
             Command::PrevChangedFile => self.step_changed_file(-1),
             Command::InsertChar(c) => {
                 let s = c.to_string();
-                self.submit_edit(move |caret, sel, _b, base| {
+                self.submit_edit_with_cause(EditCause::Type, move |caret, sel, _b, base| {
                     Some(editing::insert(caret, sel, base, &s))
                 });
             },
             Command::InsertNewline => {
-                self.submit_edit(|caret, sel, buf, base| {
+                self.submit_edit_with_cause(EditCause::Newline, |caret, sel, buf, base| {
                     Some(editing::newline(caret, sel, buf, base))
                 });
             },
-            Command::DeleteBackward => self.submit_edit(editing::backspace),
-            Command::DeleteForward => self.submit_edit(editing::delete_forward),
+            Command::DeleteBackward => {
+                self.submit_edit_with_cause(EditCause::Delete, editing::backspace)
+            },
+            Command::DeleteForward => {
+                self.submit_edit_with_cause(EditCause::Delete, editing::delete_forward);
+            },
             Command::Indent => {
                 self.submit_edit(|caret, sel, _b, base| Some(editing::indent(caret, sel, base)));
             },
@@ -3805,8 +3815,8 @@ impl App {
         }
     }
 
-    /// Esc in the editor: collapse multiple carets to the primary; with a single caret
-    /// it preserves the former behavior of returning focus to the sidebar.
+    /// Esc in the editor: collapse multiple carets to the primary; with a single
+    /// caret it is a no-op, so repeated Esc never leaves the editor view.
     fn collapse_carets_or_unfocus(&mut self) {
         let multi = matches!(
             self.tabs.get(self.active),
@@ -3820,8 +3830,6 @@ impl App {
             if let Some(Tab { editor, .. }) = self.tabs.get_mut(self.active) {
                 editor.collapse_to_primary();
             }
-        } else {
-            self.toggle_focus();
         }
     }
 
@@ -4024,6 +4032,13 @@ impl App {
     where
         F: Fn(LineCol, Option<Range>, &TextBuffer, u64) -> Option<editing::Edit>,
     {
+        self.submit_edit_with_cause(EditCause::Replace, build);
+    }
+
+    fn submit_edit_with_cause<F>(&mut self, cause: EditCause, build: F)
+    where
+        F: Fn(LineCol, Option<Range>, &TextBuffer, u64) -> Option<editing::Edit>,
+    {
         if self.backend.is_none() {
             return;
         }
@@ -4097,6 +4112,7 @@ impl App {
                 SessionCommand::ApplyChange {
                     doc,
                     change: change.clone(),
+                    cause,
                 },
             );
         }
@@ -4118,7 +4134,13 @@ impl App {
             // under fast/held input). `base` was just read from this same
             // buffer above, so this should never fail; if it somehow does,
             // leave `buffer`/`text` alone and let the next snapshot resync.
-            if let Ok(applied) = buffer.apply(&change, karet_text::EditContext::default()) {
+            if let Ok(applied) = buffer.apply(
+                &change,
+                karet_text::EditContext {
+                    cause,
+                    ..Default::default()
+                },
+            ) {
                 *next_version = applied.version;
                 *text = buffer.text();
             }
@@ -4265,7 +4287,7 @@ impl App {
             return;
         }
         self.copy_selection();
-        self.submit_edit(editing::backspace);
+        self.submit_edit_with_cause(EditCause::Cut, editing::backspace);
     }
 
     /// Paste the system clipboard at the caret (or the active modal's text field).
@@ -4289,7 +4311,7 @@ impl App {
             self.modal_paste(modal, &normalized);
             return;
         }
-        self.submit_edit(move |caret, sel, _b, base| {
+        self.submit_edit_with_cause(EditCause::Paste, move |caret, sel, _b, base| {
             Some(editing::insert(caret, sel, base, &normalized))
         });
     }
@@ -6575,12 +6597,12 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
     }
 
     #[test]
-    fn esc_with_a_single_caret_returns_focus_to_the_sidebar() {
+    fn esc_with_a_single_caret_keeps_editor_focus() {
         let mut app = app();
         app.push_tab(text_tab("t.rs", "ab"));
         app.focus = Focus::Editor;
         app.dispatch(Command::CollapseCarets);
-        assert_eq!(app.focus, Focus::Sidebar);
+        assert_eq!(app.focus, Focus::Editor);
     }
 
     #[test]
