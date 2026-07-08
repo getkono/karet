@@ -8,6 +8,7 @@ use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use karet_core::Decoration;
 use karet_core::ThemeRole;
 use karet_editor::Editor;
 use karet_filetype::FileKind;
@@ -49,7 +50,6 @@ use ratatui::widgets::ScrollbarState;
 use ratatui::widgets::Wrap;
 
 use crate::app::App;
-use crate::app::FindState;
 use crate::app::MIN_SCM_REGION;
 use crate::app::SIDEBAR_MIN_WIDTH;
 use crate::app::TabDrag;
@@ -63,6 +63,7 @@ use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
 use crate::overlay::Overlay;
 use crate::render::{self};
+use crate::tab::FindState;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 use crate::tab::ViewMode;
@@ -177,7 +178,9 @@ struct PaneCtx<'a> {
     /// Whether the editor should draw its caret as focused.
     editor_focused: bool,
     /// The find bar to draw atop this pane's content, if any (focused pane only).
-    find: Option<&'a FindState>,
+    /// Owned (not borrowed): it now lives on the active `Tab` itself, and
+    /// `render_pane` needs a mutable borrow of the tabs slice at the same time.
+    find: Option<FindState>,
 }
 
 /// What a rendered pane reported back for hit-testing and image placement.
@@ -215,7 +218,11 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                 graphics,
                 pane_focused: true,
                 editor_focused,
-                find: app.find.as_ref(),
+                find: app
+                    .find_open
+                    .then(|| app.tabs.get(app.active))
+                    .flatten()
+                    .and_then(|t| t.find.clone()),
             };
             render_pane(f, &mut app.tabs, app.active, rect, &ctx)
         } else if let Some(stored) = app.stored.get_mut(&pane) {
@@ -267,7 +274,7 @@ fn render_pane(
         draw_pane_breadcrumb(f, tabs.get(active), ctx.theme, parts[1]);
     }
     let mut content = parts[2];
-    if let Some(find) = ctx.find {
+    if let Some(find) = ctx.find.as_ref() {
         // One row for find; a second when the replace field is shown.
         let want = if find.replace_visible { 2 } else { 1 };
         let h = want.min(content.height);
@@ -340,7 +347,7 @@ fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
 /// when the replace field is shown, a replace row. Mirrors the workspace Search
 /// panel's model on the status-bar strip for a consistent find/replace experience.
 fn draw_find_bar(f: &mut Frame, find: &FindState, theme: &Theme, area: Rect) {
-    use crate::app::SearchField;
+    use crate::tab::SearchField;
 
     let base = Style::default()
         .bg(theme.role(ThemeRole::StatusBarBackground).to_ratatui())
@@ -515,7 +522,7 @@ fn draw_pane_tabs(
     let mut spans = Vec::new();
     let mut x = area.x;
     for (i, tab) in tabs.iter().enumerate() {
-        let style = if i == active && pane_focused {
+        let mut style = if i == active && pane_focused {
             Style::default()
                 .fg(theme.role(ThemeRole::Foreground).to_ratatui())
                 .add_modifier(Modifier::BOLD | Modifier::REVERSED)
@@ -527,6 +534,11 @@ fn draw_pane_tabs(
         } else {
             Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())
         };
+        // The preview tab (VS Code-style single-reused-slot tab) renders
+        // italicized so it reads as provisional until edited or promoted.
+        if tab.is_preview {
+            style = style.add_modifier(Modifier::ITALIC);
+        }
         // A pre-allocated 1-cell status slot keeps the layout stable: `●` for
         // unsaved changes (a spinner frame while a slow save writes), else blank.
         let mark = save_mark(tab);
@@ -1062,7 +1074,7 @@ fn draw_commit_input(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
 }
 
 fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
-    use crate::app::SearchField;
+    use crate::tab::SearchField;
 
     // Right-hand slot on the find/replace rows for the option toggles / replace-all.
     const SLOT_W: u16 = 10;
@@ -1222,13 +1234,19 @@ fn draw_pane_content(
             folds,
             folded,
             decos,
+            search_decos,
             ..
         } => {
             let fold_lines = crate::app::resolve_folds(folds, folded);
+            // Local find and global search highlights are kept in separate
+            // fields (so closing/rerunning one can't wipe the other) and
+            // combined only here, at render time.
+            let combined: Vec<Decoration> =
+                decos.iter().chain(search_decos.iter()).cloned().collect();
             let editor = Editor::new(buffer)
                 .highlights(highlights)
                 .theme(theme)
-                .decorations(decos)
+                .decorations(&combined)
                 .folds(&fold_lines)
                 .focused(ctx.editor_focused);
             f.render_stateful_widget(editor, area, &mut tab.editor);
@@ -2234,9 +2252,24 @@ fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         .fg(theme.role(ThemeRole::StatusBarForeground).to_ratatui());
     let key = bar.add_modifier(Modifier::BOLD);
 
-    // The language label is a fixed-width right column; the hints get everything else.
+    // The right column is a fixed-width strip: cursor position (code tabs only),
+    // encoding/EOL, then the language/kind label — the hints get everything else.
     let language = app.tabs.get(app.active).map_or("", Tab::language);
-    let right = format!(" {language} ");
+    let right = match app.tabs.get(app.active) {
+        Some(
+            tab @ Tab {
+                kind: TabKind::Code { .. },
+                ..
+            },
+        ) => {
+            let cursor_label = cursor_status_label(tab);
+            match tab.encoding_label() {
+                Some(enc) => format!(" {cursor_label} · {enc} · {language} "),
+                None => format!(" {cursor_label} · {language} "),
+            }
+        },
+        _ => format!(" {language} "),
+    };
     let cols = Layout::horizontal([Constraint::Min(0), Constraint::Length(cell_width(&right))])
         .split(area);
     let left = cols[0];
@@ -2298,6 +2331,26 @@ fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         Paragraph::new(right).style(bar).alignment(Alignment::Right),
         cols[1],
     );
+}
+
+/// The status bar's cursor-position label for a code tab: `"Ln {line}, Col
+/// {col}"` (1-based), with a `"(N selected)"` / `"(N lines selected)"` suffix
+/// when the primary selection is non-empty.
+fn cursor_status_label(tab: &Tab) -> String {
+    let primary = tab.editor.cursors().primary();
+    let head = primary.head;
+    let mut label = format!("Ln {}, Col {}", head.line + 1, head.col + 1);
+    let range = primary.range();
+    if range.start != range.end {
+        if range.start.line == range.end.line {
+            let n = range.end.col.saturating_sub(range.start.col);
+            label.push_str(&format!(" ({n} selected)"));
+        } else {
+            let lines = range.end.line - range.start.line + 1;
+            label.push_str(&format!(" ({lines} lines selected)"));
+        }
+    }
+    label
 }
 
 /// The single-letter status glyph and its color role for a changed file.
@@ -2455,6 +2508,43 @@ mod tests {
                 .any(|l| flat(l).contains("cryptographic signature")),
             "the reveal explains what Signed means"
         );
+    }
+
+    #[test]
+    fn cursor_status_label_reports_position_and_selection_extent() {
+        use karet_core::LineCol;
+        use karet_text::TextBuffer;
+
+        let buffer = TextBuffer::from_text("hello\nworld\n");
+        let mut tab = Tab::new(
+            "a.txt",
+            TabKind::Code {
+                path: std::path::PathBuf::from("/x/a.txt"),
+                language: "plaintext",
+                doc: None,
+                next_version: 0,
+                buffer: buffer.clone(),
+                text: "hello\nworld\n".to_string(),
+                highlights: karet_syntax::Highlights::default(),
+                folds: karet_syntax::FoldRegions::default(),
+                folded: std::collections::BTreeSet::new(),
+                decos: Vec::new(),
+                search_decos: Vec::new(),
+            },
+        );
+
+        tab.editor.place_caret(LineCol::new(1, 2));
+        assert_eq!(cursor_status_label(&tab), "Ln 2, Col 3");
+
+        // A same-line selection reports the selected character count.
+        tab.editor
+            .set_selection(&buffer, LineCol::new(0, 1), LineCol::new(0, 4));
+        assert_eq!(cursor_status_label(&tab), "Ln 1, Col 5 (3 selected)");
+
+        // A multi-line selection reports the line count instead.
+        tab.editor
+            .set_selection(&buffer, LineCol::new(0, 0), LineCol::new(1, 2));
+        assert_eq!(cursor_status_label(&tab), "Ln 2, Col 3 (2 lines selected)");
     }
 
     #[test]

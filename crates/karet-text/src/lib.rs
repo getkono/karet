@@ -33,6 +33,7 @@ pub use load::Encoding;
 pub use load::Eol;
 pub use load::LoadError;
 pub use save::SavedState;
+pub use save::conflicts_with_disk;
 
 /// The non-cryptographic fingerprint used for [`SavedState::hash`]: hashing a file's
 /// bytes with this yields the same value karet records on save/load, so a caller can
@@ -58,6 +59,10 @@ pub enum TextError {
     /// A change's edits overlap; an atomic batch must be non-overlapping.
     #[error("overlapping edits in a single change")]
     OverlappingEdits,
+    /// The file changed on disk since it was last read or saved; the save was
+    /// refused rather than silently overwriting someone else's change.
+    #[error("file changed on disk since it was last read")]
+    Conflict,
 }
 
 /// A headless, editable text buffer backed by a rope.

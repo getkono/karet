@@ -106,6 +106,8 @@ use crate::overlay::Overlay;
 use crate::overlay::OverlayEvent;
 use crate::render::FileView;
 use crate::render::Section;
+use crate::tab::FindState;
+use crate::tab::SearchField;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 use crate::tab::ViewMode;
@@ -158,53 +160,6 @@ pub(crate) struct StoredPane {
     pub(crate) tabs: Vec<Tab>,
     /// The pane's active tab index.
     pub(crate) active: usize,
-}
-
-/// The find-in-file bar state: the query, the match cursor, and the replace field
-/// (mirroring the workspace Search panel's model for a consistent UI).
-#[derive(Default)]
-pub(crate) struct FindState {
-    /// The search query.
-    pub(crate) query: String,
-    /// The replacement text.
-    pub(crate) replace: String,
-    /// The number of matches.
-    pub(crate) count: usize,
-    /// The current match (0-based).
-    pub(crate) current: usize,
-    /// Which field is being edited (find / replace).
-    pub(crate) field: SearchField,
-    /// Whether the replace field is shown (collapsible; hidden by default).
-    pub(crate) replace_visible: bool,
-    /// Interpret the query as a regular expression.
-    pub(crate) regex: bool,
-    /// Match case-sensitively.
-    pub(crate) case_sensitive: bool,
-    /// Match whole words only.
-    pub(crate) whole_word: bool,
-}
-
-impl FindState {
-    /// The [`SearchQuery`] for the current query text and option toggles.
-    fn query_spec(&self) -> SearchQuery {
-        SearchQuery {
-            pattern: self.query.clone(),
-            regex: self.regex,
-            case_sensitive: self.case_sensitive,
-            whole_word: self.whole_word,
-            ..Default::default()
-        }
-    }
-}
-
-/// Which field of a find/replace surface is being edited.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum SearchField {
-    /// The find query.
-    #[default]
-    Find,
-    /// The replacement text.
-    Replace,
 }
 
 /// A toggleable match option shared by the Search panel and the in-file find bar.
@@ -360,6 +315,13 @@ pub struct App {
     pub(crate) icon_style: IconStyle,
     /// The detected terminal graphics protocol.
     pub(crate) graphics: GraphicsProtocol,
+    /// Whether the terminal was confirmed (via a startup handshake) to support
+    /// OSC 22 mouse-pointer-shape hints. `false` means every pointer-shape hint
+    /// is a no-op — never assumed, only confirmed, mirroring `graphics`.
+    pub(crate) pointer_shapes_supported: bool,
+    /// The last OSC 22 pointer shape sent (so hover doesn't re-send every mouse
+    /// event), or `None` for the terminal's default shape.
+    pub(crate) pointer_shape: Option<&'static str>,
     /// Which area has keyboard focus.
     pub(crate) focus: Focus,
     /// The active sidebar panel.
@@ -382,8 +344,11 @@ pub struct App {
     pub(crate) closed: Vec<PathBuf>,
     /// The open modal overlay (quick-open / command palette), if any.
     pub(crate) overlay: Option<Overlay>,
-    /// The find-in-file bar, if open.
-    pub(crate) find: Option<FindState>,
+    /// Whether the find-in-file bar is currently shown. The query/toggle data
+    /// itself lives on the active tab (`Tab::find`), so this only tracks
+    /// visibility — closing the bar (Esc) clears this without discarding that
+    /// data, and it is reset whenever the active tab changes.
+    pub(crate) find_open: bool,
     /// The in-progress commit message while the Source-Control commit input is open.
     pub(crate) commit_input: Option<String>,
     /// The in-progress revision text while the go-to-commit input is open.
@@ -551,6 +516,8 @@ impl App {
             syntax,
             icon_style: IconStyle::default(),
             graphics: image::detect_protocol(),
+            pointer_shapes_supported: false,
+            pointer_shape: None,
             focus: Focus::Sidebar,
             sidebar_panel: SidebarPanel::Explorer,
             sidebar_visible: true,
@@ -569,7 +536,7 @@ impl App {
             stored: HashMap::new(),
             closed: Vec::new(),
             overlay: None,
-            find: None,
+            find_open: false,
             commit_input: None,
             rev_input: None,
             pending_discard: None,
@@ -774,7 +741,7 @@ impl App {
             Some(Modal::RevInput)
         } else if self.pending_discard.is_some() {
             Some(Modal::DiscardConfirm)
-        } else if self.find.is_some() {
+        } else if self.find_open {
             Some(Modal::Find)
         } else if self.explorer.is_editing() {
             Some(Modal::ExplorerEdit)
@@ -852,6 +819,51 @@ impl App {
         }
     }
 
+    /// Feed pasted text to the active modal's text field, mirroring `modal_text`
+    /// for keys. Without this, paste always landed in the main editor buffer
+    /// regardless of which text field was actually focused — corrupting the
+    /// editor's selection with clipboard text meant for Find/Search/Commit/the
+    /// explorer rename box/the quick-open query. A no-op for non-text modals.
+    fn modal_paste(&mut self, modal: Modal, text: &str) {
+        match modal {
+            Modal::Overlay => {
+                if let Some(overlay) = self.overlay.as_mut() {
+                    overlay.push_str(text);
+                }
+            },
+            Modal::Find => {
+                let Some(find) = self.active_find_mut() else {
+                    return;
+                };
+                let editing_query = find.field == SearchField::Find;
+                let target = if editing_query {
+                    &mut find.query
+                } else {
+                    &mut find.replace
+                };
+                target.push_str(text);
+                if editing_query {
+                    self.run_find();
+                }
+            },
+            Modal::CommitInput => {
+                if let Some(message) = self.commit_input.as_mut() {
+                    message.push_str(text);
+                }
+            },
+            Modal::ExplorerEdit => self.explorer.edit_paste(text),
+            Modal::SearchInput => {
+                let target = match self.search.field {
+                    SearchField::Find => &mut self.search.query,
+                    SearchField::Replace => &mut self.search.replace,
+                };
+                target.push_str(text);
+            },
+            Modal::SearchList | Modal::DiscardConfirm | Modal::QuitConfirm | Modal::SwapRecover => {
+            },
+        }
+    }
+
     /// Feed a key to the explorer inline name editor: printable characters extend the
     /// name, Backspace trims it (Enter/Esc are handled as bound commands).
     fn explorer_edit(&mut self, key: KeyEvent) {
@@ -906,22 +918,31 @@ impl App {
         self.overlay = Some(Overlay::quick_open(files));
     }
 
-    /// Open the find-in-file bar (only over a text/code tab).
+    /// Open the find-in-file bar (only over a text/code tab). Restores this tab's
+    /// last query/toggles if it has one (from a previous open-then-Esc on the same
+    /// tab) instead of always starting blank.
     fn open_find(&mut self) {
-        if matches!(
-            self.tabs.get(self.active).map(|t| &t.kind),
-            Some(TabKind::Code { .. })
-        ) {
-            self.find = Some(FindState::default());
+        if let Some(Tab {
+            kind: TabKind::Code { .. },
+            find,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            find.get_or_insert_with(FindState::default);
+            self.find_open = true;
             self.focus = Focus::Editor;
+            // Rebuild decorations against the current buffer — cheap no-op for a
+            // blank query, necessary to refresh a restored non-empty one.
+            self.run_find();
         } else {
             self.status = Some("find: open a text file first".to_string());
         }
     }
 
-    /// Close the find bar and clear the active tab's match highlights.
+    /// Close the find bar (but keep this tab's query/toggles for next time) and
+    /// clear the active tab's match highlights (cheap to rebuild on reopen).
     fn close_find(&mut self) {
-        self.find = None;
+        self.find_open = false;
         if let Some(Tab {
             kind: TabKind::Code { decos, .. },
             ..
@@ -935,7 +956,7 @@ impl App {
     /// the search. Command keys (Esc / Enter / Ctrl+G / arrows) resolve via the
     /// keymap's `Find` layer instead.
     fn find_input(&mut self, key: KeyEvent) {
-        let Some(find) = self.find.as_mut() else {
+        let Some(find) = self.active_find_mut() else {
             return;
         };
         let editing_query = find.field == SearchField::Find;
@@ -966,7 +987,7 @@ impl App {
 
     /// Re-run the in-file search and rebuild the active tab's match decorations.
     fn run_find(&mut self) {
-        let q = match &self.find {
+        let q = match self.active_find() {
             Some(find) => find.query_spec(),
             None => return,
         };
@@ -1005,7 +1026,7 @@ impl App {
                 }
             }
         }
-        if let Some(find) = self.find.as_mut() {
+        if let Some(find) = self.active_find_mut() {
             find.count = count;
             find.current = 0;
         }
@@ -1013,7 +1034,7 @@ impl App {
 
     /// Move to the next/previous match (wrapping) and scroll it into view.
     fn find_step(&mut self, delta: i32) {
-        let (count, current) = match &self.find {
+        let (count, current) = match self.active_find() {
             Some(find) => (find.count, find.current),
             None => return,
         };
@@ -1021,7 +1042,7 @@ impl App {
             return;
         }
         let next = (current as i64 + i64::from(delta)).rem_euclid(count as i64) as usize;
-        if let Some(find) = self.find.as_mut() {
+        if let Some(find) = self.active_find_mut() {
             find.current = next;
         }
         if let Some(Tab {
@@ -1039,7 +1060,7 @@ impl App {
     /// Enter in the find bar: advance to the next match, or (in the replace field)
     /// replace the current match.
     fn find_submit(&mut self) {
-        if self.find.as_ref().map(|f| f.field) == Some(SearchField::Replace) {
+        if self.active_find().map(|f| f.field) == Some(SearchField::Replace) {
             self.find_replace_current();
         } else {
             self.find_step(1);
@@ -1049,7 +1070,7 @@ impl App {
     /// Replace the current in-file match with the replacement text. The edit is
     /// applied through the document (undoable); find re-runs when the snapshot lands.
     fn find_replace_current(&mut self) {
-        let Some(find) = self.find.as_ref() else {
+        let Some(find) = self.active_find() else {
             return;
         };
         if find.count == 0 {
@@ -1075,7 +1096,7 @@ impl App {
     /// Replace every in-file match at once by rewriting the whole buffer through a
     /// single undoable edit (offset-safe via `karet_search::apply_replacements`).
     fn find_replace_all(&mut self) {
-        let Some(find) = self.find.as_ref() else {
+        let Some(find) = self.active_find() else {
             return;
         };
         let query = find.query_spec();
@@ -1108,7 +1129,7 @@ impl App {
 
     /// Show or hide the find bar's replace field (collapsing returns to the query).
     fn find_toggle_replace(&mut self) {
-        if let Some(find) = self.find.as_mut() {
+        if let Some(find) = self.active_find_mut() {
             find.replace_visible = !find.replace_visible;
             if !find.replace_visible {
                 find.field = SearchField::Find;
@@ -1118,7 +1139,7 @@ impl App {
 
     /// Switch the edited find-bar field between find and replace.
     fn find_toggle_field(&mut self) {
-        if let Some(find) = self.find.as_mut() {
+        if let Some(find) = self.active_find_mut() {
             find.field = match find.field {
                 SearchField::Find => {
                     find.replace_visible = true;
@@ -1131,7 +1152,7 @@ impl App {
 
     /// Toggle a find-bar match option (regex / case / whole-word) and refresh matches.
     fn find_toggle_option(&mut self, option: SearchOption) {
-        if let Some(find) = self.find.as_mut() {
+        if let Some(find) = self.active_find_mut() {
             match option {
                 SearchOption::Regex => find.regex = !find.regex,
                 SearchOption::Case => find.case_sensitive = !find.case_sensitive,
@@ -1273,6 +1294,7 @@ impl App {
         self.search.results.clear();
         self.search.selected = 0;
         if self.search.query.is_empty() {
+            self.refresh_search_decorations();
             return;
         }
         let query = self.build_search_query();
@@ -1283,6 +1305,48 @@ impl App {
             }
         });
         self.search.results = results;
+        self.refresh_search_decorations();
+    }
+
+    /// Recompute global-search match decorations for every open tab across every
+    /// pane, from the current Search panel query and result set — this is what
+    /// makes matches highlight inline in any already-open pane, not just the
+    /// flat results list. Matches are recomputed against each tab's own **live**
+    /// buffer (not the on-disk `FileHit` byte offsets), so a dirty/unsaved tab's
+    /// highlights stay correct even though its content differs from disk.
+    fn refresh_search_decorations(&mut self) {
+        let query = self.build_search_query();
+        // Owned, not borrowed: `all_tabs_mut()` below needs `&mut self`, which a
+        // set of `&Path` borrowed from `self.search.results` would conflict with.
+        let hit_paths: HashSet<PathBuf> =
+            self.search.results.iter().map(|h| h.path.clone()).collect();
+        for tab in self.all_tabs_mut() {
+            if let TabKind::Code {
+                path,
+                buffer,
+                text,
+                search_decos,
+                ..
+            } = &mut tab.kind
+            {
+                *search_decos = if !query.pattern.is_empty() && hit_paths.contains(path.as_path()) {
+                    search_in_file(text, &query)
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|m| Decoration {
+                            range: Range {
+                                start: buffer.byte_to_line_col(BytePos(m.start)),
+                                end: buffer.byte_to_line_col(BytePos(m.end)),
+                            },
+                            kind: DecorationKind::TextBackground,
+                            role: Some(ThemeRole::SearchMatch),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+            }
+        }
     }
 
     /// Move the selection within the search results.
@@ -1751,12 +1815,44 @@ impl App {
                     if row.is_dir {
                         self.explorer.toggle(&path);
                     } else {
-                        self.open_path(&path);
+                        self.open_path_preview(&path);
                     }
                 }
             },
             SidebarPanel::SourceControl => self.open_selected_diff(),
             SidebarPanel::Search => {},
+        }
+    }
+
+    /// Double-click on a file in the tree: promote it to a permanent tab instead
+    /// of the single-click/Enter preview behavior. If it's already open (as the
+    /// preview tab or otherwise), just clears its preview flag in place; if not
+    /// yet open, opens it as a new permanent tab via [`open_path`](Self::open_path).
+    fn sidebar_promote_or_open_permanent(&mut self) {
+        if self.sidebar_panel != SidebarPanel::Explorer {
+            return;
+        }
+        self.explorer.ensure_built(&self.root);
+        let Some(row) = self.explorer.selected() else {
+            return;
+        };
+        if row.is_dir {
+            self.explorer.toggle(&row.path.clone());
+            return;
+        }
+        let path = row.path.clone();
+        let target = canonical(&path);
+        if let Some(idx) = self
+            .tabs
+            .iter()
+            .position(|t| !t.is_diff() && t.path().is_some_and(|p| canonical(p) == target))
+        {
+            if let Some(tab) = self.tabs.get_mut(idx) {
+                tab.is_preview = false;
+            }
+            self.select_tab(idx);
+        } else {
+            self.open_path(&path);
         }
     }
 
@@ -2485,6 +2581,42 @@ impl App {
         self.push_tab(tab);
     }
 
+    /// Open `path` into the focused pane's reusable "preview" tab slot (VS
+    /// Code-style): used only by file-tree navigation (single click / arrow +
+    /// activate). A file already open (preview or permanent) is just focused,
+    /// same as [`open_path`](Self::open_path). Otherwise the current preview
+    /// tab, if this pane has one, is replaced in place; if not, a new preview
+    /// tab is opened. Every other caller of `open_path` (LSP jumps, the
+    /// overlay, reopen-closed, CLI-provided files) keeps opening permanent
+    /// tabs — only tree navigation opens previews.
+    fn open_path_preview(&mut self, path: &Path) {
+        let target = canonical(path);
+        if let Some(idx) = self
+            .tabs
+            .iter()
+            .position(|t| !t.is_diff() && t.path().is_some_and(|p| canonical(p) == target))
+        {
+            self.select_tab(idx);
+            return;
+        }
+        let mut tab = workspace::open_file(path, self.syntax);
+        tab.is_preview = true;
+        match self.tabs.iter().position(|t| t.is_preview) {
+            Some(idx) => {
+                tab.view = self.alloc_view();
+                self.tabs[idx] = tab;
+                self.active = idx;
+                self.focus = Focus::Editor;
+                self.find_open = false;
+                self.register_doc(self.active);
+                // The replaced tab's document (if any) is no longer referenced by
+                // any tab; this closes it on the session side.
+                self.reconcile_open_docs();
+            },
+            None => self.push_tab(tab),
+        }
+    }
+
     /// The "open anyway" override: re-open the active too-large placeholder's file
     /// with the size guard bypassed, replacing the placeholder tab in place (rather
     /// than opening a second tab for the same path). A no-op on any other tab — the
@@ -2520,6 +2652,8 @@ impl App {
             self.active = self.tabs.len() - 1;
         }
         self.focus = Focus::Editor;
+        // A newly-focused tab never inherits another tab's open find bar.
+        self.find_open = false;
         self.register_doc(self.active);
     }
 
@@ -2676,6 +2810,9 @@ impl App {
         if index < self.tabs.len() {
             self.active = index;
             self.focus = Focus::Editor;
+            // The find bar is keyed to whichever tab it was opened over; switching
+            // tabs must not show it over a different file.
+            self.find_open = false;
         }
     }
 
@@ -2857,6 +2994,7 @@ impl App {
                     folds,
                     folded,
                     decos,
+                    search_decos,
                 } => Tab::new(
                     t.title.clone(),
                     TabKind::Code {
@@ -2870,6 +3008,7 @@ impl App {
                         folds: folds.clone(),
                         folded: folded.clone(),
                         decos: decos.clone(),
+                        search_decos: search_decos.clone(),
                     },
                 ),
                 _ => Tab::welcome(),
@@ -2947,6 +3086,10 @@ impl App {
                 self.active = self.tabs.len() - 1;
             }
         }
+        // The closed tab's own `find` data goes with it; the flag may now be
+        // pointing at a different tab, so drop it too rather than risk showing
+        // the bar over whatever tab ends up active.
+        self.find_open = false;
         self.reconcile_open_docs();
     }
 
@@ -2962,6 +3105,7 @@ impl App {
         }
         self.tabs = vec![self.tabs.remove(self.active)];
         self.active = 0;
+        self.find_open = false;
         self.reconcile_open_docs();
     }
 
@@ -2982,6 +3126,7 @@ impl App {
         self.tabs = vec![Tab::welcome()];
         self.active = 0;
         self.focus = Focus::Sidebar;
+        self.find_open = false;
         self.reconcile_open_docs();
     }
 
@@ -3284,7 +3429,41 @@ impl App {
         self.scm_commits_h = h.clamp(MIN_SCM_REGION, max_commits);
     }
 
+    /// Hint the terminal's mouse pointer shape (OSC 22) over a draggable
+    /// divider — `col-resize` over the sidebar-width divider, `row-resize` over
+    /// the Source-Control commit-log divider, the default shape everywhere
+    /// else — mirroring how a GUI editor shows a resize cursor on hover. A
+    /// complete no-op when the terminal wasn't confirmed to support it at
+    /// startup, and only writes when the shape actually changes (never spams
+    /// an escape sequence per mouse-move event).
+    fn update_pointer_shape_hint(&mut self, mouse: &MouseEvent) {
+        if !self.pointer_shapes_supported {
+            return;
+        }
+        let over_sidebar_divider = self.sidebar_resizing
+            || (self.sidebar_visible && mouse.column == self.sidebar_divider_x);
+        let over_scm_divider = self.scm_resizing
+            || (self.sidebar_panel == SidebarPanel::SourceControl
+                && self.scm_divider_y != 0
+                && mouse.row == self.scm_divider_y
+                && rect_contains(self.sidebar_rect, (mouse.column, mouse.row)));
+        let shape = if over_sidebar_divider {
+            Some("col-resize")
+        } else if over_scm_divider {
+            Some("row-resize")
+        } else {
+            None
+        };
+        if shape == self.pointer_shape {
+            return;
+        }
+        let _ = write!(io::stdout(), "\x1b]22;{}\x1b\\", shape.unwrap_or("default"));
+        let _ = io::stdout().flush();
+        self.pointer_shape = shape;
+    }
+
     fn handle_mouse(&mut self, mouse: MouseEvent) {
+        self.update_pointer_shape_hint(&mouse);
         // Toasts float above everything (including the overlay), so hit-test them
         // first: a left click on a card dismisses it.
         if self.handle_toast_mouse(mouse) {
@@ -3442,8 +3621,13 @@ impl App {
                 } else if shift {
                     self.explorer.extend_visible(view_row);
                 } else {
+                    let streak = self.click_streak(col, row_y);
                     self.explorer.select_visible(view_row);
-                    self.sidebar_activate();
+                    if streak >= 2 {
+                        self.sidebar_promote_or_open_permanent();
+                    } else {
+                        self.sidebar_activate();
+                    }
                 }
             },
             SidebarPanel::SourceControl => {
@@ -3873,14 +4057,30 @@ impl App {
                     return;
                 }
                 per.sort_by_key(|(start, ..)| *start);
-                let flat: Vec<TextEdit> = per.iter().flat_map(|(.., e, _)| e.clone()).collect();
+                // Track which per-entry (cursor) each flattened edit belongs to, so
+                // "earlier" below can mean "from a cursor before this one" rather
+                // than a byte-position comparison — a backward-deleting edit (e.g.
+                // backspace) starts *before* its own original caret, so comparing
+                // positions would wrongly count an edit as "earlier than itself"
+                // and double-shift that same cursor's landing caret by one extra
+                // position on every backspace.
+                let mut flat: Vec<TextEdit> = Vec::new();
+                let mut owner: Vec<usize> = Vec::new();
+                for (i, (_, es, _)) in per.iter().enumerate() {
+                    for e in es {
+                        flat.push(e.clone());
+                        owner.push(i);
+                    }
+                }
                 let carets: Vec<LineCol> = per
                     .iter()
-                    .map(|(start, _, local)| {
+                    .enumerate()
+                    .map(|(i, (_, _, local))| {
                         let earlier: Vec<TextEdit> = flat
                             .iter()
-                            .filter(|te| te.range.start < *start)
-                            .cloned()
+                            .zip(&owner)
+                            .filter(|&(_, &o)| o < i)
+                            .map(|(e, _)| e.clone())
                             .collect();
                         editing::reflow_caret(*local, &earlier)
                     })
@@ -3889,23 +4089,39 @@ impl App {
             },
             _ => return,
         };
+        let change = Change::new(base, edits);
         if let Some(backend) = &self.backend {
             let id = backend.next_id();
             let _ = backend.send(
                 id,
                 SessionCommand::ApplyChange {
                     doc,
-                    change: Change::new(base, edits),
+                    change: change.clone(),
                 },
             );
         }
         if let Some(Tab {
-            kind: TabKind::Code { next_version, .. },
+            kind:
+                TabKind::Code {
+                    buffer,
+                    text,
+                    next_version,
+                    ..
+                },
             editor,
             ..
         }) = self.tabs.get_mut(idx)
         {
-            *next_version += 1;
+            // Apply the same change locally so the displayed text advances in
+            // lockstep with the caret instead of lagging behind the async
+            // snapshot echo (the prior cause of "backspace skips characters"
+            // under fast/held input). `base` was just read from this same
+            // buffer above, so this should never fail; if it somehow does,
+            // leave `buffer`/`text` alone and let the next snapshot resync.
+            if let Ok(applied) = buffer.apply(&change, karet_text::EditContext::default()) {
+                *next_version = applied.version;
+                *text = buffer.text();
+            }
             editor.set_carets(&carets);
             let head = editor.cursor();
             editor.scroll_to(head);
@@ -3921,6 +4137,17 @@ impl App {
             }) => Some(*doc),
             _ => None,
         }
+    }
+
+    /// The active tab's find-in-file state, if any (find-in-file lives per tab so
+    /// it survives closing the bar, but not closing the tab).
+    fn active_find(&self) -> Option<&FindState> {
+        self.tabs.get(self.active)?.find.as_ref()
+    }
+
+    /// A mutable handle to the active tab's find-in-file state.
+    fn active_find_mut(&mut self) -> Option<&mut FindState> {
+        self.tabs.get_mut(self.active)?.find.as_mut()
     }
 
     /// Send a document command for the active code tab, if any.
@@ -4041,7 +4268,7 @@ impl App {
         self.submit_edit(editing::backspace);
     }
 
-    /// Paste the system clipboard at the caret.
+    /// Paste the system clipboard at the caret (or the active modal's text field).
     fn paste_from_clipboard(&mut self) {
         match self.clipboard.get() {
             Ok(text) => self.handle_paste(text),
@@ -4049,11 +4276,17 @@ impl App {
         }
     }
 
-    /// Insert pasted text as a single edit (one undo group). Shared by the paste
-    /// command and bracketed paste, so pasted text is never interpreted as keys.
+    /// Route pasted text (from the paste command or bracketed paste) to whatever
+    /// actually owns text input right now: the active modal's field if one is
+    /// open, else the editor buffer. Shared by both paste sources, so pasted text
+    /// is never interpreted as keys and never lands in the wrong place.
     fn handle_paste(&mut self, text: String) {
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
         if normalized.is_empty() {
+            return;
+        }
+        if let Some(modal) = self.input_context().modal {
+            self.modal_paste(modal, &normalized);
             return;
         }
         self.submit_edit(move |caret, sel, _b, base| {
@@ -4170,6 +4403,40 @@ impl App {
                     "file changed on disk — you have unsaved changes",
                 );
             },
+            // Full non-UTF-8 editing isn't supported: the tab requested a document
+            // that will never arrive (no `Opened` follows), so leaving it as a
+            // `doc: None` code tab would make every keystroke silently no-op. Fall
+            // back to the same read-only hex view a corrupt CBOR file already uses.
+            SessionEvent::NotUtf8 { path } => {
+                if let Some(req) = id {
+                    self.pending_open.remove(&req);
+                }
+                for tab in self.all_tabs_mut() {
+                    let is_pending_for_path =
+                        matches!(&tab.kind, TabKind::Code { path: p, doc: None, .. } if *p == path);
+                    if is_pending_for_path && let Ok(bytes) = std::fs::read(&path) {
+                        tab.kind = TabKind::Hex {
+                            path: path.clone(),
+                            bytes,
+                            scroll: 0,
+                        };
+                    }
+                }
+                self.notify(
+                    Severity::Warning,
+                    NotificationKind::Io,
+                    format!("opened {} read-only: not valid UTF-8", path.display()),
+                );
+            },
+            // Keep a live workspace search current: re-run it (which also
+            // refreshes open-pane highlights) whenever something changes on
+            // disk. No extra debouncing needed here — the watcher already
+            // debounces at the source, and the result cap keeps a re-run cheap.
+            SessionEvent::FsChanged { .. } => {
+                if !self.search.query.is_empty() {
+                    self.run_global_search();
+                }
+            },
             SessionEvent::Progress { message, .. } => self.status = Some(message),
             // The single high-up funnel: every backend-reported condition becomes a
             // notification, so nothing is silently dropped.
@@ -4280,15 +4547,27 @@ impl App {
                 ..
             } = &mut tab.kind
             {
-                *buffer = snap.buffer.clone();
+                // A slow-arriving snapshot must not regress a tab that has since
+                // advanced further via `submit_edit`'s local speculative apply —
+                // only the buffer/text catch up when the snapshot is at least as
+                // new as what's already applied locally.
+                if snap.version >= buffer.version() {
+                    *buffer = snap.buffer.clone();
+                    *text = snap.buffer.text();
+                }
                 *highlights = (*snap.highlights).clone();
                 *folds = (*snap.folds).clone();
-                *text = snap.buffer.text();
                 *next_version = (*next_version).max(snap.version);
                 // Drop collapsed markers whose fold no longer starts where it did (an
                 // edit shifted or removed it), so stale hidden lines can't linger.
                 let starts: HashSet<u32> = folds.regions().iter().map(|r| r.start).collect();
                 folded.retain(|line| starts.contains(line));
+            }
+            // The clean→dirty transition permanently promotes a preview tab (VS
+            // Code behavior): once edited, it survives being navigated away from
+            // instead of getting silently replaced by the next preview-opened file.
+            if snap.dirty && !tab.dirty {
+                tab.is_preview = false;
             }
             tab.dirty = snap.dirty;
             // Undo/redo snapshots carry the caret to jump to; ordinary edits carry
@@ -4303,8 +4582,14 @@ impl App {
         }
         // If the find bar is open, an edit (e.g. a replace) just changed the buffer,
         // so recompute the match highlights against the fresh text.
-        if self.find.is_some() {
+        if self.find_open {
             self.run_find();
+        }
+        // Likewise for global search matches: a newly-opened or just-edited tab
+        // should show its highlights immediately, not only after the next
+        // explicit search re-run.
+        if !self.search.query.is_empty() {
+            self.refresh_search_decorations();
         }
     }
 }
@@ -4452,6 +4737,50 @@ fn probe_kitty_graphics(timeout: Duration) -> Option<bool> {
     Some(ok)
 }
 
+/// Probe whether the terminal supports OSC 22 (mouse pointer-shape hints, e.g.
+/// hovering a resize divider showing the OS's resize cursor) by sending its
+/// query form (`ESC ] 22 ; ? ESC \`) and checking for an OSC 22 reply before
+/// the DA1 terminator. `Some(true)`/`Some(false)` when the terminal answered
+/// before `timeout`, `None` on timeout or I/O error — in which case the
+/// caller must not send pointer-shape hints (they'd be silently ignored at
+/// best, or misinterpreted at worst). Same raw-mode/before-input-thread
+/// constraint and terminating-DA1 trick as [`probe_kitty_graphics`].
+fn probe_osc22_pointer_shape(timeout: Duration) -> Option<bool> {
+    use std::io::Read;
+
+    let query = "\x1b]22;?\x1b\\\x1b[c";
+    let mut stdout = std::io::stdout();
+    write!(stdout, "{query}").ok()?;
+    stdout.flush().ok()?;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut stdin = std::io::stdin();
+        let mut buf = Vec::new();
+        let mut byte = [0u8; 1];
+        let mut saw_csi = false;
+        loop {
+            match stdin.read(&mut byte) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let b = byte[0];
+                    buf.push(b);
+                    saw_csi |= b == b'[';
+                    if saw_csi && b == b'c' {
+                        break;
+                    }
+                },
+            }
+        }
+        let _ = tx.send(buf);
+    });
+
+    let buf = rx.recv_timeout(timeout).ok()?;
+    // An OSC 22 reply contains its own introducer echoed back: ESC ] 22 ; ...
+    let ok = buf.windows(3).any(|w| w == b"]22");
+    Some(ok)
+}
+
 /// Run the IDE shell: require the kitty keyboard protocol, set up the terminal,
 /// loop until quit, then restore it.
 ///
@@ -4523,6 +4852,11 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     // the heuristic already trusts.
     if probe_kitty_graphics(Duration::from_millis(200)) == Some(true) {
         app.graphics = GraphicsProtocol::Kitty;
+    }
+    // Same handshake for OSC 22 pointer-shape hints (col-resize/row-resize over
+    // the sidebar/SCM dividers) — confirmed support only, never assumed.
+    if probe_osc22_pointer_shape(Duration::from_millis(200)) == Some(true) {
+        app.pointer_shapes_supported = true;
     }
 
     let result = runtime.block_on(async move {
@@ -4873,6 +5207,47 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         // Dragging to the very top clamps so the changes region keeps room too.
         app.resize_scm_commits_to(0);
         assert_eq!(app.scm_commits_h, 20 - (MIN_SCM_REGION + 1));
+    }
+
+    #[test]
+    fn pointer_shape_hint_tracks_divider_hover_when_supported() {
+        let mut app = app();
+        app.pointer_shapes_supported = true;
+        app.sidebar_visible = true;
+        app.sidebar_divider_x = 30;
+
+        let moved = |col, row| MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.update_pointer_shape_hint(&moved(30, 5));
+        assert_eq!(app.pointer_shape, Some("col-resize"));
+
+        app.update_pointer_shape_hint(&moved(10, 5));
+        assert_eq!(
+            app.pointer_shape, None,
+            "moving off the divider resets to the default shape"
+        );
+    }
+
+    #[test]
+    fn pointer_shape_hint_is_a_no_op_when_unsupported() {
+        let mut app = app();
+        // `pointer_shapes_supported` defaults to false (never confirmed at startup).
+        app.sidebar_visible = true;
+        app.sidebar_divider_x = 30;
+        app.update_pointer_shape_hint(&MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 30,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(
+            app.pointer_shape, None,
+            "an unconfirmed terminal must never get a pointer-shape hint"
+        );
     }
 
     #[test]
@@ -5412,6 +5787,155 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
     }
 
     #[test]
+    fn preview_open_replaces_the_current_preview_tab_in_place() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "karet-preview-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let a = dir.join("a.rs");
+        let b = dir.join("b.rs");
+        let _ = std::fs::write(&a, "fn a() {}\n");
+        let _ = std::fs::write(&b, "fn b() {}\n");
+
+        let mut app = app();
+        app.open_path_preview(&a);
+        assert_eq!(app.tabs.len(), 1);
+        assert!(
+            app.tabs[0].is_preview,
+            "a preview-opened file is marked preview"
+        );
+        assert_eq!(app.tabs[0].path(), Some(a.as_path()));
+
+        // Navigating to a second file replaces the preview tab in place — no
+        // second tab, and the old one's path is gone.
+        app.open_path_preview(&b);
+        assert_eq!(
+            app.tabs.len(),
+            1,
+            "opening another preview must replace, not append"
+        );
+        assert!(app.tabs[0].is_preview);
+        assert_eq!(app.tabs[0].path(), Some(b.as_path()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preview_open_on_an_already_open_permanent_tab_just_focuses_it() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "karet-preview-focus-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let a = dir.join("a.rs");
+        let _ = std::fs::write(&a, "fn a() {}\n");
+
+        let mut app = app();
+        app.open_path(&a); // permanent open (not preview)
+        assert!(!app.tabs[0].is_preview);
+
+        app.open_path_preview(&a);
+        assert_eq!(app.tabs.len(), 1, "must not duplicate an already-open file");
+        assert!(
+            !app.tabs[0].is_preview,
+            "focusing an already-open permanent tab must not turn it into a preview"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn double_click_promotes_the_preview_tab_without_duplicating_it() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "karet-preview-promote-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let a = dir.join("a.rs");
+        let _ = std::fs::write(&a, "fn a() {}\n");
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+        app.explorer.ensure_built(&dir);
+        app.explorer.select_visible(
+            app.explorer
+                .rows()
+                .iter()
+                .position(|r| r.label == "a.rs")
+                .expect("a.rs is listed"),
+        );
+        app.sidebar_promote_or_open_permanent();
+        assert_eq!(app.tabs.len(), 1, "not yet open: opens one permanent tab");
+        assert!(!app.tabs[0].is_preview);
+
+        // Re-open as preview, then double-click-promote the existing tab: still
+        // exactly one tab, now permanent.
+        app.close_all_tabs();
+        app.open_path_preview(&a);
+        assert!(app.tabs[0].is_preview);
+        app.sidebar_promote_or_open_permanent();
+        assert_eq!(app.tabs.len(), 1, "promoting must not open a duplicate tab");
+        assert!(
+            !app.tabs[0].is_preview,
+            "double-click clears the preview flag"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn editing_a_preview_tab_promotes_it_permanently() {
+        let dir = std::env::temp_dir().join(format!(
+            "karet-preview-edit-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "ab").expect("write temp file");
+
+        let (session, mut events, mut snaps) = Session::new(SessionConfig {
+            roots: vec![dir.clone()],
+            ..SessionConfig::default()
+        });
+        let backend: Arc<dyn Backend> = Arc::new(local(session));
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend);
+        app.open_path_preview(&path);
+        pump(&mut app, &mut events).await;
+        assert!(app.tabs[app.active].is_preview);
+
+        app.dispatch(Command::InsertChar('x'));
+        pump(&mut app, &mut events).await;
+        // The dirty flag (and thus the promote-on-edit hook) is only ever set from
+        // a document snapshot, not from the optimistic local apply in submit_edit.
+        while let Ok(Some((doc, snap))) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), snaps.recv()).await
+        {
+            app.on_snapshot(doc, &snap);
+        }
+        assert!(
+            !app.tabs[app.active].is_preview,
+            "the first edit must permanently promote the preview tab"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn find_highlights_matches_in_a_code_tab() {
         use karet_syntax::Highlights;
         use karet_text::TextBuffer;
@@ -5430,14 +5954,15 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
+                search_decos: Vec::new(),
             },
         ));
         app.dispatch(Command::OpenFind);
-        if let Some(find) = app.find.as_mut() {
+        if let Some(find) = app.active_find_mut() {
             find.query = "foo".to_string();
         }
         app.run_find();
-        assert_eq!(app.find.as_ref().map(|f| f.count), Some(2));
+        assert_eq!(app.active_find().map(|f| f.count), Some(2));
         if let TabKind::Code { decos, .. } = &app.tabs[app.active].kind {
             assert_eq!(decos.len(), 2);
         } else {
@@ -5775,6 +6300,69 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
     }
 
     #[test]
+    fn global_search_highlights_matches_in_an_already_open_tab() {
+        let n = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "karet-app-search-decos-{}-{}",
+            std::process::id(),
+            n.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("a.txt");
+        let _ = std::fs::write(&file, "needle here\n");
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.open_path(&file);
+
+        app.search.query = "needle".to_string();
+        app.run_global_search();
+        assert_eq!(app.search.results.len(), 1);
+        match &app.tabs[app.active].kind {
+            TabKind::Code { search_decos, .. } => assert_eq!(search_decos.len(), 1),
+            _ => unreachable!("expected a code tab"),
+        }
+
+        // Clearing the query must clear the highlights too, not leave them stale.
+        app.search.query.clear();
+        app.run_global_search();
+        match &app.tabs[app.active].kind {
+            TabKind::Code { search_decos, .. } => assert!(search_decos.is_empty()),
+            _ => unreachable!("expected a code tab"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fs_changed_event_reruns_a_live_global_search() {
+        let n = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "karet-app-fschanged-{}-{}",
+            std::process::id(),
+            n.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.search.query = "needle".to_string();
+        app.run_global_search();
+        assert_eq!(app.search.results.len(), 0, "no matching file exists yet");
+
+        // A file matching the live query appears on disk...
+        let file = dir.join("new.txt");
+        let _ = std::fs::write(&file, "needle here\n");
+        // ...and the watcher's debounced event is what tells the app to look again.
+        app.on_backend_event(None, SessionEvent::FsChanged { paths: vec![file] });
+        assert_eq!(
+            app.search.results.len(),
+            1,
+            "FsChanged must re-run the live search"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn blame_without_a_code_tab_reports_status() {
         let mut app = app();
         // The Welcome tab is active — there is nothing to blame.
@@ -5813,6 +6401,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
+                search_decos: Vec::new(),
             },
         ));
         app.dispatch(Command::ShowBlame);
@@ -5856,6 +6445,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
+                search_decos: Vec::new(),
             },
         )
     }
@@ -5906,6 +6496,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
+                search_decos: Vec::new(),
             },
         )
     }
@@ -6366,49 +6957,132 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Push a minimal empty code tab and open Find over it, for tests that only
+    /// exercise the find-bar state machine (not real match content).
+    fn app_with_find_open() -> App {
+        use karet_syntax::Highlights;
+        use karet_text::TextBuffer;
+
+        let mut app = app();
+        app.push_tab(Tab::new(
+            "t.rs",
+            TabKind::Code {
+                path: PathBuf::from("t.rs"),
+                language: "Rust",
+                doc: None,
+                next_version: 0,
+                buffer: TextBuffer::from_text(""),
+                text: String::new(),
+                highlights: Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
+                decos: Vec::new(),
+                search_decos: Vec::new(),
+            },
+        ));
+        app.dispatch(Command::OpenFind);
+        app
+    }
+
     #[test]
     fn find_bar_toggle_field_reveals_and_switches_replace() {
-        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
-        app.find = Some(FindState::default());
-        assert!(app.find.as_ref().is_some_and(|f| !f.replace_visible));
+        let mut app = app_with_find_open();
+        assert!(app.active_find().is_some_and(|f| !f.replace_visible));
         app.find_toggle_field();
         assert!(
-            app.find
-                .as_ref()
+            app.active_find()
                 .is_some_and(|f| f.replace_visible && f.field == SearchField::Replace)
         );
         app.find_toggle_field();
         assert!(
-            app.find
-                .as_ref()
+            app.active_find()
                 .is_some_and(|f| f.field == SearchField::Find)
         );
     }
 
     #[test]
     fn find_input_edits_the_active_field() {
-        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
-        app.find = Some(FindState::default());
+        let mut app = app_with_find_open();
         app.find_input(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         app.find_toggle_field(); // switch to the replace field
         app.find_input(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
         assert!(
-            app.find
-                .as_ref()
+            app.active_find()
                 .is_some_and(|f| f.query == "a" && f.replace == "b")
         );
     }
 
     #[test]
     fn find_toggle_option_flips_the_flags() {
-        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
-        app.find = Some(FindState::default());
+        let mut app = app_with_find_open();
         app.find_toggle_option(SearchOption::Regex);
         app.find_toggle_option(SearchOption::Word);
         assert!(
-            app.find
-                .as_ref()
+            app.active_find()
                 .is_some_and(|f| f.regex && !f.case_sensitive && f.whole_word)
+        );
+    }
+
+    #[test]
+    fn find_state_survives_esc_and_is_restored_on_reopen() {
+        // Regression: closing Find (Esc) used to discard the query/toggles;
+        // reopening Find on the same tab must restore them instead of starting
+        // blank.
+        let mut app = app_with_find_open();
+        if let Some(find) = app.active_find_mut() {
+            find.query = "needle".to_string();
+            find.regex = true;
+        }
+        app.close_find();
+        assert_eq!(
+            app.input_context().modal,
+            None,
+            "closing find must hide the bar"
+        );
+        assert!(
+            app.active_find()
+                .is_some_and(|f| f.query == "needle" && f.regex),
+            "the tab's find data must survive Esc"
+        );
+
+        app.open_find();
+        assert_eq!(app.input_context().modal, Some(crate::keymap::Modal::Find));
+        assert!(
+            app.active_find()
+                .is_some_and(|f| f.query == "needle" && f.regex),
+            "reopening find on the same tab must restore the prior query/toggles"
+        );
+    }
+
+    #[test]
+    fn switching_tabs_does_not_show_a_stale_find_bar() {
+        let mut app = app_with_find_open();
+        app.push_tab(Tab::new(
+            "u.rs",
+            TabKind::Code {
+                path: PathBuf::from("u.rs"),
+                language: "Rust",
+                doc: None,
+                next_version: 0,
+                buffer: karet_text::TextBuffer::from_text(""),
+                text: String::new(),
+                highlights: karet_syntax::Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
+                decos: Vec::new(),
+                search_decos: Vec::new(),
+            },
+        ));
+        assert_eq!(
+            app.input_context().modal,
+            None,
+            "opening a second tab must not carry the first tab's open find bar over"
+        );
+        app.select_tab(0);
+        assert_eq!(
+            app.input_context().modal,
+            None,
+            "switching back must not resurrect the find bar either — only reopening it should"
         );
     }
 
@@ -6551,6 +7225,130 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         app.sidebar_panel = SidebarPanel::SourceControl;
         app.focus = Focus::Sidebar;
         (app, events)
+    }
+
+    fn code_tab_text(app: &App) -> String {
+        match &app.tabs[app.active].kind {
+            TabKind::Code { text, .. } => text.clone(),
+            _ => panic!("expected the active tab to be a code tab"),
+        }
+    }
+
+    #[tokio::test]
+    async fn backspace_and_insert_apply_to_the_local_buffer_without_waiting_for_a_snapshot() {
+        // Regression for "editor jumps back / skips characters on backspace": edits
+        // used to only move the caret optimistically while the displayed text
+        // waited on an async snapshot echo, so a fast burst of keys raced ahead of
+        // what was actually applied. Every edit below is dispatched back-to-back
+        // with no `pump` in between, so this fails if `submit_edit` regresses to
+        // only updating the caret again.
+        let dir =
+            std::env::temp_dir().join(format!("karet-edit-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "ab").expect("write temp file");
+
+        let (session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![dir.clone()],
+            ..SessionConfig::default()
+        });
+        let backend: Arc<dyn Backend> = Arc::new(local(session));
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend);
+        app.open_path(&path);
+        pump(&mut app, &mut events).await; // registers the doc so submit_edit can act
+
+        app.dispatch(Command::InsertChar('x'));
+        assert_eq!(code_tab_text(&app), "xab");
+        app.dispatch(Command::InsertChar('y'));
+        assert_eq!(code_tab_text(&app), "xyab");
+        app.dispatch(Command::DeleteBackward);
+        assert_eq!(code_tab_text(&app), "xab");
+        app.dispatch(Command::DeleteBackward);
+        assert_eq!(
+            code_tab_text(&app),
+            "ab",
+            "two backspaces fired before any snapshot arrives must still land on the \
+             locally-applied text"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn paste_while_find_is_open_targets_the_find_query_not_the_editor() {
+        // Regression: paste used to always land in the main editor buffer
+        // regardless of which text field was actually focused, so pasting while
+        // Find was open silently replaced the editor's content/selection instead
+        // of the find query.
+        let dir = std::env::temp_dir().join(format!(
+            "karet-pastefind-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "hello world").expect("write temp file");
+
+        let (session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![dir.clone()],
+            ..SessionConfig::default()
+        });
+        let backend: Arc<dyn Backend> = Arc::new(local(session));
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend);
+        app.open_path(&path);
+        pump(&mut app, &mut events).await;
+
+        app.open_find();
+        assert!(app.find_open);
+
+        app.handle_paste("needle".to_string());
+
+        assert_eq!(
+            app.active_find().map(|f| f.query.as_str()),
+            Some("needle"),
+            "pasted text must land in the find query"
+        );
+        assert_eq!(
+            code_tab_text(&app),
+            "hello world",
+            "paste while Find is open must not touch the editor buffer"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_non_utf8_file_opens_read_only_instead_of_a_silently_dead_tab() {
+        let dir =
+            std::env::temp_dir().join(format!("karet-nonutf8-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("bad.rs");
+        // A long valid-ASCII prefix (longer than the classifier's 8 KiB head sample)
+        // followed by one invalid byte: the workspace-level classifier sees only
+        // clean text and opens a normal code tab, but the session's full-file strict
+        // UTF-8 load then fails — this is exactly the "misses a genuinely non-UTF-8
+        // file" gap this fallback exists for, not the earlier (already-handled)
+        // "obviously binary within the head sample" case.
+        let mut bytes = vec![b'a'; 9000];
+        bytes.push(0xff);
+        std::fs::write(&path, &bytes).expect("write invalid-utf8 file");
+
+        let (session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![dir.clone()],
+            ..SessionConfig::default()
+        });
+        let backend: Arc<dyn Backend> = Arc::new(local(session));
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend);
+        app.open_path(&path);
+        pump(&mut app, &mut events).await;
+
+        assert!(
+            matches!(app.tabs[app.active].kind, TabKind::Hex { .. }),
+            "a non-UTF-8 file must fall back to the read-only hex view, not a dead \
+             code tab with doc: None"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

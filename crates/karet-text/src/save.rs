@@ -52,8 +52,15 @@ impl TextBuffer {
     /// editable text and re-encoded on save).
     ///
     /// # Errors
-    /// Returns [`TextError::Io`] if the file cannot be written.
+    /// Returns [`TextError::Io`] if the file cannot be written, or
+    /// [`TextError::Conflict`] if the file changed on disk since it was last read
+    /// or saved (nothing is written in that case).
     pub fn save_bytes(&mut self, path: &Path, bytes: &[u8]) -> Result<SavedState, TextError> {
+        if let Some(saved) = &self.saved_state
+            && conflicts_with_disk(path, saved)?
+        {
+            return Err(TextError::Conflict);
+        }
         // Resolve symlinks so we replace the real file's directory entry, not the
         // link. `canonicalize` fails for a not-yet-existing file; then use the path.
         let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
@@ -101,6 +108,32 @@ impl TextBuffer {
         }
         out
     }
+}
+
+/// Whether the file at `path` has changed on disk since `saved` was recorded
+/// (i.e. since it was last loaded or saved). A free function over `&Path`/
+/// `&SavedState` rather than a `&TextBuffer` method, so a future non-text
+/// (e.g. binary/hex) buffer type can reuse the same disk-fingerprinting
+/// primitive without depending on `TextBuffer`.
+///
+/// Checks a cheap `stat` first (size + mtime, no read); only when those don't
+/// match does it read and hash the file to rule out a false positive from a
+/// bare `touch` (same content, different mtime). A missing file never
+/// conflicts — there is nothing on disk to have diverged from.
+///
+/// # Errors
+/// Returns [`TextError::Io`] if the file exists but can't be read.
+pub fn conflicts_with_disk(path: &Path, saved: &SavedState) -> Result<bool, TextError> {
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(TextError::Io(e.to_string())),
+    };
+    if meta.len() == saved.size && meta.modified().is_ok_and(|m| m == saved.mtime) {
+        return Ok(false);
+    }
+    let bytes = std::fs::read(path).map_err(|e| TextError::Io(e.to_string()))?;
+    Ok(hash_bytes(&bytes) != saved.hash)
 }
 
 /// Write `bytes` to `target` crash-safely via a same-directory temp file + atomic
@@ -200,6 +233,57 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap_or_default(), vec![0xf6]);
         assert!(buf.saved_state().is_some());
         assert!(!buf.is_dirty());
+    }
+
+    #[test]
+    fn save_is_refused_when_the_file_changed_on_disk_since_it_was_read() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("conflict.txt");
+        if std::fs::write(&path, "original\n").is_err() {
+            return;
+        }
+        let mut buf = TextBuffer::from_bytes(b"original\n").unwrap_or_default();
+        buf.record_disk_state(&path, b"original\n");
+
+        // Someone else changes the file after we read it but before we save.
+        if std::fs::write(&path, "someone else's edit\n").is_err() {
+            return;
+        }
+
+        assert_eq!(buf.save(&path), Err(TextError::Conflict));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "someone else's edit\n",
+            "a refused save must not touch the file"
+        );
+    }
+
+    #[test]
+    fn save_succeeds_when_disk_is_unchanged_even_after_a_bare_touch() {
+        // A bare mtime bump (no content change) must not be treated as a conflict —
+        // ruling that out is exactly what the read+hash fallback is for.
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("touched.txt");
+        if std::fs::write(&path, "same\n").is_err() {
+            return;
+        }
+        let mut buf = TextBuffer::from_bytes(b"same\n").unwrap_or_default();
+        buf.record_disk_state(&path, b"same\n");
+
+        // Rewrite identical content — bumps mtime (and often nothing else) without
+        // changing what conflicts_with_disk's hash fallback compares against.
+        if std::fs::write(&path, "same\n").is_err() {
+            return;
+        }
+
+        assert!(
+            buf.save(&path).is_ok(),
+            "identical content is not a conflict"
+        );
     }
 
     #[test]
