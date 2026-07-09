@@ -81,6 +81,8 @@ pub struct SessionConfig {
     /// The loaded, verified settings (see [`crate::config`]). Producers read editing
     /// behaviour (format-on-save, spell-check, …) from here.
     pub settings: crate::config::Settings,
+    /// The loaded settings plus layer and explicit-key provenance for inspection.
+    pub loaded_config: crate::config::LoadedConfig,
     /// Directory for crash-recovery swap files. The application sets this to the real
     /// user data directory ([`crate::backup::default_swap_dir`]); left `None` (as in
     /// tests) the session keeps no backups and never touches the user's data dir.
@@ -347,6 +349,12 @@ impl Session {
             Command::RecoverSwaps => self.recover_swaps(id),
             Command::DiscardSwaps => self.discard_swaps(),
             Command::DependencyGraph => self.emit_dependency_graph(id),
+            Command::LoadedConfig => self.emit(
+                Some(id),
+                Event::LoadedConfig {
+                    report: Box::new(self.config.loaded_config.clone()),
+                },
+            ),
             // Language-intelligence and search commands are wired in later milestones.
             _ => {},
         }
@@ -2230,6 +2238,7 @@ mod tests {
             roots: Vec::new(),
             settings,
             swap_dir: None,
+            ..SessionConfig::default()
         });
         // Redirect swaps to a temp directory instead of the real data dir.
         session.swaps = Some(SwapStore::with_dir(swapdir.path().to_path_buf(), 1));
@@ -2295,6 +2304,32 @@ mod tests {
     }
 
     #[test]
+    fn loaded_config_command_returns_in_memory_report() {
+        let mut settings = crate::config::Settings::default();
+        settings.editor.tab_size = 2;
+        let report = crate::config::LoadedConfig::from_settings(settings.clone());
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            settings,
+            loaded_config: report,
+            ..SessionConfig::default()
+        });
+
+        session.handle(RequestId(42), Command::LoadedConfig);
+        let received = events.try_recv();
+        assert!(
+            matches!(
+                received,
+                Some((Some(RequestId(42)), Event::LoadedConfig { .. }))
+            ),
+            "loaded config event should answer request, got {received:?}"
+        );
+        let Some((_, Event::LoadedConfig { report })) = received else {
+            return;
+        };
+        assert_eq!(report.settings.editor.tab_size, 2);
+    }
+
+    #[test]
     fn new_session_announces_swaps_left_in_its_swap_dir() {
         let Some(swapdir) = tempfile::tempdir().ok() else {
             return;
@@ -2311,6 +2346,7 @@ mod tests {
             roots: Vec::new(),
             settings: crate::config::Settings::default(),
             swap_dir: Some(swapdir.path().to_path_buf()),
+            ..SessionConfig::default()
         });
         let mut found = None;
         while let Some((_, ev)) = events.try_recv() {

@@ -61,6 +61,7 @@ use karet_session::DocumentId;
 use karet_session::Event as SessionEvent;
 use karet_session::EventRx;
 use karet_session::GithubVerification;
+use karet_session::LoadedConfig;
 use karet_session::RangeSpec;
 use karet_session::RequestId;
 use karet_session::Session;
@@ -308,6 +309,8 @@ pub struct App {
     /// The loaded, verified configuration (see `karet_session::config`). Applied to
     /// the UI at startup and handed to the session backend.
     pub(crate) settings: Settings,
+    /// The loaded configuration plus provenance for the settings inspector.
+    pub(crate) loaded_config: LoadedConfig,
     /// Config-load diagnostics awaiting display as startup notifications.
     pub(crate) config_diagnostics: Vec<ConfigDiagnostic>,
     /// The active color theme.
@@ -518,6 +521,7 @@ impl App {
         Self {
             root,
             settings: Settings::default(),
+            loaded_config: LoadedConfig::default(),
             config_diagnostics: Vec::new(),
             theme: Theme::dark(),
             syntax,
@@ -626,10 +630,23 @@ impl App {
     /// icon style, and the startup sidebar panel.
     #[must_use]
     pub fn with_settings(mut self, settings: Settings, diagnostics: Vec<ConfigDiagnostic>) -> Self {
+        self = self.with_loaded_config(LoadedConfig {
+            settings,
+            diagnostics,
+            ..LoadedConfig::default()
+        });
+        self
+    }
+
+    /// Apply a loaded configuration report to the UI shell (builder-style).
+    #[must_use]
+    pub fn with_loaded_config(mut self, loaded: LoadedConfig) -> Self {
         use karet_session::config::schema::IconStyleSetting;
         use karet_session::config::schema::StartupPanel;
 
-        self.config_diagnostics = diagnostics;
+        let settings = loaded.settings.clone();
+        self.config_diagnostics = loaded.diagnostics.clone();
+        self.loaded_config = loaded;
 
         // Theme: the built-in "dark", or a path to a .tmTheme / VS Code .json theme.
         match load_theme(&settings.workbench.color_theme) {
@@ -690,6 +707,7 @@ impl App {
                 | TabKind::Compare { .. }
                 | TabKind::Blame { .. }
                 | TabKind::Graph { .. }
+                | TabKind::LoadedConfig { .. }
                 | TabKind::Hex { .. },
             ) => EditorTab::Pager,
             Some(TabKind::CommitGraph { .. }) => EditorTab::CommitGraph,
@@ -1533,6 +1551,13 @@ impl App {
             Command::ScmRefresh => self.send_vcs(SessionCommand::RefreshVcs),
             Command::ShowBlame => self.open_blame(false),
             Command::BlameFunction => self.open_blame(true),
+            Command::ShowLoadedConfig => {
+                if self.backend.is_some() {
+                    self.send_command(SessionCommand::LoadedConfig);
+                } else {
+                    self.open_loaded_config(self.loaded_config.clone());
+                }
+            },
             Command::ExplorerNewFile => self.explorer_begin_new(false),
             Command::ExplorerNewFolder => self.explorer_begin_new(true),
             Command::ExplorerRename => self.explorer_begin_rename(),
@@ -3192,6 +3217,7 @@ impl App {
             TabKind::Diff { scroll, .. }
             | TabKind::Blame { scroll, .. }
             | TabKind::Graph { scroll, .. }
+            | TabKind::LoadedConfig { scroll, .. }
             | TabKind::Commit { scroll, .. }
             | TabKind::Compare { scroll, .. } => {
                 let next = (i64::from(*scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
@@ -3230,6 +3256,7 @@ impl App {
             TabKind::Diff { scroll, .. }
             | TabKind::Blame { scroll, .. }
             | TabKind::Graph { scroll, .. }
+            | TabKind::LoadedConfig { scroll, .. }
             | TabKind::Commit { scroll, .. }
             | TabKind::Compare { scroll, .. } => {
                 *scroll = if top { 0 } else { u16::MAX };
@@ -4577,8 +4604,14 @@ impl App {
                 self.push_tab(Tab::graph(title, view));
                 self.status = Some(format!("dependency graph: {count} package(s)"));
             },
+            SessionEvent::LoadedConfig { report } => self.open_loaded_config(*report),
             _ => {},
         }
+    }
+
+    fn open_loaded_config(&mut self, report: LoadedConfig) {
+        self.push_tab(Tab::loaded_config(report));
+        self.status = Some("loaded settings opened".to_string());
     }
 
     /// Arm the startup crash-recovery prompt for `swaps` left by a previous session.
@@ -4900,6 +4933,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     let (session, events, snaps) = Session::new(SessionConfig {
         roots: vec![app.root.clone()],
         settings: app.settings.clone(),
+        loaded_config: app.loaded_config.clone(),
         // The real app persists crash-recovery swaps to the user data directory;
         // headless/test sessions leave this unset and keep no backups.
         swap_dir: karet_session::backup::default_swap_dir(),
@@ -5636,6 +5670,19 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         assert!(app.overlay.is_some());
         send_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn loaded_config_command_opens_read_only_tab_without_backend() {
+        let mut app = app().with_loaded_config(karet_session::LoadedConfig::from_settings(
+            Settings::default(),
+        ));
+        app.dispatch(Command::ShowLoadedConfig);
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::LoadedConfig { .. }
+        ));
+        assert_eq!(app.tabs[app.active].title, "Loaded Settings");
     }
 
     #[test]

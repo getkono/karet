@@ -9,6 +9,7 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use karet_core::Decoration;
+use karet_core::Severity;
 use karet_core::ThemeRole;
 use karet_editor::Editor;
 use karet_filetype::FileKind;
@@ -21,6 +22,8 @@ use karet_fileview::viewer::Placeholder;
 use karet_graph::LaneInput;
 use karet_graph::assign_lanes;
 use karet_graph::view::render_rail;
+use karet_session::ConfigLayerStatus;
+use karet_session::LoadedConfig;
 use karet_theme::Theme;
 use karet_vcs::StatusKind;
 use karet_widgets::Corner;
@@ -1264,6 +1267,9 @@ fn draw_pane_content(
             view,
             scroll,
         } => draw_graph(f, theme, area, title, view, scroll),
+        TabKind::LoadedConfig { report, scroll } => {
+            draw_loaded_config(f, theme, area, report, scroll);
+        },
         TabKind::Commit {
             detail,
             files,
@@ -2089,6 +2095,147 @@ fn draw_graph(
     *scroll = (*scroll).min(max_scroll as u16);
     let para = Paragraph::new(rows).scroll((*scroll, 0));
     f.render_widget(para, area);
+}
+
+/// Draw the loaded settings and provenance as a scrollable read-only report.
+fn draw_loaded_config(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    report: &LoadedConfig,
+    scroll: &mut u16,
+) {
+    let header = Style::default()
+        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+        .add_modifier(Modifier::BOLD);
+    let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
+    let explicit = fg.add_modifier(Modifier::BOLD);
+    let muted = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
+    let badge = Style::default().fg(theme.role(ThemeRole::DiagnosticHint).to_ratatui());
+    let warning = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
+
+    let mut lines = Vec::new();
+    lines.push(Line::styled(" Loaded Settings", header));
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(" Layers", header));
+
+    let mut layers = report.layers.clone();
+    layers.sort_by_key(|row| std::cmp::Reverse(row.layer));
+    if layers.is_empty() {
+        lines.push(Line::styled("  no layer provenance captured", muted));
+    }
+    for row in layers {
+        let (status, style) = match &row.status {
+            ConfigLayerStatus::Loaded => ("loaded".to_string(), fg),
+            ConfigLayerStatus::Missing => ("missing".to_string(), muted),
+            ConfigLayerStatus::Invalid(_) => ("invalid".to_string(), warning),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:<8}", row.layer.label()), style),
+            Span::styled(format!("{status:<9}"), style),
+            Span::styled(row.path.to_string_lossy().into_owned(), style),
+        ]));
+        if let ConfigLayerStatus::Invalid(message) = row.status {
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(message, warning),
+            ]));
+        }
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(" Diagnostics", header));
+    if report.diagnostics.is_empty() {
+        lines.push(Line::styled("  none", muted));
+    } else {
+        for diag in &report.diagnostics {
+            let style = severity_style(theme, diag.severity);
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {:<8}", severity_label(diag.severity)), style),
+                Span::styled(format!("{}  ", diag.path.to_string_lossy()), muted),
+                Span::styled(diag.message.clone(), style),
+            ]));
+        }
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(" Values", header));
+    match serde_json::to_value(&report.settings) {
+        Ok(serde_json::Value::Object(sections)) => {
+            for (section, value) in sections {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(section.clone(), header),
+                ]));
+                flatten_setting_lines(
+                    &mut lines, report, &section, "", &value, explicit, muted, badge,
+                );
+            }
+        },
+        _ => lines.push(Line::styled("  settings could not be serialized", warning)),
+    }
+
+    let height = area.height as usize;
+    let max_scroll = lines.len().saturating_sub(height);
+    *scroll = (*scroll).min(max_scroll as u16);
+    f.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), area);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn flatten_setting_lines(
+    lines: &mut Vec<Line<'static>>,
+    report: &LoadedConfig,
+    section: &str,
+    prefix: &str,
+    value: &serde_json::Value,
+    explicit: Style,
+    muted: Style,
+    badge: Style,
+) {
+    if let serde_json::Value::Object(obj) = value {
+        for (key, child) in obj {
+            let next = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            flatten_setting_lines(lines, report, section, &next, child, explicit, muted, badge);
+        }
+        return;
+    }
+
+    let full_path = format!("{section}.{prefix}");
+    let source = report.explicit.get(&full_path);
+    let style = if source.is_some() { explicit } else { muted };
+    let source_label = source.map_or("default", |layer| layer.label());
+    let value_text = serde_json::to_string(value).unwrap_or_else(|_| "<value>".to_string());
+    lines.push(Line::from(vec![
+        Span::raw("    "),
+        Span::styled(format!("{prefix:<24}"), style),
+        Span::styled(format!("{value_text:<26}"), style),
+        Span::styled(source_label.to_string(), source.map_or(muted, |_| badge)),
+    ]));
+}
+
+fn severity_label(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Information => "info",
+        Severity::Hint => "hint",
+        _ => "info",
+    }
+}
+
+fn severity_style(theme: &Theme, severity: Severity) -> Style {
+    let role = match severity {
+        Severity::Error => ThemeRole::DiagnosticError,
+        Severity::Warning => ThemeRole::DiagnosticWarning,
+        Severity::Information => ThemeRole::DiagnosticInfo,
+        Severity::Hint => ThemeRole::DiagnosticHint,
+        _ => ThemeRole::DiagnosticInfo,
+    };
+    Style::default().fg(theme.role(role).to_ratatui())
 }
 
 fn draw_blame(

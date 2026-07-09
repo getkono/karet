@@ -11,7 +11,12 @@ pub mod load;
 pub mod schema;
 
 pub use load::ConfigDiagnostic;
+pub use load::ConfigLayer;
+pub use load::ConfigLayerReport;
+pub use load::ConfigLayerStatus;
+pub use load::LoadedConfig;
 pub use load::load;
+pub use load::load_report;
 pub use schema::Settings;
 
 /// The JSON Schema for [`Settings`], pretty-printed. This is the single source the
