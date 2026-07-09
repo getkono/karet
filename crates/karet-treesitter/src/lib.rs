@@ -168,10 +168,25 @@ impl SyntaxTree {
         text: &str,
         ranges: &[Span],
     ) -> Result<Self, TsError> {
+        Self::parse_ranges_indexed(pool, lang, text, ranges, &line_starts(text))
+    }
+
+    /// [`parse_ranges`](Self::parse_ranges) against a precomputed line index.
+    ///
+    /// Building that index is `O(text)`, and a document can have hundreds of injected
+    /// layers, so the layered parser computes it once and lends it to every layer rather
+    /// than paying for it per parse.
+    fn parse_ranges_indexed(
+        pool: &mut ParserPool,
+        lang: LanguageId,
+        text: &str,
+        ranges: &[Span],
+        starts: &[usize],
+    ) -> Result<Self, TsError> {
         if ranges.is_empty() {
             return Err(TsError::ParseFailed);
         }
-        let ts_ranges = to_ts_ranges(text, ranges);
+        let ts_ranges = to_ts_ranges(ranges, starts);
         let parser = pool.parser_for(lang)?;
         let result = parser
             .set_included_ranges(&ts_ranges)
@@ -411,18 +426,16 @@ fn point_at(starts: &[usize], byte: usize) -> tree_sitter::Point {
     }
 }
 
-/// Convert byte [`Span`]s into the `tree_sitter::Range`s `set_included_ranges` wants.
-/// The line index is built once, so this is linear in `text` rather than in
-/// `text × ranges`.
-fn to_ts_ranges(text: &str, ranges: &[Span]) -> Vec<tree_sitter::Range> {
-    let starts = line_starts(text);
+/// Convert byte [`Span`]s into the `tree_sitter::Range`s `set_included_ranges` wants,
+/// resolving points against a precomputed line index.
+fn to_ts_ranges(ranges: &[Span], starts: &[usize]) -> Vec<tree_sitter::Range> {
     ranges
         .iter()
         .map(|s| tree_sitter::Range {
             start_byte: s.start.0,
             end_byte: s.end.0,
-            start_point: point_at(&starts, s.start.0),
-            end_point: point_at(&starts, s.end.0),
+            start_point: point_at(starts, s.start.0),
+            end_point: point_at(starts, s.end.0),
         })
         .collect()
 }
@@ -504,8 +517,12 @@ impl LayeredParser {
     /// consumer merging captures across layers can then let the later (deeper) layer
     /// win a tie against the shallower layer that injected it.
     fn build_layers(&mut self, root: &SyntaxTree, text: &str) -> Vec<SyntaxTree> {
+        // One line index for the whole descent: every injected layer needs `(row, col)`
+        // points for its ranges, and rebuilding the index per layer would make a
+        // many-layer document quadratic in its own length.
+        let starts = line_starts(text);
         let mut out: Vec<SyntaxTree> = Vec::new();
-        let mut frontier = self.expand(root, text);
+        let mut frontier = self.expand(root, text, &starts);
 
         for _ in 1..=MAX_INJECTION_DEPTH {
             if frontier.is_empty() {
@@ -521,7 +538,7 @@ impl LayeredParser {
             }
             let mut next = Vec::new();
             for layer in &frontier {
-                next.extend(self.expand(layer, text));
+                next.extend(self.expand(layer, text, &starts));
             }
             out.append(&mut frontier);
             frontier = next;
@@ -530,7 +547,7 @@ impl LayeredParser {
     }
 
     /// Parse the regions `parent` directly injects — one layer per region.
-    fn expand(&mut self, parent: &SyntaxTree, text: &str) -> Vec<SyntaxTree> {
+    fn expand(&mut self, parent: &SyntaxTree, text: &str, starts: &[usize]) -> Vec<SyntaxTree> {
         let Some(regions) = self.regions_of(parent, text) else {
             return Vec::new();
         };
@@ -561,7 +578,9 @@ impl LayeredParser {
             }
             // A failed layer degrades to the parent's highlighting rather than failing
             // the whole document.
-            if let Ok(child) = SyntaxTree::parse_ranges(&mut self.pool, lang, text, &ranges) {
+            if let Ok(child) =
+                SyntaxTree::parse_ranges_indexed(&mut self.pool, lang, text, &ranges, starts)
+            {
                 children.push(child);
             }
         }
