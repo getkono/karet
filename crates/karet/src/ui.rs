@@ -542,23 +542,7 @@ fn draw_pane_tabs(
     let mut x = area.x;
     let titles = tab_display_titles(tabs, root);
     for (i, tab) in tabs.iter().enumerate() {
-        let mut style = if i == active && pane_focused {
-            Style::default()
-                .fg(theme.role(ThemeRole::Foreground).to_ratatui())
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
-        } else if i == active {
-            // Active tab of an unfocused pane: emphasized but not reversed.
-            Style::default()
-                .fg(theme.role(ThemeRole::Foreground).to_ratatui())
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())
-        };
-        // The preview tab (VS Code-style single-reused-slot tab) renders
-        // italicized so it reads as provisional until edited or promoted.
-        if tab.is_preview {
-            style = style.add_modifier(Modifier::ITALIC);
-        }
+        let style = tab_text_style(theme, i == active, pane_focused, tab.is_preview);
         // A pre-allocated 1-cell status slot keeps the layout stable: `●` for
         // unsaved changes (a spinner frame while a slow save writes), else blank.
         let mark = save_mark(tab);
@@ -569,7 +553,7 @@ fn draw_pane_tabs(
         if !title.prefix.is_empty() {
             spans.push(Span::styled(
                 title.prefix.clone(),
-                style.fg(theme.role(ThemeRole::Muted).to_ratatui()),
+                tab_prefix_style(theme, style, i == active, pane_focused),
             ));
         }
         spans.push(Span::styled(title.name.clone(), style));
@@ -587,6 +571,38 @@ fn draw_pane_tabs(
     let bar = Style::default().bg(theme.role(ThemeRole::Background).to_ratatui());
     f.render_widget(Paragraph::new(Line::from(spans)).style(bar), area);
     (area, hits)
+}
+
+fn tab_text_style(theme: &Theme, active: bool, pane_focused: bool, preview: bool) -> Style {
+    let mut style = if active && pane_focused {
+        Style::default()
+            .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    } else if active {
+        // Active tab of an unfocused pane: emphasized but not reversed.
+        Style::default()
+            .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())
+    };
+    // The preview tab (VS Code-style single-reused-slot tab) renders italicized so
+    // it reads as provisional until edited or promoted.
+    if preview {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    style
+}
+
+fn tab_prefix_style(theme: &Theme, base: Style, active: bool, pane_focused: bool) -> Style {
+    let muted = theme.role(ThemeRole::Muted).to_ratatui();
+    if active && pane_focused {
+        base.remove_modifier(Modifier::REVERSED)
+            .fg(muted)
+            .bg(theme.role(ThemeRole::Foreground).to_ratatui())
+    } else {
+        base.fg(muted)
+    }
 }
 
 struct TabDisplayTitle {
@@ -2662,6 +2678,34 @@ mod tests {
         assert_eq!(titles[1].name, "mod.rs");
         assert_eq!(titles[2].prefix, "");
         assert_eq!(titles[2].name, "lib.rs");
+    }
+
+    #[test]
+    fn active_tab_prefix_keeps_active_fill() {
+        let theme = Theme::dark();
+        let base = tab_text_style(&theme, true, true, false);
+
+        let prefix = tab_prefix_style(&theme, base, true, true);
+
+        assert_eq!(prefix.fg, Some(theme.role(ThemeRole::Muted).to_ratatui()));
+        assert_eq!(
+            prefix.bg,
+            Some(theme.role(ThemeRole::Foreground).to_ratatui())
+        );
+        assert!(!prefix.add_modifier.contains(Modifier::REVERSED));
+        assert!(prefix.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn unfocused_active_tab_prefix_stays_muted_without_fill() {
+        let theme = Theme::dark();
+        let base = tab_text_style(&theme, true, false, false);
+
+        let prefix = tab_prefix_style(&theme, base, true, false);
+
+        assert_eq!(prefix.fg, Some(theme.role(ThemeRole::Muted).to_ratatui()));
+        assert_eq!(prefix.bg, None);
+        assert!(prefix.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
