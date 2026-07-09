@@ -1,7 +1,20 @@
 # karet
 
-A Cargo workspace of reusable primitives ("engines") for building TUI code editors,
-plus the `karet` application that composes them.
+`karet` is a TUI for high-velocity, terminal-centric coding, focused on review
+and visualization tools. It is an application that should feel more like a GUI in
+the terminal: spatial, keyboard-first, and composed from reusable Rust libraries.
+
+This repository is also a Cargo workspace of reusable primitives ("engines") for
+building TUI code editors and coding tools, plus the `karet` application that
+composes them.
+
+## Who is it for?
+
+- **`karet`** — a high-velocity TUI application for terminal-centric coding
+  workflows, especially review and visualization.
+- **The `karet-*` libraries** — reusable, presentation-free building blocks for
+  coding tools, so downstream consumers can pick the pieces they need without
+  inheriting the full application.
 
 ## Design principles
 
@@ -17,24 +30,25 @@ one best backend** (tree-sitter for syntax), and the quality floor (nightly rust
 no `unwrap`/`expect`/`panic` in libraries) is **non-negotiable**. See
 [`AGENTS.md`](AGENTS.md) for the full treatment.
 
-## `karet` — terminal git-diff viewer
+## `karet` — terminal coding TUI
 
-The `karet` binary is a fast terminal viewer for your git diff:
+The `karet` binary currently opens review-oriented terminal workflows around a
+workspace path:
 
 ```bash
-karet [PATH]        # diff the repo containing PATH (default: current directory)
-karet --staged      # force the staged diff (HEAD vs index)
-karet src/main.rs   # scope the diff to a single path
+karet [PATH]        # open the repo or workspace containing PATH
+karet --staged      # start from the staged diff (HEAD vs index)
+karet src/main.rs   # scope review to a single path
 ```
 
-With no flags it shows the staged changes if any are staged, otherwise the unstaged
+For git review, it shows staged changes if any are staged, otherwise the unstaged
 (working-tree) changes — like VS Code's default. It prints a message and exits if
-`PATH` isn't in a git repository or there's nothing to show. In the viewer: `j`/`k`
-scroll, `h`/`l` switch file, `Tab` toggles unified / side-by-side, `q` quits. Syntax
-highlighting is tree-sitter-based (Rust, Python, JS/TS, Go, Java, C/C++, C#, Ruby, PHP,
-HTML, CSS, YAML, JSON, TOML, Bash); the detected language is shown in the status bar,
-and unknown/unsupported languages render as plaintext. `--no-syntax` (or `NO_COLOR`)
-disables highlighting.
+`PATH` is not in a git repository or there is nothing to show. In the viewer: `j`/`k`
+scroll, `h`/`l` switch file, `Tab` toggles unified / side-by-side, `q` quits.
+Syntax highlighting is tree-sitter-based (Rust, Python, JS/TS, Go, Java, C/C++,
+C#, Ruby, PHP, HTML, CSS, YAML, JSON, TOML, Bash); the detected language is shown
+in the status bar, and unknown/unsupported languages render as plaintext.
+`--no-syntax` (or `NO_COLOR`) disables highlighting.
 
 ## Prerequisites
 
@@ -125,6 +139,11 @@ Two release lines coexist:
   table in [`AGENTS.md`](AGENTS.md) for the full breakdown.
 - **[`blameline`](crates/blameline) is a standalone library on its own SemVer line** (from
   `1.0.0`), published on an independent cadence; see [its README](crates/blameline/README.md).
+
+## Contribution Policy
+
+Issues will receive a response within one week. Karet tools and libraries will
+remain open-source and publicly available.
 
 ## License
 
