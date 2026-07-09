@@ -91,7 +91,6 @@ use tokio::sync::mpsc;
 use crate::clipboard::Clipboard;
 use crate::command::Command;
 use crate::compat;
-use crate::compat::CellPixels;
 use crate::compat::GraphicsCaret;
 use crate::editing;
 use crate::keymap::Context;
@@ -250,6 +249,9 @@ const COMMIT_AUTOLOAD_THRESHOLD: usize = 3;
 /// double-click before it auto-hides.
 pub(crate) const COMMIT_REVEAL: Duration = Duration::from_secs(5);
 
+/// Half-period for the app-drawn graphical editor caret.
+const GRAPHICS_CARET_BLINK_INTERVAL: Duration = Duration::from_millis(530);
+
 /// A clickable tab region in the tab strip, recorded during the last render.
 #[derive(Clone, Copy)]
 pub(crate) struct TabHit {
@@ -321,6 +323,8 @@ pub struct App {
     pub(crate) icon_style: IconStyle,
     /// The detected terminal graphics protocol.
     pub(crate) graphics: GraphicsProtocol,
+    /// Whether Kitty graphics support was detected or confirmed at startup.
+    kitty_graphics_supported: bool,
     /// Whether crossterm confirmed Kitty keyboard protocol support at startup.
     kitty_keyboard_supported: bool,
     /// Whether the terminal was confirmed (via a startup handshake) to support
@@ -480,6 +484,8 @@ pub struct App {
     shown_page: usize,
     /// The graphical caret placement currently transmitted to the terminal.
     shown_graphics_caret: Option<GraphicsCaret>,
+    /// Start of the current graphical-caret blink phase.
+    graphics_caret_blink_epoch: Instant,
     /// Whether the app should quit.
     should_quit: bool,
     /// The headless editor backend; edits route through it. `None` in unit tests,
@@ -518,6 +524,7 @@ impl App {
         let staged_count = staged.len();
         let mut changes = staged;
         changes.extend(working);
+        let graphics = image::detect_protocol();
         Self {
             root,
             settings: Settings::default(),
@@ -526,7 +533,8 @@ impl App {
             theme: Theme::dark(),
             syntax,
             icon_style: IconStyle::default(),
-            graphics: image::detect_protocol(),
+            graphics,
+            kitty_graphics_supported: graphics == GraphicsProtocol::Kitty,
             kitty_keyboard_supported: false,
             pointer_shapes_supported: false,
             pointer_shape: None,
@@ -606,6 +614,7 @@ impl App {
             shown_image: None,
             shown_page: 0,
             shown_graphics_caret: None,
+            graphics_caret_blink_epoch: Instant::now(),
             should_quit: false,
             backend: None,
             pending_open: HashMap::new(),
@@ -737,8 +746,8 @@ impl App {
 
     fn graphical_cursor_compatible(&self) -> bool {
         self.kitty_keyboard_supported
+            && self.kitty_graphics_supported
             && self.graphics == GraphicsProtocol::Kitty
-            && CellPixels::detect().is_some()
     }
 
     /// Handle a key press: resolve it against the layered keymap for the current
@@ -4053,10 +4062,16 @@ impl App {
     }
 
     fn active_graphics_caret(&self) -> Option<GraphicsCaret> {
+        if !self.graphics_caret_visible(Instant::now()) {
+            return None;
+        }
+        self.active_graphics_caret_position()
+    }
+
+    fn active_graphics_caret_position(&self) -> Option<GraphicsCaret> {
         if !self.graphical_cursor_enabled() || self.focus != Focus::Editor {
             return None;
         }
-        let cell = CellPixels::detect()?;
         let tab = self.tabs.get(self.active)?;
         let TabKind::Code {
             buffer,
@@ -4071,12 +4086,26 @@ impl App {
         let (x, y) = tab
             .editor
             .primary_caret_cell(self.editor_rect, buffer, &fold_lines)?;
-        Some(GraphicsCaret {
-            x,
-            y,
-            x_offset: 0,
-            cell,
-        })
+        Some(GraphicsCaret { x, y })
+    }
+
+    fn graphics_caret_visible(&self, now: Instant) -> bool {
+        let elapsed = now.saturating_duration_since(self.graphics_caret_blink_epoch);
+        let phase = elapsed.as_millis() / GRAPHICS_CARET_BLINK_INTERVAL.as_millis();
+        phase.is_multiple_of(2)
+    }
+
+    fn graphics_caret_next_wake(&self, now: Instant) -> Option<Duration> {
+        self.active_graphics_caret_position()?;
+        let elapsed = now.saturating_duration_since(self.graphics_caret_blink_epoch);
+        let interval_ms = GRAPHICS_CARET_BLINK_INTERVAL.as_millis();
+        let elapsed_ms = elapsed.as_millis();
+        let remaining_ms = interval_ms - (elapsed_ms % interval_ms);
+        Some(Duration::from_millis(remaining_ms as u64))
+    }
+
+    fn reset_graphics_caret_blink(&mut self) {
+        self.graphics_caret_blink_epoch = Instant::now();
     }
 }
 
@@ -4394,11 +4423,13 @@ impl App {
     }
 
     /// The soonest the event loop should wake for time-based UI: notification expiry,
-    /// or a save-spinner animation frame while any save is in flight. `None` when the
-    /// loop can park on its event sources alone.
+    /// save-spinner animation, graphical-caret blink, or an expiring hover reveal.
+    /// `None` when the loop can park on its event sources alone.
     fn next_wake(&self) -> Option<Duration> {
-        let notif = self.notifications.next_deadline(Instant::now());
+        let now = Instant::now();
+        let notif = self.notifications.next_deadline(now);
         let spinner = (!self.pending_saves.is_empty()).then(|| Duration::from_millis(100));
+        let caret = self.graphics_caret_next_wake(now);
         // Wake to repaint (hiding the tooltip) when the commit-badge reveal expires.
         let reveal = match self.tabs.get(self.active).map(|t| &t.kind) {
             Some(TabKind::Commit {
@@ -4407,7 +4438,7 @@ impl App {
             }) => COMMIT_REVEAL.checked_sub(since.elapsed()),
             _ => None,
         };
-        [notif, spinner, reveal].into_iter().flatten().min()
+        [notif, spinner, caret, reveal].into_iter().flatten().min()
     }
 
     /// Push a notification onto the center. Errors and warnings persist until
@@ -4960,6 +4991,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     // the heuristic already trusts.
     if probe_kitty_graphics(Duration::from_millis(200)) == Some(true) {
         app.graphics = GraphicsProtocol::Kitty;
+        app.kitty_graphics_supported = true;
     }
     // Same handshake for OSC 22 pointer-shape hints (col-resize/row-resize over
     // the sidebar/SCM dividers) — confirmed support only, never assumed.
@@ -5067,6 +5099,7 @@ async fn event_loop(
 
 /// Dispatch one terminal event to the app.
 fn handle_terminal_event(app: &mut App, event: Event) {
+    app.reset_graphics_caret_blink();
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => app.handle_key(key),
         Event::Mouse(mouse) => app.handle_mouse(mouse),
@@ -5363,6 +5396,57 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         assert_eq!(
             app.pointer_shape, None,
             "an unconfirmed terminal must never get a pointer-shape hint"
+        );
+    }
+
+    #[test]
+    fn graphical_cursor_requires_kitty_keyboard_and_graphics() {
+        let mut app = app();
+        app.graphics = GraphicsProtocol::Kitty;
+        app.kitty_graphics_supported = true;
+
+        assert!(!app.graphical_cursor_compatible());
+
+        app.kitty_keyboard_supported = true;
+        assert!(app.graphical_cursor_compatible());
+
+        app.graphics = GraphicsProtocol::Halfblocks;
+        assert!(
+            !app.graphical_cursor_compatible(),
+            "the graphical cursor must only ride the Kitty graphics path"
+        );
+    }
+
+    #[test]
+    fn graphical_cursor_blink_schedules_a_repaint_when_active() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "x"));
+        app.focus = Focus::Editor;
+        app.editor_rect = Rect::new(0, 0, 20, 5);
+        app.graphics = GraphicsProtocol::Kitty;
+        app.kitty_graphics_supported = true;
+        app.kitty_keyboard_supported = true;
+
+        let wake = app.next_wake().expect("an active graphical cursor blinks");
+        assert!(wake <= GRAPHICS_CARET_BLINK_INTERVAL && wake > Duration::ZERO);
+    }
+
+    #[test]
+    fn graphical_cursor_is_suppressed_during_the_hidden_blink_phase() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "x"));
+        app.focus = Focus::Editor;
+        app.editor_rect = Rect::new(0, 0, 20, 5);
+        app.graphics = GraphicsProtocol::Kitty;
+        app.kitty_graphics_supported = true;
+        app.kitty_keyboard_supported = true;
+
+        assert!(app.active_graphics_caret().is_some());
+        app.graphics_caret_blink_epoch = Instant::now() - GRAPHICS_CARET_BLINK_INTERVAL;
+        assert_eq!(app.active_graphics_caret(), None);
+        assert!(
+            app.active_graphics_caret_position().is_some(),
+            "blink hides a valid caret without losing its placement"
         );
     }
 
