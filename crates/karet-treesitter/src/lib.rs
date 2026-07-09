@@ -7,6 +7,7 @@
 //! features; [`language_id_from_path`] / [`language_name_from_path`] map a file to
 //! one (or to a plaintext fallback).
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
@@ -16,6 +17,7 @@ use karet_core::Span;
 mod detect;
 mod registry;
 
+pub use detect::language_id_from_injection_name;
 pub use detect::language_id_from_path;
 pub use detect::language_name_from_path;
 
@@ -42,6 +44,22 @@ pub struct LanguageId(pub u16);
 #[must_use]
 pub fn highlights_query(lang: LanguageId) -> Option<&'static str> {
     registry::grammar(lang).map(|g| g.highlights)
+}
+
+/// The injections query source for `lang`, if its grammar is compiled in *and* has
+/// one. `None` means the language embeds nothing.
+///
+/// Returns a [`Cow`] because karet appends its own patterns to some grammars (see
+/// `injections_extra`) — the common case still borrows the grammar's `&'static str`
+/// with no allocation.
+#[must_use]
+pub fn injections_query(lang: LanguageId) -> Option<Cow<'static, str>> {
+    let g = registry::grammar(lang)?;
+    match (g.injections, g.injections_extra) {
+        (Some(base), Some(extra)) => Some(Cow::Owned(format!("{base}\n{extra}"))),
+        (Some(q), None) | (None, Some(q)) => Some(Cow::Borrowed(q)),
+        (None, None) => None,
+    }
 }
 
 /// A pool of reusable tree-sitter parsers, keyed by [`LanguageId`].
@@ -323,6 +341,27 @@ mod tests {
     #[test]
     fn unknown_language_has_no_highlights() {
         assert!(highlights_query(LanguageId(60000)).is_none());
+        assert!(injections_query(LanguageId(60000)).is_none());
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn injections_query_compiles_for_grammars_that_ship_one() -> Result<(), TsError> {
+        let lang = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+        let src = injections_query(lang).ok_or(TsError::UnknownLanguage)?;
+        let query = Query::compile(lang, &src)?;
+        assert!(query.capture_names().contains(&"injection.content"));
+        Ok(())
+    }
+
+    #[cfg(feature = "lang-python")]
+    #[test]
+    fn grammar_without_injections_reports_none() -> Result<(), TsError> {
+        // Python's grammar ships no injections query; that is not an error.
+        let lang = language_id_from_injection_name("python").ok_or(TsError::UnknownLanguage)?;
+        assert!(highlights_query(lang).is_some());
+        assert!(injections_query(lang).is_none());
+        Ok(())
     }
 
     #[cfg(feature = "lang-rust")]

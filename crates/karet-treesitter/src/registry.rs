@@ -16,10 +16,20 @@ pub(crate) struct GrammarInfo {
     pub name: &'static str,
     /// File extensions (lowercase, without the dot) handled by this grammar.
     pub extensions: &'static [&'static str],
+    /// Lowercase names by which an injection query — or a markdown code-fence info
+    /// string — may refer to this grammar (e.g. `rust`, `rs`). Distinct from
+    /// [`extensions`](Self::extensions): a fence says ` ```sh `, not ` ```bash `.
+    pub names: &'static [&'static str],
     /// Returns the tree-sitter `Language` for this grammar.
     pub language: fn() -> tree_sitter::Language,
     /// The grammar's highlights query source.
     pub highlights: &'static str,
+    /// The grammar's bundled injections query source, if it ships one.
+    pub injections: Option<&'static str>,
+    /// karet-authored injection patterns appended to [`injections`](Self::injections).
+    /// Kept in a separate field so the grammar's own query stays pristine and the
+    /// delta we add is auditable in one place.
+    pub injections_extra: Option<&'static str>,
 }
 
 // Stable language ids — never renumber once shipped. Each is cfg-gated to its
@@ -62,6 +72,10 @@ pub(crate) const CSS: LanguageId = LanguageId(17);
 pub(crate) const YAML: LanguageId = LanguageId(18);
 #[cfg(feature = "lang-markdown")]
 pub(crate) const MARKDOWN: LanguageId = LanguageId(19);
+/// tree-sitter-md's companion *inline* grammar. Never resolved from a path — the
+/// block grammar reaches it only through an `markdown_inline` injection.
+#[cfg(feature = "lang-markdown")]
+pub(crate) const MARKDOWN_INLINE: LanguageId = LanguageId(20);
 
 /// All grammars compiled into this build, in id order.
 // The pushes are `#[cfg]`-gated per grammar, which `vec![]` cannot express.
@@ -77,155 +91,228 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             id: RUST,
             name: "Rust",
             extensions: &["rs"],
+            names: &["rust", "rs"],
             language: || tree_sitter_rust::LANGUAGE.into(),
             highlights: tree_sitter_rust::HIGHLIGHTS_QUERY,
+            injections: Some(tree_sitter_rust::INJECTIONS_QUERY),
+            injections_extra: None,
         });
         #[cfg(feature = "lang-python")]
         v.push(GrammarInfo {
             id: PYTHON,
             name: "Python",
             extensions: &["py", "pyi"],
+            names: &["python", "py"],
             language: || tree_sitter_python::LANGUAGE.into(),
             highlights: tree_sitter_python::HIGHLIGHTS_QUERY,
+            injections: None,
+            injections_extra: None,
         });
         #[cfg(feature = "lang-javascript")]
         v.push(GrammarInfo {
             id: JAVASCRIPT,
             name: "JavaScript",
             extensions: &["js", "mjs", "cjs", "jsx"],
+            names: &["javascript", "js", "jsx", "mjs", "cjs"],
             language: || tree_sitter_javascript::LANGUAGE.into(),
             highlights: tree_sitter_javascript::HIGHLIGHT_QUERY, // singular
+            injections: Some(tree_sitter_javascript::INJECTIONS_QUERY),
+            injections_extra: None,
         });
         #[cfg(feature = "lang-typescript")]
         v.push(GrammarInfo {
             id: TYPESCRIPT,
             name: "TypeScript",
             extensions: &["ts", "mts", "cts"],
+            names: &["typescript", "ts"],
             language: || tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             highlights: tree_sitter_typescript::HIGHLIGHTS_QUERY,
+            injections: None,
+            injections_extra: None,
         });
         #[cfg(feature = "lang-typescript")]
         v.push(GrammarInfo {
             id: TSX,
             name: "TSX",
             extensions: &["tsx"],
+            names: &["tsx"],
             language: || tree_sitter_typescript::LANGUAGE_TSX.into(),
             highlights: tree_sitter_typescript::HIGHLIGHTS_QUERY,
+            injections: None,
+            injections_extra: None,
         });
         #[cfg(feature = "lang-json")]
         v.push(GrammarInfo {
             id: JSON,
             name: "JSON",
             extensions: &["json", "jsonc"],
+            names: &["json", "jsonc"],
             language: || tree_sitter_json::LANGUAGE.into(),
             highlights: tree_sitter_json::HIGHLIGHTS_QUERY,
+            injections: None,
+            injections_extra: None,
         });
         #[cfg(feature = "lang-go")]
         v.push(GrammarInfo {
             id: GO,
             name: "Go",
             extensions: &["go"],
+            names: &["go", "golang"],
             language: || tree_sitter_go::LANGUAGE.into(),
             highlights: tree_sitter_go::HIGHLIGHTS_QUERY,
+            injections: None,
+            injections_extra: None,
         });
         #[cfg(feature = "lang-c")]
         v.push(GrammarInfo {
             id: C,
             name: "C",
             extensions: &["c", "h"],
+            names: &["c"],
             language: || tree_sitter_c::LANGUAGE.into(),
             highlights: tree_sitter_c::HIGHLIGHT_QUERY, // singular
+            injections: None,
+            injections_extra: None,
         });
         #[cfg(feature = "lang-cpp")]
         v.push(GrammarInfo {
             id: CPP,
             name: "C++",
             extensions: &["cc", "cpp", "cxx", "hpp", "hh", "hxx"],
+            names: &["cpp", "c++", "cxx", "cc"],
             language: || tree_sitter_cpp::LANGUAGE.into(),
             highlights: tree_sitter_cpp::HIGHLIGHT_QUERY, // singular
+            injections: None,
+            injections_extra: None,
         });
         #[cfg(feature = "lang-csharp")]
         v.push(GrammarInfo {
             id: CSHARP,
             name: "C#",
             extensions: &["cs"],
+            names: &["csharp", "c_sharp", "c#", "cs"],
             language: || tree_sitter_c_sharp::LANGUAGE.into(),
             highlights: tree_sitter_c_sharp::HIGHLIGHTS_QUERY,
+            // tree-sitter-c-sharp declares `INJECTIONS_QUERY` behind a build-script cfg
+            // but ships no `queries/injections.scm`, so the constant is gated out.
+            injections: None,
+            injections_extra: None,
         });
         #[cfg(feature = "lang-java")]
         v.push(GrammarInfo {
             id: JAVA,
             name: "Java",
             extensions: &["java"],
+            names: &["java"],
             language: || tree_sitter_java::LANGUAGE.into(),
             highlights: tree_sitter_java::HIGHLIGHTS_QUERY,
+            injections: None,
+            injections_extra: None,
         });
         #[cfg(feature = "lang-ruby")]
         v.push(GrammarInfo {
             id: RUBY,
             name: "Ruby",
             extensions: &["rb"],
+            names: &["ruby", "rb"],
             language: || tree_sitter_ruby::LANGUAGE.into(),
             highlights: tree_sitter_ruby::HIGHLIGHTS_QUERY,
+            injections: None,
+            injections_extra: None,
         });
         #[cfg(feature = "lang-php")]
         v.push(GrammarInfo {
             id: PHP,
             name: "PHP",
             extensions: &["php"],
+            names: &["php"],
             language: || tree_sitter_php::LANGUAGE_PHP.into(),
             highlights: tree_sitter_php::HIGHLIGHTS_QUERY,
+            injections: Some(tree_sitter_php::INJECTIONS_QUERY),
+            injections_extra: None,
         });
         #[cfg(feature = "lang-bash")]
         v.push(GrammarInfo {
             id: BASH,
             name: "Bash",
             extensions: &["sh", "bash"],
+            names: &["bash", "sh", "shell", "zsh", "console"],
             language: || tree_sitter_bash::LANGUAGE.into(),
             highlights: tree_sitter_bash::HIGHLIGHT_QUERY, // singular
+            injections: None,
+            injections_extra: None,
         });
         #[cfg(feature = "lang-toml")]
         v.push(GrammarInfo {
             id: TOML,
             name: "TOML",
             extensions: &["toml"],
+            names: &["toml"],
             language: || tree_sitter_toml_ng::LANGUAGE.into(),
             highlights: tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
+            injections: None,
+            injections_extra: None,
         });
         #[cfg(feature = "lang-html")]
         v.push(GrammarInfo {
             id: HTML,
             name: "HTML",
             extensions: &["html", "htm"],
+            names: &["html", "htm"],
             language: || tree_sitter_html::LANGUAGE.into(),
             highlights: tree_sitter_html::HIGHLIGHTS_QUERY,
+            injections: Some(tree_sitter_html::INJECTIONS_QUERY),
+            injections_extra: None,
         });
         #[cfg(feature = "lang-css")]
         v.push(GrammarInfo {
             id: CSS,
             name: "CSS",
             extensions: &["css"],
+            names: &["css"],
             language: || tree_sitter_css::LANGUAGE.into(),
             highlights: tree_sitter_css::HIGHLIGHTS_QUERY,
+            injections: None,
+            injections_extra: None,
         });
         #[cfg(feature = "lang-yaml")]
         v.push(GrammarInfo {
             id: YAML,
             name: "YAML",
             extensions: &["yml", "yaml"],
+            names: &["yaml", "yml"],
             language: || tree_sitter_yaml::LANGUAGE.into(),
             highlights: tree_sitter_yaml::HIGHLIGHTS_QUERY,
+            injections: None,
+            injections_extra: None,
         });
-        // Markdown uses tree-sitter-md's *block* grammar + its block highlights
-        // query (headings, code fences, list markers, …). The companion inline
-        // grammar (emphasis/links via injection) is a future refinement.
+        // Markdown is two grammars. The *block* grammar is the entry point (headings,
+        // fences, list markers); its injections query hands `(inline)` nodes to the
+        // companion inline grammar and each fence's content to the language its info
+        // string names — so emphasis, links and embedded code all arrive as layers.
         #[cfg(feature = "lang-markdown")]
         v.push(GrammarInfo {
             id: MARKDOWN,
             name: "Markdown",
             extensions: &["md", "markdown", "mdown", "mkd"],
+            names: &["markdown", "md"],
             language: || tree_sitter_md::LANGUAGE.into(),
             highlights: tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
+            injections: Some(tree_sitter_md::INJECTION_QUERY_BLOCK),
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-markdown")]
+        v.push(GrammarInfo {
+            id: MARKDOWN_INLINE,
+            name: "Markdown (inline)",
+            // Never resolved from a path: reached only via the block grammar's
+            // `markdown_inline` injection.
+            extensions: &[],
+            names: &["markdown_inline", "markdown-inline"],
+            language: || tree_sitter_md::INLINE_LANGUAGE.into(),
+            highlights: tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
+            injections: Some(tree_sitter_md::INJECTION_QUERY_INLINE),
+            injections_extra: None,
         });
 
         v
