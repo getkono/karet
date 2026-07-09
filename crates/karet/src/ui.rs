@@ -792,12 +792,11 @@ fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
         SidebarPanel::Search => "SEARCH",
         SidebarPanel::SourceControl => "SOURCE CONTROL",
     };
-    // Header columns: a small "karet" brand at the far left, the panel title, an
+    // Header columns: a compact workspace-root label, the panel title, an
     // optional Explorer toolbar, then the activity-bar switcher (7 cells). The
-    // toolbar (Explorer only) and then the brand are dropped on a narrow sidebar so
+    // toolbar (Explorer only) and then the root are dropped on a narrow sidebar so
     // the title and switcher always fit.
-    const BRAND: &str = "karet";
-    const BRAND_W: u16 = BRAND.len() as u16 + 1; // one leading space
+    const ROOT_MAX_W: u16 = 24;
     const ACTIONS_W: u16 = 8; // four buttons × 2 cells
     let icon_style = app.icon_style;
     let explorer = app.sidebar_panel == SidebarPanel::Explorer;
@@ -806,21 +805,31 @@ fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
     } else {
         0
     };
-    let show_brand = area.width >= BRAND_W + 9 + actions_w + 7;
-    let brand_w = if show_brand { BRAND_W } else { 0 };
+    let min_title_w = 9;
+    let root_avail = area
+        .width
+        .saturating_sub(min_title_w + actions_w + 7)
+        .min(ROOT_MAX_W);
+    let root_label = root_header_label(&app.root, root_avail.saturating_sub(1));
+    let show_root = root_avail > 6 && !root_label.is_empty();
+    let root_w = if show_root {
+        cell_width(&root_label).saturating_add(1).min(root_avail)
+    } else {
+        0
+    };
     let cols = Layout::horizontal([
-        Constraint::Length(brand_w),
+        Constraint::Length(root_w),
         Constraint::Min(0),
         Constraint::Length(actions_w),
         Constraint::Length(7),
     ])
     .split(area);
-    if show_brand {
-        let brand_style = Style::default()
+    if show_root {
+        let root_style = Style::default()
             .fg(theme.role(ThemeRole::Muted).to_ratatui())
             .add_modifier(Modifier::BOLD);
         f.render_widget(
-            Paragraph::new(Line::styled(format!(" {BRAND}"), brand_style)),
+            Paragraph::new(Line::styled(format!(" {root_label}"), root_style)),
             cols[0],
         );
     }
@@ -967,6 +976,44 @@ fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         app.scm_commits_total = 0;
         app.scm_more_row = None;
     }
+}
+
+fn root_header_label(root: &Path, max_width: u16) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    let full = root.to_string_lossy();
+    if cell_width(&full) <= max_width {
+        return full.into_owned();
+    }
+    let name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_else(|| full.as_ref());
+    let compact = format!(".../{name}");
+    if cell_width(&compact) <= max_width {
+        return compact;
+    }
+    truncate_left(&full, max_width)
+}
+
+fn truncate_left(text: &str, max_width: u16) -> String {
+    if max_width <= 3 {
+        return ".".repeat(max_width as usize);
+    }
+    let suffix_width = max_width - 3;
+    let mut suffix = String::new();
+    let mut used = 0;
+    for ch in text.chars().rev() {
+        let mut buf = [0; 4];
+        let w = cell_width(ch.encode_utf8(&mut buf));
+        if used + w > suffix_width {
+            break;
+        }
+        suffix.insert(0, ch);
+        used += w;
+    }
+    format!("...{suffix}")
 }
 
 /// Draw the horizontal drag divider between the changes and commit-log regions. It

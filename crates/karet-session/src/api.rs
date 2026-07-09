@@ -21,6 +21,7 @@ use karet_core::Symbol;
 use karet_search::FileHit;
 use karet_search::SearchQuery;
 use karet_syntax::HighlightSpan;
+use karet_text::EditCause;
 use karet_vcs::Commit;
 use karet_vcs::CommitDetail;
 use karet_vcs::FileChange;
@@ -103,6 +104,8 @@ pub enum Command {
         doc: DocumentId,
         /// The change to apply.
         change: Change,
+        /// Why the edit happened, used for undo grouping.
+        cause: EditCause,
     },
     /// Save a document to disk.
     Save {

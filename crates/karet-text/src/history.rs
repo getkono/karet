@@ -17,7 +17,7 @@ use karet_core::CursorState;
 use karet_core::LineCol;
 
 /// Coalesce consecutive typing within this many milliseconds into one undo step.
-const COALESCE_WINDOW_MS: u64 = 500;
+const COALESCE_WINDOW_MS: u64 = 200;
 
 /// Why an edit happened. Drives undo coalescing: only [`EditCause::Type`] is
 /// eligible to merge with the preceding edit.

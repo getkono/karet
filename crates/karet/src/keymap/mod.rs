@@ -199,7 +199,6 @@ static BINDINGS: &[Binding] = &[
     b(Sidebar, false, false, false, Char('x'), Command::SelectToggle),
     b(Sidebar, true,  false, false, Char('a'), Command::SelectAll),
     b(Sidebar, false, false, false, Char('q'), Command::Quit),
-    b(Sidebar, false, false, false, Esc,       Command::Quit),
     b(Sidebar, false, false, false, Char('j'), Command::SidebarDown),
     b(Sidebar, false, false, false, Down,      Command::SidebarDown),
     b(Sidebar, false, false, false, Char('k'), Command::SidebarUp),
@@ -222,14 +221,13 @@ static BINDINGS: &[Binding] = &[
     b(Outline, false, false, false, Right,     Command::OutlineActivate),
     b(Outline, false, false, false, Char('h'), Command::OutlineCollapse),
     b(Outline, false, false, false, Left,      Command::OutlineCollapse),
-    b(Outline, false, false, false, Esc,       Command::OutlineCollapse),
     b(Outline, false, false, false, Char('q'), Command::Quit),
 
     // Editor focus. The editor is non-modal: arrows/Home/End/PageUp-Down navigate,
     // and any unbound printable is text input (the shell inserts it after the keymap
     // declines). Bare-letter motions are intentionally gone so letters can be typed.
-    // Esc collapses multiple carets to the primary; with a single caret the dispatch
-    // falls back to returning focus to the sidebar (the former behavior).
+    // Esc collapses multiple carets to the primary; with a single caret it is a no-op
+    // so repeated Esc never leaves the active editor view.
     b(Editor, false, false, false, Esc,       Command::CollapseCarets),
     b(Editor, false, false, false, Down,      Command::CaretDown),
     b(Editor, false, false, false, Up,        Command::CaretUp),
@@ -311,13 +309,11 @@ static BINDINGS: &[Binding] = &[
     // current selection against it.
     b(CommitGraph, false, false, false, Char('m'), Command::CommitGraphMarkBase),
     b(CommitGraph, false, false, false, Char('c'), Command::CommitGraphCompare),
-    b(CommitGraph, false, false, false, Esc,       Command::ToggleFocus),
 
     // Editor focus, a too-large-file placeholder: bypass the size guard on demand.
-    // Enter loads it anyway; Esc returns focus to the sidebar (as it does in the
-    // editor, whose layer is not stacked here).
+    // Enter loads it anyway; Esc is intentionally unbound so repeated Esc never
+    // leaves the placeholder view.
     b(Oversize, false, false, false, Enter, Command::OpenAnyway),
-    b(Oversize, false, false, false, Esc,   Command::ToggleFocus),
 
     // Modal contexts. Each is exclusive (see `active_layers`); any key with no
     // binding here falls through to the modal's text input.
@@ -850,8 +846,9 @@ mod tests {
 
     #[test]
     fn oversize_placeholder_binds_open_anyway() {
-        // Enter over a too-large placeholder loads it anyway; Esc leaves for the
-        // sidebar. Editor editing keys must not leak in (the layer is not stacked).
+        // Enter over a too-large placeholder loads it anyway; Esc is unbound so
+        // repeated Esc does not leave the view. Editor editing keys must not leak in
+        // (the layer is not stacked).
         let ctx = Context::focus(FocusTarget::Oversize);
         assert_eq!(
             resolve(
@@ -868,7 +865,7 @@ mod tests {
                 ctx,
                 &[KeyChord::from_event(key(KeyCode::Esc, KeyModifiers::NONE))]
             ),
-            Resolved::Command(Command::ToggleFocus)
+            Resolved::None
         );
         // A Ctrl-chord still resolves globally (close tab), but Save (Editor layer)
         // does not reach a placeholder.

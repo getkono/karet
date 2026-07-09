@@ -54,19 +54,64 @@ fn main() -> color_eyre::Result<()> {
     // Load the layered JSONC configuration for this workspace (project/user/system,
     // over sane defaults). Diagnostics are handed to the app to surface as startup
     // notifications; loading itself never fails.
-    let loaded_config = karet_session::config::load_report(std::slice::from_ref(&root));
+    let mut loaded_config = karet_session::config::load_report(std::slice::from_ref(&root));
+    if let Some(panel) = cli.startup_panel {
+        loaded_config.settings.workbench.startup_panel = panel.into();
+    }
 
     // The Source-Control panel is populated by the session's `VcsStatus` event
     // (seeded on startup and refreshed on filesystem changes), so the shell starts
     // with an empty panel rather than computing status here.
-    let mut app =
-        app::App::new(root, Vec::new(), Vec::new(), syntax).with_loaded_config(loaded_config);
+    let mut app = app::App::new(root.clone(), Vec::new(), Vec::new(), syntax)
+        .with_loaded_config(loaded_config);
     // An explicit `--icons` flag (or `KARET_ICONS`) overrides `workbench.iconStyle`.
     if let Some(style) = cli.explicit_icon_style() {
         app = app.with_icons(style);
     }
     if let Some(file) = initial_file {
         app.open_initial(&file);
+    } else if let Some(preview) = cli.preview.as_ref() {
+        app.open_initial_preview(&resolve_under_root(&root, preview));
+    } else if cli.open.is_empty()
+        && let Some(readme) = startup_readme(&root)
+    {
+        app.open_initial_preview(&readme);
+    }
+    for file in &cli.open {
+        app.open_initial(&resolve_under_root(&root, file));
+    }
+    if let Some(focus) = cli.focus {
+        app.apply_startup_focus(focus);
     }
     app::run(app)
+}
+
+fn resolve_under_root(root: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    }
+}
+
+fn startup_readme(root: &Path) -> Option<PathBuf> {
+    if !root.join(".git").is_dir() {
+        return None;
+    }
+    for name in ["README.md", "README.markdown", "README.txt", "README"] {
+        let path = root.join(name);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    std::fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.to_ascii_lowercase().starts_with("readme."))
+        })
 }
