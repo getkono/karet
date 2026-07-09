@@ -18,6 +18,7 @@
 //! and never blocks the caller on the size of the tree; directories created later are
 //! picked up as they appear.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,19 +28,27 @@ use std::time::Duration;
 
 use ignore::DirEntry;
 use ignore::WalkBuilder;
+use notify::Config;
+use notify::ErrorKind;
 use notify::EventKind;
+use notify::PollWatcher;
 use notify::RecursiveMode;
 use notify::event::ModifyKind;
 use notify_debouncer_full::DebounceEventResult;
 use notify_debouncer_full::Debouncer;
 use notify_debouncer_full::RecommendedCache;
 use notify_debouncer_full::new_debouncer;
+use notify_debouncer_full::new_debouncer_opt;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::{self};
 
 /// The debounce window: filesystem event bursts within this interval coalesce. Also
 /// used as the background worker's poll interval for noticing shutdown.
 const DEBOUNCE: Duration = Duration::from_millis(200);
+
+/// Polling fallback interval used only after the native backend reports watch
+/// exhaustion. Kept slower than the main debounce so degraded trees remain cheap.
+const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Directory names whose contents are never surfaced or watched (build output / VCS
 /// metadata). Git dirs are watched separately and narrowly — see [`watch_git_dir`].
@@ -57,6 +66,8 @@ pub enum FsEventKind {
     Removed,
     /// A path was renamed (the paths carry the affected locations).
     Renamed,
+    /// Native watch coverage was exhausted and some paths are now polled.
+    WatchDegraded,
 }
 
 /// A debounced, neutral filesystem change.
@@ -65,8 +76,14 @@ pub struct FsEvent {
     /// The kind of change.
     pub kind: FsEventKind,
     /// The affected paths (a rename carries both the old and new locations).
+    ///
+    /// For [`FsEventKind::WatchDegraded`], these are the roots that fell back to
+    /// polling.
     pub paths: Vec<PathBuf>,
 }
+
+type NativeDebouncer = Debouncer<notify::RecommendedWatcher, RecommendedCache>;
+type PollDebouncer = Debouncer<PollWatcher, RecommendedCache>;
 
 /// Errors produced when starting a [`Watcher`].
 #[derive(Debug, thiserror::Error)]
@@ -108,11 +125,20 @@ impl Watcher {
     ) -> Result<(Self, UnboundedReceiver<FsEvent>), WatchError> {
         let (tx, rx) = mpsc::unbounded_channel();
         let (raw_tx, raw_rx) = std::sync::mpsc::channel::<DebounceEventResult>();
+        let (poll_tx, poll_rx) = std::sync::mpsc::channel::<DebounceEventResult>();
 
         // Cheap: starts the debouncer's own threads but registers no watches yet, so
         // a backend-start failure is still reported synchronously to the caller.
         let debouncer = new_debouncer(DEBOUNCE, None, raw_tx)
             .map_err(|e| WatchError::Backend(e.to_string()))?;
+        let poll_debouncer = new_debouncer_opt::<_, PollWatcher, RecommendedCache>(
+            DEBOUNCE,
+            None,
+            poll_tx,
+            RecommendedCache::new(),
+            Config::default().with_poll_interval(POLL_INTERVAL),
+        )
+        .map_err(|e| WatchError::Backend(e.to_string()))?;
 
         // Longest path first, so a nested per-worktree git dir is matched before the
         // common dir it lives under.
@@ -125,7 +151,18 @@ impl Watcher {
             let stop = Arc::clone(&stop);
             std::thread::Builder::new()
                 .name("karet-watch".to_string())
-                .spawn(move || worker_main(debouncer, &raw_rx, &roots, &meta_dirs, &tx, &stop))
+                .spawn(move || {
+                    worker_main(
+                        debouncer,
+                        poll_debouncer,
+                        &raw_rx,
+                        &poll_rx,
+                        &roots,
+                        &meta_dirs,
+                        &tx,
+                        &stop,
+                    )
+                })
                 .map_err(|e| WatchError::Backend(e.to_string()))?
         };
 
@@ -155,22 +192,23 @@ impl Drop for Watcher {
 /// debouncer so it can register new watches (e.g. for a freshly created directory)
 /// from the same thread that reads its event stream.
 fn worker_main(
-    mut debouncer: Debouncer<notify::RecommendedWatcher, RecommendedCache>,
+    mut native: NativeDebouncer,
+    mut poll: PollDebouncer,
     raw_rx: &std::sync::mpsc::Receiver<DebounceEventResult>,
+    poll_rx: &std::sync::mpsc::Receiver<DebounceEventResult>,
     roots: &[PathBuf],
     meta_dirs: &[PathBuf],
     tx: &mpsc::UnboundedSender<FsEvent>,
     stop: &AtomicBool,
 ) {
+    let mut watched = WatchState::default();
     for root in roots {
         for dir in enumerate_dirs(root) {
-            if let Err(e) = debouncer.watch(&dir, RecursiveMode::NonRecursive) {
-                tracing::warn!(path = %dir.display(), error = %e, "watch failed");
-            }
+            watch_dir(&mut native, &mut poll, &mut watched, tx, dir);
         }
     }
     for git_dir in meta_dirs {
-        watch_git_dir(&mut debouncer, git_dir);
+        watch_git_dir(&mut native, &mut poll, &mut watched, tx, git_dir);
     }
 
     loop {
@@ -179,32 +217,7 @@ fn worker_main(
         }
         match raw_rx.recv_timeout(DEBOUNCE) {
             Ok(Ok(events)) => {
-                for event in events {
-                    // A newly created directory needs its own watch (the parent's
-                    // watch is non-recursive); re-enumerating the new subtree also
-                    // covers a `mkdir -p` that surfaced only the outermost directory.
-                    if matches!(event.kind, EventKind::Create(_)) {
-                        for path in &event.paths {
-                            if path.is_dir() && !is_ignored(path) {
-                                for dir in enumerate_dirs(path) {
-                                    if let Err(e) =
-                                        debouncer.watch(&dir, RecursiveMode::NonRecursive)
-                                    {
-                                        tracing::warn!(
-                                            path = %dir.display(),
-                                            error = %e,
-                                            "watch failed",
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if let Some(fs) = convert(event.kind, &event.paths, meta_dirs) {
-                        // The receiver going away just means the session shut down.
-                        let _ = tx.send(fs);
-                    }
-                }
+                handle_events(events, &mut native, &mut poll, &mut watched, meta_dirs, tx);
             },
             // A batch of backend errors: best-effort, matches the prior behavior of
             // ignoring individual watch/backend hiccups.
@@ -213,8 +226,144 @@ fn worker_main(
             // The debouncer's sender side is gone — nothing more will ever arrive.
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
+        while let Ok(result) = poll_rx.try_recv() {
+            if let Ok(events) = result {
+                handle_events(events, &mut native, &mut poll, &mut watched, meta_dirs, tx);
+            }
+        }
     }
-    debouncer.stop();
+    poll.stop();
+    native.stop();
+}
+
+fn handle_events(
+    events: Vec<notify_debouncer_full::DebouncedEvent>,
+    native: &mut NativeDebouncer,
+    poll: &mut PollDebouncer,
+    watched: &mut WatchState,
+    meta_dirs: &[PathBuf],
+    tx: &mpsc::UnboundedSender<FsEvent>,
+) {
+    for event in events {
+        if matches!(
+            event.kind,
+            EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
+        ) {
+            for path in &event.paths {
+                unwatch_removed(native, poll, watched, path);
+            }
+        }
+        // A newly created directory needs its own watch (the parent's watch is
+        // non-recursive); re-enumerating the new subtree also covers a `mkdir -p`
+        // that surfaced only the outermost directory. For rename events, notify
+        // carries old and new paths; only the path that exists now enumerates.
+        if matches!(
+            event.kind,
+            EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
+        ) {
+            for path in &event.paths {
+                if path.is_dir() && !is_ignored(path) {
+                    for dir in enumerate_dirs(path) {
+                        watch_dir(native, poll, watched, tx, dir);
+                    }
+                }
+            }
+        }
+        if let Some(fs) = convert(event.kind, &event.paths, meta_dirs) {
+            // The receiver going away just means the session shut down.
+            let _ = tx.send(fs);
+        }
+    }
+}
+
+#[derive(Default)]
+struct WatchState {
+    native: BTreeSet<PathBuf>,
+    polled: BTreeSet<PathBuf>,
+    degraded_sent: bool,
+}
+
+fn watch_dir(
+    native: &mut NativeDebouncer,
+    poll: &mut PollDebouncer,
+    watched: &mut WatchState,
+    tx: &mpsc::UnboundedSender<FsEvent>,
+    dir: PathBuf,
+) {
+    if watched.native.contains(&dir) || watched.polled.contains(&dir) {
+        return;
+    }
+    match native.watch(&dir, RecursiveMode::NonRecursive) {
+        Ok(()) => {
+            watched.native.insert(dir);
+        },
+        Err(e) if matches!(e.kind, ErrorKind::MaxFilesWatch) => {
+            tracing::warn!(
+                path = %dir.display(),
+                error = %e,
+                "native watch limit reached; falling back to polling",
+            );
+            watch_polled(poll, watched, tx, dir);
+        },
+        Err(e) => {
+            tracing::warn!(path = %dir.display(), error = %e, "watch failed");
+        },
+    }
+}
+
+fn watch_polled(
+    poll: &mut PollDebouncer,
+    watched: &mut WatchState,
+    tx: &mpsc::UnboundedSender<FsEvent>,
+    dir: PathBuf,
+) {
+    match poll.watch(&dir, RecursiveMode::NonRecursive) {
+        Ok(()) => {
+            watched.polled.insert(dir.clone());
+            if !watched.degraded_sent {
+                watched.degraded_sent = true;
+                let _ = tx.send(FsEvent {
+                    kind: FsEventKind::WatchDegraded,
+                    paths: vec![dir],
+                });
+            }
+        },
+        Err(e) => {
+            tracing::warn!(path = %dir.display(), error = %e, "poll watch failed");
+        },
+    }
+}
+
+fn unwatch_removed(
+    native: &mut NativeDebouncer,
+    poll: &mut PollDebouncer,
+    watched: &mut WatchState,
+    removed: &Path,
+) {
+    let native_paths = remove_watched_under(&mut watched.native, removed);
+    for path in native_paths {
+        if let Err(e) = native.unwatch(&path) {
+            tracing::warn!(path = %path.display(), error = %e, "unwatch failed");
+        }
+    }
+    let polled_paths = remove_watched_under(&mut watched.polled, removed);
+    for path in polled_paths {
+        if let Err(e) = poll.unwatch(&path) {
+            tracing::warn!(path = %path.display(), error = %e, "poll unwatch failed");
+        }
+    }
+}
+
+fn remove_watched_under(watched: &mut BTreeSet<PathBuf>, removed: &Path) -> Vec<PathBuf> {
+    let paths: Vec<PathBuf> = watched
+        .iter()
+        .filter(|p| p.as_path() == removed || p.starts_with(removed))
+        .cloned()
+        .collect();
+    for path in &paths {
+        watched.remove(path);
+    }
+    paths
 }
 
 /// Enumerate the directories under `root` worth watching: hidden dotdirs, gitignored
@@ -247,17 +396,26 @@ fn enumerate_dirs(root: &Path) -> Vec<PathBuf> {
 /// and where branch/tag updates land). The high-churn `objects`/`logs` trees are never
 /// watched. Best-effort: a failure is logged, not propagated.
 fn watch_git_dir(
-    debouncer: &mut Debouncer<notify::RecommendedWatcher, RecommendedCache>,
+    native: &mut NativeDebouncer,
+    poll: &mut PollDebouncer,
+    watched: &mut WatchState,
+    tx: &mpsc::UnboundedSender<FsEvent>,
     git_dir: &Path,
 ) {
-    if let Err(e) = debouncer.watch(git_dir, RecursiveMode::NonRecursive) {
-        tracing::warn!(path = %git_dir.display(), error = %e, "watch failed");
-    }
+    watch_dir(native, poll, watched, tx, git_dir.to_path_buf());
     let refs = git_dir.join("refs");
-    if refs.is_dir()
-        && let Err(e) = debouncer.watch(&refs, RecursiveMode::Recursive)
-    {
-        tracing::warn!(path = %refs.display(), error = %e, "watch failed");
+    if refs.is_dir() && !watched.native.contains(&refs) && !watched.polled.contains(&refs) {
+        match native.watch(&refs, RecursiveMode::Recursive) {
+            Ok(()) => {
+                watched.native.insert(refs);
+            },
+            Err(e) if matches!(e.kind, ErrorKind::MaxFilesWatch) => {
+                watch_polled(poll, watched, tx, refs);
+            },
+            Err(e) => {
+                tracing::warn!(path = %refs.display(), error = %e, "watch failed");
+            },
+        }
     }
 }
 
@@ -465,6 +623,29 @@ mod tests {
         assert!(!dirs.contains(&root.join(".hidden")));
         assert!(!dirs.contains(&root.join("build")));
         Ok(())
+    }
+
+    #[test]
+    fn remove_watched_under_prunes_descendants_only() {
+        let mut watched = BTreeSet::from([
+            PathBuf::from("/repo"),
+            PathBuf::from("/repo/src"),
+            PathBuf::from("/repo/src/nested"),
+            PathBuf::from("/repo2/src"),
+        ]);
+
+        let removed = remove_watched_under(&mut watched, Path::new("/repo/src"));
+
+        assert_eq!(
+            removed,
+            vec![
+                PathBuf::from("/repo/src"),
+                PathBuf::from("/repo/src/nested"),
+            ]
+        );
+        assert!(watched.contains(Path::new("/repo")));
+        assert!(watched.contains(Path::new("/repo2/src")));
+        assert!(!watched.contains(Path::new("/repo/src")));
     }
 
     /// Poll `rx` until an event matching `pred` arrives or `deadline` elapses.
