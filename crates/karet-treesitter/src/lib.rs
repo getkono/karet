@@ -472,8 +472,7 @@ impl LayeredParser {
     /// parse is skipped rather than failing the document.
     pub fn parse(&mut self, lang: LanguageId, text: &str) -> Result<LayeredTree, TsError> {
         let root = SyntaxTree::parse(&mut self.pool, lang, text)?;
-        let mut children = Vec::new();
-        self.descend(&root, text, 1, &mut children);
+        let children = self.build_layers(&root, text);
         Ok(LayeredTree { root, children })
     }
 
@@ -495,61 +494,78 @@ impl LayeredParser {
             tree.root.edit(edit);
         }
         tree.root.reparse(&mut self.pool, text)?;
-        tree.children.clear();
-        let mut children = Vec::new();
-        self.descend(&tree.root, text, 1, &mut children);
-        tree.children = children;
+        tree.children = self.build_layers(&tree.root, text);
         Ok(())
     }
 
-    /// Parse the regions `parent` injects, then recurse into each new layer.
-    fn descend(
-        &mut self,
-        parent: &SyntaxTree,
-        text: &str,
-        depth: usize,
-        out: &mut Vec<SyntaxTree>,
-    ) {
-        if depth > MAX_INJECTION_DEPTH || out.len() >= MAX_INJECTION_LAYERS {
-            return;
+    /// Expand every injected layer beneath `root`, breadth-first.
+    ///
+    /// Breadth-first rather than depth-first so the result is ordered by depth. A
+    /// consumer merging captures across layers can then let the later (deeper) layer
+    /// win a tie against the shallower layer that injected it.
+    fn build_layers(&mut self, root: &SyntaxTree, text: &str) -> Vec<SyntaxTree> {
+        let mut out: Vec<SyntaxTree> = Vec::new();
+        let mut frontier = self.expand(root, text);
+
+        for _ in 1..=MAX_INJECTION_DEPTH {
+            if frontier.is_empty() {
+                break;
+            }
+            // Admit what we can of this level, then stop rather than silently
+            // half-highlighting a pathological document.
+            let room = MAX_INJECTION_LAYERS.saturating_sub(out.len());
+            if frontier.len() >= room {
+                frontier.truncate(room);
+                out.append(&mut frontier);
+                break;
+            }
+            let mut next = Vec::new();
+            for layer in &frontier {
+                next.extend(self.expand(layer, text));
+            }
+            out.append(&mut frontier);
+            frontier = next;
         }
+        out
+    }
+
+    /// Parse the regions `parent` directly injects — one layer per region.
+    fn expand(&mut self, parent: &SyntaxTree, text: &str) -> Vec<SyntaxTree> {
         let Some(regions) = self.regions_of(parent, text) else {
-            return;
+            return Vec::new();
         };
 
-        // `injection.combined` means every region of that pattern forms ONE tree (a PHP
-        // file's islands of code are a single program); otherwise each region is its own
-        // tree (two code fences are two independent programs).
+        // `injection.combined` means every region of that pattern forms ONE tree (a Rust
+        // doc comment's `///` lines are a single markdown document); otherwise each
+        // region is its own tree (two code fences are two independent programs).
         let mut combined: Vec<(LanguageId, Vec<Span>)> = Vec::new();
         let mut separate: Vec<(LanguageId, Vec<Span>)> = Vec::new();
         for region in regions {
-            let bucket = if region.combined {
-                &mut combined
+            if region.combined {
+                match combined.iter_mut().find(|(l, _)| *l == region.lang) {
+                    Some((_, ranges)) => ranges.extend(region.ranges),
+                    None => combined.push((region.lang, region.ranges)),
+                }
             } else {
-                &mut separate
-            };
-            match bucket.iter_mut().find(|(l, _)| *l == region.lang) {
-                Some((_, ranges)) if region.combined => ranges.extend(region.ranges),
-                _ => bucket.push((region.lang, region.ranges)),
+                separate.push((region.lang, region.ranges));
             }
         }
 
+        let mut children = Vec::new();
         for (lang, ranges) in combined.into_iter().chain(separate) {
-            if out.len() >= MAX_INJECTION_LAYERS {
-                return;
-            }
             let ranges = injection::normalize(ranges);
             // A layer that reproduces its parent verbatim would recurse forever; the
             // depth cap catches it eventually, but refusing it here keeps the tree tidy.
             if ranges.is_empty() || covers_same_text(parent, &ranges, lang) {
                 continue;
             }
-            let Ok(child) = SyntaxTree::parse_ranges(&mut self.pool, lang, text, &ranges) else {
-                continue; // a failed layer degrades to the parent's highlighting
-            };
-            self.descend(&child, text, depth + 1, out);
-            out.push(child);
+            // A failed layer degrades to the parent's highlighting rather than failing
+            // the whole document.
+            if let Ok(child) = SyntaxTree::parse_ranges(&mut self.pool, lang, text, &ranges) {
+                children.push(child);
+            }
         }
+        children
     }
 
     /// The injected regions `tree` declares, or `None` if its grammar injects nothing.
@@ -929,6 +945,34 @@ pub fn add_one() {}
         assert!(
             doctest.span().end.0 <= src.find("pub fn").unwrap_or(src.len()),
             "the doctest layer must stay inside the doc comment"
+        );
+        Ok(())
+    }
+
+    #[cfg(all(feature = "lang-rust", feature = "lang-markdown"))]
+    #[test]
+    fn layers_are_ordered_shallowest_first() -> Result<(), TsError> {
+        // rust (root) → markdown (doc comment, depth 1) → rust (doctest fence, depth 2).
+        // The nested rust layer must come *after* the markdown layer that produced it,
+        // so a capture merge can let the deeper layer win an exact-range tie.
+        let rust = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+        let md = language_id_from_injection_name("markdown").ok_or(TsError::UnknownLanguage)?;
+        let src = "/// ```rust\n/// let y = 1;\n/// ```\npub fn f() {}\n";
+
+        let mut parser = LayeredParser::new();
+        let tree = parser.parse(rust, src)?;
+        let langs: Vec<_> = tree.children().iter().map(SyntaxTree::language).collect();
+        let md_at = langs.iter().position(|l| *l == md);
+        let nested_rust_at = tree
+            .children()
+            .iter()
+            .position(|c| c.language() == rust && c.span().start.0 < src.len());
+        let (Some(md_at), Some(rust_at)) = (md_at, nested_rust_at) else {
+            return Err(TsError::ParseFailed);
+        };
+        assert!(
+            md_at < rust_at,
+            "markdown (depth 1) must precede the doctest rust layer (depth 2): {langs:?}"
         );
         Ok(())
     }
