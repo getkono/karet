@@ -1396,6 +1396,30 @@ mod tests {
     }
 
     #[test]
+    fn session_new_does_not_walk_large_tree_on_caller_thread() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        for i in 0..1200 {
+            let path = dir.path().join(format!("src/{i}/nested"));
+            if std::fs::create_dir_all(path).is_err() {
+                return;
+            }
+        }
+
+        let started = std::time::Instant::now();
+        let (_session, _events, _snaps) = Session::new(SessionConfig {
+            roots: vec![dir.path().to_path_buf()],
+            ..SessionConfig::default()
+        });
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "Session::new must not synchronously enumerate large trees"
+        );
+    }
+
+    #[test]
     fn opening_a_non_utf8_file_reports_not_utf8_instead_of_a_generic_error() {
         let Some((_dir, path)) = write_temp("bad.rs", "") else {
             return;
