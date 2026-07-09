@@ -214,7 +214,9 @@ pub enum Command {
         /// The maximum number of commits to return.
         limit: usize,
     },
-    /// Load the full detail of a single commit (answered by [`Event::CommitReady`]).
+    /// Load the full detail of a single commit (first answered by
+    /// [`Event::CommitDetailReady`], then by [`Event::CommitReady`] once changed files
+    /// are computed).
     CommitDetail {
         /// The revision to resolve: a hash, a ref name, `HEAD`, `HEAD~3`, ….
         rev: String,
@@ -448,7 +450,14 @@ pub enum Event {
         /// The new commits, newest first.
         commits: Vec<Commit>,
     },
-    /// A commit's full detail plus its file changes, answering [`Command::CommitDetail`].
+    /// A commit's metadata, answering the first stage of [`Command::CommitDetail`].
+    CommitDetailReady {
+        /// The commit metadata (message, author/committer, parents, signature). Boxed
+        /// to keep this large payload from bloating every other [`Event`] variant.
+        detail: Box<CommitDetail>,
+    },
+    /// A commit's full detail plus its file changes, answering the final stage of
+    /// [`Command::CommitDetail`].
     CommitReady {
         /// The commit metadata (message, author/committer, parents, signature). Boxed
         /// to keep this large payload from bloating every other [`Event`] variant.

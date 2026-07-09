@@ -394,24 +394,43 @@ impl Session {
         }
     }
 
-    /// Load one commit's full detail plus the files it changed, and emit them together.
-    /// A read failure (e.g. an unknown revision) becomes a VCS notification. No-op
-    /// without a repository.
+    /// Load one commit's metadata first, then the files it changed. The metadata event
+    /// lets clients render the commit view while the potentially-expensive file-change
+    /// extraction continues. A read failure (e.g. an unknown revision) becomes a VCS
+    /// notification. No-op without a repository.
     fn emit_commit_detail(&mut self, id: RequestId, rev: &str) {
         let Some(repo) = self.vcs.as_ref() else {
             return;
         };
-        match (repo.commit_detail(rev), repo.commit_changes(rev)) {
-            (Ok(detail), Ok(changes)) => {
+        let detail = match repo.commit_detail(rev) {
+            Ok(detail) => detail,
+            Err(e) => {
                 self.emit(
                     Some(id),
-                    Event::CommitReady {
-                        detail: Box::new(detail),
-                        changes,
+                    Event::Notification {
+                        severity: Severity::Error,
+                        kind: NotificationKind::Vcs,
+                        message: e.to_string(),
                     },
                 );
+                return;
             },
-            (Err(e), _) | (_, Err(e)) => self.emit(
+        };
+        self.emit(
+            Some(id),
+            Event::CommitDetailReady {
+                detail: Box::new(detail.clone()),
+            },
+        );
+        match repo.commit_changes(rev) {
+            Ok(changes) => self.emit(
+                Some(id),
+                Event::CommitReady {
+                    detail: Box::new(detail),
+                    changes,
+                },
+            ),
+            Err(e) => self.emit(
                 Some(id),
                 Event::Notification {
                     severity: Severity::Error,
@@ -2080,12 +2099,23 @@ mod tests {
                 rev: "HEAD".to_string(),
             },
         );
+        let mut detail_ready = None;
         let mut ready = None;
         while let Some((_, ev)) = events.try_recv() {
-            if let Event::CommitReady { detail, changes } = ev {
-                ready = Some((detail, changes));
+            match ev {
+                Event::CommitDetailReady { detail } => {
+                    detail_ready = Some(detail);
+                },
+                Event::CommitReady { detail, changes } => {
+                    ready = Some((detail, changes));
+                },
+                _ => {},
             }
         }
+        let Some(detail) = detail_ready else {
+            return;
+        };
+        assert_eq!(detail.summary, "add b");
         let Some((detail, changes)) = ready else {
             return;
         };

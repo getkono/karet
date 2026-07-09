@@ -1176,7 +1176,7 @@ fn draw_scm_commits(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     if app.scm.log_has_more {
         // The "load more" display row is relative to the commit region's top.
         app.scm_more_row = Some(items.len());
-        let label = if app.scm.log_loading {
+        let label = if app.scm.log_loading_since.is_some_and(loading_visible) {
             " loading…"
         } else {
             " ⋯ load more"
@@ -1432,6 +1432,8 @@ fn draw_pane_content(
         TabKind::Commit {
             detail,
             files,
+            files_loading_since,
+            files_error,
             verification,
             explain_since,
             scroll,
@@ -1442,11 +1444,26 @@ fn draw_pane_content(
                 area,
                 detail,
                 files,
+                file_load_status(*files_loading_since, files_error.as_deref()),
                 verification.as_ref(),
                 *explain_since,
                 scroll,
             );
         },
+        TabKind::CommitLoading {
+            rev,
+            loading_since,
+            error,
+            scroll,
+        } => draw_commit_loading(
+            f,
+            theme,
+            area,
+            rev,
+            *loading_since,
+            error.as_deref(),
+            scroll,
+        ),
         TabKind::Compare {
             base_label,
             head_label,
@@ -1468,9 +1485,13 @@ fn draw_pane_content(
             commits,
             has_more,
             loading,
+            loading_since,
             selected,
+            detail_loading_since,
             detail,
             files,
+            files_loading_since,
+            files_error,
             verification,
             compare_base: _,
             list_offset,
@@ -1481,9 +1502,12 @@ fn draw_pane_content(
             commits,
             *has_more,
             *loading,
+            *loading_since,
             *selected,
+            *detail_loading_since,
             detail.as_deref(),
             files,
+            file_load_status(*files_loading_since, files_error.as_deref()),
             verification.as_ref(),
             list_offset,
         ),
@@ -1661,13 +1685,21 @@ fn draw_commit(
     area: Rect,
     detail: &karet_vcs::CommitDetail,
     files: &[render::FileView],
+    file_status: CommitFileStatus<'_>,
     verification: Option<&karet_session::GithubVerification>,
     explain_since: Option<Instant>,
     scroll: &mut u16,
 ) -> Option<Rect> {
     let reveal = explain_since.is_some_and(|t| t.elapsed() < crate::app::COMMIT_REVEAL);
-    let (lines, badge) =
-        commit_detail_lines(theme, detail, files, verification, reveal, area.width);
+    let (lines, badge) = commit_detail_lines(
+        theme,
+        detail,
+        files,
+        file_status,
+        verification,
+        reveal,
+        area.width,
+    );
     let max = u16::try_from(lines.len())
         .unwrap_or(u16::MAX)
         .saturating_sub(area.height);
@@ -1684,6 +1716,54 @@ fn draw_commit(
             height: 1,
         })
     })
+}
+
+fn draw_commit_loading(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    rev: &str,
+    loading_since: Instant,
+    error: Option<&str>,
+    scroll: &mut u16,
+) {
+    *scroll = 0;
+    if error.is_none() && !loading_visible(loading_since) {
+        f.render_widget(
+            Block::default()
+                .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui())),
+            area,
+        );
+        return;
+    }
+    let title = Style::default()
+        .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+        .add_modifier(Modifier::BOLD);
+    let muted = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
+    let error_style = Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui());
+    let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
+    let short = rev.chars().take(12).collect::<String>();
+    let lines = if let Some(error) = error {
+        vec![
+            Line::styled(" Could not load commit", title),
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled(short, hash_style),
+                Span::styled("  ", muted),
+                Span::styled(error.to_string(), error_style),
+            ]),
+        ]
+    } else {
+        vec![
+            Line::styled(" Loading commit", title),
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled(short, hash_style),
+                Span::styled(" details and file changes…", muted),
+            ]),
+        ]
+    };
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 /// Draw the compare view (a range header + changed-file cards) as one scrollable
@@ -1822,10 +1902,29 @@ fn format_datetime(secs: i64, offset: i32) -> String {
 /// When `reveal` is set, the signature badge's explanation is inserted under the badge
 /// (a transient tooltip). The returned [`BadgeHit`], if any, locates the badge for
 /// click hit-testing.
+#[derive(Clone, Copy)]
+enum CommitFileStatus<'a> {
+    Ready,
+    Loading(Instant),
+    Failed(&'a str),
+}
+
+fn file_load_status(loading_since: Option<Instant>, error: Option<&str>) -> CommitFileStatus<'_> {
+    if let Some(error) = error {
+        CommitFileStatus::Failed(error)
+    } else if let Some(since) = loading_since {
+        CommitFileStatus::Loading(since)
+    } else {
+        CommitFileStatus::Ready
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // commit metadata, file state, badge state, and width are independent
 fn commit_detail_lines(
     theme: &Theme,
     detail: &karet_vcs::CommitDetail,
     files: &[render::FileView],
+    file_status: CommitFileStatus<'_>,
     verification: Option<&karet_session::GithubVerification>,
     reveal: bool,
     width: u16,
@@ -1954,9 +2053,26 @@ fn commit_detail_lines(
         ]));
     }
 
-    // The summary, the changed-file table of contents, and the per-file diff cards —
-    // shared verbatim with the compare view.
-    lines.extend(changed_files_lines(theme, files, width));
+    // The summary, the changed-file table of contents, and the per-file diff cards.
+    // Metadata can arrive before file extraction; keep this lower block stable while
+    // the heavier work finishes.
+    match file_status {
+        CommitFileStatus::Ready => lines.extend(changed_files_lines(theme, files, width)),
+        CommitFileStatus::Loading(since) => {
+            lines.push(Line::raw(""));
+            if loading_visible(since) {
+                lines.push(Line::styled(" loading changed files\u{2026}", muted));
+            }
+        },
+        CommitFileStatus::Failed(error) => {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(vec![
+                Span::styled(" changed files unavailable", label),
+                Span::raw("   "),
+                Span::styled(error.to_string(), muted),
+            ]));
+        },
+    }
     (lines, Some(badge_hit))
 }
 
@@ -2084,9 +2200,12 @@ fn draw_commit_graph(
     commits: &[karet_vcs::Commit],
     has_more: bool,
     loading: bool,
+    loading_since: Option<Instant>,
     selected: usize,
+    detail_loading_since: Option<Instant>,
     detail: Option<&karet_vcs::CommitDetail>,
     files: &[render::FileView],
+    file_status: CommitFileStatus<'_>,
     verification: Option<&karet_session::GithubVerification>,
     list_offset: &mut u16,
 ) {
@@ -2142,7 +2261,7 @@ fn draw_commit_graph(
         }
         items.push(ListItem::new(line));
     }
-    if loading && commits.is_empty() {
+    if loading && commits.is_empty() && loading_since.is_some_and(loading_visible) {
         items.push(ListItem::new(Line::styled(" loading\u{2026}", dim)));
     } else if has_more {
         items.push(ListItem::new(Line::styled(" \u{22ef} more", dim)));
@@ -2168,23 +2287,49 @@ fn draw_commit_graph(
         Some(d) if Some(d.hash.as_str()) == sel_hash => {
             f.render_widget(
                 Paragraph::new(
-                    commit_detail_lines(theme, d, files, verification, false, detail_area.width).0,
+                    commit_detail_lines(
+                        theme,
+                        d,
+                        files,
+                        file_status,
+                        verification,
+                        false,
+                        detail_area.width,
+                    )
+                    .0,
                 ),
                 detail_area,
             );
         },
         _ => {
-            let msg = if commits.is_empty() {
-                "loading commits\u{2026}"
+            let pending_since = if commits.is_empty() {
+                loading_since
             } else {
-                "loading commit\u{2026}"
+                detail_loading_since
             };
-            f.render_widget(
-                Paragraph::new(Line::styled(format!("  {msg}"), dim)),
-                detail_area,
-            );
+            if pending_since.is_some_and(loading_visible) {
+                let msg = if commits.is_empty() {
+                    "loading commits\u{2026}"
+                } else {
+                    "loading commit details\u{2026}"
+                };
+                f.render_widget(
+                    Paragraph::new(Line::styled(format!("  {msg}"), dim)),
+                    detail_area,
+                );
+            } else {
+                f.render_widget(
+                    Block::default()
+                        .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui())),
+                    detail_area,
+                );
+            }
         },
     }
+}
+
+fn loading_visible(since: Instant) -> bool {
+    since.elapsed() >= crate::app::LOADING_REVEAL_DELAY
 }
 
 /// Render the semantic-blame view: each commit group as a header (line range, short
@@ -2886,7 +3031,15 @@ mod tests {
 
         // Without a forge verdict, a signed commit reads "Signed"; the reported hit
         // must land exactly on that badge text within its line.
-        let (lines, hit) = commit_detail_lines(&Theme::dark(), &detail, &files, None, false, 80);
+        let (lines, hit) = commit_detail_lines(
+            &Theme::dark(),
+            &detail,
+            &files,
+            CommitFileStatus::Ready,
+            None,
+            false,
+            80,
+        );
         let hit = hit.expect("a signed commit has a badge");
         let chars: Vec<char> = flat(&lines[hit.line as usize]).chars().collect();
         let span: String = chars[hit.col as usize..(hit.col + hit.width) as usize]
@@ -2904,7 +3057,15 @@ mod tests {
         );
 
         // Revealing inserts the badge's plain-language meaning.
-        let (revealed, _) = commit_detail_lines(&Theme::dark(), &detail, &files, None, true, 80);
+        let (revealed, _) = commit_detail_lines(
+            &Theme::dark(),
+            &detail,
+            &files,
+            CommitFileStatus::Ready,
+            None,
+            true,
+            80,
+        );
         assert!(
             revealed
                 .iter()

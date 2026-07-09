@@ -124,6 +124,20 @@ mise run coverage    # cargo llvm-cov --workspace
 - ratatui rendering goes behind the `view` feature; never make a headless engine
   depend on `ratatui` unconditionally.
 
+## UI loading states
+
+- User actions that activate a view should update the visible surface immediately,
+  then lazy-load expensive details behind it. For example, clicking a commit in the
+  Source Control graph opens a pending commit view immediately; the commit metadata
+  and changed-file diffs fill in when the backend answers.
+- Avoid flashing loading text for fast paths. Use the shared app threshold
+  (`LOADING_REVEAL_DELAY`, currently 200ms) and render a stable, muted placeholder
+  only after work remains pending beyond that delay. Schedule a repaint at the
+  threshold so the placeholder appears even if no input arrives.
+- Keep delayed loading states layout-stable: reserve the destination pane/tab
+  immediately, clear stale detail while a new detail request is pending, and ignore
+  stale async responses that no longer match the selected item or open view.
+
 ## Testing policy
 
 Pragmatic and keyed to what a crate *is* — we spend test effort where it buys

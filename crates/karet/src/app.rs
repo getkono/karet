@@ -116,6 +116,7 @@ use crate::tab::SearchField;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 use crate::tab::ViewMode;
+use crate::tab::commit_title;
 use crate::ui;
 use crate::workspace;
 
@@ -133,6 +134,8 @@ pub(crate) struct Scm {
     pub(crate) log_has_more: bool,
     /// Whether a log page request is currently in flight.
     pub(crate) log_loading: bool,
+    /// When the current log-page request began, if one is in flight.
+    pub(crate) log_loading_since: Option<Instant>,
 }
 
 impl Scm {
@@ -251,6 +254,10 @@ const COMMIT_AUTOLOAD_THRESHOLD: usize = 3;
 /// double-click before it auto-hides.
 pub(crate) const COMMIT_REVEAL: Duration = Duration::from_secs(5);
 
+/// Delay before rendering non-blocking loading text. Fast operations can complete
+/// without visual churn; slower ones get an explicit, stable placeholder.
+pub(crate) const LOADING_REVEAL_DELAY: Duration = Duration::from_millis(200);
+
 /// Half-period for the app-drawn graphical editor caret.
 const GRAPHICS_CARET_BLINK_INTERVAL: Duration = Duration::from_millis(530);
 
@@ -299,11 +306,12 @@ pub(crate) struct ToastHit {
 }
 
 /// Where a resolved commit detail should be shown.
+#[derive(Clone)]
 enum CommitDest {
-    /// Open it as a new standalone commit tab.
-    Tab,
-    /// Fill the graph browser's detail pane.
-    Browser,
+    /// Fill the already-open standalone commit tab with this view id.
+    Tab { view: ViewId },
+    /// Fill the graph browser's detail pane if it still selects this hash.
+    Browser { hash: String },
 }
 
 /// The IDE shell state.
@@ -553,6 +561,7 @@ impl App {
                 log: Vec::new(),
                 log_has_more: false,
                 log_loading: false,
+                log_loading_since: None,
             },
             tabs: vec![Tab::welcome()],
             active: 0,
@@ -733,7 +742,8 @@ impl App {
         match self.tabs.get(self.active).map(|t| &t.kind) {
             Some(TabKind::Diff { .. }) => EditorTab::Diff,
             Some(
-                TabKind::Commit { .. }
+                TabKind::CommitLoading { .. }
+                | TabKind::Commit { .. }
                 | TabKind::Compare { .. }
                 | TabKind::Blame { .. }
                 | TabKind::Graph { .. }
@@ -2076,6 +2086,7 @@ impl App {
             return;
         }
         self.scm.log_loading = true;
+        self.scm.log_loading_since = Some(Instant::now());
         self.send_vcs(SessionCommand::VcsLog {
             skip,
             limit: SCM_LOG_PAGE,
@@ -2090,11 +2101,15 @@ impl App {
         }
     }
 
-    /// Open the commit view for `rev` (a hash or ref). The detail + diff arrive
-    /// asynchronously as [`SessionEvent::CommitReady`], which builds the tab.
+    /// Open the commit view for `rev` (a hash or ref) immediately, fill metadata when
+    /// [`SessionEvent::CommitDetailReady`] arrives, then fill changed files when
+    /// [`SessionEvent::CommitReady`] arrives.
     fn open_commit(&mut self, rev: String) {
+        self.push_tab(Tab::commit_loading(rev.clone()));
+        let view = self.tabs[self.active].view;
         if let Some(id) = self.send_command_id(SessionCommand::CommitDetail { rev }) {
-            self.pending_commit_detail.insert(id, CommitDest::Tab);
+            self.pending_commit_detail
+                .insert(id, CommitDest::Tab { view });
         }
     }
 
@@ -2219,8 +2234,14 @@ impl App {
         let hash = commits[next].hash.clone();
         self.graph_request_detail(hash);
         if want_more {
-            if let Some(TabKind::CommitGraph { loading, .. }) = self.active_commit_graph() {
+            if let Some(TabKind::CommitGraph {
+                loading,
+                loading_since,
+                ..
+            }) = self.active_commit_graph()
+            {
                 *loading = true;
+                *loading_since = Some(Instant::now());
             }
             let command = match path {
                 Some(path) => SessionCommand::FileHistory {
@@ -2245,8 +2266,26 @@ impl App {
         {
             return;
         }
-        if let Some(id) = self.send_command_id(SessionCommand::CommitDetail { rev: hash }) {
-            self.pending_commit_detail.insert(id, CommitDest::Browser);
+        if let Some(TabKind::CommitGraph {
+            detail,
+            files,
+            files_loading_since,
+            files_error,
+            verification,
+            detail_loading_since,
+            ..
+        }) = self.active_commit_graph()
+        {
+            *detail = None;
+            files.clear();
+            *files_loading_since = None;
+            *files_error = None;
+            *verification = None;
+            *detail_loading_since = Some(Instant::now());
+        }
+        if let Some(id) = self.send_command_id(SessionCommand::CommitDetail { rev: hash.clone() }) {
+            self.pending_commit_detail
+                .insert(id, CommitDest::Browser { hash });
         }
     }
 
@@ -2316,6 +2355,42 @@ impl App {
         });
     }
 
+    /// Fill the graph browser's metadata pane from a resolved commit, and fire the lazy
+    /// GitHub verification fetch. A no-op if no browser is open.
+    fn fill_graph_metadata(&mut self, detail: Box<CommitDetail>) {
+        let hash = detail.hash.clone();
+        let mut filled = false;
+        for tab in self.all_tabs_mut() {
+            if let TabKind::CommitGraph {
+                commits,
+                selected,
+                detail: slot,
+                files,
+                files_loading_since,
+                files_error,
+                verification,
+                detail_loading_since,
+                ..
+            } = &mut tab.kind
+            {
+                let selected_hash = commits.get(*selected).map(|c| c.hash.as_str());
+                if selected_hash != Some(hash.as_str()) {
+                    continue;
+                }
+                *slot = Some(detail.clone());
+                files.clear();
+                *files_loading_since = Some(Instant::now());
+                *files_error = None;
+                *verification = None;
+                *detail_loading_since = None;
+                filled = true;
+            }
+        }
+        if filled {
+            self.send_vcs(SessionCommand::FetchCommitVerification { hash });
+        }
+    }
+
     /// Fill the graph browser's detail pane from a resolved commit, and fire the lazy
     /// GitHub verification fetch. A no-op if no browser is open.
     fn fill_graph_detail(&mut self, detail: Box<CommitDetail>, changes: Vec<FileChange>) {
@@ -2324,19 +2399,35 @@ impl App {
         let mut filled = false;
         for tab in self.all_tabs_mut() {
             if let TabKind::CommitGraph {
+                commits,
+                selected,
                 detail: slot,
                 files,
+                files_loading_since,
+                files_error,
                 verification,
+                detail_loading_since,
                 ..
             } = &mut tab.kind
             {
+                let selected_hash = commits.get(*selected).map(|c| c.hash.as_str());
+                if selected_hash != Some(hash.as_str()) {
+                    continue;
+                }
+                let keep_verification = slot.as_ref().is_some_and(|d| d.hash == hash)
+                    && verification.as_ref().is_some();
                 *files = changes
                     .iter()
                     .cloned()
                     .map(|c| FileView::new(c, Section::Staged, syntax))
                     .collect();
                 *slot = Some(detail.clone());
-                *verification = None;
+                *files_loading_since = None;
+                *files_error = None;
+                if !keep_verification {
+                    *verification = None;
+                }
+                *detail_loading_since = None;
                 filled = true;
             }
         }
@@ -2354,11 +2445,13 @@ impl App {
                 commits: loaded,
                 has_more: more,
                 loading,
+                loading_since,
                 selected,
                 ..
             } = &mut tab.kind
             {
                 *loading = false;
+                *loading_since = None;
                 *more = has_more;
                 if skip == 0 {
                     *loaded = commits.clone();
@@ -2384,6 +2477,173 @@ impl App {
         let hash = detail.hash.clone();
         self.push_tab(Tab::commit(detail, files));
         self.send_vcs(SessionCommand::FetchCommitVerification { hash });
+    }
+
+    /// Open a standalone commit tab with metadata visible while changed files are still
+    /// loading. Used for unsolicited commit-detail events.
+    fn open_commit_metadata_tab(&mut self, detail: Box<CommitDetail>) {
+        let hash = detail.hash.clone();
+        self.push_tab(Tab::commit(detail, Vec::new()));
+        if let TabKind::Commit {
+            files_loading_since,
+            ..
+        } = &mut self.tabs[self.active].kind
+        {
+            *files_loading_since = Some(Instant::now());
+        }
+        self.send_vcs(SessionCommand::FetchCommitVerification { hash });
+    }
+
+    /// Fill an already-open pending commit tab with metadata, leaving its changed-file
+    /// block in a progressive loading state.
+    fn fill_commit_metadata(&mut self, view: ViewId, detail: Box<CommitDetail>) {
+        let hash = detail.hash.clone();
+        let title = commit_title(&detail.short_hash);
+        let mut detail = Some(detail);
+        let mut filled = false;
+        for tab in self.all_tabs_mut() {
+            if tab.view != view {
+                continue;
+            }
+            tab.title = title;
+            if let Some(detail) = detail.take() {
+                let scroll = match &tab.kind {
+                    TabKind::CommitLoading { scroll, .. } | TabKind::Commit { scroll, .. } => {
+                        *scroll
+                    },
+                    _ => 0,
+                };
+                tab.kind = TabKind::Commit {
+                    detail,
+                    files: Vec::new(),
+                    files_loading_since: Some(Instant::now()),
+                    files_error: None,
+                    verification: None,
+                    explain_since: None,
+                    scroll,
+                };
+                filled = true;
+            }
+            break;
+        }
+        if filled {
+            self.send_vcs(SessionCommand::FetchCommitVerification { hash });
+        }
+    }
+
+    /// Fill an already-open pending commit tab. If the tab was closed before the
+    /// request answered, the detail is discarded instead of surprising the user with
+    /// a late tab.
+    fn fill_commit_tab(
+        &mut self,
+        view: ViewId,
+        detail: Box<CommitDetail>,
+        changes: Vec<FileChange>,
+    ) {
+        let mut files = Some(
+            changes
+                .into_iter()
+                .map(|c| FileView::new(c, Section::Staged, self.syntax))
+                .collect::<Vec<_>>(),
+        );
+        let hash = detail.hash.clone();
+        let title = commit_title(&detail.short_hash);
+        let mut detail = Some(detail);
+        let mut filled = false;
+        for tab in self.all_tabs_mut() {
+            if tab.view == view {
+                tab.title = title;
+                if let (Some(detail), Some(files)) = (detail.take(), files.take()) {
+                    match &mut tab.kind {
+                        TabKind::Commit {
+                            detail: slot,
+                            files: current_files,
+                            files_loading_since,
+                            files_error,
+                            ..
+                        } if slot.hash == hash => {
+                            *slot = detail;
+                            *current_files = files;
+                            *files_loading_since = None;
+                            *files_error = None;
+                        },
+                        _ => {
+                            tab.kind = TabKind::Commit {
+                                detail,
+                                files,
+                                files_loading_since: None,
+                                files_error: None,
+                                verification: None,
+                                explain_since: None,
+                                scroll: 0,
+                            };
+                        },
+                    }
+                    filled = true;
+                }
+                break;
+            }
+        }
+        if filled {
+            self.send_vcs(SessionCommand::FetchCommitVerification { hash });
+        }
+    }
+
+    /// Mark a pending commit-detail request as failed and clear any visible loading
+    /// placeholder tied to that request.
+    fn fail_pending_commit_detail(&mut self, request: RequestId, message: &str) {
+        let Some(dest) = self.pending_commit_detail.remove(&request) else {
+            return;
+        };
+        match dest {
+            CommitDest::Tab { view } => {
+                for tab in self.all_tabs_mut() {
+                    if tab.view != view {
+                        continue;
+                    }
+                    match &mut tab.kind {
+                        TabKind::CommitLoading { error, .. } => {
+                            *error = Some(message.to_string());
+                        },
+                        TabKind::Commit {
+                            files_loading_since,
+                            files_error,
+                            ..
+                        } => {
+                            *files_loading_since = None;
+                            *files_error = Some(message.to_string());
+                        },
+                        _ => {},
+                    }
+                    break;
+                }
+            },
+            CommitDest::Browser { hash } => {
+                for tab in self.all_tabs_mut() {
+                    if let TabKind::CommitGraph {
+                        commits,
+                        selected,
+                        detail,
+                        detail_loading_since,
+                        files_loading_since,
+                        files_error,
+                        ..
+                    } = &mut tab.kind
+                    {
+                        let selected_hash = commits.get(*selected).map(|c| c.hash.as_str());
+                        if selected_hash != Some(hash.as_str()) {
+                            continue;
+                        }
+                        if detail.as_ref().is_some_and(|d| d.hash == hash) {
+                            *files_loading_since = None;
+                            *files_error = Some(message.to_string());
+                        } else {
+                            *detail_loading_since = None;
+                        }
+                    }
+                }
+            },
+        }
     }
 
     /// Build and open a compare tab from a resolved range and its changes. An empty
@@ -2623,6 +2883,7 @@ impl App {
     /// re-delivered.
     fn apply_vcs_log(&mut self, skip: usize, commits: Vec<Commit>, has_more: bool) {
         self.scm.log_loading = false;
+        self.scm.log_loading_since = None;
         self.scm.log_has_more = has_more;
         if skip == 0 {
             // A fresh first page (initial load or a reconciliation reset) replaces the
@@ -3254,6 +3515,7 @@ impl App {
             | TabKind::Blame { scroll, .. }
             | TabKind::Graph { scroll, .. }
             | TabKind::LoadedConfig { scroll, .. }
+            | TabKind::CommitLoading { scroll, .. }
             | TabKind::Commit { scroll, .. }
             | TabKind::Compare { scroll, .. } => {
                 let next = (i64::from(*scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
@@ -3293,6 +3555,7 @@ impl App {
             | TabKind::Blame { scroll, .. }
             | TabKind::Graph { scroll, .. }
             | TabKind::LoadedConfig { scroll, .. }
+            | TabKind::CommitLoading { scroll, .. }
             | TabKind::Commit { scroll, .. }
             | TabKind::Compare { scroll, .. } => {
                 *scroll = if top { 0 } else { u16::MAX };
@@ -3911,10 +4174,8 @@ impl App {
                 ..
             }) if editor.has_multiple_cursors()
         );
-        if multi {
-            if let Some(Tab { editor, .. }) = self.tabs.get_mut(self.active) {
-                editor.collapse_to_primary();
-            }
+        if multi && let Some(Tab { editor, .. }) = self.tabs.get_mut(self.active) {
+            editor.collapse_to_primary();
         }
     }
 
@@ -4471,13 +4732,15 @@ impl App {
     }
 
     /// The soonest the event loop should wake for time-based UI: notification expiry,
-    /// save-spinner animation, graphical-caret blink, or an expiring hover reveal.
+    /// save-spinner animation, graphical-caret blink, delayed loading states, or an
+    /// expiring hover reveal.
     /// `None` when the loop can park on its event sources alone.
     fn next_wake(&self) -> Option<Duration> {
         let now = Instant::now();
         let notif = self.notifications.next_deadline(now);
         let spinner = (!self.pending_saves.is_empty()).then(|| Duration::from_millis(100));
         let caret = self.graphics_caret_next_wake(now);
+        let loading = self.loading_reveal_wake(now);
         // Wake to repaint (hiding the tooltip) when the commit-badge reveal expires.
         let reveal = match self.tabs.get(self.active).map(|t| &t.kind) {
             Some(TabKind::Commit {
@@ -4486,7 +4749,46 @@ impl App {
             }) => COMMIT_REVEAL.checked_sub(since.elapsed()),
             _ => None,
         };
-        [notif, spinner, caret, reveal].into_iter().flatten().min()
+        [notif, spinner, caret, loading, reveal]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
+    fn loading_reveal_wake(&self, now: Instant) -> Option<Duration> {
+        let sidebar = (self.sidebar_visible && self.sidebar_panel == SidebarPanel::SourceControl)
+            .then_some(self.scm.log_loading_since)
+            .flatten()
+            .and_then(|since| loading_delay_remaining(since, now));
+        let tabs = self.all_tabs().filter_map(|tab| match &tab.kind {
+            TabKind::CommitLoading {
+                loading_since,
+                error,
+                ..
+            } => error
+                .is_none()
+                .then(|| loading_delay_remaining(*loading_since, now))
+                .flatten(),
+            TabKind::Commit {
+                files_loading_since,
+                ..
+            } => files_loading_since.and_then(|since| loading_delay_remaining(since, now)),
+            TabKind::CommitGraph {
+                loading_since,
+                detail_loading_since,
+                files_loading_since,
+                ..
+            } => [
+                loading_since.and_then(|since| loading_delay_remaining(since, now)),
+                detail_loading_since.and_then(|since| loading_delay_remaining(since, now)),
+                files_loading_since.and_then(|since| loading_delay_remaining(since, now)),
+            ]
+            .into_iter()
+            .flatten()
+            .min(),
+            _ => None,
+        });
+        std::iter::once(sidebar).flatten().chain(tabs).min()
     }
 
     /// Push a notification onto the center. Errors and warnings persist until
@@ -4626,7 +4928,12 @@ impl App {
                 severity,
                 kind,
                 message,
-            } => self.notify(severity, kind, message),
+            } => {
+                if let Some(req) = id {
+                    self.fail_pending_commit_detail(req, &message);
+                }
+                self.notify(severity, kind, message);
+            },
             SessionEvent::VcsStatus { staged, working } => self.apply_vcs_status(staged, working),
             SessionEvent::VcsLog {
                 skip,
@@ -4667,9 +4974,24 @@ impl App {
                 );
             },
             SessionEvent::SwapsFound { swaps } => self.arm_swap_recovery(swaps),
+            SessionEvent::CommitDetailReady { detail } => {
+                let dest = id.and_then(|i| self.pending_commit_detail.get(&i).cloned());
+                match dest {
+                    Some(CommitDest::Browser { hash }) if detail.hash == hash => {
+                        self.fill_graph_metadata(detail);
+                    },
+                    Some(CommitDest::Browser { .. }) => {},
+                    Some(CommitDest::Tab { view }) => self.fill_commit_metadata(view, detail),
+                    _ => self.open_commit_metadata_tab(detail),
+                }
+            },
             SessionEvent::CommitReady { detail, changes } => {
                 match id.and_then(|i| self.pending_commit_detail.remove(&i)) {
-                    Some(CommitDest::Browser) => self.fill_graph_detail(detail, changes),
+                    Some(CommitDest::Browser { hash }) if detail.hash == hash => {
+                        self.fill_graph_detail(detail, changes);
+                    },
+                    Some(CommitDest::Browser { .. }) => {},
+                    Some(CommitDest::Tab { view }) => self.fill_commit_tab(view, detail, changes),
                     _ => self.open_commit_tab(detail, changes),
                 }
             },
@@ -4815,6 +5137,10 @@ fn tab_at(hits: &[TabHit], x: u16) -> Option<(usize, bool)> {
     hits.iter()
         .enumerate()
         .find_map(|(i, h)| (x >= h.start && x < h.end).then_some((i, x == h.close)))
+}
+
+fn loading_delay_remaining(since: Instant, now: Instant) -> Option<Duration> {
+    LOADING_REVEAL_DELAY.checked_sub(now.saturating_duration_since(since))
 }
 
 /// The canonical form of `path` for tab de-duplication, falling back to the path
@@ -5853,6 +6179,25 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         }
     }
 
+    fn commit_detail(hash: &str, summary: &str) -> CommitDetail {
+        let id = karet_vcs::Identity {
+            name: "Tester".to_string(),
+            email: "t@example.com".to_string(),
+            time: 0,
+            offset: 0,
+        };
+        CommitDetail {
+            hash: hash.to_string(),
+            short_hash: hash.chars().take(7).collect(),
+            summary: summary.to_string(),
+            body: String::new(),
+            author: id.clone(),
+            committer: id,
+            parents: Vec::new(),
+            signature: None,
+        }
+    }
+
     #[test]
     fn toggle_fold_collapses_at_cursor_and_relocates_caret() {
         use karet_treesitter::ParserPool;
@@ -5940,6 +6285,139 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         assert_eq!(app.scm_offset, 0); // changes untouched
         app.sidebar_wheel(100, 11);
         assert_eq!(app.scm_commits_offset, 7); // clamps to 12 - 5
+    }
+
+    #[test]
+    fn source_control_commit_click_opens_pending_commit_tab_immediately() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        app.sidebar_rect = Rect {
+            x: 0,
+            y: 0,
+            width: 30,
+            height: 12,
+        };
+        app.scm_commits_rect = Rect {
+            x: 0,
+            y: 4,
+            width: 30,
+            height: 6,
+        };
+        app.scm_commits_offset = 0;
+        app.scm.log = vec![commit("aaaaaaa111", "first")];
+
+        app.handle_sidebar_click(2, 5, KeyModifiers::NONE);
+
+        assert!(matches!(
+            &app.tabs[app.active].kind,
+            TabKind::CommitLoading { rev, .. } if rev == "aaaaaaa111"
+        ));
+        let sent = backend
+            .sent
+            .lock()
+            .map(|sent| sent.len())
+            .unwrap_or_default();
+        assert_eq!(sent, 1, "the detail request is lazy and asynchronous");
+    }
+
+    #[test]
+    fn commit_detail_response_fills_the_pending_tab_in_place() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend);
+
+        app.open_commit("aaaaaaa111".to_string());
+        let view = app.tabs[app.active].view;
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::CommitLoading { .. }
+        ));
+
+        app.on_backend_event(
+            Some(RequestId(1)),
+            SessionEvent::CommitReady {
+                detail: Box::new(commit_detail("aaaaaaa111", "first")),
+                changes: vec![change("a.rs", StatusKind::Modified)],
+            },
+        );
+
+        assert_eq!(app.tabs[app.active].view, view);
+        assert_eq!(app.tabs[app.active].title, "Commit aaaaaaa");
+        assert!(!app.tabs[app.active].dirty);
+        match &app.tabs[app.active].kind {
+            TabKind::Commit { detail, files, .. } => {
+                assert_eq!(detail.hash, "aaaaaaa111");
+                assert_eq!(files.len(), 1);
+            },
+            _ => panic!("pending tab should become a loaded commit view"),
+        }
+    }
+
+    #[test]
+    fn commit_metadata_response_progressively_fills_pending_tab() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend);
+
+        app.open_commit("aaaaaaa111".to_string());
+        let view = app.tabs[app.active].view;
+
+        app.on_backend_event(
+            Some(RequestId(1)),
+            SessionEvent::CommitDetailReady {
+                detail: Box::new(commit_detail("aaaaaaa111", "first")),
+            },
+        );
+
+        assert_eq!(app.tabs[app.active].view, view);
+        assert_eq!(app.tabs[app.active].title, "Commit aaaaaaa");
+        assert!(!app.tabs[app.active].dirty);
+        match &app.tabs[app.active].kind {
+            TabKind::Commit {
+                detail,
+                files,
+                files_loading_since,
+                ..
+            } => {
+                assert_eq!(detail.hash, "aaaaaaa111");
+                assert!(files.is_empty());
+                assert!(files_loading_since.is_some());
+            },
+            _ => panic!("pending tab should show commit metadata while files load"),
+        }
+
+        app.apply_commit_verification(
+            "aaaaaaa111",
+            GithubVerification {
+                verified: true,
+                reason: "valid".to_string(),
+                signer: Some("Tester".to_string()),
+            },
+        );
+
+        app.on_backend_event(
+            Some(RequestId(1)),
+            SessionEvent::CommitReady {
+                detail: Box::new(commit_detail("aaaaaaa111", "first")),
+                changes: vec![change("a.rs", StatusKind::Modified)],
+            },
+        );
+
+        match &app.tabs[app.active].kind {
+            TabKind::Commit {
+                files,
+                files_loading_since,
+                verification,
+                ..
+            } => {
+                assert_eq!(files.len(), 1);
+                assert!(files_loading_since.is_none());
+                assert!(verification.as_ref().is_some_and(|v| v.verified));
+            },
+            _ => panic!("metadata tab should become a complete commit view"),
+        }
     }
 
     #[test]

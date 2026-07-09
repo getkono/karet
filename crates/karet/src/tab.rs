@@ -202,11 +202,28 @@ pub enum TabKind {
     },
     /// A read-only, GitHub-parity commit view: the message, author/committer, parents,
     /// signature badge, changed-file list, and per-file semantic diffs.
+    CommitLoading {
+        /// The revision/hash being resolved.
+        rev: String,
+        /// When the detail request began; drives the delayed loading placeholder.
+        loading_since: Instant,
+        /// A load error for the revision, when metadata could not be resolved.
+        error: Option<String>,
+        /// Vertical scroll offset (reserved so the loading tab stays in the pager layer).
+        scroll: u16,
+    },
+    /// A read-only, GitHub-parity commit view: the message, author/committer, parents,
+    /// signature badge, changed-file list, and per-file semantic diffs.
     Commit {
         /// The commit metadata (message, author/committer, parents, signature).
         detail: Box<karet_vcs::CommitDetail>,
         /// Each changed file (vs the first parent), diffed and highlighted for display.
         files: Vec<FileView>,
+        /// When changed-file extraction began, if metadata is visible but files are not.
+        files_loading_since: Option<Instant>,
+        /// A load error for the changed-file block, when metadata resolved but diffs did
+        /// not.
+        files_error: Option<String>,
         /// The forge's "Verified" verdict, once fetched (lazily, over the network).
         verification: Option<karet_session::GithubVerification>,
         /// When the signature badge was last double-clicked, if its explanatory
@@ -243,12 +260,21 @@ pub enum TabKind {
         has_more: bool,
         /// Whether a history page is currently in flight.
         loading: bool,
+        /// When the history-page request began, if one is in flight.
+        loading_since: Option<Instant>,
         /// The selected commit's index into `commits`.
         selected: usize,
+        /// When the selected commit's detail request began, if one is in flight.
+        detail_loading_since: Option<Instant>,
         /// The selected commit's loaded detail, if the fetch has answered.
         detail: Option<Box<karet_vcs::CommitDetail>>,
         /// The selected commit's changed files, diffed for the detail pane.
         files: Vec<FileView>,
+        /// When changed-file extraction began, if metadata is visible but files are not.
+        files_loading_since: Option<Instant>,
+        /// A load error for the changed-file block, when metadata resolved but diffs did
+        /// not.
+        files_error: Option<String>,
         /// The forge's verdict for the selected commit, once fetched.
         verification: Option<karet_session::GithubVerification>,
         /// A commit hash marked as the base for a two-commit comparison, if any. Set by
@@ -339,14 +365,32 @@ impl Tab {
     /// A read-only commit view for `detail` and its changed `files`.
     #[must_use]
     pub fn commit(detail: Box<karet_vcs::CommitDetail>, files: Vec<FileView>) -> Self {
-        let title = format!("● {}", detail.short_hash);
+        let title = commit_title(&detail.short_hash);
         Self::new(
             title,
             TabKind::Commit {
                 detail,
                 files,
+                files_loading_since: None,
+                files_error: None,
                 verification: None,
                 explain_since: None,
+                scroll: 0,
+            },
+        )
+    }
+
+    /// A commit tab opened before its full detail has loaded.
+    #[must_use]
+    pub fn commit_loading(rev: impl Into<String>) -> Self {
+        let rev = rev.into();
+        let title = commit_title(&rev.chars().take(7).collect::<String>());
+        Self::new(
+            title,
+            TabKind::CommitLoading {
+                rev,
+                loading_since: Instant::now(),
+                error: None,
                 scroll: 0,
             },
         )
@@ -363,9 +407,13 @@ impl Tab {
                 commits: Vec::new(),
                 has_more: false,
                 loading: true,
+                loading_since: Some(Instant::now()),
                 selected: 0,
+                detail_loading_since: None,
                 detail: None,
                 files: Vec::new(),
+                files_loading_since: None,
+                files_error: None,
                 verification: None,
                 compare_base: None,
                 list_offset: 0,
@@ -409,6 +457,7 @@ impl Tab {
             TabKind::Welcome
             | TabKind::Graph { .. }
             | TabKind::LoadedConfig { .. }
+            | TabKind::CommitLoading { .. }
             | TabKind::Commit { .. }
             | TabKind::Compare { .. }
             | TabKind::CommitGraph { .. } => None,
@@ -434,6 +483,7 @@ impl Tab {
             TabKind::Blame { .. } => "blame",
             TabKind::Graph { .. } => "graph",
             TabKind::LoadedConfig { .. } => "settings",
+            TabKind::CommitLoading { .. } => "commit",
             TabKind::Commit { .. } => "commit",
             TabKind::Compare { .. } => "compare",
             TabKind::CommitGraph { .. } => "commits",
@@ -456,6 +506,12 @@ impl Tab {
         }
         Some(label)
     }
+}
+
+/// Human-readable title for standalone commit tabs.
+#[must_use]
+pub(crate) fn commit_title(short: &str) -> String {
+    format!("Commit {short}")
 }
 
 #[cfg(test)]
@@ -512,5 +568,33 @@ mod tests {
         );
         assert_eq!(tab.encoding_label().as_deref(), Some("UTF-8 · CRLF"));
         assert_eq!(Tab::welcome().encoding_label(), None);
+    }
+
+    #[test]
+    fn commit_tabs_do_not_use_the_unsaved_marker_as_their_title() {
+        let identity = karet_vcs::Identity {
+            name: "Tester".to_string(),
+            email: "t@example.com".to_string(),
+            time: 0,
+            offset: 0,
+        };
+        let detail = karet_vcs::CommitDetail {
+            hash: "a".repeat(40),
+            short_hash: "aaaaaaa".to_string(),
+            summary: "subject".to_string(),
+            body: String::new(),
+            author: identity.clone(),
+            committer: identity,
+            parents: Vec::new(),
+            signature: None,
+        };
+
+        let loaded = Tab::commit(Box::new(detail), Vec::new());
+        let loading = Tab::commit_loading("bbbbbbb111");
+
+        assert_eq!(loaded.title, "Commit aaaaaaa");
+        assert_eq!(loading.title, "Commit bbbbbbb");
+        assert!(!loaded.dirty);
+        assert!(!loading.dirty);
     }
 }

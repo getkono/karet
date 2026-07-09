@@ -155,12 +155,14 @@ impl Watcher {
                     worker_main(
                         debouncer,
                         poll_debouncer,
-                        &raw_rx,
-                        &poll_rx,
-                        &roots,
-                        &meta_dirs,
-                        &tx,
-                        &stop,
+                        WorkerMainArgs {
+                            raw_rx: &raw_rx,
+                            poll_rx: &poll_rx,
+                            roots: &roots,
+                            meta_dirs: &meta_dirs,
+                            tx: &tx,
+                            stop: &stop,
+                        },
                     )
                 })
                 .map_err(|e| WatchError::Backend(e.to_string()))?
@@ -191,16 +193,24 @@ impl Drop for Watcher {
 /// loops converting and forwarding events until told to [`Watcher::drop`]. Owns the
 /// debouncer so it can register new watches (e.g. for a freshly created directory)
 /// from the same thread that reads its event stream.
-fn worker_main(
-    mut native: NativeDebouncer,
-    mut poll: PollDebouncer,
-    raw_rx: &std::sync::mpsc::Receiver<DebounceEventResult>,
-    poll_rx: &std::sync::mpsc::Receiver<DebounceEventResult>,
-    roots: &[PathBuf],
-    meta_dirs: &[PathBuf],
-    tx: &mpsc::UnboundedSender<FsEvent>,
-    stop: &AtomicBool,
-) {
+struct WorkerMainArgs<'a> {
+    raw_rx: &'a std::sync::mpsc::Receiver<DebounceEventResult>,
+    poll_rx: &'a std::sync::mpsc::Receiver<DebounceEventResult>,
+    roots: &'a [PathBuf],
+    meta_dirs: &'a [PathBuf],
+    tx: &'a mpsc::UnboundedSender<FsEvent>,
+    stop: &'a AtomicBool,
+}
+
+fn worker_main(mut native: NativeDebouncer, mut poll: PollDebouncer, args: WorkerMainArgs<'_>) {
+    let WorkerMainArgs {
+        raw_rx,
+        poll_rx,
+        roots,
+        meta_dirs,
+        tx,
+        stop,
+    } = args;
     let mut watched = WatchState::default();
     for root in roots {
         for dir in enumerate_dirs(root) {
