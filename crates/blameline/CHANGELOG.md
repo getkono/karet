@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2](https://github.com/getkono/karet/compare/blameline-v1.0.1...blameline-v1.0.2) - 2026-07-09
+
+### Other
+
+- updated the following local packages: karet-core, karet-treesitter
+
 ## [1.0.1](https://github.com/getkono/karet/compare/blameline-v1.0.0...blameline-v1.0.1) - 2026-07-04
 
 ### Other

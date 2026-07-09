@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/getkono/karet/compare/karet-filetype-v0.2.0...karet-filetype-v0.2.1) - 2026-07-09
+
+### Fixed
+
+- *(karet-filetype)* don't let the markdown extension skip the binary sniff
+
 ## [0.2.0](https://github.com/getkono/karet/compare/karet-filetype-v0.1.0...karet-filetype-v0.2.0) - 2026-07-04
 
 ### Added
