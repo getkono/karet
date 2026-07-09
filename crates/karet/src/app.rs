@@ -851,6 +851,11 @@ impl App {
                     message.push_str(text);
                 }
             },
+            Modal::RevInput => {
+                if let Some(rev) = self.rev_input.as_mut() {
+                    rev.push_str(text);
+                }
+            },
             Modal::ExplorerEdit => self.explorer.edit_paste(text),
             Modal::SearchInput => {
                 let target = match self.search.field {
