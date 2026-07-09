@@ -42,6 +42,9 @@ pub struct Editor {
     pub line_numbers: LineNumbers,
     /// Highlight the line the caret is on.
     pub cursor_line: bool,
+    /// Draw the caret with terminal graphics: `null` auto-enables when supported,
+    /// `true` requests it and reports incompatibility, `false` disables it.
+    pub graphical_cursor: Option<bool>,
     /// Keep at least this many lines visible above and below the caret.
     pub scroll_off: u16,
     /// Columns to draw vertical rulers at (empty = none).
@@ -63,6 +66,7 @@ impl Default for Editor {
             insert_spaces: true,
             line_numbers: LineNumbers::On,
             cursor_line: true,
+            graphical_cursor: None,
             scroll_off: 3,
             rulers: Vec::new(),
             word_wrap: false,
@@ -276,6 +280,7 @@ mod tests {
         assert_eq!(s.editor.tab_size, 4);
         assert!(s.editor.insert_spaces);
         assert_eq!(s.editor.line_numbers, LineNumbers::On);
+        assert_eq!(s.editor.graphical_cursor, None);
         assert_eq!(s.files.auto_save, AutoSave::Off);
         assert_eq!(s.workbench.color_theme, "dark");
         assert!(s.search.smart_case);
