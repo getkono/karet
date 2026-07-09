@@ -900,6 +900,7 @@ impl Session {
                         store.remove(&path);
                     }
                 }
+                self.publish(doc_id, None);
                 self.emit(Some(id), Event::Saved { doc: doc_id });
             },
             Some(Err(TextError::Conflict)) => {
@@ -1530,6 +1531,11 @@ mod tests {
                 .unwrap_or_default()
                 .contains("fn x()")
         );
+        let mut clean_snapshot = false;
+        while let Some((_, snap)) = snaps.try_recv() {
+            clean_snapshot = clean_snapshot || !snap.dirty;
+        }
+        assert!(clean_snapshot, "save should publish a clean snapshot");
 
         // Undo restores the original content ("fn main() {}\n" → two lines).
         session.handle(RequestId(4), Command::Undo { doc });

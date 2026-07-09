@@ -301,6 +301,24 @@ mod tests {
     }
 
     #[test]
+    fn dirty_tracks_content_not_history_position() {
+        let mut b = TextBuffer::from_text("alpha\nbeta\ngamma\n");
+        let remove_beta = Range {
+            start: LineCol::new(1, 0),
+            end: LineCol::new(2, 0),
+        };
+        assert!(b.apply_simple(&del(0, remove_beta)).is_ok());
+        assert!(b.is_dirty());
+
+        assert!(b.apply_simple(&ins(1, 1, 0, "beta\n")).is_ok());
+        assert_eq!(b.text(), "alpha\nbeta\ngamma\n");
+        assert!(
+            !b.is_dirty(),
+            "restoring the exact saved text manually should clear dirty"
+        );
+    }
+
+    #[test]
     fn multibyte_insert_keeps_bytes_aligned() {
         let mut b = TextBuffer::from_text("aé");
         // Insert after 'é' (char col 2, byte 3).

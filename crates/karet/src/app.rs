@@ -4342,6 +4342,9 @@ impl App {
         let now = Instant::now();
         let mut issued = 0;
         for doc in docs {
+            if self.pending_saves.values().any(|pending| *pending == doc) {
+                continue;
+            }
             let id = backend.next_id();
             match backend.send(id, SessionCommand::Save { doc }) {
                 Ok(()) => {
@@ -4367,12 +4370,16 @@ impl App {
         let Some(backend) = self.backend.clone() else {
             return;
         };
+        if self.pending_saves.values().any(|pending| *pending == doc) {
+            self.status = Some("save already in progress".to_string());
+            return;
+        }
         let id = backend.next_id();
         match backend.send(id, SessionCommand::Save { doc }) {
             Ok(()) => {
                 self.pending_saves.insert(id, doc);
                 let now = Instant::now();
-                for tab in &mut self.tabs {
+                for tab in self.all_tabs_mut() {
                     if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
                         tab.saving_since = Some(now);
                     }
@@ -4476,19 +4483,23 @@ impl App {
 
     /// Handle a backend event: correlate opens to tabs, surface save/progress status.
     fn on_backend_event(&mut self, id: Option<RequestId>, event: SessionEvent) {
-        // A save's answering event (saved or error) clears its tab spinner.
+        // A save's answering event clears its tab spinner. During "save all & quit",
+        // only successful Saved responses may let the quit continue; a refused or
+        // failed save keeps the app open with the dirty buffer intact.
+        let mut save_failed = false;
         if let Some(req) = id
             && let Some(doc) = self.pending_saves.remove(&req)
         {
+            save_failed = !matches!(event, SessionEvent::Saved { doc: saved } if saved == doc);
             for tab in self.all_tabs_mut() {
                 if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
                     tab.saving_since = None;
                 }
             }
         }
-        // A "save all & quit" exits once every issued save has been answered.
-        if self.quitting && self.pending_saves.is_empty() {
-            self.should_quit = true;
+        if self.quitting && save_failed {
+            self.quitting = false;
+            self.status = Some("quit cancelled: save failed".to_string());
         }
         match event {
             SessionEvent::Opened { doc, .. } => {
@@ -4637,6 +4648,10 @@ impl App {
             },
             SessionEvent::LoadedConfig { report } => self.open_loaded_config(*report),
             _ => {},
+        }
+        // A "save all & quit" exits once every issued save has succeeded.
+        if self.quitting && self.pending_saves.is_empty() {
+            self.should_quit = true;
         }
     }
 
@@ -5135,6 +5150,33 @@ mod tests {
         )
     }
 
+    struct RecordingBackend {
+        next: std::sync::atomic::AtomicU64,
+        sent: std::sync::Mutex<Vec<(RequestId, SessionCommand)>>,
+    }
+
+    impl RecordingBackend {
+        fn new() -> Self {
+            Self {
+                next: std::sync::atomic::AtomicU64::new(1),
+                sent: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Backend for RecordingBackend {
+        fn send(&self, id: RequestId, command: SessionCommand) -> Result<(), BackendError> {
+            if let Ok(mut sent) = self.sent.lock() {
+                sent.push((id, command));
+            }
+            Ok(())
+        }
+
+        fn next_id(&self) -> RequestId {
+            RequestId(self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+        }
+    }
+
     #[test]
     fn quit_with_unsaved_changes_arms_the_prompt() {
         let mut app = app();
@@ -5473,6 +5515,82 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         );
         assert!(app.tabs[app.active].saving_since.is_none());
         assert!(app.pending_saves.is_empty());
+    }
+
+    #[test]
+    fn duplicate_save_command_is_debounced_while_in_flight() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        app.push_tab(text_tab("t.rs", "x"));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(2));
+        }
+
+        app.save_active();
+        app.save_active();
+
+        let sent_saves = backend
+            .sent
+            .lock()
+            .map(|sent| {
+                sent.iter()
+                    .filter(|(_, command)| matches!(command, SessionCommand::Save { .. }))
+                    .count()
+            })
+            .unwrap_or_default();
+        assert_eq!(sent_saves, 1, "only one save may be in flight per document");
+        assert_eq!(
+            app.status.as_deref(),
+            Some("save already in progress"),
+            "the second shortcut is ignored because the first save is still pending"
+        );
+    }
+
+    #[test]
+    fn save_active_marks_every_view_of_the_document_as_saving() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend);
+        app.push_tab(text_tab("t.rs", "x"));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(2));
+        }
+        app.split_focused(SplitDir::Right);
+
+        app.save_active();
+
+        assert!(app.tabs[app.active].saving_since.is_some());
+        let stored_saving = app
+            .stored
+            .values()
+            .flat_map(|pane| pane.tabs.iter())
+            .any(|tab| tab.saving_since.is_some());
+        assert!(
+            stored_saving,
+            "background split view should show save progress"
+        );
+    }
+
+    #[test]
+    fn quit_save_all_conflict_keeps_the_app_open() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "x"));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(2));
+        }
+        app.tabs[app.active].dirty = true;
+        app.quitting = true;
+        app.pending_saves.insert(RequestId(5), DocumentId(2));
+
+        app.on_backend_event(
+            Some(RequestId(5)),
+            SessionEvent::ExternalConflict { doc: DocumentId(2) },
+        );
+
+        assert!(!app.should_quit);
+        assert!(!app.quitting);
+        assert!(app.tabs[app.active].dirty);
     }
 
     #[test]

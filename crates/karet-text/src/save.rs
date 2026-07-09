@@ -16,6 +16,7 @@ use crate::TextBuffer;
 use crate::TextError;
 use crate::load::Encoding;
 use crate::load::Eol;
+use crate::text_hash;
 
 /// A fingerprint of a file's on-disk state at the moment karet last read or wrote
 /// it. A file-watcher compares this against a fresh `stat` to tell the editor's own
@@ -75,6 +76,7 @@ impl TextBuffer {
             hash: hash_bytes(bytes),
         };
         self.saved_state = Some(state.clone());
+        self.saved_text_hash = text_hash(&self.rope);
         self.history.mark_saved();
         Ok(state)
     }
