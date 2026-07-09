@@ -140,6 +140,17 @@ impl SyntaxTree {
         self.lang
     }
 
+    /// The byte span this tree covers. For an injected layer this is the extent of its
+    /// included ranges, in document coordinates — not `0..len`.
+    #[must_use]
+    pub fn span(&self) -> Span {
+        let root = self.tree.root_node();
+        Span {
+            start: BytePos(root.start_byte()),
+            end: BytePos(root.end_byte()),
+        }
+    }
+
     /// Parse only `ranges` of `text` as `lang`, leaving the rest of the document
     /// invisible to the grammar — the mechanism behind language injection.
     ///
@@ -863,6 +874,61 @@ mod tests {
         assert!(
             !layer_langs(&tree).contains(&rust),
             "the rust layer must vanish with its fence"
+        );
+        Ok(())
+    }
+
+    #[cfg(all(feature = "lang-rust", feature = "lang-markdown"))]
+    #[test]
+    fn rust_doc_comment_is_markdown() -> Result<(), TsError> {
+        let rust = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+        let md = language_id_from_injection_name("markdown").ok_or(TsError::UnknownLanguage)?;
+        let mut parser = LayeredParser::new();
+        let tree = parser.parse(rust, "/// Adds *one*.\npub fn f() {}\n")?;
+        let langs: Vec<_> = tree.children().iter().map(SyntaxTree::language).collect();
+        assert!(
+            langs.contains(&md),
+            "doc comment must inject markdown: {langs:?}"
+        );
+        // A plain `//` comment is not markdown.
+        let plain = parser.parse(rust, "// not *markdown*\npub fn f() {}\n")?;
+        assert!(!plain.children().iter().any(|c| c.language() == md));
+        Ok(())
+    }
+
+    #[cfg(all(feature = "lang-rust", feature = "lang-markdown"))]
+    #[test]
+    fn rust_doctest_fence_in_a_doc_comment_is_rust() -> Result<(), TsError> {
+        // The headline case: a doctest fence spans several `///` lines, each its own
+        // `line_comment` node. Only a *combined* markdown injection can see the fence,
+        // and markdown must then recursively inject rust back into it.
+        let rust = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+        let md = language_id_from_injection_name("markdown").ok_or(TsError::UnknownLanguage)?;
+        let src = "\
+/// Adds one.
+///
+/// ```rust
+/// let y = 1 + 1;
+/// assert_eq!(y, 2);
+/// ```
+pub fn add_one() {}
+";
+        let mut parser = LayeredParser::new();
+        let tree = parser.parse(rust, src)?;
+        let langs: Vec<_> = tree.children().iter().map(SyntaxTree::language).collect();
+        assert!(langs.contains(&md), "expected a markdown layer: {langs:?}");
+
+        // The doctest body must come back as a *nested* rust layer covering the fence
+        // body — not merely some rust layer (a macro injection would also be rust).
+        let fence_body = src.find("let y").ok_or(TsError::ParseFailed)?;
+        let doctest = tree
+            .children()
+            .iter()
+            .find(|c| c.language() == rust && c.span().start.0 >= fence_body);
+        let doctest = doctest.ok_or(TsError::ParseFailed)?;
+        assert!(
+            doctest.span().end.0 <= src.find("pub fn").unwrap_or(src.len()),
+            "the doctest layer must stay inside the doc comment"
         );
         Ok(())
     }

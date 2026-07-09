@@ -77,6 +77,28 @@ pub(crate) const MARKDOWN: LanguageId = LanguageId(19);
 #[cfg(feature = "lang-markdown")]
 pub(crate) const MARKDOWN_INLINE: LanguageId = LanguageId(20);
 
+/// karet's own addition to Rust's injections query: a doc comment is markdown.
+///
+/// tree-sitter-rust ships injections only for macro token trees, so `///` and `//!`
+/// bodies would otherwise render as flat comment text. The `doc:` field yields the
+/// comment's *content*, with the `///` marker excluded — exactly the markdown source
+/// rustdoc sees.
+///
+/// `injection.combined` is essential rather than an optimization: each `///` line is
+/// its own `line_comment` node, so without combining them into a single markdown
+/// parse a fenced ` ```rust ` block could never span the lines it always spans. Once
+/// combined, markdown's own fence injection recursively lights up the doctest as Rust.
+#[cfg(feature = "lang-rust")]
+const RUST_DOC_COMMENT_INJECTION: &str = r#"
+((line_comment doc: (doc_comment) @injection.content)
+ (#set! injection.language "markdown")
+ (#set! injection.combined))
+
+((block_comment doc: (doc_comment) @injection.content)
+ (#set! injection.language "markdown")
+ (#set! injection.combined))
+"#;
+
 /// All grammars compiled into this build, in id order.
 // The pushes are `#[cfg]`-gated per grammar, which `vec![]` cannot express.
 #[allow(clippy::vec_init_then_push)]
@@ -95,7 +117,7 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             language: || tree_sitter_rust::LANGUAGE.into(),
             highlights: tree_sitter_rust::HIGHLIGHTS_QUERY,
             injections: Some(tree_sitter_rust::INJECTIONS_QUERY),
-            injections_extra: None,
+            injections_extra: Some(RUST_DOC_COMMENT_INJECTION),
         });
         #[cfg(feature = "lang-python")]
         v.push(GrammarInfo {
