@@ -905,21 +905,20 @@ enum ChromeButtonState {
 }
 
 fn chrome_button_style(theme: &Theme, state: ChromeButtonState) -> Style {
-    let mut style = match state {
-        ChromeButtonState::Normal | ChromeButtonState::Hovered => {
+    match state {
+        ChromeButtonState::Normal => {
             Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())
         },
-        ChromeButtonState::Active | ChromeButtonState::ActiveHovered => Style::default()
+        ChromeButtonState::Hovered => {
+            Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+        },
+        ChromeButtonState::Active => Style::default()
             .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
             .add_modifier(Modifier::BOLD),
-    };
-    if matches!(
-        state,
-        ChromeButtonState::Hovered | ChromeButtonState::ActiveHovered
-    ) {
-        style = style.bg(theme.role(ThemeRole::HoverHighlight).to_ratatui());
+        ChromeButtonState::ActiveHovered => Style::default()
+            .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+            .add_modifier(Modifier::BOLD),
     }
-    style
 }
 
 fn header_hovered(app: &App, start: u16, end: u16) -> bool {
@@ -2709,27 +2708,21 @@ mod tests {
     }
 
     #[test]
-    fn chrome_button_hover_adds_background_without_losing_active_style() {
+    fn chrome_button_hover_changes_foreground_without_background() {
         let theme = Theme::dark();
         let hover = chrome_button_style(&theme, ChromeButtonState::Hovered);
         assert_eq!(
-            hover.bg,
-            Some(theme.role(ThemeRole::HoverHighlight).to_ratatui())
-        );
-        assert_eq!(
             hover.fg,
-            Some(theme.role(ThemeRole::LineNumber).to_ratatui())
+            Some(theme.role(ThemeRole::LineNumberActive).to_ratatui())
         );
+        assert_eq!(hover.bg, None);
 
         let active_hover = chrome_button_style(&theme, ChromeButtonState::ActiveHovered);
         assert_eq!(
-            active_hover.bg,
-            Some(theme.role(ThemeRole::HoverHighlight).to_ratatui())
-        );
-        assert_eq!(
             active_hover.fg,
-            Some(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+            Some(theme.role(ThemeRole::Foreground).to_ratatui())
         );
+        assert_eq!(active_hover.bg, None);
         assert!(active_hover.add_modifier.contains(Modifier::BOLD));
     }
 
