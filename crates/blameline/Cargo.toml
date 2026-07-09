@@ -4,7 +4,7 @@ description  = "Semantic git blame: grouped, full-message, tree-sitter-filtered 
 # INDEPENDENT versioning — blameline is a standalone library and is deliberately NOT
 # pinned to the karet workspace's lockstep `version.workspace`. It follows its own
 # SemVer line starting at 1.0.0 and releases on its own cadence. See `README.md`.
-version      = "1.0.1"
+version      = "1.0.2"
 edition.workspace      = true
 rust-version.workspace = true
 authors.workspace      = true

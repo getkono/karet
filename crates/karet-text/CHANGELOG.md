@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/getkono/karet/compare/karet-text-v0.2.0...karet-text-v0.2.1) - 2026-07-09
+
+### Fixed
+
+- track unsaved state by text content
+
+### Other
+
+- *(readme)* refresh karet positioning
+- Merge branch 'master' into test/startup-smoke-and-cursor-research
+- Merge branch 'master' of github.com:getkono/karet
+- restructure design principles and testing guidance
+
 ## [0.2.0](https://github.com/getkono/karet/compare/karet-text-v0.1.0...karet-text-v0.2.0) - 2026-07-04
 
 ### Added
