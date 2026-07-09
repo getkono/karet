@@ -142,6 +142,10 @@ pub enum Layer {
     RevInput,
     /// Active while the discard-confirmation prompt is up.
     DiscardConfirm,
+    /// Active while the explorer delete-confirmation prompt is up.
+    ExplorerDeleteConfirm,
+    /// Active while a context menu is open.
+    ContextMenu,
     /// Active while the quit-confirmation prompt (unsaved changes) is up.
     QuitConfirm,
     /// Active while the startup crash-recovery prompt is up.
@@ -169,6 +173,10 @@ pub enum Modal {
     RevInput,
     /// The discard-confirmation prompt.
     DiscardConfirm,
+    /// The explorer delete-confirmation prompt.
+    ExplorerDeleteConfirm,
+    /// A context menu.
+    ContextMenu,
     /// The quit-confirmation prompt shown when quitting with unsaved changes.
     QuitConfirm,
     /// The startup prompt to recover crash-recovery backups.
@@ -219,6 +227,8 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
         Some(Modal::CommitInput) => &[L::CommitInput],
         Some(Modal::RevInput) => &[L::RevInput],
         Some(Modal::DiscardConfirm) => &[L::DiscardConfirm],
+        Some(Modal::ExplorerDeleteConfirm) => &[L::ExplorerDeleteConfirm],
+        Some(Modal::ContextMenu) => &[L::ContextMenu],
         Some(Modal::QuitConfirm) => &[L::QuitConfirm],
         Some(Modal::SwapRecover) => &[L::SwapRecover],
         Some(Modal::ExplorerEdit) => &[L::ExplorerEdit],

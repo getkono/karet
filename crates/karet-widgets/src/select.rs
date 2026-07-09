@@ -216,6 +216,26 @@ impl ListSelection {
         self.anchor = None;
     }
 
+    /// Replace the effective selection with `indices`, using `cursor` as the lead
+    /// row when it is valid.
+    pub fn replace_selection(
+        &mut self,
+        indices: impl IntoIterator<Item = usize>,
+        cursor: Option<usize>,
+    ) {
+        self.marked = indices.into_iter().filter(|&i| i < self.len).collect();
+        self.anchor = None;
+        if self.len == 0 {
+            self.cursor = 0;
+            self.marked.clear();
+            return;
+        }
+        self.cursor = cursor
+            .filter(|&i| i < self.len)
+            .or_else(|| self.marked.iter().next().copied())
+            .unwrap_or_else(|| self.clamp(self.cursor));
+    }
+
     /// Clear the toggle-set and any active range; the cursor stays put (so the
     /// effective selection falls back to the cursor row).
     pub fn clear(&mut self) {
@@ -339,6 +359,18 @@ mod tests {
         assert_eq!(sel.selected_indices(), vec![0, 1, 2, 3]);
         sel.clear();
         assert_eq!(sel.selected_indices(), vec![0]); // fallback to cursor
+    }
+
+    #[test]
+    fn replace_selection_sets_marks_and_cursor() {
+        let mut sel = ListSelection::new(5);
+        sel.replace_selection([1, 3, 99], Some(3));
+        assert_eq!(sel.selected_indices(), vec![1, 3]);
+        assert_eq!(sel.cursor(), 3);
+
+        sel.replace_selection([], None);
+        assert_eq!(sel.selected_indices(), vec![3]);
+        assert_eq!(sel.cursor(), 3);
     }
 
     #[test]

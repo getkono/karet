@@ -112,6 +112,13 @@ pub enum Command {
         /// The document to save.
         doc: DocumentId,
     },
+    /// Retarget an open document to a new path after a filesystem rename/move.
+    RetargetDocument {
+        /// The document to retarget.
+        doc: DocumentId,
+        /// The document's new file path.
+        path: PathBuf,
+    },
     /// Undo the most recent edit group on a document.
     Undo {
         /// The target document.
@@ -315,6 +322,13 @@ pub enum Event {
     Saved {
         /// The saved document.
         doc: DocumentId,
+    },
+    /// A document path was retargeted after a filesystem rename/move.
+    Retargeted {
+        /// The retargeted document.
+        doc: DocumentId,
+        /// The document's new file path.
+        path: PathBuf,
     },
     /// A document was closed.
     Closed {
@@ -527,7 +541,15 @@ mod tests {
         assert_eq!(DocumentId(1), DocumentId(1));
         assert_ne!(RequestId(1), RequestId(2));
         let _cmd = Command::Save { doc: DocumentId(7) };
+        let _cmd = Command::RetargetDocument {
+            doc: DocumentId(7),
+            path: PathBuf::from("new.txt"),
+        };
         let _ev = Event::Saved { doc: DocumentId(7) };
+        let _ev = Event::Retargeted {
+            doc: DocumentId(7),
+            path: PathBuf::from("new.txt"),
+        };
         let _cfg = Command::LoadedConfig;
         assert_eq!(DecorationLayer::Vcs, DecorationLayer::Vcs);
     }

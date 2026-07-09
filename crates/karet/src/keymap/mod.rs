@@ -96,10 +96,12 @@ use KeyCode::Tab;
 use KeyCode::Up;
 use Layer::CommitGraph;
 use Layer::CommitInput;
+use Layer::ContextMenu;
 use Layer::DiffEditor;
 use Layer::DiscardConfirm;
 use Layer::Editor;
 use Layer::Explorer;
+use Layer::ExplorerDeleteConfirm;
 use Layer::ExplorerEdit;
 use Layer::Find;
 use Layer::Global;
@@ -185,6 +187,12 @@ static BINDINGS: &[Binding] = &[
     // and new file/folder are also on the panel's toolbar buttons and in the palette.
     b(Explorer, false, false, false, Char('a'), Command::ExplorerNewFile),
     b(Explorer, false, false, false, Char('A'), Command::ExplorerNewFolder),
+    b(Explorer, true,  false, false, Char('c'), Command::ExplorerCopy),
+    b(Explorer, true,  false, false, Char('x'), Command::ExplorerCut),
+    b(Explorer, true,  false, false, Char('v'), Command::ExplorerPaste),
+    b(Explorer, true,  false, false, Char('d'), Command::ExplorerDuplicate),
+    b(Explorer, false, false, false, Delete,    Command::ExplorerDelete),
+    b(Explorer, false, true,  false, F(10),     Command::ExplorerOpenContextMenu),
     b(Explorer, false, false, false, F(2),      Command::ExplorerRename),
     b(Explorer, false, false, false, F(5),      Command::ExplorerRefresh),
 
@@ -347,6 +355,17 @@ static BINDINGS: &[Binding] = &[
     b(DiscardConfirm, false, false, false, Enter,     Command::ConfirmDiscard),
     b(DiscardConfirm, false, false, false, Char('y'), Command::ConfirmDiscard),
     b(DiscardConfirm, false, false, false, Char('Y'), Command::ConfirmDiscard),
+    // Explorer delete confirmation: only confirm keys are bound; anything else cancels.
+    b(ExplorerDeleteConfirm, false, false, false, Enter,     Command::ConfirmExplorerDelete),
+    b(ExplorerDeleteConfirm, false, false, false, Char('y'), Command::ConfirmExplorerDelete),
+    b(ExplorerDeleteConfirm, false, false, false, Char('Y'), Command::ConfirmExplorerDelete),
+    // Context menu.
+    b(ContextMenu, false, false, false, Esc,       Command::ContextMenuCancel),
+    b(ContextMenu, false, false, false, Enter,     Command::ContextMenuAccept),
+    b(ContextMenu, false, false, false, Up,        Command::ContextMenuUp),
+    b(ContextMenu, false, false, false, Char('k'), Command::ContextMenuUp),
+    b(ContextMenu, false, false, false, Down,      Command::ContextMenuDown),
+    b(ContextMenu, false, false, false, Char('j'), Command::ContextMenuDown),
     // Quit confirmation (unsaved changes): save-all, discard, or (any other key) cancel.
     b(QuitConfirm, false, false, false, Char('s'), Command::QuitSaveAll),
     b(QuitConfirm, false, false, false, Char('S'), Command::QuitSaveAll),
@@ -961,6 +980,60 @@ mod tests {
                 key(KeyCode::Char(' '), KeyModifiers::NONE)
             ),
             Some(Command::SidebarToggleExpand)
+        );
+        assert_eq!(
+            res_in(
+                Focus::Sidebar,
+                SidebarPanel::Explorer,
+                false,
+                key(KeyCode::Char('c'), KeyModifiers::CONTROL)
+            ),
+            Some(Command::ExplorerCopy)
+        );
+        assert_eq!(
+            res_in(
+                Focus::Sidebar,
+                SidebarPanel::Explorer,
+                false,
+                key(KeyCode::Char('x'), KeyModifiers::CONTROL)
+            ),
+            Some(Command::ExplorerCut)
+        );
+        assert_eq!(
+            res_in(
+                Focus::Sidebar,
+                SidebarPanel::Explorer,
+                false,
+                key(KeyCode::Char('v'), KeyModifiers::CONTROL)
+            ),
+            Some(Command::ExplorerPaste)
+        );
+        assert_eq!(
+            res_in(
+                Focus::Sidebar,
+                SidebarPanel::Explorer,
+                false,
+                key(KeyCode::Char('d'), KeyModifiers::CONTROL)
+            ),
+            Some(Command::ExplorerDuplicate)
+        );
+        assert_eq!(
+            res_in(
+                Focus::Sidebar,
+                SidebarPanel::Explorer,
+                false,
+                key(KeyCode::Delete, KeyModifiers::NONE)
+            ),
+            Some(Command::ExplorerDelete)
+        );
+        assert_eq!(
+            res_in(
+                Focus::Sidebar,
+                SidebarPanel::Explorer,
+                false,
+                key(KeyCode::F(10), KeyModifiers::SHIFT)
+            ),
+            Some(Command::ExplorerOpenContextMenu)
         );
     }
 
