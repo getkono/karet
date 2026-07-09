@@ -33,12 +33,16 @@ fn alias(name: &str) -> Option<StandardToken> {
         "escape" => StandardToken::StringEscape,
         "constructor" => StandardToken::Type,
         "field" | "variable.member" => StandardToken::Property,
-        // Markdown (tree-sitter-md block grammar) captures with no standard
-        // analogue: headings stand out as keywords, code spans/fences as strings,
-        // and links/refs as constants.
-        "text.title" => StandardToken::Keyword,
-        "text.literal" => StandardToken::String,
-        "text.uri" | "text.reference" => StandardToken::Constant,
+        "comment.doc" => StandardToken::CommentDoc,
+        // tree-sitter-md (block + inline grammars) predates the `markup.*` convention
+        // and spells its captures `text.*`. Route them onto the markup vocabulary so
+        // markdown gets native colors instead of borrowing Keyword/String/Constant.
+        "text.title" => StandardToken::MarkupHeading,
+        "text.literal" => StandardToken::MarkupRaw,
+        "text.emphasis" => StandardToken::MarkupItalic,
+        "text.strong" => StandardToken::MarkupBold,
+        "text.quote" => StandardToken::MarkupQuote,
+        "text.uri" | "text.reference" => StandardToken::MarkupLink,
         _ => return None,
     })
 }
@@ -82,16 +86,73 @@ mod tests {
     }
 
     #[test]
-    fn markdown_captures_map_to_standard_tokens() {
-        assert_eq!(map_capture("text.title"), Some(TokenId::KEYWORD));
-        assert_eq!(map_capture("text.literal"), Some(TokenId::STRING));
-        assert_eq!(map_capture("text.uri"), Some(TokenId::CONSTANT));
-        assert_eq!(map_capture("text.reference"), Some(TokenId::CONSTANT));
+    fn markdown_captures_map_to_markup_tokens() {
+        assert_eq!(
+            map_capture("text.title"),
+            Some(StandardToken::MarkupHeading.id())
+        );
+        assert_eq!(
+            map_capture("text.literal"),
+            Some(StandardToken::MarkupRaw.id())
+        );
+        assert_eq!(
+            map_capture("text.emphasis"),
+            Some(StandardToken::MarkupItalic.id())
+        );
+        assert_eq!(
+            map_capture("text.strong"),
+            Some(StandardToken::MarkupBold.id())
+        );
+        assert_eq!(
+            map_capture("text.uri"),
+            Some(StandardToken::MarkupLink.id())
+        );
+        assert_eq!(
+            map_capture("text.reference"),
+            Some(StandardToken::MarkupLink.id())
+        );
+    }
+
+    #[test]
+    fn markup_convention_names_map_directly_and_by_fallback() {
+        assert_eq!(
+            map_capture("markup.heading"),
+            Some(StandardToken::MarkupHeading.id())
+        );
+        // Grammars that qualify the scope still land on the base class.
+        assert_eq!(
+            map_capture("markup.heading.1.markdown"),
+            Some(StandardToken::MarkupHeading.id())
+        );
+        assert_eq!(
+            map_capture("markup.link.url"),
+            Some(StandardToken::MarkupLink.id())
+        );
+    }
+
+    #[test]
+    fn doc_comments_outrank_plain_comments() {
+        // tree-sitter-rust emits `@comment.documentation` for `///` and `//!`.
+        assert_eq!(
+            map_capture("comment.documentation"),
+            Some(StandardToken::CommentDoc.id())
+        );
+        assert_eq!(
+            map_capture("comment.doc"),
+            Some(StandardToken::CommentDoc.id())
+        );
+        // An ordinary comment still resolves to the plain class...
+        assert_eq!(map_capture("comment"), Some(TokenId::COMMENT));
+        // ...as does an unrecognized comment sub-scope, via the dotted fallback.
+        assert_eq!(map_capture("comment.line"), Some(TokenId::COMMENT));
     }
 
     #[test]
     fn unknown_capture_is_none() {
         assert_eq!(map_capture("nonsense.capture.name"), None);
         assert_eq!(map_capture("spell"), None);
+        // tree-sitter-md tags fence content `@none` — deliberately unhighlighted, so
+        // the injected language's own captures show through.
+        assert_eq!(map_capture("none"), None);
     }
 }
