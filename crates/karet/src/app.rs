@@ -407,6 +407,8 @@ pub struct App {
     /// The current mouse position while hovering the sidebar content, for a
     /// secondary-accent row highlight (explorer / source-control lists).
     pub(crate) hover: Option<(u16, u16)>,
+    /// The current mouse position while hovering the sidebar header controls.
+    pub(crate) sidebar_header_hover: Option<(u16, u16)>,
     /// The header panel-switcher cells (`1 2 3`) from the last frame.
     pub(crate) panel_hits: Vec<(u16, u16, SidebarPanel)>,
     /// Whether the right-side outline panel is shown.
@@ -578,6 +580,7 @@ impl App {
             tab_drag: None,
             sidebar_content_rect: Rect::default(),
             hover: None,
+            sidebar_header_hover: None,
             panel_hits: Vec::new(),
             outline_visible: false,
             outline_sel: ListSelection::new(0),
@@ -3620,6 +3623,8 @@ impl App {
             // explorer / source-control lists (cleared when off the content area).
             MouseEventKind::Moved => {
                 self.hover = rect_contains(self.sidebar_content_rect, point).then_some(point);
+                self.sidebar_header_hover =
+                    (in_sidebar && mouse.row == self.sidebar_rect.y).then_some(point);
             },
             _ => {},
         }
@@ -5665,6 +5670,42 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         assert_eq!(app.hovered_scm_change(), Some(0));
         app.hover = Some((5, 2)); // display 0 → header → nothing
         assert_eq!(app.hovered_scm_change(), None);
+    }
+
+    #[test]
+    fn sidebar_header_hover_tracks_header_only() {
+        let mut app = app();
+        app.sidebar_visible = true;
+        app.sidebar_rect = Rect {
+            x: 0,
+            y: 1,
+            width: 20,
+            height: 8,
+        };
+        app.sidebar_content_rect = Rect {
+            x: 0,
+            y: 2,
+            width: 20,
+            height: 7,
+        };
+        let moved = |column, row| MouseEvent {
+            kind: MouseEventKind::Moved,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        app.handle_mouse(moved(5, 1));
+        assert_eq!(app.sidebar_header_hover, Some((5, 1)));
+        assert_eq!(app.hover, None);
+
+        app.handle_mouse(moved(5, 3));
+        assert_eq!(app.sidebar_header_hover, None);
+        assert_eq!(app.hover, Some((5, 3)));
+
+        app.handle_mouse(moved(30, 3));
+        assert_eq!(app.sidebar_header_hover, None);
+        assert_eq!(app.hover, None);
     }
 
     #[test]

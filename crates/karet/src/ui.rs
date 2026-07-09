@@ -821,7 +821,6 @@ fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
     app.header_action_hits = Vec::new();
     if actions_w > 0 {
         let a = cols[2];
-        let action_style = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
         let actions = [
             (UiIcon::NewFile, Command::ExplorerNewFile),
             (UiIcon::NewFolder, Command::ExplorerNewFolder),
@@ -832,9 +831,15 @@ fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
         for (i, (ui_icon, cmd)) in actions.into_iter().enumerate() {
             let x = a.x + i as u16 * 2;
             app.header_action_hits.push((x, x + 2, cmd));
+            let hovered = header_hovered(app, x, x + 2);
+            let state = if hovered {
+                ChromeButtonState::Hovered
+            } else {
+                ChromeButtonState::Normal
+            };
             spans.push(Span::styled(
                 format!("{} ", ui_icon.glyph(icon_style)),
-                action_style,
+                chrome_button_style(theme, state),
             ));
         }
         f.render_widget(Paragraph::new(Line::from(spans)), a);
@@ -849,14 +854,20 @@ fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
         (switch.x + 2, switch.x + 4, SidebarPanel::Search),
         (switch.x + 4, switch.x + 6, SidebarPanel::SourceControl),
     ];
-    let hint = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
-    let on = Style::default()
-        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
-        .add_modifier(Modifier::BOLD);
     let icon = |ui: UiIcon, panel: SidebarPanel| {
+        let hovered = app
+            .panel_hits
+            .iter()
+            .any(|&(start, end, p)| p == panel && header_hovered(app, start, end));
+        let state = match (active == panel, hovered) {
+            (true, true) => ChromeButtonState::ActiveHovered,
+            (true, false) => ChromeButtonState::Active,
+            (false, true) => ChromeButtonState::Hovered,
+            (false, false) => ChromeButtonState::Normal,
+        };
         Span::styled(
             format!("{} ", ui.glyph(icon_style)),
-            if active == panel { on } else { hint },
+            chrome_button_style(theme, state),
         )
     };
     f.render_widget(
@@ -867,6 +878,37 @@ fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
         ])),
         switch,
     );
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChromeButtonState {
+    Normal,
+    Hovered,
+    Active,
+    ActiveHovered,
+}
+
+fn chrome_button_style(theme: &Theme, state: ChromeButtonState) -> Style {
+    let mut style = match state {
+        ChromeButtonState::Normal | ChromeButtonState::Hovered => {
+            Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())
+        },
+        ChromeButtonState::Active | ChromeButtonState::ActiveHovered => Style::default()
+            .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+            .add_modifier(Modifier::BOLD),
+    };
+    if matches!(
+        state,
+        ChromeButtonState::Hovered | ChromeButtonState::ActiveHovered
+    ) {
+        style = style.bg(theme.role(ThemeRole::HoverHighlight).to_ratatui());
+    }
+    style
+}
+
+fn header_hovered(app: &App, start: u16, end: u16) -> bool {
+    app.sidebar_header_hover
+        .is_some_and(|(col, row)| row == app.sidebar_rect.y && col >= start && col < end)
 }
 
 fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
@@ -2620,6 +2662,31 @@ mod tests {
         assert_eq!(titles[1].name, "mod.rs");
         assert_eq!(titles[2].prefix, "");
         assert_eq!(titles[2].name, "lib.rs");
+    }
+
+    #[test]
+    fn chrome_button_hover_adds_background_without_losing_active_style() {
+        let theme = Theme::dark();
+        let hover = chrome_button_style(&theme, ChromeButtonState::Hovered);
+        assert_eq!(
+            hover.bg,
+            Some(theme.role(ThemeRole::HoverHighlight).to_ratatui())
+        );
+        assert_eq!(
+            hover.fg,
+            Some(theme.role(ThemeRole::LineNumber).to_ratatui())
+        );
+
+        let active_hover = chrome_button_style(&theme, ChromeButtonState::ActiveHovered);
+        assert_eq!(
+            active_hover.bg,
+            Some(theme.role(ThemeRole::HoverHighlight).to_ratatui())
+        );
+        assert_eq!(
+            active_hover.fg,
+            Some(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+        );
+        assert!(active_hover.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
