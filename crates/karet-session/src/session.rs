@@ -323,7 +323,7 @@ impl Session {
         match command {
             Command::OpenDocument { path, language } => self.open(id, path, language.as_deref()),
             Command::CloseDocument { doc } => self.close(id, doc),
-            Command::ApplyChange { doc, change } => self.apply(id, doc, &change),
+            Command::ApplyChange { doc, change, cause } => self.apply(id, doc, &change, cause),
             Command::Undo { doc } => self.undo_redo(id, doc, true),
             Command::Redo { doc } => self.undo_redo(id, doc, false),
             Command::Save { doc } => self.save(id, doc),
@@ -796,9 +796,9 @@ impl Session {
         self.publish(doc_id, None);
     }
 
-    fn apply(&mut self, id: RequestId, doc_id: DocumentId, change: &Change) {
+    fn apply(&mut self, id: RequestId, doc_id: DocumentId, change: &Change, cause: EditCause) {
         let tick = self.elapsed_ms();
-        let ctx = edit_context(tick, change);
+        let ctx = edit_context(tick, cause, change);
         // `None` means the change was stale or overlapping (the client's local
         // speculative state has diverged from ours); either way we still publish
         // below so the authoritative buffer flows back down to the client instead
@@ -988,7 +988,7 @@ impl Session {
                 .get(&doc_id)
                 .and_then(|doc| whole_document_change(doc, record.content.clone()));
             if let Some(change) = change {
-                self.apply(id, doc_id, &change);
+                self.apply(id, doc_id, &change, EditCause::Replace);
                 discard(&record.swap_path);
             }
         }
@@ -1264,32 +1264,15 @@ fn whole_document_change(doc: &Document, new_text: String) -> Option<Change> {
     ))
 }
 
-fn edit_context(tick_ms: u64, change: &Change) -> EditContext {
+fn edit_context(tick_ms: u64, cause: EditCause, change: &Change) -> EditContext {
     let cursor_before = change.edits.first().map_or_else(CursorState::default, |e| {
         CursorState::single(Selection::caret(e.range.start))
     });
-    let cause = if is_single_char_insert(change) {
-        EditCause::Type
-    } else {
-        EditCause::Replace
-    };
     EditContext {
         tick_ms,
         cause,
         cursor_before,
     }
-}
-
-/// Whether `change` is a single insertion of exactly one non-newline `char`.
-fn is_single_char_insert(change: &Change) -> bool {
-    let [edit] = change.edits.as_slice() else {
-        return false;
-    };
-    if edit.range.start != edit.range.end {
-        return false;
-    }
-    let mut chars = edit.new_text.chars();
-    matches!((chars.next(), chars.next()), (Some(c), None) if c != '\n')
 }
 
 /// Convert a `karet-text` applied edit into the parse host's neutral edit.
@@ -1469,7 +1452,14 @@ mod tests {
                 new_text: "\nfn x() {}".to_string(),
             }],
         );
-        session.handle(RequestId(2), Command::ApplyChange { doc, change });
+        session.handle(
+            RequestId(2),
+            Command::ApplyChange {
+                doc,
+                change,
+                cause: EditCause::Replace,
+            },
+        );
         // Applied event with version 1.
         let mut applied_version = None;
         while let Some((_, ev)) = events.try_recv() {
@@ -1548,7 +1538,14 @@ mod tests {
                 new_text: "// edited\n".to_string(),
             }],
         );
-        session.handle(RequestId(2), Command::ApplyChange { doc, change });
+        session.handle(
+            RequestId(2),
+            Command::ApplyChange {
+                doc,
+                change,
+                cause: EditCause::Replace,
+            },
+        );
         while events.try_recv().is_some() {}
         let _ = snaps.try_recv();
 
@@ -1615,7 +1612,14 @@ mod tests {
                 new_text: "!".to_string(),
             }],
         );
-        session.handle(RequestId(2), Command::ApplyChange { doc, change });
+        session.handle(
+            RequestId(2),
+            Command::ApplyChange {
+                doc,
+                change,
+                cause: EditCause::Replace,
+            },
+        );
 
         let mut notified = false;
         let mut applied = false;
@@ -1678,7 +1682,14 @@ mod tests {
                 new_text: "fn x() {}\n".to_string(),
             }],
         );
-        session.handle(RequestId(2), Command::ApplyChange { doc, change });
+        session.handle(
+            RequestId(2),
+            Command::ApplyChange {
+                doc,
+                change,
+                cause: EditCause::Replace,
+            },
+        );
         assert_eq!(
             drain(&mut snaps).and_then(|s| s.cursor.clone()),
             None,
@@ -1744,7 +1755,14 @@ mod tests {
                 new_text: "3".to_string(),
             }],
         );
-        session.handle(RequestId(2), Command::ApplyChange { doc, change });
+        session.handle(
+            RequestId(2),
+            Command::ApplyChange {
+                doc,
+                change,
+                cause: EditCause::Replace,
+            },
+        );
         while events.try_recv().is_some() {}
 
         // Save re-encodes to CBOR; the file on disk decodes to the edited value.
@@ -1804,7 +1822,14 @@ mod tests {
                 new_text: String::new(),
             }],
         );
-        session.handle(RequestId(2), Command::ApplyChange { doc, change });
+        session.handle(
+            RequestId(2),
+            Command::ApplyChange {
+                doc,
+                change,
+                cause: EditCause::Replace,
+            },
+        );
         while events.try_recv().is_some() {}
 
         // Save fails to encode; no Saved event, and the file is unchanged.
@@ -2236,6 +2261,7 @@ mod tests {
             Command::ApplyChange {
                 doc,
                 change: insert_change("x"),
+                cause: EditCause::Replace,
             },
         );
 
