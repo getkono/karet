@@ -13,7 +13,7 @@ mod default;
 mod load_vscode;
 
 /// Number of [`StandardToken`](karet_core::StandardToken) classes (token id space).
-pub(crate) const TOKEN_COUNT: usize = 22;
+pub(crate) const TOKEN_COUNT: usize = 30;
 /// Number of [`ThemeRole`] variants.
 pub(crate) const ROLE_COUNT: usize = 28;
 
@@ -90,10 +90,49 @@ impl Rgba {
     }
 }
 
+/// The text emphasis a theme requests for a token class, independent of any
+/// renderer. Markup tokens carry weight/slant as much as color — a markdown
+/// heading reads as a heading because it is **bold**, not merely blue.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Emphasis {
+    /// Render bold.
+    pub bold: bool,
+    /// Render italic.
+    pub italic: bool,
+}
+
+impl Emphasis {
+    /// Bold, not italic.
+    pub(crate) const BOLD: Self = Self {
+        bold: true,
+        italic: false,
+    };
+    /// Italic, not bold.
+    pub(crate) const ITALIC: Self = Self {
+        bold: false,
+        italic: true,
+    };
+
+    /// Convert to a ratatui modifier set (empty when neither flag is set).
+    #[cfg(feature = "view")]
+    #[must_use]
+    pub fn to_ratatui(self) -> ratatui::style::Modifier {
+        let mut m = ratatui::style::Modifier::empty();
+        if self.bold {
+            m |= ratatui::style::Modifier::BOLD;
+        }
+        if self.italic {
+            m |= ratatui::style::Modifier::ITALIC;
+        }
+        m
+    }
+}
+
 /// A resolved color theme: maps token classes and UI roles to colors.
 #[derive(Clone, Debug)]
 pub struct Theme {
     tokens: [Rgba; TOKEN_COUNT],
+    emphasis: [Emphasis; TOKEN_COUNT],
     fallback_fg: Rgba,
     roles: [Rgba; ROLE_COUNT],
     dark: bool,
@@ -148,6 +187,15 @@ impl Theme {
             .get(token.0 as usize)
             .copied()
             .unwrap_or(self.fallback_fg)
+    }
+
+    /// The text emphasis for a semantic token class (none if unmapped).
+    #[must_use]
+    pub fn emphasis(&self, token: TokenId) -> Emphasis {
+        self.emphasis
+            .get(token.0 as usize)
+            .copied()
+            .unwrap_or_default()
     }
 
     /// The color for a UI role (the fallback foreground if unmapped).
@@ -228,6 +276,42 @@ mod tests {
         );
         // Unmapped token id falls back to foreground.
         assert_eq!(t.color(TokenId(60000)), t.role(ThemeRole::Foreground));
+    }
+
+    #[test]
+    fn token_palette_covers_every_standard_token() {
+        // `TOKEN_COUNT` must track the `StandardToken` enum: a token whose id lands past
+        // the palette silently renders as plain foreground. `MarkupListMarker` is the
+        // last variant, so bounding it bounds them all.
+        assert!((StandardToken::MarkupListMarker.id().0 as usize) < TOKEN_COUNT);
+        // And the palette is not oversized relative to the enum.
+        assert_eq!(
+            StandardToken::MarkupListMarker.id().0 as usize,
+            TOKEN_COUNT - 1
+        );
+    }
+
+    #[test]
+    fn markup_emphasis_defaults() {
+        let t = Theme::dark();
+        assert!(t.emphasis(StandardToken::MarkupBold.id()).bold);
+        assert!(t.emphasis(StandardToken::MarkupItalic.id()).italic);
+        assert!(t.emphasis(StandardToken::MarkupHeading.id()).bold);
+        assert!(t.emphasis(StandardToken::CommentDoc.id()).italic);
+        // Code tokens stay unemphasized.
+        assert_eq!(t.emphasis(StandardToken::Keyword.id()), Emphasis::default());
+        // An unmapped id yields no emphasis rather than panicking.
+        assert_eq!(t.emphasis(TokenId(60000)), Emphasis::default());
+    }
+
+    #[test]
+    fn doc_comment_is_brighter_than_comment() {
+        let t = Theme::dark();
+        let bg = t.role(ThemeRole::Background);
+        assert!(
+            contrast_ratio(t.color(StandardToken::CommentDoc.id()), bg)
+                > contrast_ratio(t.color(StandardToken::Comment.id()), bg)
+        );
     }
 
     #[test]
