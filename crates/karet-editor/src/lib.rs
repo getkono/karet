@@ -127,6 +127,22 @@ impl EditorState {
         }
     }
 
+    /// The screen cell of the primary caret within `area`, if it is visible.
+    ///
+    /// This mirrors the widget's own caret placement, including the line-number
+    /// gutter, horizontal scroll, and collapsed folds. Applications that render a
+    /// terminal-native caret outside the ratatui buffer can use this after a frame's
+    /// layout has recorded the editor area.
+    #[must_use]
+    pub fn primary_caret_cell(
+        &self,
+        area: Rect,
+        buffer: &TextBuffer,
+        folds: &[Fold],
+    ) -> Option<(u16, u16)> {
+        caret_cell(area, buffer, folds, self, self.cursor())
+    }
+
     /// Scroll so `line` sits at the vertical center of the viewport. Handy for a
     /// read-only viewer centering a search match. The scroll is clamped to the
     /// buffer at render time.
@@ -478,6 +494,49 @@ impl EditorState {
     }
 }
 
+fn caret_cell(
+    area: Rect,
+    buffer: &TextBuffer,
+    folds: &[Fold],
+    state: &EditorState,
+    at: LineCol,
+) -> Option<(u16, u16)> {
+    let line_count = buffer.line_count() as u32;
+    let top = first_visible(
+        folds,
+        state.scroll_line.min(line_count.saturating_sub(1)),
+        line_count,
+    );
+    if at.line < top || hidden_in(folds, at.line) || at.col < state.scroll_col {
+        return None;
+    }
+    let mut vis_row: u16 = 0;
+    let mut ll = top;
+    while ll < at.line {
+        if !hidden_in(folds, ll) {
+            vis_row = vis_row.saturating_add(1);
+        }
+        ll += 1;
+    }
+    if vis_row >= area.height {
+        return None;
+    }
+    let gutter = 1 + digit_count(line_count.max(1)) as u16 + 1;
+    let cx = area
+        .x
+        .saturating_add(gutter)
+        .saturating_add(u16::try_from(at.col - state.scroll_col).unwrap_or(u16::MAX));
+    let cy = area.y.saturating_add(vis_row);
+    (cx < area.right() && cy < area.bottom()).then_some((cx, cy))
+}
+
+fn first_visible(folds: &[Fold], mut line: u32, line_count: u32) -> u32 {
+    while line < line_count && hidden_in(folds, line) {
+        line += 1;
+    }
+    line
+}
+
 /// Clamp `pos` to a valid position within `buffer` (line, then column).
 fn clamp_to_buffer(buffer: &TextBuffer, pos: LineCol) -> LineCol {
     let line = pos.line.min(last_line(buffer));
@@ -498,6 +557,7 @@ pub struct Editor<'a> {
     inlay_hints: &'a [InlayHint],
     folds: &'a [Fold],
     focused: bool,
+    cell_caret: bool,
     read_only: bool,
 }
 
@@ -514,6 +574,7 @@ impl<'a> Editor<'a> {
             inlay_hints: &[],
             folds: &[],
             focused: false,
+            cell_caret: true,
             read_only: false,
         }
     }
@@ -522,6 +583,16 @@ impl<'a> Editor<'a> {
     #[must_use]
     pub fn focused(mut self, focused: bool) -> Self {
         self.focused = focused;
+        self
+    }
+
+    /// Choose whether the focused editor paints its built-in reversed-cell caret.
+    ///
+    /// Applications that draw a separate terminal-native or pixel-graphics caret can
+    /// disable this while keeping focus-dependent cursor-line highlighting.
+    #[must_use]
+    pub fn cell_caret(mut self, visible: bool) -> Self {
+        self.cell_caret = visible;
         self
     }
 
@@ -840,7 +911,7 @@ impl StatefulWidget for Editor<'_> {
         }
 
         // Draw a reversed caret cell for every head when focused and editable.
-        if self.focused && !self.read_only {
+        if self.focused && self.cell_caret && !self.read_only {
             for sel in &state.cursors().selections {
                 self.draw_caret(buf, area, digits, state, line_count, sel.head);
             }
@@ -1233,6 +1304,31 @@ mod tests {
         // The caret-free middle line has no reversed cell.
         let row1_caret = (0..area.width).any(|x| buf[(x, 1)].modifier.contains(Modifier::REVERSED));
         assert!(!row1_caret, "line 1 has no caret");
+    }
+
+    #[test]
+    fn cell_caret_can_be_suppressed_while_focused() {
+        let buffer = TextBuffer::from_text("abc\n");
+        let mut state = EditorState::new();
+        state.place_caret(LineCol::new(0, 1));
+        let area = Rect::new(0, 0, 8, 2);
+        let mut buf = Buffer::empty(area);
+        Editor::new(&buffer)
+            .focused(true)
+            .cell_caret(false)
+            .render(area, &mut buf, &mut state);
+        let any_caret = (0..area.width)
+            .any(|x| (0..area.height).any(|y| buf[(x, y)].modifier.contains(Modifier::REVERSED)));
+        assert!(!any_caret);
+    }
+
+    #[test]
+    fn primary_caret_cell_matches_rendered_gutter_geometry() {
+        let buffer = TextBuffer::from_text("abc\n");
+        let mut state = EditorState::new();
+        state.place_caret(LineCol::new(0, 2));
+        let area = Rect::new(10, 5, 20, 4);
+        assert_eq!(state.primary_caret_cell(area, &buffer, &[]), Some((15, 5)));
     }
 
     #[test]
