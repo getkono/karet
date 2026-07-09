@@ -80,12 +80,12 @@ published to crates.io (everything else is `publish = false`).
 | `karet-core` | foundation | ✓ | shared vocabulary: geometry, text coords, neutral models (Diagnostic/Decoration/Symbol/Completion/Hover/…), neutral edits, `SymbolProvider`, `TokenId` |
 | `karet-filetype` | engine | ✓ | single registry: path → file type (name, category, per-`IconStyle` icon) + renderer routing (`FileKind`/`classify`); dependency-free |
 | `karet-text` | engine | ✓ | rope buffer, undo/redo, dirty/save, large-file mmap |
-| `karet-treesitter` | engine | ✓ | shared tree-sitter parse host (parser pool, incremental trees, queries) |
-| `karet-syntax` | engine | ✓ | tree-sitter highlighting, fold regions, bracket pairs, structural selection |
+| `karet-treesitter` | engine | ✓ | shared tree-sitter parse host (parser pool, incremental trees, queries, **language injection** → layered trees) |
+| `karet-syntax` | engine | ✓ | tree-sitter highlighting (incl. **injected** languages), fold regions, bracket pairs, structural selection |
 | `karet-theme` | engine | ✓ | token palette, .tmTheme + VS Code JSON loaders, contrast (`view` feat) |
 | `karet-diff` | engine | ✓ | pure syntax-aware diffing (tree-sitter + line/word fallback) — no presentation |
 | `karet-graph` | engine | — | DAG lane-assignment layout + rail renderer (`view` feat) for the commit graph & code visualizations; consumes `karet_core::GraphView` |
-| `karet-markdown` | engine | — | markdown render model (`view` + `highlight` feats) |
+| `karet-markdown` | engine | — | markdown parse → wrap → render model; `highlight` colours code fences, `view` paints ratatui |
 | `karet-cbor` | engine | — | CBOR decode/encode ↔ editable diagnostic-notation text (via `ciborium`); no presentation |
 | `karet-pdf` | engine | ✓ | pure-Rust PDF page → RGBA rasterization (via `hayro`); no presentation |
 | `karet-terminal` | engine | — | VT/PTY emulator, scrollback, OSC 133 (`view` feat) |
@@ -95,7 +95,7 @@ published to crates.io (everything else is `publish = false`).
 | `karet-search` | engine | ✓ | in-file + workspace search/replace (ripgrep-style; no karet deps) |
 | `karet-watch` | engine | — | debounced cross-platform FS-watch → neutral `FsEvent` Tokio stream; enumerates off-thread (headless) |
 | `karet-fuzzy` | engine | — | fuzzy match + frecency + quick-open query parsing |
-| `karet-session` | backend | — | headless editor backend: owns documents/workspace, orchestrates producers, applies `Command`s, emits `Event`s; holds format-on-save, spell-check, settings/session |
+| `karet-session` | backend | — | headless editor backend: owns documents/workspace, orchestrates producers, applies `Command`s, emits `Event`s; runs layered highlighting on a background worker; holds format-on-save, spell-check, settings/session |
 | `karet-widgets` | widget | — | ratatui UI toolkit: file tree, picker/palette, outline+breadcrumbs, status bar, dialogs, dock, problems, pane layout, LSP completion/hover popups |
 | `karet-editor` | widget | ✓ | the editor widget: gutter, minimap, scroll, visual aids, snippets (modules); `read_only` pager mode |
 | `karet-fileview` | widget | ✓ | read-only "render any file" widget: dispatches `FileKind` → editor/hex/image/placeholder; hosts the hex view + terminal image; Markdown renders as source |
