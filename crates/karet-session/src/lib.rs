@@ -22,6 +22,7 @@ pub mod api;
 pub mod backend;
 pub mod backup;
 pub mod config;
+mod highlight;
 pub mod local;
 pub mod session;
 pub mod viz;

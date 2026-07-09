@@ -13,11 +13,10 @@ use karet_fileview::image;
 use karet_fileview::viewer::FileKind;
 use karet_fileview::viewer::{self};
 use karet_syntax::FoldRegions;
-use karet_syntax::Highlighter;
 use karet_syntax::Highlights;
+use karet_syntax::LayeredHighlighter;
 use karet_text::TextBuffer;
-use karet_treesitter::ParserPool;
-use karet_treesitter::SyntaxTree;
+use karet_treesitter::LayeredParser;
 use karet_treesitter::language_id_from_path;
 use karet_treesitter::language_name_from_path;
 
@@ -162,18 +161,18 @@ fn open_cbor(path: &Path, bytes: &[u8]) -> Tab {
 }
 
 /// Highlight `text` for `path`'s language, or return empty highlights.
+///
+/// Layered, so a read-only view colours embedded languages — a markdown fence, a Rust
+/// doctest — exactly as the editable one does.
 fn highlight(path: &Path, text: &str) -> Highlights {
     let Some(lang) = language_id_from_path(path) else {
         return Highlights::default();
     };
-    let mut pool = ParserPool::new();
-    let Ok(tree) = SyntaxTree::parse(&mut pool, lang, text) else {
+    let mut parser = LayeredParser::new();
+    let Ok(tree) = parser.parse(lang, text) else {
         return Highlights::default();
     };
-    let Ok(highlighter) = Highlighter::new(lang) else {
-        return Highlights::default();
-    };
-    highlighter.highlight(&tree, text).unwrap_or_default()
+    LayeredHighlighter::new().highlight(&tree, text)
 }
 
 /// Open a PDF as a document tab whose pages rasterize on demand (via `karet-pdf`),

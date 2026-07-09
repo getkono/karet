@@ -14,6 +14,7 @@ const BACKUP_TICK: Duration = Duration::from_secs(2);
 
 use crate::api::Command;
 use crate::api::RequestId;
+use crate::highlight::HighlightResult;
 use crate::session::Session;
 
 /// Errors produced when submitting to a [`Backend`].
@@ -82,6 +83,7 @@ impl Backend for LocalBackend {
 pub fn local(mut session: Session) -> LocalBackend {
     let (commands, mut rx) = mpsc::unbounded_channel::<(RequestId, Command)>();
     let (watcher, mut fs_rx) = session.take_watch();
+    let mut highlights = session.take_highlights();
     tokio::spawn(async move {
         // Hold the watcher alive for exactly as long as the actor consumes events.
         let _watcher = watcher;
@@ -103,6 +105,11 @@ pub fn local(mut session: Session) -> LocalBackend {
                     Some(event) => session.handle_fs_event(event),
                     None => fs_rx = None, // the watcher stopped; stop selecting it
                 },
+                // Layered highlights computed off-actor; applied (and published) here.
+                result = recv_highlights(&mut highlights) => match result {
+                    Some(result) => session.apply_highlights(result),
+                    None => highlights = None, // the worker stopped; stop selecting it
+                },
                 _ = backup.tick() => session.backup_tick(),
             }
         }
@@ -116,6 +123,16 @@ pub fn local(mut session: Session) -> LocalBackend {
 /// Await the next filesystem event, or never resolve when there is no watcher (so
 /// the actor's `select!` simply ignores that arm).
 async fn recv_fs(rx: &mut Option<mpsc::UnboundedReceiver<FsEvent>>) -> Option<FsEvent> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Await the next completed highlight, or never resolve when there is no worker.
+async fn recv_highlights(
+    rx: &mut Option<mpsc::UnboundedReceiver<HighlightResult>>,
+) -> Option<HighlightResult> {
     match rx {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,
@@ -168,6 +185,151 @@ mod tests {
         assert!(
             matches!(received, Some((_, Event::Opened { .. }))),
             "local backend should drive the session to open the file, got {received:?}"
+        );
+    }
+
+    /// Drain snapshots until one satisfies `wanted`, or time out.
+    #[cfg(test)]
+    async fn await_snapshot(
+        snaps: &mut crate::local::SnapshotRx,
+        wanted: impl Fn(&crate::local::DocSnapshot) -> bool,
+    ) -> bool {
+        let found = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some((_, snap)) = snaps.recv().await {
+                if wanted(&snap) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await;
+        found.unwrap_or(false)
+    }
+
+    #[tokio::test]
+    async fn injected_language_is_highlighted_through_the_worker() {
+        use karet_core::TokenId;
+
+        use crate::session::Session;
+        use crate::session::SessionConfig;
+
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("notes.md");
+        // A markdown file whose fenced block is rust: only the injection machinery,
+        // driven end to end through the worker, can colour `fn` as a keyword.
+        if std::fs::write(&path, "# T\n\n```rust\nfn main() {}\n```\n").is_err() {
+            return;
+        }
+
+        let (session, _events, mut snaps) = Session::new(SessionConfig::default());
+        let backend = local(session);
+        let id = backend.next_id();
+        assert!(
+            backend
+                .send(
+                    id,
+                    Command::OpenDocument {
+                        path,
+                        language: None
+                    }
+                )
+                .is_ok()
+        );
+
+        // The open publishes immediately with no spans; the worker's answer follows.
+        let highlighted = await_snapshot(&mut snaps, |snap| {
+            snap.highlights
+                .all()
+                .iter()
+                .any(|s| s.token == TokenId::KEYWORD)
+        })
+        .await;
+        assert!(
+            highlighted,
+            "the embedded rust fence should eventually be highlighted"
+        );
+    }
+
+    #[tokio::test]
+    async fn editing_republishes_highlights_for_the_new_text() {
+        use karet_core::Change;
+        use karet_core::LineCol;
+        use karet_core::Range;
+        use karet_core::TextEdit;
+        use karet_core::TokenId;
+        use karet_text::EditCause;
+
+        use crate::api::Event;
+        use crate::session::Session;
+        use crate::session::SessionConfig;
+
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("live.md");
+        if std::fs::write(&path, "text\n").is_err() {
+            return;
+        }
+
+        let (session, mut events, mut snaps) = Session::new(SessionConfig::default());
+        let backend = local(session);
+        let id = backend.next_id();
+        if backend
+            .send(
+                id,
+                Command::OpenDocument {
+                    path,
+                    language: None,
+                },
+            )
+            .is_err()
+        {
+            return;
+        }
+        let Some((_, Event::Opened { doc, version })) = events.recv().await else {
+            return;
+        };
+
+        // Type a rust code fence at the end of the buffer.
+        let Ok(range) = Range::new(LineCol::new(1, 0), LineCol::new(1, 0)) else {
+            return;
+        };
+        let change = Change::new(
+            version,
+            vec![TextEdit {
+                range,
+                new_text: "\n```rust\nfn f() {}\n```\n".to_owned(),
+            }],
+        );
+        assert!(backend.next_id() > id);
+        if backend
+            .send(
+                backend.next_id(),
+                Command::ApplyChange {
+                    doc,
+                    change,
+                    cause: EditCause::Paste,
+                },
+            )
+            .is_err()
+        {
+            return;
+        }
+
+        // The fence did not exist a moment ago; the worker must discover the injection
+        // and republish. This is the live-update contract.
+        let highlighted = await_snapshot(&mut snaps, |snap| {
+            snap.highlights
+                .all()
+                .iter()
+                .any(|s| s.token == TokenId::KEYWORD)
+        })
+        .await;
+        assert!(
+            highlighted,
+            "typing a code fence should light up the embedded language"
         );
     }
 }
