@@ -175,6 +175,7 @@ fn draw_rev_input(f: &mut Frame, rev: &str, theme: &Theme, area: Rect) {
 /// small.
 struct PaneCtx<'a> {
     theme: &'a Theme,
+    root: &'a Path,
     graphics: GraphicsProtocol,
     /// Whether this pane holds the window focus (affects tab-strip styling).
     pane_focused: bool,
@@ -221,6 +222,7 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         let rendered = if is_focused {
             let ctx = PaneCtx {
                 theme,
+                root: &app.root,
                 graphics,
                 pane_focused: true,
                 editor_focused,
@@ -235,6 +237,7 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         } else if let Some(stored) = app.stored.get_mut(&pane) {
             let ctx = PaneCtx {
                 theme,
+                root: &app.root,
                 graphics,
                 pane_focused: false,
                 editor_focused: false,
@@ -276,8 +279,15 @@ fn render_pane(
         Constraint::Min(0),     // content
     ])
     .split(area);
-    let (tabstrip_rect, tab_hits) =
-        draw_pane_tabs(f, tabs, active, ctx.pane_focused, ctx.theme, parts[0]);
+    let (tabstrip_rect, tab_hits) = draw_pane_tabs(
+        f,
+        tabs,
+        active,
+        ctx.pane_focused,
+        ctx.theme,
+        ctx.root,
+        parts[0],
+    );
     if bc == 1 {
         draw_pane_breadcrumb(f, tabs.get(active), ctx.theme, parts[1]);
     }
@@ -524,11 +534,13 @@ fn draw_pane_tabs(
     active: usize,
     pane_focused: bool,
     theme: &Theme,
+    root: &Path,
     area: Rect,
 ) -> (Rect, Vec<TabHit>) {
     let mut hits = Vec::new();
     let mut spans = Vec::new();
     let mut x = area.x;
+    let titles = tab_display_titles(tabs, root);
     for (i, tab) in tabs.iter().enumerate() {
         let mut style = if i == active && pane_focused {
             Style::default()
@@ -550,10 +562,18 @@ fn draw_pane_tabs(
         // A pre-allocated 1-cell status slot keeps the layout stable: `●` for
         // unsaved changes (a spinner frame while a slow save writes), else blank.
         let mark = save_mark(tab);
-        let label = format!(" {mark} {} ", tab.title);
-        let label_w = label.chars().count() as u16;
+        let title = &titles[i];
+        let label_w = (4 + title.prefix.chars().count() + title.name.chars().count()) as u16;
         let start = x;
-        spans.push(Span::styled(label, style));
+        spans.push(Span::styled(format!(" {mark} "), style));
+        if !title.prefix.is_empty() {
+            spans.push(Span::styled(
+                title.prefix.clone(),
+                style.fg(theme.role(ThemeRole::Muted).to_ratatui()),
+            ));
+        }
+        spans.push(Span::styled(title.name.clone(), style));
+        spans.push(Span::styled(" ", style));
         spans.push(Span::styled("\u{00d7}", style)); // × close glyph
         spans.push(Span::styled(" ", style));
         let close = start + label_w;
@@ -567,6 +587,41 @@ fn draw_pane_tabs(
     let bar = Style::default().bg(theme.role(ThemeRole::Background).to_ratatui());
     f.render_widget(Paragraph::new(Line::from(spans)).style(bar), area);
     (area, hits)
+}
+
+struct TabDisplayTitle {
+    prefix: String,
+    name: String,
+}
+
+fn tab_display_titles(tabs: &[Tab], root: &Path) -> Vec<TabDisplayTitle> {
+    tabs.iter()
+        .map(|tab| {
+            let name = tab_name(tab);
+            let duplicate = tabs.iter().filter(|other| tab_name(other) == name).count() > 1;
+            let prefix = if duplicate {
+                tab.path().and_then(|path| tab_parent_prefix(path, root))
+            } else {
+                None
+            }
+            .unwrap_or_default();
+            TabDisplayTitle { prefix, name }
+        })
+        .collect()
+}
+
+fn tab_name(tab: &Tab) -> String {
+    tab.path()
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .map_or_else(|| tab.title.clone(), str::to_string)
+}
+
+fn tab_parent_prefix(path: &Path, root: &Path) -> Option<String> {
+    let display = path.strip_prefix(root).unwrap_or(path);
+    let parent = display.parent()?;
+    let prefix = parent.to_string_lossy();
+    (!prefix.is_empty()).then(|| format!("{prefix}/"))
 }
 
 /// Braille spinner frames for a slow save (each is a single display cell).
@@ -2522,6 +2577,50 @@ fn status_glyph(kind: StatusKind) -> (char, ThemeRole) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_code_tab(path: &str) -> Tab {
+        use karet_text::TextBuffer;
+
+        let buffer = TextBuffer::from_text("");
+        Tab::new(
+            Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(path),
+            TabKind::Code {
+                path: PathBuf::from(path),
+                language: "plaintext",
+                doc: None,
+                next_version: 0,
+                buffer,
+                text: String::new(),
+                highlights: karet_syntax::Highlights::default(),
+                folds: karet_syntax::FoldRegions::default(),
+                folded: std::collections::BTreeSet::new(),
+                decos: Vec::new(),
+                search_decos: Vec::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn tab_titles_disambiguate_duplicate_file_names() {
+        let root = Path::new("/repo");
+        let tabs = vec![
+            test_code_tab("/repo/src/view/mod.rs"),
+            test_code_tab("/repo/tests/view/mod.rs"),
+            test_code_tab("/repo/src/lib.rs"),
+        ];
+
+        let titles = tab_display_titles(&tabs, root);
+
+        assert_eq!(titles[0].prefix, "src/view/");
+        assert_eq!(titles[0].name, "mod.rs");
+        assert_eq!(titles[1].prefix, "tests/view/");
+        assert_eq!(titles[1].name, "mod.rs");
+        assert_eq!(titles[2].prefix, "");
+        assert_eq!(titles[2].name, "lib.rs");
+    }
 
     #[test]
     fn format_datetime_is_correct_and_applies_offset() {

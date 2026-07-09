@@ -1971,24 +1971,25 @@ impl App {
         let Some(pending) = self.explorer.take_edit() else {
             return;
         };
-        match pending {
+        match &pending {
             PendingEdit::Create { path, folder } => {
-                let result = if folder {
-                    std::fs::create_dir_all(&path)
+                let result = if *folder {
+                    std::fs::create_dir_all(path)
                 } else {
                     if let Some(parent) = path.parent() {
                         let _ = std::fs::create_dir_all(parent);
                     }
-                    std::fs::File::create(&path).map(|_| ())
+                    std::fs::File::create(path).map(|_| ())
                 };
                 match result {
                     Ok(()) => {
                         self.explorer.rebuild(&self.root);
-                        if !folder {
-                            self.open_path(&path);
+                        if !*folder {
+                            self.open_path(path);
                         }
                     },
                     Err(e) => {
+                        self.explorer.restore_edit(&pending);
                         self.notify(
                             Severity::Error,
                             NotificationKind::Io,
@@ -1997,9 +1998,10 @@ impl App {
                     },
                 }
             },
-            PendingEdit::Rename { from, to } => match std::fs::rename(&from, &to) {
+            PendingEdit::Rename { from, to } => match std::fs::rename(from, to) {
                 Ok(()) => self.explorer.rebuild(&self.root),
                 Err(e) => {
+                    self.explorer.restore_edit(&pending);
                     self.notify(
                         Severity::Error,
                         NotificationKind::Io,
@@ -7285,6 +7287,26 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         app.explorer_commit_edit();
         assert!(dir.join("hello.txt").exists());
         assert!(!app.explorer.is_editing());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_explorer_create_keeps_inline_name_for_retry() {
+        let dir = std::env::temp_dir().join(format!("karet-newfile-fail-{}", std::process::id()));
+        let existing = dir.join("existing");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(&existing, "already here");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+        app.explorer_begin_new(true);
+        for c in "existing".chars() {
+            app.explorer.edit_push(c);
+        }
+
+        app.explorer_commit_edit();
+
+        assert!(app.explorer.is_editing());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
