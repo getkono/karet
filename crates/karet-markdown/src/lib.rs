@@ -4,8 +4,24 @@
 //! Enable `view` for a ratatui renderer, and `highlight` to syntax-highlight code
 //! fences via `karet-syntax`.
 //!
-//! This is the implementation *skeleton*: the public render model is defined; the
-//! pulldown-cmark parsing, wrapping and rendering are filled in separately.
+//! Two stages. [`parse`] turns source into a tree of [`Block`]s and [`Inline`]s;
+//! [`MarkdownDocument::wrap`] soft-wraps that tree to a column width, producing
+//! [`WrappedLine`]s of [`TextSpan`]s tagged with a semantic
+//! [`TokenId`](karet_core::TokenId). Nothing here knows about a terminal: a consumer
+//! resolves those tokens to colors (and bold/italic) through `karet-theme`.
+
+mod parse;
+mod wrap;
+
+#[cfg(feature = "highlight")]
+mod highlight;
+
+#[cfg(feature = "view")]
+pub mod view;
+
+pub use wrap::TextSpan;
+pub use wrap::WrappedDocument;
+pub use wrap::WrappedLine;
 
 /// An inline span of markdown content.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,23 +80,20 @@ pub struct MarkdownDocument {
 }
 
 impl MarkdownDocument {
-    /// Soft-wrap the document to `width` columns for terminal rendering.
+    /// Soft-wrap the document to `width` terminal columns.
+    ///
+    /// With the `highlight` feature, a fenced code block whose info string names a
+    /// compiled-in grammar is syntax-highlighted; otherwise it renders as raw markup.
     #[must_use]
     pub fn wrap(&self, width: u16) -> WrappedDocument {
-        let _ = width;
-        todo!()
+        wrap::wrap(self, width)
     }
 }
-
-/// A width-wrapped document, ready to be painted line by line.
-#[derive(Clone, Debug, Default)]
-pub struct WrappedDocument {}
 
 /// Parse markdown `source` into a [`MarkdownDocument`].
 #[must_use]
 pub fn parse(source: &str) -> MarkdownDocument {
-    let _ = source;
-    todo!()
+    parse::parse(source)
 }
 
 #[cfg(test)]
