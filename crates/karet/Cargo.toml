@@ -55,6 +55,7 @@ thiserror.workspace = true           # error types for the merged clipboard/inpu
 base64.workspace = true              # `clipboard` module (OSC 52), merged from karet-clipboard
 toml.workspace = true                # `input` module keymap config, merged from karet-input
 serde.workspace = true               # `input` module keymap config
+serde_json.workspace = true          # loaded-settings inspector formatting
 
 # Build-time only: reuse the existing pure-Rust `gix` (already pinned with `status`)
 # to read the commit / dirty / commit-time provenance baked into `karet -V`. No new

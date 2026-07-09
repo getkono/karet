@@ -18,6 +18,7 @@ mod app;
 mod cli;
 mod clipboard;
 mod command;
+mod compat;
 mod editing;
 mod keymap;
 mod notify;
@@ -53,16 +54,16 @@ fn main() -> color_eyre::Result<()> {
     // Load the layered JSONC configuration for this workspace (project/user/system,
     // over sane defaults). Diagnostics are handed to the app to surface as startup
     // notifications; loading itself never fails.
-    let (mut settings, diagnostics) = karet_session::config::load(std::slice::from_ref(&root));
+    let mut loaded_config = karet_session::config::load_report(std::slice::from_ref(&root));
     if let Some(panel) = cli.startup_panel {
-        settings.workbench.startup_panel = panel.into();
+        loaded_config.settings.workbench.startup_panel = panel.into();
     }
 
     // The Source-Control panel is populated by the session's `VcsStatus` event
     // (seeded on startup and refreshed on filesystem changes), so the shell starts
     // with an empty panel rather than computing status here.
     let mut app = app::App::new(root.clone(), Vec::new(), Vec::new(), syntax)
-        .with_settings(settings, diagnostics);
+        .with_loaded_config(loaded_config);
     // An explicit `--icons` flag (or `KARET_ICONS`) overrides `workbench.iconStyle`.
     if let Some(style) = cli.explicit_icon_style() {
         app = app.with_icons(style);

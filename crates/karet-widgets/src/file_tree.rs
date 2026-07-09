@@ -344,6 +344,36 @@ impl FileTreeState {
         })
     }
 
+    /// Restore a failed inline edit so the user can correct or retry it.
+    ///
+    /// The app calls this when the filesystem rejects a create/rename after
+    /// [`take_edit`](Self::take_edit) has already consumed the editor state.
+    pub fn restore_edit(&mut self, pending: &PendingEdit) {
+        self.editing = match pending {
+            PendingEdit::Create { path, folder } => path.parent().map(|parent| EditState {
+                kind: if *folder {
+                    EditKind::NewFolder
+                } else {
+                    EditKind::NewFile
+                },
+                parent: parent.to_path_buf(),
+                buffer: file_label(path),
+            }),
+            PendingEdit::Rename { from, to } => {
+                let parent = from
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| self.root.clone());
+                Some(EditState {
+                    kind: EditKind::Rename(from.clone()),
+                    parent,
+                    buffer: file_label(to),
+                })
+            },
+        };
+        self.needs_rebuild = true;
+    }
+
     /// Overlay the in-progress inline edit onto freshly-built `rows`: a rename marks
     /// its target row as editing; a new file/folder inserts a placeholder editing row
     /// under its parent. Returns the row index the cursor should follow, if any.
@@ -358,6 +388,12 @@ impl FileTreeState {
             },
             EditKind::NewFile | EditKind::NewFolder => {
                 let is_dir = matches!(edit.kind, EditKind::NewFolder);
+                let name = edit.buffer.trim();
+                let path = if name.is_empty() {
+                    edit.parent.clone()
+                } else {
+                    edit.parent.join(name)
+                };
                 let (at, depth) = if edit.parent == self.root {
                     (0, 0)
                 } else if let Some(idx) = rows.iter().position(|r| r.path == edit.parent) {
@@ -369,7 +405,7 @@ impl FileTreeState {
                 rows.insert(
                     at,
                     FileTreeRow {
-                        path: edit.parent.clone(),
+                        path,
                         label: edit.buffer.clone(),
                         depth,
                         is_dir,
@@ -1038,6 +1074,11 @@ mod tests {
                 .iter()
                 .any(|r| r.editing && r.label == "new.rs")
         );
+        let editing = state.rows().iter().find(|r| r.editing);
+        assert!(
+            editing.is_some_and(|r| r.path == dir.path.join("new.rs")),
+            "the editing row should use the typed candidate path for icon detection"
+        );
         // Commit → a Create for the joined path, and editing ends.
         let pending = state.take_edit();
         assert_eq!(
@@ -1048,6 +1089,32 @@ mod tests {
             })
         );
         assert!(!state.is_editing());
+    }
+
+    #[test]
+    fn failed_create_can_restore_the_inline_editor() {
+        let dir = temp_dir();
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+        state.begin_new(false);
+        for c in "retry.rs".chars() {
+            state.edit_push(c);
+        }
+        let pending = state.take_edit();
+        assert!(pending.is_some(), "typed name should produce a create edit");
+        let Some(pending) = pending else {
+            return;
+        };
+        assert!(!state.is_editing());
+
+        state.restore_edit(&pending);
+        state.ensure_built(&dir.path);
+
+        let editing = state.rows().iter().find(|r| r.editing);
+        assert!(state.is_editing());
+        assert!(
+            editing.is_some_and(|r| r.label == "retry.rs" && r.path == dir.path.join("retry.rs"))
+        );
     }
 
     #[test]

@@ -49,6 +49,7 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 | `insertSpaces` | bool | `true` | Insert spaces instead of a hard tab. |
 | `lineNumbers` | `"on"`\|`"off"`\|`"relative"` | `"on"` | Line-number gutter mode. |
 | `cursorLine` | bool | `true` | Highlight the caret's line. |
+| `graphicalCursor` | bool\|null | `null` | Draw a graphical caret when supported; `true` reports a visible error if incompatible. |
 | `scrollOff` | number | `3` | Lines kept visible above/below the caret. |
 | `rulers` | number[] | `[]` | Columns to draw vertical rulers at. |
 | `wordWrap` | bool | `false` | Soft-wrap long lines. |

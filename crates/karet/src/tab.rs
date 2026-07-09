@@ -16,6 +16,7 @@ use karet_fileview::viewer::FileKind;
 use karet_pdf::Document as PdfDocument;
 use karet_search::SearchQuery;
 use karet_session::DocumentId;
+use karet_session::LoadedConfig;
 use karet_session::ViewId;
 use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
@@ -192,6 +193,13 @@ pub enum TabKind {
         /// Vertical scroll offset (display rows).
         scroll: u16,
     },
+    /// A read-only view of the loaded settings and their provenance.
+    LoadedConfig {
+        /// The loaded configuration report.
+        report: LoadedConfig,
+        /// Vertical scroll offset (display rows).
+        scroll: u16,
+    },
     /// A read-only, GitHub-parity commit view: the message, author/committer, parents,
     /// signature badge, changed-file list, and per-file semantic diffs.
     Commit {
@@ -319,6 +327,15 @@ impl Tab {
         )
     }
 
+    /// A read-only loaded-configuration inspector.
+    #[must_use]
+    pub fn loaded_config(report: LoadedConfig) -> Self {
+        Self::new(
+            "Loaded Settings",
+            TabKind::LoadedConfig { report, scroll: 0 },
+        )
+    }
+
     /// A read-only commit view for `detail` and its changed `files`.
     #[must_use]
     pub fn commit(detail: Box<karet_vcs::CommitDetail>, files: Vec<FileView>) -> Self {
@@ -391,6 +408,7 @@ impl Tab {
             TabKind::Diff { file, .. } => Some(&file.change.path),
             TabKind::Welcome
             | TabKind::Graph { .. }
+            | TabKind::LoadedConfig { .. }
             | TabKind::Commit { .. }
             | TabKind::Compare { .. }
             | TabKind::CommitGraph { .. } => None,
@@ -415,6 +433,7 @@ impl Tab {
             TabKind::Diff { file, .. } => file.language,
             TabKind::Blame { .. } => "blame",
             TabKind::Graph { .. } => "graph",
+            TabKind::LoadedConfig { .. } => "settings",
             TabKind::Commit { .. } => "commit",
             TabKind::Compare { .. } => "compare",
             TabKind::CommitGraph { .. } => "commits",

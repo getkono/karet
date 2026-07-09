@@ -3,8 +3,9 @@
 //! Each [`Revision`] stores the *inverse* change (to undo) and the *forward*
 //! change (to redo), tagged with a coalescing `group`. Consecutive single-`char`
 //! typing within a short time window and contiguous in position share one group,
-//! so it undoes as a unit. The dirty state is the current group vs. the group at
-//! the last save, so undoing back to the saved point clears it.
+//! so it undoes as a unit. History records the last saved group for undo/redo
+//! bookkeeping, while [`TextBuffer`](crate::TextBuffer) derives dirty state from
+//! a content fingerprint so equivalent manual edits become clean again.
 //!
 //! History is purely in-memory and lives for the buffer's lifetime; it is dropped
 //! only by [`TextBuffer::reset_history`](crate::TextBuffer::reset_history), which
@@ -100,6 +101,7 @@ impl History {
     }
 
     /// Whether the head differs from the last save point.
+    #[cfg(test)]
     pub(crate) fn is_dirty(&self) -> bool {
         self.current_group() != self.saved_group
     }

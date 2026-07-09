@@ -81,6 +81,8 @@ pub struct SessionConfig {
     /// The loaded, verified settings (see [`crate::config`]). Producers read editing
     /// behaviour (format-on-save, spell-check, …) from here.
     pub settings: crate::config::Settings,
+    /// The loaded settings plus layer and explicit-key provenance for inspection.
+    pub loaded_config: crate::config::LoadedConfig,
     /// Directory for crash-recovery swap files. The application sets this to the real
     /// user data directory ([`crate::backup::default_swap_dir`]); left `None` (as in
     /// tests) the session keeps no backups and never touches the user's data dir.
@@ -347,6 +349,12 @@ impl Session {
             Command::RecoverSwaps => self.recover_swaps(id),
             Command::DiscardSwaps => self.discard_swaps(),
             Command::DependencyGraph => self.emit_dependency_graph(id),
+            Command::LoadedConfig => self.emit(
+                Some(id),
+                Event::LoadedConfig {
+                    report: Box::new(self.config.loaded_config.clone()),
+                },
+            ),
             // Language-intelligence and search commands are wired in later milestones.
             _ => {},
         }
@@ -903,6 +911,7 @@ impl Session {
                         store.remove(&path);
                     }
                 }
+                self.publish(doc_id, None);
                 self.emit(Some(id), Event::Saved { doc: doc_id });
             },
             Some(Err(TextError::Conflict)) => {
@@ -1390,6 +1399,30 @@ mod tests {
     }
 
     #[test]
+    fn session_new_does_not_walk_large_tree_on_caller_thread() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        for i in 0..1200 {
+            let path = dir.path().join(format!("src/{i}/nested"));
+            if std::fs::create_dir_all(path).is_err() {
+                return;
+            }
+        }
+
+        let started = std::time::Instant::now();
+        let (_session, _events, _snaps) = Session::new(SessionConfig {
+            roots: vec![dir.path().to_path_buf()],
+            ..SessionConfig::default()
+        });
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "Session::new must not synchronously enumerate large trees"
+        );
+    }
+
+    #[test]
     fn opening_a_non_utf8_file_reports_not_utf8_instead_of_a_generic_error() {
         let Some((_dir, path)) = write_temp("bad.rs", "") else {
             return;
@@ -1499,6 +1532,11 @@ mod tests {
                 .unwrap_or_default()
                 .contains("fn x()")
         );
+        let mut clean_snapshot = false;
+        while let Some((_, snap)) = snaps.try_recv() {
+            clean_snapshot = clean_snapshot || !snap.dirty;
+        }
+        assert!(clean_snapshot, "save should publish a clean snapshot");
 
         // Undo restores the original content ("fn main() {}\n" → two lines).
         session.handle(RequestId(4), Command::Undo { doc });
@@ -2242,6 +2280,7 @@ mod tests {
             roots: Vec::new(),
             settings,
             swap_dir: None,
+            ..SessionConfig::default()
         });
         // Redirect swaps to a temp directory instead of the real data dir.
         session.swaps = Some(SwapStore::with_dir(swapdir.path().to_path_buf(), 1));
@@ -2308,6 +2347,32 @@ mod tests {
     }
 
     #[test]
+    fn loaded_config_command_returns_in_memory_report() {
+        let mut settings = crate::config::Settings::default();
+        settings.editor.tab_size = 2;
+        let report = crate::config::LoadedConfig::from_settings(settings.clone());
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            settings,
+            loaded_config: report,
+            ..SessionConfig::default()
+        });
+
+        session.handle(RequestId(42), Command::LoadedConfig);
+        let received = events.try_recv();
+        assert!(
+            matches!(
+                received,
+                Some((Some(RequestId(42)), Event::LoadedConfig { .. }))
+            ),
+            "loaded config event should answer request, got {received:?}"
+        );
+        let Some((_, Event::LoadedConfig { report })) = received else {
+            return;
+        };
+        assert_eq!(report.settings.editor.tab_size, 2);
+    }
+
+    #[test]
     fn new_session_announces_swaps_left_in_its_swap_dir() {
         let Some(swapdir) = tempfile::tempdir().ok() else {
             return;
@@ -2324,6 +2389,7 @@ mod tests {
             roots: Vec::new(),
             settings: crate::config::Settings::default(),
             swap_dir: Some(swapdir.path().to_path_buf()),
+            ..SessionConfig::default()
         });
         let mut found = None;
         while let Some((_, ev)) = events.try_recv() {

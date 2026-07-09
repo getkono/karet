@@ -72,6 +72,14 @@
           "type": "boolean",
           "default": false
         },
+        "graphicalCursor": {
+          "description": "Draw the caret with terminal graphics: `null` auto-enables when supported,\n`true` requests it and reports incompatibility, `false` disables it.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
         "insertFinalNewline": {
           "description": "Ensure the file ends with a single trailing newline on save.",
           "type": "boolean",

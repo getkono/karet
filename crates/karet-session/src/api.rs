@@ -26,6 +26,8 @@ use karet_vcs::Commit;
 use karet_vcs::CommitDetail;
 use karet_vcs::FileChange;
 
+use crate::config::LoadedConfig;
+
 /// Identifies an open document within a session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DocumentId(pub u64);
@@ -248,6 +250,8 @@ pub enum Command {
     DiscardSwaps,
     /// Build the workspace package-dependency graph (answered by [`Event::GraphReady`]).
     DependencyGraph,
+    /// Return the loaded settings and their in-memory provenance for this session.
+    LoadedConfig,
 }
 
 /// Which visualization a [`Event::GraphReady`] carries.
@@ -498,6 +502,11 @@ pub enum Event {
         /// The neutral graph to render.
         view: karet_core::GraphView,
     },
+    /// The loaded settings and provenance for this running session.
+    LoadedConfig {
+        /// The loaded configuration report.
+        report: Box<LoadedConfig>,
+    },
 }
 
 #[cfg(test)]
@@ -510,6 +519,7 @@ mod tests {
         assert_ne!(RequestId(1), RequestId(2));
         let _cmd = Command::Save { doc: DocumentId(7) };
         let _ev = Event::Saved { doc: DocumentId(7) };
+        let _cfg = Command::LoadedConfig;
         assert_eq!(DecorationLayer::Vcs, DecorationLayer::Vcs);
     }
 }

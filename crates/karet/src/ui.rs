@@ -9,6 +9,7 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use karet_core::Decoration;
+use karet_core::Severity;
 use karet_core::ThemeRole;
 use karet_editor::Editor;
 use karet_filetype::FileKind;
@@ -21,6 +22,8 @@ use karet_fileview::viewer::Placeholder;
 use karet_graph::LaneInput;
 use karet_graph::assign_lanes;
 use karet_graph::view::render_rail;
+use karet_session::ConfigLayerStatus;
+use karet_session::LoadedConfig;
 use karet_theme::Theme;
 use karet_vcs::StatusKind;
 use karet_widgets::Corner;
@@ -172,11 +175,14 @@ fn draw_rev_input(f: &mut Frame, rev: &str, theme: &Theme, area: Rect) {
 /// small.
 struct PaneCtx<'a> {
     theme: &'a Theme,
+    root: &'a Path,
     graphics: GraphicsProtocol,
     /// Whether this pane holds the window focus (affects tab-strip styling).
     pane_focused: bool,
     /// Whether the editor should draw its caret as focused.
     editor_focused: bool,
+    /// Whether the app will draw a Kitty graphics caret after this frame.
+    graphical_cursor: bool,
     /// The find bar to draw atop this pane's content, if any (focused pane only).
     /// Owned (not borrowed): it now lives on the active `Tab` itself, and
     /// `render_pane` needs a mutable borrow of the tabs slice at the same time.
@@ -210,14 +216,17 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let focused = app.focus_pane();
     let editor_focused = app.focus == Focus::Editor;
     let graphics = app.graphics;
+    let graphical_cursor = app.graphical_cursor_enabled();
     for (pane, rect) in app.layout.layout(area) {
         let is_focused = pane == focused;
         let rendered = if is_focused {
             let ctx = PaneCtx {
                 theme,
+                root: &app.root,
                 graphics,
                 pane_focused: true,
                 editor_focused,
+                graphical_cursor,
                 find: app
                     .find_open
                     .then(|| app.tabs.get(app.active))
@@ -228,9 +237,11 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         } else if let Some(stored) = app.stored.get_mut(&pane) {
             let ctx = PaneCtx {
                 theme,
+                root: &app.root,
                 graphics,
                 pane_focused: false,
                 editor_focused: false,
+                graphical_cursor: false,
                 find: None,
             };
             render_pane(f, &mut stored.tabs, stored.active, rect, &ctx)
@@ -268,8 +279,15 @@ fn render_pane(
         Constraint::Min(0),     // content
     ])
     .split(area);
-    let (tabstrip_rect, tab_hits) =
-        draw_pane_tabs(f, tabs, active, ctx.pane_focused, ctx.theme, parts[0]);
+    let (tabstrip_rect, tab_hits) = draw_pane_tabs(
+        f,
+        tabs,
+        active,
+        ctx.pane_focused,
+        ctx.theme,
+        ctx.root,
+        parts[0],
+    );
     if bc == 1 {
         draw_pane_breadcrumb(f, tabs.get(active), ctx.theme, parts[1]);
     }
@@ -516,36 +534,30 @@ fn draw_pane_tabs(
     active: usize,
     pane_focused: bool,
     theme: &Theme,
+    root: &Path,
     area: Rect,
 ) -> (Rect, Vec<TabHit>) {
     let mut hits = Vec::new();
     let mut spans = Vec::new();
     let mut x = area.x;
+    let titles = tab_display_titles(tabs, root);
     for (i, tab) in tabs.iter().enumerate() {
-        let mut style = if i == active && pane_focused {
-            Style::default()
-                .fg(theme.role(ThemeRole::Foreground).to_ratatui())
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
-        } else if i == active {
-            // Active tab of an unfocused pane: emphasized but not reversed.
-            Style::default()
-                .fg(theme.role(ThemeRole::Foreground).to_ratatui())
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())
-        };
-        // The preview tab (VS Code-style single-reused-slot tab) renders
-        // italicized so it reads as provisional until edited or promoted.
-        if tab.is_preview {
-            style = style.add_modifier(Modifier::ITALIC);
-        }
+        let style = tab_text_style(theme, i == active, pane_focused, tab.is_preview);
         // A pre-allocated 1-cell status slot keeps the layout stable: `●` for
         // unsaved changes (a spinner frame while a slow save writes), else blank.
         let mark = save_mark(tab);
-        let label = format!(" {mark} {} ", tab.title);
-        let label_w = label.chars().count() as u16;
+        let title = &titles[i];
+        let label_w = (4 + title.prefix.chars().count() + title.name.chars().count()) as u16;
         let start = x;
-        spans.push(Span::styled(label, style));
+        spans.push(Span::styled(format!(" {mark} "), style));
+        if !title.prefix.is_empty() {
+            spans.push(Span::styled(
+                title.prefix.clone(),
+                tab_prefix_style(theme, style, i == active, pane_focused),
+            ));
+        }
+        spans.push(Span::styled(title.name.clone(), style));
+        spans.push(Span::styled(" ", style));
         spans.push(Span::styled("\u{00d7}", style)); // × close glyph
         spans.push(Span::styled(" ", style));
         let close = start + label_w;
@@ -559,6 +571,73 @@ fn draw_pane_tabs(
     let bar = Style::default().bg(theme.role(ThemeRole::Background).to_ratatui());
     f.render_widget(Paragraph::new(Line::from(spans)).style(bar), area);
     (area, hits)
+}
+
+fn tab_text_style(theme: &Theme, active: bool, pane_focused: bool, preview: bool) -> Style {
+    let mut style = if active && pane_focused {
+        Style::default()
+            .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    } else if active {
+        // Active tab of an unfocused pane: emphasized but not reversed.
+        Style::default()
+            .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())
+    };
+    // The preview tab (VS Code-style single-reused-slot tab) renders italicized so
+    // it reads as provisional until edited or promoted.
+    if preview {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    style
+}
+
+fn tab_prefix_style(theme: &Theme, base: Style, active: bool, pane_focused: bool) -> Style {
+    let muted = theme.role(ThemeRole::Muted).to_ratatui();
+    if active && pane_focused {
+        base.remove_modifier(Modifier::REVERSED)
+            .fg(muted)
+            .bg(theme.role(ThemeRole::Foreground).to_ratatui())
+    } else {
+        base.fg(muted)
+    }
+}
+
+struct TabDisplayTitle {
+    prefix: String,
+    name: String,
+}
+
+fn tab_display_titles(tabs: &[Tab], root: &Path) -> Vec<TabDisplayTitle> {
+    tabs.iter()
+        .map(|tab| {
+            let name = tab_name(tab);
+            let duplicate = tabs.iter().filter(|other| tab_name(other) == name).count() > 1;
+            let prefix = if duplicate {
+                tab.path().and_then(|path| tab_parent_prefix(path, root))
+            } else {
+                None
+            }
+            .unwrap_or_default();
+            TabDisplayTitle { prefix, name }
+        })
+        .collect()
+}
+
+fn tab_name(tab: &Tab) -> String {
+    tab.path()
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .map_or_else(|| tab.title.clone(), str::to_string)
+}
+
+fn tab_parent_prefix(path: &Path, root: &Path) -> Option<String> {
+    let display = path.strip_prefix(root).unwrap_or(path);
+    let parent = display.parent()?;
+    let prefix = parent.to_string_lossy();
+    (!prefix.is_empty()).then(|| format!("{prefix}/"))
 }
 
 /// Braille spinner frames for a slow save (each is a single display cell).
@@ -767,7 +846,6 @@ fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
     app.header_action_hits = Vec::new();
     if actions_w > 0 {
         let a = cols[2];
-        let action_style = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
         let actions = [
             (UiIcon::NewFile, Command::ExplorerNewFile),
             (UiIcon::NewFolder, Command::ExplorerNewFolder),
@@ -778,9 +856,15 @@ fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
         for (i, (ui_icon, cmd)) in actions.into_iter().enumerate() {
             let x = a.x + i as u16 * 2;
             app.header_action_hits.push((x, x + 2, cmd));
+            let hovered = header_hovered(app, x, x + 2);
+            let state = if hovered {
+                ChromeButtonState::Hovered
+            } else {
+                ChromeButtonState::Normal
+            };
             spans.push(Span::styled(
                 format!("{} ", ui_icon.glyph(icon_style)),
-                action_style,
+                chrome_button_style(theme, state),
             ));
         }
         f.render_widget(Paragraph::new(Line::from(spans)), a);
@@ -795,14 +879,20 @@ fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
         (switch.x + 2, switch.x + 4, SidebarPanel::Search),
         (switch.x + 4, switch.x + 6, SidebarPanel::SourceControl),
     ];
-    let hint = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
-    let on = Style::default()
-        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
-        .add_modifier(Modifier::BOLD);
     let icon = |ui: UiIcon, panel: SidebarPanel| {
+        let hovered = app
+            .panel_hits
+            .iter()
+            .any(|&(start, end, p)| p == panel && header_hovered(app, start, end));
+        let state = match (active == panel, hovered) {
+            (true, true) => ChromeButtonState::ActiveHovered,
+            (true, false) => ChromeButtonState::Active,
+            (false, true) => ChromeButtonState::Hovered,
+            (false, false) => ChromeButtonState::Normal,
+        };
         Span::styled(
             format!("{} ", ui.glyph(icon_style)),
-            if active == panel { on } else { hint },
+            chrome_button_style(theme, state),
         )
     };
     f.render_widget(
@@ -813,6 +903,36 @@ fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
         ])),
         switch,
     );
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChromeButtonState {
+    Normal,
+    Hovered,
+    Active,
+    ActiveHovered,
+}
+
+fn chrome_button_style(theme: &Theme, state: ChromeButtonState) -> Style {
+    match state {
+        ChromeButtonState::Normal => {
+            Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())
+        },
+        ChromeButtonState::Hovered => {
+            Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+        },
+        ChromeButtonState::Active => Style::default()
+            .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+            .add_modifier(Modifier::BOLD),
+        ChromeButtonState::ActiveHovered => Style::default()
+            .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+            .add_modifier(Modifier::BOLD),
+    }
+}
+
+fn header_hovered(app: &App, start: u16, end: u16) -> bool {
+    app.sidebar_header_hover
+        .is_some_and(|(col, row)| row == app.sidebar_rect.y && col >= start && col < end)
 }
 
 fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
@@ -1295,7 +1415,8 @@ fn draw_pane_content(
                 .theme(theme)
                 .decorations(&combined)
                 .folds(&fold_lines)
-                .focused(ctx.editor_focused);
+                .focused(ctx.editor_focused)
+                .cell_caret(!ctx.graphical_cursor);
             f.render_stateful_widget(editor, area, &mut tab.editor);
         },
         TabKind::Diff { file, view, scroll } => draw_diff(f, theme, area, file, *view, scroll),
@@ -1305,6 +1426,9 @@ fn draw_pane_content(
             view,
             scroll,
         } => draw_graph(f, theme, area, title, view, scroll),
+        TabKind::LoadedConfig { report, scroll } => {
+            draw_loaded_config(f, theme, area, report, scroll);
+        },
         TabKind::Commit {
             detail,
             files,
@@ -2132,6 +2256,147 @@ fn draw_graph(
     f.render_widget(para, area);
 }
 
+/// Draw the loaded settings and provenance as a scrollable read-only report.
+fn draw_loaded_config(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    report: &LoadedConfig,
+    scroll: &mut u16,
+) {
+    let header = Style::default()
+        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+        .add_modifier(Modifier::BOLD);
+    let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
+    let explicit = fg.add_modifier(Modifier::BOLD);
+    let muted = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
+    let badge = Style::default().fg(theme.role(ThemeRole::DiagnosticHint).to_ratatui());
+    let warning = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
+
+    let mut lines = Vec::new();
+    lines.push(Line::styled(" Loaded Settings", header));
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(" Layers", header));
+
+    let mut layers = report.layers.clone();
+    layers.sort_by_key(|row| std::cmp::Reverse(row.layer));
+    if layers.is_empty() {
+        lines.push(Line::styled("  no layer provenance captured", muted));
+    }
+    for row in layers {
+        let (status, style) = match &row.status {
+            ConfigLayerStatus::Loaded => ("loaded".to_string(), fg),
+            ConfigLayerStatus::Missing => ("missing".to_string(), muted),
+            ConfigLayerStatus::Invalid(_) => ("invalid".to_string(), warning),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:<8}", row.layer.label()), style),
+            Span::styled(format!("{status:<9}"), style),
+            Span::styled(row.path.to_string_lossy().into_owned(), style),
+        ]));
+        if let ConfigLayerStatus::Invalid(message) = row.status {
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(message, warning),
+            ]));
+        }
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(" Diagnostics", header));
+    if report.diagnostics.is_empty() {
+        lines.push(Line::styled("  none", muted));
+    } else {
+        for diag in &report.diagnostics {
+            let style = severity_style(theme, diag.severity);
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {:<8}", severity_label(diag.severity)), style),
+                Span::styled(format!("{}  ", diag.path.to_string_lossy()), muted),
+                Span::styled(diag.message.clone(), style),
+            ]));
+        }
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(" Values", header));
+    match serde_json::to_value(&report.settings) {
+        Ok(serde_json::Value::Object(sections)) => {
+            for (section, value) in sections {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(section.clone(), header),
+                ]));
+                flatten_setting_lines(
+                    &mut lines, report, &section, "", &value, explicit, muted, badge,
+                );
+            }
+        },
+        _ => lines.push(Line::styled("  settings could not be serialized", warning)),
+    }
+
+    let height = area.height as usize;
+    let max_scroll = lines.len().saturating_sub(height);
+    *scroll = (*scroll).min(max_scroll as u16);
+    f.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), area);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn flatten_setting_lines(
+    lines: &mut Vec<Line<'static>>,
+    report: &LoadedConfig,
+    section: &str,
+    prefix: &str,
+    value: &serde_json::Value,
+    explicit: Style,
+    muted: Style,
+    badge: Style,
+) {
+    if let serde_json::Value::Object(obj) = value {
+        for (key, child) in obj {
+            let next = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            flatten_setting_lines(lines, report, section, &next, child, explicit, muted, badge);
+        }
+        return;
+    }
+
+    let full_path = format!("{section}.{prefix}");
+    let source = report.explicit.get(&full_path);
+    let style = if source.is_some() { explicit } else { muted };
+    let source_label = source.map_or("default", |layer| layer.label());
+    let value_text = serde_json::to_string(value).unwrap_or_else(|_| "<value>".to_string());
+    lines.push(Line::from(vec![
+        Span::raw("    "),
+        Span::styled(format!("{prefix:<24}"), style),
+        Span::styled(format!("{value_text:<26}"), style),
+        Span::styled(source_label.to_string(), source.map_or(muted, |_| badge)),
+    ]));
+}
+
+fn severity_label(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Information => "info",
+        Severity::Hint => "hint",
+        _ => "info",
+    }
+}
+
+fn severity_style(theme: &Theme, severity: Severity) -> Style {
+    let role = match severity {
+        Severity::Error => ThemeRole::DiagnosticError,
+        Severity::Warning => ThemeRole::DiagnosticWarning,
+        Severity::Information => ThemeRole::DiagnosticInfo,
+        Severity::Hint => ThemeRole::DiagnosticHint,
+        _ => ThemeRole::DiagnosticInfo,
+    };
+    Style::default().fg(theme.role(role).to_ratatui())
+}
+
 fn draw_blame(
     f: &mut Frame,
     theme: &Theme,
@@ -2416,6 +2681,97 @@ fn status_glyph(kind: StatusKind) -> (char, ThemeRole) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_code_tab(path: &str) -> Tab {
+        use karet_text::TextBuffer;
+
+        let buffer = TextBuffer::from_text("");
+        Tab::new(
+            Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(path),
+            TabKind::Code {
+                path: PathBuf::from(path),
+                language: "plaintext",
+                doc: None,
+                next_version: 0,
+                buffer,
+                text: String::new(),
+                highlights: karet_syntax::Highlights::default(),
+                folds: karet_syntax::FoldRegions::default(),
+                folded: std::collections::BTreeSet::new(),
+                decos: Vec::new(),
+                search_decos: Vec::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn tab_titles_disambiguate_duplicate_file_names() {
+        let root = Path::new("/repo");
+        let tabs = vec![
+            test_code_tab("/repo/src/view/mod.rs"),
+            test_code_tab("/repo/tests/view/mod.rs"),
+            test_code_tab("/repo/src/lib.rs"),
+        ];
+
+        let titles = tab_display_titles(&tabs, root);
+
+        assert_eq!(titles[0].prefix, "src/view/");
+        assert_eq!(titles[0].name, "mod.rs");
+        assert_eq!(titles[1].prefix, "tests/view/");
+        assert_eq!(titles[1].name, "mod.rs");
+        assert_eq!(titles[2].prefix, "");
+        assert_eq!(titles[2].name, "lib.rs");
+    }
+
+    #[test]
+    fn active_tab_prefix_keeps_active_fill() {
+        let theme = Theme::dark();
+        let base = tab_text_style(&theme, true, true, false);
+
+        let prefix = tab_prefix_style(&theme, base, true, true);
+
+        assert_eq!(prefix.fg, Some(theme.role(ThemeRole::Muted).to_ratatui()));
+        assert_eq!(
+            prefix.bg,
+            Some(theme.role(ThemeRole::Foreground).to_ratatui())
+        );
+        assert!(!prefix.add_modifier.contains(Modifier::REVERSED));
+        assert!(prefix.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn unfocused_active_tab_prefix_stays_muted_without_fill() {
+        let theme = Theme::dark();
+        let base = tab_text_style(&theme, true, false, false);
+
+        let prefix = tab_prefix_style(&theme, base, true, false);
+
+        assert_eq!(prefix.fg, Some(theme.role(ThemeRole::Muted).to_ratatui()));
+        assert_eq!(prefix.bg, None);
+        assert!(prefix.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn chrome_button_hover_changes_foreground_without_background() {
+        let theme = Theme::dark();
+        let hover = chrome_button_style(&theme, ChromeButtonState::Hovered);
+        assert_eq!(
+            hover.fg,
+            Some(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+        );
+        assert_eq!(hover.bg, None);
+
+        let active_hover = chrome_button_style(&theme, ChromeButtonState::ActiveHovered);
+        assert_eq!(
+            active_hover.fg,
+            Some(theme.role(ThemeRole::Foreground).to_ratatui())
+        );
+        assert_eq!(active_hover.bg, None);
+        assert!(active_hover.add_modifier.contains(Modifier::BOLD));
+    }
 
     #[test]
     fn format_datetime_is_correct_and_applies_offset() {

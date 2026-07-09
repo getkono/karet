@@ -13,6 +13,7 @@
 //! strict UTF-8 with line-ending/BOM detection; saving ([`save`](TextBuffer::save))
 //! is atomic and round-trips the detected encoding.
 
+use std::hash::Hasher;
 use std::io::Read;
 
 use karet_core::BytePos;
@@ -70,17 +71,36 @@ pub enum TextError {
 /// Tracks a monotonically increasing edit `version` (used to validate
 /// [`Change`](karet_core::Change)s under optimistic concurrency), an in-memory
 /// undo/redo [`History`], and the detected line-ending / encoding so a save
-/// round-trips the on-disk form. The dirty state is derived from the history
-/// relative to the last save point, so undoing back to a saved state clears it.
-#[derive(Clone, Default)]
+/// round-trips the on-disk form. The dirty state is derived from the normalized
+/// text content relative to the last loaded/saved content, so undo and equivalent
+/// manual edits both clear it.
+#[derive(Clone)]
 pub struct TextBuffer {
     rope: ropey::Rope,
     version: u64,
     history: History,
+    saved_text_hash: u64,
     eol: Eol,
     encoding: Encoding,
     mixed_eol: bool,
     saved_state: Option<SavedState>,
+}
+
+impl Default for TextBuffer {
+    fn default() -> Self {
+        let rope = ropey::Rope::new();
+        let saved_text_hash = text_hash(&rope);
+        Self {
+            rope,
+            version: 0,
+            history: History::default(),
+            saved_text_hash,
+            eol: Eol::default(),
+            encoding: Encoding::default(),
+            mixed_eol: false,
+            saved_state: None,
+        }
+    }
 }
 
 impl TextBuffer {
@@ -93,8 +113,11 @@ impl TextBuffer {
     /// Create a buffer from in-memory text (assumed already LF-normalized UTF-8).
     #[must_use]
     pub fn from_text(text: &str) -> Self {
+        let rope = ropey::Rope::from_str(text);
+        let saved_text_hash = text_hash(&rope);
         Self {
-            rope: ropey::Rope::from_str(text),
+            rope,
+            saved_text_hash,
             ..Self::default()
         }
     }
@@ -108,8 +131,10 @@ impl TextBuffer {
     /// Returns [`TextError::Io`] if reading fails.
     pub fn from_reader<R: Read>(reader: R) -> Result<Self, TextError> {
         let rope = ropey::Rope::from_reader(reader).map_err(|e| TextError::Io(e.to_string()))?;
+        let saved_text_hash = text_hash(&rope);
         Ok(Self {
             rope,
+            saved_text_hash,
             ..Self::default()
         })
     }
@@ -135,7 +160,7 @@ impl TextBuffer {
     /// Whether the buffer has unsaved changes relative to the last save point.
     #[must_use]
     pub fn is_dirty(&self) -> bool {
-        self.history.is_dirty()
+        text_hash(&self.rope) != self.saved_text_hash
     }
 
     /// The detected line ending used when saving.
@@ -207,6 +232,7 @@ impl TextBuffer {
             rope: self.rope.clone(),
             version: self.version,
             history: History::default(),
+            saved_text_hash: self.saved_text_hash,
             eol: self.eol,
             encoding: self.encoding,
             mixed_eol: self.mixed_eol,
@@ -221,6 +247,7 @@ impl TextBuffer {
     /// longer match the new content, so they must be dropped.
     pub fn reset_history(&mut self) {
         self.history = History::default();
+        self.saved_text_hash = text_hash(&self.rope);
     }
 
     /// Replace this buffer's content (and line-ending/encoding/on-disk fingerprint)
@@ -232,6 +259,7 @@ impl TextBuffer {
     /// discarded because they no longer match the new content.
     pub fn adopt_content(&mut self, content: Self) {
         self.rope = content.rope;
+        self.saved_text_hash = content.saved_text_hash;
         self.eol = content.eol;
         self.encoding = content.encoding;
         self.mixed_eol = content.mixed_eol;
@@ -358,6 +386,17 @@ impl TextBuffer {
         let line_start = self.rope.line_to_byte(row);
         (row, b - line_start)
     }
+}
+
+/// Fingerprint the editor's normalized text content, independent of history
+/// position and independent of on-disk bytes for encoded formats such as CBOR.
+fn text_hash(rope: &ropey::Rope) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hasher.write_usize(rope.len_bytes());
+    for chunk in rope.chunks() {
+        hasher.write(chunk.as_bytes());
+    }
+    hasher.finish()
 }
 
 /// The number of `char`s in `line`, excluding a trailing `\n` or `\r\n`.

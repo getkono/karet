@@ -217,6 +217,8 @@ pub enum Command {
     ShowBlame,
     /// Open a semantic-blame view narrowed to the function under the caret.
     BlameFunction,
+    /// Open a read-only view of the loaded settings and their provenance.
+    ShowLoadedConfig,
     /// Begin creating a new file in the explorer (inline name editor).
     ExplorerNewFile,
     /// Begin creating a new folder in the explorer (inline name editor).
@@ -440,6 +442,7 @@ impl Command {
             Self::ScmRefresh => "Source Control: Refresh",
             Self::ShowBlame => "Source Control: Show Blame",
             Self::BlameFunction => "Source Control: Blame This Function",
+            Self::ShowLoadedConfig => "Settings: Show Loaded Configuration",
             Self::ExplorerNewFile => "Explorer: New File…",
             Self::ExplorerNewFolder => "Explorer: New Folder…",
             Self::ExplorerRename => "Explorer: Rename…",
@@ -542,6 +545,7 @@ impl Command {
             Self::Paste => "paste",
             Self::ShowBlame => "blame",
             Self::BlameFunction => "blame fn",
+            Self::ShowLoadedConfig => "settings",
             Self::ToggleFold => "fold",
             Self::AddCursorNextOccurrence => "add cursor",
             // Diff.
@@ -714,6 +718,7 @@ impl Command {
                 | Self::ScmRefresh
                 | Self::ShowBlame
                 | Self::BlameFunction
+                | Self::ShowLoadedConfig
                 | Self::ExplorerNewFile
                 | Self::ExplorerNewFolder
                 | Self::ExplorerRename
@@ -756,6 +761,7 @@ pub fn palette() -> Vec<Command> {
         Command::DiffSinceBase,
         Command::BlameFunction,
         Command::ShowDependencyGraph,
+        Command::ShowLoadedConfig,
         Command::ExplorerNewFile,
         Command::ExplorerNewFolder,
         Command::ExplorerRename,
@@ -815,6 +821,15 @@ mod tests {
     #[test]
     fn command_palette_itself_is_not_listed() {
         assert!(!palette().contains(&Command::OpenCommandPalette));
+    }
+
+    #[test]
+    fn loaded_config_is_in_the_palette() {
+        assert!(palette().contains(&Command::ShowLoadedConfig));
+        assert_eq!(
+            Command::ShowLoadedConfig.label(),
+            "Settings: Show Loaded Configuration"
+        );
     }
 
     #[test]

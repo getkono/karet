@@ -103,8 +103,10 @@ impl TextBuffer {
         } else {
             ropey::Rope::from_str(text)
         };
+        let saved_text_hash = super::text_hash(&rope);
         Ok(Self {
             rope,
+            saved_text_hash,
             eol,
             encoding,
             mixed_eol,

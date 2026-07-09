@@ -62,6 +62,7 @@ use karet_session::DocumentId;
 use karet_session::Event as SessionEvent;
 use karet_session::EventRx;
 use karet_session::GithubVerification;
+use karet_session::LoadedConfig;
 use karet_session::RangeSpec;
 use karet_session::RequestId;
 use karet_session::Session;
@@ -91,6 +92,8 @@ use tokio::sync::mpsc;
 
 use crate::clipboard::Clipboard;
 use crate::command::Command;
+use crate::compat;
+use crate::compat::GraphicsCaret;
 use crate::editing;
 use crate::keymap::Context;
 use crate::keymap::EditorTab;
@@ -248,6 +251,9 @@ const COMMIT_AUTOLOAD_THRESHOLD: usize = 3;
 /// double-click before it auto-hides.
 pub(crate) const COMMIT_REVEAL: Duration = Duration::from_secs(5);
 
+/// Half-period for the app-drawn graphical editor caret.
+const GRAPHICS_CARET_BLINK_INTERVAL: Duration = Duration::from_millis(530);
+
 /// A clickable tab region in the tab strip, recorded during the last render.
 #[derive(Clone, Copy)]
 pub(crate) struct TabHit {
@@ -307,6 +313,8 @@ pub struct App {
     /// The loaded, verified configuration (see `karet_session::config`). Applied to
     /// the UI at startup and handed to the session backend.
     pub(crate) settings: Settings,
+    /// The loaded configuration plus provenance for the settings inspector.
+    pub(crate) loaded_config: LoadedConfig,
     /// Config-load diagnostics awaiting display as startup notifications.
     pub(crate) config_diagnostics: Vec<ConfigDiagnostic>,
     /// The active color theme.
@@ -317,6 +325,10 @@ pub struct App {
     pub(crate) icon_style: IconStyle,
     /// The detected terminal graphics protocol.
     pub(crate) graphics: GraphicsProtocol,
+    /// Whether Kitty graphics support was detected or confirmed at startup.
+    kitty_graphics_supported: bool,
+    /// Whether crossterm confirmed Kitty keyboard protocol support at startup.
+    kitty_keyboard_supported: bool,
     /// Whether the terminal was confirmed (via a startup handshake) to support
     /// OSC 22 mouse-pointer-shape hints. `false` means every pointer-shape hint
     /// is a no-op — never assumed, only confirmed, mirroring `graphics`.
@@ -397,6 +409,8 @@ pub struct App {
     /// The current mouse position while hovering the sidebar content, for a
     /// secondary-accent row highlight (explorer / source-control lists).
     pub(crate) hover: Option<(u16, u16)>,
+    /// The current mouse position while hovering the sidebar header controls.
+    pub(crate) sidebar_header_hover: Option<(u16, u16)>,
     /// The header panel-switcher cells (`1 2 3`) from the last frame.
     pub(crate) panel_hits: Vec<(u16, u16, SidebarPanel)>,
     /// Whether the right-side outline panel is shown.
@@ -472,6 +486,10 @@ pub struct App {
     /// The document page currently transmitted, so paging a PDF re-transmits even
     /// though the view (and thus [`shown_image`](Self::shown_image)) is unchanged.
     shown_page: usize,
+    /// The graphical caret placement currently transmitted to the terminal.
+    shown_graphics_caret: Option<GraphicsCaret>,
+    /// Start of the current graphical-caret blink phase.
+    graphics_caret_blink_epoch: Instant,
     /// Whether the app should quit.
     should_quit: bool,
     /// The headless editor backend; edits route through it. `None` in unit tests,
@@ -510,14 +528,18 @@ impl App {
         let staged_count = staged.len();
         let mut changes = staged;
         changes.extend(working);
+        let graphics = image::detect_protocol();
         Self {
             root,
             settings: Settings::default(),
+            loaded_config: LoadedConfig::default(),
             config_diagnostics: Vec::new(),
             theme: Theme::dark(),
             syntax,
             icon_style: IconStyle::default(),
-            graphics: image::detect_protocol(),
+            graphics,
+            kitty_graphics_supported: graphics == GraphicsProtocol::Kitty,
+            kitty_keyboard_supported: false,
             pointer_shapes_supported: false,
             pointer_shape: None,
             focus: Focus::Sidebar,
@@ -560,6 +582,7 @@ impl App {
             tab_drag: None,
             sidebar_content_rect: Rect::default(),
             hover: None,
+            sidebar_header_hover: None,
             panel_hits: Vec::new(),
             outline_visible: false,
             outline_sel: ListSelection::new(0),
@@ -595,6 +618,8 @@ impl App {
             image_area: None,
             shown_image: None,
             shown_page: 0,
+            shown_graphics_caret: None,
+            graphics_caret_blink_epoch: Instant::now(),
             should_quit: false,
             backend: None,
             pending_open: HashMap::new(),
@@ -619,10 +644,23 @@ impl App {
     /// icon style, and the startup sidebar panel.
     #[must_use]
     pub fn with_settings(mut self, settings: Settings, diagnostics: Vec<ConfigDiagnostic>) -> Self {
+        self = self.with_loaded_config(LoadedConfig {
+            settings,
+            diagnostics,
+            ..LoadedConfig::default()
+        });
+        self
+    }
+
+    /// Apply a loaded configuration report to the UI shell (builder-style).
+    #[must_use]
+    pub fn with_loaded_config(mut self, loaded: LoadedConfig) -> Self {
         use karet_session::config::schema::IconStyleSetting;
         use karet_session::config::schema::StartupPanel;
 
-        self.config_diagnostics = diagnostics;
+        let settings = loaded.settings.clone();
+        self.config_diagnostics = loaded.diagnostics.clone();
+        self.loaded_config = loaded;
 
         // Theme: the built-in "dark", or a path to a .tmTheme / VS Code .json theme.
         match load_theme(&settings.workbench.color_theme) {
@@ -699,6 +737,7 @@ impl App {
                 | TabKind::Compare { .. }
                 | TabKind::Blame { .. }
                 | TabKind::Graph { .. }
+                | TabKind::LoadedConfig { .. }
                 | TabKind::Hex { .. },
             ) => EditorTab::Pager,
             Some(TabKind::CommitGraph { .. }) => EditorTab::CommitGraph,
@@ -714,6 +753,22 @@ impl App {
     /// determines which keybinding layer is live.
     pub(crate) fn focus_target(&self) -> FocusTarget {
         FocusTarget::from(self.focus, self.sidebar_panel, self.active_editor_tab())
+    }
+
+    /// Whether the active frame should suppress the editor's cell caret because the
+    /// app will draw the Kitty graphics caret after ratatui flushes the frame.
+    pub(crate) fn graphical_cursor_enabled(&self) -> bool {
+        match self.settings.editor.graphical_cursor {
+            Some(false) => false,
+            Some(true) => self.graphical_cursor_compatible(),
+            None => self.graphical_cursor_compatible(),
+        }
+    }
+
+    fn graphical_cursor_compatible(&self) -> bool {
+        self.kitty_keyboard_supported
+            && self.kitty_graphics_supported
+            && self.graphics == GraphicsProtocol::Kitty
     }
 
     /// Handle a key press: resolve it against the layered keymap for the current
@@ -1530,6 +1585,13 @@ impl App {
             Command::ScmRefresh => self.send_vcs(SessionCommand::RefreshVcs),
             Command::ShowBlame => self.open_blame(false),
             Command::BlameFunction => self.open_blame(true),
+            Command::ShowLoadedConfig => {
+                if self.backend.is_some() {
+                    self.send_command(SessionCommand::LoadedConfig);
+                } else {
+                    self.open_loaded_config(self.loaded_config.clone());
+                }
+            },
             Command::ExplorerNewFile => self.explorer_begin_new(false),
             Command::ExplorerNewFolder => self.explorer_begin_new(true),
             Command::ExplorerRename => self.explorer_begin_rename(),
@@ -1934,24 +1996,25 @@ impl App {
         let Some(pending) = self.explorer.take_edit() else {
             return;
         };
-        match pending {
+        match &pending {
             PendingEdit::Create { path, folder } => {
-                let result = if folder {
-                    std::fs::create_dir_all(&path)
+                let result = if *folder {
+                    std::fs::create_dir_all(path)
                 } else {
                     if let Some(parent) = path.parent() {
                         let _ = std::fs::create_dir_all(parent);
                     }
-                    std::fs::File::create(&path).map(|_| ())
+                    std::fs::File::create(path).map(|_| ())
                 };
                 match result {
                     Ok(()) => {
                         self.explorer.rebuild(&self.root);
-                        if !folder {
-                            self.open_path(&path);
+                        if !*folder {
+                            self.open_path(path);
                         }
                     },
                     Err(e) => {
+                        self.explorer.restore_edit(&pending);
                         self.notify(
                             Severity::Error,
                             NotificationKind::Io,
@@ -1960,9 +2023,10 @@ impl App {
                     },
                 }
             },
-            PendingEdit::Rename { from, to } => match std::fs::rename(&from, &to) {
+            PendingEdit::Rename { from, to } => match std::fs::rename(from, to) {
                 Ok(()) => self.explorer.rebuild(&self.root),
                 Err(e) => {
+                    self.explorer.restore_edit(&pending);
                     self.notify(
                         Severity::Error,
                         NotificationKind::Io,
@@ -3189,6 +3253,7 @@ impl App {
             TabKind::Diff { scroll, .. }
             | TabKind::Blame { scroll, .. }
             | TabKind::Graph { scroll, .. }
+            | TabKind::LoadedConfig { scroll, .. }
             | TabKind::Commit { scroll, .. }
             | TabKind::Compare { scroll, .. } => {
                 let next = (i64::from(*scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
@@ -3227,6 +3292,7 @@ impl App {
             TabKind::Diff { scroll, .. }
             | TabKind::Blame { scroll, .. }
             | TabKind::Graph { scroll, .. }
+            | TabKind::LoadedConfig { scroll, .. }
             | TabKind::Commit { scroll, .. }
             | TabKind::Compare { scroll, .. } => {
                 *scroll = if top { 0 } else { u16::MAX };
@@ -3579,6 +3645,8 @@ impl App {
             // explorer / source-control lists (cleared when off the content area).
             MouseEventKind::Moved => {
                 self.hover = rect_contains(self.sidebar_content_rect, point).then_some(point);
+                self.sidebar_header_hover =
+                    (in_sidebar && mouse.row == self.sidebar_rect.y).then_some(point);
             },
             _ => {},
         }
@@ -4003,6 +4071,68 @@ impl App {
             },
             _ => {},
         }
+
+        let caret = self.active_graphics_caret();
+        match (caret, self.shown_graphics_caret) {
+            (Some(next), shown) if shown != Some(next) => {
+                let _ = write!(stdout, "{}", next.escape());
+                let _ = stdout.flush();
+                self.shown_graphics_caret = Some(next);
+            },
+            (None, Some(_)) => {
+                let _ = write!(stdout, "{}", compat::delete_graphics_caret());
+                let _ = stdout.flush();
+                self.shown_graphics_caret = None;
+            },
+            _ => {},
+        }
+    }
+
+    fn active_graphics_caret(&self) -> Option<GraphicsCaret> {
+        if !self.graphics_caret_visible(Instant::now()) {
+            return None;
+        }
+        self.active_graphics_caret_position()
+    }
+
+    fn active_graphics_caret_position(&self) -> Option<GraphicsCaret> {
+        if !self.graphical_cursor_enabled() || self.focus != Focus::Editor {
+            return None;
+        }
+        let tab = self.tabs.get(self.active)?;
+        let TabKind::Code {
+            buffer,
+            folds,
+            folded,
+            ..
+        } = &tab.kind
+        else {
+            return None;
+        };
+        let fold_lines = resolve_folds(folds, folded);
+        let (x, y) = tab
+            .editor
+            .primary_caret_cell(self.editor_rect, buffer, &fold_lines)?;
+        Some(GraphicsCaret { x, y })
+    }
+
+    fn graphics_caret_visible(&self, now: Instant) -> bool {
+        let elapsed = now.saturating_duration_since(self.graphics_caret_blink_epoch);
+        let phase = elapsed.as_millis() / GRAPHICS_CARET_BLINK_INTERVAL.as_millis();
+        phase.is_multiple_of(2)
+    }
+
+    fn graphics_caret_next_wake(&self, now: Instant) -> Option<Duration> {
+        self.active_graphics_caret_position()?;
+        let elapsed = now.saturating_duration_since(self.graphics_caret_blink_epoch);
+        let interval_ms = GRAPHICS_CARET_BLINK_INTERVAL.as_millis();
+        let elapsed_ms = elapsed.as_millis();
+        let remaining_ms = interval_ms - (elapsed_ms % interval_ms);
+        Some(Duration::from_millis(remaining_ms as u64))
+    }
+
+    fn reset_graphics_caret_blink(&mut self) {
+        self.graphics_caret_blink_epoch = Instant::now();
     }
 }
 
@@ -4253,6 +4383,9 @@ impl App {
         let now = Instant::now();
         let mut issued = 0;
         for doc in docs {
+            if self.pending_saves.values().any(|pending| *pending == doc) {
+                continue;
+            }
             let id = backend.next_id();
             match backend.send(id, SessionCommand::Save { doc }) {
                 Ok(()) => {
@@ -4278,12 +4411,16 @@ impl App {
         let Some(backend) = self.backend.clone() else {
             return;
         };
+        if self.pending_saves.values().any(|pending| *pending == doc) {
+            self.status = Some("save already in progress".to_string());
+            return;
+        }
         let id = backend.next_id();
         match backend.send(id, SessionCommand::Save { doc }) {
             Ok(()) => {
                 self.pending_saves.insert(id, doc);
                 let now = Instant::now();
-                for tab in &mut self.tabs {
+                for tab in self.all_tabs_mut() {
                     if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
                         tab.saving_since = Some(now);
                     }
@@ -4334,11 +4471,13 @@ impl App {
     }
 
     /// The soonest the event loop should wake for time-based UI: notification expiry,
-    /// or a save-spinner animation frame while any save is in flight. `None` when the
-    /// loop can park on its event sources alone.
+    /// save-spinner animation, graphical-caret blink, or an expiring hover reveal.
+    /// `None` when the loop can park on its event sources alone.
     fn next_wake(&self) -> Option<Duration> {
-        let notif = self.notifications.next_deadline(Instant::now());
+        let now = Instant::now();
+        let notif = self.notifications.next_deadline(now);
         let spinner = (!self.pending_saves.is_empty()).then(|| Duration::from_millis(100));
+        let caret = self.graphics_caret_next_wake(now);
         // Wake to repaint (hiding the tooltip) when the commit-badge reveal expires.
         let reveal = match self.tabs.get(self.active).map(|t| &t.kind) {
             Some(TabKind::Commit {
@@ -4347,7 +4486,7 @@ impl App {
             }) => COMMIT_REVEAL.checked_sub(since.elapsed()),
             _ => None,
         };
-        [notif, spinner, reveal].into_iter().flatten().min()
+        [notif, spinner, caret, reveal].into_iter().flatten().min()
     }
 
     /// Push a notification onto the center. Errors and warnings persist until
@@ -4385,19 +4524,23 @@ impl App {
 
     /// Handle a backend event: correlate opens to tabs, surface save/progress status.
     fn on_backend_event(&mut self, id: Option<RequestId>, event: SessionEvent) {
-        // A save's answering event (saved or error) clears its tab spinner.
+        // A save's answering event clears its tab spinner. During "save all & quit",
+        // only successful Saved responses may let the quit continue; a refused or
+        // failed save keeps the app open with the dirty buffer intact.
+        let mut save_failed = false;
         if let Some(req) = id
             && let Some(doc) = self.pending_saves.remove(&req)
         {
+            save_failed = !matches!(event, SessionEvent::Saved { doc: saved } if saved == doc);
             for tab in self.all_tabs_mut() {
                 if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
                     tab.saving_since = None;
                 }
             }
         }
-        // A "save all & quit" exits once every issued save has been answered.
-        if self.quitting && self.pending_saves.is_empty() {
-            self.should_quit = true;
+        if self.quitting && save_failed {
+            self.quitting = false;
+            self.status = Some("quit cancelled: save failed".to_string());
         }
         match event {
             SessionEvent::Opened { doc, .. } => {
@@ -4544,8 +4687,18 @@ impl App {
                 self.push_tab(Tab::graph(title, view));
                 self.status = Some(format!("dependency graph: {count} package(s)"));
             },
+            SessionEvent::LoadedConfig { report } => self.open_loaded_config(*report),
             _ => {},
         }
+        // A "save all & quit" exits once every issued save has succeeded.
+        if self.quitting && self.pending_saves.is_empty() {
+            self.should_quit = true;
+        }
+    }
+
+    fn open_loaded_config(&mut self, report: LoadedConfig) {
+        self.push_tab(Tab::loaded_config(report));
+        self.status = Some("loaded settings opened".to_string());
     }
 
     /// Arm the startup crash-recovery prompt for `swaps` left by a previous session.
@@ -4849,15 +5002,17 @@ fn load_theme(name: &str) -> Result<Theme, String> {
 }
 
 pub fn run(mut app: App) -> color_eyre::Result<()> {
-    if !matches!(
+    let kitty_keyboard_supported = matches!(
         crossterm::terminal::supports_keyboard_enhancement(),
         Ok(true)
-    ) {
+    );
+    if !kitty_keyboard_supported {
         return Err(eyre!(
             "karet requires a terminal with kitty keyboard protocol support \
              (kitty, ghostty, WezTerm, foot, …)"
         ));
     }
+    app.kitty_keyboard_supported = true;
 
     // The session backend runs on its own Tokio runtime; the UI task selects over
     // terminal input, backend events, and document snapshots so it never blocks.
@@ -4865,6 +5020,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     let (session, events, snaps) = Session::new(SessionConfig {
         roots: vec![app.root.clone()],
         settings: app.settings.clone(),
+        loaded_config: app.loaded_config.clone(),
         // The real app persists crash-recovery swaps to the user data directory;
         // headless/test sessions leave this unset and keep no backups.
         swap_dir: karet_session::backup::default_swap_dir(),
@@ -4895,6 +5051,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     // the heuristic already trusts.
     if probe_kitty_graphics(Duration::from_millis(200)) == Some(true) {
         app.graphics = GraphicsProtocol::Kitty;
+        app.kitty_graphics_supported = true;
     }
     // Same handshake for OSC 22 pointer-shape hints (col-resize/row-resize over
     // the sidebar/SCM dividers) — confirmed support only, never assumed.
@@ -4913,6 +5070,14 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
                 diag.severity,
                 NotificationKind::System,
                 format!("config: {}", diag.message),
+            );
+        }
+        if app.settings.editor.graphical_cursor == Some(true) && !app.graphical_cursor_compatible()
+        {
+            app.notify(
+                Severity::Error,
+                NotificationKind::System,
+                "graphical cursor is not compatible with this terminal",
             );
         }
         event_loop(&mut terminal, &mut app, events, snaps).await
@@ -4994,6 +5159,7 @@ async fn event_loop(
 
 /// Dispatch one terminal event to the app.
 fn handle_terminal_event(app: &mut App, event: Event) {
+    app.reset_graphics_caret_blink();
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => app.handle_key(key),
         Event::Mouse(mouse) => app.handle_mouse(mouse),
@@ -5027,6 +5193,33 @@ mod tests {
             vec![change("b.rs", StatusKind::Modified)],
             false,
         )
+    }
+
+    struct RecordingBackend {
+        next: std::sync::atomic::AtomicU64,
+        sent: std::sync::Mutex<Vec<(RequestId, SessionCommand)>>,
+    }
+
+    impl RecordingBackend {
+        fn new() -> Self {
+            Self {
+                next: std::sync::atomic::AtomicU64::new(1),
+                sent: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Backend for RecordingBackend {
+        fn send(&self, id: RequestId, command: SessionCommand) -> Result<(), BackendError> {
+            if let Ok(mut sent) = self.sent.lock() {
+                sent.push((id, command));
+            }
+            Ok(())
+        }
+
+        fn next_id(&self) -> RequestId {
+            RequestId(self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+        }
     }
 
     #[test]
@@ -5294,6 +5487,57 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
     }
 
     #[test]
+    fn graphical_cursor_requires_kitty_keyboard_and_graphics() {
+        let mut app = app();
+        app.graphics = GraphicsProtocol::Kitty;
+        app.kitty_graphics_supported = true;
+
+        assert!(!app.graphical_cursor_compatible());
+
+        app.kitty_keyboard_supported = true;
+        assert!(app.graphical_cursor_compatible());
+
+        app.graphics = GraphicsProtocol::Halfblocks;
+        assert!(
+            !app.graphical_cursor_compatible(),
+            "the graphical cursor must only ride the Kitty graphics path"
+        );
+    }
+
+    #[test]
+    fn graphical_cursor_blink_schedules_a_repaint_when_active() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "x"));
+        app.focus = Focus::Editor;
+        app.editor_rect = Rect::new(0, 0, 20, 5);
+        app.graphics = GraphicsProtocol::Kitty;
+        app.kitty_graphics_supported = true;
+        app.kitty_keyboard_supported = true;
+
+        let wake = app.next_wake().expect("an active graphical cursor blinks");
+        assert!(wake <= GRAPHICS_CARET_BLINK_INTERVAL && wake > Duration::ZERO);
+    }
+
+    #[test]
+    fn graphical_cursor_is_suppressed_during_the_hidden_blink_phase() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "x"));
+        app.focus = Focus::Editor;
+        app.editor_rect = Rect::new(0, 0, 20, 5);
+        app.graphics = GraphicsProtocol::Kitty;
+        app.kitty_graphics_supported = true;
+        app.kitty_keyboard_supported = true;
+
+        assert!(app.active_graphics_caret().is_some());
+        app.graphics_caret_blink_epoch = Instant::now() - GRAPHICS_CARET_BLINK_INTERVAL;
+        assert_eq!(app.active_graphics_caret(), None);
+        assert!(
+            app.active_graphics_caret_position().is_some(),
+            "blink hides a valid caret without losing its placement"
+        );
+    }
+
+    #[test]
     fn pending_save_drives_the_animation_tick() {
         let mut app = app();
         assert!(app.next_wake().is_none());
@@ -5316,6 +5560,82 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         );
         assert!(app.tabs[app.active].saving_since.is_none());
         assert!(app.pending_saves.is_empty());
+    }
+
+    #[test]
+    fn duplicate_save_command_is_debounced_while_in_flight() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        app.push_tab(text_tab("t.rs", "x"));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(2));
+        }
+
+        app.save_active();
+        app.save_active();
+
+        let sent_saves = backend
+            .sent
+            .lock()
+            .map(|sent| {
+                sent.iter()
+                    .filter(|(_, command)| matches!(command, SessionCommand::Save { .. }))
+                    .count()
+            })
+            .unwrap_or_default();
+        assert_eq!(sent_saves, 1, "only one save may be in flight per document");
+        assert_eq!(
+            app.status.as_deref(),
+            Some("save already in progress"),
+            "the second shortcut is ignored because the first save is still pending"
+        );
+    }
+
+    #[test]
+    fn save_active_marks_every_view_of_the_document_as_saving() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend);
+        app.push_tab(text_tab("t.rs", "x"));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(2));
+        }
+        app.split_focused(SplitDir::Right);
+
+        app.save_active();
+
+        assert!(app.tabs[app.active].saving_since.is_some());
+        let stored_saving = app
+            .stored
+            .values()
+            .flat_map(|pane| pane.tabs.iter())
+            .any(|tab| tab.saving_since.is_some());
+        assert!(
+            stored_saving,
+            "background split view should show save progress"
+        );
+    }
+
+    #[test]
+    fn quit_save_all_conflict_keeps_the_app_open() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "x"));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(2));
+        }
+        app.tabs[app.active].dirty = true;
+        app.quitting = true;
+        app.pending_saves.insert(RequestId(5), DocumentId(2));
+
+        app.on_backend_event(
+            Some(RequestId(5)),
+            SessionEvent::ExternalConflict { doc: DocumentId(2) },
+        );
+
+        assert!(!app.should_quit);
+        assert!(!app.quitting);
+        assert!(app.tabs[app.active].dirty);
     }
 
     #[test]
@@ -5388,6 +5708,42 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         assert_eq!(app.hovered_scm_change(), Some(0));
         app.hover = Some((5, 2)); // display 0 → header → nothing
         assert_eq!(app.hovered_scm_change(), None);
+    }
+
+    #[test]
+    fn sidebar_header_hover_tracks_header_only() {
+        let mut app = app();
+        app.sidebar_visible = true;
+        app.sidebar_rect = Rect {
+            x: 0,
+            y: 1,
+            width: 20,
+            height: 8,
+        };
+        app.sidebar_content_rect = Rect {
+            x: 0,
+            y: 2,
+            width: 20,
+            height: 7,
+        };
+        let moved = |column, row| MouseEvent {
+            kind: MouseEventKind::Moved,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        app.handle_mouse(moved(5, 1));
+        assert_eq!(app.sidebar_header_hover, Some((5, 1)));
+        assert_eq!(app.hover, None);
+
+        app.handle_mouse(moved(5, 3));
+        assert_eq!(app.sidebar_header_hover, None);
+        assert_eq!(app.hover, Some((5, 3)));
+
+        app.handle_mouse(moved(30, 3));
+        assert_eq!(app.sidebar_header_hover, None);
+        assert_eq!(app.hover, None);
     }
 
     #[test]
@@ -5597,6 +5953,19 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         assert!(app.overlay.is_some());
         send_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn loaded_config_command_opens_read_only_tab_without_backend() {
+        let mut app = app().with_loaded_config(karet_session::LoadedConfig::from_settings(
+            Settings::default(),
+        ));
+        app.dispatch(Command::ShowLoadedConfig);
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::LoadedConfig { .. }
+        ));
+        assert_eq!(app.tabs[app.active].title, "Loaded Settings");
     }
 
     #[test]
@@ -6997,6 +7366,26 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         app.explorer_commit_edit();
         assert!(dir.join("hello.txt").exists());
         assert!(!app.explorer.is_editing());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_explorer_create_keeps_inline_name_for_retry() {
+        let dir = std::env::temp_dir().join(format!("karet-newfile-fail-{}", std::process::id()));
+        let existing = dir.join("existing");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(&existing, "already here");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+        app.explorer_begin_new(true);
+        for c in "existing".chars() {
+            app.explorer.edit_push(c);
+        }
+
+        app.explorer_commit_edit();
+
+        assert!(app.explorer.is_editing());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
