@@ -177,6 +177,8 @@ struct PaneCtx<'a> {
     pane_focused: bool,
     /// Whether the editor should draw its caret as focused.
     editor_focused: bool,
+    /// Whether the app will draw a Kitty graphics caret after this frame.
+    graphical_cursor: bool,
     /// The find bar to draw atop this pane's content, if any (focused pane only).
     /// Owned (not borrowed): it now lives on the active `Tab` itself, and
     /// `render_pane` needs a mutable borrow of the tabs slice at the same time.
@@ -210,6 +212,7 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let focused = app.focus_pane();
     let editor_focused = app.focus == Focus::Editor;
     let graphics = app.graphics;
+    let graphical_cursor = app.graphical_cursor_enabled();
     for (pane, rect) in app.layout.layout(area) {
         let is_focused = pane == focused;
         let rendered = if is_focused {
@@ -218,6 +221,7 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                 graphics,
                 pane_focused: true,
                 editor_focused,
+                graphical_cursor,
                 find: app
                     .find_open
                     .then(|| app.tabs.get(app.active))
@@ -231,6 +235,7 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                 graphics,
                 pane_focused: false,
                 editor_focused: false,
+                graphical_cursor: false,
                 find: None,
             };
             render_pane(f, &mut stored.tabs, stored.active, rect, &ctx)
@@ -1248,7 +1253,8 @@ fn draw_pane_content(
                 .theme(theme)
                 .decorations(&combined)
                 .folds(&fold_lines)
-                .focused(ctx.editor_focused);
+                .focused(ctx.editor_focused)
+                .cell_caret(!ctx.graphical_cursor);
             f.render_stateful_widget(editor, area, &mut tab.editor);
         },
         TabKind::Diff { file, view, scroll } => draw_diff(f, theme, area, file, *view, scroll),

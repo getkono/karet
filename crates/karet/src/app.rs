@@ -89,6 +89,9 @@ use tokio::sync::mpsc;
 
 use crate::clipboard::Clipboard;
 use crate::command::Command;
+use crate::compat;
+use crate::compat::CellPixels;
+use crate::compat::GraphicsCaret;
 use crate::editing;
 use crate::keymap::Context;
 use crate::keymap::EditorTab;
@@ -315,6 +318,8 @@ pub struct App {
     pub(crate) icon_style: IconStyle,
     /// The detected terminal graphics protocol.
     pub(crate) graphics: GraphicsProtocol,
+    /// Whether crossterm confirmed Kitty keyboard protocol support at startup.
+    kitty_keyboard_supported: bool,
     /// Whether the terminal was confirmed (via a startup handshake) to support
     /// OSC 22 mouse-pointer-shape hints. `false` means every pointer-shape hint
     /// is a no-op — never assumed, only confirmed, mirroring `graphics`.
@@ -470,6 +475,8 @@ pub struct App {
     /// The document page currently transmitted, so paging a PDF re-transmits even
     /// though the view (and thus [`shown_image`](Self::shown_image)) is unchanged.
     shown_page: usize,
+    /// The graphical caret placement currently transmitted to the terminal.
+    shown_graphics_caret: Option<GraphicsCaret>,
     /// Whether the app should quit.
     should_quit: bool,
     /// The headless editor backend; edits route through it. `None` in unit tests,
@@ -516,6 +523,7 @@ impl App {
             syntax,
             icon_style: IconStyle::default(),
             graphics: image::detect_protocol(),
+            kitty_keyboard_supported: false,
             pointer_shapes_supported: false,
             pointer_shape: None,
             focus: Focus::Sidebar,
@@ -593,6 +601,7 @@ impl App {
             image_area: None,
             shown_image: None,
             shown_page: 0,
+            shown_graphics_caret: None,
             should_quit: false,
             backend: None,
             pending_open: HashMap::new(),
@@ -696,6 +705,22 @@ impl App {
     /// determines which keybinding layer is live.
     pub(crate) fn focus_target(&self) -> FocusTarget {
         FocusTarget::from(self.focus, self.sidebar_panel, self.active_editor_tab())
+    }
+
+    /// Whether the active frame should suppress the editor's cell caret because the
+    /// app will draw the Kitty graphics caret after ratatui flushes the frame.
+    pub(crate) fn graphical_cursor_enabled(&self) -> bool {
+        match self.settings.editor.graphical_cursor {
+            Some(false) => false,
+            Some(true) => self.graphical_cursor_compatible(),
+            None => self.graphical_cursor_compatible(),
+        }
+    }
+
+    fn graphical_cursor_compatible(&self) -> bool {
+        self.kitty_keyboard_supported
+            && self.graphics == GraphicsProtocol::Kitty
+            && CellPixels::detect().is_some()
     }
 
     /// Handle a key press: resolve it against the layered keymap for the current
@@ -3983,6 +4008,48 @@ impl App {
             },
             _ => {},
         }
+
+        let caret = self.active_graphics_caret();
+        match (caret, self.shown_graphics_caret) {
+            (Some(next), shown) if shown != Some(next) => {
+                let _ = write!(stdout, "{}", next.escape());
+                let _ = stdout.flush();
+                self.shown_graphics_caret = Some(next);
+            },
+            (None, Some(_)) => {
+                let _ = write!(stdout, "{}", compat::delete_graphics_caret());
+                let _ = stdout.flush();
+                self.shown_graphics_caret = None;
+            },
+            _ => {},
+        }
+    }
+
+    fn active_graphics_caret(&self) -> Option<GraphicsCaret> {
+        if !self.graphical_cursor_enabled() || self.focus != Focus::Editor {
+            return None;
+        }
+        let cell = CellPixels::detect()?;
+        let tab = self.tabs.get(self.active)?;
+        let TabKind::Code {
+            buffer,
+            folds,
+            folded,
+            ..
+        } = &tab.kind
+        else {
+            return None;
+        };
+        let fold_lines = resolve_folds(folds, folded);
+        let (x, y) = tab
+            .editor
+            .primary_caret_cell(self.editor_rect, buffer, &fold_lines)?;
+        Some(GraphicsCaret {
+            x,
+            y,
+            x_offset: 0,
+            cell,
+        })
     }
 }
 
@@ -4815,15 +4882,17 @@ fn load_theme(name: &str) -> Result<Theme, String> {
 }
 
 pub fn run(mut app: App) -> color_eyre::Result<()> {
-    if !matches!(
+    let kitty_keyboard_supported = matches!(
         crossterm::terminal::supports_keyboard_enhancement(),
         Ok(true)
-    ) {
+    );
+    if !kitty_keyboard_supported {
         return Err(eyre!(
             "karet requires a terminal with kitty keyboard protocol support \
              (kitty, ghostty, WezTerm, foot, …)"
         ));
     }
+    app.kitty_keyboard_supported = true;
 
     // The session backend runs on its own Tokio runtime; the UI task selects over
     // terminal input, backend events, and document snapshots so it never blocks.
@@ -4875,6 +4944,14 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
                 diag.severity,
                 NotificationKind::System,
                 format!("config: {}", diag.message),
+            );
+        }
+        if app.settings.editor.graphical_cursor == Some(true) && !app.graphical_cursor_compatible()
+        {
+            app.notify(
+                Severity::Error,
+                NotificationKind::System,
+                "graphical cursor is not compatible with this terminal",
             );
         }
         event_loop(&mut terminal, &mut app, events, snaps).await

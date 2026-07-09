@@ -18,6 +18,7 @@ mod app;
 mod cli;
 mod clipboard;
 mod command;
+mod compat;
 mod editing;
 mod keymap;
 mod notify;
