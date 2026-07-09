@@ -194,6 +194,17 @@ impl FileTreeState {
         self.selected().map(|r| r.path.as_path())
     }
 
+    /// The paths of every effectively-selected row, in visible row order.
+    #[must_use]
+    pub fn selected_paths(&self) -> Vec<PathBuf> {
+        self.selection
+            .selected_indices()
+            .into_iter()
+            .filter_map(|i| self.rows.get(i))
+            .map(|row| row.path.clone())
+            .collect()
+    }
+
     /// Move the cursor to the next row, collapsing any multi-selection.
     pub fn select_next(&mut self) {
         self.selection.move_by(1);
@@ -1299,6 +1310,34 @@ mod tests {
         state.mark_toggle(); // {1}
         state.select_all();
         assert!((0..3).all(|i| state.is_selected(i)));
+    }
+
+    #[test]
+    fn selected_paths_follow_the_effective_selection() {
+        let dir = temp_dir();
+        write(&dir.path, "a.txt", b"a");
+        write(&dir.path, "b.txt", b"b");
+        write(&dir.path, "c.txt", b"c");
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+
+        assert_eq!(state.selected_paths(), vec![dir.path.join("a.txt")]);
+
+        state.select_extend(1);
+        assert_eq!(
+            state.selected_paths(),
+            vec![dir.path.join("a.txt"), dir.path.join("b.txt")]
+        );
+
+        state.toggle_visible(2);
+        assert_eq!(
+            state.selected_paths(),
+            vec![
+                dir.path.join("a.txt"),
+                dir.path.join("b.txt"),
+                dir.path.join("c.txt"),
+            ]
+        );
     }
 
     #[test]

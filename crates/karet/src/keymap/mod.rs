@@ -185,6 +185,8 @@ static BINDINGS: &[Binding] = &[
     // and new file/folder are also on the panel's toolbar buttons and in the palette.
     b(Explorer, false, false, false, Char('a'), Command::ExplorerNewFile),
     b(Explorer, false, false, false, Char('A'), Command::ExplorerNewFolder),
+    b(Explorer, true,  false, false, Char('x'), Command::Cut),
+    b(Explorer, true,  false, false, Char('v'), Command::Paste),
     b(Explorer, false, false, false, F(2),      Command::ExplorerRename),
     b(Explorer, false, false, false, F(5),      Command::ExplorerRefresh),
 
@@ -961,6 +963,24 @@ mod tests {
                 key(KeyCode::Char(' '), KeyModifiers::NONE)
             ),
             Some(Command::SidebarToggleExpand)
+        );
+        assert_eq!(
+            res_in(
+                Focus::Sidebar,
+                SidebarPanel::Explorer,
+                false,
+                key(KeyCode::Char('x'), KeyModifiers::CONTROL)
+            ),
+            Some(Command::Cut)
+        );
+        assert_eq!(
+            res_in(
+                Focus::Sidebar,
+                SidebarPanel::Explorer,
+                false,
+                key(KeyCode::Char('v'), KeyModifiers::CONTROL)
+            ),
+            Some(Command::Paste)
         );
     }
 

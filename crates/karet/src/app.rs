@@ -314,6 +314,23 @@ enum CommitDest {
     Browser { hash: String },
 }
 
+/// Which filesystem operation the explorer's internal file clipboard will perform.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExplorerFileOp {
+    /// Duplicate the selected files/directories on paste.
+    Copy,
+    /// Move the selected files/directories on paste.
+    Cut,
+}
+
+/// The explorer's internal file clipboard. This is intentionally separate from the
+/// system text clipboard: terminal clipboards do not carry portable file lists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ExplorerFileClipboard {
+    op: ExplorerFileOp,
+    paths: Vec<PathBuf>,
+}
+
 /// The IDE shell state.
 pub struct App {
     /// The workspace root.
@@ -352,6 +369,8 @@ pub struct App {
     pub(crate) sidebar_visible: bool,
     /// The file-explorer tree state.
     pub(crate) explorer: FileTreeState,
+    /// Files/directories selected for an explorer copy or cut operation.
+    explorer_clipboard: Option<ExplorerFileClipboard>,
     /// The Source-Control panel state.
     pub(crate) scm: Scm,
     /// The focused pane's open tabs.
@@ -554,6 +573,7 @@ impl App {
             sidebar_panel: SidebarPanel::Explorer,
             sidebar_visible: true,
             explorer: FileTreeState::new(),
+            explorer_clipboard: None,
             scm: Scm {
                 selection: ListSelection::new(changes.len()),
                 changes,
@@ -2019,6 +2039,7 @@ impl App {
                 match result {
                     Ok(()) => {
                         self.explorer.rebuild(&self.root);
+                        self.send_vcs(SessionCommand::RefreshVcs);
                         if !*folder {
                             self.open_path(path);
                         }
@@ -2034,7 +2055,10 @@ impl App {
                 }
             },
             PendingEdit::Rename { from, to } => match std::fs::rename(from, to) {
-                Ok(()) => self.explorer.rebuild(&self.root),
+                Ok(()) => {
+                    self.explorer.rebuild(&self.root);
+                    self.send_vcs(SessionCommand::RefreshVcs);
+                },
                 Err(e) => {
                     self.explorer.restore_edit(&pending);
                     self.notify(
@@ -2044,6 +2068,134 @@ impl App {
                     );
                 },
             },
+        }
+    }
+
+    /// Copy the explorer's selected files/directories into the internal file
+    /// clipboard.
+    fn explorer_copy_files(&mut self) {
+        self.explorer_store_files(ExplorerFileOp::Copy);
+    }
+
+    /// Cut the explorer's selected files/directories into the internal file
+    /// clipboard.
+    fn explorer_cut_files(&mut self) {
+        self.explorer_store_files(ExplorerFileOp::Cut);
+    }
+
+    /// Store the current explorer selection as the source for a future paste.
+    fn explorer_store_files(&mut self, op: ExplorerFileOp) {
+        self.explorer.ensure_built(&self.root);
+        let paths = self.explorer.selected_paths();
+        if paths.is_empty() {
+            self.status = Some("explorer: select a file first".to_string());
+            return;
+        }
+        let count = paths.len();
+        self.explorer_clipboard = Some(ExplorerFileClipboard { op, paths });
+        let verb = match op {
+            ExplorerFileOp::Copy => "copied",
+            ExplorerFileOp::Cut => "cut",
+        };
+        self.status = Some(format!("{verb} {count} explorer item(s)"));
+    }
+
+    /// Paste the internal explorer file clipboard into the selected destination.
+    fn explorer_paste_files(&mut self) {
+        let Some(clipboard) = self.explorer_clipboard.clone() else {
+            self.status = Some("paste: no explorer files".to_string());
+            return;
+        };
+        let dest_dir = self.explorer_paste_destination();
+        if let Err(e) = std::fs::create_dir_all(&dest_dir) {
+            self.notify(
+                Severity::Error,
+                NotificationKind::Io,
+                format!("paste failed: {e}"),
+            );
+            return;
+        }
+
+        let mut pasted = 0usize;
+        let mut skipped = 0usize;
+        let mut failed = 0usize;
+        let mut first_error: Option<String> = None;
+
+        for source in &clipboard.paths {
+            if !source.exists() {
+                failed += 1;
+                first_error.get_or_insert_with(|| {
+                    format!("paste failed: {} no longer exists", source.display())
+                });
+                continue;
+            }
+            if clipboard.op == ExplorerFileOp::Cut
+                && source
+                    .parent()
+                    .is_some_and(|parent| same_path(parent, &dest_dir))
+            {
+                skipped += 1;
+                continue;
+            }
+            if source.is_dir() && path_contains_or_equals(source, &dest_dir) {
+                failed += 1;
+                first_error.get_or_insert_with(|| {
+                    format!(
+                        "paste failed: cannot paste {} into itself",
+                        source.display()
+                    )
+                });
+                continue;
+            }
+
+            let target = unique_child_path(&dest_dir, source);
+            let result = match clipboard.op {
+                ExplorerFileOp::Copy => copy_path_recursive(source, &target),
+                ExplorerFileOp::Cut => std::fs::rename(source, &target),
+            };
+            match result {
+                Ok(()) => pasted += 1,
+                Err(e) => {
+                    failed += 1;
+                    first_error.get_or_insert_with(|| format!("paste failed: {e}"));
+                },
+            }
+        }
+
+        if pasted > 0 {
+            self.explorer.rebuild(&self.root);
+            self.send_vcs(SessionCommand::RefreshVcs);
+            if clipboard.op == ExplorerFileOp::Cut {
+                self.explorer_clipboard = None;
+            }
+        }
+
+        if let Some(message) = first_error {
+            self.notify(Severity::Error, NotificationKind::Io, message);
+        }
+
+        self.status = if pasted > 0 && failed > 0 {
+            Some(format!("pasted {pasted} item(s), {failed} failed"))
+        } else if pasted > 0 {
+            Some(format!("pasted {pasted} item(s)"))
+        } else if skipped > 0 && failed == 0 {
+            Some("paste: already in target folder".to_string())
+        } else {
+            Some("paste failed".to_string())
+        };
+    }
+
+    /// The explorer paste target: selected directory, selected file's parent, or root.
+    fn explorer_paste_destination(&mut self) -> PathBuf {
+        self.explorer.ensure_built(&self.root);
+        match self.explorer.selected() {
+            Some(row) if row.is_dir => row.path.clone(),
+            Some(row) => row
+                .path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| self.root.clone()),
+            None => self.root.clone(),
         }
     }
 
@@ -4067,6 +4219,10 @@ impl App {
     /// Copy the active code tab's selection, or its cursor line when nothing is
     /// selected (VS Code behavior).
     fn copy_selection(&mut self) {
+        if self.focus_target() == FocusTarget::Explorer {
+            self.explorer_copy_files();
+            return;
+        }
         let text = match self.tabs.get(self.active) {
             Some(Tab {
                 kind: TabKind::Code { buffer, text, .. },
@@ -4693,6 +4849,10 @@ impl App {
 
     /// Cut the current selection (copy then delete); a no-op without a selection.
     fn cut(&mut self) {
+        if self.focus_target() == FocusTarget::Explorer {
+            self.explorer_cut_files();
+            return;
+        }
         let has_selection = matches!(
             self.tabs.get(self.active),
             Some(Tab { kind: TabKind::Code { .. }, editor, .. })
@@ -4707,6 +4867,10 @@ impl App {
 
     /// Paste the system clipboard at the caret (or the active modal's text field).
     fn paste_from_clipboard(&mut self) {
+        if self.focus_target() == FocusTarget::Explorer {
+            self.explorer_paste_files();
+            return;
+        }
         match self.clipboard.get() {
             Ok(text) => self.handle_paste(text),
             Err(_) => self.status = Some("paste: clipboard unavailable".to_string()),
@@ -5143,6 +5307,76 @@ fn loading_delay_remaining(since: Instant, now: Instant) -> Option<Duration> {
     LOADING_REVEAL_DELAY.checked_sub(now.saturating_duration_since(since))
 }
 
+/// Recursively copy a file or directory tree.
+fn copy_path_recursive(from: &Path, to: &Path) -> io::Result<()> {
+    if from.is_dir() {
+        std::fs::create_dir_all(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            copy_path_recursive(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else {
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(from, to).map(|_| ())
+    }
+}
+
+/// Whether two paths resolve to the same filesystem location.
+fn same_path(a: &Path, b: &Path) -> bool {
+    canonical(a) == canonical(b)
+}
+
+/// Whether `child` resolves to `parent` or a path below it.
+fn path_contains_or_equals(parent: &Path, child: &Path) -> bool {
+    canonical(child).starts_with(canonical(parent))
+}
+
+/// A destination path under `dir`, suffixing when the source name already exists.
+fn unique_child_path(dir: &Path, source: &Path) -> PathBuf {
+    let name = source
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "item".to_string());
+    let first = dir.join(&name);
+    if !first.exists() {
+        return first;
+    }
+
+    for n in 1usize.. {
+        let candidate = dir.join(copy_name(source, &name, n));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    unreachable!("unbounded suffix search should always return");
+}
+
+/// Build `name copy.ext`, `name copy 2.ext`, or `dir copy` style conflict names.
+fn copy_name(source: &Path, fallback: &str, n: usize) -> String {
+    let suffix = if n == 1 {
+        " copy".to_string()
+    } else {
+        format!(" copy {n}")
+    };
+    if source.is_dir() {
+        return format!("{fallback}{suffix}");
+    }
+    let stem = source
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or_else(|| fallback.to_string());
+    match source.extension().map(|ext| ext.to_string_lossy()) {
+        Some(ext) if !ext.is_empty() => format!("{stem}{suffix}.{ext}"),
+        _ => format!("{stem}{suffix}"),
+    }
+}
+
 /// The canonical form of `path` for tab de-duplication, falling back to the path
 /// as given when it cannot be resolved (e.g. it no longer exists).
 fn canonical(path: &Path) -> PathBuf {
@@ -5519,6 +5753,46 @@ mod tests {
             vec![change("b.rs", StatusKind::Modified)],
             false,
         )
+    }
+
+    fn test_dir(name: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let dir =
+            std::env::temp_dir().join(format!("karet-{name}-{}-{unique}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
+    fn write_file(root: &Path, rel: &str, contents: &[u8]) {
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(path, contents);
+    }
+
+    fn select_explorer_path(app: &mut App, path: &Path) {
+        app.explorer.ensure_built(&app.root);
+        let Some(idx) = app.explorer.rows().iter().position(|row| row.path == path) else {
+            panic!("missing explorer path {}", path.display());
+        };
+        app.explorer.select_visible(idx);
+    }
+
+    fn refresh_count(backend: &RecordingBackend) -> usize {
+        backend
+            .sent
+            .lock()
+            .map(|sent| {
+                sent.iter()
+                    .filter(|(_, command)| matches!(command, SessionCommand::RefreshVcs))
+                    .count()
+            })
+            .unwrap_or_default()
     }
 
     struct RecordingBackend {
@@ -7864,6 +8138,128 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         app.explorer_commit_edit();
 
         assert!(app.explorer.is_editing());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explorer_copy_paste_file_uses_copy_suffix() {
+        let dir = test_dir("copy-file");
+        write_file(&dir, "a.txt", b"alpha");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+
+        app.dispatch(Command::Copy);
+        app.dispatch(Command::Paste);
+
+        assert_eq!(
+            std::fs::read(dir.join("a copy.txt")).unwrap_or_default(),
+            b"alpha"
+        );
+        assert!(dir.join("a.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explorer_copy_paste_directory_recursively_into_selected_directory() {
+        let dir = test_dir("copy-dir");
+        write_file(&dir, "src/nested/file.txt", b"nested");
+        write_file(&dir, "src/marker.txt", b"marker");
+        let _ = std::fs::create_dir_all(dir.join("dst"));
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+
+        select_explorer_path(&mut app, &dir.join("src"));
+        app.dispatch(Command::Copy);
+        select_explorer_path(&mut app, &dir.join("dst"));
+        app.dispatch(Command::Paste);
+
+        assert_eq!(
+            std::fs::read(dir.join("dst/src/nested/file.txt")).unwrap_or_default(),
+            b"nested"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explorer_cut_paste_moves_files_and_clears_clipboard() {
+        let dir = test_dir("cut-file");
+        write_file(&dir, "move.txt", b"move");
+        let _ = std::fs::create_dir_all(dir.join("dst"));
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+
+        select_explorer_path(&mut app, &dir.join("move.txt"));
+        app.dispatch(Command::Cut);
+        select_explorer_path(&mut app, &dir.join("dst"));
+        app.dispatch(Command::Paste);
+
+        assert!(!dir.join("move.txt").exists());
+        assert_eq!(
+            std::fs::read(dir.join("dst/move.txt")).unwrap_or_default(),
+            b"move"
+        );
+        assert!(app.explorer_clipboard.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explorer_paste_rejects_directory_into_its_descendant() {
+        let dir = test_dir("copy-into-self");
+        write_file(&dir, "src/child/file.txt", b"child");
+        write_file(&dir, "src/marker.txt", b"marker");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+
+        select_explorer_path(&mut app, &dir.join("src"));
+        app.dispatch(Command::Copy);
+        app.explorer.expand(&dir.join("src"));
+        app.explorer.ensure_built(&dir);
+        select_explorer_path(&mut app, &dir.join("src/child"));
+        app.dispatch(Command::Paste);
+
+        assert!(!dir.join("src/child/src").exists());
+        assert_eq!(app.status.as_deref(), Some("paste failed"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explorer_rename_refreshes_vcs_status() {
+        let dir = test_dir("rename-refresh");
+        write_file(&dir, "old.txt", b"old");
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend.clone());
+        app.sidebar_panel = SidebarPanel::Explorer;
+
+        select_explorer_path(&mut app, &dir.join("old.txt"));
+        app.explorer_begin_rename();
+        for _ in 0.."old.txt".len() {
+            app.explorer.edit_backspace();
+        }
+        for c in "new.txt".chars() {
+            app.explorer.edit_push(c);
+        }
+        app.explorer_commit_edit();
+
+        assert!(dir.join("new.txt").exists());
+        assert_eq!(refresh_count(&backend), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explorer_paste_refreshes_vcs_status_after_success() {
+        let dir = test_dir("paste-refresh");
+        write_file(&dir, "a.txt", b"a");
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend.clone());
+        app.sidebar_panel = SidebarPanel::Explorer;
+
+        app.dispatch(Command::Copy);
+        app.dispatch(Command::Paste);
+
+        assert!(dir.join("a copy.txt").exists());
+        assert_eq!(refresh_count(&backend), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
