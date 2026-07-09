@@ -140,6 +140,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if let Some(rev) = &app.rev_input {
         draw_rev_input(f, rev, &theme, area);
     }
+    draw_explorer_context_menu(f, app, &theme, area);
 
     // Toasts float above everything, including the modal overlay.
     draw_toasts(f, app, &theme, area);
@@ -769,12 +770,14 @@ fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             let explorer_focused =
                 app.focus == Focus::Sidebar && app.sidebar_panel == SidebarPanel::Explorer;
             let hover = app.hovered_explorer_row();
+            let cut_paths = app.explorer_cut_paths().to_vec();
             f.render_stateful_widget(
                 FileTree::new(&root)
                     .theme(theme)
                     .icons(icon_style)
                     .visible(&visible)
                     .active(active.as_deref())
+                    .cut_paths(&cut_paths)
                     .explorer_focused(explorer_focused)
                     .hover(hover),
                 rows[1],
@@ -783,6 +786,102 @@ fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         },
         SidebarPanel::SourceControl => draw_scm(f, app, theme, rows[1]),
         SidebarPanel::Search => draw_search_panel(f, app, theme, rows[1]),
+    }
+}
+
+fn draw_explorer_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+    let Some(menu) = app.explorer_context_menu.as_mut() else {
+        return;
+    };
+    if menu.items.is_empty() {
+        menu.rect = Rect::default();
+        return;
+    }
+    let hints: Vec<Option<String>> = menu
+        .items
+        .iter()
+        .map(|cmd| keymap::hint_for(*cmd, ChordStyle::Verbose))
+        .collect();
+    let labels: Vec<&str> = menu
+        .items
+        .iter()
+        .map(|cmd| context_menu_label(*cmd))
+        .collect();
+    let label_w = labels
+        .iter()
+        .map(|label| cell_width(label))
+        .max()
+        .unwrap_or(0);
+    let hint_w = hints
+        .iter()
+        .flatten()
+        .map(|hint| cell_width(hint))
+        .max()
+        .unwrap_or(0);
+    let width = (label_w + hint_w + 6).clamp(18, 46).min(area.width.max(1));
+    let height = (menu.items.len() as u16 + 2).min(area.height.max(1));
+    let x = menu.x.min(area.right().saturating_sub(width));
+    let y = menu.y.min(area.bottom().saturating_sub(height));
+    let rect = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    menu.rect = rect;
+    f.render_widget(Clear, rect);
+    let style = Style::default()
+        .bg(theme.role(ThemeRole::Background).to_ratatui())
+        .fg(theme.role(ThemeRole::Foreground).to_ratatui());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .style(style)
+        .border_style(Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui()));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let items: Vec<ListItem> = labels
+        .iter()
+        .zip(hints.iter())
+        .map(|(label, hint)| match hint {
+            Some(hint) => {
+                let used = cell_width(label) + cell_width(hint);
+                let pad = inner.width.saturating_sub(used).max(1);
+                ListItem::new(Line::from(vec![
+                    Span::raw((*label).to_string()),
+                    Span::raw(" ".repeat(pad as usize)),
+                    Span::styled(hint.clone(), dim),
+                ]))
+            },
+            None => ListItem::new(Line::raw((*label).to_string())),
+        })
+        .collect();
+    let mut state = ListState::default();
+    state.select(Some(menu.selected));
+    let list = List::new(items).highlight_style(
+        Style::default()
+            .bg(theme.role(ThemeRole::Selection).to_ratatui())
+            .add_modifier(Modifier::BOLD),
+    );
+    f.render_stateful_widget(list, inner, &mut state);
+}
+
+fn context_menu_label(command: Command) -> &'static str {
+    match command {
+        Command::SidebarActivate => "Open",
+        Command::ExplorerNewFile => "New File",
+        Command::ExplorerNewFolder => "New Folder",
+        Command::ExplorerRename => "Rename",
+        Command::ExplorerCopy => "Copy",
+        Command::ExplorerCut => "Cut",
+        Command::ExplorerPaste => "Paste",
+        Command::ExplorerDuplicate => "Duplicate",
+        Command::ExplorerDelete => "Delete",
+        Command::ExplorerCopyPath => "Copy Path",
+        Command::ExplorerCopyRelativePath => "Copy Relative Path",
+        Command::ExplorerRefresh => "Refresh",
+        Command::ExplorerCollapseAll => "Collapse All",
+        _ => command.label(),
     }
 }
 

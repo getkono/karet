@@ -229,6 +229,22 @@ pub enum Command {
     ExplorerRefresh,
     /// Collapse every expanded folder in the explorer.
     ExplorerCollapseAll,
+    /// Copy the selected explorer item(s) into the explorer file clipboard.
+    ExplorerCopy,
+    /// Cut the selected explorer item(s) into the explorer file clipboard.
+    ExplorerCut,
+    /// Paste the explorer file clipboard into the selected destination.
+    ExplorerPaste,
+    /// Duplicate the selected explorer item(s) beside themselves.
+    ExplorerDuplicate,
+    /// Arm deletion of the selected explorer item(s).
+    ExplorerDelete,
+    /// Copy the selected explorer item path(s) to the clipboard.
+    ExplorerCopyPath,
+    /// Copy the selected explorer item path(s), relative to the workspace root.
+    ExplorerCopyRelativePath,
+    /// Open the explorer context menu at the current selection.
+    ExplorerOpenContextMenu,
 
     // Modal-scoped commands. These are resolved only while a modal context is
     // active (see [`crate::keymap::Modal`]) and never appear in the command palette.
@@ -271,6 +287,16 @@ pub enum Command {
     ExplorerEditCancel,
     /// Confirm the pending discard.
     ConfirmDiscard,
+    /// Confirm the pending explorer delete.
+    ConfirmExplorerDelete,
+    /// Move the context menu selection up.
+    ContextMenuUp,
+    /// Move the context menu selection down.
+    ContextMenuDown,
+    /// Accept the selected context menu item.
+    ContextMenuAccept,
+    /// Dismiss the context menu.
+    ContextMenuCancel,
     /// At the quit prompt: save every unsaved document, then exit.
     QuitSaveAll,
     /// At the quit prompt: discard unsaved changes and exit.
@@ -448,6 +474,14 @@ impl Command {
             Self::ExplorerRename => "Explorer: Rename…",
             Self::ExplorerRefresh => "Explorer: Refresh",
             Self::ExplorerCollapseAll => "Explorer: Collapse Folders",
+            Self::ExplorerCopy => "Explorer: Copy",
+            Self::ExplorerCut => "Explorer: Cut",
+            Self::ExplorerPaste => "Explorer: Paste",
+            Self::ExplorerDuplicate => "Explorer: Duplicate",
+            Self::ExplorerDelete => "Explorer: Delete…",
+            Self::ExplorerCopyPath => "Explorer: Copy Path",
+            Self::ExplorerCopyRelativePath => "Explorer: Copy Relative Path",
+            Self::ExplorerOpenContextMenu => "Explorer: Open Context Menu",
             Self::OverlayUp => "Overlay: Select Previous",
             Self::OverlayDown => "Overlay: Select Next",
             Self::OverlayAccept => "Overlay: Accept",
@@ -467,6 +501,11 @@ impl Command {
             Self::ExplorerEditSubmit => "Explorer: Confirm Name",
             Self::ExplorerEditCancel => "Explorer: Cancel Edit",
             Self::ConfirmDiscard => "Source Control: Confirm Discard",
+            Self::ConfirmExplorerDelete => "Explorer: Confirm Delete",
+            Self::ContextMenuUp => "Context Menu: Select Previous",
+            Self::ContextMenuDown => "Context Menu: Select Next",
+            Self::ContextMenuAccept => "Context Menu: Accept",
+            Self::ContextMenuCancel => "Context Menu: Cancel",
             Self::QuitSaveAll => "Quit: Save All and Exit",
             Self::QuitDiscard => "Quit: Discard and Exit",
             Self::RecoverSwaps => "Recover Unsaved Changes",
@@ -567,6 +606,14 @@ impl Command {
             Self::ExplorerRename => "rename",
             Self::ExplorerRefresh => "refresh",
             Self::ExplorerCollapseAll => "collapse all",
+            Self::ExplorerCopy => "copy",
+            Self::ExplorerCut => "cut",
+            Self::ExplorerPaste => "paste",
+            Self::ExplorerDuplicate => "duplicate",
+            Self::ExplorerDelete => "delete",
+            Self::ExplorerCopyPath => "copy path",
+            Self::ExplorerCopyRelativePath => "copy rel path",
+            Self::ExplorerOpenContextMenu => "menu",
             // Modal-scoped.
             Self::OverlayAccept => "accept",
             Self::OverlayCancel => "cancel",
@@ -585,6 +632,9 @@ impl Command {
             Self::ExplorerEditSubmit => "confirm",
             Self::ExplorerEditCancel => "cancel",
             Self::ConfirmDiscard => "confirm",
+            Self::ConfirmExplorerDelete => "confirm",
+            Self::ContextMenuAccept => "accept",
+            Self::ContextMenuCancel => "cancel",
             Self::QuitSaveAll => "save all & quit",
             Self::QuitDiscard => "discard & quit",
             Self::RecoverSwaps => "recover",
@@ -670,6 +720,8 @@ impl Command {
             | Self::OverlayDown
             | Self::SearchSelectUp
             | Self::SearchSelectDown
+            | Self::ContextMenuUp
+            | Self::ContextMenuDown
             | Self::OpenCommitByHash
             | Self::ShowFileHistory
             | Self::DiffUnpushed
@@ -724,6 +776,13 @@ impl Command {
                 | Self::ExplorerRename
                 | Self::ExplorerRefresh
                 | Self::ExplorerCollapseAll
+                | Self::ExplorerCopy
+                | Self::ExplorerCut
+                | Self::ExplorerPaste
+                | Self::ExplorerDuplicate
+                | Self::ExplorerDelete
+                | Self::ExplorerCopyPath
+                | Self::ExplorerCopyRelativePath
                 | Self::DismissNotification
                 | Self::DismissAllNotifications
                 | Self::SplitRight
@@ -767,6 +826,13 @@ pub fn palette() -> Vec<Command> {
         Command::ExplorerRename,
         Command::ExplorerRefresh,
         Command::ExplorerCollapseAll,
+        Command::ExplorerCopy,
+        Command::ExplorerCut,
+        Command::ExplorerPaste,
+        Command::ExplorerDuplicate,
+        Command::ExplorerDelete,
+        Command::ExplorerCopyPath,
+        Command::ExplorerCopyRelativePath,
         Command::Copy,
         Command::CopyPath,
         Command::CopyRelativePath,

@@ -329,6 +329,7 @@ impl Session {
             Command::Undo { doc } => self.undo_redo(id, doc, true),
             Command::Redo { doc } => self.undo_redo(id, doc, false),
             Command::Save { doc } => self.save(id, doc),
+            Command::RetargetDocument { doc, path } => self.retarget(id, doc, path),
             // The caret is UI-local; `SetCursor` becomes meaningful when producers
             // (LSP at a position, multi-view sync) need it.
             Command::SetCursor { .. } => {},
@@ -959,6 +960,21 @@ impl Session {
         }
     }
 
+    fn retarget(&mut self, id: RequestId, doc_id: DocumentId, path: PathBuf) {
+        let Some(doc) = self.store.docs.get_mut(&doc_id) else {
+            self.emit(Some(id), unknown_document(doc_id));
+            return;
+        };
+        let old = doc.path.clone();
+        self.store.by_path.remove(&old);
+        doc.path = path.clone();
+        doc.lang_id = language_id_from_path(&path);
+        doc.language = language_name_from_path(&path);
+        self.store.by_path.insert(path.clone(), doc_id);
+        self.emit(Some(id), Event::Retargeted { doc: doc_id, path });
+        self.publish(doc_id, None);
+    }
+
     fn close(&mut self, id: RequestId, doc_id: DocumentId) {
         let removed = match self.store.docs.get_mut(&doc_id) {
             Some(doc) => {
@@ -1564,6 +1580,71 @@ mod tests {
                 .document(doc)
                 .is_some_and(|v| v.buffer().line_count() == 2)
         );
+    }
+
+    #[test]
+    fn retarget_document_updates_the_save_destination() {
+        let Some((_dir, path)) = write_temp("old.txt", "old\n") else {
+            return;
+        };
+        let new_path = path.with_file_name("new.txt");
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let Some(doc) = opened_doc(&mut events) else {
+            return;
+        };
+        if std::fs::rename(&path, &new_path).is_err() {
+            return;
+        }
+
+        session.handle(
+            RequestId(2),
+            Command::RetargetDocument {
+                doc,
+                path: new_path.clone(),
+            },
+        );
+        let mut retargeted = None;
+        while let Some((_, ev)) = events.try_recv() {
+            if let Event::Retargeted { doc, path } = ev {
+                retargeted = Some((doc, path));
+            }
+        }
+        assert_eq!(retargeted, Some((doc, new_path.clone())));
+
+        let change = Change::new(
+            0,
+            vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(0, 3),
+                    end: LineCol::new(0, 3),
+                },
+                new_text: " moved".to_string(),
+            }],
+        );
+        session.handle(
+            RequestId(3),
+            Command::ApplyChange {
+                doc,
+                change,
+                cause: EditCause::Replace,
+            },
+        );
+        while events.try_recv().is_some() {}
+        session.handle(RequestId(4), Command::Save { doc });
+
+        assert_eq!(
+            std::fs::read_to_string(&new_path).unwrap_or_default(),
+            "old moved\n"
+        );
+        assert!(!path.exists());
     }
 
     #[test]

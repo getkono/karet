@@ -33,6 +33,7 @@ use karet_filetype::icon_for_path;
 use karet_theme::Theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -82,6 +83,8 @@ struct EditState {
     kind: EditKind,
     parent: PathBuf,
     buffer: String,
+    cursor: usize,
+    selection: Option<(usize, usize)>,
 }
 
 /// A committed inline edit for the host to apply on the filesystem.
@@ -115,6 +118,8 @@ pub struct FileTreeState {
     respect_gitignore: bool,
     needs_rebuild: bool,
     editing: Option<EditState>,
+    selected_paths: BTreeSet<PathBuf>,
+    cursor_path: Option<PathBuf>,
 }
 
 impl Default for FileTreeState {
@@ -129,6 +134,8 @@ impl Default for FileTreeState {
             respect_gitignore: true,
             needs_rebuild: true,
             editing: None,
+            selected_paths: BTreeSet::new(),
+            cursor_path: None,
         }
     }
 }
@@ -172,20 +179,49 @@ impl FileTreeState {
         self.offset
     }
 
+    /// The absolute row index of the cursor row.
+    #[must_use]
+    pub fn cursor(&self) -> usize {
+        self.selection.cursor()
+    }
+
+    /// The absolute row index for a viewport row, if it currently maps to a row.
+    #[must_use]
+    pub fn visible_index(&self, viewport_row: usize) -> Option<usize> {
+        let idx = self.offset + viewport_row;
+        (idx < self.rows.len()).then_some(idx)
+    }
+
+    /// Whether the row shown at `viewport_row` is selected.
+    #[must_use]
+    pub fn is_visible_selected(&self, viewport_row: usize) -> bool {
+        self.visible_index(viewport_row)
+            .is_some_and(|idx| self.selection.is_selected(idx))
+    }
+
+    /// Select the absolute row index, collapsing any multi-selection.
+    pub fn select_index(&mut self, index: usize) {
+        self.selection.move_to(index);
+        self.sync_selection_paths();
+    }
+
     /// Move the cursor to the row currently shown at `viewport_row` (0 = top of the
     /// viewport), collapsing any multi-selection. A no-op when the tree is empty.
     pub fn select_visible(&mut self, viewport_row: usize) {
         self.selection.move_to(self.offset + viewport_row);
+        self.sync_selection_paths();
     }
 
     /// Extend the range selection to the row at `viewport_row`.
     pub fn extend_visible(&mut self, viewport_row: usize) {
         self.selection.extend_to(self.offset + viewport_row);
+        self.sync_selection_paths();
     }
 
     /// Toggle selection of the row at `viewport_row` (Ctrl-click).
     pub fn toggle_visible(&mut self, viewport_row: usize) {
         self.selection.toggle(self.offset + viewport_row);
+        self.sync_selection_paths();
     }
 
     /// The path of the cursor row, if any.
@@ -208,26 +244,31 @@ impl FileTreeState {
     /// Move the cursor to the next row, collapsing any multi-selection.
     pub fn select_next(&mut self) {
         self.selection.move_by(1);
+        self.sync_selection_paths();
     }
 
     /// Move the cursor to the previous row, collapsing any multi-selection.
     pub fn select_prev(&mut self) {
         self.selection.move_by(-1);
+        self.sync_selection_paths();
     }
 
     /// Extend the range selection by `delta` rows (Shift+Arrows).
     pub fn select_extend(&mut self, delta: i32) {
         self.selection.extend_by(delta);
+        self.sync_selection_paths();
     }
 
     /// Toggle whether the cursor row is part of the selection (Space/`x`).
     pub fn mark_toggle(&mut self) {
         self.selection.toggle_cursor();
+        self.sync_selection_paths();
     }
 
     /// Select every row.
     pub fn select_all(&mut self) {
         self.selection.select_all();
+        self.sync_selection_paths();
     }
 
     /// Collapse every expanded directory (VS Code's "Collapse Folders").
@@ -242,6 +283,35 @@ impl FileTreeState {
     #[must_use]
     pub fn is_editing(&self) -> bool {
         self.editing.is_some()
+    }
+
+    /// Store the current effective selection as path identities.
+    fn sync_selection_paths(&mut self) {
+        self.selected_paths = self
+            .selection
+            .selected_indices()
+            .into_iter()
+            .filter_map(|i| self.rows.get(i))
+            .map(|row| row.path.clone())
+            .collect();
+        self.cursor_path = self.selected().map(|row| row.path.clone());
+    }
+
+    /// Rebuild the index-based selection from remembered path identities.
+    fn restore_selection_paths(&mut self) {
+        let indices: Vec<usize> = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, row)| self.selected_paths.contains(&row.path).then_some(i))
+            .collect();
+        let cursor = self
+            .cursor_path
+            .as_ref()
+            .and_then(|path| self.rows.iter().position(|row| &row.path == path))
+            .or_else(|| indices.first().copied());
+        self.selection.replace_selection(indices, cursor);
+        self.sync_selection_paths();
     }
 
     /// The directory a newly-created entry should live in: the selected directory, a
@@ -275,6 +345,8 @@ impl FileTreeState {
             kind,
             parent,
             buffer: String::new(),
+            cursor: 0,
+            selection: None,
         });
         self.needs_rebuild = true;
     }
@@ -291,7 +363,13 @@ impl FileTreeState {
                 kind: EditKind::Rename(old.clone()),
                 parent,
                 buffer: file_label(&old),
+                cursor: 0,
+                selection: None,
             });
+            if let Some(edit) = self.editing.as_mut() {
+                edit.cursor = edit.buffer.len();
+                edit.selection = rename_selection(&old, &edit.buffer);
+            }
             self.needs_rebuild = true;
         }
     }
@@ -299,7 +377,9 @@ impl FileTreeState {
     /// Append a character to the inline edit buffer (no-op when not editing).
     pub fn edit_push(&mut self, c: char) {
         if let Some(edit) = self.editing.as_mut() {
-            edit.buffer.push(c);
+            replace_edit_selection(edit, "");
+            edit.buffer.insert(edit.cursor, c);
+            edit.cursor += c.len_utf8();
             self.needs_rebuild = true;
         }
     }
@@ -307,7 +387,67 @@ impl FileTreeState {
     /// Delete the last character of the inline edit buffer (no-op when not editing).
     pub fn edit_backspace(&mut self) {
         if let Some(edit) = self.editing.as_mut() {
-            edit.buffer.pop();
+            if !replace_edit_selection(edit, "") && edit.cursor > 0 {
+                let prev = prev_boundary(&edit.buffer, edit.cursor);
+                edit.buffer.replace_range(prev..edit.cursor, "");
+                edit.cursor = prev;
+            }
+            self.needs_rebuild = true;
+        }
+    }
+
+    /// Delete the character after the inline edit cursor (no-op when not editing).
+    pub fn edit_delete(&mut self) {
+        if let Some(edit) = self.editing.as_mut() {
+            if !replace_edit_selection(edit, "") && edit.cursor < edit.buffer.len() {
+                let next = next_boundary(&edit.buffer, edit.cursor);
+                edit.buffer.replace_range(edit.cursor..next, "");
+            }
+            self.needs_rebuild = true;
+        }
+    }
+
+    /// Move the inline edit cursor left by one character.
+    pub fn edit_left(&mut self) {
+        if let Some(edit) = self.editing.as_mut() {
+            edit.selection = None;
+            edit.cursor = prev_boundary(&edit.buffer, edit.cursor);
+            self.needs_rebuild = true;
+        }
+    }
+
+    /// Move the inline edit cursor right by one character.
+    pub fn edit_right(&mut self) {
+        if let Some(edit) = self.editing.as_mut() {
+            edit.selection = None;
+            edit.cursor = next_boundary(&edit.buffer, edit.cursor);
+            self.needs_rebuild = true;
+        }
+    }
+
+    /// Move the inline edit cursor to the start of the buffer.
+    pub fn edit_home(&mut self) {
+        if let Some(edit) = self.editing.as_mut() {
+            edit.selection = None;
+            edit.cursor = 0;
+            self.needs_rebuild = true;
+        }
+    }
+
+    /// Move the inline edit cursor to the end of the buffer.
+    pub fn edit_end(&mut self) {
+        if let Some(edit) = self.editing.as_mut() {
+            edit.selection = None;
+            edit.cursor = edit.buffer.len();
+            self.needs_rebuild = true;
+        }
+    }
+
+    /// Select the full inline edit buffer.
+    pub fn edit_select_all(&mut self) {
+        if let Some(edit) = self.editing.as_mut() {
+            edit.selection = Some((0, edit.buffer.len()));
+            edit.cursor = edit.buffer.len();
             self.needs_rebuild = true;
         }
     }
@@ -315,7 +455,10 @@ impl FileTreeState {
     /// Append pasted text to the inline edit buffer (no-op when not editing).
     pub fn edit_paste(&mut self, text: &str) {
         if let Some(edit) = self.editing.as_mut() {
-            edit.buffer.push_str(text);
+            if !replace_edit_selection(edit, text) {
+                edit.buffer.insert_str(edit.cursor, text);
+                edit.cursor += text.len();
+            }
             self.needs_rebuild = true;
         }
     }
@@ -369,6 +512,8 @@ impl FileTreeState {
                 },
                 parent: parent.to_path_buf(),
                 buffer: file_label(path),
+                cursor: file_label(path).len(),
+                selection: None,
             }),
             PendingEdit::Rename { from, to } => {
                 let parent = from
@@ -379,6 +524,8 @@ impl FileTreeState {
                     kind: EditKind::Rename(from.clone()),
                     parent,
                     buffer: file_label(to),
+                    cursor: file_label(to).len(),
+                    selection: None,
                 })
             },
         };
@@ -482,6 +629,9 @@ impl FileTreeState {
         self.selection.set_len(self.rows.len());
         if let Some(idx) = follow {
             self.selection.move_to(idx);
+            self.sync_selection_paths();
+        } else {
+            self.restore_selection_paths();
         }
         self.needs_rebuild = false;
     }
@@ -573,6 +723,105 @@ fn file_label(path: &Path) -> String {
         .to_string()
 }
 
+fn rename_selection(path: &Path, buffer: &str) -> Option<(usize, usize)> {
+    if path.is_dir() {
+        return Some((0, buffer.len()));
+    }
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .and_then(|stem| buffer.find(stem).map(|start| (start, start + stem.len())))
+        .or(Some((0, buffer.len())))
+}
+
+fn prev_boundary(s: &str, idx: usize) -> usize {
+    let mut i = idx.min(s.len());
+    if i == 0 {
+        return 0;
+    }
+    i -= 1;
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+fn next_boundary(s: &str, idx: usize) -> usize {
+    let mut i = idx.min(s.len());
+    if i >= s.len() {
+        return s.len();
+    }
+    i += 1;
+    while !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
+fn edit_selection(edit: &EditState) -> Option<(usize, usize)> {
+    edit.selection
+        .map(|(a, b)| (a.min(b), a.max(b)))
+        .filter(|(a, b)| a < b && *b <= edit.buffer.len())
+}
+
+fn replace_edit_selection(edit: &mut EditState, text: &str) -> bool {
+    let Some((start, end)) = edit_selection(edit) else {
+        return false;
+    };
+    edit.buffer.replace_range(start..end, text);
+    edit.cursor = start + text.len();
+    edit.selection = None;
+    true
+}
+
+fn push_editing_spans(
+    spans: &mut Vec<Span<'static>>,
+    edit: Option<&EditState>,
+    fg: Color,
+    selection_bg: Color,
+) {
+    let Some(edit) = edit else {
+        spans.push(Span::styled(
+            " ",
+            Style::default().add_modifier(Modifier::REVERSED),
+        ));
+        return;
+    };
+    let normal = Style::default().fg(fg);
+    if let Some((start, end)) = edit_selection(edit) {
+        if start > 0 {
+            spans.push(Span::styled(edit.buffer[..start].to_string(), normal));
+        }
+        spans.push(Span::styled(
+            edit.buffer[start..end].to_string(),
+            Style::default().fg(fg).bg(selection_bg),
+        ));
+        if end < edit.buffer.len() {
+            spans.push(Span::styled(edit.buffer[end..].to_string(), normal));
+        }
+        return;
+    }
+    let cursor = edit.cursor.min(edit.buffer.len());
+    if cursor > 0 {
+        spans.push(Span::styled(edit.buffer[..cursor].to_string(), normal));
+    }
+    if cursor < edit.buffer.len() {
+        let next = next_boundary(&edit.buffer, cursor);
+        spans.push(Span::styled(
+            edit.buffer[cursor..next].to_string(),
+            Style::default().fg(fg).add_modifier(Modifier::REVERSED),
+        ));
+        if next < edit.buffer.len() {
+            spans.push(Span::styled(edit.buffer[next..].to_string(), normal));
+        }
+    } else {
+        spans.push(Span::styled(
+            " ",
+            Style::default().fg(fg).add_modifier(Modifier::REVERSED),
+        ));
+    }
+}
+
 /// Read the immediate entries of `dir`, dirs first then case-insensitive name.
 ///
 /// Gitignored entries are listed and flagged `ignored` (VS Code dims them) rather
@@ -652,6 +901,7 @@ pub struct FileTree<'a> {
     status: &'a [(PathBuf, Decoration)],
     visible: &'a [PathBuf],
     active: Option<&'a Path>,
+    cut_paths: &'a [PathBuf],
     explorer_focused: bool,
     hover: Option<usize>,
     icons: IconStyle,
@@ -667,6 +917,7 @@ impl<'a> FileTree<'a> {
             status: &[],
             visible: &[],
             active: None,
+            cut_paths: &[],
             explorer_focused: false,
             hover: None,
             icons: IconStyle::default(),
@@ -699,6 +950,13 @@ impl<'a> FileTree<'a> {
     #[must_use]
     pub fn active(mut self, active: Option<&'a Path>) -> Self {
         self.active = active;
+        self
+    }
+
+    /// Supply paths currently marked as cut in the explorer file clipboard.
+    #[must_use]
+    pub fn cut_paths(mut self, paths: &'a [PathBuf]) -> Self {
+        self.cut_paths = paths;
         self
     }
 
@@ -798,14 +1056,19 @@ impl StatefulWidget for FileTree<'_> {
             let is_active = self.active == Some(row.path.as_path());
             let is_visible = self.visible.iter().any(|p| p == &row.path);
             let selected = state.selection.is_selected(i);
+            let cut = self.cut_paths.iter().any(|p| p == &row.path);
             // Background precedence: the focused pane's active file ("you are here")
             // wins; then the explorer's own cursor — but only while the explorer holds
             // focus, so the last-clicked row doesn't linger once you return to editing;
             // then the transient mouse-hover accent.
             let row_bg = if is_active {
                 Some(ThemeRole::ActiveEditorRow)
-            } else if selected && self.explorer_focused {
-                Some(ThemeRole::Selection)
+            } else if selected {
+                if self.explorer_focused {
+                    Some(ThemeRole::Selection)
+                } else {
+                    Some(ThemeRole::HoverHighlight)
+                }
             } else if self.hover == Some(i) {
                 Some(ThemeRole::HoverHighlight)
             } else {
@@ -841,7 +1104,9 @@ impl StatefulWidget for FileTree<'_> {
             // bold; a file visible in another pane is accented; gitignored entries
             // recede to a readable muted grey (VS Code style); everything else — a
             // merely-open background tab included — is normal.
-            let (row_fg, label_style) = if is_active {
+            let (row_fg, label_style) = if cut {
+                (muted, Style::default().fg(muted.to_ratatui()))
+            } else if is_active {
                 (
                     accent,
                     Style::default()
@@ -858,7 +1123,7 @@ impl StatefulWidget for FileTree<'_> {
             // The type icon is tinted by file Category (text / media / binary /
             // neutral); directories follow the row color, and gitignored entries
             // recede to muted so the whole row dims together.
-            let icon_color = if row.ignored {
+            let icon_color = if row.ignored || cut {
                 muted
             } else if row.is_dir {
                 row_fg
@@ -884,15 +1149,12 @@ impl StatefulWidget for FileTree<'_> {
                 Style::default().fg(icon_color.to_ratatui()),
             ));
             if row.editing {
-                // The inline name editor: the buffer plus a reversed-cell cursor.
-                spans.push(Span::styled(
-                    row.label.clone(),
-                    Style::default().fg(accent.to_ratatui()),
-                ));
-                spans.push(Span::styled(
-                    " ",
-                    Style::default().add_modifier(Modifier::REVERSED),
-                ));
+                push_editing_spans(
+                    &mut spans,
+                    state.editing.as_ref(),
+                    accent.to_ratatui(),
+                    theme.role(ThemeRole::Selection).to_ratatui(),
+                );
             } else {
                 spans.push(Span::styled(row.label.clone(), label_style));
                 if let Some(dec) = self.status_for(&row.path)
@@ -1155,23 +1417,54 @@ mod tests {
     }
 
     #[test]
-    fn edit_paste_appends_to_the_inline_edit_buffer() {
+    fn edit_paste_replaces_the_selected_rename_stem() {
         let dir = temp_dir();
         write(&dir.path, "old.txt", b"o");
         let mut state = FileTreeState::new();
         state.ensure_built(&dir.path);
         state.select_visible(0);
         state.begin_rename();
-        for _ in 0.."old.txt".len() {
-            state.edit_backspace();
-        }
-        state.edit_paste("pasted.txt");
+        state.edit_paste("pasted");
         state.ensure_built(&dir.path);
         assert!(
             state
                 .rows()
                 .iter()
                 .any(|r| r.editing && r.label == "pasted.txt")
+        );
+    }
+
+    #[test]
+    fn inline_edit_cursor_keys_match_a_text_field() {
+        let dir = temp_dir();
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+        state.begin_new(false);
+        state.edit_paste("abcd");
+        state.edit_left();
+        state.edit_left();
+        state.edit_delete();
+        state.edit_push('X');
+        state.edit_home();
+        state.edit_push('^');
+        state.edit_end();
+        state.edit_push('$');
+        state.ensure_built(&dir.path);
+        assert!(
+            state
+                .rows()
+                .iter()
+                .any(|r| r.editing && r.label == "^abXd$")
+        );
+
+        state.edit_select_all();
+        state.edit_paste("final.txt");
+        state.ensure_built(&dir.path);
+        assert!(
+            state
+                .rows()
+                .iter()
+                .any(|r| r.editing && r.label == "final.txt")
         );
     }
 
@@ -1193,11 +1486,9 @@ mod tests {
         state.ensure_built(&dir.path);
         state.select_visible(0);
         state.begin_rename();
-        // The buffer seeds with the current name; clear it and type a new one.
-        for _ in 0.."old.txt".len() {
-            state.edit_backspace();
-        }
-        for c in "renamed.txt".chars() {
+        // Rename begins with the stem selected, mirroring a GUI file explorer:
+        // typing replaces "old" while keeping the ".txt" extension.
+        for c in "renamed".chars() {
             state.edit_push(c);
         }
         state.ensure_built(&dir.path);
@@ -1341,6 +1632,30 @@ mod tests {
     }
 
     #[test]
+    fn selected_paths_survive_row_rebuilds() {
+        let dir = temp_dir();
+        write(&dir.path, "a.txt", b"a");
+        write(&dir.path, "b.txt", b"b");
+        write(&dir.path, "c.txt", b"c");
+        let mut state = FileTreeState::new();
+        state.ensure_built(&dir.path);
+
+        state.select_index(1);
+        state.toggle_visible(2);
+        write(&dir.path, "aa.txt", b"aa");
+        state.rebuild(&dir.path);
+
+        assert_eq!(
+            state.selected_paths(),
+            vec![dir.path.join("b.txt"), dir.path.join("c.txt")]
+        );
+        assert_eq!(
+            state.selected_path(),
+            Some(dir.path.join("c.txt").as_path())
+        );
+    }
+
+    #[test]
     fn select_visible_maps_viewport_rows_via_offset() {
         let dir = temp_dir();
         write(&dir.path, "a.txt", b"a");
@@ -1350,6 +1665,9 @@ mod tests {
         state.ensure_built(&dir.path);
         assert_eq!(state.offset(), 0);
         state.select_visible(2);
+        assert_eq!(state.visible_index(0), Some(0));
+        assert_eq!(state.visible_index(2), Some(2));
+        assert!(state.is_visible_selected(2));
         assert_eq!(
             state.selected_path(),
             Some(dir.path.join("c.txt").as_path())

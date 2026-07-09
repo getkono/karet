@@ -331,6 +331,44 @@ struct ExplorerFileClipboard {
     paths: Vec<PathBuf>,
 }
 
+/// A positioned context menu opened from the explorer.
+pub(crate) struct ExplorerContextMenu {
+    /// The column where the menu should be anchored.
+    pub(crate) x: u16,
+    /// The row where the menu should be anchored.
+    pub(crate) y: u16,
+    /// The commands shown in the menu, in display order.
+    pub(crate) items: Vec<Command>,
+    /// The selected item index.
+    pub(crate) selected: usize,
+    /// The menu rect from the last render.
+    pub(crate) rect: Rect,
+}
+
+impl ExplorerContextMenu {
+    fn new(x: u16, y: u16, items: Vec<Command>) -> Self {
+        Self {
+            x,
+            y,
+            items,
+            selected: 0,
+            rect: Rect::default(),
+        }
+    }
+
+    fn select_by(&mut self, delta: i32) {
+        if self.items.is_empty() {
+            return;
+        }
+        let next = (self.selected as i64 + i64::from(delta)).clamp(0, self.items.len() as i64 - 1);
+        self.selected = next as usize;
+    }
+
+    fn selected_command(&self) -> Option<Command> {
+        self.items.get(self.selected).copied()
+    }
+}
+
 /// The IDE shell state.
 pub struct App {
     /// The workspace root.
@@ -371,6 +409,8 @@ pub struct App {
     pub(crate) explorer: FileTreeState,
     /// Files/directories selected for an explorer copy or cut operation.
     explorer_clipboard: Option<ExplorerFileClipboard>,
+    /// The active explorer context menu, if any.
+    pub(crate) explorer_context_menu: Option<ExplorerContextMenu>,
     /// The Source-Control panel state.
     pub(crate) scm: Scm,
     /// The focused pane's open tabs.
@@ -397,6 +437,8 @@ pub struct App {
     /// Paths awaiting a discard confirmation (set after pressing discard; cleared
     /// when the user confirms or cancels).
     pub(crate) pending_discard: Option<Vec<PathBuf>>,
+    /// Paths awaiting explorer-delete confirmation.
+    pub(crate) pending_explorer_delete: Option<Vec<PathBuf>>,
     /// Whether the quit-confirmation prompt (unsaved changes) is armed.
     pub(crate) pending_quit: bool,
     /// Whether a "save all & quit" is in flight: exit once the saves drain.
@@ -574,6 +616,7 @@ impl App {
             sidebar_visible: true,
             explorer: FileTreeState::new(),
             explorer_clipboard: None,
+            explorer_context_menu: None,
             scm: Scm {
                 selection: ListSelection::new(changes.len()),
                 changes,
@@ -593,6 +636,7 @@ impl App {
             commit_input: None,
             rev_input: None,
             pending_discard: None,
+            pending_explorer_delete: None,
             pending_quit: false,
             quitting: false,
             pending_swaps: None,
@@ -844,6 +888,10 @@ impl App {
             Some(Modal::RevInput)
         } else if self.pending_discard.is_some() {
             Some(Modal::DiscardConfirm)
+        } else if self.pending_explorer_delete.is_some() {
+            Some(Modal::ExplorerDeleteConfirm)
+        } else if self.explorer_context_menu.is_some() {
+            Some(Modal::ContextMenu)
         } else if self.find_open {
             Some(Modal::Find)
         } else if self.explorer.is_editing() {
@@ -909,6 +957,8 @@ impl App {
             Modal::SearchInput => self.search_edit(key),
             Modal::SearchList => {},
             Modal::DiscardConfirm => self.resolve_discard(false),
+            Modal::ExplorerDeleteConfirm => self.resolve_explorer_delete(false),
+            Modal::ContextMenu => self.close_context_menu(),
             // An unbound key cancels the quit prompt (stay in the editor)…
             Modal::QuitConfirm => {
                 self.pending_quit = false;
@@ -967,8 +1017,12 @@ impl App {
                 };
                 target.push_str(text);
             },
-            Modal::SearchList | Modal::DiscardConfirm | Modal::QuitConfirm | Modal::SwapRecover => {
-            },
+            Modal::SearchList
+            | Modal::DiscardConfirm
+            | Modal::ExplorerDeleteConfirm
+            | Modal::ContextMenu
+            | Modal::QuitConfirm
+            | Modal::SwapRecover => {},
         }
     }
 
@@ -977,6 +1031,16 @@ impl App {
     fn explorer_edit(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Backspace => self.explorer.edit_backspace(),
+            KeyCode::Delete => self.explorer.edit_delete(),
+            KeyCode::Left => self.explorer.edit_left(),
+            KeyCode::Right => self.explorer.edit_right(),
+            KeyCode::Home => self.explorer.edit_home(),
+            KeyCode::End => self.explorer.edit_end(),
+            KeyCode::Char('a') | KeyCode::Char('A')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.explorer.edit_select_all();
+            },
             KeyCode::Char(c)
                 if !key
                     .modifiers
@@ -1627,6 +1691,14 @@ impl App {
             Command::ExplorerRename => self.explorer_begin_rename(),
             Command::ExplorerRefresh => self.explorer_refresh(),
             Command::ExplorerCollapseAll => self.explorer.collapse_all(),
+            Command::ExplorerCopy => self.explorer_copy_files(),
+            Command::ExplorerCut => self.explorer_cut_files(),
+            Command::ExplorerPaste => self.explorer_paste_files(),
+            Command::ExplorerDuplicate => self.explorer_duplicate_files(),
+            Command::ExplorerDelete => self.explorer_arm_delete(),
+            Command::ExplorerCopyPath => self.explorer_copy_path(false),
+            Command::ExplorerCopyRelativePath => self.explorer_copy_path(true),
+            Command::ExplorerOpenContextMenu => self.open_context_menu_for_selection(),
 
             // Modal-scoped commands (resolved only while a modal context is active).
             Command::OverlayUp => {
@@ -1656,6 +1728,11 @@ impl App {
             Command::ExplorerEditSubmit => self.explorer_commit_edit(),
             Command::ExplorerEditCancel => self.explorer.cancel_edit(),
             Command::ConfirmDiscard => self.resolve_discard(true),
+            Command::ConfirmExplorerDelete => self.resolve_explorer_delete(true),
+            Command::ContextMenuUp => self.context_menu_step(-1),
+            Command::ContextMenuDown => self.context_menu_step(1),
+            Command::ContextMenuAccept => self.accept_context_menu(),
+            Command::ContextMenuCancel => self.close_context_menu(),
             Command::QuitSaveAll => self.quit_save_all(),
             Command::QuitDiscard => {
                 self.pending_quit = false;
@@ -2056,6 +2133,7 @@ impl App {
             },
             PendingEdit::Rename { from, to } => match std::fs::rename(from, to) {
                 Ok(()) => {
+                    self.retarget_open_paths(from, to);
                     self.explorer.rebuild(&self.root);
                     self.send_vcs(SessionCommand::RefreshVcs);
                 },
@@ -2086,7 +2164,7 @@ impl App {
     /// Store the current explorer selection as the source for a future paste.
     fn explorer_store_files(&mut self, op: ExplorerFileOp) {
         self.explorer.ensure_built(&self.root);
-        let paths = self.explorer.selected_paths();
+        let paths = self.explorer_selected_paths();
         if paths.is_empty() {
             self.status = Some("explorer: select a file first".to_string());
             return;
@@ -2120,6 +2198,7 @@ impl App {
         let mut skipped = 0usize;
         let mut failed = 0usize;
         let mut first_error: Option<String> = None;
+        let mut moves = Vec::new();
 
         for source in &clipboard.paths {
             if !source.exists() {
@@ -2151,10 +2230,15 @@ impl App {
             let target = unique_child_path(&dest_dir, source);
             let result = match clipboard.op {
                 ExplorerFileOp::Copy => copy_path_recursive(source, &target),
-                ExplorerFileOp::Cut => std::fs::rename(source, &target),
+                ExplorerFileOp::Cut => move_path(source, &target),
             };
             match result {
-                Ok(()) => pasted += 1,
+                Ok(()) => {
+                    pasted += 1;
+                    if clipboard.op == ExplorerFileOp::Cut {
+                        moves.push((source.clone(), target));
+                    }
+                },
                 Err(e) => {
                     failed += 1;
                     first_error.get_or_insert_with(|| format!("paste failed: {e}"));
@@ -2163,6 +2247,9 @@ impl App {
         }
 
         if pasted > 0 {
+            for (from, to) in &moves {
+                self.retarget_open_paths(from, to);
+            }
             self.explorer.rebuild(&self.root);
             self.send_vcs(SessionCommand::RefreshVcs);
             if clipboard.op == ExplorerFileOp::Cut {
@@ -2197,6 +2284,220 @@ impl App {
                 .unwrap_or_else(|| self.root.clone()),
             None => self.root.clone(),
         }
+    }
+
+    /// The explorer's selected paths after ensuring its row cache is current.
+    fn explorer_selected_paths(&mut self) -> Vec<PathBuf> {
+        self.explorer.ensure_built(&self.root);
+        self.explorer.selected_paths()
+    }
+
+    /// The paths currently dimmed as cut in the explorer.
+    pub(crate) fn explorer_cut_paths(&self) -> &[PathBuf] {
+        self.explorer_clipboard
+            .as_ref()
+            .filter(|clipboard| clipboard.op == ExplorerFileOp::Cut)
+            .map_or(&[], |clipboard| clipboard.paths.as_slice())
+    }
+
+    /// Duplicate the selected explorer item(s) beside themselves.
+    fn explorer_duplicate_files(&mut self) {
+        let paths = self.explorer_selected_paths();
+        if paths.is_empty() {
+            self.status = Some("duplicate: select a file first".to_string());
+            return;
+        }
+        let mut copied = 0usize;
+        let mut first_error = None;
+        for source in paths {
+            let Some(parent) = source.parent() else {
+                continue;
+            };
+            let target = unique_child_path(parent, &source);
+            match copy_path_recursive(&source, &target) {
+                Ok(()) => copied += 1,
+                Err(e) => {
+                    first_error.get_or_insert_with(|| format!("duplicate failed: {e}"));
+                },
+            }
+        }
+        if copied > 0 {
+            self.explorer.rebuild(&self.root);
+            self.send_vcs(SessionCommand::RefreshVcs);
+            self.status = Some(format!("duplicated {copied} item(s)"));
+        }
+        if let Some(message) = first_error {
+            self.notify(Severity::Error, NotificationKind::Io, message);
+        }
+    }
+
+    /// Copy selected explorer paths to the system clipboard.
+    fn explorer_copy_path(&mut self, relative: bool) {
+        let paths = self.explorer_selected_paths();
+        if paths.is_empty() {
+            self.status = Some("copy path: select a file first".to_string());
+            return;
+        }
+        let text = paths
+            .iter()
+            .map(|path| {
+                let display = if relative {
+                    path.strip_prefix(&self.root).unwrap_or(path)
+                } else {
+                    path.as_path()
+                };
+                display.to_string_lossy().into_owned()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.copy_to_clipboard(text, "path");
+    }
+
+    /// Arm deletion of the selected explorer item(s).
+    fn explorer_arm_delete(&mut self) {
+        let paths = self.explorer_selected_paths();
+        if paths.is_empty() {
+            self.status = Some("delete: select a file first".to_string());
+            return;
+        }
+        if self.has_dirty_tabs_under(&paths) {
+            self.notify(
+                Severity::Warning,
+                NotificationKind::Io,
+                "delete blocked: save or close dirty files first",
+            );
+            return;
+        }
+        self.context_menu_clear();
+        self.status = Some(format!(
+            "delete {} item(s)? press y to confirm, any other key to cancel",
+            paths.len()
+        ));
+        self.pending_explorer_delete = Some(paths);
+    }
+
+    /// Resolve a pending explorer delete confirmation.
+    fn resolve_explorer_delete(&mut self, confirmed: bool) {
+        let Some(paths) = self.pending_explorer_delete.take() else {
+            return;
+        };
+        if !confirmed {
+            self.status = Some("delete cancelled".to_string());
+            return;
+        }
+        self.close_tabs_under(&paths);
+        let mut deleted = 0usize;
+        let mut first_error = None;
+        for path in &paths {
+            let result = if path.is_dir() {
+                std::fs::remove_dir_all(path)
+            } else {
+                std::fs::remove_file(path)
+            };
+            match result {
+                Ok(()) => deleted += 1,
+                Err(e) if !path.exists() => {
+                    deleted += 1;
+                    first_error.get_or_insert_with(|| format!("delete warning: {e}"));
+                },
+                Err(e) => {
+                    first_error.get_or_insert_with(|| format!("delete failed: {e}"));
+                },
+            }
+        }
+        if deleted > 0 {
+            self.explorer.rebuild(&self.root);
+            self.send_vcs(SessionCommand::RefreshVcs);
+            self.status = Some(format!("deleted {deleted} item(s)"));
+        }
+        if let Some(message) = first_error {
+            self.notify(Severity::Error, NotificationKind::Io, message);
+        }
+    }
+
+    fn row_context_items(&self) -> Vec<Command> {
+        vec![
+            Command::SidebarActivate,
+            Command::ExplorerRename,
+            Command::ExplorerNewFile,
+            Command::ExplorerNewFolder,
+            Command::ExplorerCopy,
+            Command::ExplorerCut,
+            Command::ExplorerPaste,
+            Command::ExplorerDuplicate,
+            Command::ExplorerDelete,
+            Command::ExplorerCopyPath,
+            Command::ExplorerCopyRelativePath,
+            Command::ExplorerRefresh,
+        ]
+    }
+
+    fn blank_context_items(&self) -> Vec<Command> {
+        vec![
+            Command::ExplorerNewFile,
+            Command::ExplorerNewFolder,
+            Command::ExplorerPaste,
+            Command::ExplorerRefresh,
+            Command::ExplorerCollapseAll,
+        ]
+    }
+
+    fn context_menu_clear(&mut self) {
+        self.explorer_context_menu = None;
+    }
+
+    fn open_context_menu(&mut self, x: u16, y: u16, row: Option<usize>) {
+        self.sidebar_panel = SidebarPanel::Explorer;
+        self.sidebar_visible = true;
+        self.focus = Focus::Sidebar;
+        self.explorer.ensure_built(&self.root);
+        let items = if let Some(row) = row {
+            if !self.explorer.is_selected(row) {
+                self.explorer.select_index(row);
+            }
+            self.row_context_items()
+        } else {
+            self.blank_context_items()
+        };
+        self.explorer_context_menu = Some(ExplorerContextMenu::new(x, y, items));
+    }
+
+    fn open_context_menu_for_selection(&mut self) {
+        self.sidebar_panel = SidebarPanel::Explorer;
+        self.sidebar_visible = true;
+        self.focus = Focus::Sidebar;
+        self.explorer.ensure_built(&self.root);
+        let cursor = self.explorer.cursor();
+        let y = self.sidebar_content_rect.y.saturating_add(
+            cursor
+                .saturating_sub(self.explorer.offset())
+                .try_into()
+                .unwrap_or(0),
+        );
+        let x = self.sidebar_content_rect.x.saturating_add(2);
+        let row = (!self.explorer.rows().is_empty()).then_some(cursor);
+        self.open_context_menu(x, y, row);
+    }
+
+    fn context_menu_step(&mut self, delta: i32) {
+        if let Some(menu) = self.explorer_context_menu.as_mut() {
+            menu.select_by(delta);
+        }
+    }
+
+    fn accept_context_menu(&mut self) {
+        let command = self
+            .explorer_context_menu
+            .as_ref()
+            .and_then(ExplorerContextMenu::selected_command);
+        self.explorer_context_menu = None;
+        if let Some(command) = command {
+            self.dispatch(command);
+        }
+    }
+
+    fn close_context_menu(&mut self) {
+        self.context_menu_clear();
     }
 
     /// Open a diff tab for the selected Source-Control entry.
@@ -3235,6 +3536,66 @@ impl App {
             .chain(self.stored.values().flat_map(|p| p.tabs.iter()))
     }
 
+    /// Whether any dirty open tab is backed by one of `paths` or a descendant.
+    fn has_dirty_tabs_under(&self, paths: &[PathBuf]) -> bool {
+        self.all_tabs().any(|tab| {
+            tab.dirty
+                && tab
+                    .path()
+                    .is_some_and(|path| paths.iter().any(|root| path_under(root, path)))
+        })
+    }
+
+    /// Close every clean tab backed by one of `paths` or a descendant.
+    fn close_tabs_under(&mut self, paths: &[PathBuf]) {
+        self.tabs.retain(|tab| {
+            !tab.path()
+                .is_some_and(|path| paths.iter().any(|root| path_under(root, path)))
+        });
+        if self.tabs.is_empty() {
+            self.tabs.push(Tab::welcome());
+            self.active = 0;
+        } else if self.active >= self.tabs.len() {
+            self.active = self.tabs.len() - 1;
+        }
+        for pane in self.stored.values_mut() {
+            pane.tabs.retain(|tab| {
+                !tab.path()
+                    .is_some_and(|path| paths.iter().any(|root| path_under(root, path)))
+            });
+            if pane.tabs.is_empty() {
+                pane.tabs.push(Tab::welcome());
+                pane.active = 0;
+            } else if pane.active >= pane.tabs.len() {
+                pane.active = pane.tabs.len() - 1;
+            }
+        }
+        self.reconcile_open_docs();
+    }
+
+    /// Update open tabs and the session document path map after a filesystem move.
+    fn retarget_open_paths(&mut self, from: &Path, to: &Path) {
+        let mut docs = Vec::new();
+        for tab in self.all_tabs_mut() {
+            let Some(current) = tab.path().map(Path::to_path_buf) else {
+                continue;
+            };
+            let Some(next) = rebase_path(&current, from, to) else {
+                continue;
+            };
+            let doc = Self::tab_doc(tab);
+            retarget_tab_path(tab, &next);
+            if let Some(doc) = doc {
+                docs.push((doc, next));
+            }
+        }
+        docs.sort_by_key(|(doc, _)| *doc);
+        docs.dedup_by_key(|(doc, _)| *doc);
+        for (doc, path) in docs {
+            self.send_command(SessionCommand::RetargetDocument { doc, path });
+        }
+    }
+
     /// Release any session documents no longer shown in a tab (the session
     /// ref-counts opens; the app balances them). Call after closing tabs.
     fn reconcile_open_docs(&mut self) {
@@ -3908,6 +4269,32 @@ impl App {
         true
     }
 
+    /// Handle mouse interaction with an open context menu.
+    fn handle_context_menu_mouse(&mut self, mouse: MouseEvent) -> bool {
+        let Some(menu) = self.explorer_context_menu.as_ref() else {
+            return false;
+        };
+        let point = (mouse.column, mouse.row);
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) if rect_contains(menu.rect, point) => {
+                let inner_y = mouse.row.saturating_sub(menu.rect.y).saturating_sub(1);
+                let idx = usize::from(inner_y);
+                if let Some(menu) = self.explorer_context_menu.as_mut()
+                    && idx < menu.items.len()
+                {
+                    menu.selected = idx;
+                }
+                self.accept_context_menu();
+                true
+            },
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Down(MouseButton::Right) => {
+                self.close_context_menu();
+                true
+            },
+            _ => true,
+        }
+    }
+
     /// Handle a mouse event: the tab strip (switch / close / cycle), wheel scrolls
     /// (the sidebar or the active tab), and a left click moves focus.
     /// Resize the sidebar so its right edge sits at column `col`. Dragging narrower
@@ -3980,6 +4367,9 @@ impl App {
         if self.overlay.is_some() {
             return;
         }
+        if self.handle_context_menu_mouse(mouse) {
+            return;
+        }
         // An in-progress tab drag captures motion until the button is released.
         if self.tab_drag.is_some() {
             match mouse.kind {
@@ -4038,6 +4428,17 @@ impl App {
             MouseEventKind::ScrollUp => self.scroll_lines(-3),
             MouseEventKind::Down(MouseButton::Left) if in_outline => {
                 self.handle_outline_click(mouse.row);
+            },
+            MouseEventKind::Down(MouseButton::Right)
+                if in_sidebar && self.sidebar_panel == SidebarPanel::Explorer =>
+            {
+                let row = rect_contains(self.sidebar_content_rect, point)
+                    .then(|| {
+                        self.explorer
+                            .visible_index((mouse.row - self.sidebar_content_rect.y) as usize)
+                    })
+                    .flatten();
+                self.open_context_menu(mouse.column, mouse.row, row);
             },
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.sidebar_visible && mouse.column == self.sidebar_divider_x {
@@ -4126,6 +4527,9 @@ impl App {
                 let view_row = (row_y - self.sidebar_content_rect.y) as usize;
                 let root = self.root.clone();
                 self.explorer.ensure_built(&root);
+                if self.explorer.visible_index(view_row).is_none() {
+                    return;
+                }
                 if ctrl {
                     self.explorer.toggle_visible(view_row);
                 } else if shift {
@@ -5324,9 +5728,54 @@ fn copy_path_recursive(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
+/// Move a file or directory, falling back to copy-then-delete for cross-device moves.
+fn move_path(from: &Path, to: &Path) -> io::Result<()> {
+    match std::fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(rename_err) => {
+            copy_path_recursive(from, to)?;
+            let remove = if from.is_dir() {
+                std::fs::remove_dir_all(from)
+            } else {
+                std::fs::remove_file(from)
+            };
+            remove.map_err(|_| rename_err)
+        },
+    }
+}
+
 /// Whether two paths resolve to the same filesystem location.
 fn same_path(a: &Path, b: &Path) -> bool {
     canonical(a) == canonical(b)
+}
+
+fn path_under(root: &Path, path: &Path) -> bool {
+    canonical(path).starts_with(canonical(root))
+}
+
+fn rebase_path(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
+    if !path_under(from, path) {
+        return None;
+    }
+    let suffix = path.strip_prefix(from).ok()?;
+    Some(to.join(suffix))
+}
+
+fn retarget_tab_path(tab: &mut Tab, path: &Path) {
+    match &mut tab.kind {
+        TabKind::Code { path: p, .. }
+        | TabKind::Image { path: p, .. }
+        | TabKind::Document { path: p, .. }
+        | TabKind::Hex { path: p, .. }
+        | TabKind::Placeholder { path: p, .. }
+        | TabKind::Blame { path: p, .. } => {
+            *p = path.to_path_buf();
+            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                tab.title = name.to_string();
+            }
+        },
+        _ => {},
+    }
 }
 
 /// Whether `child` resolves to `parent` or a path below it.
@@ -5791,6 +6240,23 @@ mod tests {
                 sent.iter()
                     .filter(|(_, command)| matches!(command, SessionCommand::RefreshVcs))
                     .count()
+            })
+            .unwrap_or_default()
+    }
+
+    fn retarget_commands(backend: &RecordingBackend) -> Vec<(DocumentId, PathBuf)> {
+        backend
+            .sent
+            .lock()
+            .map(|sent| {
+                sent.iter()
+                    .filter_map(|(_, command)| match command {
+                        SessionCommand::RetargetDocument { doc, path } => {
+                            Some((*doc, path.clone()))
+                        },
+                        _ => None,
+                    })
+                    .collect()
             })
             .unwrap_or_default()
     }
@@ -8106,6 +8572,36 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
     }
 
     #[test]
+    fn explorer_blank_area_click_does_not_open_the_last_row() {
+        let dir = test_dir("blank-click");
+        write_file(&dir, "a.txt", b"a");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+        app.sidebar_rect = Rect {
+            x: 0,
+            y: 0,
+            width: 30,
+            height: 8,
+        };
+        app.sidebar_content_rect = Rect {
+            x: 0,
+            y: 1,
+            width: 30,
+            height: 7,
+        };
+        app.explorer.ensure_built(&dir);
+
+        app.handle_sidebar_click(1, 5, KeyModifiers::NONE);
+
+        assert!(
+            !app.tabs
+                .iter()
+                .any(|tab| tab.path() == Some(dir.join("a.txt").as_path()))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn explorer_commit_edit_creates_a_file() {
         let dir = std::env::temp_dir().join(format!("karet-newfile-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
@@ -8203,6 +8699,104 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
     }
 
     #[test]
+    fn explorer_duplicate_file_uses_copy_suffix() {
+        let dir = test_dir("duplicate-file");
+        write_file(&dir, "a.txt", b"alpha");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+
+        select_explorer_path(&mut app, &dir.join("a.txt"));
+        app.dispatch(Command::ExplorerDuplicate);
+
+        assert_eq!(
+            std::fs::read(dir.join("a copy.txt")).unwrap_or_default(),
+            b"alpha"
+        );
+        assert!(dir.join("a.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explorer_delete_requires_confirmation() {
+        let dir = test_dir("delete-file");
+        write_file(&dir, "gone.txt", b"delete");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+
+        select_explorer_path(&mut app, &dir.join("gone.txt"));
+        app.dispatch(Command::ExplorerDelete);
+        assert!(dir.join("gone.txt").exists());
+        assert!(app.pending_explorer_delete.is_some());
+
+        app.dispatch(Command::ConfirmExplorerDelete);
+        assert!(!dir.join("gone.txt").exists());
+        assert!(app.pending_explorer_delete.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explorer_context_menu_accepts_the_selected_file_command() {
+        let dir = test_dir("context-duplicate");
+        write_file(&dir, "a.txt", b"alpha");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+        app.explorer.ensure_built(&dir);
+        let Some(row) = app
+            .explorer
+            .rows()
+            .iter()
+            .position(|row| row.path == dir.join("a.txt"))
+        else {
+            return;
+        };
+
+        app.open_context_menu(2, 2, Some(row));
+        let Some(menu) = app.explorer_context_menu.as_mut() else {
+            return;
+        };
+        let Some(duplicate) = menu
+            .items
+            .iter()
+            .position(|cmd| *cmd == Command::ExplorerDuplicate)
+        else {
+            return;
+        };
+        menu.selected = duplicate;
+        app.accept_context_menu();
+
+        assert_eq!(
+            std::fs::read(dir.join("a copy.txt")).unwrap_or_default(),
+            b"alpha"
+        );
+        assert!(app.explorer_context_menu.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explorer_keyboard_context_menu_uses_blank_items_when_empty() {
+        let dir = test_dir("context-empty");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+        app.sidebar_content_rect = Rect {
+            x: 0,
+            y: 1,
+            width: 30,
+            height: 10,
+        };
+
+        app.open_context_menu_for_selection();
+
+        let Some(menu) = app.explorer_context_menu.as_ref() else {
+            return;
+        };
+        assert!(menu.items.contains(&Command::ExplorerNewFile));
+        assert!(menu.items.contains(&Command::ExplorerNewFolder));
+        assert!(!menu.items.contains(&Command::SidebarActivate));
+        assert!(!menu.items.contains(&Command::ExplorerRename));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn explorer_paste_rejects_directory_into_its_descendant() {
         let dir = test_dir("copy-into-self");
         write_file(&dir, "src/child/file.txt", b"child");
@@ -8233,16 +8827,46 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
 
         select_explorer_path(&mut app, &dir.join("old.txt"));
         app.explorer_begin_rename();
-        for _ in 0.."old.txt".len() {
-            app.explorer.edit_backspace();
-        }
-        for c in "new.txt".chars() {
+        for c in "new".chars() {
             app.explorer.edit_push(c);
         }
         app.explorer_commit_edit();
 
         assert!(dir.join("new.txt").exists());
         assert_eq!(refresh_count(&backend), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explorer_rename_retargets_open_code_tabs() {
+        let dir = test_dir("rename-retarget");
+        let old = dir.join("old.txt");
+        let new = dir.join("new.txt");
+        write_file(&dir, "old.txt", b"old");
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend.clone());
+        app.sidebar_panel = SidebarPanel::Explorer;
+        let mut tab = code_tab("old.txt");
+        if let TabKind::Code { path, doc, .. } = &mut tab.kind {
+            *path = old.clone();
+            *doc = Some(DocumentId(42));
+        }
+        app.push_tab(tab);
+
+        select_explorer_path(&mut app, &old);
+        app.explorer_begin_rename();
+        for c in "new".chars() {
+            app.explorer.edit_push(c);
+        }
+        app.explorer_commit_edit();
+
+        assert!(
+            app.tabs
+                .iter()
+                .any(|tab| tab.title == "new.txt" && tab.path() == Some(new.as_path()))
+        );
+        assert_eq!(retarget_commands(&backend), vec![(DocumentId(42), new)]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
