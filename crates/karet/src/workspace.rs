@@ -287,6 +287,65 @@ mod tests {
         assert!(matches!(tab.kind, TabKind::Code { .. }));
     }
 
+    /// The token covering `needle`'s first byte, per a tab's highlights.
+    fn token_of(tab: &Tab, needle: &str) -> Option<karet_core::TokenId> {
+        let TabKind::Code {
+            text, highlights, ..
+        } = &tab.kind
+        else {
+            return None;
+        };
+        let at = text.find(needle)?;
+        highlights
+            .all()
+            .iter()
+            .find(|s| s.span.start.0 <= at && at < s.span.end.0)
+            .map(|s| s.token)
+    }
+
+    #[test]
+    fn markdown_code_fence_opens_highlighted_as_its_language() {
+        let dir = temp_dir();
+        let file = dir.path.join("notes.md");
+        let _ = std::fs::write(&file, "# Title\n\n```rust\nfn main() {}\n```\n");
+        let tab = open_file(&file, true);
+        // The embedded rust must colour through the injection layers, not render as
+        // undifferentiated markdown.
+        assert_eq!(
+            token_of(&tab, "fn main"),
+            Some(karet_core::TokenId::KEYWORD)
+        );
+        assert_eq!(
+            token_of(&tab, "Title"),
+            Some(karet_core::StandardToken::MarkupHeading.id())
+        );
+    }
+
+    #[test]
+    fn rust_doctest_in_a_doc_comment_opens_highlighted_as_rust() {
+        let dir = temp_dir();
+        let file = dir.path.join("lib.rs");
+        let _ = std::fs::write(
+            &file,
+            "/// Doc.\n///\n/// ```rust\n/// let y = 1;\n/// ```\npub fn f() {}\n",
+        );
+        let tab = open_file(&file, true);
+        assert_eq!(token_of(&tab, "let y"), Some(karet_core::TokenId::KEYWORD));
+        assert_eq!(
+            token_of(&tab, "Doc."),
+            Some(karet_core::StandardToken::CommentDoc.id())
+        );
+    }
+
+    #[test]
+    fn no_syntax_flag_disables_highlighting() {
+        let dir = temp_dir();
+        let file = dir.path.join("notes.md");
+        let _ = std::fs::write(&file, "```rust\nfn main() {}\n```\n");
+        let tab = open_file(&file, false);
+        assert_eq!(token_of(&tab, "fn main"), None);
+    }
+
     #[test]
     fn invalid_utf8_text_opens_as_hex() {
         let dir = temp_dir();
