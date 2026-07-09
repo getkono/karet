@@ -30,6 +30,7 @@ use crossterm::event::MouseEventKind;
 use crossterm::event::PopKeyboardEnhancementFlags;
 use crossterm::event::PushKeyboardEnhancementFlags;
 use crossterm::event::{self};
+use crossterm::terminal::SetTitle;
 use karet_core::BytePos;
 use karet_core::Change;
 use karet_core::Decoration;
@@ -663,6 +664,22 @@ impl App {
         self.open_path(path);
     }
 
+    /// Open `path` as a startup preview without stealing focus from the configured
+    /// startup panel.
+    pub fn open_initial_preview(&mut self, path: &Path) {
+        let focus = self.focus;
+        self.open_path_preview(path);
+        self.focus = focus;
+    }
+
+    /// Apply the CLI's startup focus override after startup tabs are opened.
+    pub fn apply_startup_focus(&mut self, focus: crate::cli::FocusChoice) {
+        self.focus = match focus {
+            crate::cli::FocusChoice::Sidebar if self.sidebar_visible => Focus::Sidebar,
+            crate::cli::FocusChoice::Sidebar | crate::cli::FocusChoice::Editor => Focus::Editor,
+        };
+    }
+
     /// Whether the active tab is a diff (enables diff-specific keys).
     fn active_is_diff(&self) -> bool {
         self.tabs.get(self.active).is_some_and(Tab::is_diff)
@@ -849,6 +866,11 @@ impl App {
             Modal::CommitInput => {
                 if let Some(message) = self.commit_input.as_mut() {
                     message.push_str(text);
+                }
+            },
+            Modal::RevInput => {
+                if let Some(rev) = self.rev_input.as_mut() {
+                    rev.push_str(text);
                 }
             },
             Modal::ExplorerEdit => self.explorer.edit_paste(text),
@@ -4832,6 +4854,10 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     });
 
     let mut terminal = ratatui::init();
+    let _ = crossterm::execute!(
+        io::stdout(),
+        SetTitle(format!("karet - {}", app.root.display()))
+    );
     let _keyboard = {
         let _ = crossterm::execute!(
             io::stdout(),
