@@ -15,11 +15,13 @@ use karet_core::BytePos;
 use karet_core::Span;
 
 mod detect;
+mod injection;
 mod registry;
 
 pub use detect::language_id_from_injection_name;
 pub use detect::language_id_from_path;
 pub use detect::language_name_from_path;
+pub use injection::InjectionRegion;
 
 /// Errors produced by the parse host.
 #[derive(Debug, thiserror::Error)]
@@ -130,6 +132,60 @@ impl SyntaxTree {
             .parse(text.as_bytes(), None)
             .ok_or(TsError::ParseFailed)?;
         Ok(Self { tree, lang })
+    }
+
+    /// The language this tree was parsed with.
+    #[must_use]
+    pub fn language(&self) -> LanguageId {
+        self.lang
+    }
+
+    /// Parse only `ranges` of `text` as `lang`, leaving the rest of the document
+    /// invisible to the grammar — the mechanism behind language injection.
+    ///
+    /// `ranges` must be ascending and non-overlapping (see `injection::normalize`).
+    /// Because the parser reads the *whole* `text` and merely restricts itself to
+    /// `ranges`, every node's byte offset is already in document coordinates, so the
+    /// resulting tree's captures need no translation to merge with the root's.
+    ///
+    /// # Errors
+    /// Returns [`TsError::UnknownLanguage`] if `lang` has no grammar compiled in, or
+    /// [`TsError::ParseFailed`] if the ranges are rejected or parsing fails.
+    pub fn parse_ranges(
+        pool: &mut ParserPool,
+        lang: LanguageId,
+        text: &str,
+        ranges: &[Span],
+    ) -> Result<Self, TsError> {
+        if ranges.is_empty() {
+            return Err(TsError::ParseFailed);
+        }
+        let ts_ranges = to_ts_ranges(text, ranges);
+        let parser = pool.parser_for(lang)?;
+        let result = parser
+            .set_included_ranges(&ts_ranges)
+            .map_err(|_| TsError::ParseFailed)
+            .and_then(|()| {
+                parser
+                    .parse(text.as_bytes(), None)
+                    .ok_or(TsError::ParseFailed)
+            });
+        // The parser is pooled: clear the range restriction before anyone else draws it,
+        // whether or not the parse succeeded.
+        parser.set_included_ranges(&[]).ok();
+        Ok(Self {
+            tree: result?,
+            lang,
+        })
+    }
+
+    /// The embedded-language regions `query` (an injections query) finds in this tree.
+    ///
+    /// `text` must be the source this tree was parsed from. Regions naming a language
+    /// with no grammar compiled in are omitted.
+    #[must_use]
+    pub fn injections(&self, query: &Query, text: &str) -> Vec<InjectionRegion> {
+        injection::extract(&self.tree, query, text)
     }
 
     /// Re-parse after the buffer changed to `text`.
@@ -294,7 +350,7 @@ pub struct RawCapture {
 
 /// A compiled tree-sitter query (highlights, folds, locals, …).
 pub struct Query {
-    inner: tree_sitter::Query,
+    pub(crate) inner: tree_sitter::Query,
 }
 
 impl Query {
@@ -321,6 +377,220 @@ impl Query {
 /// Convert a neutral `(row, byte-column)` point to a tree-sitter `Point`.
 fn to_point((row, column): (usize, usize)) -> tree_sitter::Point {
     tree_sitter::Point { row, column }
+}
+
+/// Byte offsets at which each line of `text` begins (line 0 starts at 0).
+fn line_starts(text: &str) -> Vec<usize> {
+    let mut starts = vec![0usize];
+    starts.extend(
+        text.bytes()
+            .enumerate()
+            .filter(|(_, b)| *b == b'\n')
+            .map(|(i, _)| i + 1),
+    );
+    starts
+}
+
+/// The `(row, byte-column)` of `byte`, resolved against a precomputed line index.
+fn point_at(starts: &[usize], byte: usize) -> tree_sitter::Point {
+    let row = starts.partition_point(|&s| s <= byte).saturating_sub(1);
+    tree_sitter::Point {
+        row,
+        column: byte - starts.get(row).copied().unwrap_or(0),
+    }
+}
+
+/// Convert byte [`Span`]s into the `tree_sitter::Range`s `set_included_ranges` wants.
+/// The line index is built once, so this is linear in `text` rather than in
+/// `text × ranges`.
+fn to_ts_ranges(text: &str, ranges: &[Span]) -> Vec<tree_sitter::Range> {
+    let starts = line_starts(text);
+    ranges
+        .iter()
+        .map(|s| tree_sitter::Range {
+            start_byte: s.start.0,
+            end_byte: s.end.0,
+            start_point: point_at(&starts, s.start.0),
+            end_point: point_at(&starts, s.end.0),
+        })
+        .collect()
+}
+
+/// How deep injections may nest before the parser stops descending.
+///
+/// Rust → markdown (doc comment) → rust (a ` ```rust ` doctest) → markdown is already
+/// three levels, and a doctest's own doc comments could recurse forever. Four bounds
+/// the useful cases and terminates the pathological ones.
+const MAX_INJECTION_DEPTH: usize = 4;
+
+/// An upper bound on injected layers per document, so a pathological file cannot make
+/// the parse host allocate without limit. Generous enough that no real document trips
+/// it — a large markdown file has one inline layer per paragraph.
+const MAX_INJECTION_LAYERS: usize = 4096;
+
+/// A parse host for documents that embed other languages.
+///
+/// Owns the parser pool *and* the compiled injections queries, because deriving the
+/// layers of a tree needs both and the borrow checker would otherwise force the caller
+/// to interleave them.
+#[derive(Default)]
+pub struct LayeredParser {
+    pool: ParserPool,
+    /// Compiled injections query per language; `None` records "this grammar ships
+    /// none", so we never try to compile it twice.
+    injections: HashMap<LanguageId, Option<Query>>,
+}
+
+impl LayeredParser {
+    /// Create an empty layered parse host.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The underlying parser pool, for callers that need a plain single-language parse.
+    pub fn pool(&mut self) -> &mut ParserPool {
+        &mut self.pool
+    }
+
+    /// Parse `text` as `lang`, then recursively parse every injected region.
+    ///
+    /// # Errors
+    /// Returns [`TsError::UnknownLanguage`] if `lang` has no grammar compiled in, or
+    /// [`TsError::ParseFailed`] if the root parse fails. A child layer that fails to
+    /// parse is skipped rather than failing the document.
+    pub fn parse(&mut self, lang: LanguageId, text: &str) -> Result<LayeredTree, TsError> {
+        let root = SyntaxTree::parse(&mut self.pool, lang, text)?;
+        let mut children = Vec::new();
+        self.descend(&root, text, 1, &mut children);
+        Ok(LayeredTree { root, children })
+    }
+
+    /// Re-parse `tree` after `edits` changed the buffer to `text`.
+    ///
+    /// The root tree is reparsed incrementally (reusing untouched subtrees); the
+    /// injected layers are re-derived, since an edit can create, destroy or retarget a
+    /// region — typing ` ```rust ` turns a paragraph into a code fence.
+    ///
+    /// # Errors
+    /// Returns [`TsError::ParseFailed`] if the root cannot be reparsed.
+    pub fn reparse(
+        &mut self,
+        tree: &mut LayeredTree,
+        edits: &[Edit],
+        text: &str,
+    ) -> Result<(), TsError> {
+        for edit in edits {
+            tree.root.edit(edit);
+        }
+        tree.root.reparse(&mut self.pool, text)?;
+        tree.children.clear();
+        let mut children = Vec::new();
+        self.descend(&tree.root, text, 1, &mut children);
+        tree.children = children;
+        Ok(())
+    }
+
+    /// Parse the regions `parent` injects, then recurse into each new layer.
+    fn descend(
+        &mut self,
+        parent: &SyntaxTree,
+        text: &str,
+        depth: usize,
+        out: &mut Vec<SyntaxTree>,
+    ) {
+        if depth > MAX_INJECTION_DEPTH || out.len() >= MAX_INJECTION_LAYERS {
+            return;
+        }
+        let Some(regions) = self.regions_of(parent, text) else {
+            return;
+        };
+
+        // `injection.combined` means every region of that pattern forms ONE tree (a PHP
+        // file's islands of code are a single program); otherwise each region is its own
+        // tree (two code fences are two independent programs).
+        let mut combined: Vec<(LanguageId, Vec<Span>)> = Vec::new();
+        let mut separate: Vec<(LanguageId, Vec<Span>)> = Vec::new();
+        for region in regions {
+            let bucket = if region.combined {
+                &mut combined
+            } else {
+                &mut separate
+            };
+            match bucket.iter_mut().find(|(l, _)| *l == region.lang) {
+                Some((_, ranges)) if region.combined => ranges.extend(region.ranges),
+                _ => bucket.push((region.lang, region.ranges)),
+            }
+        }
+
+        for (lang, ranges) in combined.into_iter().chain(separate) {
+            if out.len() >= MAX_INJECTION_LAYERS {
+                return;
+            }
+            let ranges = injection::normalize(ranges);
+            // A layer that reproduces its parent verbatim would recurse forever; the
+            // depth cap catches it eventually, but refusing it here keeps the tree tidy.
+            if ranges.is_empty() || covers_same_text(parent, &ranges, lang) {
+                continue;
+            }
+            let Ok(child) = SyntaxTree::parse_ranges(&mut self.pool, lang, text, &ranges) else {
+                continue; // a failed layer degrades to the parent's highlighting
+            };
+            self.descend(&child, text, depth + 1, out);
+            out.push(child);
+        }
+    }
+
+    /// The injected regions `tree` declares, or `None` if its grammar injects nothing.
+    fn regions_of(&mut self, tree: &SyntaxTree, text: &str) -> Option<Vec<InjectionRegion>> {
+        let lang = tree.language();
+        // Compile once per language and remember the "ships no query" answer too.
+        self.injections.entry(lang).or_insert_with(|| {
+            let source = injections_query(lang)?;
+            Query::compile(lang, &source).ok()
+        });
+        let query = self.injections.get(&lang)?.as_ref()?;
+        Some(tree.injections(query, text))
+    }
+}
+
+/// Whether an injected layer would re-parse exactly its parent's own text in its
+/// parent's own language — an identity injection that must not be followed.
+fn covers_same_text(parent: &SyntaxTree, ranges: &[Span], lang: LanguageId) -> bool {
+    lang == parent.language()
+        && ranges.len() == 1
+        && ranges[0].start.0 == parent.tree.root_node().start_byte()
+        && ranges[0].end.0 == parent.tree.root_node().end_byte()
+}
+
+/// A document parsed as a root tree plus one tree per injected region.
+///
+/// Every layer's nodes carry document byte offsets (they are parsed with included
+/// ranges over the shared source), so a consumer can run each layer's own queries and
+/// merge the results without translating coordinates.
+pub struct LayeredTree {
+    root: SyntaxTree,
+    /// Injected layers, innermost first within each branch of the descent.
+    children: Vec<SyntaxTree>,
+}
+
+impl LayeredTree {
+    /// The root tree — the document's own language.
+    #[must_use]
+    pub fn root(&self) -> &SyntaxTree {
+        &self.root
+    }
+
+    /// The injected layers, excluding the root.
+    #[must_use]
+    pub fn children(&self) -> &[SyntaxTree] {
+        &self.children
+    }
+
+    /// Every layer, root first, then each injected layer.
+    pub fn layers(&self) -> impl Iterator<Item = &SyntaxTree> {
+        std::iter::once(&self.root).chain(&self.children)
+    }
 }
 
 #[cfg(test)]
@@ -437,6 +707,203 @@ mod tests {
                 .all(|c| (c.capture as usize) < query.capture_names().len())
         );
         Ok(())
+    }
+
+    /// The `(row, byte-column)` of `byte` in `text` — for building test edits.
+    #[cfg(feature = "lang-markdown")]
+    fn point_of(text: &str, byte: usize) -> (usize, usize) {
+        let before = text.get(..byte).unwrap_or("");
+        let row = before.matches('\n').count();
+        let col = before.rfind('\n').map_or(byte, |i| byte - i - 1);
+        (row, col)
+    }
+
+    #[cfg(feature = "lang-markdown")]
+    fn layer_langs(tree: &LayeredTree) -> Vec<LanguageId> {
+        tree.children().iter().map(SyntaxTree::language).collect()
+    }
+
+    #[cfg(all(feature = "lang-markdown", feature = "lang-rust"))]
+    #[test]
+    fn markdown_injects_fenced_code_into_its_language() -> Result<(), TsError> {
+        let md = language_id_from_injection_name("markdown").ok_or(TsError::UnknownLanguage)?;
+        let rust = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+        let src = "# Title\n\n```rust\nfn main() {}\n```\n";
+
+        let mut parser = LayeredParser::new();
+        let tree = parser.parse(md, src)?;
+
+        assert_eq!(tree.root().language(), md);
+        // The fence's info string names rust, so its content becomes a rust layer.
+        assert!(
+            layer_langs(&tree).contains(&rust),
+            "expected an embedded rust layer, got {:?}",
+            layer_langs(&tree)
+        );
+        // Root is always the first layer.
+        assert_eq!(tree.layers().count(), tree.children().len() + 1);
+        Ok(())
+    }
+
+    #[cfg(feature = "lang-markdown")]
+    #[test]
+    fn markdown_injects_its_own_inline_grammar() -> Result<(), TsError> {
+        let md = language_id_from_injection_name("markdown").ok_or(TsError::UnknownLanguage)?;
+        let inline =
+            language_id_from_injection_name("markdown_inline").ok_or(TsError::UnknownLanguage)?;
+        let mut parser = LayeredParser::new();
+        let tree = parser.parse(md, "Some *emphasis* and a [link](http://x).\n")?;
+        assert!(layer_langs(&tree).contains(&inline));
+        Ok(())
+    }
+
+    #[cfg(feature = "lang-markdown")]
+    #[test]
+    fn unknown_fence_language_injects_nothing() -> Result<(), TsError> {
+        let md = language_id_from_injection_name("markdown").ok_or(TsError::UnknownLanguage)?;
+        let mut parser = LayeredParser::new();
+        // No grammar for `brainfuck`; the fence stays plain text rather than erroring.
+        let tree = parser.parse(md, "```brainfuck\n+++.\n```\n")?;
+        assert!(
+            tree.children().is_empty(),
+            "an unresolvable fence language must yield no layer"
+        );
+        // A resolvable fence over the same shape does produce one.
+        let rust = parser.parse(md, "```rust\nfn f() {}\n```\n")?;
+        assert!(!rust.children().is_empty());
+        Ok(())
+    }
+
+    #[cfg(all(
+        feature = "lang-html",
+        feature = "lang-javascript",
+        feature = "lang-css"
+    ))]
+    #[test]
+    fn html_injects_script_and_style() -> Result<(), TsError> {
+        let html = language_id_from_injection_name("html").ok_or(TsError::UnknownLanguage)?;
+        let js = language_id_from_injection_name("javascript").ok_or(TsError::UnknownLanguage)?;
+        let css = language_id_from_injection_name("css").ok_or(TsError::UnknownLanguage)?;
+
+        let mut parser = LayeredParser::new();
+        let tree = parser.parse(
+            html,
+            "<script>let x = 1;</script><style>a { color: red }</style>",
+        )?;
+        let langs: Vec<_> = tree.children().iter().map(SyntaxTree::language).collect();
+        assert!(
+            langs.contains(&js),
+            "expected a javascript layer: {langs:?}"
+        );
+        assert!(langs.contains(&css), "expected a css layer: {langs:?}");
+        Ok(())
+    }
+
+    #[cfg(all(feature = "lang-markdown", feature = "lang-rust"))]
+    #[test]
+    fn reparse_discovers_a_newly_typed_code_fence() -> Result<(), TsError> {
+        let md = language_id_from_injection_name("markdown").ok_or(TsError::UnknownLanguage)?;
+        let rust = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+
+        let old = "text\n";
+        let new = "text\n\n```rust\nfn f() {}\n```\n";
+        let mut parser = LayeredParser::new();
+        let mut tree = parser.parse(md, old)?;
+        assert!(!layer_langs(&tree).contains(&rust), "no fence yet");
+
+        // Append the fence — the edit turns a paragraph into an injected rust region.
+        let edit = Edit {
+            start_byte: old.len(),
+            old_end_byte: old.len(),
+            new_end_byte: new.len(),
+            start_point: point_of(old, old.len()),
+            old_end_point: point_of(old, old.len()),
+            new_end_point: point_of(new, new.len()),
+        };
+        parser.reparse(&mut tree, &[edit], new)?;
+
+        assert!(
+            layer_langs(&tree).contains(&rust),
+            "reparse must discover the new fence, got {:?}",
+            layer_langs(&tree)
+        );
+        // And it agrees with a cold parse of the same text.
+        let fresh = parser.parse(md, new)?;
+        let (mut a, mut b) = (layer_langs(&tree), layer_langs(&fresh));
+        a.sort_unstable_by_key(|l| l.0);
+        b.sort_unstable_by_key(|l| l.0);
+        assert_eq!(a, b, "incremental layers must match a full layered parse");
+        Ok(())
+    }
+
+    #[cfg(all(feature = "lang-markdown", feature = "lang-rust"))]
+    #[test]
+    fn deleting_a_fence_drops_its_layer() -> Result<(), TsError> {
+        let md = language_id_from_injection_name("markdown").ok_or(TsError::UnknownLanguage)?;
+        let rust = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+        let old = "```rust\nfn f() {}\n```\n";
+        let new = "";
+
+        let mut parser = LayeredParser::new();
+        let mut tree = parser.parse(md, old)?;
+        assert!(layer_langs(&tree).contains(&rust));
+
+        parser.reparse(
+            &mut tree,
+            &[Edit {
+                start_byte: 0,
+                old_end_byte: old.len(),
+                new_end_byte: 0,
+                start_point: (0, 0),
+                old_end_point: point_of(old, old.len()),
+                new_end_point: (0, 0),
+            }],
+            new,
+        )?;
+        assert!(
+            !layer_langs(&tree).contains(&rust),
+            "the rust layer must vanish with its fence"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn self_injecting_grammar_terminates() -> Result<(), TsError> {
+        // Rust's own injections query re-parses macro token trees as rust. Without the
+        // depth cap and identity guard this descends forever.
+        let rust = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+        let mut parser = LayeredParser::new();
+        let tree = parser.parse(rust, "macro_rules! m { () => { m!(); } }\nfn f() { m!(); }")?;
+        assert!(tree.children().len() < MAX_INJECTION_LAYERS);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_ranges_rejects_an_empty_range_list() {
+        let mut pool = ParserPool::new();
+        let err = SyntaxTree::parse_ranges(&mut pool, LanguageId(60000), "x", &[]);
+        assert!(matches!(err, Err(TsError::ParseFailed)));
+    }
+
+    #[test]
+    fn point_at_resolves_rows_and_columns() {
+        let text = "ab\ncd\n";
+        let starts = line_starts(text);
+        assert_eq!(starts, vec![0, 3, 6]);
+        assert_eq!(
+            point_at(&starts, 0),
+            tree_sitter::Point { row: 0, column: 0 }
+        );
+        assert_eq!(
+            point_at(&starts, 4),
+            tree_sitter::Point { row: 1, column: 1 }
+        );
+        // End of buffer sits at the start of the (empty) trailing line.
+        assert_eq!(
+            point_at(&starts, 6),
+            tree_sitter::Point { row: 2, column: 0 }
+        );
     }
 
     #[cfg(feature = "lang-rust")]
