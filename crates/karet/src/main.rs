@@ -26,6 +26,7 @@ mod outline;
 mod overlay;
 mod render;
 mod tab;
+mod term_caps;
 mod ui;
 mod workspace;
 
