@@ -8636,6 +8636,91 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         assert_eq!(source_scroll(&app), last, "clamped to the last buffer line");
     }
 
+    /// Draw the whole shell into a test terminal and return the screen, row by row.
+    fn screen(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        terminal
+            .draw(|f| crate::ui::draw(f, app))
+            .expect("draw the shell");
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_owned())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// End-to-end: the shell splits, wraps and paints the preview through `ui::draw`.
+    ///
+    /// A list is the giveaway — the source pane shows `- one`, the rendered preview shows
+    /// a `•` bullet — so this proves the preview is rendered, not echoed source.
+    #[test]
+    fn the_preview_pane_paints_rendered_markdown_beside_the_source() {
+        let mut app = markdown_app("- one\n- two\n");
+        app.dispatch(Command::MarkdownPreviewSide);
+
+        let painted = screen(&mut app, 100, 12).join("\n");
+        assert!(
+            painted.contains("- one"),
+            "the source pane still shows markup:\n{painted}"
+        );
+        assert!(
+            painted.contains('\u{2022}'),
+            "the preview pane should render a bullet:\n{painted}"
+        );
+    }
+
+    /// The draw-time render cache is keyed on the document version, so an edit re-renders
+    /// the preview on the next frame. Drives the edit through `TextBuffer::apply` — the
+    /// same path the session takes — because that is what moves the version.
+    #[test]
+    fn editing_the_source_re_renders_the_preview_on_the_next_draw() {
+        let mut app = markdown_app("# before\n");
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(11));
+        }
+        app.dispatch(Command::MarkdownPreviewSide);
+        let before = screen(&mut app, 100, 12).join("\n");
+        assert!(before.contains("before"), "{before}");
+
+        // "# before" -> "# after": delete "before", insert "after". Applying bumps the
+        // version, which is exactly what invalidates the cache.
+        let mut edited = karet_text::TextBuffer::from_text("# before\n");
+        let change = karet_core::Change::new(
+            edited.version(),
+            vec![karet_core::TextEdit {
+                range: Range {
+                    start: LineCol::new(0, 2),
+                    end: LineCol::new(0, 8),
+                },
+                new_text: "after".to_string(),
+            }],
+        );
+        edited.apply_simple(&change).expect("apply the edit");
+        assert!(edited.version() > 0, "the edit must move the version");
+
+        for tab in app.all_tabs_mut() {
+            match &mut tab.kind {
+                TabKind::Code { buffer, text, .. } => {
+                    *buffer = edited.content_snapshot();
+                    *text = edited.text();
+                },
+                TabKind::MarkdownPreview { buffer, .. } => *buffer = edited.content_snapshot(),
+                _ => {},
+            }
+        }
+
+        let after = screen(&mut app, 100, 12).join("\n");
+        assert!(
+            after.contains("after") && !after.contains("before"),
+            "the preview must re-render once the document version moves:\n{after}"
+        );
+    }
+
     #[test]
     fn selection_text_slices_the_source() {
         use karet_text::TextBuffer;
