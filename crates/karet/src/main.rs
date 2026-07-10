@@ -89,6 +89,17 @@ fn main() -> color_eyre::Result<()> {
     for file in &cli.open {
         app.open_initial(&resolve_under_root(&root, file));
     }
+    if !cli.split.is_empty() {
+        // The editor rectangle is only computed on the first draw; seed it with the
+        // terminal size so the split-room guard has a real budget now. The draw loop
+        // recomputes the exact rectangle every frame, so an approximation is fine.
+        if let Ok((w, h)) = crossterm::terminal::size() {
+            app.main_rect = ratatui::layout::Rect::new(0, 0, w, h);
+        }
+        for file in &cli.split {
+            app.open_startup_split(&resolve_under_root(&root, file));
+        }
+    }
     if let Some(spec) = cli.goto.as_deref() {
         let goto = cli::parse_goto_spec(spec);
         app.open_startup_goto(&resolve_under_root(&root, &goto.path), goto.line, goto.col);

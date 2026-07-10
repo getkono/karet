@@ -73,6 +73,16 @@ pub struct Cli {
     #[arg(long)]
     pub preview: Option<PathBuf>,
 
+    /// Open a file in a new pane split to the right of the focused pane, after any
+    /// `--open` tabs are placed (repeatable; splits chain left-to-right). Relative
+    /// paths resolve under the root. When the layout has no room for another pane,
+    /// the file opens as a tab in the current pane and a notification says so.
+    ///
+    /// Unstable automation surface: intended for scripting and view capture, this
+    /// flag's behaviour may change between major versions without notice.
+    #[arg(long = "split", value_name = "PATH")]
+    pub split: Vec<PathBuf>,
+
     /// Open a file and place the caret, as `PATH[:LINE[:COL]]` (1-based, both
     /// default to 1), then focus the editor. Relative paths resolve under the root.
     ///
@@ -261,6 +271,23 @@ mod tests {
     fn goto_defaults_to_none() -> Result<(), clap::Error> {
         let cli = Cli::try_parse_from(["karet"])?;
         assert!(cli.goto.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn split_flag_is_repeatable() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from(["karet", "--split", "a.rs", "--split", "b.rs"])?;
+        assert_eq!(
+            cli.split,
+            vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn split_defaults_to_empty() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from(["karet"])?;
+        assert!(cli.split.is_empty());
         Ok(())
     }
 

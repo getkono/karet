@@ -828,6 +828,48 @@ impl App {
         self.focus = Focus::Editor;
     }
 
+    /// Open `path` in a new right split at startup (from the `--split` flag): the
+    /// file becomes the sole tab of a fresh pane to the right of the focused pane,
+    /// which then takes focus, so repeated calls chain panes left-to-right. When the
+    /// layout has no room for another pane (per `can_split` against
+    /// [`Self::main_rect`], which the caller seeds with the terminal size before the
+    /// first draw), the file opens as a tab in the current pane instead and a
+    /// warning notification says so — automation gets its file either way.
+    pub fn open_startup_split(&mut self, path: &Path) {
+        let from = self.focus_pane();
+        if !self.layout.can_split(from, SplitDir::Right, self.main_rect) {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file")
+                .to_string();
+            self.notify(
+                Severity::Warning,
+                NotificationKind::System,
+                format!("--split: no room for another pane; opened {name} in the current pane"),
+            );
+            self.open_path(path);
+            return;
+        }
+        let mut tab = workspace::open_file(path, self.syntax);
+        tab.view = self.alloc_view();
+        self.stash_focused();
+        let new_pane = self.layout.split(from, SplitDir::Right);
+        self.stored.insert(
+            new_pane,
+            StoredPane {
+                tabs: vec![tab],
+                active: 0,
+            },
+        );
+        // `split` already focuses the pane it created; make that explicit, then pull
+        // the new pane's tabs live and register its document with the backend.
+        self.layout.set_focus(new_pane);
+        self.load_focused();
+        self.focus = Focus::Editor;
+        self.register_doc(self.active);
+    }
+
     /// Apply the CLI's startup focus override after startup tabs are opened.
     pub fn apply_startup_focus(&mut self, focus: crate::cli::FocusChoice) {
         self.focus = match focus {
@@ -6975,6 +7017,90 @@ mod tests {
             caret.line <= 2,
             "caret line {} should clamp within the 2-line buffer",
             caret.line
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_startup_split_creates_a_second_pane_with_the_file() {
+        let dir = test_dir("split");
+        write_file(&dir, "a.rs", b"fn a() {}\n");
+        write_file(&dir, "b.rs", b"fn b() {}\n");
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.main_rect = Rect::new(0, 0, 120, 40);
+        app.open_initial(&dir.join("a.rs"));
+        app.open_startup_split(&dir.join("b.rs"));
+
+        assert_eq!(app.layout.panes().len(), 2, "the split adds a second pane");
+        // The new pane is focused and holds exactly the split file.
+        assert_eq!(app.focus, Focus::Editor);
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(
+            app.tabs[app.active].path(),
+            Some(dir.join("b.rs")).as_deref()
+        );
+        // The first pane still holds the originally-opened file.
+        let stored: Vec<_> = app
+            .stored
+            .values()
+            .flat_map(|p| p.tabs.iter())
+            .filter_map(Tab::path)
+            .collect();
+        assert_eq!(stored, vec![dir.join("a.rs").as_path()]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_startup_split_chains_panes_left_to_right() {
+        let dir = test_dir("split-chain");
+        write_file(&dir, "a.rs", b"fn a() {}\n");
+        write_file(&dir, "b.rs", b"fn b() {}\n");
+        write_file(&dir, "c.rs", b"fn c() {}\n");
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.main_rect = Rect::new(0, 0, 200, 40);
+        app.open_initial(&dir.join("a.rs"));
+        app.open_startup_split(&dir.join("b.rs"));
+        app.open_startup_split(&dir.join("c.rs"));
+
+        assert_eq!(app.layout.panes().len(), 3);
+        // The last split pane is focused and shows the last file.
+        assert_eq!(
+            app.tabs[app.active].path(),
+            Some(dir.join("c.rs")).as_deref()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_startup_split_falls_back_to_a_tab_when_there_is_no_room() {
+        let dir = test_dir("split-narrow");
+        write_file(&dir, "a.rs", b"fn a() {}\n");
+        write_file(&dir, "b.rs", b"fn b() {}\n");
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        // Too narrow for two panes at the minimum pane width.
+        app.main_rect = Rect::new(0, 0, 12, 10);
+        app.open_initial(&dir.join("a.rs"));
+        app.open_startup_split(&dir.join("b.rs"));
+
+        assert_eq!(app.layout.panes().len(), 1, "no second pane is created");
+        assert_eq!(app.tabs.len(), 2, "the file still opens, as a tab");
+        assert_eq!(
+            app.tabs[app.active].path(),
+            Some(dir.join("b.rs")).as_deref()
+        );
+        // The degradation is surfaced, not silent.
+        assert!(
+            app.notifications
+                .active()
+                .iter()
+                .any(|n| n.title.contains("--split")),
+            "a startup notification explains the fallback"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
