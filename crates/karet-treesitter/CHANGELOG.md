@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/getkono/karet/compare/karet-treesitter-v0.2.1...karet-treesitter-v0.2.2) - 2026-07-10
+
+### Added
+
+- *(karet-treesitter)* inject markdown into Rust doc comments
+- *(karet-treesitter)* layered parsing of injected languages
+- *(karet-treesitter)* injection query registry and language-name resolver
+
+### Other
+
+- describe language injection across the crate docs
+- *(karet-treesitter)* build the line index once per layered parse
+- *(karet-treesitter)* expand injected layers breadth-first
+
 ## [0.2.0](https://github.com/getkono/karet/compare/karet-treesitter-v0.1.0...karet-treesitter-v0.2.0) - 2026-07-04
 
 ### Added

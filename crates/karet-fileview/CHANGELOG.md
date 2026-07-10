@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/getkono/karet/compare/karet-fileview-v0.2.1...karet-fileview-v0.2.2) - 2026-07-10
+
+### Added
+
+- *(karet-fileview)* gate raster image rendering behind features
+
+### Other
+
+- Merge branch 'master' into feat/53-markdown-preview
+- pin Rust toolchains to exact versions
+- document optional format features + binary-size analysis
+
 ## [0.2.1](https://github.com/getkono/karet/compare/karet-fileview-v0.2.0...karet-fileview-v0.2.1) - 2026-07-09
 
 ### Other
