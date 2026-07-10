@@ -85,6 +85,13 @@ bytes so a mislabeled file still routes sensibly):
 | Binary | hex view | NUL byte / invalid UTF-8 in the sampled head |
 | Too large | placeholder, with an "open anyway" override | larger than 10 MiB |
 
+The **Image** and **PDF** renderers are optional, default-on Cargo features
+(`images` and `pdf` on the `karet` app; `raster`/`images`/`pdf` on
+`karet-fileview`). Building the app with `--no-default-features` drops their heavy
+dependency trees (`image` codecs, `hayro`) and routes those kinds to the
+placeholder branch instead — see [binary-size.md](binary-size.md). Classification
+(`FileKind`) is unaffected; only rendering degrades.
+
 The 10 MiB guard is a *routing* default, not a hard limit: the too-large
 placeholder offers an "open anyway" action (Enter in the TUI) that re-classifies
 the file ignoring its size and opens it with the renderer its content warrants —
