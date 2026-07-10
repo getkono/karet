@@ -18,6 +18,7 @@ use karet_treesitter::SyntaxTree;
 use karet_treesitter::language_id_from_path;
 use karet_treesitter::language_name_from_path;
 
+#[cfg(feature = "images")]
 use crate::image;
 
 /// How many leading bytes to sample for file-type classification.
@@ -70,6 +71,7 @@ pub(crate) enum Content {
         language: &'static str,
     },
     /// A decoded raster image.
+    #[cfg(feature = "images")]
     Image(image::Image),
     /// A parsed multi-page document (e.g. PDF) rasterized to images on demand.
     #[cfg(feature = "pdf")]
@@ -120,6 +122,7 @@ impl FileDoc {
         let kind = classify_with_guard(path, head, len, limits.max_bytes);
         let content = match kind {
             FileKind::Text | FileKind::Markdown => prepare_text(path, bytes, limits),
+            #[cfg(feature = "images")]
             FileKind::Image => match image::decode(bytes) {
                 Ok(img) => Content::Image(img),
                 Err(_) => Content::Placeholder,
@@ -138,11 +141,14 @@ impl FileDoc {
             _ => Content::Placeholder,
         };
         // Annotate an undecodable-image placeholder with the pixel dimensions.
+        #[cfg(feature = "images")]
         let dims = if matches!(kind, FileKind::Image) && matches!(content, Content::Placeholder) {
             image::dimensions(bytes)
         } else {
             None
         };
+        #[cfg(not(feature = "images"))]
+        let dims = None;
         Self {
             kind,
             content,
@@ -177,7 +183,9 @@ impl FileDoc {
             Content::Binary(bytes) => bytes.len().div_ceil(16),
             #[cfg(feature = "pdf")]
             Content::Document { .. } => 0,
-            Content::Image(_) | Content::Placeholder => 0,
+            #[cfg(feature = "images")]
+            Content::Image(_) => 0,
+            Content::Placeholder => 0,
         }
     }
 
@@ -232,6 +240,7 @@ mod tests {
     use super::*;
 
     /// A 2×2 PNG built in-memory (no fixtures on disk).
+    #[cfg(feature = "images")]
     fn tiny_png() -> Vec<u8> {
         let mut img = ::image::RgbaImage::new(2, 2);
         img.put_pixel(0, 0, ::image::Rgba([255, 0, 0, 255]));
@@ -286,6 +295,7 @@ mod tests {
         assert_eq!(doc.row_count(), 1);
     }
 
+    #[cfg(feature = "images")]
     #[test]
     fn image_decodes() {
         let png = tiny_png();
@@ -299,6 +309,7 @@ mod tests {
         assert!(matches!(doc.content, Content::Image(_)));
     }
 
+    #[cfg(feature = "images")]
     #[test]
     fn undecodable_image_falls_back_with_dims() {
         // A .png extension over non-image bytes classifies Image, fails to decode.

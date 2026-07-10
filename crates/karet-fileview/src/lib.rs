@@ -43,4 +43,5 @@ pub use doc::Limits;
 pub use hex::HexView;
 pub use view::FileView;
 pub use view::FileViewState;
+#[cfg(feature = "raster")]
 pub use view::flush_kitty_image;

@@ -17,9 +17,18 @@ default = []
 # Compile in every tree-sitter grammar so the text branch highlights. Off by
 # default so a consumer that only renders images/hex/plain text pulls no grammars.
 all-languages = ["karet-treesitter/all-languages"]
+# The shared terminal-image primitives (Kitty escape + halfblock rendering). These
+# pull the `image` raster crate, so they are gated on. Enabled automatically by
+# `images` and `pdf`; a consumer rarely selects it directly.
+raster = ["dep:image", "dep:base64"]
+# Decode & render raster image FILES: adds the image-codec entry points on top of
+# the shared `raster` primitives. Off by default so a consumer that never opens
+# images pulls no image codecs.
+images = ["raster"]
 # Rasterize PDF pages (via karet-pdf/hayro) into the Kitty image path. Off by
-# default so a consumer that never opens PDFs pulls neither hayro nor its deps.
-pdf = ["dep:karet-pdf"]
+# default so a consumer that never opens PDFs pulls neither hayro nor its deps; it
+# reuses the shared `raster` primitives to display the rendered page.
+pdf = ["dep:karet-pdf", "raster"]
 
 [dependencies]
 karet-core.workspace = true
@@ -31,8 +40,8 @@ karet-theme = { workspace = true, features = ["view"] }  # role colors for the v
 karet-editor.workspace = true         # renders the highlighted text branch (read-only)
 karet-pdf = { workspace = true, optional = true }  # PDF page rasterization (behind `pdf`)
 ratatui.workspace = true
-image.workspace = true                # image decode + halfblock rendering
-base64.workspace = true               # Kitty graphics protocol payload encoding
+image = { workspace = true, optional = true }   # image decode + halfblock rendering (behind `raster`)
+base64 = { workspace = true, optional = true }  # Kitty graphics protocol payload encoding (behind `raster`)
 thiserror.workspace = true
 
 [dev-dependencies]
