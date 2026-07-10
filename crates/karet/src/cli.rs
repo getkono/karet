@@ -27,6 +27,16 @@ const LONG_VERSION: &str = concat!(
     env!("KARET_BUILD_TIMESTAMP"),
 );
 
+/// One-line build identity for the `--doctor` report: `<version> (<commit><dirty>)`,
+/// assembled from the same build-script provenance as [`LONG_VERSION`].
+pub const VERSION_LINE: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("KARET_GIT_SHA"),
+    env!("KARET_GIT_DIRTY"),
+    ")",
+);
+
 /// karet — a terminal IDE: file explorer, code window, and search.
 ///
 /// Opens an Explorer-first shell rooted at the given path. A file opens directly; a
@@ -62,6 +72,14 @@ pub struct Cli {
     /// Open one startup preview tab without moving focus from the startup panel.
     #[arg(long)]
     pub preview: Option<PathBuf>,
+
+    /// Print terminal-capability diagnostics and exit instead of starting the
+    /// editor. Probes the same features karet checks at startup (kitty keyboard
+    /// protocol, kitty graphics protocol, OSC 22 pointer shapes) and reports one
+    /// line per check; exits non-zero when a required capability is missing. The
+    /// other flags are ignored.
+    #[arg(long)]
+    pub doctor: bool,
 }
 
 /// The `--icons` choices, mirroring [`IconStyle`].
@@ -129,5 +147,33 @@ impl Cli {
                 .ok()
                 .and_then(|v| IconStyle::from_name(&v))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+    use clap::Parser;
+
+    use super::Cli;
+
+    #[test]
+    fn cli_definition_is_valid() {
+        // clap's self-check: panics on conflicting/ill-formed argument definitions.
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn doctor_flag_parses() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from(["karet", "--doctor"])?;
+        assert!(cli.doctor);
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_defaults_to_off() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from(["karet"])?;
+        assert!(!cli.doctor);
+        Ok(())
     }
 }

@@ -19,6 +19,7 @@ mod cli;
 mod clipboard;
 mod command;
 mod compat;
+mod doctor;
 mod editing;
 mod keymap;
 mod notify;
@@ -56,6 +57,13 @@ fn main() -> color_eyre::Result<()> {
     // over sane defaults). Diagnostics are handed to the app to surface as startup
     // notifications; loading itself never fails.
     let mut loaded_config = karet_session::config::load_report(std::slice::from_ref(&root));
+
+    // `--doctor` acts like a subcommand: run the terminal diagnostics against the
+    // loaded settings and exit — never enter the alternate screen or the app loop.
+    if cli.doctor {
+        std::process::exit(doctor::run(&loaded_config.settings));
+    }
+
     if let Some(panel) = cli.startup_panel {
         loaded_config.settings.workbench.startup_panel = panel.into();
     }
