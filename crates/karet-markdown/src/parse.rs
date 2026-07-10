@@ -18,7 +18,10 @@ use crate::Row;
 /// A container element currently being built.
 enum Frame {
     Quote(Vec<Block>),
-    List(Vec<Vec<Block>>),
+    List {
+        start: Option<u64>,
+        items: Vec<Vec<Block>>,
+    },
     Item(Vec<Block>),
     /// A paragraph. `implicit` marks one we opened ourselves to hold loose inlines — a
     /// *tight* list item emits its text with no `Start(Paragraph)` around it.
@@ -62,7 +65,7 @@ fn closes(frame: &Frame, tag: TagEnd) -> bool {
             | (Frame::Heading { .. }, TagEnd::Heading(_))
             | (Frame::Quote(_), TagEnd::BlockQuote(_))
             | (Frame::CodeBlock { .. }, TagEnd::CodeBlock)
-            | (Frame::List(_), TagEnd::List(_))
+            | (Frame::List { .. }, TagEnd::List(_))
             | (Frame::Item(_), TagEnd::Item)
             | (Frame::Emphasis(_), TagEnd::Emphasis)
             | (Frame::Strong(_), TagEnd::Strong)
@@ -166,7 +169,11 @@ impl Builder {
                 lang: fence_language(kind),
                 code: String::new(),
             },
-            Tag::List(_) => Frame::List(Vec::new()),
+            // `Tag::List(Some(n))` is an ordered list starting at `n`; `None` is a bullet.
+            Tag::List(start) => Frame::List {
+                start: *start,
+                items: Vec::new(),
+            },
             Tag::Item => Frame::Item(Vec::new()),
             Tag::Emphasis => Frame::Emphasis(Vec::new()),
             Tag::Strong => Frame::Strong(Vec::new()),
@@ -220,9 +227,9 @@ impl Builder {
             Frame::Heading { level, content } => self.block(Block::Heading { level, content }),
             Frame::Quote(blocks) => self.block(Block::Quote(blocks)),
             Frame::CodeBlock { lang, code } => self.block(Block::CodeBlock { lang, code }),
-            Frame::List(items) => self.block(Block::List(items)),
+            Frame::List { start, items } => self.block(Block::List { start, items }),
             Frame::Item(blocks) => {
-                if let Some(Frame::List(items)) = self.stack.last_mut() {
+                if let Some(Frame::List { items, .. }) = self.stack.last_mut() {
                     items.push(blocks);
                 } else {
                     // An item outside a list: keep its content rather than drop it.
@@ -439,11 +446,29 @@ mod tests {
     fn parses_lists_and_quotes() {
         let doc = parse("- one\n- two\n\n> quoted\n");
         let items = match doc.blocks.first() {
-            Some(Block::List(items)) => items.len(),
+            Some(Block::List { items, .. }) => items.len(),
             _ => 0,
         };
         assert_eq!(items, 2);
         assert!(matches!(doc.blocks.get(1), Some(Block::Quote(_))));
+    }
+
+    /// The `start` of the first block, if it is a list.
+    fn list_start(source: &str) -> Option<Option<u64>> {
+        match parse(source).blocks.first() {
+            Some(Block::List { start, .. }) => Some(*start),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn an_unordered_list_has_no_start_and_an_ordered_one_keeps_its_first_ordinal() {
+        assert_eq!(list_start("- one\n- two\n"), Some(None));
+        assert_eq!(list_start("* one\n"), Some(None));
+        assert_eq!(list_start("1. one\n2. two\n"), Some(Some(1)));
+        // An ordered list may begin anywhere, and the ordinal is the author's.
+        assert_eq!(list_start("7. seven\n8. eight\n"), Some(Some(7)));
+        assert_eq!(list_start("0. zero\n"), Some(Some(0)));
     }
 
     #[test]
@@ -475,7 +500,7 @@ mod tests {
         // paragraph the text escapes to the document root.
         let doc = parse("- one\n- two\n");
         let items = match doc.blocks.first() {
-            Some(Block::List(items)) => items.clone(),
+            Some(Block::List { items, .. }) => items.clone(),
             _ => Vec::new(),
         };
         assert_eq!(items.len(), 2);
@@ -490,7 +515,7 @@ mod tests {
     fn a_block_inside_a_tight_item_stays_a_sibling_of_its_text() {
         let doc = parse("- one\n\n  ```\n  x\n  ```\n");
         let items = match doc.blocks.first() {
-            Some(Block::List(items)) => items.clone(),
+            Some(Block::List { items, .. }) => items.clone(),
             _ => Vec::new(),
         };
         let first = items.first().cloned().unwrap_or_default();

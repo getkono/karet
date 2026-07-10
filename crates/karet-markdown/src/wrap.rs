@@ -172,7 +172,10 @@ pub(crate) fn wrap(doc: &MarkdownDocument, width: u16) -> WrappedDocument {
 /// indent), separated by a blank line.
 fn wrap_blocks(blocks: &[Block], width: usize, prefix: &[TextSpan], out: &mut Vec<WrappedLine>) {
     for (index, block) in blocks.iter().enumerate() {
-        if index > 0 {
+        // A nested list hugs the item that introduces it: a blank line between `- one`
+        // and its sub-list would read as a break between two unrelated lists.
+        let separated = index > 0 && !matches!(block, Block::List { .. });
+        if separated {
             out.push(prefixed_line(prefix, Vec::new()));
         }
         wrap_block(block, width, prefix, out);
@@ -203,25 +206,29 @@ fn wrap_block(block: &Block, width: usize, prefix: &[TextSpan], out: &mut Vec<Wr
                 out.push(prefixed_line(prefix, line));
             }
         },
-        Block::List(items) => {
-            for item in items {
-                // The bullet occupies the first line; continuation lines align under it.
-                let mut bullet = prefix.to_vec();
-                bullet.push(TextSpan {
-                    text: BULLET.to_owned(),
+        Block::List { start, items } => {
+            let markers = list_markers(*start, items.len());
+            // Every marker is padded to the widest, so `9.` and `10.` share one text
+            // column and the items' content lines up.
+            let marker_width = markers.iter().map(|m| m.width()).max().unwrap_or(0);
+            for (item, marker) in items.iter().zip(&markers) {
+                // The marker occupies the first line; continuation lines align under it.
+                let mut marked = prefix.to_vec();
+                marked.push(TextSpan {
+                    text: marker.clone() + &" ".repeat(marker_width - marker.width()),
                     token: Some(StandardToken::MarkupListMarker.id()),
                 });
                 let mut continuation = prefix.to_vec();
                 continuation.push(TextSpan {
-                    text: " ".repeat(BULLET.width()),
+                    text: " ".repeat(marker_width),
                     token: None,
                 });
 
-                let start = out.len();
+                let first_line = out.len();
                 wrap_blocks(item, width, &continuation, out);
-                // Swap the continuation indent on the item's first line for the bullet.
-                if let Some(first) = out.get_mut(start) {
-                    replace_prefix(first, prefix.len(), &bullet);
+                // Swap the continuation indent on the item's first line for the marker.
+                if let Some(first) = out.get_mut(first_line) {
+                    replace_prefix(first, prefix.len(), &marked);
                 }
             }
         },
@@ -445,6 +452,22 @@ fn wrap_table(
         table_row(row, &widths, alignments, prefix, out);
     }
     out.push(prefixed_line(prefix, table_border(&widths, '└', '┴', '┘')));
+}
+
+/// The marker for each of `count` list items: `1. `, `2. `, … from `start` for an ordered
+/// list, or a bullet for each item of an unordered one.
+fn list_markers(start: Option<u64>, count: usize) -> Vec<String> {
+    let Some(start) = start else {
+        return vec![BULLET.to_owned(); count];
+    };
+    (0..count)
+        .map(|index| {
+            // A list long enough to overflow `u64` cannot be typed; saturating keeps the
+            // arithmetic total either way, at the cost of repeating the final ordinal.
+            let ordinal = start.saturating_add(u64::try_from(index).unwrap_or(u64::MAX));
+            format!("{ordinal}. ")
+        })
+        .collect()
 }
 
 /// Replace the first `old_len` spans of `line` with `new`.
@@ -732,6 +755,68 @@ mod tests {
         assert_eq!(out.first().map(String::as_str), Some("• alpha"));
         // Continuation lines align under the bullet's text, not its marker.
         assert_eq!(out.get(1).map(String::as_str), Some("  beta"));
+    }
+
+    #[test]
+    fn an_ordered_list_numbers_its_items_from_its_start() {
+        assert_eq!(lines("1. one\n2. two\n", 20), vec!["1. one", "2. two"]);
+        // The ordinals are the author's, counted up from the first.
+        assert_eq!(
+            lines("7. seven\n8. eight\n", 20),
+            vec!["7. seven", "8. eight"]
+        );
+    }
+
+    #[test]
+    fn ordered_markers_share_a_text_column_once_they_differ_in_width() {
+        // `9.` and `10.` must not stagger the items' text.
+        let out = lines("9. nine\n10. ten\n11. eleven\n", 20);
+        assert_eq!(out, vec!["9.  nine", "10. ten", "11. eleven"]);
+    }
+
+    #[test]
+    fn an_ordered_items_continuation_aligns_under_its_text() {
+        let out = lines("10. alpha beta\n", 11);
+        assert_eq!(out, vec!["10. alpha", "    beta"]);
+    }
+
+    #[test]
+    fn a_nested_ordered_list_numbers_independently_of_its_parent() {
+        let out = lines("- bullet\n  1. one\n  2. two\n", 20);
+        assert_eq!(out, vec!["• bullet", "  1. one", "  2. two"]);
+    }
+
+    #[test]
+    fn a_nested_list_hugs_the_item_that_introduces_it() {
+        // No blank line between an item's text and its sub-list…
+        assert_eq!(lines("- one\n  - two\n", 20), vec!["• one", "  • two"]);
+        // …but two paragraphs inside one item still break apart.
+        let out = lines("- one\n\n  two\n", 20);
+        assert_eq!(
+            out,
+            vec!["• one".to_owned(), "  ".to_owned(), "  two".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_list_marker_is_structural_punctuation() {
+        let doc = wrap(&parse::parse("1. one\n"), 20);
+        let first = doc.lines.first().cloned().unwrap_or_default();
+        assert_eq!(
+            first.spans.first().and_then(|s| s.token),
+            Some(StandardToken::MarkupListMarker.id())
+        );
+        assert_eq!(first.spans.first().map(|s| s.text.as_str()), Some("1. "));
+    }
+
+    #[test]
+    fn list_markers_saturate_rather_than_overflow() {
+        assert_eq!(
+            list_markers(Some(u64::MAX), 2),
+            vec![format!("{}. ", u64::MAX), format!("{}. ", u64::MAX),]
+        );
+        assert!(list_markers(None, 3).iter().all(|m| m == BULLET));
+        assert!(list_markers(Some(1), 0).is_empty());
     }
 
     #[test]

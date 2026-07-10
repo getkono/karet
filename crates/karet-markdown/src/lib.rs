@@ -91,7 +91,13 @@ pub enum Block {
         code: String,
     },
     /// A list, as a sequence of items (each a sequence of blocks).
-    List(Vec<Vec<Block>>),
+    List {
+        /// The first ordinal of an ordered list (`1` for `1.`), or `None` when the list
+        /// is unordered.
+        start: Option<u64>,
+        /// The items, each a sequence of blocks.
+        items: Vec<Vec<Block>>,
+    },
     /// A block quote.
     Quote(Vec<Block>),
     /// A GitHub-flavored table.
