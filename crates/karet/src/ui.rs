@@ -41,6 +41,7 @@ use ratatui::Frame;
 use ratatui::layout::Alignment;
 use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
+use ratatui::layout::Margin;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
@@ -2669,6 +2670,20 @@ fn severity_style(theme: &Theme, severity: Severity) -> Style {
     Style::default().fg(theme.role(role).to_ratatui())
 }
 
+/// The breathing room between a markdown preview's rendered text and its pane edges. Prose
+/// pinned against the pane border reads as cramped next to the source pane's gutter.
+const MARKDOWN_PREVIEW_PADDING: Margin = Margin {
+    horizontal: 2,
+    vertical: 1,
+};
+
+/// The rect a markdown preview paints into: its pane, inset by
+/// [`MARKDOWN_PREVIEW_PADDING`]. A pane too small to hold the padding gives up an empty
+/// rect rather than painting to the edge.
+fn markdown_preview_rect(area: Rect) -> Rect {
+    area.inner(MARKDOWN_PREVIEW_PADDING)
+}
+
 /// Paint a markdown preview, re-parsing and re-wrapping only when the document version or
 /// the pane width has moved since the last frame.
 ///
@@ -2683,6 +2698,9 @@ fn draw_markdown_preview(
     rendered: &mut Option<(u64, u16)>,
     scroll: &mut u16,
 ) {
+    // Wrap to the padded width, not the pane's: the cache key follows, so a resize that
+    // only moves the padding away still re-wraps exactly once.
+    let area = markdown_preview_rect(area);
     let key = (buffer.version(), area.width);
     if *rendered != Some(key) {
         *wrapped = karet_markdown::parse(&buffer.text()).wrap(area.width);
@@ -2979,6 +2997,21 @@ fn status_glyph(kind: StatusKind) -> (char, ThemeRole) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_markdown_preview_is_inset_from_its_pane_on_every_side() {
+        let inner = markdown_preview_rect(Rect::new(10, 5, 40, 20));
+        assert_eq!(inner, Rect::new(12, 6, 36, 18));
+    }
+
+    #[test]
+    fn a_pane_too_small_to_pad_paints_nothing_rather_than_to_the_edge() {
+        // The padding needs 4 columns and 2 rows; below that there is no content rect.
+        assert_eq!(markdown_preview_rect(Rect::new(0, 0, 4, 1)).height, 0);
+        assert_eq!(markdown_preview_rect(Rect::new(0, 0, 3, 2)).width, 0);
+        // Exactly enough for the padding leaves an empty — but valid — content rect.
+        assert_eq!(markdown_preview_rect(Rect::new(0, 0, 4, 2)).width, 0);
+    }
 
     fn test_code_tab(path: &str) -> Tab {
         use karet_text::TextBuffer;
