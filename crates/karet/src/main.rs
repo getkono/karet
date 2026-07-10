@@ -89,6 +89,10 @@ fn main() -> color_eyre::Result<()> {
     for file in &cli.open {
         app.open_initial(&resolve_under_root(&root, file));
     }
+    if let Some(spec) = cli.goto.as_deref() {
+        let goto = cli::parse_goto_spec(spec);
+        app.open_startup_goto(&resolve_under_root(&root, &goto.path), goto.line, goto.col);
+    }
     if let Some(focus) = cli.focus {
         app.apply_startup_focus(focus);
     }

@@ -808,6 +808,26 @@ impl App {
         self.focus = focus;
     }
 
+    /// Open `path` at startup and place the caret at 1-based `line`/`col` (from the
+    /// `--goto` flag), then focus the editor. The file opens as a permanent tab (or
+    /// re-focuses an already-open one); the target is converted to the editor's
+    /// 0-based coordinates and clamped into the buffer. A non-text target (image,
+    /// binary, …) simply opens with no caret to place.
+    pub fn open_startup_goto(&mut self, path: &Path, line: u32, col: u32) {
+        self.open_path(path);
+        // `line`/`col` are 1-based with a minimum of 1; `saturating_sub` maps them to
+        // the editor's 0-based coordinates, and `goto` clamps into the buffer.
+        let pos = LineCol::new(line.saturating_sub(1), col.saturating_sub(1));
+        let buffer = match self.tabs.get(self.active).map(|t| &t.kind) {
+            Some(TabKind::Code { buffer, .. }) => Some(buffer.clone()),
+            _ => None,
+        };
+        if let (Some(buffer), Some(tab)) = (buffer, self.tabs.get_mut(self.active)) {
+            tab.editor.goto(&buffer, pos);
+        }
+        self.focus = Focus::Editor;
+    }
+
     /// Apply the CLI's startup focus override after startup tabs are opened.
     pub fn apply_startup_focus(&mut self, focus: crate::cli::FocusChoice) {
         self.focus = match focus {
@@ -6917,6 +6937,47 @@ mod tests {
         let app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false)
             .with_settings(settings, Vec::new());
         assert!(!app.sidebar_visible);
+    }
+
+    #[test]
+    fn open_startup_goto_positions_caret_and_focuses_editor() {
+        let dir = test_dir("goto");
+        write_file(
+            &dir,
+            "src/main.rs",
+            b"fn main() {\n    println!(\"hi\");\n}\n",
+        );
+        let path = dir.join("src/main.rs");
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.open_startup_goto(&path, 2, 5);
+
+        // The file opened as a code tab, focused, with the caret at 0-based (1, 4).
+        assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
+        assert_eq!(app.focus, Focus::Editor);
+        assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(1, 4));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_startup_goto_clamps_out_of_range_target() {
+        let dir = test_dir("goto-clamp");
+        write_file(&dir, "a.txt", b"one\ntwo\n");
+        let path = dir.join("a.txt");
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        // Line far past the end and a large column clamp into the buffer rather than
+        // panicking or landing off the end.
+        app.open_startup_goto(&path, 9999, 9999);
+        let caret = app.tabs[app.active].editor.cursor();
+        assert!(
+            caret.line <= 2,
+            "caret line {} should clamp within the 2-line buffer",
+            caret.line
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
