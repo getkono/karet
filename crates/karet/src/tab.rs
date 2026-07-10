@@ -13,6 +13,7 @@ use karet_core::Decoration;
 use karet_editor::EditorState;
 use karet_fileview::image::Image;
 use karet_fileview::viewer::FileKind;
+use karet_markdown::WrappedDocument;
 use karet_pdf::Document as PdfDocument;
 use karet_search::SearchQuery;
 use karet_session::DocumentId;
@@ -118,6 +119,30 @@ pub enum TabKind {
         /// `decos` so closing/rerunning local find can't wipe them (or vice
         /// versa). Empty unless this tab's path is a current search result.
         search_decos: Vec<Decoration>,
+    },
+    /// A rendered, read-only preview of a Markdown document, shown beside the
+    /// [`Code`](TabKind::Code) tab it mirrors.
+    ///
+    /// The source of truth is the session document, not this tab: `buffer` is refreshed
+    /// from every snapshot, and the render model behind it is rebuilt lazily at draw
+    /// time (see `rendered`).
+    MarkdownPreview {
+        /// The file path.
+        path: PathBuf,
+        /// The session document previewed, once the source tab has registered one.
+        doc: Option<DocumentId>,
+        /// The [`Tab::view`] of the source tab this previews. Scrolling is synchronized
+        /// with it while both are their pane's active tab.
+        source_view: ViewId,
+        /// The latest snapshot's buffer (a cheap rope-sharing clone).
+        buffer: TextBuffer,
+        /// The parsed + wrapped render model, rebuilt only when `rendered` goes stale.
+        wrapped: WrappedDocument,
+        /// The `(document version, wrap width)` `wrapped` was built at, or `None` when it
+        /// has never been built. A change in either rebuilds it on the next draw.
+        rendered: Option<(u64, u16)>,
+        /// The first visible wrapped line.
+        scroll: u16,
     },
     /// A raster image.
     Image {
@@ -339,6 +364,32 @@ impl Tab {
         Self::new("Welcome", TabKind::Welcome)
     }
 
+    /// A rendered preview of the Markdown document `source_view` holds.
+    ///
+    /// `buffer` is seeded from the source tab so the preview paints on its very first
+    /// frame, before any snapshot has arrived.
+    #[must_use]
+    pub fn markdown_preview(
+        path: PathBuf,
+        doc: Option<DocumentId>,
+        source_view: ViewId,
+        buffer: TextBuffer,
+    ) -> Self {
+        let title = preview_title(&path);
+        Self::new(
+            title,
+            TabKind::MarkdownPreview {
+                path,
+                doc,
+                source_view,
+                buffer,
+                wrapped: WrappedDocument::default(),
+                rendered: None,
+                scroll: 0,
+            },
+        )
+    }
+
     /// A read-only visualization tab rendering `view` as an indented tree.
     #[must_use]
     pub fn graph(title: impl Into<String>, view: karet_core::GraphView) -> Self {
@@ -448,6 +499,7 @@ impl Tab {
     pub fn path(&self) -> Option<&Path> {
         match &self.kind {
             TabKind::Code { path, .. }
+            | TabKind::MarkdownPreview { path, .. }
             | TabKind::Image { path, .. }
             | TabKind::Document { path, .. }
             | TabKind::Hex { path, .. }
@@ -475,6 +527,7 @@ impl Tab {
     pub fn language(&self) -> &str {
         match &self.kind {
             TabKind::Code { language, .. } => language,
+            TabKind::MarkdownPreview { .. } => "markdown",
             TabKind::Image { .. } => "image",
             TabKind::Document { .. } => "pdf",
             TabKind::Hex { .. } => "binary",
@@ -512,6 +565,15 @@ impl Tab {
 #[must_use]
 pub(crate) fn commit_title(short: &str) -> String {
     format!("Commit {short}")
+}
+
+/// Human-readable title for a markdown preview tab.
+#[must_use]
+pub(crate) fn preview_title(path: &Path) -> String {
+    let name = path
+        .file_name()
+        .map_or_else(|| path.to_string_lossy(), std::ffi::OsStr::to_string_lossy);
+    format!("Preview {name}")
 }
 
 #[cfg(test)]

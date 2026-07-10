@@ -22,8 +22,12 @@ use karet_fileview::viewer::Placeholder;
 use karet_graph::LaneInput;
 use karet_graph::assign_lanes;
 use karet_graph::view::render_rail;
+use karet_markdown::WrappedDocument;
+use karet_markdown::view::MarkdownView;
+use karet_markdown::view::MarkdownViewState;
 use karet_session::ConfigLayerStatus;
 use karet_session::LoadedConfig;
+use karet_text::TextBuffer;
 use karet_theme::Theme;
 use karet_vcs::StatusKind;
 use karet_widgets::Corner;
@@ -1518,6 +1522,13 @@ fn draw_pane_content(
                 .cell_caret(!ctx.graphical_cursor);
             f.render_stateful_widget(editor, area, &mut tab.editor);
         },
+        TabKind::MarkdownPreview {
+            buffer,
+            wrapped,
+            rendered,
+            scroll,
+            ..
+        } => draw_markdown_preview(f, theme, area, buffer, wrapped, rendered, scroll),
         TabKind::Diff { file, view, scroll } => draw_diff(f, theme, area, file, *view, scroll),
         TabKind::Blame { groups, scroll, .. } => draw_blame(f, theme, area, groups, scroll),
         TabKind::Graph {
@@ -2639,6 +2650,32 @@ fn severity_style(theme: &Theme, severity: Severity) -> Style {
         _ => ThemeRole::DiagnosticInfo,
     };
     Style::default().fg(theme.role(role).to_ratatui())
+}
+
+/// Paint a markdown preview, re-parsing and re-wrapping only when the document version or
+/// the pane width has moved since the last frame.
+///
+/// Caching here rather than on every snapshot is what keeps typing cheap: a burst of
+/// keystrokes lands many snapshots but only one draw, so it costs one re-parse.
+fn draw_markdown_preview(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    buffer: &TextBuffer,
+    wrapped: &mut WrappedDocument,
+    rendered: &mut Option<(u64, u16)>,
+    scroll: &mut u16,
+) {
+    let key = (buffer.version(), area.width);
+    if *rendered != Some(key) {
+        *wrapped = karet_markdown::parse(&buffer.text()).wrap(area.width);
+        *rendered = Some(key);
+    }
+    let mut state = MarkdownViewState { scroll: *scroll };
+    f.render_stateful_widget(MarkdownView::new(wrapped, theme), area, &mut state);
+    // The widget clamps the scroll to the document; keep the clamped value so a
+    // shrinking document doesn't leave the tab scrolled past the end.
+    *scroll = state.scroll;
 }
 
 fn draw_blame(

@@ -170,6 +170,9 @@ static BINDINGS: &[Binding] = &[
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Right)], Command::FocusNextPane),
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Left)],  Command::FocusPrevPane),
 
+    // Markdown preview to the side (VS Code parity: `Ctrl+K V`). Inert on a non-Markdown tab.
+    seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('v'))], Command::MarkdownPreviewSide),
+
     // Source-Control panel (sidebar focus, SCM panel active). Listed before the
     // generic sidebar bindings so its keys win when both would match.
     b(SourceControl, false, false, false, Char(' '), Command::ScmToggleStage),

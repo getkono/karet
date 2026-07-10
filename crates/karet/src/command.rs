@@ -59,6 +59,8 @@ pub enum Command {
     DismissNotification,
     /// Dismiss all notifications.
     DismissAllNotifications,
+    /// Open a rendered preview of the active Markdown file in a pane to the right.
+    MarkdownPreviewSide,
     /// Split the focused pane into a new pane on the right.
     SplitRight,
     /// Split the focused pane into a new pane below.
@@ -389,6 +391,7 @@ impl Command {
             Self::OpenAnyway => "File: Open Anyway (Ignore Size Limit)",
             Self::DismissNotification => "Notifications: Dismiss",
             Self::DismissAllNotifications => "Notifications: Dismiss All",
+            Self::MarkdownPreviewSide => "Markdown: Open Preview to the Side",
             Self::SplitRight => "View: Split Editor Right",
             Self::SplitDown => "View: Split Editor Down",
             Self::FocusNextPane => "View: Focus Next Pane",
@@ -659,6 +662,7 @@ impl Command {
             Self::SearchToggleRegex => "regex",
             Self::SearchToggleCase => "case",
             Self::SearchToggleWord => "word",
+            Self::MarkdownPreviewSide => "preview",
             // Self-evident motion, selection, and editing — no hint.
             Self::MoveTabLeft
             | Self::MoveTabRight
@@ -785,6 +789,7 @@ impl Command {
                 | Self::ExplorerCopyRelativePath
                 | Self::DismissNotification
                 | Self::DismissAllNotifications
+                | Self::MarkdownPreviewSide
                 | Self::SplitRight
                 | Self::SplitDown
                 | Self::FocusNextPane
@@ -859,6 +864,7 @@ pub fn palette() -> Vec<Command> {
         Command::ScmUnstageAll,
         Command::ScmCommit,
         Command::ScmRefresh,
+        Command::MarkdownPreviewSide,
         Command::SplitRight,
         Command::SplitDown,
         Command::FocusNextPane,
