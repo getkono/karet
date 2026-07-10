@@ -93,6 +93,18 @@ pub struct Cli {
     #[arg(long, value_name = "PATH[:LINE[:COL]]")]
     pub goto: Option<String>,
 
+    /// Run a command-palette command after every other startup flag is applied
+    /// (repeatable; runs in the given order). NAME matches a palette entry's title
+    /// (e.g. "Source Control: Commit Graph") or its short slug (e.g. "graph"),
+    /// case-insensitively and exactly. An unknown or ambiguous name prints the
+    /// closest matches to stderr and exits non-zero before the TUI starts.
+    ///
+    /// Unstable automation surface: intended for scripting and view capture, the
+    /// command set and command names may change between major versions without
+    /// notice.
+    #[arg(long = "command", value_name = "NAME")]
+    pub command: Vec<String>,
+
     /// Print terminal-capability diagnostics and exit instead of starting the
     /// editor. Probes the same features karet checks at startup (kitty keyboard
     /// protocol, kitty graphics protocol, OSC 22 pointer shapes) and reports one
@@ -288,6 +300,26 @@ mod tests {
     fn split_defaults_to_empty() -> Result<(), clap::Error> {
         let cli = Cli::try_parse_from(["karet"])?;
         assert!(cli.split.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn command_flag_is_repeatable_and_ordered() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from([
+            "karet",
+            "--command",
+            "graph",
+            "--command",
+            "View: Split Editor Right",
+        ])?;
+        assert_eq!(cli.command, vec!["graph", "View: Split Editor Right"]);
+        Ok(())
+    }
+
+    #[test]
+    fn command_defaults_to_empty() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from(["karet"])?;
+        assert!(cli.command.is_empty());
         Ok(())
     }
 

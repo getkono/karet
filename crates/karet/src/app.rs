@@ -870,6 +870,14 @@ impl App {
         self.register_doc(self.active);
     }
 
+    /// Dispatch a palette command at startup (from the `--command` flag), after
+    /// every other startup flag is applied. Runs through the same
+    /// [`dispatch`](Self::dispatch) path a key binding or the palette uses, so CLI
+    /// automation and interactive use cannot drift.
+    pub fn apply_startup_command(&mut self, command: Command) {
+        self.dispatch(command);
+    }
+
     /// Apply the CLI's startup focus override after startup tabs are opened.
     pub fn apply_startup_focus(&mut self, focus: crate::cli::FocusChoice) {
         self.focus = match focus {
@@ -7104,6 +7112,42 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_startup_command_dispatches_in_order() {
+        // The pair [SelectPanel(Search), ToggleSidebar] is order-observable: run in
+        // this order the panel is Search and the sidebar ends hidden (SelectPanel
+        // shows it, ToggleSidebar then hides it); reversed it would end visible.
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        assert!(app.sidebar_visible);
+        app.apply_startup_command(Command::SelectPanel(SidebarPanel::Search));
+        app.apply_startup_command(Command::ToggleSidebar);
+        assert_eq!(app.sidebar_panel, SidebarPanel::Search);
+        assert!(
+            !app.sidebar_visible,
+            "ToggleSidebar must run after SelectPanel"
+        );
+
+        // The reversed order ends with the sidebar visible, proving order matters.
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        app.apply_startup_command(Command::ToggleSidebar);
+        app.apply_startup_command(Command::SelectPanel(SidebarPanel::Search));
+        assert!(app.sidebar_visible);
+    }
+
+    #[test]
+    fn apply_startup_command_opens_views() {
+        // A view-affecting palette command works from the startup path: SplitRight
+        // creates a second pane synchronously (no backend round-trip needed).
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        assert_eq!(app.layout.panes().len(), 1);
+        app.apply_startup_command(Command::SplitRight);
+        assert_eq!(
+            app.layout.panes().len(),
+            2,
+            "SplitRight should create a second pane"
+        );
     }
 
     #[test]

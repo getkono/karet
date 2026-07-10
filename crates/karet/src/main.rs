@@ -64,6 +64,22 @@ fn main() -> color_eyre::Result<()> {
         std::process::exit(doctor::run(&loaded_config.settings));
     }
 
+    // Resolve every `--command` name up front, so a typo fails fast on stderr with
+    // a non-zero exit — an automation run must never enter (and wedge) the TUI on a
+    // command that can never dispatch.
+    let startup_commands: Vec<command::Command> = match cli
+        .command
+        .iter()
+        .map(|name| command::resolve_named(name))
+        .collect()
+    {
+        Ok(commands) => commands,
+        Err(error) => {
+            eprintln!("karet: --command: {error}");
+            std::process::exit(2);
+        },
+    };
+
     if let Some(panel) = cli.startup_panel {
         loaded_config.settings.workbench.startup_panel = panel.into();
     }
@@ -106,6 +122,9 @@ fn main() -> color_eyre::Result<()> {
     }
     if let Some(focus) = cli.focus {
         app.apply_startup_focus(focus);
+    }
+    for command in startup_commands {
+        app.apply_startup_command(command);
     }
     app::run(app)
 }
