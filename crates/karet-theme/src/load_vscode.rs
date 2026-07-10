@@ -259,7 +259,8 @@ mod tests {
             t.emphasis(StandardToken::MarkupItalic.id()),
             Emphasis {
                 bold: false,
-                italic: true
+                italic: true,
+                strikethrough: false
             }
         );
         // An entry may carry both a color and a font style.
@@ -271,7 +272,8 @@ mod tests {
             t.emphasis(StandardToken::MarkupHeading.id()),
             Emphasis {
                 bold: true,
-                italic: true
+                italic: true,
+                strikethrough: false
             }
         );
         // An explicit empty fontStyle clears the built-in emphasis.
