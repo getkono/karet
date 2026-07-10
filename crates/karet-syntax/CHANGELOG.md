@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/getkono/karet/compare/karet-syntax-v0.2.1...karet-syntax-v0.2.2) - 2026-07-10
+
+### Added
+
+- *(karet-syntax)* translate highlight spans across an edit
+- *(karet-syntax)* highlight injected languages across layers
+
+### Other
+
+- Merge branch 'master' into feat/53-markdown-preview
+- pin Rust toolchains to exact versions
+- *(karet-syntax)* use `?` for the dotted-capture fallback
+- describe language injection across the crate docs
+
 ## [0.2.1](https://github.com/getkono/karet/compare/karet-syntax-v0.2.0...karet-syntax-v0.2.1) - 2026-07-09
 
 ### Other

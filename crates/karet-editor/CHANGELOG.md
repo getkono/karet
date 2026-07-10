@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/getkono/karet/compare/karet-editor-v0.2.1...karet-editor-v0.2.2) - 2026-07-10
+
+### Added
+
+- *(karet-theme)* colors and text emphasis for markup scopes
+
+### Other
+
+- Merge branch 'master' into feat/53-markdown-preview
+- pin Rust toolchains to exact versions
+
 ## [0.2.1](https://github.com/getkono/karet/compare/karet-editor-v0.2.0...karet-editor-v0.2.1) - 2026-07-09
 
 ### Added
