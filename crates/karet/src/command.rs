@@ -299,10 +299,12 @@ pub enum Command {
     ContextMenuAccept,
     /// Dismiss the context menu.
     ContextMenuCancel,
-    /// At the quit prompt: save every unsaved document, then exit.
-    QuitSaveAll,
-    /// At the quit prompt: discard unsaved changes and exit.
-    QuitDiscard,
+    /// At the close prompt (quit or tab/pane close): save the at-risk documents, then
+    /// run the close.
+    CloseConfirmSave,
+    /// At the close prompt (quit or tab/pane close): discard unsaved changes and run
+    /// the close.
+    CloseConfirmDiscard,
     /// At the startup recovery prompt: restore the unsaved changes from a previous
     /// session's crash-recovery backups.
     RecoverSwaps,
@@ -509,8 +511,8 @@ impl Command {
             Self::ContextMenuDown => "Context Menu: Select Next",
             Self::ContextMenuAccept => "Context Menu: Accept",
             Self::ContextMenuCancel => "Context Menu: Cancel",
-            Self::QuitSaveAll => "Quit: Save All and Exit",
-            Self::QuitDiscard => "Quit: Discard and Exit",
+            Self::CloseConfirmSave => "Confirm Close: Save and Close",
+            Self::CloseConfirmDiscard => "Confirm Close: Discard and Close",
             Self::RecoverSwaps => "Recover Unsaved Changes",
             Self::DiscardSwaps => "Discard Unsaved Backups",
             Self::ShowDependencyGraph => "Visualize: Dependency Graph",
@@ -638,8 +640,8 @@ impl Command {
             Self::ConfirmExplorerDelete => "confirm",
             Self::ContextMenuAccept => "accept",
             Self::ContextMenuCancel => "cancel",
-            Self::QuitSaveAll => "save all & quit",
-            Self::QuitDiscard => "discard & quit",
+            Self::CloseConfirmSave => "save & close",
+            Self::CloseConfirmDiscard => "discard & close",
             Self::RecoverSwaps => "recover",
             Self::DiscardSwaps => "discard",
             Self::ShowDependencyGraph => "deps",
