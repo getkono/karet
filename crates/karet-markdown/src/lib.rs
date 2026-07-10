@@ -1,8 +1,8 @@
 //! `karet-markdown` — a markdown rendering model for karet (and LSP hover docs).
 //!
-//! Parses markdown (CommonMark plus GitHub tables) into a block/inline render model
-//! decoupled from any renderer. Enable `view` for a ratatui renderer, and `highlight` to
-//! syntax-highlight code fences via `karet-syntax`.
+//! Parses markdown (CommonMark plus GitHub tables and task lists) into a block/inline
+//! render model decoupled from any renderer. Enable `view` for a ratatui renderer, and
+//! `highlight` to syntax-highlight code fences via `karet-syntax`.
 //!
 //! Two stages. [`parse`] turns source into a tree of [`Block`]s and [`Inline`]s;
 //! [`MarkdownDocument::wrap`] soft-wraps that tree to a column width, producing
@@ -49,6 +49,19 @@ pub enum Inline {
     },
 }
 
+/// One item of a [`Block::List`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ListItem {
+    /// Whether the item's box is ticked, for a task-list item (`- [ ]` / `- [x]`), or
+    /// `None` for an ordinary item.
+    ///
+    /// GitHub spells the checkbox inside the item's first paragraph; the model lifts it
+    /// onto the item, where it belongs — it marks the item, exactly as a bullet does.
+    pub task: Option<bool>,
+    /// The item's content.
+    pub blocks: Vec<Block>,
+}
+
 /// How a table column's cells are aligned within their column.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -90,13 +103,13 @@ pub enum Block {
         /// The raw code.
         code: String,
     },
-    /// A list, as a sequence of items (each a sequence of blocks).
+    /// A list.
     List {
         /// The first ordinal of an ordered list (`1` for `1.`), or `None` when the list
         /// is unordered.
         start: Option<u64>,
-        /// The items, each a sequence of blocks.
-        items: Vec<Vec<Block>>,
+        /// The items, top to bottom.
+        items: Vec<ListItem>,
     },
     /// A block quote.
     Quote(Vec<Block>),
@@ -147,6 +160,11 @@ impl MarkdownDocument {
 #[must_use]
 pub fn parse(source: &str) -> MarkdownDocument {
     parse::parse(source)
+}
+
+/// The checkbox a [`ListItem::task`] renders as, trailing space included.
+pub(crate) fn task_marker(checked: bool) -> &'static str {
+    if checked { "☑ " } else { "☐ " }
 }
 
 #[cfg(test)]

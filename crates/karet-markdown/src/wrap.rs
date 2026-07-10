@@ -12,6 +12,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::Alignment;
 use crate::Block;
 use crate::Inline;
+use crate::ListItem;
 use crate::MarkdownDocument;
 use crate::Row;
 
@@ -207,7 +208,7 @@ fn wrap_block(block: &Block, width: usize, prefix: &[TextSpan], out: &mut Vec<Wr
             }
         },
         Block::List { start, items } => {
-            let markers = list_markers(*start, items.len());
+            let markers = list_markers(*start, items);
             // Every marker is padded to the widest, so `9.` and `10.` share one text
             // column and the items' content lines up.
             let marker_width = markers.iter().map(|m| m.width()).max().unwrap_or(0);
@@ -225,7 +226,7 @@ fn wrap_block(block: &Block, width: usize, prefix: &[TextSpan], out: &mut Vec<Wr
                 });
 
                 let first_line = out.len();
-                wrap_blocks(item, width, &continuation, out);
+                wrap_blocks(&item.blocks, width, &continuation, out);
                 // Swap the continuation indent on the item's first line for the marker.
                 if let Some(first) = out.get_mut(first_line) {
                     replace_prefix(first, prefix.len(), &marked);
@@ -454,18 +455,26 @@ fn wrap_table(
     out.push(prefixed_line(prefix, table_border(&widths, '└', '┴', '┘')));
 }
 
-/// The marker for each of `count` list items: `1. `, `2. `, … from `start` for an ordered
-/// list, or a bullet for each item of an unordered one.
-fn list_markers(start: Option<u64>, count: usize) -> Vec<String> {
-    let Some(start) = start else {
-        return vec![BULLET.to_owned(); count];
-    };
-    (0..count)
-        .map(|index| {
-            // A list long enough to overflow `u64` cannot be typed; saturating keeps the
-            // arithmetic total either way, at the cost of repeating the final ordinal.
-            let ordinal = start.saturating_add(u64::try_from(index).unwrap_or(u64::MAX));
-            format!("{ordinal}. ")
+/// The marker for each list item: `1. `, `2. `, … from `start` for an ordered list, or a
+/// bullet for each item of an unordered one.
+///
+/// A task item's checkbox stands in for the bullet — the two mark the same thing, and
+/// GitHub draws only the box. An *ordered* task item keeps its ordinal and puts the
+/// checkbox after it, because the number carries meaning the box does not.
+fn list_markers(start: Option<u64>, items: &[ListItem]) -> Vec<String> {
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| match (start, item.task) {
+            (None, None) => BULLET.to_owned(),
+            (None, Some(checked)) => crate::task_marker(checked).to_owned(),
+            (Some(start), task) => {
+                // A list long enough to overflow `u64` cannot be typed; saturating keeps
+                // the arithmetic total, at the cost of repeating the final ordinal.
+                let ordinal = start.saturating_add(u64::try_from(index).unwrap_or(u64::MAX));
+                let box_ = task.map(crate::task_marker).unwrap_or_default();
+                format!("{ordinal}. {box_}")
+            },
         })
         .collect()
 }
@@ -809,14 +818,54 @@ mod tests {
         assert_eq!(first.spans.first().map(|s| s.text.as_str()), Some("1. "));
     }
 
+    /// `count` plain (non-task) list items.
+    fn plain_items(count: usize) -> Vec<ListItem> {
+        vec![ListItem::default(); count]
+    }
+
     #[test]
     fn list_markers_saturate_rather_than_overflow() {
         assert_eq!(
-            list_markers(Some(u64::MAX), 2),
-            vec![format!("{}. ", u64::MAX), format!("{}. ", u64::MAX),]
+            list_markers(Some(u64::MAX), &plain_items(2)),
+            vec![format!("{}. ", u64::MAX), format!("{}. ", u64::MAX)]
         );
-        assert!(list_markers(None, 3).iter().all(|m| m == BULLET));
-        assert!(list_markers(Some(1), 0).is_empty());
+        assert!(
+            list_markers(None, &plain_items(3))
+                .iter()
+                .all(|m| m == BULLET)
+        );
+        assert!(list_markers(Some(1), &[]).is_empty());
+    }
+
+    #[test]
+    fn a_task_items_checkbox_replaces_its_bullet_but_follows_its_ordinal() {
+        assert_eq!(
+            lines("- [ ] todo\n- [x] done\n- plain\n", 20),
+            vec!["☐ todo", "☑ done", "• plain",]
+        );
+        // An ordinal carries meaning the box does not, so both are drawn.
+        assert_eq!(
+            lines("1. [ ] todo\n2. [x] done\n", 20),
+            vec!["1. ☐ todo", "2. ☑ done",]
+        );
+    }
+
+    #[test]
+    fn a_task_items_content_aligns_with_a_plain_items() {
+        // The checkbox and the bullet are both two columns, so the text lines up.
+        let out = lines("- [x] alpha beta\n- plain\n", 8);
+        assert_eq!(out, vec!["☑ alpha", "  beta", "• plain"]);
+    }
+
+    #[test]
+    fn a_task_checkbox_is_structural_punctuation() {
+        let doc = wrap(&parse::parse("- [x] done\n"), 20);
+        let first = doc.lines.first().cloned().unwrap_or_default();
+        assert_eq!(first.spans.first().map(|s| s.text.as_str()), Some("☑ "));
+        assert_eq!(
+            first.spans.first().and_then(|s| s.token),
+            Some(StandardToken::MarkupListMarker.id())
+        );
     }
 
     #[test]

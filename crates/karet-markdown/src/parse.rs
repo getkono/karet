@@ -12,6 +12,7 @@ use crate::Alignment;
 use crate::Block;
 use crate::Cell;
 use crate::Inline;
+use crate::ListItem;
 use crate::MarkdownDocument;
 use crate::Row;
 
@@ -20,9 +21,13 @@ enum Frame {
     Quote(Vec<Block>),
     List {
         start: Option<u64>,
-        items: Vec<Vec<Block>>,
+        items: Vec<ListItem>,
     },
-    Item(Vec<Block>),
+    Item {
+        /// Set by the `TaskListMarker` event, which arrives before the item's content.
+        task: Option<bool>,
+        blocks: Vec<Block>,
+    },
     /// A paragraph. `implicit` marks one we opened ourselves to hold loose inlines — a
     /// *tight* list item emits its text with no `Start(Paragraph)` around it.
     Paragraph {
@@ -66,7 +71,7 @@ fn closes(frame: &Frame, tag: TagEnd) -> bool {
             | (Frame::Quote(_), TagEnd::BlockQuote(_))
             | (Frame::CodeBlock { .. }, TagEnd::CodeBlock)
             | (Frame::List { .. }, TagEnd::List(_))
-            | (Frame::Item(_), TagEnd::Item)
+            | (Frame::Item { .. }, TagEnd::Item)
             | (Frame::Emphasis(_), TagEnd::Emphasis)
             | (Frame::Strong(_), TagEnd::Strong)
             | (Frame::Link { .. }, TagEnd::Link | TagEnd::Image)
@@ -81,13 +86,13 @@ fn closes(frame: &Frame, tag: TagEnd) -> bool {
 /// Parse `source` into the render model.
 pub(crate) fn parse(source: &str) -> MarkdownDocument {
     let mut builder = Builder::new(source);
-    // CommonMark plus GitHub tables. The remaining extensions (footnotes, strikethrough,
-    // task lists) have no shape in the model, so enabling them would produce events we
-    // would silently drop.
+    // CommonMark plus the GitHub extensions the model has a shape for. The rest
+    // (footnotes, math) would only produce events we silently drop.
     //
     // `into_offset_iter` pairs each event with its source byte range, which is what lets
     // a top-level block remember the line it came from (see `Builder::block_lines`).
-    for (event, span) in Parser::new_ext(source, Options::ENABLE_TABLES).into_offset_iter() {
+    let options = Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS;
+    for (event, span) in Parser::new_ext(source, options).into_offset_iter() {
         builder.event(&event, span.start);
     }
     builder.finish()
@@ -148,6 +153,13 @@ impl Builder {
             // A hard break ends the line; the wrapper honors an embedded newline.
             Event::HardBreak => self.text("\n"),
             Event::Rule => self.block(Block::Rule),
+            // The marker arrives inside its item, ahead of the item's content, so the
+            // item frame is on top and no paragraph has opened yet.
+            Event::TaskListMarker(checked) => {
+                if let Some(Frame::Item { task, .. }) = self.stack.last_mut() {
+                    *task = Some(*checked);
+                }
+            },
             // Inline/block HTML, math and footnotes have no place in the model; their
             // text still arrives as `Event::Text` where it matters.
             _ => {},
@@ -174,7 +186,10 @@ impl Builder {
                 start: *start,
                 items: Vec::new(),
             },
-            Tag::Item => Frame::Item(Vec::new()),
+            Tag::Item => Frame::Item {
+                task: None,
+                blocks: Vec::new(),
+            },
             Tag::Emphasis => Frame::Emphasis(Vec::new()),
             Tag::Strong => Frame::Strong(Vec::new()),
             Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. } => Frame::Link {
@@ -228,9 +243,9 @@ impl Builder {
             Frame::Quote(blocks) => self.block(Block::Quote(blocks)),
             Frame::CodeBlock { lang, code } => self.block(Block::CodeBlock { lang, code }),
             Frame::List { start, items } => self.block(Block::List { start, items }),
-            Frame::Item(blocks) => {
+            Frame::Item { task, blocks } => {
                 if let Some(Frame::List { items, .. }) = self.stack.last_mut() {
-                    items.push(blocks);
+                    items.push(ListItem { task, blocks });
                 } else {
                     // An item outside a list: keep its content rather than drop it.
                     for block in blocks {
@@ -310,7 +325,7 @@ impl Builder {
             self.close();
         }
         match self.stack.last_mut() {
-            Some(Frame::Quote(blocks) | Frame::Item(blocks)) => blocks.push(block),
+            Some(Frame::Quote(blocks) | Frame::Item { blocks, .. }) => blocks.push(block),
             _ => self.push_root(block),
         }
     }
@@ -461,6 +476,43 @@ mod tests {
         }
     }
 
+    /// The `task` of each item of the first block, if it is a list.
+    fn item_tasks(source: &str) -> Vec<Option<bool>> {
+        match parse(source).blocks.first() {
+            Some(Block::List { items, .. }) => items.iter().map(|item| item.task).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_task_marker_is_lifted_off_the_items_text_and_onto_the_item() {
+        assert_eq!(
+            item_tasks("- [ ] todo\n- [x] done\n- plain\n"),
+            vec![Some(false), Some(true), None,]
+        );
+        // An upper-case tick is a tick too, and an ordered item can be a task.
+        assert_eq!(item_tasks("1. [X] done\n"), vec![Some(true)]);
+    }
+
+    #[test]
+    fn a_task_items_text_survives_the_marker_being_lifted_off_it() {
+        let doc = parse("- [x] done\n");
+        let items = match doc.blocks.first() {
+            Some(Block::List { items, .. }) => items.clone(),
+            _ => Vec::new(),
+        };
+        assert_eq!(
+            items.first().map(|item| item.blocks.as_slice()),
+            Some(&[Block::Paragraph(vec![Inline::Text("done".to_owned())])][..])
+        );
+    }
+
+    #[test]
+    fn a_bracket_pair_that_is_not_a_task_marker_stays_text() {
+        // Only a marker at the head of an item is a checkbox.
+        assert_eq!(item_tasks("- not [ ] a task\n"), vec![None]);
+    }
+
     #[test]
     fn an_unordered_list_has_no_start_and_an_ordered_one_keeps_its_first_ordinal() {
         assert_eq!(list_start("- one\n- two\n"), Some(None));
@@ -505,7 +557,7 @@ mod tests {
         };
         assert_eq!(items.len(), 2);
         assert_eq!(
-            items.first().map(Vec::as_slice),
+            items.first().map(|item| item.blocks.as_slice()),
             Some(&[Block::Paragraph(vec![Inline::Text("one".to_owned())])][..])
         );
         assert_eq!(doc.blocks.len(), 1, "nothing may escape to the root");
@@ -518,7 +570,7 @@ mod tests {
             Some(Block::List { items, .. }) => items.clone(),
             _ => Vec::new(),
         };
-        let first = items.first().cloned().unwrap_or_default();
+        let first = items.first().cloned().unwrap_or_default().blocks;
         assert_eq!(first.len(), 2, "text and code block, both inside the item");
         assert!(matches!(first.first(), Some(Block::Paragraph(_))));
         assert!(matches!(first.get(1), Some(Block::CodeBlock { .. })));
