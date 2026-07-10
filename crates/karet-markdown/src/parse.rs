@@ -8,9 +8,12 @@ use pulldown_cmark::Parser;
 use pulldown_cmark::Tag;
 use pulldown_cmark::TagEnd;
 
+use crate::Alignment;
 use crate::Block;
+use crate::Cell;
 use crate::Inline;
 use crate::MarkdownDocument;
+use crate::Row;
 
 /// A container element currently being built.
 enum Frame {
@@ -37,6 +40,18 @@ enum Frame {
         lang: Option<String>,
         code: String,
     },
+    Table {
+        alignments: Vec<Alignment>,
+        header: Row,
+        rows: Vec<Row>,
+    },
+    /// A table row. `head` marks the header row, which arrives as `TableHead` rather
+    /// than `TableRow` and lands in the table's `header` instead of its `rows`.
+    TableRow {
+        cells: Row,
+        head: bool,
+    },
+    TableCell(Cell),
 }
 
 /// Whether `frame` is the one `tag` closes.
@@ -52,18 +67,24 @@ fn closes(frame: &Frame, tag: TagEnd) -> bool {
             | (Frame::Emphasis(_), TagEnd::Emphasis)
             | (Frame::Strong(_), TagEnd::Strong)
             | (Frame::Link { .. }, TagEnd::Link | TagEnd::Image)
+            | (Frame::Table { .. }, TagEnd::Table)
+            // A header row and a body row share one frame; the two end tags never nest,
+            // so either closing the row frame is unambiguous.
+            | (Frame::TableRow { .. }, TagEnd::TableHead | TagEnd::TableRow)
+            | (Frame::TableCell(_), TagEnd::TableCell)
     )
 }
 
 /// Parse `source` into the render model.
 pub(crate) fn parse(source: &str) -> MarkdownDocument {
     let mut builder = Builder::new(source);
-    // Only CommonMark: the model has no table/footnote/strikethrough shape to hold the
-    // extensions, so enabling them would produce events we would silently drop.
+    // CommonMark plus GitHub tables. The remaining extensions (footnotes, strikethrough,
+    // task lists) have no shape in the model, so enabling them would produce events we
+    // would silently drop.
     //
     // `into_offset_iter` pairs each event with its source byte range, which is what lets
     // a top-level block remember the line it came from (see `Builder::block_lines`).
-    for (event, span) in Parser::new_ext(source, Options::empty()).into_offset_iter() {
+    for (event, span) in Parser::new_ext(source, Options::ENABLE_TABLES).into_offset_iter() {
         builder.event(&event, span.start);
     }
     builder.finish()
@@ -153,14 +174,28 @@ impl Builder {
                 href: dest_url.to_string(),
                 text: String::new(),
             },
-            _ => return, // tables, footnotes, HTML blocks: no model shape
+            Tag::Table(alignments) => Frame::Table {
+                alignments: alignments.iter().copied().map(alignment).collect(),
+                header: Vec::new(),
+                rows: Vec::new(),
+            },
+            Tag::TableHead => Frame::TableRow {
+                cells: Vec::new(),
+                head: true,
+            },
+            Tag::TableRow => Frame::TableRow {
+                cells: Vec::new(),
+                head: false,
+            },
+            Tag::TableCell => Frame::TableCell(Vec::new()),
+            _ => return, // footnotes, HTML blocks: no model shape
         };
         self.stack.push(frame);
     }
 
     fn end(&mut self, tag: TagEnd) {
-        // An unmodelled tag (a table, a footnote) pushed no frame; closing on it would
-        // tear down an unrelated one.
+        // An unmodelled tag (a footnote, an HTML block) pushed no frame; closing on it
+        // would tear down an unrelated one.
         if !self.stack.iter().any(|frame| closes(frame, tag)) {
             return;
         }
@@ -199,6 +234,31 @@ impl Builder {
             Frame::Emphasis(content) => self.inline(Inline::Emphasis(content)),
             Frame::Strong(content) => self.inline(Inline::Strong(content)),
             Frame::Link { href, text } => self.inline(Inline::Link { text, href }),
+            Frame::Table {
+                alignments,
+                header,
+                rows,
+            } => self.block(Block::Table {
+                header,
+                alignments,
+                rows,
+            }),
+            // A row or cell only ever closes inside its parent; outside one there is
+            // nowhere to attach it, and its content is dropped.
+            Frame::TableRow { cells, head } => {
+                if let Some(Frame::Table { header, rows, .. }) = self.stack.last_mut() {
+                    if head {
+                        *header = cells;
+                    } else {
+                        rows.push(cells);
+                    }
+                }
+            },
+            Frame::TableCell(content) => {
+                if let Some(Frame::TableRow { cells, .. }) = self.stack.last_mut() {
+                    cells.push(content);
+                }
+            },
         }
     }
 
@@ -219,7 +279,8 @@ impl Builder {
                 Frame::Paragraph { content, .. }
                 | Frame::Heading { content, .. }
                 | Frame::Emphasis(content)
-                | Frame::Strong(content),
+                | Frame::Strong(content)
+                | Frame::TableCell(content),
             ) => content.push(inline),
             // A link's label is flattened to text: the model carries no nested inlines
             // inside a link.
@@ -280,6 +341,17 @@ fn fence_language(kind: &CodeBlockKind<'_>) -> Option<String> {
         .unwrap_or("")
         .trim();
     (!name.is_empty()).then(|| name.to_ascii_lowercase())
+}
+
+/// Map `pulldown-cmark`'s column alignment onto the model's, so the public API stays
+/// free of the parser's types.
+fn alignment(alignment: pulldown_cmark::Alignment) -> Alignment {
+    match alignment {
+        pulldown_cmark::Alignment::None => Alignment::None,
+        pulldown_cmark::Alignment::Left => Alignment::Left,
+        pulldown_cmark::Alignment::Center => Alignment::Center,
+        pulldown_cmark::Alignment::Right => Alignment::Right,
+    }
 }
 
 fn heading_level(level: HeadingLevel) -> u8 {
@@ -430,6 +502,91 @@ mod tests {
     #[test]
     fn empty_source_yields_no_blocks() {
         assert!(parse("").blocks.is_empty());
+    }
+
+    /// The first block's table parts (else empty, which fails the caller's assertions
+    /// informatively).
+    fn table(doc: &MarkdownDocument) -> (&[Cell], &[Alignment], &[Row]) {
+        match doc.blocks.first() {
+            Some(Block::Table {
+                header,
+                alignments,
+                rows,
+            }) => (header, alignments, rows),
+            _ => (&[], &[], &[]),
+        }
+    }
+
+    #[test]
+    fn parses_a_table_with_its_header_alignments_and_rows() {
+        let doc = parse("| a | b |\n| :- | -: |\n| 1 | 2 |\n| 3 | 4 |\n");
+        let (header, alignments, rows) = table(&doc);
+        assert_eq!(
+            header,
+            [
+                vec![Inline::Text("a".to_owned())],
+                vec![Inline::Text("b".to_owned())],
+            ]
+        );
+        assert_eq!(alignments, [Alignment::Left, Alignment::Right]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows.first().and_then(|r| r.first()),
+            Some(&vec![Inline::Text("1".to_owned())])
+        );
+    }
+
+    #[test]
+    fn a_table_cell_keeps_its_inline_structure() {
+        let doc = parse("| `c` | **b** |\n| - | - |\n| [l](http://x) | |\n");
+        let (header, _, rows) = table(&doc);
+        assert_eq!(header.first(), Some(&vec![Inline::Code("c".to_owned())]));
+        assert!(matches!(
+            header.get(1).and_then(|c| c.first()),
+            Some(Inline::Strong(_))
+        ));
+        assert!(matches!(
+            rows.first().and_then(|r| r.first()).and_then(|c| c.first()),
+            Some(Inline::Link { .. })
+        ));
+        // A cell with no content is present but empty, so the row keeps its shape.
+        assert_eq!(rows.first().and_then(|r| r.get(1)), Some(&Vec::new()));
+    }
+
+    #[test]
+    fn an_undeclared_column_alignment_is_none() {
+        assert_eq!(
+            table(&parse("| a |\n| --- |\n| 1 |\n")).1,
+            [Alignment::None]
+        );
+    }
+
+    #[test]
+    fn a_short_body_row_is_padded_and_a_long_one_truncated() {
+        // GFM: a row's cells are matched against the header, dropping the excess.
+        let doc = parse("| a | b |\n| - | - |\n| 1 |\n| 1 | 2 | 3 |\n");
+        assert_eq!(
+            table(&doc).2.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![2, 2]
+        );
+    }
+
+    #[test]
+    fn a_table_nests_inside_a_block_quote() {
+        let doc = parse("> | a |\n> | - |\n> | 1 |\n");
+        assert!(matches!(
+            doc.blocks.first(),
+            Some(Block::Quote(blocks)) if matches!(blocks.first(), Some(Block::Table { .. }))
+        ));
+        assert_eq!(doc.blocks.len(), 1, "nothing may escape to the root");
+    }
+
+    #[test]
+    fn a_table_anchors_on_its_header_line() {
+        assert_eq!(
+            block_lines("para\n\n| a |\n| - |\n| 1 |\n\ntail\n"),
+            vec![0, 2, 6]
+        );
     }
 
     /// The source line of every top-level block, in order.

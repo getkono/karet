@@ -6,11 +6,14 @@
 
 use karet_core::StandardToken;
 use karet_core::TokenId;
+use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
+use crate::Alignment;
 use crate::Block;
 use crate::Inline;
 use crate::MarkdownDocument;
+use crate::Row;
 
 /// A styled run of text within a wrapped line.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,8 +132,10 @@ fn project(
 
 /// The bullet used for unordered list items.
 const BULLET: &str = "• ";
-/// The rule drawn for a thematic break.
+/// The rule drawn for a thematic break, and for a table's horizontal borders.
 const RULE: char = '─';
+/// The vertical border between a table's columns.
+const BAR: char = '│';
 /// The gutter drawn to the left of a block quote.
 const QUOTE_GUTTER: &str = "▌ ";
 
@@ -228,6 +233,11 @@ fn wrap_block(block: &Block, width: usize, prefix: &[TextSpan], out: &mut Vec<Wr
             });
             wrap_blocks(blocks, width, &gutter, out);
         },
+        Block::Table {
+            header,
+            alignments,
+            rows,
+        } => wrap_table(header, alignments, rows, inner, prefix, out),
         Block::Rule => out.push(prefixed_line(
             prefix,
             vec![TextSpan {
@@ -236,6 +246,205 @@ fn wrap_block(block: &Block, width: usize, prefix: &[TextSpan], out: &mut Vec<Wr
             }],
         )),
     }
+}
+
+/// Every cell of `row`, flattened to styled runs and padded out to `columns` cells.
+///
+/// `token` seeds the flatten, so a header row can render bold without overriding the
+/// tokens an inline sets for itself (a code span stays raw).
+fn row_runs(row: &Row, columns: usize, token: Option<TokenId>) -> Vec<Vec<TextSpan>> {
+    let mut cells: Vec<Vec<TextSpan>> = row
+        .iter()
+        .map(|cell| {
+            let mut runs = Vec::new();
+            flatten(cell, token, &mut runs);
+            runs
+        })
+        .collect();
+    cells.resize_with(columns, Vec::new);
+    cells
+}
+
+/// The single-line display width of a cell's runs.
+fn runs_width(runs: &[TextSpan]) -> usize {
+    runs.iter().map(|s| s.text.width()).sum()
+}
+
+/// The total width of `natural` once no column exceeds `cap`.
+fn capped_total(natural: &[usize], cap: usize) -> usize {
+    natural.iter().map(|&n| n.min(cap)).sum()
+}
+
+/// The content width of each column, given `width` columns for the whole table.
+///
+/// Every column gets at least one cell column, so a table always renders — a viewport too
+/// narrow to hold the grid overflows rather than collapsing. Where the natural widths do
+/// not fit, the *widest* columns shrink first (a cap is lowered until the row fits), so a
+/// narrow column keeps its content intact instead of being squeezed alongside a prose
+/// column that dwarfs it.
+fn column_widths<'a>(
+    rows: impl Iterator<Item = &'a [Vec<TextSpan>]>,
+    columns: usize,
+    width: usize,
+) -> Vec<usize> {
+    let mut natural = vec![1usize; columns];
+    for row in rows {
+        for (column, cell) in row.iter().enumerate() {
+            if let Some(slot) = natural.get_mut(column) {
+                *slot = (*slot).max(runs_width(cell));
+            }
+        }
+    }
+    // Chrome per column: a left border and a space either side of the content, plus the
+    // table's closing border.
+    let chrome = columns.saturating_mul(3).saturating_add(1);
+    let budget = width.saturating_sub(chrome).max(columns);
+    if capped_total(&natural, usize::MAX) <= budget {
+        return natural;
+    }
+
+    // The largest per-column cap that fits. A cap of 1 always fits (`budget >= columns`),
+    // so the search has a feasible floor to fall back on.
+    let mut low = 1usize;
+    let mut high = natural.iter().copied().max().unwrap_or(1);
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        if capped_total(&natural, mid) <= budget {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    let mut widths: Vec<usize> = natural.iter().map(|&n| n.min(low)).collect();
+    // The cap leaves the budget under-spent by less than one column's worth; hand the
+    // remainder to the capped columns so the grid fills the viewport.
+    let mut spare = budget.saturating_sub(widths.iter().sum());
+    for (width, natural) in widths.iter_mut().zip(&natural) {
+        if spare == 0 {
+            break;
+        }
+        if *width < *natural {
+            *width += 1;
+            spare -= 1;
+        }
+    }
+    widths
+}
+
+/// A horizontal table border: `left`, then a `RULE` run per column, joined by `mid`.
+fn table_border(widths: &[usize], left: char, mid: char, right: char) -> Vec<TextSpan> {
+    let mut text = left.to_string();
+    for (index, &width) in widths.iter().enumerate() {
+        if index > 0 {
+            text.push(mid);
+        }
+        // The content width plus the space padding either side of it.
+        text.extend(std::iter::repeat_n(RULE, width.saturating_add(2)));
+    }
+    text.push(right);
+    vec![TextSpan {
+        text,
+        token: Some(StandardToken::MarkupListMarker.id()),
+    }]
+}
+
+/// The padding to either side of a cell line `extra` columns narrower than its column.
+fn cell_padding(alignment: Alignment, extra: usize) -> (usize, usize) {
+    match alignment {
+        Alignment::None | Alignment::Left => (0, extra),
+        Alignment::Center => (extra / 2, extra - extra / 2),
+        Alignment::Right => (extra, 0),
+    }
+}
+
+/// Paint one table row, soft-wrapping each cell inside its column. A row is as tall as
+/// its tallest cell; the shorter cells are blank-padded to match.
+fn table_row(
+    cells: &[Vec<TextSpan>],
+    widths: &[usize],
+    alignments: &[Alignment],
+    prefix: &[TextSpan],
+    out: &mut Vec<WrappedLine>,
+) {
+    let wrapped: Vec<Vec<WrappedLine>> = cells
+        .iter()
+        .zip(widths)
+        .map(|(runs, &width)| {
+            let mut lines = Vec::new();
+            wrap_cell(runs, width, &mut lines);
+            lines
+        })
+        .collect();
+    let height = wrapped.iter().map(Vec::len).max().unwrap_or(0);
+
+    for row in 0..height {
+        let mut spans = vec![bar()];
+        for (column, &width) in widths.iter().enumerate() {
+            let line = wrapped.get(column).and_then(|lines| lines.get(row));
+            let used = line.map_or(0, WrappedLine::width);
+            let alignment = alignments.get(column).copied().unwrap_or_default();
+            let (left, right) = cell_padding(alignment, width.saturating_sub(used));
+            spans.push(space(left.saturating_add(1)));
+            if let Some(line) = line {
+                spans.extend(line.spans.iter().cloned());
+            }
+            spans.push(space(right.saturating_add(1)));
+            spans.push(bar());
+        }
+        out.push(prefixed_line(prefix, spans));
+    }
+}
+
+/// A vertical table border.
+fn bar() -> TextSpan {
+    TextSpan {
+        text: BAR.to_string(),
+        token: Some(StandardToken::MarkupListMarker.id()),
+    }
+}
+
+/// An unstyled run of `count` spaces.
+fn space(count: usize) -> TextSpan {
+    TextSpan {
+        text: " ".repeat(count),
+        token: None,
+    }
+}
+
+/// Paint a table as a box-drawn grid: a header row, a rule under it, then the body.
+fn wrap_table(
+    header: &Row,
+    alignments: &[Alignment],
+    rows: &[Row],
+    width: usize,
+    prefix: &[TextSpan],
+    out: &mut Vec<WrappedLine>,
+) {
+    let columns = header
+        .len()
+        .max(rows.iter().map(Vec::len).max().unwrap_or(0));
+    if columns == 0 {
+        return; // a table with no columns has nothing to draw
+    }
+    // A header cell renders bold unless one of its inlines claims a token of its own.
+    let header_cells = row_runs(header, columns, Some(StandardToken::MarkupBold.id()));
+    let body_cells: Vec<Vec<Vec<TextSpan>>> = rows
+        .iter()
+        .map(|row| row_runs(row, columns, None))
+        .collect();
+
+    let measured =
+        std::iter::once(header_cells.as_slice()).chain(body_cells.iter().map(Vec::as_slice));
+    let widths = column_widths(measured, columns, width);
+
+    out.push(prefixed_line(prefix, table_border(&widths, '┌', '┬', '┐')));
+    table_row(&header_cells, &widths, alignments, prefix, out);
+    out.push(prefixed_line(prefix, table_border(&widths, '├', '┼', '┤')));
+    for row in &body_cells {
+        table_row(row, &widths, alignments, prefix, out);
+    }
+    out.push(prefixed_line(prefix, table_border(&widths, '└', '┴', '┘')));
 }
 
 /// Replace the first `old_len` spans of `line` with `new`.
@@ -295,9 +504,50 @@ fn flatten(inlines: &[Inline], token: Option<TokenId>, out: &mut Vec<TextSpan>) 
 /// Greedily wrap `runs` to `width` columns, preserving each run's token.
 ///
 /// Breaks at whitespace; a single word longer than the line is emitted whole and allowed
-/// to overflow rather than being cut mid-grapheme. An embedded `\n` (a hard break) ends
-/// the line.
+/// to overflow rather than being cut mid-word. An embedded `\n` (a hard break) ends the
+/// line.
 fn wrap_runs(runs: &[TextSpan], width: usize, prefix: &[TextSpan], out: &mut Vec<WrappedLine>) {
+    wrap_runs_inner(runs, width, prefix, false, out);
+}
+
+/// As [`wrap_runs`], but breaking an over-long word across lines rather than letting it
+/// overflow — a table cell must stay inside its column or the grid stops lining up.
+fn wrap_cell(runs: &[TextSpan], width: usize, out: &mut Vec<WrappedLine>) {
+    wrap_runs_inner(runs, width, &[], true, out);
+}
+
+/// Split `word` into chunks at most `width` columns wide.
+///
+/// Splits between `char`s, so a word made of multi-`char` grapheme clusters can be cut
+/// mid-cluster; the alternative — overflowing the column — breaks the table grid, which is
+/// the worse of the two. A single `char` wider than `width` is emitted alone.
+fn split_to_width(word: &str, width: usize) -> Vec<&str> {
+    let width = width.max(1);
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    let mut used = 0usize;
+    for (index, ch) in word.char_indices() {
+        let ch_width = ch.width().unwrap_or(0);
+        if used > 0 && used + ch_width > width {
+            chunks.push(&word[start..index]);
+            start = index;
+            used = 0;
+        }
+        used += ch_width;
+    }
+    if start < word.len() {
+        chunks.push(&word[start..]);
+    }
+    chunks
+}
+
+fn wrap_runs_inner(
+    runs: &[TextSpan],
+    width: usize,
+    prefix: &[TextSpan],
+    break_words: bool,
+    out: &mut Vec<WrappedLine>,
+) {
     let mut line: Vec<TextSpan> = Vec::new();
     let mut used = 0usize;
 
@@ -315,21 +565,28 @@ fn wrap_runs(runs: &[TextSpan], width: usize, prefix: &[TextSpan], out: &mut Vec
                 flush(&mut line, &mut used, out); // a hard break
             }
             for word in words(segment) {
-                let w = word.width();
                 let is_space = word.chars().all(char::is_whitespace);
-                // Never start a line with the space that separated two words.
-                if used == 0 && is_space {
-                    continue;
+                let pieces = if break_words && !is_space && word.width() > width {
+                    split_to_width(word, width)
+                } else {
+                    vec![word]
+                };
+                for piece in pieces {
+                    let w = piece.width();
+                    // Never start a line with the space that separated two words.
+                    if used == 0 && is_space {
+                        continue;
+                    }
+                    if used > 0 && used + w > width && !is_space {
+                        flush(&mut line, &mut used, out);
+                    }
+                    // Re-check: a leading space can appear after the flush above.
+                    if used == 0 && is_space {
+                        continue;
+                    }
+                    push_word(&mut line, piece, run.token);
+                    used += w;
                 }
-                if used > 0 && used + w > width && !is_space {
-                    flush(&mut line, &mut used, out);
-                }
-                // Re-check: a leading space can appear after the flush above.
-                if used == 0 && is_space {
-                    continue;
-                }
-                push_word(&mut line, word, run.token);
-                used += w;
             }
         }
     }
@@ -507,6 +764,153 @@ mod tests {
         // A CJK glyph is two columns wide, so only one fits in a width of 3.
         let out = lines("世 界\n", 3);
         assert_eq!(out.len(), 2, "got {out:?}");
+    }
+
+    const TABLE: &str = "| Left | Center | Right |\n| :--- | :----: | ----: |\n\
+                         | a | bb | ccc |\n| longer cell | x | y |\n";
+
+    #[test]
+    fn a_table_renders_as_a_box_drawn_grid() {
+        assert_eq!(
+            lines(TABLE, 60),
+            vec![
+                "┌─────────────┬────────┬───────┐",
+                "│ Left        │ Center │ Right │",
+                "├─────────────┼────────┼───────┤",
+                "│ a           │   bb   │   ccc │",
+                "│ longer cell │   x    │     y │",
+                "└─────────────┴────────┴───────┘",
+            ]
+        );
+    }
+
+    #[test]
+    fn table_cells_honor_their_column_alignment() {
+        // Row `a | bb | ccc` under `:--- | :----: | ----:`, so left, centered, right.
+        let row = lines(TABLE, 60).get(3).cloned().unwrap_or_default();
+        assert_eq!(row, "│ a           │   bb   │   ccc │");
+    }
+
+    #[test]
+    fn a_header_cell_is_bold_unless_the_inline_claims_its_own_token() {
+        let doc = wrap(&parse::parse("| a | `c` |\n| - | - |\n| 1 | 2 |\n"), 40);
+        let header = doc.lines.get(1).cloned().unwrap_or_default();
+        let token = |text: &str| {
+            header
+                .spans
+                .iter()
+                .find(|s| s.text == text)
+                .and_then(|s| s.token)
+        };
+        assert_eq!(token("a"), Some(StandardToken::MarkupBold.id()));
+        assert_eq!(token("c"), Some(StandardToken::MarkupRaw.id()));
+    }
+
+    #[test]
+    fn table_borders_are_structural_punctuation() {
+        let doc = wrap(&parse::parse(TABLE), 60);
+        let top = doc.lines.first().cloned().unwrap_or_default();
+        assert_eq!(
+            top.spans.first().and_then(|s| s.token),
+            Some(StandardToken::MarkupListMarker.id())
+        );
+    }
+
+    /// Every line of the grid must be exactly as wide as every other, or the borders and
+    /// the cells stop lining up.
+    #[test]
+    fn every_grid_line_has_the_same_width_at_any_viewport() {
+        for width in [4, 7, 12, 20, 33, 60, 200] {
+            let doc = wrap(&parse::parse(TABLE), width);
+            let widths: Vec<usize> = doc.lines.iter().map(WrappedLine::width).collect();
+            assert!(
+                widths.windows(2).all(|w| w[0] == w[1]),
+                "ragged grid at width {width}: {widths:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_narrow_table_shrinks_its_widest_column_first() {
+        // The grid wants 32 columns. Given 30, `Center` and `Right` keep their content
+        // and only the prose column gives ground — it is the one with room to spare.
+        let out = lines(TABLE, 30);
+        assert_eq!(
+            out.get(1).map(String::as_str),
+            Some("│ Left      │ Center │ Right │")
+        );
+        assert_eq!(
+            out.get(4).map(String::as_str),
+            Some("│ longer    │   x    │     y │")
+        );
+    }
+
+    #[test]
+    fn a_table_fits_the_viewport_it_is_given() {
+        // 60 columns is more than the grid needs, so it renders at its natural width.
+        let natural = wrap(&parse::parse(TABLE), 60)
+            .lines
+            .first()
+            .map_or(0, WrappedLine::width);
+        assert_eq!(natural, 32);
+        // 30 columns is less, so it shrinks to fill exactly those.
+        let shrunk = wrap(&parse::parse(TABLE), 30);
+        assert_eq!(shrunk.lines.first().map(WrappedLine::width), Some(30));
+    }
+
+    #[test]
+    fn an_over_long_cell_word_is_broken_rather_than_overflowing_its_column() {
+        let out = lines("| h |\n| - |\n| abcdefgh |\n", 9);
+        // Content columns: 9 - (3*1 + 1) = 5.
+        assert_eq!(
+            out,
+            vec![
+                "┌───────┐",
+                "│ h     │",
+                "├───────┤",
+                "│ abcde │",
+                "│ fgh   │",
+                "└───────┘",
+            ]
+        );
+    }
+
+    #[test]
+    fn split_to_width_never_exceeds_the_width_and_loses_nothing() {
+        assert_eq!(split_to_width("abcdef", 2), vec!["ab", "cd", "ef"]);
+        // A CJK glyph is two columns, so only one fits per chunk of three.
+        assert_eq!(split_to_width("世界", 3), vec!["世", "界"]);
+        // A glyph wider than the chunk is emitted alone rather than dropped.
+        assert_eq!(split_to_width("世", 1), vec!["世"]);
+        assert_eq!(split_to_width("", 4), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn a_table_with_no_columns_draws_nothing() {
+        let mut out = Vec::new();
+        wrap_table(&Vec::new(), &[], &[], 20, &[], &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn a_quoted_table_carries_the_gutter_on_every_line() {
+        let out = lines("> | a |\n> | - |\n> | 1 |\n", 30);
+        assert!(!out.is_empty());
+        assert!(out.iter().all(|l| l.starts_with(QUOTE_GUTTER)), "{out:?}");
+    }
+
+    #[test]
+    fn a_degenerate_width_still_terminates_and_stays_aligned() {
+        let doc = wrap(&parse::parse(TABLE), 0);
+        let widths: Vec<usize> = doc.lines.iter().map(WrappedLine::width).collect();
+        assert!(widths.windows(2).all(|w| w[0] == w[1]), "{widths:?}");
+    }
+
+    #[test]
+    fn a_table_anchors_like_any_other_top_level_block() {
+        let doc = wrapped("para\n\n| a |\n| - |\n| 1 |\n", 30);
+        assert_eq!(doc.anchors.len(), 2);
+        assert_eq!(doc.anchors.get(1).map(|a| a.source_line), Some(2));
     }
 
     #[test]

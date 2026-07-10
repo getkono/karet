@@ -1,8 +1,8 @@
 //! `karet-markdown` — a markdown rendering model for karet (and LSP hover docs).
 //!
-//! Parses markdown into a block/inline render model decoupled from any renderer.
-//! Enable `view` for a ratatui renderer, and `highlight` to syntax-highlight code
-//! fences via `karet-syntax`.
+//! Parses markdown (CommonMark plus GitHub tables) into a block/inline render model
+//! decoupled from any renderer. Enable `view` for a ratatui renderer, and `highlight` to
+//! syntax-highlight code fences via `karet-syntax`.
 //!
 //! Two stages. [`parse`] turns source into a tree of [`Block`]s and [`Inline`]s;
 //! [`MarkdownDocument::wrap`] soft-wraps that tree to a column width, producing
@@ -49,6 +49,27 @@ pub enum Inline {
     },
 }
 
+/// How a table column's cells are aligned within their column.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Alignment {
+    /// No alignment was declared; cells render left-aligned.
+    #[default]
+    None,
+    /// `:---`
+    Left,
+    /// `:---:`
+    Center,
+    /// `---:`
+    Right,
+}
+
+/// One table cell: a run of inline content.
+pub type Cell = Vec<Inline>;
+
+/// One table row: a cell per column.
+pub type Row = Vec<Cell>;
+
 /// A block-level markdown element.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -73,6 +94,16 @@ pub enum Block {
     List(Vec<Vec<Block>>),
     /// A block quote.
     Quote(Vec<Block>),
+    /// A GitHub-flavored table.
+    Table {
+        /// The header row.
+        header: Row,
+        /// Per-column alignment. A column past the end of this vector is
+        /// [`Alignment::None`].
+        alignments: Vec<Alignment>,
+        /// The body rows, top to bottom. A row may be short; missing cells are empty.
+        rows: Vec<Row>,
+    },
     /// A thematic break (horizontal rule).
     Rule,
 }
