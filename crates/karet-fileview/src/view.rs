@@ -2,16 +2,20 @@
 //! right primitive, plus its [`FileViewState`] (scroll + reserved-image tracking)
 //! and the [`flush_kitty_image`] post-draw hook.
 
+#[cfg(feature = "raster")]
 use std::io;
+#[cfg(feature = "raster")]
 use std::io::Write;
 
 use karet_core::Decoration;
+#[cfg(any(feature = "images", feature = "pdf"))]
 use karet_core::ThemeRole;
 use karet_editor::Editor;
 use karet_editor::EditorState;
 use karet_theme::Theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+#[cfg(any(feature = "images", feature = "pdf"))]
 use ratatui::style::Style;
 use ratatui::widgets::StatefulWidget;
 use ratatui::widgets::Widget;
@@ -19,8 +23,10 @@ use ratatui::widgets::Widget;
 use crate::doc::Content;
 use crate::doc::FileDoc;
 use crate::hex::HexView;
+#[cfg(feature = "raster")]
 use crate::image;
 use crate::image::GraphicsProtocol;
+#[cfg(feature = "images")]
 use crate::image::ImageWidget;
 use crate::viewer::Placeholder;
 
@@ -201,6 +207,7 @@ impl StatefulWidget for FileView<'_> {
                     .read_only(true)
                     .render(area, buf, &mut state.editor);
             },
+            #[cfg(feature = "images")]
             Content::Image(img) => match self.protocol {
                 GraphicsProtocol::Kitty => {
                     // Reserve the area: paint the background and record the rect so
@@ -275,6 +282,10 @@ impl StatefulWidget for FileView<'_> {
 ///
 /// # Errors
 /// Propagates any write/flush error from `out`.
+///
+/// Compiled only when a raster branch exists (the `images` or `pdf` feature);
+/// without either there is nothing that can reserve a Kitty placement.
+#[cfg(feature = "raster")]
 pub fn flush_kitty_image(
     doc: &FileDoc,
     state: &FileViewState,
@@ -284,8 +295,10 @@ pub fn flush_kitty_image(
         return Ok(());
     };
     // The pixels live either directly on the document (a raster image) or in the
-    // per-view cache (a rasterized document page).
-    let img = match &doc.content {
+    // per-view cache (a rasterized document page). The explicit type keeps a
+    // `raster`-only build (no `images`/`pdf` arm) inferrable.
+    let img: Option<&image::Image> = match &doc.content {
+        #[cfg(feature = "images")]
         Content::Image(img) => Some(img),
         #[cfg(feature = "pdf")]
         Content::Document { .. } => state.rendered.as_ref().map(|(_, img)| img),
@@ -374,6 +387,7 @@ mod tests {
         assert!(text.contains("doc.pdf"), "placeholder title missing");
     }
 
+    #[cfg(feature = "images")]
     #[test]
     fn kitty_reserves_and_flushes() {
         let mut png = Vec::new();

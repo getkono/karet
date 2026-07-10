@@ -33,31 +33,43 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Formatting runs on nightly (rustfmt.toml uses unstable import options for
-      # merge resilience); build, clippy and tests stay on the pinned stable
-      # toolchain, which is installed last so it becomes the default.
-      - uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rustfmt
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      # Both toolchains are pinned in-repo, so CI and local dev compile with the
+      # exact same rustc. Formatting runs on the nightly pinned in rust-nightly.txt
+      # (rustfmt.toml uses unstable import options for merge resilience); build,
+      # clippy and tests run on the stable toolchain pinned in rust-toolchain.toml,
+      # which the bare `rustup toolchain install` resolves (along with its
+      # components) and which rustup then applies to every unprefixed cargo call.
+      - name: Install pinned toolchains
+        run: |
+          rustup toolchain install --profile minimal --component rustfmt "$(cat rust-nightly.txt)"
+          rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@v2
       - name: Format check
-        run: cargo +nightly fmt --all -- --check
+        run: cargo "+$(cat rust-nightly.txt)" fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test
         run: cargo test --workspace --all-features
+      # Guard the lean build (issue #23): the app and karet-fileview must keep
+      # compiling with the heavy media dependencies (`hayro`, `image`) removed, and
+      # each single media feature must build on its own. `--all-features` (above)
+      # covers the everything-on side.
+      - name: Lean build (no heavy media deps)
+        run: |
+          cargo build -p karet --no-default-features
+          cargo build -p karet --no-default-features --features pdf
+          cargo build -p karet --no-default-features --features images
+          cargo build -p karet-fileview --no-default-features
+          cargo build -p karet-fileview --no-default-features --features pdf
 
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
+      # Pinned stable + llvm-tools-preview, both from rust-toolchain.toml.
+      - name: Install pinned toolchain
+        run: rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate coverage report

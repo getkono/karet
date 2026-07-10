@@ -56,7 +56,7 @@ you type, and the two panes scroll together — whichever one has focus leads.
 
 ## Prerequisites
 
-- [Rust (rustup)](https://rustup.rs) — toolchain (pinned via `rust-toolchain.toml`)
+- [Rust (rustup)](https://rustup.rs) — toolchain (stable pinned in `rust-toolchain.toml`; the rustfmt-only nightly in `rust-nightly.txt`)
 - [mise](https://mise.jdx.dev) — task runner and tool manager
 - [hk](https://hk.jdx.dev) — git hooks manager (installed by `mise install`)
 - [pkl](https://pkl-lang.org) — config language for `hk.pkl` (installed by `mise install`)

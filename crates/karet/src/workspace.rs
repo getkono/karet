@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 
+#[cfg(feature = "images")]
 use karet_fileview::image;
 use karet_fileview::viewer::FileKind;
 use karet_fileview::viewer::{self};
@@ -61,6 +62,7 @@ fn read_file(path: &Path) -> (Vec<u8>, u64) {
 fn open_classified(path: &Path, syntax: bool, kind: FileKind, bytes: Vec<u8>, len: u64) -> Tab {
     match kind {
         FileKind::Text | FileKind::Markdown => open_text(path, &bytes, syntax),
+        #[cfg(feature = "images")]
         FileKind::Image => match image::decode(&bytes) {
             Ok(img) => Tab::new(
                 title(path),
@@ -80,6 +82,7 @@ fn open_classified(path: &Path, syntax: bool, kind: FileKind, bytes: Vec<u8>, le
                 scroll: 0,
             },
         ),
+        #[cfg(feature = "pdf")]
         FileKind::Pdf => open_document(path, bytes, len),
         FileKind::TooLarge { .. } => placeholder(path, kind, &bytes, len),
         // DOCX (rendering deferred — no pure-Rust rasterizer yet) and any future
@@ -177,6 +180,7 @@ fn highlight(path: &Path, text: &str) -> Highlights {
 
 /// Open a PDF as a document tab whose pages rasterize on demand (via `karet-pdf`),
 /// or fall back to a placeholder if the bytes are not a parseable PDF.
+#[cfg(feature = "pdf")]
 fn open_document(path: &Path, bytes: Vec<u8>, len: u64) -> Tab {
     match karet_pdf::Document::load(bytes) {
         Ok(doc) => {
@@ -200,9 +204,15 @@ fn open_document(path: &Path, bytes: Vec<u8>, len: u64) -> Tab {
 
 /// Build a graceful placeholder tab (too-large / DOCX / undecodable image / PDF).
 fn placeholder(path: &Path, kind: FileKind, bytes: &[u8], len: u64) -> Tab {
+    #[cfg(feature = "images")]
     let dims = if kind == FileKind::Image {
         image::dimensions(bytes)
     } else {
+        None
+    };
+    #[cfg(not(feature = "images"))]
+    let dims = {
+        let _ = bytes;
         None
     };
     Tab::new(
@@ -406,12 +416,14 @@ mod tests {
     }
 
     /// A minimal single-page PDF (empty US-Letter page), inline (no fixture).
+    #[cfg(feature = "pdf")]
     const MINIMAL_PDF: &[u8] = b"%PDF-1.4\n\
 1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n\
 2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n\
 3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n\
 trailer<</Size 4/Root 1 0 R>>\n%%EOF";
 
+    #[cfg(feature = "pdf")]
     #[test]
     fn opens_pdf_as_document_tab() {
         let dir = temp_dir();
