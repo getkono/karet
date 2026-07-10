@@ -18,10 +18,8 @@ pub(crate) fn map_capture(name: &str) -> Option<TokenId> {
         if let Some(tok) = StandardToken::from_capture_name(n) {
             return Some(tok.id());
         }
-        match n.rfind('.') {
-            Some(i) => n = &n[..i],
-            None => return None,
-        }
+        let i = n.rfind('.')?;
+        n = &n[..i];
     }
 }
 
