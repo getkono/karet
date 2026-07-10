@@ -57,7 +57,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      # Resolves the exact stable toolchain pinned in rust-toolchain.toml.
+      - name: Install pinned toolchain
+        run: rustup toolchain install --profile minimal
       - id: release-plz
         uses: release-plz/action@v0.5
         with:
@@ -87,7 +89,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      # Resolves the exact stable toolchain pinned in rust-toolchain.toml.
+      - name: Install pinned toolchain
+        run: rustup toolchain install --profile minimal
       - uses: release-plz/action@v0.5
         with:
           command: release-pr
@@ -115,9 +119,12 @@ jobs:
           - { os: macos-latest, target: aarch64-apple-darwin, use_cross: false }
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+      # The pinned stable toolchain (rust-toolchain.toml), plus this job's target.
+      # `rustup target add` applies to the toolchain that file selects.
+      - name: Install pinned toolchain
+        run: |
+          rustup toolchain install --profile minimal
+          rustup target add ${{ matrix.target }}
       # Key the cache by target. Both musl targets run on the same ubuntu-latest
       # runner, and rust-cache's default key omits the target — sharing one cache
       # would let the aarch64 job restore the x86_64 job's host-compiled build

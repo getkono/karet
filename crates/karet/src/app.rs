@@ -1802,6 +1802,7 @@ impl App {
     /// The flattened outline rows for the active tab, or empty when it has none.
     pub(crate) fn active_outline_rows(&self) -> Vec<OutlineRow> {
         match self.tabs.get(self.active).map(|t| &t.kind) {
+            #[cfg(feature = "pdf")]
             Some(TabKind::Document { outline, .. }) => {
                 crate::outline::flatten(&crate::outline::from_pdf(outline))
             },
@@ -1884,8 +1885,10 @@ impl App {
         self.outline_activate();
     }
 
-    /// Set the active document tab's current page (clamped to the page range).
+    /// Set the active document tab's current page (clamped to the page range). A
+    /// no-op without the `pdf` feature, where no document tab exists.
     fn set_document_page(&mut self, page: usize) {
+        #[cfg(feature = "pdf")]
         if let Some(Tab {
             kind:
                 TabKind::Document {
@@ -1898,6 +1901,8 @@ impl App {
         {
             *current = page.min(page_count.saturating_sub(1));
         }
+        #[cfg(not(feature = "pdf"))]
+        let _ = page;
     }
 
     /// Route a mouse-wheel notch over the sidebar: the Source-Control panel scrolls
@@ -4040,6 +4045,7 @@ impl App {
                 *scroll = next as usize;
             },
             // Scrolling a document turns pages (one page per scroll gesture).
+            #[cfg(feature = "pdf")]
             TabKind::Document {
                 page, page_count, ..
             } => {
@@ -4080,6 +4086,7 @@ impl App {
                     bytes.len().div_ceil(16).saturating_sub(1)
                 };
             },
+            #[cfg(feature = "pdf")]
             TabKind::Document {
                 page, page_count, ..
             } => {
@@ -4857,40 +4864,49 @@ impl App {
             return;
         }
         let mut stdout = io::stdout();
-        // The image, if any, belongs to the focused pane's active tab (keyed by its
-        // stable ViewId so a focus switch re-transmits correctly). Documents also key
-        // on the current page so paging re-transmits under an unchanged ViewId.
-        let current = self.tabs.get(self.active).map(|t| t.view);
-        let current_page = match self.tabs.get(self.active).map(|t| &t.kind) {
-            Some(TabKind::Document { page, .. }) => *page,
-            _ => 0,
-        };
-        // The pixels live directly on an image tab, or in a document tab's page cache.
-        let image = match self.tabs.get(self.active).map(|t| &t.kind) {
-            Some(TabKind::Image { image, .. }) => Some(image),
-            Some(TabKind::Document {
-                rendered: Some((_, image)),
-                ..
-            }) => Some(image),
-            _ => None,
-        };
-        match self.image_area {
-            Some(area) if self.shown_image != current || self.shown_page != current_page => {
-                let _ = write!(stdout, "{}", image::kitty_delete_all());
-                let _ = write!(stdout, "\x1b[{};{}H", area.y + 1, area.x + 1);
-                if let Some(image) = image {
-                    let _ = write!(stdout, "{}", image.kitty_escape(area.width, area.height));
-                }
-                let _ = stdout.flush();
-                self.shown_image = current;
-                self.shown_page = current_page;
-            },
-            None if self.shown_image.is_some() => {
-                let _ = write!(stdout, "{}", image::kitty_delete_all());
-                let _ = stdout.flush();
-                self.shown_image = None;
-            },
-            _ => {},
+        // Transmitting a rasterized image/PDF page needs a raster branch compiled in
+        // (`images`/`pdf`); the graphical text caret below is independent of it.
+        #[cfg(any(feature = "images", feature = "pdf"))]
+        {
+            // The image, if any, belongs to the focused pane's active tab (keyed by
+            // its stable ViewId so a focus switch re-transmits correctly). Documents
+            // also key on the current page so paging re-transmits under an unchanged
+            // ViewId.
+            let current = self.tabs.get(self.active).map(|t| t.view);
+            let current_page = match self.tabs.get(self.active).map(|t| &t.kind) {
+                #[cfg(feature = "pdf")]
+                Some(TabKind::Document { page, .. }) => *page,
+                _ => 0,
+            };
+            // The pixels live directly on an image tab, or in a document's page cache.
+            let image = match self.tabs.get(self.active).map(|t| &t.kind) {
+                #[cfg(feature = "images")]
+                Some(TabKind::Image { image, .. }) => Some(image),
+                #[cfg(feature = "pdf")]
+                Some(TabKind::Document {
+                    rendered: Some((_, image)),
+                    ..
+                }) => Some(image),
+                _ => None,
+            };
+            match self.image_area {
+                Some(area) if self.shown_image != current || self.shown_page != current_page => {
+                    let _ = write!(stdout, "{}", image::kitty_delete_all());
+                    let _ = write!(stdout, "\x1b[{};{}H", area.y + 1, area.x + 1);
+                    if let Some(image) = image {
+                        let _ = write!(stdout, "{}", image.kitty_escape(area.width, area.height));
+                    }
+                    let _ = stdout.flush();
+                    self.shown_image = current;
+                    self.shown_page = current_page;
+                },
+                None if self.shown_image.is_some() => {
+                    let _ = write!(stdout, "{}", image::kitty_delete_all());
+                    let _ = stdout.flush();
+                    self.shown_image = None;
+                },
+                _ => {},
+            }
         }
 
         let caret = self.active_graphics_caret();
@@ -5762,19 +5778,22 @@ fn rebase_path(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
 }
 
 fn retarget_tab_path(tab: &mut Tab, path: &Path) {
-    match &mut tab.kind {
+    let target = match &mut tab.kind {
         TabKind::Code { path: p, .. }
-        | TabKind::Image { path: p, .. }
-        | TabKind::Document { path: p, .. }
         | TabKind::Hex { path: p, .. }
         | TabKind::Placeholder { path: p, .. }
-        | TabKind::Blame { path: p, .. } => {
-            *p = path.to_path_buf();
-            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-                tab.title = name.to_string();
-            }
-        },
-        _ => {},
+        | TabKind::Blame { path: p, .. } => Some(p),
+        #[cfg(feature = "images")]
+        TabKind::Image { path: p, .. } => Some(p),
+        #[cfg(feature = "pdf")]
+        TabKind::Document { path: p, .. } => Some(p),
+        _ => None,
+    };
+    if let Some(p) = target {
+        *p = path.to_path_buf();
+        if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+            tab.title = name.to_string();
+        }
     }
 }
 
@@ -6421,6 +6440,7 @@ mod tests {
         assert!(load_theme("/definitely/missing.tmTheme").is_err());
     }
 
+    #[cfg(feature = "pdf")]
     #[test]
     fn outline_panel_toggles_and_jumps_to_a_bookmarked_page() {
         // A 2-page PDF whose single bookmark targets the second page (index 1). Like

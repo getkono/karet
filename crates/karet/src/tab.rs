@@ -11,8 +11,10 @@ use std::time::Instant;
 
 use karet_core::Decoration;
 use karet_editor::EditorState;
+#[cfg(any(feature = "images", feature = "pdf"))]
 use karet_fileview::image::Image;
 use karet_fileview::viewer::FileKind;
+#[cfg(feature = "pdf")]
 use karet_pdf::Document as PdfDocument;
 use karet_search::SearchQuery;
 use karet_session::DocumentId;
@@ -120,6 +122,7 @@ pub enum TabKind {
         search_decos: Vec<Decoration>,
     },
     /// A raster image.
+    #[cfg(feature = "images")]
     Image {
         /// The file path.
         path: PathBuf,
@@ -128,6 +131,7 @@ pub enum TabKind {
     },
     /// A rendered multi-page document (e.g. PDF): pages rasterized to images on
     /// demand and shown via the Kitty graphics protocol.
+    #[cfg(feature = "pdf")]
     Document {
         /// The file path.
         path: PathBuf,
@@ -448,11 +452,13 @@ impl Tab {
     pub fn path(&self) -> Option<&Path> {
         match &self.kind {
             TabKind::Code { path, .. }
-            | TabKind::Image { path, .. }
-            | TabKind::Document { path, .. }
             | TabKind::Hex { path, .. }
             | TabKind::Placeholder { path, .. }
             | TabKind::Blame { path, .. } => Some(path),
+            #[cfg(feature = "images")]
+            TabKind::Image { path, .. } => Some(path),
+            #[cfg(feature = "pdf")]
+            TabKind::Document { path, .. } => Some(path),
             TabKind::Diff { file, .. } => Some(&file.change.path),
             TabKind::Welcome
             | TabKind::Graph { .. }
@@ -475,7 +481,9 @@ impl Tab {
     pub fn language(&self) -> &str {
         match &self.kind {
             TabKind::Code { language, .. } => language,
+            #[cfg(feature = "images")]
             TabKind::Image { .. } => "image",
+            #[cfg(feature = "pdf")]
             TabKind::Document { .. } => "pdf",
             TabKind::Hex { .. } => "binary",
             TabKind::Placeholder { .. } => "preview",

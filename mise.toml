@@ -1,8 +1,10 @@
 #:schema https://mise.jdx.dev/schema/mise.json
 
 # Tools are managed by mise so `mise install` provisions everything the
-# hooks and tasks below need. The Rust toolchain itself is pinned via
-# rust-toolchain.toml and provided by rustup.
+# hooks and tasks below need. The Rust toolchains themselves are provided by
+# rustup and pinned to exact versions in-repo: stable in rust-toolchain.toml
+# (which rustup applies to every cargo call) and the rustfmt-only nightly in
+# rust-nightly.txt (read below, and by hk.pkl and CI, so it has one home).
 [tools]
 hk = "latest"                  # git hooks manager (reads hk.pkl)
 pkl = "latest"                 # config language hk.pkl is written in
@@ -10,8 +12,12 @@ pkl = "latest"                 # config language hk.pkl is written in
 "cargo:convco" = "latest"          # conventional-commit validation (commit-msg hook + CI)
 
 [tasks.format]
-description = "Format code with rustfmt (nightly: rustfmt.toml uses unstable import opts)"
-run = "cargo +nightly fmt --all"
+description = "Format code with rustfmt (pinned nightly: rustfmt.toml uses unstable import opts)"
+run = 'cargo "+$(cat {{config_root}}/rust-nightly.txt)" fmt --all'
+
+[tasks.format-check]
+description = "Check formatting without writing (same pinned nightly as `format`)"
+run = 'cargo "+$(cat {{config_root}}/rust-nightly.txt)" fmt --all -- --check'
 
 [tasks.lint]
 description = "Lint with clippy (deny warnings)"
@@ -24,6 +30,16 @@ run = "cargo clippy --workspace --all-targets --all-features --fix --allow-dirty
 [tasks.test]
 description = "Run the test suite"
 run = "cargo test --workspace --all-features"
+
+[tasks.build-lean]
+description = "Build without the heavy media deps (issue #23): app + karet-fileview across the optional feature combos"
+run = [
+  "cargo build -p karet --no-default-features",
+  "cargo build -p karet --no-default-features --features pdf",
+  "cargo build -p karet --no-default-features --features images",
+  "cargo build -p karet-fileview --no-default-features",
+  "cargo build -p karet-fileview --no-default-features --features pdf",
+]
 
 [tasks.coverage]
 description = "Report line coverage with cargo-llvm-cov"

@@ -53,9 +53,20 @@ if protocol == GraphicsProtocol::Kitty {
 
 ## Features
 
+All off by default, so a consumer that only renders hex or plain text pulls no
+grammar, codec, or PDF dependencies. Disabled file kinds fall through to the
+placeholder branch.
+
 - `all-languages` — compile in every tree-sitter grammar so the text branch
-  highlights. Off by default; without it (or a per-language feature) text still
-  renders, just unhighlighted.
+  highlights. Without it (or a per-language feature) text still renders,
+  unhighlighted.
+- `raster` — the shared terminal-image primitives (Kitty escape + halfblock
+  rendering); pulls the `image` crate. Enabled automatically by `images` and
+  `pdf`, so it is rarely selected on its own.
+- `images` — decode & render raster image **files** (adds the image-codec entry
+  points on top of `raster`).
+- `pdf` — rasterize PDF pages via `karet-pdf`/`hayro` and display them through
+  the shared `raster` primitives.
 
 ## Notes
 

@@ -25,6 +25,7 @@ use karet_fileview::FileDoc;
 use karet_fileview::FileView;
 use karet_fileview::FileViewState;
 use karet_fileview::Limits;
+#[cfg(feature = "raster")]
 use karet_fileview::flush_kitty_image;
 use karet_fileview::image::GraphicsProtocol;
 use karet_fileview::image::detect_protocol;
@@ -63,7 +64,9 @@ fn run(
             let area = frame.area();
             frame.render_stateful_widget(FileView::new(doc).graphics(protocol), area, &mut state);
         })?;
-        // The Kitty graphics path transmits pixels after the frame is drawn.
+        // The Kitty graphics path transmits pixels after the frame is drawn (only
+        // when a raster branch is compiled in via the `images`/`pdf` features).
+        #[cfg(feature = "raster")]
         if protocol == GraphicsProtocol::Kitty {
             flush_kitty_image(doc, &state, &mut io::stdout())?;
         }

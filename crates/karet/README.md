@@ -53,6 +53,11 @@ renderer — everything unsupported fails gracefully:
 | binary | `karet-widgets::HexView` |
 | too large (>10 MiB) | placeholder |
 
+Image and PDF rendering are optional, **default-on** features (`images`, `pdf`).
+Build with `cargo build --no-default-features` to drop their heavy dependency
+trees (`image` codecs, `hayro`); those kinds then show the placeholder instead.
+See [docs/binary-size.md](../../docs/binary-size.md).
+
 ## Keymap
 
 **Global:** `Ctrl+P` quick-open · `Ctrl+Shift+P` (or `F1`) command palette · `Ctrl+F`

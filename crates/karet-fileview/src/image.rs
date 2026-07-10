@@ -7,17 +7,30 @@
 //! the terminal after drawing, since the cell buffer cannot carry pixels. The
 //! placement lifecycle across scroll/resize is intentionally minimal (active tab
 //! only) for now; Sixel/iTerm2 protocols and PDF rasterization are out of scope.
+//!
+//! Pixel work sits behind two features so a lean build pulls no `image` codec
+//! tree: the shared primitives ([`Image`], [`ImageWidget`]) require `raster`
+//! (enabled by both `images` and `pdf`), while the image-file decoders
+//! ([`decode`], [`dimensions`]) require `images`. Protocol detection
+//! ([`GraphicsProtocol`], [`detect_protocol`], [`fit_rect`]) carries no `image`
+//! dependency and is always compiled.
 
+#[cfg(feature = "raster")]
 use base64::Engine as _;
+#[cfg(feature = "raster")]
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+#[cfg(feature = "raster")]
 use ratatui::style::Color;
+#[cfg(feature = "raster")]
 use ratatui::widgets::Widget;
 
 /// The maximum base64 payload per Kitty escape chunk.
+#[cfg(feature = "raster")]
 const KITTY_CHUNK: usize = 4096;
 
 /// Errors decoding or rendering an image.
+#[cfg(feature = "images")]
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ImageError {
@@ -87,6 +100,7 @@ pub fn fit_rect(area: Rect, px_w: u32, px_h: u32) -> Rect {
 }
 
 /// A decoded RGBA image.
+#[cfg(feature = "raster")]
 #[derive(Clone, Debug)]
 pub struct Image {
     rgba: Vec<u8>,
@@ -94,6 +108,7 @@ pub struct Image {
     height: u32,
 }
 
+#[cfg(feature = "raster")]
 impl Image {
     /// Build an image directly from raw 8-bit RGBA pixels (row-major, 4 bytes per
     /// pixel, `width * height * 4` bytes).
@@ -198,6 +213,7 @@ impl Image {
 ///
 /// # Errors
 /// Returns [`ImageError::Decode`] if the bytes are not a supported format.
+#[cfg(feature = "images")]
 pub fn decode(bytes: &[u8]) -> Result<Image, ImageError> {
     let img = ::image::load_from_memory(bytes).map_err(|_| ImageError::Decode)?;
     let rgba = img.to_rgba8();
@@ -211,6 +227,7 @@ pub fn decode(bytes: &[u8]) -> Result<Image, ImageError> {
 
 /// Read just the pixel dimensions of `bytes` without fully decoding it (used for
 /// placeholders), or `None` if the format cannot be determined.
+#[cfg(feature = "images")]
 #[must_use]
 pub fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     ::image::ImageReader::new(std::io::Cursor::new(bytes))
@@ -224,10 +241,12 @@ pub fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 ///
 /// For the Kitty graphics path the application reserves the area and flushes
 /// [`Image::kitty_escape`] itself; this widget is the universal fallback.
+#[cfg(feature = "raster")]
 pub struct ImageWidget<'a> {
     image: &'a Image,
 }
 
+#[cfg(feature = "raster")]
 impl<'a> ImageWidget<'a> {
     /// Build a widget rendering `image`.
     #[must_use]
@@ -236,6 +255,7 @@ impl<'a> ImageWidget<'a> {
     }
 }
 
+#[cfg(feature = "raster")]
 impl Widget for ImageWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         self.image.render_halfblocks(area, buf);
@@ -247,6 +267,7 @@ mod tests {
     use super::*;
 
     /// A 2×2 PNG built in-memory (no test fixtures on disk).
+    #[cfg(feature = "images")]
     fn tiny_png() -> Vec<u8> {
         let mut img = ::image::RgbaImage::new(2, 2);
         img.put_pixel(0, 0, ::image::Rgba([255, 0, 0, 255]));
@@ -259,6 +280,7 @@ mod tests {
         bytes
     }
 
+    #[cfg(feature = "images")]
     fn empty() -> Image {
         Image {
             rgba: Vec::new(),
@@ -267,6 +289,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "images")]
     #[test]
     fn decode_and_dimensions() {
         let png = tiny_png();
@@ -277,11 +300,13 @@ mod tests {
         assert_eq!((img.width(), img.height()), (2, 2));
     }
 
+    #[cfg(feature = "images")]
     #[test]
     fn decode_rejects_garbage() {
         assert!(matches!(decode(b"not an image"), Err(ImageError::Decode)));
     }
 
+    #[cfg(feature = "raster")]
     #[test]
     fn from_rgba_keeps_dimensions_and_feeds_kitty() {
         // A 2×1 image supplied as raw RGBA reuses the Kitty escape path.
@@ -292,6 +317,7 @@ mod tests {
         assert!(esc.contains("v=1"));
     }
 
+    #[cfg(feature = "raster")]
     #[test]
     fn from_rgba_pads_short_buffers_to_declared_size() {
         // Fewer bytes than width*height*4 are padded so the buffer stays valid.
@@ -303,6 +329,7 @@ mod tests {
         assert!(buf.content().iter().any(|c| c.symbol() == "▀"));
     }
 
+    #[cfg(feature = "images")]
     #[test]
     fn halfblocks_fill_cells() {
         let img = decode(&tiny_png()).unwrap_or_else(|_| empty());
@@ -312,6 +339,7 @@ mod tests {
         assert!(buf.content().iter().any(|c| c.symbol() == "▀"));
     }
 
+    #[cfg(feature = "images")]
     #[test]
     fn kitty_escape_has_header_and_terminators() {
         let img = decode(&tiny_png()).unwrap_or_else(|_| empty());
