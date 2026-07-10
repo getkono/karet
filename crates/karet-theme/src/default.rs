@@ -3,6 +3,7 @@
 use karet_core::StandardToken;
 use karet_core::ThemeRole;
 
+use crate::Emphasis;
 use crate::ROLE_COUNT;
 use crate::Rgba;
 use crate::TOKEN_COUNT;
@@ -42,6 +43,26 @@ pub(crate) fn dark() -> Theme {
     tok(StandardToken::Attribute, rgb(0xe0, 0xaf, 0x68));
     tok(StandardToken::Namespace, rgb(0x73, 0xda, 0xca));
     tok(StandardToken::Label, rgb(0x89, 0xdd, 0xff));
+    // A doc comment sits a step brighter than an ordinary comment: it is prose the
+    // reader is meant to read, not noise to skim past.
+    tok(StandardToken::CommentDoc, rgb(0x73, 0x7a, 0xa2));
+    tok(StandardToken::MarkupHeading, rgb(0x7a, 0xa2, 0xf7));
+    tok(StandardToken::MarkupBold, rgb(0xc0, 0xca, 0xf5));
+    tok(StandardToken::MarkupItalic, rgb(0xc0, 0xca, 0xf5));
+    tok(StandardToken::MarkupLink, rgb(0x2a, 0xc3, 0xde));
+    tok(StandardToken::MarkupRaw, rgb(0x9e, 0xce, 0x6a));
+    tok(StandardToken::MarkupQuote, rgb(0x9a, 0xa5, 0xce));
+    tok(StandardToken::MarkupListMarker, rgb(0xff, 0x9e, 0x64));
+
+    // Markup carries weight and slant, not just hue: bold/italic are what make a
+    // heading read as a heading and `*em*` read as emphasis.
+    let mut emphasis = [Emphasis::default(); TOKEN_COUNT];
+    let mut em = |t: StandardToken, e: Emphasis| emphasis[t.id().0 as usize] = e;
+    em(StandardToken::CommentDoc, Emphasis::ITALIC);
+    em(StandardToken::MarkupHeading, Emphasis::BOLD);
+    em(StandardToken::MarkupBold, Emphasis::BOLD);
+    em(StandardToken::MarkupItalic, Emphasis::ITALIC);
+    em(StandardToken::MarkupQuote, Emphasis::ITALIC);
 
     let mut roles = [fg; ROLE_COUNT];
     let mut role = |r: ThemeRole, c: Rgba| roles[r as usize] = c;
@@ -84,6 +105,7 @@ pub(crate) fn dark() -> Theme {
 
     Theme {
         tokens,
+        emphasis,
         fallback_fg: fg,
         roles,
         dark: is_dark_color(bg),

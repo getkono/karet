@@ -13,11 +13,10 @@ use karet_fileview::image;
 use karet_fileview::viewer::FileKind;
 use karet_fileview::viewer::{self};
 use karet_syntax::FoldRegions;
-use karet_syntax::Highlighter;
 use karet_syntax::Highlights;
+use karet_syntax::LayeredHighlighter;
 use karet_text::TextBuffer;
-use karet_treesitter::ParserPool;
-use karet_treesitter::SyntaxTree;
+use karet_treesitter::LayeredParser;
 use karet_treesitter::language_id_from_path;
 use karet_treesitter::language_name_from_path;
 
@@ -162,18 +161,18 @@ fn open_cbor(path: &Path, bytes: &[u8]) -> Tab {
 }
 
 /// Highlight `text` for `path`'s language, or return empty highlights.
+///
+/// Layered, so a read-only view colours embedded languages — a markdown fence, a Rust
+/// doctest — exactly as the editable one does.
 fn highlight(path: &Path, text: &str) -> Highlights {
     let Some(lang) = language_id_from_path(path) else {
         return Highlights::default();
     };
-    let mut pool = ParserPool::new();
-    let Ok(tree) = SyntaxTree::parse(&mut pool, lang, text) else {
+    let mut parser = LayeredParser::new();
+    let Ok(tree) = parser.parse(lang, text) else {
         return Highlights::default();
     };
-    let Ok(highlighter) = Highlighter::new(lang) else {
-        return Highlights::default();
-    };
-    highlighter.highlight(&tree, text).unwrap_or_default()
+    LayeredHighlighter::new().highlight(&tree, text)
 }
 
 /// Open a PDF as a document tab whose pages rasterize on demand (via `karet-pdf`),
@@ -286,6 +285,65 @@ mod tests {
         let _ = std::fs::write(&file, "fn main() {}\n");
         let tab = open_file(&file, true);
         assert!(matches!(tab.kind, TabKind::Code { .. }));
+    }
+
+    /// The token covering `needle`'s first byte, per a tab's highlights.
+    fn token_of(tab: &Tab, needle: &str) -> Option<karet_core::TokenId> {
+        let TabKind::Code {
+            text, highlights, ..
+        } = &tab.kind
+        else {
+            return None;
+        };
+        let at = text.find(needle)?;
+        highlights
+            .all()
+            .iter()
+            .find(|s| s.span.start.0 <= at && at < s.span.end.0)
+            .map(|s| s.token)
+    }
+
+    #[test]
+    fn markdown_code_fence_opens_highlighted_as_its_language() {
+        let dir = temp_dir();
+        let file = dir.path.join("notes.md");
+        let _ = std::fs::write(&file, "# Title\n\n```rust\nfn main() {}\n```\n");
+        let tab = open_file(&file, true);
+        // The embedded rust must colour through the injection layers, not render as
+        // undifferentiated markdown.
+        assert_eq!(
+            token_of(&tab, "fn main"),
+            Some(karet_core::TokenId::KEYWORD)
+        );
+        assert_eq!(
+            token_of(&tab, "Title"),
+            Some(karet_core::StandardToken::MarkupHeading.id())
+        );
+    }
+
+    #[test]
+    fn rust_doctest_in_a_doc_comment_opens_highlighted_as_rust() {
+        let dir = temp_dir();
+        let file = dir.path.join("lib.rs");
+        let _ = std::fs::write(
+            &file,
+            "/// Doc.\n///\n/// ```rust\n/// let y = 1;\n/// ```\npub fn f() {}\n",
+        );
+        let tab = open_file(&file, true);
+        assert_eq!(token_of(&tab, "let y"), Some(karet_core::TokenId::KEYWORD));
+        assert_eq!(
+            token_of(&tab, "Doc."),
+            Some(karet_core::StandardToken::CommentDoc.id())
+        );
+    }
+
+    #[test]
+    fn no_syntax_flag_disables_highlighting() {
+        let dir = temp_dir();
+        let file = dir.path.join("notes.md");
+        let _ = std::fs::write(&file, "```rust\nfn main() {}\n```\n");
+        let tab = open_file(&file, false);
+        assert_eq!(token_of(&tab, "fn main"), None);
     }
 
     #[test]

@@ -23,8 +23,9 @@ thiserror.workspace = true
 # parse host (not tree-sitter-highlight), honoring the single-parse-host design.
 
 [dev-dependencies]
-# Compile in the Rust grammar so the end-to-end highlight test is self-contained.
-karet-treesitter = { workspace = true, features = ["lang-rust"] }
+# Compile in the Rust + Markdown grammars so the end-to-end highlight tests — including
+# embedded code fences and markdown-in-doc-comments — are self-contained.
+karet-treesitter = { workspace = true, features = ["lang-rust", "lang-markdown"] }
 
 [lints]
 workspace = true

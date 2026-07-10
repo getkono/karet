@@ -1,10 +1,16 @@
 //! The owned, headless editor model: [`Session`] and its read/event surface.
 //!
-//! A [`Session`] owns a [`DocumentStore`] of open documents, a single tree-sitter
-//! [`ParserPool`] and per-language [`Highlighter`]s reused across documents, and
-//! the senders for the neutral [`Event`] stream and the local snapshot stream. It
-//! applies [`Command`]s synchronously (the fast paths — open/apply/save/undo — are
-//! inline) and emits [`Event`]s plus [`DocSnapshot`]s.
+//! A [`Session`] owns a [`DocumentStore`] of open documents and the senders for the
+//! neutral [`Event`] stream and the local snapshot stream. It applies [`Command`]s
+//! synchronously (the fast paths — open/apply/save/undo — are inline) and emits
+//! [`Event`]s plus [`DocSnapshot`]s.
+//!
+//! Syntax highlighting is the one thing it does *not* do inline. Injection-aware
+//! layered highlighting re-parses every embedded language, far too much work to hold
+//! the command queue on. The session hands the buffer's text to the
+//! [`crate::highlight`] worker and adopts the spans it sends back; meanwhile the spans
+//! it already has ride each edit via `Highlights::translate`, so the view stays stable
+//! in the frames before the worker answers.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -25,7 +31,6 @@ use karet_core::TextEdit;
 use karet_filetype::FileKind;
 use karet_filetype::classify_ignoring_size;
 use karet_syntax::FoldRegions;
-use karet_syntax::Highlighter;
 use karet_syntax::Highlights;
 use karet_text::AppliedEdit;
 use karet_text::EditCause;
@@ -34,8 +39,6 @@ use karet_text::LoadError;
 use karet_text::TextBuffer;
 use karet_text::TextError;
 use karet_treesitter::LanguageId;
-use karet_treesitter::ParserPool;
-use karet_treesitter::SyntaxTree;
 use karet_treesitter::language_id_from_path;
 use karet_treesitter::language_name_from_path;
 use karet_vcs::FileChange;
@@ -58,6 +61,9 @@ use crate::backup::SwapRecord;
 use crate::backup::SwapStore;
 use crate::backup::discard;
 use crate::backup::scan;
+use crate::highlight::HighlightJob;
+use crate::highlight::HighlightRequest;
+use crate::highlight::HighlightResult;
 use crate::local::DocSnapshot;
 use crate::local::SnapshotRx;
 
@@ -165,7 +171,8 @@ struct Document {
     buffer: TextBuffer,
     /// How the buffer is (de)serialized on disk.
     format: DocFormat,
-    tree: Option<SyntaxTree>,
+    /// The last highlights the worker produced, translated across any edits applied
+    /// since. The parsed trees themselves live on the worker, not here.
     highlights: Arc<Highlights>,
     folds: Arc<FoldRegions>,
     decorations: Vec<Decoration>,
@@ -214,8 +221,11 @@ pub struct Session {
     events: mpsc::UnboundedSender<(Option<RequestId>, Event)>,
     snapshots: mpsc::UnboundedSender<(DocumentId, Arc<DocSnapshot>)>,
     store: DocumentStore,
-    pool: ParserPool,
-    highlighters: HashMap<LanguageId, Highlighter>,
+    /// Jobs for the background highlight worker (see [`crate::highlight`]). Layered
+    /// highlighting is too heavy to run inline on this actor.
+    highlight_tx: std::sync::mpsc::Sender<HighlightJob>,
+    /// The worker's results, taken by [`crate::backend::local`] for the actor loop.
+    highlight_rx: Option<mpsc::UnboundedReceiver<HighlightResult>>,
     clock: Instant,
     /// The workspace file-watcher, kept alive for the session's lifetime.
     watcher: Option<Watcher>,
@@ -284,6 +294,9 @@ impl Session {
             .as_ref()
             .map(|store| scan(store.dir()))
             .unwrap_or_default();
+        // Layered highlighting runs on its own thread; the actor only sends it text and
+        // applies the spans it sends back.
+        let (highlight_tx, highlight_rx) = crate::highlight::spawn();
         let mut session = Self {
             config,
             events,
@@ -292,8 +305,8 @@ impl Session {
                 next: 1,
                 ..DocumentStore::default()
             },
-            pool: ParserPool::new(),
-            highlighters: HashMap::new(),
+            highlight_tx,
+            highlight_rx: Some(highlight_rx),
             clock: Instant::now(),
             watcher,
             fs_rx,
@@ -701,6 +714,28 @@ impl Session {
         (self.watcher.take(), self.fs_rx.take())
     }
 
+    /// Take the highlight worker's result stream, to be driven by the actor.
+    pub(crate) fn take_highlights(&mut self) -> Option<mpsc::UnboundedReceiver<HighlightResult>> {
+        self.highlight_rx.take()
+    }
+
+    /// Adopt a completed highlight, then publish the refreshed snapshot.
+    ///
+    /// A result for a version the buffer has already moved past is dropped: a newer
+    /// request is by construction already queued (every edit sends one), so waiting for
+    /// it beats painting spans that no longer describe the text.
+    pub(crate) fn apply_highlights(&mut self, result: HighlightResult) {
+        let Some(doc) = self.store.docs.get_mut(&result.doc) else {
+            return; // the document closed while the worker was busy
+        };
+        if doc.buffer.version() != result.version {
+            return;
+        }
+        doc.highlights = result.highlights;
+        doc.folds = result.folds;
+        self.publish(result.doc, None);
+    }
+
     /// React to a debounced filesystem event by reloading or flagging any open
     /// document whose file changed underneath it.
     pub(crate) fn handle_fs_event(&mut self, event: FsEvent) {
@@ -802,7 +837,6 @@ impl Session {
             lang_id,
             buffer,
             format,
-            tree: None,
             highlights: Arc::new(Highlights::default()),
             folds: Arc::new(FoldRegions::default()),
             decorations: Vec::new(),
@@ -810,7 +844,7 @@ impl Session {
             dirty_since: None,
             backed_up_version: None,
         };
-        update_syntax(&mut self.pool, &mut self.highlighters, &mut doc, None);
+        update_syntax(&self.highlight_tx, doc_id, &mut doc, None);
         let version = doc.buffer.version();
         self.store.by_path.insert(path, doc_id);
         self.store.docs.insert(doc_id, doc);
@@ -832,15 +866,14 @@ impl Session {
         // below so the authoritative buffer flows back down to the client instead
         // of leaving it stuck rejecting every future edit forever.
         let version = {
-            let pool = &mut self.pool;
-            let highlighters = &mut self.highlighters;
+            let highlight_tx = &self.highlight_tx;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
                 self.events.send((Some(id), unknown_document(doc_id))).ok();
                 return;
             };
             match doc.buffer.apply(change, ctx) {
                 Ok(applied) => {
-                    update_syntax(pool, highlighters, doc, Some(&applied.edits));
+                    update_syntax(highlight_tx, doc_id, doc, Some(&applied.edits));
                     // Arm the backup clock on the clean→dirty transition (see
                     // `backup_tick`).
                     doc.sync_dirty_since(tick);
@@ -877,8 +910,7 @@ impl Session {
     fn undo_redo(&mut self, id: RequestId, doc_id: DocumentId, undo: bool) {
         let tick = self.elapsed_ms();
         let (version, cursor) = {
-            let pool = &mut self.pool;
-            let highlighters = &mut self.highlighters;
+            let highlight_tx = &self.highlight_tx;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
                 return;
             };
@@ -890,7 +922,7 @@ impl Session {
             let Some(applied) = applied else {
                 return; // nothing to undo/redo
             };
-            update_syntax(pool, highlighters, doc, Some(&applied.edits));
+            update_syntax(highlight_tx, doc_id, doc, Some(&applied.edits));
             // Undoing back to the save point clears dirtiness (and any pending backup).
             doc.sync_dirty_since(tick);
             // Jump the caret to the change: undo restores the exact pre-edit cursor;
@@ -970,6 +1002,8 @@ impl Session {
         doc.path = path.clone();
         doc.lang_id = language_id_from_path(&path);
         doc.language = language_name_from_path(&path);
+        // The language may have changed with the extension; re-highlight from scratch.
+        update_syntax(&self.highlight_tx, doc_id, doc, None);
         self.store.by_path.insert(path.clone(), doc_id);
         self.emit(Some(id), Event::Retargeted { doc: doc_id, path });
         self.publish(doc_id, None);
@@ -986,6 +1020,8 @@ impl Session {
         if removed {
             if let Some(doc) = self.store.docs.remove(&doc_id) {
                 self.store.by_path.remove(&doc.path);
+                // Release the worker's retained trees for this document.
+                self.highlight_tx.send(HighlightJob::Drop(doc_id)).ok();
                 // The document is gone from the editor: skipping a save is an explicit
                 // decision, so clean up its swap.
                 if let Some(store) = self.swaps.as_ref() {
@@ -1180,8 +1216,7 @@ impl Session {
     /// [`Event::Reloaded`] and publish the fresh snapshot.
     fn reload(&mut self, doc_id: DocumentId) {
         let version = {
-            let pool = &mut self.pool;
-            let highlighters = &mut self.highlighters;
+            let highlight_tx = &self.highlight_tx;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
                 return;
             };
@@ -1189,8 +1224,9 @@ impl Session {
                 return; // file vanished or became unreadable; leave the buffer as-is
             };
             doc.buffer.adopt_content(fresh);
-            doc.tree = None;
-            update_syntax(pool, highlighters, doc, None);
+            // The buffer was replaced wholesale, so the worker's retained tree is void:
+            // `None` edits force it to start over.
+            update_syntax(highlight_tx, doc_id, doc, None);
             doc.buffer.version()
         };
         self.emit(
@@ -1241,55 +1277,39 @@ impl Session {
 /// tree (the query still materializes the text — the rope-native query is a
 /// follow-up).
 fn update_syntax(
-    pool: &mut ParserPool,
-    highlighters: &mut HashMap<LanguageId, Highlighter>,
+    highlight_tx: &std::sync::mpsc::Sender<HighlightJob>,
+    doc_id: DocumentId,
     doc: &mut Document,
     edits: Option<&[AppliedEdit]>,
 ) {
     let Some(lang) = doc.lang_id else {
-        doc.tree = None;
+        // Plaintext: nothing to parse, and no worker round-trip to wait for.
         doc.highlights = Arc::new(Highlights::default());
         doc.folds = Arc::new(FoldRegions::default());
         return;
     };
 
-    let mut reparsed = false;
-    if let (Some(edits), Some(tree)) = (edits, doc.tree.as_mut()) {
+    // Keep the spans we already have usable until the worker answers. Rendering them
+    // unshifted would smear color across the text the edit moved.
+    if let Some(edits) = edits {
         for ae in edits {
-            tree.edit(&to_edit(ae));
+            doc.highlights = Arc::new(doc.highlights.translate(
+                BytePos(ae.start_byte),
+                BytePos(ae.old_end_byte),
+                BytePos(ae.new_end_byte),
+            ));
         }
-        reparsed = tree
-            .reparse_with(pool, |byte| doc.buffer.byte_chunk(byte))
-            .is_ok();
     }
 
-    let text = doc.buffer.text();
-    if !reparsed {
-        doc.tree = SyntaxTree::parse(pool, lang, &text).ok();
-    }
-
-    ensure_highlighter(highlighters, lang);
-    doc.highlights = match (doc.tree.as_ref(), highlighters.get(&lang)) {
-        (Some(tree), Some(hl)) => Arc::new(hl.highlight(tree, &text).unwrap_or_default()),
-        _ => Arc::new(Highlights::default()),
+    let request = HighlightRequest {
+        doc: doc_id,
+        version: doc.buffer.version(),
+        lang,
+        text: doc.buffer.text(),
+        edits: edits.map(|es| es.iter().map(to_edit).collect()),
     };
-    // Fold regions are grammar-agnostic (any multi-line node), so they come straight
-    // off the tree with no per-language highlighter.
-    doc.folds = match doc.tree.as_ref() {
-        Some(tree) => Arc::new(karet_syntax::fold(tree)),
-        None => Arc::new(FoldRegions::default()),
-    };
-}
-
-/// Compile and cache a highlighter for `lang` if one is not present. A language
-/// with no compiled-in grammar simply leaves the slot empty (retried each call).
-fn ensure_highlighter(highlighters: &mut HashMap<LanguageId, Highlighter>, lang: LanguageId) {
-    use std::collections::hash_map::Entry;
-    if let Entry::Vacant(slot) = highlighters.entry(lang)
-        && let Ok(highlighter) = Highlighter::new(lang)
-    {
-        slot.insert(highlighter);
-    }
+    // A dead worker only means no highlights; editing carries on.
+    highlight_tx.send(HighlightJob::Update(request)).ok();
 }
 
 /// Derive an [`EditContext`] from a change's geometry: a single-`char` insertion is

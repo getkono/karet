@@ -20,6 +20,7 @@ use karet_core::LineCol;
 use karet_core::Range;
 use karet_core::Selection;
 use karet_core::ThemeRole;
+use karet_core::TokenId;
 use karet_syntax::HighlightSpan;
 use karet_syntax::Highlights;
 use karet_text::TextBuffer;
@@ -727,8 +728,7 @@ impl Editor<'_> {
                 col += 1;
                 continue;
             }
-            let fg = fg_for(line_start + boff, hl, theme, default_fg);
-            let mut style = Style::default().fg(fg.to_ratatui());
+            let mut style = token_style(line_start + boff, hl, theme, default_fg);
             let bg = if in_any(selections, l, col) {
                 Some(theme.role(ThemeRole::Selection))
             } else {
@@ -1080,15 +1080,22 @@ fn col_in_range(l: u32, col: u32, range: Range) -> bool {
     col >= lo && col < hi
 }
 
-/// The foreground color for the char at absolute byte `abs` from the highlight
-/// spans, falling back to `default_fg`.
-fn fg_for(abs: usize, hl: &[HighlightSpan], theme: &Theme, default_fg: Rgba) -> Rgba {
-    for s in hl {
-        if s.span.start.0 <= abs && abs < s.span.end.0 {
-            return theme.color(s.token);
-        }
+/// The semantic token covering absolute byte `abs`, if any highlight span claims it.
+fn token_at(abs: usize, hl: &[HighlightSpan]) -> Option<TokenId> {
+    hl.iter()
+        .find(|s| s.span.start.0 <= abs && abs < s.span.end.0)
+        .map(|s| s.token)
+}
+
+/// The style (foreground + emphasis) for the char at absolute byte `abs`. Markup
+/// tokens carry bold/italic, so color alone is not enough.
+fn token_style(abs: usize, hl: &[HighlightSpan], theme: &Theme, default_fg: Rgba) -> Style {
+    match token_at(abs, hl) {
+        Some(token) => Style::default()
+            .fg(theme.color(token).to_ratatui())
+            .add_modifier(theme.emphasis(token).to_ratatui()),
+        None => Style::default().fg(default_fg.to_ratatui()),
     }
-    default_fg
 }
 
 #[cfg(test)]
@@ -1106,7 +1113,7 @@ mod tests {
     }
 
     #[test]
-    fn fg_for_uses_highlight_then_default() {
+    fn token_style_uses_highlight_then_default() {
         let theme = Theme::dark();
         let default_fg = theme.role(ThemeRole::Foreground);
         let hl = [HighlightSpan {
@@ -1116,8 +1123,34 @@ mod tests {
             },
             token: TokenId(0),
         }];
-        assert_eq!(fg_for(1, &hl, &theme, default_fg), theme.color(TokenId(0)));
-        assert_eq!(fg_for(5, &hl, &theme, default_fg), default_fg);
+        assert_eq!(
+            token_style(1, &hl, &theme, default_fg).fg,
+            Some(theme.color(TokenId(0)).to_ratatui())
+        );
+        assert_eq!(
+            token_style(5, &hl, &theme, default_fg).fg,
+            Some(default_fg.to_ratatui())
+        );
+    }
+
+    #[test]
+    fn token_style_applies_markup_emphasis() {
+        use karet_core::StandardToken;
+        let theme = Theme::dark();
+        let default_fg = theme.role(ThemeRole::Foreground);
+        let hl = [HighlightSpan {
+            span: karet_core::Span {
+                start: BytePos(0),
+                end: BytePos(4),
+            },
+            token: StandardToken::MarkupBold.id(),
+        }];
+        // A bold markup span renders bold, not merely recolored.
+        let style = token_style(2, &hl, &theme, default_fg);
+        assert!(style.add_modifier.contains(ratatui::style::Modifier::BOLD));
+        // Unhighlighted text carries no modifier.
+        let plain = token_style(9, &hl, &theme, default_fg);
+        assert!(plain.add_modifier.is_empty());
     }
 
     #[test]

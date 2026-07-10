@@ -15,17 +15,25 @@ publish = false                       # karet-internal — not published to crat
 
 [features]
 default = []
-# Syntax-highlight code fences via karet-syntax.
-highlight = ["dep:karet-syntax"]
-# ratatui renderer widget.
-view = ["dep:ratatui"]
+# Syntax-highlight code fences via karet-syntax (a fence's info string resolves to a
+# grammar through karet-treesitter's shared injection-name resolver).
+highlight = ["dep:karet-syntax", "dep:karet-treesitter"]
+# ratatui renderer: resolves span tokens through a karet-theme Theme.
+view = ["dep:ratatui", "dep:karet-theme"]
 
 [dependencies]
 karet-core.workspace = true
 pulldown-cmark.workspace = true
 thiserror.workspace = true
+unicode-width.workspace = true        # wrap by terminal columns, not bytes or chars
 karet-syntax = { workspace = true, optional = true }
+karet-treesitter = { workspace = true, optional = true }
+karet-theme = { workspace = true, optional = true, features = ["view"] }
 ratatui = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Compile in the Rust grammar so the code-fence highlighting tests are self-contained.
+karet-treesitter = { workspace = true, features = ["lang-rust"] }
 
 [lints]
 workspace = true

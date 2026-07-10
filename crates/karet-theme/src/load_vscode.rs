@@ -6,6 +6,7 @@ use karet_core::StandardToken;
 use karet_core::ThemeRole;
 use serde::Deserialize;
 
+use crate::Emphasis;
 use crate::Rgba;
 use crate::Theme;
 use crate::ThemeError;
@@ -31,6 +32,9 @@ struct TokenColorEntry {
 struct Settings {
     #[serde(default)]
     foreground: Option<String>,
+    /// A space-separated list, e.g. `"bold italic"` / `"underline"` / `""`.
+    #[serde(default, rename = "fontStyle")]
+    font_style: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -74,14 +78,16 @@ pub(crate) fn load(json: &str) -> Result<Theme, ThemeError> {
     }
 
     for entry in &root.token_colors {
-        let Some(fg) = entry
+        let fg = entry
             .settings
             .foreground
             .as_deref()
-            .and_then(Rgba::from_hex)
-        else {
+            .and_then(Rgba::from_hex);
+        let em = entry.settings.font_style.as_deref().map(parse_font_style);
+        // An entry may set only a color, only a font style, or both.
+        if fg.is_none() && em.is_none() {
             continue;
-        };
+        }
         let scopes = match &entry.scope {
             Some(StringOrVec::One(s)) => split_scopes(s),
             Some(StringOrVec::Many(v)) => v.iter().flat_map(|s| split_scopes(s)).collect(),
@@ -89,7 +95,13 @@ pub(crate) fn load(json: &str) -> Result<Theme, ThemeError> {
         };
         for scope in scopes {
             if let Some(tok) = scope_to_token(scope.trim()) {
-                theme.tokens[tok.id().0 as usize] = fg;
+                let i = tok.id().0 as usize;
+                if let Some(fg) = fg {
+                    theme.tokens[i] = fg;
+                }
+                if let Some(em) = em {
+                    theme.emphasis[i] = em;
+                }
             }
         }
     }
@@ -105,10 +117,40 @@ fn split_scopes(s: &str) -> Vec<String> {
     s.split(',').map(|p| p.trim().to_string()).collect()
 }
 
+/// Parse a VS Code `fontStyle` string (e.g. `"bold italic"`) into an [`Emphasis`].
+/// An empty string explicitly clears emphasis, which is why this returns a value
+/// rather than an `Option`.
+fn parse_font_style(s: &str) -> Emphasis {
+    Emphasis {
+        bold: s.split_whitespace().any(|w| w == "bold"),
+        italic: s.split_whitespace().any(|w| w == "italic"),
+    }
+}
+
 /// Map a TextMate scope selector to a [`StandardToken`], most-specific first.
 fn scope_to_token(scope: &str) -> Option<StandardToken> {
     let s = scope;
-    let t = if s.starts_with("comment") {
+    let t = if s.starts_with("markup.heading") || s.starts_with("entity.name.section") {
+        StandardToken::MarkupHeading
+    } else if s.starts_with("markup.bold") || s.starts_with("markup.strong") {
+        StandardToken::MarkupBold
+    } else if s.starts_with("markup.italic") {
+        StandardToken::MarkupItalic
+    } else if s.starts_with("markup.underline.link") || s.starts_with("markup.link") {
+        StandardToken::MarkupLink
+    } else if s.starts_with("markup.inline.raw")
+        || s.starts_with("markup.raw")
+        || s.starts_with("markup.fenced_code")
+    {
+        StandardToken::MarkupRaw
+    } else if s.starts_with("markup.quote") {
+        StandardToken::MarkupQuote
+    } else if s.starts_with("markup.list") {
+        StandardToken::MarkupListMarker
+    // Doc comments must be tested before the general `comment` prefix.
+    } else if s.starts_with("comment") && s.contains("documentation") {
+        StandardToken::CommentDoc
+    } else if s.starts_with("comment") {
         StandardToken::Comment
     } else if s.starts_with("string") {
         StandardToken::String
@@ -173,6 +215,79 @@ mod tests {
         assert_eq!(t.color(StandardToken::Comment.id()), Rgba::rgb(0, 255, 0));
         // Background is dark → theme reports dark.
         assert!(t.is_dark());
+        Ok(())
+    }
+
+    #[test]
+    fn markup_and_doc_comment_scopes_map() {
+        assert_eq!(
+            scope_to_token("markup.heading.1.markdown"),
+            Some(StandardToken::MarkupHeading)
+        );
+        assert_eq!(
+            scope_to_token("markup.inline.raw"),
+            Some(StandardToken::MarkupRaw)
+        );
+        assert_eq!(
+            scope_to_token("markup.underline.link"),
+            Some(StandardToken::MarkupLink)
+        );
+        // A doc comment must not be swallowed by the general `comment` prefix.
+        assert_eq!(
+            scope_to_token("comment.block.documentation"),
+            Some(StandardToken::CommentDoc)
+        );
+        assert_eq!(scope_to_token("comment.line"), Some(StandardToken::Comment));
+    }
+
+    #[test]
+    fn font_style_overlays_emphasis() -> Result<(), ThemeError> {
+        let json = r##"{
+            "tokenColors": [
+                { "scope": "markup.italic", "settings": { "fontStyle": "italic" } },
+                { "scope": "markup.heading", "settings": { "foreground": "#ff0000", "fontStyle": "bold italic" } },
+                { "scope": "comment", "settings": { "fontStyle": "" } }
+            ]
+        }"##;
+        let t = Theme::load_vscode(json)?;
+        assert_eq!(
+            t.emphasis(StandardToken::MarkupItalic.id()),
+            Emphasis {
+                bold: false,
+                italic: true
+            }
+        );
+        // An entry may carry both a color and a font style.
+        assert_eq!(
+            t.color(StandardToken::MarkupHeading.id()),
+            Rgba::rgb(255, 0, 0)
+        );
+        assert_eq!(
+            t.emphasis(StandardToken::MarkupHeading.id()),
+            Emphasis {
+                bold: true,
+                italic: true
+            }
+        );
+        // An explicit empty fontStyle clears the built-in emphasis.
+        assert_eq!(t.emphasis(StandardToken::Comment.id()), Emphasis::default());
+        Ok(())
+    }
+
+    #[test]
+    fn font_style_only_entry_preserves_default_color() -> Result<(), ThemeError> {
+        // The entry sets no foreground, so the built-in dark color must survive.
+        let json = r##"{
+            "tokenColors": [
+                { "scope": "markup.quote", "settings": { "fontStyle": "bold" } }
+            ]
+        }"##;
+        let t = Theme::load_vscode(json)?;
+        assert_eq!(
+            t.color(StandardToken::MarkupQuote.id()),
+            Theme::dark().color(StandardToken::MarkupQuote.id())
+        );
+        assert!(t.emphasis(StandardToken::MarkupQuote.id()).bold);
         Ok(())
     }
 

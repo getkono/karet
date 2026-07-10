@@ -90,6 +90,25 @@ pub enum StandardToken {
     Namespace,
     /// A label.
     Label,
+    // NOTE: variants below are appended. `TokenId` is the discriminant and doubles as
+    // `karet-theme`'s palette index, so existing variants must never be renumbered.
+    /// A documentation comment (`///`, `//!`, `/** */`), distinct from an ordinary
+    /// [`Comment`](Self::Comment) — its contents are often injected markup.
+    CommentDoc,
+    /// A markup heading (a markdown `#` title).
+    MarkupHeading,
+    /// Strongly emphasized (bold) markup.
+    MarkupBold,
+    /// Emphasized (italic) markup.
+    MarkupItalic,
+    /// A markup link destination or reference.
+    MarkupLink,
+    /// Literal/raw markup: a code span or fenced code block's shell.
+    MarkupRaw,
+    /// A markup block quote.
+    MarkupQuote,
+    /// A markup list marker, thematic break, or other structural punctuation.
+    MarkupListMarker,
 }
 
 impl StandardToken {
@@ -125,6 +144,14 @@ impl StandardToken {
             Self::Attribute => "attribute",
             Self::Namespace => "namespace",
             Self::Label => "label",
+            Self::CommentDoc => "comment.documentation",
+            Self::MarkupHeading => "markup.heading",
+            Self::MarkupBold => "markup.strong",
+            Self::MarkupItalic => "markup.italic",
+            Self::MarkupLink => "markup.link",
+            Self::MarkupRaw => "markup.raw",
+            Self::MarkupQuote => "markup.quote",
+            Self::MarkupListMarker => "markup.list",
         }
     }
 
@@ -154,6 +181,14 @@ impl StandardToken {
             "attribute" => Self::Attribute,
             "namespace" => Self::Namespace,
             "label" => Self::Label,
+            "comment.documentation" => Self::CommentDoc,
+            "markup.heading" => Self::MarkupHeading,
+            "markup.strong" => Self::MarkupBold,
+            "markup.italic" => Self::MarkupItalic,
+            "markup.link" => Self::MarkupLink,
+            "markup.raw" => Self::MarkupRaw,
+            "markup.quote" => Self::MarkupQuote,
+            "markup.list" => Self::MarkupListMarker,
             _ => return None,
         };
         Some(token)
@@ -246,6 +281,14 @@ mod tests {
             StandardToken::FunctionBuiltin,
             StandardToken::Comment,
             StandardToken::Label,
+            StandardToken::CommentDoc,
+            StandardToken::MarkupHeading,
+            StandardToken::MarkupBold,
+            StandardToken::MarkupItalic,
+            StandardToken::MarkupLink,
+            StandardToken::MarkupRaw,
+            StandardToken::MarkupQuote,
+            StandardToken::MarkupListMarker,
         ] {
             assert_eq!(
                 StandardToken::from_capture_name(tok.capture_name()),
@@ -253,5 +296,26 @@ mod tests {
             );
         }
         assert_eq!(StandardToken::from_capture_name("not.a.capture"), None);
+    }
+
+    #[test]
+    fn doc_comment_is_distinct_from_comment() {
+        assert_ne!(StandardToken::CommentDoc.id(), TokenId::COMMENT);
+        assert_eq!(
+            StandardToken::from_capture_name("comment.documentation"),
+            Some(StandardToken::CommentDoc)
+        );
+    }
+
+    #[test]
+    fn appended_variants_do_not_renumber_the_originals() {
+        // `TokenId` is the discriminant and doubles as karet-theme's palette index, so
+        // the pre-existing classes must keep their ids as new ones are appended.
+        assert_eq!(StandardToken::Keyword.id(), TokenId(0));
+        assert_eq!(StandardToken::Comment.id(), TokenId(13));
+        assert_eq!(StandardToken::Label.id(), TokenId(21));
+        // The markup block is appended immediately after `Label`.
+        assert_eq!(StandardToken::CommentDoc.id(), TokenId(22));
+        assert_eq!(StandardToken::MarkupListMarker.id(), TokenId(29));
     }
 }

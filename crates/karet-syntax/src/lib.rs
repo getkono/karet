@@ -5,11 +5,16 @@
 //! crate behind the standalone "highlight a code snippet" use case. Highlighting
 //! runs a grammar's query through `karet-treesitter`'s single parse host.
 //!
+//! [`Highlighter`] highlights one language. [`LayeredHighlighter`] highlights a
+//! `LayeredTree` — a document plus its injected languages — so a markdown code fence
+//! is coloured as the language it names and a Rust doc comment as the markdown it is.
+//!
 //! Fold regions, bracket pairs and structural selection are reserved (the public
 //! joints are defined; their tree-walking is filled in with the editor).
 
 use std::collections::BTreeMap;
 
+use karet_core::BytePos;
 use karet_core::Span;
 use karet_core::TokenId;
 use karet_treesitter::SyntaxTree;
@@ -18,6 +23,7 @@ mod highlight;
 mod map;
 
 pub use highlight::Highlighter;
+pub use highlight::LayeredHighlighter;
 
 /// Errors produced by syntactic analysis.
 #[derive(Debug, thiserror::Error)]
@@ -68,6 +74,51 @@ impl Highlights {
     /// Wrap an already-sorted, non-overlapping span list (from the highlighter).
     pub(crate) fn from_sorted_spans(spans: Vec<HighlightSpan>) -> Self {
         Self { spans }
+    }
+
+    /// Shift these spans to stay aligned with a buffer edited in `[start, old_end)` →
+    /// `[start, new_end)`.
+    ///
+    /// When re-highlighting is asynchronous the buffer changes before fresh spans
+    /// arrive. Rendering the old spans verbatim would smear color across the shifted
+    /// text; translating them keeps everything after the edit correctly aligned for the
+    /// frame or two before the highlighter answers.
+    ///
+    /// Spans wholly before the edit are untouched, spans wholly after are shifted, and
+    /// a span the edit actually cut through is dropped — its extent is no longer known,
+    /// so the affected text renders unhighlighted rather than wrong.
+    #[must_use]
+    pub fn translate(&self, start: BytePos, old_end: BytePos, new_end: BytePos) -> Self {
+        let spans = self
+            .spans
+            .iter()
+            .filter_map(|s| {
+                if s.span.end.0 <= start.0 {
+                    return Some(*s);
+                }
+                if s.span.start.0 >= old_end.0 {
+                    return Some(HighlightSpan {
+                        span: Span {
+                            start: BytePos(shift_pos(s.span.start.0, old_end.0, new_end.0)),
+                            end: BytePos(shift_pos(s.span.end.0, old_end.0, new_end.0)),
+                        },
+                        token: s.token,
+                    });
+                }
+                // The edit cut through this span.
+                None
+            })
+            .collect();
+        Self { spans }
+    }
+}
+
+/// Move `pos` (which lies at or after `old_end`) by the edit's signed length delta.
+fn shift_pos(pos: usize, old_end: usize, new_end: usize) -> usize {
+    if new_end >= old_end {
+        pos + (new_end - old_end)
+    } else {
+        pos.saturating_sub(old_end - new_end)
     }
 }
 
@@ -175,6 +226,7 @@ pub fn structural_selection(tree: &SyntaxTree, at: Span, dir: ExpandDir) -> Span
 #[cfg(test)]
 mod tests {
     use karet_core::BytePos;
+    use karet_core::StandardToken;
 
     use super::*;
 
@@ -217,6 +269,80 @@ mod tests {
         assert_eq!(hl.spans_in(span(0, 10)).len(), 2);
         // Gap between spans yields nothing.
         assert!(hl.spans_in(span(9, 12)).is_empty());
+    }
+
+    #[test]
+    fn translate_shifts_spans_after_an_insertion() {
+        let hl = Highlights::from_sorted_spans(vec![
+            HighlightSpan {
+                span: span(0, 3),
+                token: TokenId::KEYWORD,
+            },
+            HighlightSpan {
+                span: span(10, 14),
+                token: TokenId::FUNCTION,
+            },
+        ]);
+        // Insert 2 bytes at 5: before is untouched, after slides right.
+        let out = hl.translate(BytePos(5), BytePos(5), BytePos(7));
+        assert_eq!(out.all()[0].span, span(0, 3));
+        assert_eq!(out.all()[1].span, span(12, 16));
+    }
+
+    #[test]
+    fn translate_shifts_spans_after_a_deletion() {
+        let hl = Highlights::from_sorted_spans(vec![HighlightSpan {
+            span: span(10, 14),
+            token: TokenId::FUNCTION,
+        }]);
+        // Delete bytes [5,8): the span slides left by 3.
+        let out = hl.translate(BytePos(5), BytePos(8), BytePos(5));
+        assert_eq!(out.all()[0].span, span(7, 11));
+    }
+
+    #[test]
+    fn translate_drops_a_span_the_edit_cut_through() {
+        let hl = Highlights::from_sorted_spans(vec![
+            HighlightSpan {
+                span: span(0, 3),
+                token: TokenId::KEYWORD,
+            },
+            HighlightSpan {
+                span: span(4, 9),
+                token: TokenId::STRING,
+            },
+        ]);
+        // Typing inside the string: its extent is unknown until the reparse lands, so it
+        // renders unhighlighted rather than wrong.
+        let out = hl.translate(BytePos(6), BytePos(6), BytePos(7));
+        assert_eq!(out.all().len(), 1);
+        assert_eq!(out.all()[0].token, TokenId::KEYWORD);
+    }
+
+    #[test]
+    fn translate_preserves_sorted_non_overlapping_order() {
+        let hl = Highlights::from_sorted_spans(vec![
+            HighlightSpan {
+                span: span(0, 3),
+                token: TokenId::KEYWORD,
+            },
+            HighlightSpan {
+                span: span(5, 8),
+                token: TokenId::STRING,
+            },
+            HighlightSpan {
+                span: span(9, 12),
+                token: TokenId::NUMBER,
+            },
+        ]);
+        let out = hl.translate(BytePos(4), BytePos(4), BytePos(6));
+        assert!(
+            out.all()
+                .windows(2)
+                .all(|w| w[0].span.end.0 <= w[1].span.start.0)
+        );
+        // `spans_in` relies on that invariant, so it must still find the shifted span.
+        assert_eq!(out.spans_in(span(7, 11)).len(), 1);
     }
 
     #[test]
@@ -277,6 +403,153 @@ mod tests {
         let mut pool = ParserPool::new();
         let tree = SyntaxTree::parse(&mut pool, lang, "let x = 1;")?;
         assert!(fold(&tree).regions().is_empty());
+        Ok(())
+    }
+
+    /// The token covering `needle`'s first byte in `text`, per `highlights`.
+    fn token_of(highlights: &Highlights, text: &str, needle: &str) -> Option<TokenId> {
+        let at = text.find(needle)?;
+        highlights
+            .all()
+            .iter()
+            .find(|s| s.span.start.0 <= at && at < s.span.end.0)
+            .map(|s| s.token)
+    }
+
+    #[test]
+    fn markdown_code_fence_is_highlighted_as_its_language() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use karet_treesitter::LayeredParser;
+        use karet_treesitter::language_id_from_injection_name;
+
+        let Some(md) = language_id_from_injection_name("markdown") else {
+            return Ok(());
+        };
+        let src = "# Title\n\n```rust\nfn main() { let x = 42; }\n```\n";
+        let mut parser = LayeredParser::new();
+        let tree = parser.parse(md, src)?;
+        let highlights = LayeredHighlighter::new().highlight(&tree, src);
+
+        // The embedded rust wins over markdown's coarse `text.literal` fence span.
+        assert_eq!(
+            token_of(&highlights, src, "fn main"),
+            Some(TokenId::KEYWORD)
+        );
+        assert_eq!(token_of(&highlights, src, "42"), Some(TokenId::CONSTANT));
+        // Markdown's own structure keeps its markup colors.
+        assert_eq!(
+            token_of(&highlights, src, "Title"),
+            Some(StandardToken::MarkupHeading.id())
+        );
+        // Spans remain sorted and non-overlapping after the cross-layer merge.
+        assert!(
+            highlights
+                .all()
+                .windows(2)
+                .all(|w| w[0].span.end.0 <= w[1].span.start.0)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn markdown_inline_emphasis_is_highlighted() -> Result<(), Box<dyn std::error::Error>> {
+        use karet_treesitter::LayeredParser;
+        use karet_treesitter::language_id_from_injection_name;
+
+        let Some(md) = language_id_from_injection_name("markdown") else {
+            return Ok(());
+        };
+        // Emphasis and links live in the *inline* grammar, reachable only by injection.
+        let src = "Some *slanted* and **heavy** text, plus <http://example.com>.\n";
+        let mut parser = LayeredParser::new();
+        let tree = parser.parse(md, src)?;
+        let highlights = LayeredHighlighter::new().highlight(&tree, src);
+
+        assert_eq!(
+            token_of(&highlights, src, "slanted"),
+            Some(StandardToken::MarkupItalic.id())
+        );
+        assert_eq!(
+            token_of(&highlights, src, "heavy"),
+            Some(StandardToken::MarkupBold.id())
+        );
+        assert_eq!(
+            token_of(&highlights, src, "http://example.com"),
+            Some(StandardToken::MarkupLink.id())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rust_doctest_in_a_doc_comment_is_highlighted_as_rust()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use karet_treesitter::LayeredParser;
+        use karet_treesitter::language_id_from_injection_name;
+
+        let Some(rust) = language_id_from_injection_name("rust") else {
+            return Ok(());
+        };
+        let src = "\
+/// Adds one to `x`.
+///
+/// ```rust
+/// let y = 1 + 1;
+/// ```
+pub fn add_one() {}
+";
+        let mut parser = LayeredParser::new();
+        let tree = parser.parse(rust, src)?;
+        let highlights = LayeredHighlighter::new().highlight(&tree, src);
+
+        // The doctest body is real rust: `let` is a keyword, not comment text.
+        assert_eq!(token_of(&highlights, src, "let y"), Some(TokenId::KEYWORD));
+        // The doc comment's prose is a doc comment, distinct from a plain comment.
+        assert_eq!(
+            token_of(&highlights, src, "Adds one"),
+            Some(StandardToken::CommentDoc.id())
+        );
+        // And the outer function is still highlighted normally.
+        assert_eq!(token_of(&highlights, src, "pub"), Some(TokenId::KEYWORD));
+        Ok(())
+    }
+
+    #[test]
+    fn layered_highlight_tracks_a_live_edit() -> Result<(), Box<dyn std::error::Error>> {
+        use karet_treesitter::Edit;
+        use karet_treesitter::LayeredParser;
+        use karet_treesitter::language_id_from_injection_name;
+
+        let Some(md) = language_id_from_injection_name("markdown") else {
+            return Ok(());
+        };
+        let old = "text\n";
+        let new = "text\n\n```rust\nfn f() {}\n```\n";
+
+        let mut parser = LayeredParser::new();
+        let mut highlighter = LayeredHighlighter::new();
+        let mut tree = parser.parse(md, old)?;
+        assert!(
+            token_of(&highlighter.highlight(&tree, old), old, "text") != Some(TokenId::KEYWORD)
+        );
+
+        parser.reparse(
+            &mut tree,
+            &[Edit {
+                start_byte: old.len(),
+                old_end_byte: old.len(),
+                new_end_byte: new.len(),
+                start_point: (1, 0),
+                old_end_point: (1, 0),
+                new_end_point: (5, 0),
+            }],
+            new,
+        )?;
+        let after = highlighter.highlight(&tree, new);
+        // Typing the fence lights up the embedded language immediately.
+        assert_eq!(token_of(&after, new, "fn f"), Some(TokenId::KEYWORD));
+        // ...and matches a cold parse of the same text.
+        let cold = LayeredHighlighter::new().highlight(&parser.parse(md, new)?, new);
+        assert_eq!(after.all(), cold.all());
         Ok(())
     }
 

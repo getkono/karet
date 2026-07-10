@@ -19,12 +19,11 @@ use karet_diff::Segment;
 use karet_diff::align_hunk;
 use karet_diff::compute_highlights;
 use karet_diff::diff_text;
-use karet_syntax::Highlighter;
+use karet_syntax::LayeredHighlighter;
 use karet_theme::Rgba;
 use karet_theme::Theme;
 use karet_treesitter::LanguageId;
-use karet_treesitter::ParserPool;
-use karet_treesitter::SyntaxTree;
+use karet_treesitter::LayeredParser;
 use karet_treesitter::language_id_from_path;
 use karet_treesitter::language_name_from_path;
 use karet_vcs::FileChange;
@@ -132,10 +131,11 @@ fn line_tokens(content: &str, lang: Option<LanguageId>) -> Vec<Vec<LineToken>> {
     let Some(lang) = lang.filter(|_| !content.is_empty()) else {
         return Vec::new();
     };
+    // Layered, so a diff of a markdown file still colours its code fences.
     let highlights = (|| {
-        let mut pool = ParserPool::new();
-        let tree = SyntaxTree::parse(&mut pool, lang, content).ok()?;
-        Highlighter::new(lang).ok()?.highlight(&tree, content).ok()
+        let mut parser = LayeredParser::new();
+        let tree = parser.parse(lang, content).ok()?;
+        Some(LayeredHighlighter::new().highlight(&tree, content))
     })();
     let Some(highlights) = highlights else {
         return Vec::new();

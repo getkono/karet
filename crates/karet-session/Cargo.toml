@@ -49,5 +49,10 @@ schemars.workspace = true             # generate the external JSON Schema from `
 dependable-core.workspace = true      # Cargo.lock → package dependency graph (offline)
 tempfile.workspace = true             # atomic swap-file writes + open/save flow tests
 
+[dev-dependencies]
+# Compile in the Rust + Markdown grammars so the Command/snapshot contract test can
+# assert that an *injected* language really is highlighted through the worker.
+karet-treesitter = { workspace = true, features = ["lang-rust", "lang-markdown"] }
+
 [lints]
 workspace = true
