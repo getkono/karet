@@ -25,6 +25,16 @@ run = "cargo clippy --workspace --all-targets --all-features --fix --allow-dirty
 description = "Run the test suite"
 run = "cargo test --workspace --all-features"
 
+[tasks.build-lean]
+description = "Build without the heavy media deps (issue #23): app + karet-fileview across the optional feature combos"
+run = [
+  "cargo build -p karet --no-default-features",
+  "cargo build -p karet --no-default-features --features pdf",
+  "cargo build -p karet --no-default-features --features images",
+  "cargo build -p karet-fileview --no-default-features",
+  "cargo build -p karet-fileview --no-default-features --features pdf",
+]
+
 [tasks.coverage]
 description = "Report line coverage with cargo-llvm-cov"
 run = "cargo llvm-cov --workspace --all-features"
