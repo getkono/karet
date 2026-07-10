@@ -80,6 +80,33 @@ fn main() -> color_eyre::Result<()> {
         },
     };
 
+    // Read every `--diff` pair up front for the same reason: an unreadable file
+    // fails fast on stderr instead of surfacing inside a TUI an automation run
+    // cannot see. `None` content marks a side whose bytes are not UTF-8; the app
+    // renders that pair as a binary change.
+    let mut startup_diffs: Vec<(PathBuf, PathBuf, Option<String>, Option<String>)> = Vec::new();
+    for pair in cli.diff.chunks(2) {
+        let [old, new] = pair else {
+            // Unreachable: clap's `num_args = 2` accepts only whole pairs.
+            continue;
+        };
+        let (old, new) = (
+            resolve_under_root(&root, old),
+            resolve_under_root(&root, new),
+        );
+        let read = |path: &Path| match std::fs::read(path) {
+            Ok(bytes) => Some(String::from_utf8(bytes).ok()),
+            Err(error) => {
+                eprintln!("karet: --diff: cannot read {}: {error}", path.display());
+                None
+            },
+        };
+        match (read(&old), read(&new)) {
+            (Some(old_text), Some(new_text)) => startup_diffs.push((old, new, old_text, new_text)),
+            _ => std::process::exit(2),
+        }
+    }
+
     if let Some(panel) = cli.startup_panel {
         loaded_config.settings.workbench.startup_panel = panel.into();
     }
@@ -104,6 +131,9 @@ fn main() -> color_eyre::Result<()> {
     }
     for file in &cli.open {
         app.open_initial(&resolve_under_root(&root, file));
+    }
+    for (old, new, old_text, new_text) in startup_diffs {
+        app.open_startup_diff(&old, &new, old_text, new_text);
     }
     if !cli.split.is_empty() {
         // The editor rectangle is only computed on the first draw; seed it with the

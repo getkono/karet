@@ -79,6 +79,7 @@ use karet_theme::Theme;
 use karet_vcs::Commit;
 use karet_vcs::CommitDetail;
 use karet_vcs::FileChange;
+use karet_vcs::StatusKind;
 use karet_widgets::DropZone;
 use karet_widgets::FileTreeState;
 use karet_widgets::ListSelection;
@@ -868,6 +869,61 @@ impl App {
         self.load_focused();
         self.focus = Focus::Editor;
         self.register_doc(self.active);
+    }
+
+    /// Open a diff of two arbitrary files as a startup tab (from the `--diff`
+    /// flag): `old` renders as the "before" side and `new` as the "after",
+    /// syntax-aware like any Source-Control diff. `old_text`/`new_text` carry each
+    /// file's content, already read by the caller (which fails fast on an unreadable
+    /// file), with `None` marking non-UTF-8 bytes — either side non-text flags the
+    /// change binary, rendering the standard binary-change placeholder (matching the
+    /// [`FileChange::is_binary`] contract that both texts are then empty).
+    pub fn open_startup_diff(
+        &mut self,
+        old: &Path,
+        new: &Path,
+        old_text: Option<String>,
+        new_text: Option<String>,
+    ) {
+        let is_binary = old_text.is_none() || new_text.is_none();
+        let change = FileChange {
+            path: new.to_path_buf(),
+            // The "renamed from" marker only applies when the two sides differ.
+            old_path: (old != new).then(|| old.to_path_buf()),
+            status: StatusKind::Modified,
+            is_binary,
+            old: if is_binary {
+                String::new()
+            } else {
+                old_text.unwrap_or_default()
+            },
+            new: if is_binary {
+                String::new()
+            } else {
+                new_text.unwrap_or_default()
+            },
+        };
+        let name = |p: &Path| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("diff")
+                .to_string()
+        };
+        let (old_name, new_name) = (name(old), name(new));
+        let title = if old_name == new_name {
+            new_name
+        } else {
+            format!("{old_name} ↔ {new_name}")
+        };
+        let file = FileView::new(change, Section::Working, self.syntax);
+        self.push_tab(Tab::new(
+            title,
+            TabKind::Diff {
+                file: Box::new(file),
+                view: self.diff_layout,
+                scroll: 0,
+            },
+        ));
     }
 
     /// Dispatch a palette command at startup (from the `--command` flag), after
@@ -7111,6 +7167,77 @@ mod tests {
             "a startup notification explains the fallback"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_startup_diff_opens_a_text_diff_tab() {
+        let dir = test_dir("cli-diff");
+        write_file(&dir, "old.rs", b"fn a() {}\n");
+        write_file(&dir, "new.rs", b"fn b() {}\n");
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.open_startup_diff(
+            &dir.join("old.rs"),
+            &dir.join("new.rs"),
+            Some("fn a() {}\n".to_string()),
+            Some("fn b() {}\n".to_string()),
+        );
+
+        match &app.tabs[app.active].kind {
+            TabKind::Diff { file, .. } => {
+                assert!(!file.change.is_binary);
+                assert_eq!(file.change.old, "fn a() {}\n");
+                assert_eq!(file.change.new, "fn b() {}\n");
+                assert_eq!(file.change.path, dir.join("new.rs"));
+                assert_eq!(file.change.old_path, Some(dir.join("old.rs")));
+                // Both lines differ, so the diff carries one added + one removed line.
+                assert_eq!(file.line_stats(), (1, 1));
+            },
+            _ => panic!("expected a diff tab"),
+        }
+        assert_eq!(app.tabs[app.active].title, "old.rs ↔ new.rs");
+        assert_eq!(app.focus, Focus::Editor);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_startup_diff_marks_a_non_utf8_side_binary() {
+        let dir = test_dir("cli-diff-bin");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        // A `None` side is what main.rs passes for non-UTF-8 bytes.
+        app.open_startup_diff(
+            &dir.join("a.bin"),
+            &dir.join("b.bin"),
+            None,
+            Some("text\n".to_string()),
+        );
+
+        match &app.tabs[app.active].kind {
+            TabKind::Diff { file, .. } => {
+                assert!(file.change.is_binary);
+                // The is_binary contract: both texts are empty.
+                assert!(file.change.old.is_empty());
+                assert!(file.change.new.is_empty());
+            },
+            _ => panic!("expected a diff tab"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_startup_diff_same_file_name_keeps_a_single_title() {
+        let dir = test_dir("cli-diff-title");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.open_startup_diff(
+            &dir.join("v1/config.toml"),
+            &dir.join("v2/config.toml"),
+            Some("a = 1\n".to_string()),
+            Some("a = 2\n".to_string()),
+        );
+        assert_eq!(app.tabs[app.active].title, "config.toml");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

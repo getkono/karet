@@ -93,6 +93,17 @@ pub struct Cli {
     #[arg(long, value_name = "PATH[:LINE[:COL]]")]
     pub goto: Option<String>,
 
+    /// Open a diff of two files as a startup tab: OLD renders as the "before" side
+    /// and NEW as the "after" (repeatable; each occurrence takes exactly two paths
+    /// and opens one diff tab). Relative paths resolve under the root. A file that
+    /// cannot be read is a fatal error before the TUI starts; non-UTF-8 content on
+    /// either side renders as a binary-change placeholder.
+    ///
+    /// Unstable automation surface: intended for scripting and view capture, this
+    /// flag's behaviour may change between major versions without notice.
+    #[arg(long = "diff", num_args = 2, value_names = ["OLD", "NEW"])]
+    pub diff: Vec<PathBuf>,
+
     /// Run a command-palette command after every other startup flag is applied
     /// (repeatable; runs in the given order). NAME matches a palette entry's title
     /// (e.g. "Source Control: Commit Graph") or its short slug (e.g. "graph"),
@@ -320,6 +331,23 @@ mod tests {
     fn command_defaults_to_empty() -> Result<(), clap::Error> {
         let cli = Cli::try_parse_from(["karet"])?;
         assert!(cli.command.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn diff_flag_takes_exactly_two_paths() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from(["karet", "--diff", "a.rs", "b.rs"])?;
+        assert_eq!(cli.diff, vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")]);
+        // One path is a parse error, not a silent half-pair.
+        assert!(Cli::try_parse_from(["karet", "--diff", "a.rs"]).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn diff_flag_is_repeatable_in_pairs() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from(["karet", "--diff", "a", "b", "--diff", "c", "d"])?;
+        assert_eq!(cli.diff.len(), 4);
+        assert_eq!(cli.diff[2], PathBuf::from("c"));
         Ok(())
     }
 
