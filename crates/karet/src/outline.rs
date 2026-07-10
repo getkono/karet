@@ -68,11 +68,13 @@ fn push_rows(entries: &[OutlineEntry], depth: usize, rows: &mut Vec<OutlineRow>)
 }
 
 /// Build the neutral outline for a PDF document from its extracted bookmarks.
+#[cfg(feature = "pdf")]
 #[must_use]
 pub fn from_pdf(items: &[karet_pdf::OutlineItem]) -> Vec<OutlineEntry> {
     items.iter().map(OutlineEntry::from).collect()
 }
 
+#[cfg(feature = "pdf")]
 impl From<&karet_pdf::OutlineItem> for OutlineEntry {
     fn from(item: &karet_pdf::OutlineItem) -> Self {
         Self {
@@ -108,6 +110,7 @@ mod tests {
         assert_eq!(rows[1].target, Some(OutlineTarget::Page(1)));
     }
 
+    #[cfg(feature = "pdf")]
     #[test]
     fn pdf_bookmarks_convert_to_page_targets() {
         let items = vec![karet_pdf::OutlineItem {

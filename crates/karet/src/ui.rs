@@ -15,8 +15,11 @@ use karet_editor::Editor;
 use karet_filetype::FileKind;
 use karet_fileview::HexView;
 use karet_fileview::image::GraphicsProtocol;
+#[cfg(feature = "pdf")]
 use karet_fileview::image::Image;
+#[cfg(feature = "images")]
 use karet_fileview::image::ImageWidget;
+#[cfg(feature = "pdf")]
 use karet_fileview::image::fit_rect;
 use karet_fileview::viewer::Placeholder;
 use karet_graph::LaneInput;
@@ -47,8 +50,11 @@ use ratatui::widgets::List;
 use ratatui::widgets::ListItem;
 use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
+#[cfg(feature = "pdf")]
 use ratatui::widgets::Scrollbar;
+#[cfg(feature = "pdf")]
 use ratatui::widgets::ScrollbarOrientation;
+#[cfg(feature = "pdf")]
 use ratatui::widgets::ScrollbarState;
 use ratatui::widgets::Wrap;
 
@@ -654,6 +660,7 @@ const SPINNER_FRAME_MS: u128 = 100;
 /// The scale at which document (PDF) pages are rasterized. Larger than a typical
 /// pane so the Kitty protocol downscales (sharp) rather than upscales into the
 /// reserved cell box; 2.0 ≈ 144 DPI for a native 72-DPI page.
+#[cfg(feature = "pdf")]
 const DOC_RENDER_SCALE: f32 = 2.0;
 
 /// The 1-cell tab status mark: a spinner while a slow save writes, `●` for unsaved
@@ -1490,7 +1497,12 @@ fn draw_pane_content(
     let Some(tab) = tabs.get_mut(active) else {
         return PaneContent::default();
     };
+    // Written by the image/PDF render arms; stays `None` (and non-`mut`) when neither
+    // media feature is compiled in.
+    #[cfg(any(feature = "images", feature = "pdf"))]
     let mut image_area = None;
+    #[cfg(not(any(feature = "images", feature = "pdf")))]
+    let image_area: Option<Rect> = None;
     let mut badge_rect = None;
     match &mut tab.kind {
         TabKind::Welcome => draw_welcome(f, theme, area),
@@ -1615,6 +1627,7 @@ fn draw_pane_content(
             *scroll = (*scroll).min(rows.saturating_sub(1));
             f.render_widget(HexView::new(bytes).scroll(*scroll).theme(theme), area);
         },
+        #[cfg(feature = "images")]
         TabKind::Image { image, .. } => {
             if ctx.graphics == GraphicsProtocol::Kitty {
                 // Reserve the area; the app flushes the Kitty escape after drawing.
@@ -1628,6 +1641,7 @@ fn draw_pane_content(
                 f.render_widget(ImageWidget::new(image), area);
             }
         },
+        #[cfg(feature = "pdf")]
         TabKind::Document {
             path,
             doc,

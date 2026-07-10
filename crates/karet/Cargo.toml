@@ -18,6 +18,18 @@ build   = "build.rs"                  # embeds build provenance into `karet -V` 
 name = "karet"
 path = "src/main.rs"
 
+# Heavy media renderers are optional so a lean build drops their dependency trees
+# (issue #23). Both are ON by default, so the shipped binary is unchanged; a
+# `--no-default-features` build compiles without the `image` codec tree or `hayro`.
+[features]
+default = ["images", "pdf"]
+# Decode & render raster image files (pulls the `image` codec stack via
+# karet-fileview's `images` feature, which implies its shared `raster` primitives).
+images = ["karet-fileview/images"]
+# View PDF documents: rasterize pages (pulls `hayro` via karet-pdf) and display
+# them through karet-fileview's shared terminal-image primitives (`raster`).
+pdf = ["dep:karet-pdf", "karet-fileview/raster"]
+
 [dependencies]
 # Presentation/client half + the headless backend it drives through the Command/Event seam.
 karet-core.workspace = true
@@ -39,8 +51,8 @@ karet-search.workspace = true
 karet-fuzzy.workspace = true
 karet-widgets.workspace = true
 karet-editor.workspace = true
-karet-fileview = { workspace = true, features = ["images"] }  # read-only "render any file" primitives (hex/image/placeholder)
-karet-pdf.workspace = true            # rasterize PDF pages (pure-Rust hayro) into the Kitty image path
+karet-fileview.workspace = true       # read-only "render any file" primitives (hex/image/placeholder)
+karet-pdf = { workspace = true, optional = true }  # rasterize PDF pages (pure-Rust hayro); behind the `pdf` feature
 # External (app-level orchestration: runtime, CLI, plus the merged clipboard/input modules).
 ratatui.workspace = true
 crossterm.workspace = true
