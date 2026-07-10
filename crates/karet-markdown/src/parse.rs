@@ -57,22 +57,45 @@ fn closes(frame: &Frame, tag: TagEnd) -> bool {
 
 /// Parse `source` into the render model.
 pub(crate) fn parse(source: &str) -> MarkdownDocument {
-    let mut builder = Builder::default();
+    let mut builder = Builder::new(source);
     // Only CommonMark: the model has no table/footnote/strikethrough shape to hold the
     // extensions, so enabling them would produce events we would silently drop.
-    for event in Parser::new_ext(source, Options::empty()) {
-        builder.event(&event);
+    //
+    // `into_offset_iter` pairs each event with its source byte range, which is what lets
+    // a top-level block remember the line it came from (see `Builder::block_lines`).
+    for (event, span) in Parser::new_ext(source, Options::empty()).into_offset_iter() {
+        builder.event(&event, span.start);
     }
     builder.finish()
 }
 
-#[derive(Default)]
 struct Builder {
     blocks: Vec<Block>,
+    /// The 0-based source line each top-level block begins on; parallel to `blocks`.
+    block_lines: Vec<usize>,
     stack: Vec<Frame>,
+    /// The byte offset of every `\n` in the source, ascending.
+    newlines: Vec<usize>,
+    /// The byte offset at which the currently-open top-level block began.
+    pending_start: usize,
 }
 
 impl Builder {
+    fn new(source: &str) -> Self {
+        Self {
+            blocks: Vec::new(),
+            block_lines: Vec::new(),
+            stack: Vec::new(),
+            newlines: source.match_indices('\n').map(|(index, _)| index).collect(),
+            pending_start: 0,
+        }
+    }
+
+    /// The 0-based line holding byte `offset`. A `\n` belongs to the line it ends.
+    fn line_of(&self, offset: usize) -> usize {
+        self.newlines.partition_point(|&newline| newline < offset)
+    }
+
     fn finish(mut self) -> MarkdownDocument {
         // Unbalanced input (never produced by pulldown-cmark, but cheap to survive):
         // close whatever is still open so no content is lost.
@@ -81,10 +104,17 @@ impl Builder {
         }
         MarkdownDocument {
             blocks: self.blocks,
+            block_lines: self.block_lines,
         }
     }
 
-    fn event(&mut self, event: &Event<'_>) {
+    fn event(&mut self, event: &Event<'_>, start: usize) {
+        // An event seen with an empty stack opens the next top-level block: record where
+        // it began, before any frame hides the transition. The value survives untouched
+        // until that block closes, because every event in between sees a non-empty stack.
+        if self.stack.is_empty() {
+            self.pending_start = start;
+        }
         match event {
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(*tag),
@@ -156,10 +186,15 @@ impl Builder {
             Frame::Quote(blocks) => self.block(Block::Quote(blocks)),
             Frame::CodeBlock { lang, code } => self.block(Block::CodeBlock { lang, code }),
             Frame::List(items) => self.block(Block::List(items)),
-            Frame::Item(blocks) => match self.stack.last_mut() {
-                Some(Frame::List(items)) => items.push(blocks),
-                // An item outside a list: keep its content rather than drop it.
-                _ => self.blocks.extend(blocks),
+            Frame::Item(blocks) => {
+                if let Some(Frame::List(items)) = self.stack.last_mut() {
+                    items.push(blocks);
+                } else {
+                    // An item outside a list: keep its content rather than drop it.
+                    for block in blocks {
+                        self.push_root(block);
+                    }
+                }
             },
             Frame::Emphasis(content) => self.inline(Inline::Emphasis(content)),
             Frame::Strong(content) => self.inline(Inline::Strong(content)),
@@ -208,8 +243,15 @@ impl Builder {
         }
         match self.stack.last_mut() {
             Some(Frame::Quote(blocks) | Frame::Item(blocks)) => blocks.push(block),
-            _ => self.blocks.push(block),
+            _ => self.push_root(block),
         }
+    }
+
+    /// Push a block at the document root, stamping the source line it began on so the
+    /// two vectors stay parallel.
+    fn push_root(&mut self, block: Block) {
+        self.blocks.push(block);
+        self.block_lines.push(self.line_of(self.pending_start));
     }
 }
 
@@ -388,5 +430,73 @@ mod tests {
     #[test]
     fn empty_source_yields_no_blocks() {
         assert!(parse("").blocks.is_empty());
+    }
+
+    /// The source line of every top-level block, in order.
+    fn block_lines(source: &str) -> Vec<usize> {
+        let doc = parse(source);
+        assert_eq!(
+            doc.blocks.len(),
+            doc.block_lines.len(),
+            "a block line must be stamped for every root block"
+        );
+        doc.block_lines
+    }
+
+    #[test]
+    fn top_level_blocks_remember_the_source_line_they_begin_on() {
+        assert_eq!(block_lines("# Title\n\nSome text.\n"), vec![0, 2]);
+    }
+
+    #[test]
+    fn leading_and_repeated_blank_lines_are_counted() {
+        assert_eq!(block_lines("\n\n# T\n"), vec![2]);
+        assert_eq!(block_lines("a\n\n\n\nb\n"), vec![0, 4]);
+    }
+
+    #[test]
+    fn a_rule_anchors_on_its_own_line() {
+        // `Event::Rule` pushes no frame, so its offset must be read straight off the event.
+        assert_eq!(block_lines("a\n\n---\n\nb\n"), vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn a_code_fence_anchors_on_its_opening_delimiter() {
+        assert_eq!(block_lines("```rust\nfn f() {}\n```\n\ntext\n"), vec![0, 4]);
+    }
+
+    #[test]
+    fn only_top_level_blocks_are_anchored() {
+        // The nested item on line 1 is inside the list; the list itself anchors at line 0.
+        assert_eq!(block_lines("- one\n  - two\n\n> quoted\n"), vec![0, 3]);
+    }
+
+    #[test]
+    fn a_multi_line_paragraph_anchors_on_its_first_line() {
+        assert_eq!(block_lines("# H\n\nsoft\nbreak\n\n## T\n"), vec![0, 2, 5]);
+    }
+
+    #[test]
+    fn block_lines_stay_parallel_to_blocks_on_adversarial_input() {
+        // Each of these either opens frames it never closes, or emits events the model has
+        // no shape for. `block_lines` asserts the two vectors match length.
+        for source in [
+            "",
+            "*unbalanced\n",
+            "> quote\n\n- item\n\n<div>html</div>\n\npara\n",
+            "| a | b |\n| - | - |\n",
+            "\n",
+        ] {
+            let _ = block_lines(source);
+        }
+    }
+
+    #[test]
+    fn block_lines_ascend() {
+        let lines = block_lines("a\n\n# b\n\n---\n\n> c\n\n- d\n");
+        assert!(
+            lines.windows(2).all(|w| w[0] < w[1]),
+            "anchors must ascend: {lines:?}"
+        );
     }
 }

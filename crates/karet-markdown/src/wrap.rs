@@ -42,11 +42,89 @@ impl WrappedLine {
     }
 }
 
+/// Ties a source line to the wrapped line it produced.
+///
+/// One anchor is emitted per *top-level* block, at the block's first wrapped line. Lines
+/// inside a block (a soft-wrapped paragraph, the body of a code fence) are not anchored
+/// individually; [`WrappedDocument`]'s projections interpolate between anchors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Anchor {
+    /// The 0-based line in the markdown source.
+    pub source_line: usize,
+    /// The 0-based index into [`WrappedDocument::lines`].
+    pub wrapped_line: usize,
+}
+
 /// A width-wrapped document, ready to be painted line by line.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WrappedDocument {
     /// The painted lines, top to bottom.
     pub lines: Vec<WrappedLine>,
+    /// Source-line anchors, one per top-level block, ascending on both axes.
+    pub anchors: Vec<Anchor>,
+}
+
+impl WrappedDocument {
+    /// The wrapped line that best corresponds to 0-based `source_line`.
+    ///
+    /// Clamped to the last line; `0` for an empty document.
+    #[must_use]
+    pub fn wrapped_line_for_source(&self, source_line: usize) -> usize {
+        project(
+            &self.anchors,
+            source_line,
+            |a| a.source_line,
+            |a| a.wrapped_line,
+            self.lines.len().saturating_sub(1),
+        )
+    }
+
+    /// The 0-based source line that best corresponds to `wrapped_line`.
+    ///
+    /// Unclamped at the top end — the source's length is not known here, so a caller that
+    /// needs a valid line index clamps it against its own buffer.
+    #[must_use]
+    pub fn source_line_for_wrapped(&self, wrapped_line: usize) -> usize {
+        project(
+            &self.anchors,
+            wrapped_line,
+            |a| a.wrapped_line,
+            |a| a.source_line,
+            usize::MAX,
+        )
+    }
+}
+
+/// Project `input` from one anchor axis onto the other, interpolating proportionally
+/// between the two anchors that bracket it, and clamping the result to `limit`.
+///
+/// Total by construction: an empty `anchors`, or an `input` below the first anchor,
+/// projects to `0`; past the last anchor the final block extends one-for-one.
+fn project(
+    anchors: &[Anchor],
+    input: usize,
+    from: impl Fn(&Anchor) -> usize,
+    to: impl Fn(&Anchor) -> usize,
+    limit: usize,
+) -> usize {
+    let above = anchors.partition_point(|a| from(a) <= input);
+    let Some(lo) = above.checked_sub(1).and_then(|i| anchors.get(i)) else {
+        return 0;
+    };
+    let offset = input.saturating_sub(from(lo));
+    let projected = match anchors.get(above) {
+        // Bracketed by two anchors: scale the offset by the ratio of the two spans. The
+        // `max(1)` divisor is unreachable (anchors are strictly ascending on the source
+        // axis) but keeps the division total.
+        Some(hi) => {
+            let span_from = from(hi).saturating_sub(from(lo)).max(1);
+            let span_to = to(hi).saturating_sub(to(lo));
+            to(lo).saturating_add(offset.saturating_mul(span_to) / span_from)
+        },
+        // Past the last anchor: no `hi` to scale against, so extend one-for-one.
+        None => to(lo).saturating_add(offset),
+    };
+    projected.min(limit)
 }
 
 /// The bullet used for unordered list items.
@@ -62,12 +140,27 @@ pub(crate) fn wrap(doc: &MarkdownDocument, width: u16) -> WrappedDocument {
     // terminates, and the caller sees (unhelpful but finite) output.
     let width = usize::from(width).max(1);
     let mut lines = Vec::new();
-    wrap_blocks(&doc.blocks, width, &[], &mut lines);
+    let mut anchors = Vec::new();
+    // The top level is wrapped here rather than through `wrap_blocks` so each block can
+    // be anchored to its source line. The anchor is stamped *after* the separator, so it
+    // points at the block's first real line rather than the blank one above it.
+    for (index, block) in doc.blocks.iter().enumerate() {
+        if index > 0 {
+            lines.push(WrappedLine::default());
+        }
+        if let Some(source_line) = doc.block_line(index) {
+            anchors.push(Anchor {
+                source_line,
+                wrapped_line: lines.len(),
+            });
+        }
+        wrap_block(block, width, &[], &mut lines);
+    }
     // A trailing blank line is an artifact of the between-blocks separator.
     while lines.last().is_some_and(|l| l.spans.is_empty()) {
         lines.pop();
     }
-    WrappedDocument { lines }
+    WrappedDocument { lines, anchors }
 }
 
 /// Wrap a sequence of blocks, each prefixed by `prefix` (a quote gutter, a list
@@ -456,5 +549,149 @@ mod tests {
             first.spans.first().and_then(|s| s.token),
             Some(StandardToken::MarkupRaw.id())
         );
+    }
+
+    fn wrapped(source: &str, width: u16) -> WrappedDocument {
+        wrap(&parse::parse(source), width)
+    }
+
+    #[test]
+    fn one_anchor_per_top_level_block_at_its_first_line() {
+        // "# Title" / "" / "Some text." — the anchor skips the separator blank.
+        let doc = wrapped("# Title\n\nSome text.\n", 40);
+        assert_eq!(
+            doc.anchors,
+            vec![
+                Anchor {
+                    source_line: 0,
+                    wrapped_line: 0
+                },
+                Anchor {
+                    source_line: 2,
+                    wrapped_line: 2
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_blocks_do_not_add_anchors() {
+        let doc = wrapped("- one\n  - two\n\n> quoted\n", 40);
+        assert_eq!(
+            doc.anchors.len(),
+            2,
+            "the list and the quote, nothing inside"
+        );
+    }
+
+    #[test]
+    fn anchors_ascend_on_both_axes() {
+        let doc = wrapped("a\n\n# b\n\n---\n\n> c\n\n- d\n", 20);
+        assert!(
+            doc.anchors
+                .windows(2)
+                .all(|w| w[0].source_line < w[1].source_line
+                    && w[0].wrapped_line < w[1].wrapped_line),
+            "{:?}",
+            doc.anchors
+        );
+    }
+
+    #[test]
+    fn projections_hit_anchors_exactly() {
+        let doc = wrapped("# Title\n\nSome text.\n", 40);
+        for anchor in &doc.anchors {
+            assert_eq!(
+                doc.wrapped_line_for_source(anchor.source_line),
+                anchor.wrapped_line
+            );
+            assert_eq!(
+                doc.source_line_for_wrapped(anchor.wrapped_line),
+                anchor.source_line
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_document_projects_everything_to_the_top() {
+        let doc = wrapped("", 40);
+        assert!(doc.anchors.is_empty());
+        assert_eq!(doc.wrapped_line_for_source(7), 0);
+        assert_eq!(doc.source_line_for_wrapped(7), 0);
+    }
+
+    #[test]
+    fn a_single_anchor_extends_one_for_one() {
+        // One block, so there is no `hi` to interpolate against.
+        let doc = wrapped("alpha\nbravo\ncharlie\n", 40);
+        assert_eq!(doc.anchors.len(), 1);
+        // Source lines beyond the block still map forward, clamped to the last line.
+        assert_eq!(doc.wrapped_line_for_source(0), 0);
+        assert_eq!(doc.source_line_for_wrapped(2), 2);
+    }
+
+    #[test]
+    fn a_source_line_below_the_first_anchor_maps_to_the_top() {
+        let doc = wrapped("\n\n# Late\n", 40);
+        assert_eq!(doc.anchors.first().map(|a| a.source_line), Some(2));
+        assert_eq!(doc.wrapped_line_for_source(0), 0);
+        assert_eq!(doc.wrapped_line_for_source(1), 0);
+    }
+
+    #[test]
+    fn a_source_line_past_the_end_clamps_to_the_last_wrapped_line() {
+        let doc = wrapped("# Title\n\nSome text.\n", 40);
+        let last = doc.lines.len().saturating_sub(1);
+        assert_eq!(doc.wrapped_line_for_source(9_999), last);
+    }
+
+    #[test]
+    fn a_wrapped_line_past_the_end_is_not_clamped() {
+        // The source's length is unknown here, so the caller clamps; we just extend.
+        let doc = wrapped("# Title\n\nSome text.\n", 40);
+        assert!(doc.source_line_for_wrapped(9_999) > 2);
+    }
+
+    #[test]
+    fn interpolation_lands_strictly_inside_the_block_that_owns_the_line() {
+        // A paragraph on source lines 2-3 that soft-wraps into several rendered lines,
+        // bracketed by headings, so both anchors exist.
+        let doc = wrapped(
+            "# H\n\nlorem ipsum dolor\nsit amet consectetur\n\n## Tail\n",
+            12,
+        );
+        let para = doc.wrapped_line_for_source(2);
+        let tail = doc.wrapped_line_for_source(5);
+        let inner = doc.wrapped_line_for_source(3);
+        assert!(
+            para < inner && inner < tail,
+            "source line 3 must render between the paragraph start and the tail heading: \
+             {para} < {inner} < {tail}"
+        );
+        // And back: the interpolated row belongs to the paragraph, not the tail heading.
+        let back = doc.source_line_for_wrapped(inner);
+        assert!((2..5).contains(&back), "expected 2..5, got {back}");
+    }
+
+    #[test]
+    fn round_tripping_a_source_line_stays_within_its_block() {
+        let doc = wrapped(
+            "# H\n\nlorem ipsum dolor\nsit amet consectetur\n\n## Tail\n",
+            12,
+        );
+        for source_line in 0..6 {
+            let back = doc.source_line_for_wrapped(doc.wrapped_line_for_source(source_line));
+            assert!(
+                back <= source_line.max(2),
+                "{source_line} round-tripped to {back}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_zero_width_wrap_still_projects_without_panicking() {
+        let doc = wrapped("# H\n\ntext\n", 0);
+        let _ = doc.wrapped_line_for_source(usize::MAX);
+        let _ = doc.source_line_for_wrapped(usize::MAX);
     }
 }

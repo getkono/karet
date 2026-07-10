@@ -9,6 +9,10 @@
 //! [`WrappedLine`]s of [`TextSpan`]s tagged with a semantic
 //! [`TokenId`](karet_core::TokenId). Nothing here knows about a terminal: a consumer
 //! resolves those tokens to colors (and bold/italic) through `karet-theme`.
+//!
+//! A [`WrappedDocument`] also carries [`Anchor`]s tying each top-level block back to the
+//! source line it came from, so a rendered preview can be scrolled in step with the
+//! markdown it was rendered from.
 
 mod parse;
 mod wrap;
@@ -19,6 +23,7 @@ mod highlight;
 #[cfg(feature = "view")]
 pub mod view;
 
+pub use wrap::Anchor;
 pub use wrap::TextSpan;
 pub use wrap::WrappedDocument;
 pub use wrap::WrappedLine;
@@ -77,6 +82,10 @@ pub enum Block {
 pub struct MarkdownDocument {
     /// The top-level blocks.
     pub blocks: Vec<Block>,
+    /// The 0-based source line each top-level block begins on, parallel to `blocks`.
+    /// Private so the two vectors cannot drift out of step; read it through
+    /// [`block_line`](Self::block_line).
+    block_lines: Vec<usize>,
 }
 
 impl MarkdownDocument {
@@ -87,6 +96,13 @@ impl MarkdownDocument {
     #[must_use]
     pub fn wrap(&self, width: u16) -> WrappedDocument {
         wrap::wrap(self, width)
+    }
+
+    /// The 0-based source line the top-level block at `index` begins on, or `None` when
+    /// `index` is out of range.
+    #[must_use]
+    pub fn block_line(&self, index: usize) -> Option<usize> {
+        self.block_lines.get(index).copied()
     }
 }
 
@@ -107,8 +123,11 @@ mod tests {
                 level: 1,
                 content: vec![Inline::Text("Title".to_owned())],
             }],
+            block_lines: vec![0],
         };
         assert_eq!(doc.blocks.len(), 1);
+        assert_eq!(doc.block_line(0), Some(0));
+        assert_eq!(doc.block_line(1), None);
         assert_eq!(Block::Rule, Block::Rule);
     }
 }
