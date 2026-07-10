@@ -25,7 +25,7 @@ use crate::tab::Tab;
 use crate::tab::TabKind;
 
 /// How many leading bytes to sample for file-type classification.
-const HEAD_BYTES: usize = 8192;
+pub(crate) const HEAD_BYTES: usize = 8192;
 
 /// Open `path` as a tab, classifying its content and choosing a renderer. Files
 /// larger than the [size guard](viewer::SIZE_GUARD) route to a too-large

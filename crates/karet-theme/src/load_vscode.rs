@@ -124,6 +124,7 @@ fn parse_font_style(s: &str) -> Emphasis {
     Emphasis {
         bold: s.split_whitespace().any(|w| w == "bold"),
         italic: s.split_whitespace().any(|w| w == "italic"),
+        strikethrough: s.split_whitespace().any(|w| w == "strikethrough"),
     }
 }
 
@@ -147,6 +148,10 @@ fn scope_to_token(scope: &str) -> Option<StandardToken> {
         StandardToken::MarkupQuote
     } else if s.starts_with("markup.list") {
         StandardToken::MarkupListMarker
+    // TextMate grammars spell struck text either way; `markup.deleted` is also a diff
+    // scope, but no karet token claims that, so routing it here loses nothing.
+    } else if s.starts_with("markup.strikethrough") || s.starts_with("markup.deleted") {
+        StandardToken::MarkupStrikethrough
     // Doc comments must be tested before the general `comment` prefix.
     } else if s.starts_with("comment") && s.contains("documentation") {
         StandardToken::CommentDoc

@@ -25,8 +25,12 @@ use karet_fileview::viewer::Placeholder;
 use karet_graph::LaneInput;
 use karet_graph::assign_lanes;
 use karet_graph::view::render_rail;
+use karet_markdown::WrappedDocument;
+use karet_markdown::view::MarkdownView;
+use karet_markdown::view::MarkdownViewState;
 use karet_session::ConfigLayerStatus;
 use karet_session::LoadedConfig;
+use karet_text::TextBuffer;
 use karet_theme::Theme;
 use karet_vcs::StatusKind;
 use karet_widgets::Corner;
@@ -37,6 +41,7 @@ use ratatui::Frame;
 use ratatui::layout::Alignment;
 use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
+use ratatui::layout::Margin;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
@@ -136,6 +141,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.outline_content_rect = Rect::default();
     }
 
+    // Align a markdown preview with its source before either is painted, using the wrap
+    // the last frame cached.
+    app.sync_markdown_preview();
     draw_panes(f, app, &theme, app.main_rect);
     draw_drop_preview(f, app, &theme);
     draw_status(f, app, &theme, rows[1]);
@@ -1530,6 +1538,13 @@ fn draw_pane_content(
                 .cell_caret(!ctx.graphical_cursor);
             f.render_stateful_widget(editor, area, &mut tab.editor);
         },
+        TabKind::MarkdownPreview {
+            buffer,
+            wrapped,
+            rendered,
+            scroll,
+            ..
+        } => draw_markdown_preview(f, theme, area, buffer, wrapped, rendered, scroll),
         TabKind::Diff { file, view, scroll } => draw_diff(f, theme, area, file, *view, scroll),
         TabKind::Blame { groups, scroll, .. } => draw_blame(f, theme, area, groups, scroll),
         TabKind::Graph {
@@ -2655,6 +2670,49 @@ fn severity_style(theme: &Theme, severity: Severity) -> Style {
     Style::default().fg(theme.role(role).to_ratatui())
 }
 
+/// The breathing room between a markdown preview's rendered text and its pane edges. Prose
+/// pinned against the pane border reads as cramped next to the source pane's gutter.
+const MARKDOWN_PREVIEW_PADDING: Margin = Margin {
+    horizontal: 2,
+    vertical: 1,
+};
+
+/// The rect a markdown preview paints into: its pane, inset by
+/// [`MARKDOWN_PREVIEW_PADDING`]. A pane too small to hold the padding gives up an empty
+/// rect rather than painting to the edge.
+fn markdown_preview_rect(area: Rect) -> Rect {
+    area.inner(MARKDOWN_PREVIEW_PADDING)
+}
+
+/// Paint a markdown preview, re-parsing and re-wrapping only when the document version or
+/// the pane width has moved since the last frame.
+///
+/// Caching here rather than on every snapshot is what keeps typing cheap: a burst of
+/// keystrokes lands many snapshots but only one draw, so it costs one re-parse.
+fn draw_markdown_preview(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    buffer: &TextBuffer,
+    wrapped: &mut WrappedDocument,
+    rendered: &mut Option<(u64, u16)>,
+    scroll: &mut u16,
+) {
+    // Wrap to the padded width, not the pane's: the cache key follows, so a resize that
+    // only moves the padding away still re-wraps exactly once.
+    let area = markdown_preview_rect(area);
+    let key = (buffer.version(), area.width);
+    if *rendered != Some(key) {
+        *wrapped = karet_markdown::parse(&buffer.text()).wrap(area.width);
+        *rendered = Some(key);
+    }
+    let mut state = MarkdownViewState { scroll: *scroll };
+    f.render_stateful_widget(MarkdownView::new(wrapped, theme), area, &mut state);
+    // The widget clamps the scroll to the document; keep the clamped value so a
+    // shrinking document doesn't leave the tab scrolled past the end.
+    *scroll = state.scroll;
+}
+
 fn draw_blame(
     f: &mut Frame,
     theme: &Theme,
@@ -2939,6 +2997,21 @@ fn status_glyph(kind: StatusKind) -> (char, ThemeRole) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_markdown_preview_is_inset_from_its_pane_on_every_side() {
+        let inner = markdown_preview_rect(Rect::new(10, 5, 40, 20));
+        assert_eq!(inner, Rect::new(12, 6, 36, 18));
+    }
+
+    #[test]
+    fn a_pane_too_small_to_pad_paints_nothing_rather_than_to_the_edge() {
+        // The padding needs 4 columns and 2 rows; below that there is no content rect.
+        assert_eq!(markdown_preview_rect(Rect::new(0, 0, 4, 1)).height, 0);
+        assert_eq!(markdown_preview_rect(Rect::new(0, 0, 3, 2)).width, 0);
+        // Exactly enough for the padding leaves an empty — but valid — content rect.
+        assert_eq!(markdown_preview_rect(Rect::new(0, 0, 4, 2)).width, 0);
+    }
 
     fn test_code_tab(path: &str) -> Tab {
         use karet_text::TextBuffer;

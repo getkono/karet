@@ -85,7 +85,7 @@ published to crates.io (everything else is `publish = false`).
 | `karet-theme` | engine | ✓ | token palette, .tmTheme + VS Code JSON loaders, contrast (`view` feat) |
 | `karet-diff` | engine | ✓ | pure syntax-aware diffing (tree-sitter + line/word fallback) — no presentation |
 | `karet-graph` | engine | — | DAG lane-assignment layout + rail renderer (`view` feat) for the commit graph & code visualizations; consumes `karet_core::GraphView` |
-| `karet-markdown` | engine | — | markdown parse → wrap → render model; `highlight` colours code fences, `view` paints ratatui |
+| `karet-markdown` | engine | — | markdown parse → wrap → render model, with source-line anchors for scroll sync; `highlight` colours code fences, `view` paints ratatui (incl. a scrollable `MarkdownView`) |
 | `karet-cbor` | engine | — | CBOR decode/encode ↔ editable diagnostic-notation text (via `ciborium`); no presentation |
 | `karet-pdf` | engine | ✓ | pure-Rust PDF page → RGBA rasterization (via `hayro`); no presentation |
 | `karet-terminal` | engine | — | VT/PTY emulator, scrollback, OSC 133 (`view` feat) |

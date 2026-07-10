@@ -50,6 +50,10 @@ C#, Ruby, PHP, HTML, CSS, YAML, JSON, TOML, Bash); the detected language is show
 in the status bar, and unknown/unsupported languages render as plaintext.
 `--no-syntax` (or `NO_COLOR`) disables highlighting.
 
+On a Markdown file, `Ctrl+K V` (or "Markdown: Open Preview to the Side" in the
+command palette) opens a rendered preview in a pane to the right. It re-renders as
+you type, and the two panes scroll together — whichever one has focus leads.
+
 ## Prerequisites
 
 - [Rust (rustup)](https://rustup.rs) — toolchain (stable pinned in `rust-toolchain.toml`; the rustfmt-only nightly in `rust-nightly.txt`)
