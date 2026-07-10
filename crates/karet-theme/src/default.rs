@@ -53,6 +53,8 @@ pub(crate) fn dark() -> Theme {
     tok(StandardToken::MarkupRaw, rgb(0x9e, 0xce, 0x6a));
     tok(StandardToken::MarkupQuote, rgb(0x9a, 0xa5, 0xce));
     tok(StandardToken::MarkupListMarker, rgb(0xff, 0x9e, 0x64));
+    // Struck text is text the author retracted: dim it toward the comment grey.
+    tok(StandardToken::MarkupStrikethrough, rgb(0x56, 0x5f, 0x89));
 
     // Markup carries weight and slant, not just hue: bold/italic are what make a
     // heading read as a heading and `*em*` read as emphasis.
@@ -63,6 +65,7 @@ pub(crate) fn dark() -> Theme {
     em(StandardToken::MarkupBold, Emphasis::BOLD);
     em(StandardToken::MarkupItalic, Emphasis::ITALIC);
     em(StandardToken::MarkupQuote, Emphasis::ITALIC);
+    em(StandardToken::MarkupStrikethrough, Emphasis::STRIKETHROUGH);
 
     let mut roles = [fg; ROLE_COUNT];
     let mut role = |r: ThemeRole, c: Rgba| roles[r as usize] = c;

@@ -109,6 +109,8 @@ pub enum StandardToken {
     MarkupQuote,
     /// A markup list marker, thematic break, or other structural punctuation.
     MarkupListMarker,
+    /// Struck-through (deleted) markup.
+    MarkupStrikethrough,
 }
 
 impl StandardToken {
@@ -152,6 +154,7 @@ impl StandardToken {
             Self::MarkupRaw => "markup.raw",
             Self::MarkupQuote => "markup.quote",
             Self::MarkupListMarker => "markup.list",
+            Self::MarkupStrikethrough => "markup.strikethrough",
         }
     }
 
@@ -189,6 +192,7 @@ impl StandardToken {
             "markup.raw" => Self::MarkupRaw,
             "markup.quote" => Self::MarkupQuote,
             "markup.list" => Self::MarkupListMarker,
+            "markup.strikethrough" => Self::MarkupStrikethrough,
             _ => return None,
         };
         Some(token)
@@ -289,6 +293,7 @@ mod tests {
             StandardToken::MarkupRaw,
             StandardToken::MarkupQuote,
             StandardToken::MarkupListMarker,
+            StandardToken::MarkupStrikethrough,
         ] {
             assert_eq!(
                 StandardToken::from_capture_name(tok.capture_name()),
@@ -317,5 +322,6 @@ mod tests {
         // The markup block is appended immediately after `Label`.
         assert_eq!(StandardToken::CommentDoc.id(), TokenId(22));
         assert_eq!(StandardToken::MarkupListMarker.id(), TokenId(29));
+        assert_eq!(StandardToken::MarkupStrikethrough.id(), TokenId(30));
     }
 }

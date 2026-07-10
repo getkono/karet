@@ -13,7 +13,7 @@ mod default;
 mod load_vscode;
 
 /// Number of [`StandardToken`](karet_core::StandardToken) classes (token id space).
-pub(crate) const TOKEN_COUNT: usize = 30;
+pub(crate) const TOKEN_COUNT: usize = 31;
 /// Number of [`ThemeRole`] variants.
 pub(crate) const ROLE_COUNT: usize = 28;
 
@@ -99,18 +99,28 @@ pub struct Emphasis {
     pub bold: bool,
     /// Render italic.
     pub italic: bool,
+    /// Render struck through.
+    pub strikethrough: bool,
 }
 
 impl Emphasis {
-    /// Bold, not italic.
+    /// Bold, and nothing else.
     pub(crate) const BOLD: Self = Self {
         bold: true,
         italic: false,
+        strikethrough: false,
     };
-    /// Italic, not bold.
+    /// Italic, and nothing else.
     pub(crate) const ITALIC: Self = Self {
         bold: false,
         italic: true,
+        strikethrough: false,
+    };
+    /// Struck through, and nothing else.
+    pub(crate) const STRIKETHROUGH: Self = Self {
+        bold: false,
+        italic: false,
+        strikethrough: true,
     };
 
     /// Convert to a ratatui modifier set (empty when neither flag is set).
@@ -123,6 +133,9 @@ impl Emphasis {
         }
         if self.italic {
             m |= ratatui::style::Modifier::ITALIC;
+        }
+        if self.strikethrough {
+            m |= ratatui::style::Modifier::CROSSED_OUT;
         }
         m
     }
@@ -281,12 +294,12 @@ mod tests {
     #[test]
     fn token_palette_covers_every_standard_token() {
         // `TOKEN_COUNT` must track the `StandardToken` enum: a token whose id lands past
-        // the palette silently renders as plain foreground. `MarkupListMarker` is the
+        // the palette silently renders as plain foreground. `MarkupStrikethrough` is the
         // last variant, so bounding it bounds them all.
-        assert!((StandardToken::MarkupListMarker.id().0 as usize) < TOKEN_COUNT);
+        assert!((StandardToken::MarkupStrikethrough.id().0 as usize) < TOKEN_COUNT);
         // And the palette is not oversized relative to the enum.
         assert_eq!(
-            StandardToken::MarkupListMarker.id().0 as usize,
+            StandardToken::MarkupStrikethrough.id().0 as usize,
             TOKEN_COUNT - 1
         );
     }
@@ -298,6 +311,10 @@ mod tests {
         assert!(t.emphasis(StandardToken::MarkupItalic.id()).italic);
         assert!(t.emphasis(StandardToken::MarkupHeading.id()).bold);
         assert!(t.emphasis(StandardToken::CommentDoc.id()).italic);
+        assert!(
+            t.emphasis(StandardToken::MarkupStrikethrough.id())
+                .strikethrough
+        );
         // Code tokens stay unemphasized.
         assert_eq!(t.emphasis(StandardToken::Keyword.id()), Emphasis::default());
         // An unmapped id yields no emphasis rather than panicking.
