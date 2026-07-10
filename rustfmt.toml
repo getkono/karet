@@ -7,7 +7,8 @@ edition = "2024"
 # `imports_granularity = "Item"` keeps every import on its own line (never brace-
 # merged), and `group_imports = "StdExternalCrate"` fixes each import in a
 # deterministic std / external / local block. Both are nightly-only rustfmt
-# features, so formatting runs under `cargo +nightly fmt` (build/clippy/test stay
+# features, so formatting runs under the nightly pinned in `rust-nightly.txt` — use
+# `mise run format` rather than a bare `cargo +nightly fmt` (build/clippy/test stay
 # on the stable toolchain pinned in rust-toolchain.toml).
 imports_granularity = "Item"
 group_imports = "StdExternalCrate"

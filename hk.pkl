@@ -22,8 +22,9 @@ hooks {
         steps {
             ["cargo-fmt"] {
                 glob = "*.rs"
-                // nightly: rustfmt.toml enables unstable import options (see rustfmt.toml)
-                fix = "cargo +nightly fmt"
+                // Delegates to mise so the pinned nightly (rust-nightly.txt) stays in
+                // one place; rustfmt.toml enables unstable import options.
+                fix = "mise run format"
             }
             ["cargo-clippy"] {
                 glob = "*.rs"
@@ -37,8 +38,9 @@ hooks {
         steps {
             ["cargo-fmt-check"] {
                 glob = "*.rs"
-                // nightly: rustfmt.toml enables unstable import options (see rustfmt.toml)
-                check = "cargo +nightly fmt -- --check"
+                // Delegates to mise so the pinned nightly (rust-nightly.txt) stays in
+                // one place; rustfmt.toml enables unstable import options.
+                check = "mise run format-check"
             }
             ["cargo-clippy-check"] {
                 glob = "*.rs"

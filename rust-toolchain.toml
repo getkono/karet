@@ -1,3 +1,15 @@
+# Source of truth for the stable toolchain, everywhere: rustup reads this file
+# automatically on every `cargo`/`rustup` invocation (local shells, git hooks, CI),
+# so the channel is pinned to an exact version rather than a floating `stable`.
+#
+# CI installs it with a bare `rustup toolchain install` (which resolves this file)
+# rather than a toolchain action, so there is no second copy to keep in sync.
+#
+# rustfmt needs a nightly (rustfmt.toml enables unstable import options); that
+# second toolchain is pinned in `rust-nightly.txt`.
+#
+# Bumping: change `channel` here, run `mise run lint && mise run test`, and keep it
+# at or above the `rust-version` MSRV in the root Cargo.toml.
 [toolchain]
-channel = "stable"
+channel = "1.96.0"
 components = ["rustfmt", "clippy", "rust-analyzer", "llvm-tools-preview"]
