@@ -134,6 +134,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.outline_content_rect = Rect::default();
     }
 
+    // Align a markdown preview with its source before either is painted, using the wrap
+    // the last frame cached.
+    app.sync_markdown_preview();
     draw_panes(f, app, &theme, app.main_rect);
     draw_drop_preview(f, app, &theme);
     draw_status(f, app, &theme, rows[1]);

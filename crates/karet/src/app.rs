@@ -3826,12 +3826,85 @@ impl App {
         self.reconcile_open_docs();
     }
 
-    /// Split the focused pane in `dir` via the keyboard, opening a second view of the
-    /// active document (sharing its session document, with an independent cursor) in
-    /// the new pane, which becomes focused.
     /// Whether `tab` is the markdown preview of the source view `source_view`.
     fn previews_view(tab: &Tab, source_view: ViewId) -> bool {
         matches!(&tab.kind, TabKind::MarkdownPreview { source_view: v, .. } if *v == source_view)
+    }
+
+    /// The visible (pane-active) tab of some *non-focused* pane matching `pred`.
+    fn stored_active(&self, pred: impl Fn(&Tab) -> bool) -> Option<&Tab> {
+        self.stored
+            .values()
+            .filter_map(|pane| pane.tabs.get(pane.active))
+            .find(|tab| pred(tab))
+    }
+
+    /// As [`stored_active`](Self::stored_active), mutably.
+    fn stored_active_mut(&mut self, pred: impl Fn(&Tab) -> bool) -> Option<&mut Tab> {
+        self.stored
+            .values_mut()
+            .filter_map(|pane| pane.tabs.get_mut(pane.active))
+            .find(|tab| pred(tab))
+    }
+
+    /// Scroll a markdown preview and its source together.
+    ///
+    /// The focused pane drives and the other follows. Because the driver's own scroll is
+    /// never written back, the pair cannot oscillate even though the projections are lossy
+    /// — a whole run of source lines can share one wrapped line.
+    ///
+    /// The preview only pushes once it has actually been scrolled *away* from where the
+    /// source projects it. Without that check, merely moving focus onto the preview would
+    /// nudge the source by the rounding error of a `source -> wrapped -> source` round trip.
+    ///
+    /// Runs once per frame just before drawing, so it reads the `wrapped` model the
+    /// previous draw cached; a resize therefore takes one extra frame to settle. A pair
+    /// whose halves are not both their pane's visible tab is skipped.
+    pub(crate) fn sync_markdown_preview(&mut self) {
+        let Some(focused) = self.tabs.get(self.active) else {
+            return;
+        };
+        match &focused.kind {
+            TabKind::Code { .. } => {
+                let view = focused.view;
+                let line = focused.editor.scroll_line as usize;
+                let Some(preview) = self.stored_active_mut(|t| Self::previews_view(t, view)) else {
+                    return;
+                };
+                if let TabKind::MarkdownPreview {
+                    wrapped, scroll, ..
+                } = &mut preview.kind
+                {
+                    let row = wrapped.wrapped_line_for_source(line);
+                    *scroll = u16::try_from(row).unwrap_or(u16::MAX);
+                }
+            },
+            TabKind::MarkdownPreview {
+                source_view,
+                wrapped,
+                scroll,
+                ..
+            } => {
+                let view = *source_view;
+                let scroll = *scroll;
+                let Some(source) = self.stored_active(|t| t.view == view) else {
+                    return;
+                };
+                let source_line = source.editor.scroll_line as usize;
+                if wrapped.wrapped_line_for_source(source_line) == usize::from(scroll) {
+                    return; // already consistent: a bare focus change must not move it
+                }
+                let want = wrapped.source_line_for_wrapped(usize::from(scroll));
+                let Some(source) = self.stored_active_mut(|t| t.view == view) else {
+                    return;
+                };
+                if let TabKind::Code { buffer, .. } = &source.kind {
+                    let last = buffer.line_count().saturating_sub(1);
+                    source.editor.scroll_line = u32::try_from(want.min(last)).unwrap_or(u32::MAX);
+                }
+            },
+            _ => {},
+        }
     }
 
     /// Focus the existing preview of `source_view`, wherever it lives. `false` if there
@@ -3918,6 +3991,9 @@ impl App {
         self.focus = Focus::Editor;
     }
 
+    /// Split the focused pane in `dir` via the keyboard, opening a second view of the
+    /// active document (sharing its session document, with an independent cursor) in
+    /// the new pane, which becomes focused.
     fn split_focused(&mut self, dir: SplitDir) {
         let from = self.focus_pane();
         let dup = self.duplicate_active_tab();
@@ -8428,6 +8504,136 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
             panic!("expected a preview tab");
         };
         assert_eq!(buffer.text(), "# Changed\n");
+    }
+
+    /// A source doc whose blocks sit on known lines: headings on 0, 2, 4, 6.
+    const SYNC_DOC: &str = "# a\n\n# b\n\n# c\n\n# d\n";
+
+    /// Open a preview for `SYNC_DOC` and give it a wrapped model, standing in for the
+    /// first draw (which is what normally populates it).
+    fn synced_app() -> App {
+        let mut app = markdown_app(SYNC_DOC);
+        app.dispatch(Command::MarkdownPreviewSide);
+        let preview = app
+            .stored_active_mut(|t| matches!(t.kind, TabKind::MarkdownPreview { .. }))
+            .expect("a preview tab");
+        if let TabKind::MarkdownPreview { wrapped, .. } = &mut preview.kind {
+            *wrapped = karet_markdown::parse(SYNC_DOC).wrap(40);
+        }
+        app
+    }
+
+    /// The preview's scroll, wherever the preview currently lives.
+    fn preview_scroll(app: &App) -> u16 {
+        let find = |t: &Tab| match &t.kind {
+            TabKind::MarkdownPreview { scroll, .. } => Some(*scroll),
+            _ => None,
+        };
+        app.tabs
+            .iter()
+            .chain(app.stored.values().flat_map(|p| p.tabs.iter()))
+            .find_map(find)
+            .expect("a preview tab")
+    }
+
+    /// The source tab's scroll, wherever it lives.
+    fn source_scroll(app: &App) -> u32 {
+        app.tabs
+            .iter()
+            .chain(app.stored.values().flat_map(|p| p.tabs.iter()))
+            .find(|t| matches!(t.kind, TabKind::Code { .. }))
+            .expect("a source tab")
+            .editor
+            .scroll_line
+    }
+
+    #[test]
+    fn scrolling_the_source_scrolls_the_preview_to_the_matching_block() {
+        let mut app = synced_app();
+        // Source line 4 is the third heading; it renders on wrapped line 4 ("# a", "",
+        // "# b", "", "# c").
+        app.tabs[app.active].editor.scroll_line = 4;
+        app.sync_markdown_preview();
+        assert_eq!(preview_scroll(&app), 4);
+        assert_eq!(source_scroll(&app), 4, "the driver never moves itself");
+    }
+
+    #[test]
+    fn scrolling_the_preview_scrolls_the_source_back() {
+        let mut app = synced_app();
+        app.dispatch(Command::MarkdownPreviewSide); // focus the preview
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::MarkdownPreview { .. }
+        ));
+
+        for _ in 0..4 {
+            app.dispatch(Command::ScrollDown);
+        }
+        app.sync_markdown_preview();
+        assert_eq!(preview_scroll(&app), 4, "the driver never moves itself");
+        assert_eq!(source_scroll(&app), 4);
+    }
+
+    #[test]
+    fn merely_focusing_the_preview_does_not_nudge_the_source() {
+        let mut app = synced_app();
+        app.tabs[app.active].editor.scroll_line = 3; // a blank line, mid-round-trip
+        app.sync_markdown_preview();
+        let settled = preview_scroll(&app);
+
+        app.dispatch(Command::MarkdownPreviewSide); // focus the preview
+        app.sync_markdown_preview();
+
+        assert_eq!(
+            source_scroll(&app),
+            3,
+            "a bare focus change must not move it"
+        );
+        assert_eq!(preview_scroll(&app), settled);
+    }
+
+    #[test]
+    fn syncing_is_idempotent_and_cannot_oscillate() {
+        let mut app = synced_app();
+        app.tabs[app.active].editor.scroll_line = 3;
+        for _ in 0..10 {
+            app.sync_markdown_preview();
+        }
+        let (source, preview) = (source_scroll(&app), preview_scroll(&app));
+
+        app.dispatch(Command::MarkdownPreviewSide); // hand the wheel to the preview
+        for _ in 0..10 {
+            app.sync_markdown_preview();
+        }
+        assert_eq!(source_scroll(&app), source, "the pair settled, not drifted");
+        assert_eq!(preview_scroll(&app), preview);
+    }
+
+    #[test]
+    fn syncing_a_source_with_no_preview_is_a_no_op() {
+        let mut app = markdown_app(SYNC_DOC);
+        app.tabs[app.active].editor.scroll_line = 2;
+        app.sync_markdown_preview();
+        assert_eq!(source_scroll(&app), 2);
+    }
+
+    #[test]
+    fn a_preview_scrolled_past_the_source_clamps_to_the_last_source_line() {
+        let mut app = synced_app();
+        app.dispatch(Command::MarkdownPreviewSide); // focus the preview
+        if let TabKind::MarkdownPreview { scroll, .. } = &mut app.tabs[app.active].kind {
+            *scroll = u16::MAX;
+        }
+        app.sync_markdown_preview();
+        let last = app
+            .stored_active(|t| matches!(t.kind, TabKind::Code { .. }))
+            .and_then(|t| match &t.kind {
+                TabKind::Code { buffer, .. } => Some(buffer.line_count().saturating_sub(1) as u32),
+                _ => None,
+            })
+            .expect("a source tab");
+        assert_eq!(source_scroll(&app), last, "clamped to the last buffer line");
     }
 
     #[test]
