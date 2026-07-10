@@ -503,12 +503,7 @@ impl Tab {
     pub fn path(&self) -> Option<&Path> {
         match &self.kind {
             TabKind::Code { path, .. }
-<<<<<<< HEAD
             | TabKind::MarkdownPreview { path, .. }
-            | TabKind::Image { path, .. }
-            | TabKind::Document { path, .. }
-=======
->>>>>>> master
             | TabKind::Hex { path, .. }
             | TabKind::Placeholder { path, .. }
             | TabKind::Blame { path, .. } => Some(path),
@@ -538,11 +533,8 @@ impl Tab {
     pub fn language(&self) -> &str {
         match &self.kind {
             TabKind::Code { language, .. } => language,
-<<<<<<< HEAD
             TabKind::MarkdownPreview { .. } => "markdown",
-=======
             #[cfg(feature = "images")]
->>>>>>> master
             TabKind::Image { .. } => "image",
             #[cfg(feature = "pdf")]
             TabKind::Document { .. } => "pdf",
