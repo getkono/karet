@@ -57,6 +57,8 @@ pub struct Editor {
     pub insert_final_newline: bool,
     /// Run the configured formatter on save.
     pub format_on_save: bool,
+    /// Distinct highlighting of codetag comment blocks (`TODO:`, `FIXME:`, …).
+    pub semantic_comments: SemanticComments,
 }
 
 impl Default for Editor {
@@ -73,6 +75,34 @@ impl Default for Editor {
             trim_trailing_whitespace: true,
             insert_final_newline: true,
             format_on_save: false,
+            semantic_comments: SemanticComments::default(),
+        }
+    }
+}
+
+/// `editor.semanticComments.*` — distinct highlighting of codetag comment blocks.
+///
+/// A comment whose content opens with a configured tag — plus the immediately
+/// following non-empty comment lines — is highlighted with an attention-drawing
+/// style instead of the ordinary comment color.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct SemanticComments {
+    /// Highlight codetag comment blocks distinctly.
+    pub enabled: bool,
+    /// The codetags that open a block. Matching is case-sensitive and whole-word:
+    /// the tag must start the comment's content and be followed by `:`, `(`,
+    /// whitespace, or the end of the line. Setting this replaces the defaults.
+    pub tags: Vec<String>,
+}
+
+impl Default for SemanticComments {
+    /// Enabled, with the conventional codetags (`TODO`, `FIXME`, `HACK`, `XXX`,
+    /// `BUG` — the single source of truth is `karet-syntax`'s default).
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            tags: karet_syntax::SemanticCommentConfig::default().tags,
         }
     }
 }
@@ -286,6 +316,21 @@ mod tests {
         assert!(s.search.smart_case);
         assert!(!s.spellcheck.enabled);
         assert!(s.git.decorations);
+        assert!(s.editor.semantic_comments.enabled);
+    }
+
+    #[test]
+    fn semantic_comments_default_on_with_the_conventional_tags() {
+        let s = SemanticComments::default();
+        assert!(s.enabled, "the feature is on by default");
+        assert_eq!(s.tags, ["TODO", "FIXME", "HACK", "XXX", "BUG"]);
+        // And the on-disk key deserializes camelCase under `editor`.
+        let parsed: Editor = serde_json::from_str(
+            r#"{ "semanticComments": { "enabled": false, "tags": ["TODO"] } }"#,
+        )
+        .unwrap_or_default();
+        assert!(!parsed.semantic_comments.enabled);
+        assert_eq!(parsed.semantic_comments.tags, ["TODO"]);
     }
 
     #[test]

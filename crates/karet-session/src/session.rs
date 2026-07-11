@@ -295,8 +295,15 @@ impl Session {
             .map(|store| scan(store.dir()))
             .unwrap_or_default();
         // Layered highlighting runs on its own thread; the actor only sends it text and
-        // applies the spans it sends back.
-        let (highlight_tx, highlight_rx) = crate::highlight::spawn();
+        // applies the spans it sends back. The worker also runs the semantic-comment
+        // pass (codetag blocks → CommentMark) when `editor.semanticComments` is on.
+        let semantic_comments = &config.settings.editor.semantic_comments;
+        let semantic = semantic_comments
+            .enabled
+            .then(|| karet_syntax::SemanticCommentConfig {
+                tags: semantic_comments.tags.clone(),
+            });
+        let (highlight_tx, highlight_rx) = crate::highlight::spawn(semantic);
         let mut session = Self {
             config,
             events,

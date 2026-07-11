@@ -253,6 +253,105 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn todo_comments_are_marked_in_a_real_rust_buffer() {
+        use karet_core::StandardToken;
+
+        use crate::session::Session;
+        use crate::session::SessionConfig;
+
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("lib.rs");
+        if std::fs::write(&path, "// TODO: fix bug here\n// context\nfn main() {}\n").is_err() {
+            return;
+        }
+
+        // Default settings: `editor.semanticComments` is on.
+        let (session, _events, mut snaps) = Session::new(SessionConfig::default());
+        let backend = local(session);
+        assert!(
+            backend
+                .send(
+                    backend.next_id(),
+                    Command::OpenDocument {
+                        path,
+                        language: None
+                    }
+                )
+                .is_ok()
+        );
+
+        let mark = StandardToken::CommentMark.id();
+        let marked = await_snapshot(&mut snaps, |snap| {
+            snap.highlights.all().iter().any(|s| s.token == mark)
+        })
+        .await;
+        assert!(
+            marked,
+            "the TODO comment block should be published as CommentMark"
+        );
+    }
+
+    #[tokio::test]
+    async fn disabling_semantic_comments_leaves_comments_plain() {
+        use karet_core::StandardToken;
+        use karet_core::TokenId;
+
+        use crate::session::Session;
+        use crate::session::SessionConfig;
+
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("lib.rs");
+        if std::fs::write(&path, "// TODO: fix bug here\nfn main() {}\n").is_err() {
+            return;
+        }
+
+        let mut config = SessionConfig::default();
+        config.settings.editor.semantic_comments.enabled = false;
+        let (session, _events, mut snaps) = Session::new(config);
+        let backend = local(session);
+        assert!(
+            backend
+                .send(
+                    backend.next_id(),
+                    Command::OpenDocument {
+                        path,
+                        language: None
+                    }
+                )
+                .is_ok()
+        );
+
+        // Wait for the worker's real answer: the snapshot that carries comment spans.
+        let mark = StandardToken::CommentMark.id();
+        let mut saw_mark = false;
+        let highlighted = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some((_, snap)) = snaps.recv().await {
+                saw_mark |= snap.highlights.all().iter().any(|s| s.token == mark);
+                if snap
+                    .highlights
+                    .all()
+                    .iter()
+                    .any(|s| s.token == TokenId::COMMENT)
+                {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .unwrap_or(false);
+        assert!(highlighted, "the buffer should still be highlighted");
+        assert!(
+            !saw_mark,
+            "with the setting off, no snapshot may carry CommentMark"
+        );
+    }
+
+    #[tokio::test]
     async fn editing_republishes_highlights_for_the_new_text() {
         use karet_core::Change;
         use karet_core::LineCol;
