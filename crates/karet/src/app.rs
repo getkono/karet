@@ -79,6 +79,7 @@ use karet_theme::Theme;
 use karet_vcs::Commit;
 use karet_vcs::CommitDetail;
 use karet_vcs::FileChange;
+use karet_vcs::StatusKind;
 use karet_widgets::DropZone;
 use karet_widgets::FileTreeState;
 use karet_widgets::ListSelection;
@@ -806,6 +807,131 @@ impl App {
         let focus = self.focus;
         self.open_path_preview(path);
         self.focus = focus;
+    }
+
+    /// Open `path` at startup and place the caret at 1-based `line`/`col` (from the
+    /// `--goto` flag), then focus the editor. The file opens as a permanent tab (or
+    /// re-focuses an already-open one); the target is converted to the editor's
+    /// 0-based coordinates and clamped into the buffer. A non-text target (image,
+    /// binary, …) simply opens with no caret to place.
+    pub fn open_startup_goto(&mut self, path: &Path, line: u32, col: u32) {
+        self.open_path(path);
+        // `line`/`col` are 1-based with a minimum of 1; `saturating_sub` maps them to
+        // the editor's 0-based coordinates, and `goto` clamps into the buffer.
+        let pos = LineCol::new(line.saturating_sub(1), col.saturating_sub(1));
+        let buffer = match self.tabs.get(self.active).map(|t| &t.kind) {
+            Some(TabKind::Code { buffer, .. }) => Some(buffer.clone()),
+            _ => None,
+        };
+        if let (Some(buffer), Some(tab)) = (buffer, self.tabs.get_mut(self.active)) {
+            tab.editor.goto(&buffer, pos);
+        }
+        self.focus = Focus::Editor;
+    }
+
+    /// Open `path` in a new right split at startup (from the `--split` flag): the
+    /// file becomes the sole tab of a fresh pane to the right of the focused pane,
+    /// which then takes focus, so repeated calls chain panes left-to-right. When the
+    /// layout has no room for another pane (per `can_split` against
+    /// [`Self::main_rect`], which the caller seeds with the terminal size before the
+    /// first draw), the file opens as a tab in the current pane instead and a
+    /// warning notification says so — automation gets its file either way.
+    pub fn open_startup_split(&mut self, path: &Path) {
+        let from = self.focus_pane();
+        if !self.layout.can_split(from, SplitDir::Right, self.main_rect) {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file")
+                .to_string();
+            self.notify(
+                Severity::Warning,
+                NotificationKind::System,
+                format!("--split: no room for another pane; opened {name} in the current pane"),
+            );
+            self.open_path(path);
+            return;
+        }
+        let mut tab = workspace::open_file(path, self.syntax);
+        tab.view = self.alloc_view();
+        self.stash_focused();
+        let new_pane = self.layout.split(from, SplitDir::Right);
+        self.stored.insert(
+            new_pane,
+            StoredPane {
+                tabs: vec![tab],
+                active: 0,
+            },
+        );
+        // `split` already focuses the pane it created; make that explicit, then pull
+        // the new pane's tabs live and register its document with the backend.
+        self.layout.set_focus(new_pane);
+        self.load_focused();
+        self.focus = Focus::Editor;
+        self.register_doc(self.active);
+    }
+
+    /// Open a diff of two arbitrary files as a startup tab (from the `--diff`
+    /// flag): `old` renders as the "before" side and `new` as the "after",
+    /// syntax-aware like any Source-Control diff. `old_text`/`new_text` carry each
+    /// file's content, already read by the caller (which fails fast on an unreadable
+    /// file), with `None` marking non-UTF-8 bytes — either side non-text flags the
+    /// change binary, rendering the standard binary-change placeholder (matching the
+    /// [`FileChange::is_binary`] contract that both texts are then empty).
+    pub fn open_startup_diff(
+        &mut self,
+        old: &Path,
+        new: &Path,
+        old_text: Option<String>,
+        new_text: Option<String>,
+    ) {
+        let is_binary = old_text.is_none() || new_text.is_none();
+        let change = FileChange {
+            path: new.to_path_buf(),
+            // The "renamed from" marker only applies when the two sides differ.
+            old_path: (old != new).then(|| old.to_path_buf()),
+            status: StatusKind::Modified,
+            is_binary,
+            old: if is_binary {
+                String::new()
+            } else {
+                old_text.unwrap_or_default()
+            },
+            new: if is_binary {
+                String::new()
+            } else {
+                new_text.unwrap_or_default()
+            },
+        };
+        let name = |p: &Path| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("diff")
+                .to_string()
+        };
+        let (old_name, new_name) = (name(old), name(new));
+        let title = if old_name == new_name {
+            new_name
+        } else {
+            format!("{old_name} ↔ {new_name}")
+        };
+        let file = FileView::new(change, Section::Working, self.syntax);
+        self.push_tab(Tab::new(
+            title,
+            TabKind::Diff {
+                file: Box::new(file),
+                view: self.diff_layout,
+                scroll: 0,
+            },
+        ));
+    }
+
+    /// Dispatch a palette command at startup (from the `--command` flag), after
+    /// every other startup flag is applied. Runs through the same
+    /// [`dispatch`](Self::dispatch) path a key binding or the palette uses, so CLI
+    /// automation and interactive use cannot drift.
+    pub fn apply_startup_command(&mut self, command: Command) {
+        self.dispatch(command);
     }
 
     /// Apply the CLI's startup focus override after startup tabs are opened.
@@ -6917,6 +7043,238 @@ mod tests {
         let app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false)
             .with_settings(settings, Vec::new());
         assert!(!app.sidebar_visible);
+    }
+
+    #[test]
+    fn open_startup_goto_positions_caret_and_focuses_editor() {
+        let dir = test_dir("goto");
+        write_file(
+            &dir,
+            "src/main.rs",
+            b"fn main() {\n    println!(\"hi\");\n}\n",
+        );
+        let path = dir.join("src/main.rs");
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.open_startup_goto(&path, 2, 5);
+
+        // The file opened as a code tab, focused, with the caret at 0-based (1, 4).
+        assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
+        assert_eq!(app.focus, Focus::Editor);
+        assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(1, 4));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_startup_goto_clamps_out_of_range_target() {
+        let dir = test_dir("goto-clamp");
+        write_file(&dir, "a.txt", b"one\ntwo\n");
+        let path = dir.join("a.txt");
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        // Line far past the end and a large column clamp into the buffer rather than
+        // panicking or landing off the end.
+        app.open_startup_goto(&path, 9999, 9999);
+        let caret = app.tabs[app.active].editor.cursor();
+        assert!(
+            caret.line <= 2,
+            "caret line {} should clamp within the 2-line buffer",
+            caret.line
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_startup_split_creates_a_second_pane_with_the_file() {
+        let dir = test_dir("split");
+        write_file(&dir, "a.rs", b"fn a() {}\n");
+        write_file(&dir, "b.rs", b"fn b() {}\n");
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.main_rect = Rect::new(0, 0, 120, 40);
+        app.open_initial(&dir.join("a.rs"));
+        app.open_startup_split(&dir.join("b.rs"));
+
+        assert_eq!(app.layout.panes().len(), 2, "the split adds a second pane");
+        // The new pane is focused and holds exactly the split file.
+        assert_eq!(app.focus, Focus::Editor);
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(
+            app.tabs[app.active].path(),
+            Some(dir.join("b.rs")).as_deref()
+        );
+        // The first pane still holds the originally-opened file.
+        let stored: Vec<_> = app
+            .stored
+            .values()
+            .flat_map(|p| p.tabs.iter())
+            .filter_map(Tab::path)
+            .collect();
+        assert_eq!(stored, vec![dir.join("a.rs").as_path()]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_startup_split_chains_panes_left_to_right() {
+        let dir = test_dir("split-chain");
+        write_file(&dir, "a.rs", b"fn a() {}\n");
+        write_file(&dir, "b.rs", b"fn b() {}\n");
+        write_file(&dir, "c.rs", b"fn c() {}\n");
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.main_rect = Rect::new(0, 0, 200, 40);
+        app.open_initial(&dir.join("a.rs"));
+        app.open_startup_split(&dir.join("b.rs"));
+        app.open_startup_split(&dir.join("c.rs"));
+
+        assert_eq!(app.layout.panes().len(), 3);
+        // The last split pane is focused and shows the last file.
+        assert_eq!(
+            app.tabs[app.active].path(),
+            Some(dir.join("c.rs")).as_deref()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_startup_split_falls_back_to_a_tab_when_there_is_no_room() {
+        let dir = test_dir("split-narrow");
+        write_file(&dir, "a.rs", b"fn a() {}\n");
+        write_file(&dir, "b.rs", b"fn b() {}\n");
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        // Too narrow for two panes at the minimum pane width.
+        app.main_rect = Rect::new(0, 0, 12, 10);
+        app.open_initial(&dir.join("a.rs"));
+        app.open_startup_split(&dir.join("b.rs"));
+
+        assert_eq!(app.layout.panes().len(), 1, "no second pane is created");
+        assert_eq!(app.tabs.len(), 2, "the file still opens, as a tab");
+        assert_eq!(
+            app.tabs[app.active].path(),
+            Some(dir.join("b.rs")).as_deref()
+        );
+        // The degradation is surfaced, not silent.
+        assert!(
+            app.notifications
+                .active()
+                .iter()
+                .any(|n| n.title.contains("--split")),
+            "a startup notification explains the fallback"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_startup_diff_opens_a_text_diff_tab() {
+        let dir = test_dir("cli-diff");
+        write_file(&dir, "old.rs", b"fn a() {}\n");
+        write_file(&dir, "new.rs", b"fn b() {}\n");
+
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.open_startup_diff(
+            &dir.join("old.rs"),
+            &dir.join("new.rs"),
+            Some("fn a() {}\n".to_string()),
+            Some("fn b() {}\n".to_string()),
+        );
+
+        match &app.tabs[app.active].kind {
+            TabKind::Diff { file, .. } => {
+                assert!(!file.change.is_binary);
+                assert_eq!(file.change.old, "fn a() {}\n");
+                assert_eq!(file.change.new, "fn b() {}\n");
+                assert_eq!(file.change.path, dir.join("new.rs"));
+                assert_eq!(file.change.old_path, Some(dir.join("old.rs")));
+                // Both lines differ, so the diff carries one added + one removed line.
+                assert_eq!(file.line_stats(), (1, 1));
+            },
+            _ => panic!("expected a diff tab"),
+        }
+        assert_eq!(app.tabs[app.active].title, "old.rs ↔ new.rs");
+        assert_eq!(app.focus, Focus::Editor);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_startup_diff_marks_a_non_utf8_side_binary() {
+        let dir = test_dir("cli-diff-bin");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        // A `None` side is what main.rs passes for non-UTF-8 bytes.
+        app.open_startup_diff(
+            &dir.join("a.bin"),
+            &dir.join("b.bin"),
+            None,
+            Some("text\n".to_string()),
+        );
+
+        match &app.tabs[app.active].kind {
+            TabKind::Diff { file, .. } => {
+                assert!(file.change.is_binary);
+                // The is_binary contract: both texts are empty.
+                assert!(file.change.old.is_empty());
+                assert!(file.change.new.is_empty());
+            },
+            _ => panic!("expected a diff tab"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_startup_diff_same_file_name_keeps_a_single_title() {
+        let dir = test_dir("cli-diff-title");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.open_startup_diff(
+            &dir.join("v1/config.toml"),
+            &dir.join("v2/config.toml"),
+            Some("a = 1\n".to_string()),
+            Some("a = 2\n".to_string()),
+        );
+        assert_eq!(app.tabs[app.active].title, "config.toml");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_startup_command_dispatches_in_order() {
+        // The pair [SelectPanel(Search), ToggleSidebar] is order-observable: run in
+        // this order the panel is Search and the sidebar ends hidden (SelectPanel
+        // shows it, ToggleSidebar then hides it); reversed it would end visible.
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        assert!(app.sidebar_visible);
+        app.apply_startup_command(Command::SelectPanel(SidebarPanel::Search));
+        app.apply_startup_command(Command::ToggleSidebar);
+        assert_eq!(app.sidebar_panel, SidebarPanel::Search);
+        assert!(
+            !app.sidebar_visible,
+            "ToggleSidebar must run after SelectPanel"
+        );
+
+        // The reversed order ends with the sidebar visible, proving order matters.
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        app.apply_startup_command(Command::ToggleSidebar);
+        app.apply_startup_command(Command::SelectPanel(SidebarPanel::Search));
+        assert!(app.sidebar_visible);
+    }
+
+    #[test]
+    fn apply_startup_command_opens_views() {
+        // A view-affecting palette command works from the startup path: SplitRight
+        // creates a second pane synchronously (no backend round-trip needed).
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        assert_eq!(app.layout.panes().len(), 1);
+        app.apply_startup_command(Command::SplitRight);
+        assert_eq!(
+            app.layout.panes().len(),
+            2,
+            "SplitRight should create a second pane"
+        );
     }
 
     #[test]

@@ -880,6 +880,136 @@ pub fn palette() -> Vec<Command> {
     .collect()
 }
 
+/// Why a `--command` name failed to resolve against the palette.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolveNamedError {
+    /// No palette command's title or slug matches the name.
+    Unknown {
+        /// The name as given on the command line.
+        name: String,
+        /// The closest palette titles, best first (may be empty).
+        suggestions: Vec<&'static str>,
+    },
+    /// The name is a slug shared by more than one palette command.
+    Ambiguous {
+        /// The name as given on the command line.
+        name: String,
+        /// The titles of every command carrying that slug.
+        candidates: Vec<&'static str>,
+    },
+}
+
+impl std::fmt::Display for ResolveNamedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unknown { name, suggestions } => {
+                write!(f, "unknown command {name:?}")?;
+                if !suggestions.is_empty() {
+                    write!(f, "; did you mean: {}?", suggestions.join(", "))?;
+                }
+                Ok(())
+            },
+            Self::Ambiguous { name, candidates } => write!(
+                f,
+                "{name:?} matches more than one command: {}; use the full title",
+                candidates.join(", ")
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ResolveNamedError {}
+
+/// Resolve a `--command` name to a palette command: a case-insensitive **exact**
+/// match on a command's title ([`Command::label`], e.g. "Source Control: Commit
+/// Graph") or its short slug ([`Command::hint_verb`], e.g. "graph"). Titles are
+/// unique; a slug shared by several commands is [`ResolveNamedError::Ambiguous`],
+/// and anything else is [`ResolveNamedError::Unknown`] with the closest titles as
+/// suggestions.
+///
+/// # Errors
+/// Returns [`ResolveNamedError`] when the name matches no palette command exactly
+/// or matches a slug carried by more than one.
+pub fn resolve_named(name: &str) -> Result<Command, ResolveNamedError> {
+    let query = name.trim().to_lowercase();
+    let commands = palette();
+    if let Some(cmd) = commands.iter().find(|c| c.label().to_lowercase() == query) {
+        return Ok(*cmd);
+    }
+    let slug_matches: Vec<Command> = commands
+        .iter()
+        .copied()
+        .filter(|c| c.hint_verb().is_some_and(|v| v == query))
+        .collect();
+    match slug_matches.as_slice() {
+        [cmd] => Ok(*cmd),
+        [] => Err(ResolveNamedError::Unknown {
+            name: name.to_string(),
+            suggestions: suggest(&query, &commands),
+        }),
+        many => Err(ResolveNamedError::Ambiguous {
+            name: name.to_string(),
+            candidates: many.iter().map(|c| c.label()).collect(),
+        }),
+    }
+}
+
+/// The number of suggestions [`resolve_named`] offers for an unknown name.
+const MAX_SUGGESTIONS: usize = 3;
+
+/// The closest palette titles to `query` (already lowercased), best first: ranked
+/// by the [substring edit distance](substring_distance) of the query to the title
+/// or its slug (an exactly-contained query scores 0), tie-broken on the title for
+/// determinism. Titles further than the cutoff — half the query length — are
+/// suppressed: a wall of unrelated suggestions is worse than none.
+fn suggest(query: &str, commands: &[Command]) -> Vec<&'static str> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let mut scored: Vec<(usize, &'static str)> = commands
+        .iter()
+        .map(|c| {
+            let label = c.label();
+            let by_label = substring_distance(query, &label.to_lowercase());
+            let by_slug = c
+                .hint_verb()
+                .map_or(usize::MAX, |slug| substring_distance(query, slug));
+            (by_label.min(by_slug), label)
+        })
+        .collect();
+    scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(b.1)));
+    let cutoff = (query.chars().count() / 2).max(2);
+    scored
+        .into_iter()
+        .filter(|(score, _)| *score <= cutoff)
+        .take(MAX_SUGGESTIONS)
+        .map(|(_, label)| label)
+        .collect()
+}
+
+/// The minimal Levenshtein edit distance (insert / delete / substitute, all cost 1,
+/// over `char`s) between `pattern` and **any substring** of `text` — the classic
+/// semi-global alignment, with a free start and end in `text`. A contained pattern
+/// scores 0, and a typo of a phrase inside a long title scores just its own edits,
+/// not the length of the rest of the title. Small inputs only — palette titles.
+fn substring_distance(pattern: &str, text: &str) -> usize {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    // Row 0 is all zeros: the match may begin at any position in `text` for free.
+    let mut prev = vec![0usize; t.len() + 1];
+    let mut cur = vec![0usize; t.len() + 1];
+    for (i, pc) in p.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, tc) in t.iter().enumerate() {
+            let sub = prev[j] + usize::from(pc != tc);
+            cur[j + 1] = sub.min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    // The match may end at any position in `text` for free: take the best cell.
+    prev.into_iter().min().unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -895,6 +1025,124 @@ mod tests {
     #[test]
     fn command_palette_itself_is_not_listed() {
         assert!(!palette().contains(&Command::OpenCommandPalette));
+    }
+
+    #[test]
+    fn resolve_named_matches_a_title_exactly() {
+        assert_eq!(
+            resolve_named("Source Control: Commit Graph"),
+            Ok(Command::ShowCommitGraph)
+        );
+    }
+
+    #[test]
+    fn resolve_named_is_case_insensitive() {
+        assert_eq!(
+            resolve_named("source control: commit graph"),
+            Ok(Command::ShowCommitGraph)
+        );
+        assert_eq!(
+            resolve_named("SOURCE CONTROL: COMMIT GRAPH"),
+            Ok(Command::ShowCommitGraph)
+        );
+    }
+
+    #[test]
+    fn resolve_named_matches_a_unique_slug() {
+        assert_eq!(resolve_named("graph"), Ok(Command::ShowCommitGraph));
+        assert_eq!(resolve_named("GRAPH"), Ok(Command::ShowCommitGraph));
+        assert_eq!(resolve_named("deps"), Ok(Command::ShowDependencyGraph));
+    }
+
+    #[test]
+    fn resolve_named_rejects_an_ambiguous_slug_with_candidates() {
+        // "refresh" is the slug of both Source Control: Refresh and Explorer: Refresh.
+        let err = resolve_named("refresh");
+        match err {
+            Err(ResolveNamedError::Ambiguous { name, candidates }) => {
+                assert_eq!(name, "refresh");
+                assert!(candidates.contains(&"Source Control: Refresh"));
+                assert!(candidates.contains(&"Explorer: Refresh"));
+            },
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_named_unknown_offers_close_suggestions() {
+        // A typo of a real title still points at it.
+        match resolve_named("comit graph") {
+            Err(ResolveNamedError::Unknown { name, suggestions }) => {
+                assert_eq!(name, "comit graph");
+                assert!(
+                    suggestions.contains(&"Source Control: Commit Graph"),
+                    "suggestions {suggestions:?} should include the commit graph"
+                );
+                assert!(suggestions.len() <= MAX_SUGGESTIONS);
+            },
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_named_rejects_non_palette_commands() {
+        // A modal-scoped command's title must not be reachable from the CLI.
+        assert!(matches!(
+            resolve_named("Overlay: Accept"),
+            Err(ResolveNamedError::Unknown { .. })
+        ));
+    }
+
+    #[test]
+    fn resolve_named_far_off_garbage_gets_no_suggestions() {
+        match resolve_named("zzzzqqqqxxxx") {
+            Err(ResolveNamedError::Unknown { suggestions, .. }) => {
+                assert!(
+                    suggestions.is_empty(),
+                    "garbage should not fish up unrelated titles: {suggestions:?}"
+                );
+            },
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_errors_render_a_clear_message() {
+        let unknown = ResolveNamedError::Unknown {
+            name: "comit".to_string(),
+            suggestions: vec!["Source Control: Commit…"],
+        };
+        assert_eq!(
+            unknown.to_string(),
+            "unknown command \"comit\"; did you mean: Source Control: Commit…?"
+        );
+        let ambiguous = ResolveNamedError::Ambiguous {
+            name: "refresh".to_string(),
+            candidates: vec!["Source Control: Refresh", "Explorer: Refresh"],
+        };
+        assert_eq!(
+            ambiguous.to_string(),
+            "\"refresh\" matches more than one command: Source Control: Refresh, \
+             Explorer: Refresh; use the full title"
+        );
+    }
+
+    #[test]
+    fn substring_distance_basics() {
+        // Exact and contained patterns are free.
+        assert_eq!(substring_distance("abc", "abc"), 0);
+        assert_eq!(
+            substring_distance("commit", "source control: commit graph"),
+            0
+        );
+        // A typo inside a long title costs only its own edits.
+        assert_eq!(
+            substring_distance("comit graph", "source control: commit graph"),
+            1
+        );
+        // Degenerate inputs.
+        assert_eq!(substring_distance("", "anything"), 0);
+        assert_eq!(substring_distance("abc", ""), 3);
     }
 
     #[test]

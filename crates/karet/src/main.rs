@@ -64,6 +64,49 @@ fn main() -> color_eyre::Result<()> {
         std::process::exit(doctor::run(&loaded_config.settings));
     }
 
+    // Resolve every `--command` name up front, so a typo fails fast on stderr with
+    // a non-zero exit — an automation run must never enter (and wedge) the TUI on a
+    // command that can never dispatch.
+    let startup_commands: Vec<command::Command> = match cli
+        .command
+        .iter()
+        .map(|name| command::resolve_named(name))
+        .collect()
+    {
+        Ok(commands) => commands,
+        Err(error) => {
+            eprintln!("karet: --command: {error}");
+            std::process::exit(2);
+        },
+    };
+
+    // Read every `--diff` pair up front for the same reason: an unreadable file
+    // fails fast on stderr instead of surfacing inside a TUI an automation run
+    // cannot see. `None` content marks a side whose bytes are not UTF-8; the app
+    // renders that pair as a binary change.
+    let mut startup_diffs: Vec<(PathBuf, PathBuf, Option<String>, Option<String>)> = Vec::new();
+    for pair in cli.diff.chunks(2) {
+        let [old, new] = pair else {
+            // Unreachable: clap's `num_args = 2` accepts only whole pairs.
+            continue;
+        };
+        let (old, new) = (
+            resolve_under_root(&root, old),
+            resolve_under_root(&root, new),
+        );
+        let read = |path: &Path| match std::fs::read(path) {
+            Ok(bytes) => Some(String::from_utf8(bytes).ok()),
+            Err(error) => {
+                eprintln!("karet: --diff: cannot read {}: {error}", path.display());
+                None
+            },
+        };
+        match (read(&old), read(&new)) {
+            (Some(old_text), Some(new_text)) => startup_diffs.push((old, new, old_text, new_text)),
+            _ => std::process::exit(2),
+        }
+    }
+
     if let Some(panel) = cli.startup_panel {
         loaded_config.settings.workbench.startup_panel = panel.into();
     }
@@ -89,8 +132,29 @@ fn main() -> color_eyre::Result<()> {
     for file in &cli.open {
         app.open_initial(&resolve_under_root(&root, file));
     }
+    for (old, new, old_text, new_text) in startup_diffs {
+        app.open_startup_diff(&old, &new, old_text, new_text);
+    }
+    if !cli.split.is_empty() {
+        // The editor rectangle is only computed on the first draw; seed it with the
+        // terminal size so the split-room guard has a real budget now. The draw loop
+        // recomputes the exact rectangle every frame, so an approximation is fine.
+        if let Ok((w, h)) = crossterm::terminal::size() {
+            app.main_rect = ratatui::layout::Rect::new(0, 0, w, h);
+        }
+        for file in &cli.split {
+            app.open_startup_split(&resolve_under_root(&root, file));
+        }
+    }
+    if let Some(spec) = cli.goto.as_deref() {
+        let goto = cli::parse_goto_spec(spec);
+        app.open_startup_goto(&resolve_under_root(&root, &goto.path), goto.line, goto.col);
+    }
     if let Some(focus) = cli.focus {
         app.apply_startup_focus(focus);
+    }
+    for command in startup_commands {
+        app.apply_startup_command(command);
     }
     app::run(app)
 }
