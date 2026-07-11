@@ -169,6 +169,9 @@ pub enum Command {
     NextChangedFile,
     /// Move to the previous changed file (diff tab).
     PrevChangedFile,
+    /// Open the diffed file in a normal editor tab, at its first changed line
+    /// (diff tab).
+    OpenDiffFile,
     /// Insert a printable character at the caret (replacing any selection).
     InsertChar(char),
     /// Insert a newline with leading-whitespace auto-indent.
@@ -448,6 +451,7 @@ impl Command {
             Self::ToggleFold => "Fold: Toggle at Cursor",
             Self::NextChangedFile => "Diff: Next Changed File",
             Self::PrevChangedFile => "Diff: Previous Changed File",
+            Self::OpenDiffFile => "Diff: Open File",
             Self::InsertChar(_) => "Insert Character",
             Self::InsertNewline => "Insert Newline",
             Self::DeleteBackward => "Delete Backward",
@@ -596,6 +600,7 @@ impl Command {
             Self::ToggleDiffLayout => "layout",
             Self::NextChangedFile => "next change",
             Self::PrevChangedFile => "prev change",
+            Self::OpenDiffFile => "open file",
             // Source control.
             Self::ScmStage => "stage",
             Self::ScmUnstage => "unstage",

@@ -804,9 +804,7 @@ impl App {
     /// Open `path` as a startup preview without stealing focus from the configured
     /// startup panel.
     pub fn open_initial_preview(&mut self, path: &Path) {
-        let focus = self.focus;
-        self.open_path_preview(path);
-        self.focus = focus;
+        self.open_path_preview(path, false);
     }
 
     /// Open `path` at startup and place the caret at 1-based `line`/`col` (from the
@@ -1787,6 +1785,7 @@ impl App {
             Command::ToggleFold => self.toggle_fold(),
             Command::NextChangedFile => self.step_changed_file(1),
             Command::PrevChangedFile => self.step_changed_file(-1),
+            Command::OpenDiffFile => self.open_diff_file(),
             Command::InsertChar(c) => {
                 let s = c.to_string();
                 self.submit_edit_with_cause(EditCause::Type, move |caret, sel, _b, base| {
@@ -2066,12 +2065,18 @@ impl App {
                     self.scm_scroll_changes(delta);
                 }
             },
-            _ => self.sidebar_step(delta.signum()),
+            // The wheel only moves the selection — it must not open previews, or
+            // scrolling past files would thrash the preview slot open with every
+            // notch. Deliberate navigation (the arrow keys) goes through
+            // [`sidebar_step`](Self::sidebar_step), which does preview.
+            _ => self.sidebar_move(delta.signum()),
         }
     }
 
-    /// Move the sidebar selection within the active panel.
-    fn sidebar_step(&mut self, delta: i32) {
+    /// Move the sidebar selection within the active panel, without opening
+    /// anything (the wheel path; [`sidebar_step`](Self::sidebar_step) layers
+    /// selection-follows-preview on top for keyboard navigation).
+    fn sidebar_move(&mut self, delta: i32) {
         match self.sidebar_panel {
             SidebarPanel::Explorer => {
                 self.explorer.ensure_built(&self.root);
@@ -2088,6 +2093,20 @@ impl App {
                 self.scm_follow_cursor();
             },
             SidebarPanel::Search => self.search_select(delta),
+        }
+    }
+
+    /// Move the sidebar selection one step by keyboard (arrows / `j`/`k`), then
+    /// follow it with a preview: the landed-on file or change opens in the pane's
+    /// preview slot *without* stealing focus, so navigation keeps flowing and the
+    /// panel's own keys (e.g. staging) stay live.
+    fn sidebar_step(&mut self, delta: i32) {
+        self.sidebar_move(delta);
+        match self.sidebar_panel {
+            // A directory row leaves the editor area untouched.
+            SidebarPanel::Explorer => self.preview_selected_explorer_row(),
+            SidebarPanel::SourceControl => self.preview_selected_diff(),
+            SidebarPanel::Search => {},
         }
     }
 
@@ -2153,27 +2172,53 @@ impl App {
         }
     }
 
-    /// Activate the selected sidebar row (open a file, expand a dir, open a diff).
+    /// Activate the selected sidebar row — the explicit Enter "commit into the
+    /// view" action: expand a dir, or open the file/diff *materialized* (never a
+    /// preview) with keyboard focus moving into it. An already-open view — even
+    /// the preview slot — is re-focused and made permanent instead of duplicated.
+    /// Browsing (arrow moves) previews without stealing focus; a single click
+    /// previews with focus (see [`handle_sidebar_click`](Self::handle_sidebar_click)).
     fn sidebar_activate(&mut self) {
         match self.sidebar_panel {
-            SidebarPanel::Explorer => {
-                self.explorer.ensure_built(&self.root);
-                if let Some(row) = self.explorer.selected() {
-                    let path = row.path.clone();
-                    if row.is_dir {
-                        self.explorer.toggle(&path);
-                    } else {
-                        self.open_path_preview(&path);
-                    }
-                }
-            },
+            SidebarPanel::Explorer => self.sidebar_promote_or_open_permanent(),
             SidebarPanel::SourceControl => self.open_selected_diff(),
             SidebarPanel::Search => {},
         }
     }
 
-    /// Double-click on a file in the tree: promote it to a permanent tab instead
-    /// of the single-click/Enter preview behavior. If it's already open (as the
+    /// Open the explorer's selected file in the pane's preview slot with keyboard
+    /// focus moving to the editor — the single-click action (VS Code parity: a
+    /// click previews and focuses; Enter / double-click materializes). A directory
+    /// row toggles its expansion.
+    fn explorer_preview_with_focus(&mut self) {
+        self.explorer.ensure_built(&self.root);
+        if let Some(row) = self.explorer.selected() {
+            let path = row.path.clone();
+            if row.is_dir {
+                self.explorer.toggle(&path);
+            } else {
+                self.open_path_preview(&path, true);
+            }
+        }
+    }
+
+    /// Open the explorer's selected row in the pane's preview slot without
+    /// stealing keyboard focus (selection-follows-preview). A directory row (or an
+    /// empty selection) changes nothing; a file already open is just shown. The
+    /// sidebar keeps focus so the user can keep arrowing through the tree.
+    fn preview_selected_explorer_row(&mut self) {
+        let Some(row) = self.explorer.selected() else {
+            return;
+        };
+        if row.is_dir {
+            return;
+        }
+        let path = row.path.clone();
+        self.open_path_preview(&path, false);
+    }
+
+    /// Enter or double-click on a file in the tree: promote it to a permanent tab
+    /// instead of the single-click preview behavior. If it's already open (as the
     /// preview tab or otherwise), just clears its preview flag in place; if not
     /// yet open, opens it as a new permanent tab via [`open_path`](Self::open_path).
     fn sidebar_promote_or_open_permanent(&mut self) {
@@ -2652,34 +2697,81 @@ impl App {
         self.context_menu_clear();
     }
 
-    /// Open a diff tab for the selected Source-Control entry.
+    /// Open the Source-Control cursor's change as a materialized (permanent) diff
+    /// view and move keyboard focus into it — the explicit Enter / double-click
+    /// "take me into the view" action. Browsing (arrow moves, single click) goes
+    /// through [`preview_selected_diff`](Self::preview_selected_diff) instead,
+    /// which keeps focus on the panel so the staging keys stay live.
     fn open_selected_diff(&mut self) {
         let cursor = self.scm.selection.cursor();
-        let Some(change) = self.scm.changes.get(cursor) else {
+        let Some(change) = self.scm.changes.get(cursor).cloned() else {
             return;
         };
         let section = self.scm.section(cursor);
+        // Never duplicate: an existing diff tab for the same change — the preview
+        // slot or a permanent one — is materialized and focused instead.
+        if let Some(idx) = self.find_diff_tab(&change.path, section) {
+            if let Some(tab) = self.tabs.get_mut(idx) {
+                tab.is_preview = false;
+            }
+            self.select_tab(idx);
+            return;
+        }
+        let tab = self.build_diff_tab(change, section);
+        self.push_tab(tab);
+    }
+
+    /// Show the Source-Control cursor's change in the pane's shared preview slot
+    /// *without* stealing keyboard focus (selection-follows-preview): browsing the
+    /// change list with the arrows (or a single click) shows each diff while the
+    /// panel keeps focus, so stage/unstage/discard/commit and the selection keys
+    /// keep working. An existing diff tab for the same change is just shown;
+    /// otherwise the preview slot is replaced in place — never one new tab per
+    /// visited change.
+    fn preview_selected_diff(&mut self) {
+        let cursor = self.scm.selection.cursor();
+        let Some(change) = self.scm.changes.get(cursor).cloned() else {
+            return;
+        };
+        let section = self.scm.section(cursor);
+        if let Some(idx) = self.find_diff_tab(&change.path, section) {
+            self.active = idx;
+            self.find_open = false;
+            return;
+        }
+        let mut tab = self.build_diff_tab(change, section);
+        tab.is_preview = true;
+        self.install_preview_tab(tab, false);
+    }
+
+    /// The index of this pane's existing diff tab for `path` in `section`, if any
+    /// (preview or permanent) — the dedup lookup for the Source-Control open paths.
+    fn find_diff_tab(&self, path: &Path, section: Section) -> Option<usize> {
+        self.tabs.iter().position(|t| {
+            matches!(&t.kind, TabKind::Diff { file, .. }
+                if file.change.path == *path && file.section == section)
+        })
+    }
+
+    /// Diff and highlight `change` into a fresh [`TabKind::Diff`] tab using the
+    /// remembered layout. The caller decides how the tab enters the pane (preview
+    /// slot vs permanent) and where focus lands.
+    fn build_diff_tab(&self, change: FileChange, section: Section) -> Tab {
         let title = change
             .path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("diff")
             .to_string();
-        let file = FileView::new(change.clone(), section, self.syntax);
-        let tab = Tab::new(
+        let file = FileView::new(change, section, self.syntax);
+        Tab::new(
             title,
             TabKind::Diff {
                 file: Box::new(file),
                 view: self.diff_layout,
                 scroll: 0,
             },
-        );
-        self.push_tab(tab);
-        // Previewing a change must not steal focus: `push_tab` focuses the editor
-        // (right for opening a file), but here the Source-Control pane stays active
-        // so stage/unstage/discard/commit and selection keys keep working while the
-        // diff is shown. Press Tab to move into the diff to scroll it.
-        self.focus = Focus::Sidebar;
+        )
     }
 
     // --- source control ---------------------------------------------------
@@ -3539,38 +3631,71 @@ impl App {
     }
 
     /// Open `path` into the focused pane's reusable "preview" tab slot (VS
-    /// Code-style): used only by file-tree navigation (single click / arrow +
-    /// activate). A file already open (preview or permanent) is just focused,
-    /// same as [`open_path`](Self::open_path). Otherwise the current preview
-    /// tab, if this pane has one, is replaced in place; if not, a new preview
-    /// tab is opened. Every other caller of `open_path` (LSP jumps, the
-    /// overlay, reopen-closed, CLI-provided files) keeps opening permanent
-    /// tabs — only tree navigation opens previews.
-    fn open_path_preview(&mut self, path: &Path) {
+    /// Code-style): used by file-tree navigation (single click / arrow +
+    /// activate) and selection-follows-preview. A file already open (preview or
+    /// permanent) is just shown. Otherwise the current preview tab, if this pane
+    /// has one, is replaced in place; if not, a new preview tab is opened. Every
+    /// other caller of `open_path` (LSP jumps, the overlay, reopen-closed,
+    /// CLI-provided files) keeps opening permanent tabs — only tree navigation
+    /// opens previews.
+    ///
+    /// `steal_focus` moves keyboard focus to the editor (Enter / click);
+    /// selection-follows-preview passes `false` so the sidebar keeps focus and
+    /// the user can keep arrowing.
+    fn open_path_preview(&mut self, path: &Path, steal_focus: bool) {
         let target = canonical(path);
         if let Some(idx) = self
             .tabs
             .iter()
             .position(|t| !t.is_diff() && t.path().is_some_and(|p| canonical(p) == target))
         {
-            self.select_tab(idx);
+            self.active = idx;
+            self.find_open = false;
+            if steal_focus {
+                self.focus = Focus::Editor;
+            }
             return;
         }
         let mut tab = workspace::open_file(path, self.syntax);
         tab.is_preview = true;
+        self.install_preview_tab(tab, steal_focus);
+    }
+
+    /// Place `tab` (already flagged [`is_preview`](Tab::is_preview)) into the
+    /// focused pane's single preview slot: replace the existing preview tab in
+    /// place, or — when this pane has none — open it as a new tab. One slot per
+    /// pane regardless of content kind, so a previewed file and a previewed diff
+    /// share it. `steal_focus` moves keyboard focus to the editor; otherwise the
+    /// current focus is preserved (selection-follows-preview).
+    fn install_preview_tab(&mut self, mut tab: Tab, steal_focus: bool) {
+        tab.view = self.alloc_view();
         match self.tabs.iter().position(|t| t.is_preview) {
             Some(idx) => {
-                tab.view = self.alloc_view();
                 self.tabs[idx] = tab;
                 self.active = idx;
-                self.focus = Focus::Editor;
                 self.find_open = false;
+                if steal_focus {
+                    self.focus = Focus::Editor;
+                }
                 self.register_doc(self.active);
                 // The replaced tab's document (if any) is no longer referenced by
                 // any tab; this closes it on the session side.
                 self.reconcile_open_docs();
             },
-            None => self.push_tab(tab),
+            None => {
+                if self.tabs.len() == 1 && matches!(self.tabs[0].kind, TabKind::Welcome) {
+                    self.tabs[0] = tab;
+                    self.active = 0;
+                } else {
+                    self.tabs.push(tab);
+                    self.active = self.tabs.len() - 1;
+                }
+                self.find_open = false;
+                if steal_focus {
+                    self.focus = Focus::Editor;
+                }
+                self.register_doc(self.active);
+            },
         }
     }
 
@@ -4533,6 +4658,43 @@ impl App {
         }
     }
 
+    /// Open the active diff's underlying file in a normal editor tab — the Enter
+    /// action on a focused diff ("editor mode") — placing the caret at the diff's
+    /// first changed line. Routes through [`open_path`](Self::open_path), so an
+    /// already-open tab for the file is focused rather than duplicated. Degrades
+    /// gracefully when the file is gone from the working tree (a deleted change):
+    /// a status message, never a dead tab.
+    fn open_diff_file(&mut self) {
+        let Some(TabKind::Diff { file, .. }) = self.tabs.get(self.active).map(|t| &t.kind) else {
+            return;
+        };
+        let line = file.first_changed_line().unwrap_or(1);
+        let path = file.change.path.clone();
+        // Change paths come from the VCS repo-relative; resolve against the
+        // workspace root so the file opens (and dedups) like any explorer open.
+        let abs = if path.is_absolute() {
+            path
+        } else {
+            self.root.join(path)
+        };
+        if !abs.is_file() {
+            let name = abs.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+            self.status = Some(format!("open file: {name} is not in the working tree"));
+            return;
+        }
+        self.open_path(&abs);
+        // Land the caret on the first changed line (`goto` clamps into the buffer;
+        // a non-text tab — image, binary — simply has no caret to place).
+        let pos = LineCol::new(line.saturating_sub(1), 0);
+        let buffer = match self.tabs.get(self.active).map(|t| &t.kind) {
+            Some(TabKind::Code { buffer, .. }) => Some(buffer.clone()),
+            _ => None,
+        };
+        if let (Some(buffer), Some(tab)) = (buffer, self.tabs.get_mut(self.active)) {
+            tab.editor.goto(&buffer, pos);
+        }
+    }
+
     /// Handle a mouse event over a pane's tab strip (click to switch / close, wheel
     /// to cycle). Returns `true` when the event was consumed.
     fn handle_tabstrip_mouse(&mut self, mouse: MouseEvent) -> bool {
@@ -4886,9 +5048,11 @@ impl App {
                     let streak = self.click_streak(col, row_y);
                     self.explorer.select_visible(view_row);
                     if streak >= 2 {
+                        // Double-click lands on the SAME view the single-click
+                        // preview created, materialized — never a duplicate.
                         self.sidebar_promote_or_open_permanent();
                     } else {
-                        self.sidebar_activate();
+                        self.explorer_preview_with_focus();
                     }
                 }
             },
@@ -4918,8 +5082,19 @@ impl App {
                     } else if shift {
                         self.scm.selection.extend_to(idx);
                     } else {
+                        let streak = self.click_streak(col, row_y);
                         self.scm.selection.move_to(idx);
-                        self.open_selected_diff();
+                        if streak >= 2 {
+                            // Double-click materializes the SAME view the
+                            // single-click preview created and moves focus into
+                            // it — never a duplicate diff tab.
+                            self.open_selected_diff();
+                        } else {
+                            // A single click browses: the diff shows in the
+                            // preview slot while the panel keeps focus, so the
+                            // staging keys stay live.
+                            self.preview_selected_diff();
+                        }
                     }
                 }
             },
@@ -8191,16 +8366,244 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
 
     #[test]
     fn opening_a_diff_keeps_source_control_focused() {
+        // The contract: browsing (arrow moves) previews each change's diff while
+        // the SCM pane keeps focus, so stage/unstage/discard/commit and the
+        // selection keys keep working; Enter is the explicit "commit into the
+        // view" action that focuses the diff editor (see
+        // `enter_on_a_change_materializes_and_focuses_the_diff`).
         let mut app = app();
         app.sidebar_panel = SidebarPanel::SourceControl;
-        app.dispatch(Command::SidebarActivate);
-        assert!(app.active_is_diff(), "the diff tab is shown");
-        // Focus stays in the SCM pane so its action/selection keys keep working
-        // (the bug was that previewing a diff moved focus to the editor, silently
-        // disabling stage/unstage/discard/commit).
+        app.dispatch(Command::SidebarDown); // cursor 0 → 1: previews b.rs
+        assert!(app.active_is_diff(), "the diff preview is shown");
+        assert!(app.tabs[app.active].is_preview);
+        assert_eq!(app.tabs[app.active].title, "b.rs");
         assert_eq!(app.focus, Focus::Sidebar);
         assert_eq!(app.focus_target(), FocusTarget::SourceControl);
         assert_eq!(app.tabs.len(), 1, "welcome tab is replaced, not appended");
+        // Arrowing back retargets the SAME preview slot — never one tab per
+        // visited change.
+        app.dispatch(Command::SidebarUp); // cursor 1 → 0: previews a.rs
+        assert_eq!(
+            app.tabs.len(),
+            1,
+            "the preview slot is reused, not appended"
+        );
+        assert!(app.tabs[app.active].is_preview);
+        assert_eq!(app.tabs[app.active].title, "a.rs");
+        assert_eq!(app.focus, Focus::Sidebar);
+    }
+
+    #[test]
+    fn enter_on_a_change_materializes_and_focuses_the_diff() {
+        let mut app = app();
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        // Browse first: the diff shows as a preview without stealing focus.
+        app.dispatch(Command::SidebarDown);
+        assert!(app.tabs[app.active].is_preview);
+        let view = app.tabs[app.active].view;
+        // Enter: the SAME previewed view is materialized and focused — the
+        // reported bug was a brand-new duplicate diff tab on every Enter.
+        app.dispatch(Command::SidebarActivate);
+        assert_eq!(app.tabs.len(), 1, "Enter must reuse the previewed diff");
+        assert!(!app.tabs[app.active].is_preview, "Enter materializes");
+        assert_eq!(app.tabs[app.active].view, view, "the same view, not a copy");
+        assert_eq!(app.focus, Focus::Editor);
+        assert_eq!(app.focus_target(), FocusTarget::DiffEditor);
+        // Enter again (back from the sidebar): re-focuses, never duplicates.
+        app.focus = Focus::Sidebar;
+        app.dispatch(Command::SidebarActivate);
+        assert_eq!(app.tabs.len(), 1, "repeat Enter must not duplicate");
+        assert_eq!(app.focus, Focus::Editor);
+    }
+
+    #[test]
+    fn enter_on_a_focused_diff_opens_the_file_at_its_first_changed_line() {
+        let dir = test_dir("diff-enter-into-file");
+        write_file(&dir, "a.rs", b"fn a() {}\nfn added() {}\nfn c() {}\n");
+        let changed = FileChange {
+            path: PathBuf::from("a.rs"),
+            old_path: None,
+            status: StatusKind::Modified,
+            is_binary: false,
+            old: "fn a() {}\nfn c() {}\n".to_string(),
+            new: "fn a() {}\nfn added() {}\nfn c() {}\n".to_string(),
+        };
+        let mut app = App::new(dir.clone(), Vec::new(), vec![changed], false);
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        app.focus = Focus::Sidebar;
+        app.dispatch(Command::SidebarActivate); // materialize + focus the diff
+        assert_eq!(app.focus_target(), FocusTarget::DiffEditor);
+
+        // Enter on the focused diff drops into the file, caret on the first
+        // changed line (line 2, 0-based 1) — keyboard parity with the mouse.
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            matches!(app.tabs[app.active].kind, TabKind::Code { .. }),
+            "a normal, editable editor tab"
+        );
+        assert_eq!(
+            app.tabs[app.active].path().map(canonical),
+            Some(canonical(&dir.join("a.rs")))
+        );
+        assert_eq!(app.focus, Focus::Editor);
+        assert_eq!(
+            app.tabs[app.active].editor.cursor().line,
+            1,
+            "caret lands on the first changed line"
+        );
+        assert_eq!(app.tabs.len(), 2, "the diff stays open alongside the file");
+
+        // Enter again from the diff re-focuses the existing file tab — never a
+        // duplicate.
+        let file_idx = app.active;
+        let diff_idx = app
+            .tabs
+            .iter()
+            .position(Tab::is_diff)
+            .expect("the diff tab is still open");
+        app.select_tab(diff_idx);
+        app.dispatch(Command::OpenDiffFile);
+        assert_eq!(app.tabs.len(), 2, "no duplicate editor tab");
+        assert_eq!(app.active, file_idx);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn enter_on_a_deleted_files_diff_reports_instead_of_opening() {
+        let dir = test_dir("diff-enter-deleted");
+        let deleted = FileChange {
+            path: PathBuf::from("gone.rs"),
+            old_path: None,
+            status: StatusKind::Deleted,
+            is_binary: false,
+            old: "fn gone() {}\n".to_string(),
+            new: String::new(),
+        };
+        let mut app = App::new(dir.clone(), Vec::new(), vec![deleted], false);
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        app.focus = Focus::Sidebar;
+        app.dispatch(Command::SidebarActivate);
+        assert_eq!(app.focus_target(), FocusTarget::DiffEditor);
+
+        // The file is gone from the working tree: Enter degrades to a status
+        // message — no dead tab, no panic.
+        app.dispatch(Command::OpenDiffFile);
+        assert_eq!(app.tabs.len(), 1, "nothing new opens for a deleted file");
+        assert!(app.active_is_diff(), "the diff stays active");
+        assert!(
+            app.status.as_deref().is_some_and(|s| s.contains("gone.rs")),
+            "a status message names the missing file"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scm_double_click_materializes_the_previewed_diff_without_duplicating() {
+        let mut app = app();
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        app.sidebar_visible = true;
+        // Seed the layout state a render would have produced: the changes region
+        // starts at row 2, whose first display row is change index 0.
+        app.sidebar_rect = Rect::new(0, 0, 20, 20);
+        app.scm_changes_rect = Rect::new(0, 2, 20, 10);
+        app.scm_row_map = vec![Some(0), Some(1)];
+
+        // First click of the double-click: the diff opens as a preview and the
+        // panel keeps focus (a plain single click is a browse).
+        app.handle_sidebar_click(3, 2, KeyModifiers::NONE);
+        assert!(app.active_is_diff());
+        assert!(app.tabs[app.active].is_preview);
+        assert_eq!(app.focus, Focus::Sidebar);
+        let view = app.tabs[app.active].view;
+
+        // Second click: the SAME view is materialized and focused — the bug was
+        // a separate duplicate view on double-click.
+        app.handle_sidebar_click(3, 2, KeyModifiers::NONE);
+        assert_eq!(
+            app.tabs.len(),
+            1,
+            "double-click must not duplicate the diff"
+        );
+        assert!(
+            !app.tabs[app.active].is_preview,
+            "double-click materializes"
+        );
+        assert_eq!(app.tabs[app.active].view, view, "the same view, not a copy");
+        assert_eq!(app.focus, Focus::Editor);
+        assert_eq!(app.focus_target(), FocusTarget::DiffEditor);
+    }
+
+    #[test]
+    fn enter_on_an_explorer_file_materializes_it() {
+        let dir = test_dir("explorer-enter-materialize");
+        write_file(&dir, "a.rs", b"fn a() {}\n");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+        app.focus = Focus::Sidebar;
+        select_explorer_path(&mut app, &dir.join("a.rs"));
+
+        // Enter opens the file materialized (not a preview) and focuses it.
+        app.dispatch(Command::SidebarActivate);
+        assert_eq!(app.tabs.len(), 1);
+        assert!(
+            !app.tabs[0].is_preview,
+            "Enter materializes, never previews"
+        );
+        assert_eq!(app.focus, Focus::Editor);
+
+        // Enter again re-focuses the same tab — no duplicate.
+        app.focus = Focus::Sidebar;
+        app.dispatch(Command::SidebarActivate);
+        assert_eq!(app.tabs.len(), 1, "repeat Enter must not duplicate");
+        assert_eq!(app.focus, Focus::Editor);
+
+        // And Enter on a file currently in the preview slot materializes that
+        // same tab in place.
+        app.close_all_tabs();
+        app.open_path_preview(&dir.join("a.rs"), false);
+        assert!(app.tabs[0].is_preview);
+        let view = app.tabs[0].view;
+        app.focus = Focus::Sidebar;
+        app.dispatch(Command::SidebarActivate);
+        assert_eq!(app.tabs.len(), 1);
+        assert!(!app.tabs[0].is_preview);
+        assert_eq!(app.tabs[0].view, view, "the same view, not a copy");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_preview_and_a_diff_preview_share_the_panes_one_slot() {
+        let dir = test_dir("shared-preview-slot");
+        write_file(&dir, "c.rs", b"fn c() {}\n");
+        let mut app = App::new(
+            dir.clone(),
+            vec![change("a.rs", StatusKind::Modified)],
+            Vec::new(),
+            false,
+        );
+        // A previewed file occupies the slot…
+        app.open_path_preview(&dir.join("c.rs"), false);
+        assert_eq!(app.tabs.len(), 1);
+        assert!(app.tabs[0].is_preview);
+        assert!(!app.tabs[0].is_diff());
+
+        // …a previewed diff replaces it in place…
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        app.preview_selected_diff();
+        assert_eq!(app.tabs.len(), 1, "one preview slot per pane, any content");
+        assert!(app.tabs[0].is_preview);
+        assert!(app.tabs[0].is_diff());
+
+        // …and a previewed file takes it back.
+        app.open_path_preview(&dir.join("c.rs"), false);
+        assert_eq!(app.tabs.len(), 1);
+        assert!(app.tabs[0].is_preview);
+        assert!(!app.tabs[0].is_diff());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -8308,7 +8711,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         let _ = std::fs::write(&b, "fn b() {}\n");
 
         let mut app = app();
-        app.open_path_preview(&a);
+        app.open_path_preview(&a, true);
         assert_eq!(app.tabs.len(), 1);
         assert!(
             app.tabs[0].is_preview,
@@ -8318,7 +8721,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
 
         // Navigating to a second file replaces the preview tab in place — no
         // second tab, and the old one's path is gone.
-        app.open_path_preview(&b);
+        app.open_path_preview(&b, true);
         assert_eq!(
             app.tabs.len(),
             1,
@@ -8348,7 +8751,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         app.open_path(&a); // permanent open (not preview)
         assert!(!app.tabs[0].is_preview);
 
-        app.open_path_preview(&a);
+        app.open_path_preview(&a, true);
         assert_eq!(app.tabs.len(), 1, "must not duplicate an already-open file");
         assert!(
             !app.tabs[0].is_preview,
@@ -8389,7 +8792,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         // Re-open as preview, then double-click-promote the existing tab: still
         // exactly one tab, now permanent.
         app.close_all_tabs();
-        app.open_path_preview(&a);
+        app.open_path_preview(&a, true);
         assert!(app.tabs[0].is_preview);
         app.sidebar_promote_or_open_permanent();
         assert_eq!(app.tabs.len(), 1, "promoting must not open a duplicate tab");
@@ -8419,7 +8822,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         let backend: Arc<dyn Backend> = Arc::new(local(session));
         let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
         app.backend = Some(backend);
-        app.open_path_preview(&path);
+        app.open_path_preview(&path, true);
         pump(&mut app, &mut events).await;
         assert!(app.tabs[app.active].is_preview);
 
@@ -8436,6 +8839,194 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
             !app.tabs[app.active].is_preview,
             "the first edit must permanently promote the preview tab"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_dirty_preview_is_not_silently_replaced_by_the_next_preview() {
+        // Editing a preview promotes it (see `editing_a_preview_tab_...`), so by the
+        // time the next preview opens the edited tab is no longer the preview slot:
+        // it survives, its document is not discarded, and the close guard (#51) is
+        // never asked to drop unsaved work.
+        let dir = test_dir("preview-dirty-safety");
+        let a = dir.join("a.txt");
+        let b = dir.join("b.txt");
+        std::fs::write(&a, "ab").expect("write a");
+        std::fs::write(&b, "cd").expect("write b");
+
+        let (session, mut events, mut snaps) = Session::new(SessionConfig {
+            roots: vec![dir.clone()],
+            ..SessionConfig::default()
+        });
+        let backend: Arc<dyn Backend> = Arc::new(local(session));
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend);
+
+        app.open_path_preview(&a, true);
+        pump(&mut app, &mut events).await;
+        assert!(app.tabs[app.active].is_preview);
+
+        // Edit a.txt so a snapshot marks it dirty (and thus permanent).
+        app.dispatch(Command::InsertChar('x'));
+        pump(&mut app, &mut events).await;
+        while let Ok(Some((doc, snap))) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), snaps.recv()).await
+        {
+            app.on_snapshot(doc, &snap);
+        }
+        assert!(!app.tabs[app.active].is_preview, "the edit promoted a.txt");
+        assert!(app.tabs[app.active].dirty, "a.txt has unsaved changes");
+
+        // Now preview b.txt. The dirty a.txt tab must NOT be replaced — it has no
+        // preview flag — so b.txt opens as a second tab and a.txt is kept safe.
+        app.open_path_preview(&b, true);
+        pump(&mut app, &mut events).await;
+        assert_eq!(app.tabs.len(), 2, "the dirty tab is kept, not replaced");
+        let a_tab = app
+            .tabs
+            .iter()
+            .find(|t| t.path().map(canonical) == Some(canonical(&a)))
+            .expect("a.txt is still open");
+        assert!(a_tab.dirty, "a.txt keeps its unsaved changes");
+        assert!(!a_tab.is_preview);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn explorer_row_index(app: &App, label: &str) -> usize {
+        app.explorer
+            .rows()
+            .iter()
+            .position(|r| r.label == label)
+            .unwrap_or_else(|| panic!("missing explorer row {label}"))
+    }
+
+    #[test]
+    fn arrowing_the_explorer_previews_files_without_stealing_focus() {
+        let dir = test_dir("explorer-arrow-preview");
+        write_file(&dir, "a.rs", b"fn a() {}\n");
+        write_file(&dir, "b.rs", b"fn b() {}\n");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+        app.focus = Focus::Sidebar;
+        app.explorer.ensure_built(&dir);
+        let a_idx = explorer_row_index(&app, "a.rs");
+        let b_idx = explorer_row_index(&app, "b.rs");
+        app.explorer.select_index(a_idx);
+
+        // Arrow onto b.rs: it opens in the pane's preview slot, and the sidebar
+        // keeps keyboard focus so the user can keep arrowing.
+        app.sidebar_step((b_idx as i32 - a_idx as i32).signum());
+        assert_eq!(app.focus, Focus::Sidebar, "arrowing must not steal focus");
+        assert_eq!(app.tabs.len(), 1);
+        assert!(app.tabs[0].is_preview, "the arrowed-to file is a preview");
+        assert_eq!(
+            app.tabs[0].path().map(canonical),
+            Some(canonical(&dir.join("b.rs")))
+        );
+
+        // Arrow back onto a.rs: the single preview slot is reused, never appended.
+        app.sidebar_step((a_idx as i32 - b_idx as i32).signum());
+        assert_eq!(
+            app.tabs.len(),
+            1,
+            "one preview slot is reused, not appended"
+        );
+        assert!(app.tabs[0].is_preview);
+        assert_eq!(
+            app.tabs[0].path().map(canonical),
+            Some(canonical(&dir.join("a.rs")))
+        );
+        assert_eq!(app.focus, Focus::Sidebar);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wheel_scrolling_the_explorer_moves_selection_without_previewing() {
+        let dir = test_dir("explorer-wheel-no-preview");
+        write_file(&dir, "a.rs", b"fn a() {}\n");
+        write_file(&dir, "b.rs", b"fn b() {}\n");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+        app.focus = Focus::Sidebar;
+        app.explorer.ensure_built(&dir);
+        let before = app.explorer.cursor();
+
+        // A wheel notch moves the selection but must not open anything —
+        // scrolling past files must not thrash the preview slot.
+        app.sidebar_wheel(1, 3);
+        assert_ne!(app.explorer.cursor(), before, "the wheel moves selection");
+        assert_eq!(app.tabs.len(), 1);
+        assert!(
+            matches!(app.tabs[0].kind, TabKind::Welcome),
+            "the wheel must not open a preview"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn arrowing_onto_a_directory_row_leaves_the_editor_untouched() {
+        let dir = test_dir("explorer-arrow-dir");
+        write_file(&dir, "sub/nested.rs", b"fn n() {}\n");
+        write_file(&dir, "a.rs", b"fn a() {}\n");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+        app.focus = Focus::Sidebar;
+        app.explorer.ensure_built(&dir);
+        // Preview a.rs first, then arrow onto the `sub` directory row.
+        let a_idx = explorer_row_index(&app, "a.rs");
+        app.explorer.select_index(a_idx);
+        app.preview_selected_explorer_row();
+        assert_eq!(app.tabs.len(), 1);
+        assert!(app.tabs[0].is_preview);
+
+        let sub_idx = explorer_row_index(&app, "sub");
+        assert!(
+            app.explorer.rows()[sub_idx].is_dir,
+            "sub is a directory row"
+        );
+        app.explorer.select_index(sub_idx);
+        app.preview_selected_explorer_row();
+        // Landing on a directory changes nothing: the a.rs preview stays as-is.
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(
+            app.tabs[0].path().map(canonical),
+            Some(canonical(&dir.join("a.rs")))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn arrowing_onto_an_already_open_file_activates_it_without_a_new_tab() {
+        let dir = test_dir("explorer-arrow-permanent");
+        write_file(&dir, "a.rs", b"fn a() {}\n");
+        write_file(&dir, "b.rs", b"fn b() {}\n");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+        app.focus = Focus::Sidebar;
+        app.explorer.ensure_built(&dir);
+        // b.rs is open as a permanent tab (not a preview).
+        app.open_path(&dir.join("b.rs"));
+        assert!(!app.tabs[0].is_preview);
+        app.focus = Focus::Sidebar;
+
+        // Arrow onto b.rs from a.rs: it activates the existing permanent tab
+        // rather than opening a preview, and does not steal focus.
+        let a_idx = explorer_row_index(&app, "a.rs");
+        let b_idx = explorer_row_index(&app, "b.rs");
+        app.explorer.select_index(a_idx);
+        app.sidebar_step((b_idx as i32 - a_idx as i32).signum());
+        assert_eq!(app.tabs.len(), 1, "must not duplicate the open file");
+        assert!(
+            !app.tabs[0].is_preview,
+            "an already-permanent tab stays permanent"
+        );
+        assert_eq!(app.active, 0);
+        assert_eq!(app.focus, Focus::Sidebar);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -10558,8 +11149,10 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
 
     #[tokio::test]
     async fn scm_stage_still_works_after_previewing_a_diff() {
-        // Regression for "actions do nothing after opening a diff": the preview
-        // must not steal focus away from the Source-Control pane.
+        // Regression for "actions do nothing after opening a diff": browsing the
+        // change list (arrow moves) previews each diff *without* stealing focus
+        // from the Source-Control pane, so the staging keys stay live. (Enter is
+        // the explicit "commit into the view" action and does move focus.)
         let Some(repo) = init_test_repo() else {
             return;
         };
@@ -10567,12 +11160,13 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         pump(&mut app, &mut events).await;
         assert_eq!(app.scm.changes.len(), 1);
 
-        // Preview the change's diff — focus must stay on the SCM layer.
-        app.dispatch(Command::SidebarActivate);
+        // Arrow-browse onto the change: its diff previews, focus stays on SCM.
+        app.dispatch(Command::SidebarDown);
         assert!(app.active_is_diff());
+        assert!(app.tabs[app.active].is_preview);
         assert_eq!(app.focus_target(), FocusTarget::SourceControl);
 
-        // Staging still works after the preview.
+        // Staging still works while the preview is up.
         app.handle_key(press('s'));
         pump(&mut app, &mut events).await;
         assert_eq!(app.scm.staged_count, 1);
