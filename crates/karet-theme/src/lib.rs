@@ -13,7 +13,7 @@ mod default;
 mod load_vscode;
 
 /// Number of [`StandardToken`](karet_core::StandardToken) classes (token id space).
-pub(crate) const TOKEN_COUNT: usize = 31;
+pub(crate) const TOKEN_COUNT: usize = 32;
 /// Number of [`ThemeRole`] variants.
 pub(crate) const ROLE_COUNT: usize = 28;
 
@@ -294,14 +294,11 @@ mod tests {
     #[test]
     fn token_palette_covers_every_standard_token() {
         // `TOKEN_COUNT` must track the `StandardToken` enum: a token whose id lands past
-        // the palette silently renders as plain foreground. `MarkupStrikethrough` is the
-        // last variant, so bounding it bounds them all.
-        assert!((StandardToken::MarkupStrikethrough.id().0 as usize) < TOKEN_COUNT);
+        // the palette silently renders as plain foreground. `CommentMark` is the last
+        // variant, so bounding it bounds them all.
+        assert!((StandardToken::CommentMark.id().0 as usize) < TOKEN_COUNT);
         // And the palette is not oversized relative to the enum.
-        assert_eq!(
-            StandardToken::MarkupStrikethrough.id().0 as usize,
-            TOKEN_COUNT - 1
-        );
+        assert_eq!(StandardToken::CommentMark.id().0 as usize, TOKEN_COUNT - 1);
     }
 
     #[test]
@@ -329,6 +326,25 @@ mod tests {
             contrast_ratio(t.color(StandardToken::CommentDoc.id()), bg)
                 > contrast_ratio(t.color(StandardToken::Comment.id()), bg)
         );
+    }
+
+    #[test]
+    fn semantic_comment_marker_stands_out_from_comments() {
+        let t = Theme::dark();
+        let bg = t.role(ThemeRole::Background);
+        // The codetag marker must be distinct from — and louder than — both the plain
+        // comment and the doc comment, or it fails its one job of drawing the eye.
+        let mark = t.color(StandardToken::CommentMark.id());
+        assert_ne!(mark, t.color(StandardToken::Comment.id()));
+        assert_ne!(mark, t.color(StandardToken::CommentDoc.id()));
+        assert!(
+            contrast_ratio(mark, bg) > contrast_ratio(t.color(StandardToken::Comment.id()), bg)
+        );
+        assert!(
+            contrast_ratio(mark, bg) > contrast_ratio(t.color(StandardToken::CommentDoc.id()), bg)
+        );
+        // And it carries weight, not just hue.
+        assert!(t.emphasis(StandardToken::CommentMark.id()).bold);
     }
 
     #[test]

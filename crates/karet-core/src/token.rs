@@ -111,6 +111,11 @@ pub enum StandardToken {
     MarkupListMarker,
     /// Struck-through (deleted) markup.
     MarkupStrikethrough,
+    /// An attention-drawing marker comment: a comment line a codetag (`TODO`,
+    /// `FIXME`, `HACK`, …) opened, plus the lines it carries through. Synthesized by
+    /// `karet-syntax`'s semantic-comment pass — no grammar emits it — so such
+    /// comments render distinctly from an ordinary [`Comment`](Self::Comment).
+    CommentMark,
 }
 
 impl StandardToken {
@@ -155,6 +160,7 @@ impl StandardToken {
             Self::MarkupQuote => "markup.quote",
             Self::MarkupListMarker => "markup.list",
             Self::MarkupStrikethrough => "markup.strikethrough",
+            Self::CommentMark => "comment.mark",
         }
     }
 
@@ -193,6 +199,7 @@ impl StandardToken {
             "markup.quote" => Self::MarkupQuote,
             "markup.list" => Self::MarkupListMarker,
             "markup.strikethrough" => Self::MarkupStrikethrough,
+            "comment.mark" => Self::CommentMark,
             _ => return None,
         };
         Some(token)
@@ -294,6 +301,7 @@ mod tests {
             StandardToken::MarkupQuote,
             StandardToken::MarkupListMarker,
             StandardToken::MarkupStrikethrough,
+            StandardToken::CommentMark,
         ] {
             assert_eq!(
                 StandardToken::from_capture_name(tok.capture_name()),
@@ -323,5 +331,7 @@ mod tests {
         assert_eq!(StandardToken::CommentDoc.id(), TokenId(22));
         assert_eq!(StandardToken::MarkupListMarker.id(), TokenId(29));
         assert_eq!(StandardToken::MarkupStrikethrough.id(), TokenId(30));
+        // The semantic-comment marker is appended after the markup block.
+        assert_eq!(StandardToken::CommentMark.id(), TokenId(31));
     }
 }
