@@ -123,6 +123,21 @@ pub struct Cli {
     /// other flags are ignored.
     #[arg(long)]
     pub doctor: bool,
+
+    /// Install a per-user desktop entry that opens karet in a terminal, then exit
+    /// instead of starting the editor: an XDG .desktop entry + icon on Linux, a
+    /// ~/Applications/karet.app bundle on macOS, a Start-Menu launcher on Windows
+    /// 10/11. karet requires a modern terminal (kitty keyboard protocol) and offers
+    /// no guarantees with the OS default terminal — run `karet --doctor` inside it
+    /// to check. Idempotent; prints each created file. The other flags are ignored.
+    #[arg(long, conflicts_with = "uninstall_desktop")]
+    pub install_desktop: bool,
+
+    /// Remove the desktop entry `--install-desktop` created, then exit instead of
+    /// starting the editor. Prints each removed file; an already-absent file is
+    /// noted, not an error. The other flags are ignored.
+    #[arg(long)]
+    pub uninstall_desktop: bool,
 }
 
 /// A parsed [`Cli::goto`] argument: a file path with a 1-based caret target.
@@ -281,6 +296,36 @@ mod tests {
         let cli = Cli::try_parse_from(["karet"])?;
         assert!(!cli.doctor);
         Ok(())
+    }
+
+    #[test]
+    fn install_desktop_flag_parses() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from(["karet", "--install-desktop"])?;
+        assert!(cli.install_desktop);
+        assert!(!cli.uninstall_desktop);
+        Ok(())
+    }
+
+    #[test]
+    fn uninstall_desktop_flag_parses() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from(["karet", "--uninstall-desktop"])?;
+        assert!(cli.uninstall_desktop);
+        assert!(!cli.install_desktop);
+        Ok(())
+    }
+
+    #[test]
+    fn desktop_flags_default_to_off() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from(["karet"])?;
+        assert!(!cli.install_desktop);
+        assert!(!cli.uninstall_desktop);
+        Ok(())
+    }
+
+    #[test]
+    fn desktop_flags_conflict() {
+        let error = Cli::try_parse_from(["karet", "--install-desktop", "--uninstall-desktop"]);
+        assert!(error.is_err(), "the two desktop flags must be exclusive");
     }
 
     #[test]
