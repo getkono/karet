@@ -273,6 +273,19 @@ pub(crate) struct TabHit {
     pub(crate) close: u16,
 }
 
+/// A clickable breadcrumb segment recorded during the last frame: its column span
+/// on the breadcrumb row and the path prefix it resolves to (always within the
+/// workspace root — segments above the root are never recorded).
+#[derive(Clone)]
+pub(crate) struct BreadcrumbHit {
+    /// First column of the segment (inclusive).
+    pub(crate) start: u16,
+    /// One past the last column of the segment (exclusive).
+    pub(crate) end: u16,
+    /// The absolute path up to (and including) this segment's component.
+    pub(crate) path: PathBuf,
+}
+
 /// A rendered pane's clickable regions, recorded during the last frame for mouse
 /// hit-testing (which pane a click lands in, and its tab strip / content).
 #[derive(Clone)]
@@ -283,6 +296,10 @@ pub(crate) struct PaneFrame {
     pub(crate) tabstrip_rect: Rect,
     /// Per-tab clickable regions within the strip.
     pub(crate) tab_hits: Vec<TabHit>,
+    /// The pane's breadcrumb row (zero-sized when the active tab has no path).
+    pub(crate) breadcrumb_rect: Rect,
+    /// Per-segment clickable regions within the breadcrumb row.
+    pub(crate) breadcrumb_hits: Vec<BreadcrumbHit>,
     /// The pane's content (editor) area.
     pub(crate) content_rect: Rect,
 }
@@ -2279,6 +2296,16 @@ impl App {
         if !path_under(&self.root, path) {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("path");
             self.status = Some(format!("reveal: {name} is outside the workspace"));
+            return;
+        }
+        // The workspace root itself has no row (the tree lists its children): just
+        // show and focus the Explorer without disturbing the selection.
+        if same_path(path, &self.root) {
+            let root = self.root.clone();
+            self.explorer.ensure_built(&root);
+            self.sidebar_panel = SidebarPanel::Explorer;
+            self.sidebar_visible = true;
+            self.focus = Focus::Sidebar;
             return;
         }
         // Expand every ancestor directory from the root down to the target, plus the
@@ -4798,6 +4825,32 @@ impl App {
         true
     }
 
+    /// Handle a left click on a pane's breadcrumb row: a segment reveals its path
+    /// prefix in the Explorer; a separator gap (or an inert segment above the
+    /// workspace root) does nothing. Either way the click is consumed so it never
+    /// falls through to the tab strip or editor underneath. Returns `true` when
+    /// consumed.
+    fn handle_breadcrumb_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return false;
+        }
+        let point = (mouse.column, mouse.row);
+        let Some(hit) = self.pane_frames.iter().find_map(|f| {
+            rect_contains(f.breadcrumb_rect, point).then(|| {
+                f.breadcrumb_hits
+                    .iter()
+                    .find(|h| mouse.column >= h.start && mouse.column < h.end)
+                    .map(|h| h.path.clone())
+            })
+        }) else {
+            return false;
+        };
+        if let Some(path) = hit {
+            self.reveal_in_explorer(&path);
+        }
+        true
+    }
+
     /// Handle a left click on a toast card: dismiss it. Returns `true` when the
     /// click landed on a card (so it is not routed elsewhere).
     fn handle_toast_mouse(&mut self, mouse: MouseEvent) -> bool {
@@ -4979,6 +5032,9 @@ impl App {
             return;
         }
         if self.handle_tabstrip_mouse(mouse) {
+            return;
+        }
+        if self.handle_breadcrumb_mouse(mouse) {
             return;
         }
         if self.handle_status_mouse(mouse) {
@@ -9579,6 +9635,8 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
             pane: app.focus_pane(),
             tabstrip_rect: Rect::default(),
             tab_hits: Vec::new(),
+            breadcrumb_rect: Rect::default(),
+            breadcrumb_hits: Vec::new(),
             content_rect: rect,
         }
     }
@@ -10355,6 +10413,8 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                     close: 22,
                 },
             ],
+            breadcrumb_rect: Rect::default(),
+            breadcrumb_hits: Vec::new(),
             content_rect: Rect::default(),
         }];
         app.active = 0;
@@ -10729,6 +10789,139 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
             app.explorer.offset() > 0,
             "the tree did not scroll to reveal the selection"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reveal_in_explorer_of_the_root_focuses_the_explorer_without_reselecting() {
+        let dir = test_dir("reveal-root");
+        write_file(&dir, "top.txt", b"x");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        select_explorer_path(&mut app, &dir.join("top.txt"));
+        app.sidebar_visible = false;
+        app.focus = Focus::Editor;
+
+        // The root has no row of its own: revealing it shows and focuses the
+        // Explorer but leaves the selection where it was.
+        app.reveal_in_explorer(&dir);
+
+        assert!(app.sidebar_visible);
+        assert_eq!(app.sidebar_panel, SidebarPanel::Explorer);
+        assert_eq!(app.focus, Focus::Sidebar);
+        assert_eq!(
+            app.explorer.selected_path(),
+            Some(dir.join("top.txt").as_path())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A frame whose breadcrumb row is at `y = 1` (columns 10..50) with one
+    /// clickable segment at columns 12..15 resolving to `segment`, over a content
+    /// rect that deliberately overlaps the breadcrumb row — so a swallowed click
+    /// is distinguishable from one that fell through to the editor.
+    fn breadcrumb_frame(app: &App, segment: PathBuf) -> PaneFrame {
+        PaneFrame {
+            pane: app.focus_pane(),
+            tabstrip_rect: Rect::default(),
+            tab_hits: Vec::new(),
+            breadcrumb_rect: Rect {
+                x: 10,
+                y: 1,
+                width: 40,
+                height: 1,
+            },
+            breadcrumb_hits: vec![BreadcrumbHit {
+                start: 12,
+                end: 15,
+                path: segment,
+            }],
+            content_rect: Rect {
+                x: 10,
+                y: 1,
+                width: 40,
+                height: 10,
+            },
+        }
+    }
+
+    #[test]
+    fn clicking_a_breadcrumb_segment_reveals_its_path_in_the_explorer() {
+        let dir = test_dir("breadcrumb-click");
+        write_file(&dir, "a/b/c.rs", b"code");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_visible = false;
+        app.focus = Focus::Editor;
+        let target = dir.join("a/b");
+        app.pane_frames = vec![breadcrumb_frame(&app, target.clone())];
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 13,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(app.explorer.selected_path(), Some(target.as_path()));
+        assert!(app.sidebar_visible);
+        assert_eq!(app.sidebar_panel, SidebarPanel::Explorer);
+        assert_eq!(app.focus, Focus::Sidebar);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_breadcrumb_gap_click_is_swallowed_not_forwarded_to_the_editor() {
+        let dir = test_dir("breadcrumb-gap");
+        write_file(&dir, "a/b/c.rs", b"code");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.focus = Focus::Sidebar;
+        app.pane_frames = vec![breadcrumb_frame(&app, dir.join("a/b"))];
+
+        // Column 16 is past the segment (a separator gap): the click lands on the
+        // breadcrumb row but maps to no segment. Had it fallen through, the editor
+        // click handler (whose content rect overlaps the row) would steal focus.
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 16,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(app.focus, Focus::Sidebar, "the gap click fell through");
+        assert_eq!(app.explorer.selected_path(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_frame_records_breadcrumb_hits_only_within_the_workspace() {
+        let dir = test_dir("breadcrumb-frame");
+        write_file(&dir, "a/b.rs", b"code");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.open_path(&dir.join("a/b.rs"));
+
+        let painted = screen(&mut app, 200, 20).join("\n");
+        assert!(
+            painted.contains('\u{203a}'),
+            "the breadcrumb separator did not paint:\n{painted}"
+        );
+
+        let frame = app.pane_frames.first().expect("a pane frame");
+        assert_eq!(frame.breadcrumb_rect.height, 1);
+        let paths: Vec<_> = frame
+            .breadcrumb_hits
+            .iter()
+            .map(|h| h.path.clone())
+            .collect();
+        // Segments above the workspace root ("/", "tmp", …) are inert: only the
+        // root itself and the components below it are recorded.
+        assert_eq!(paths, vec![dir.clone(), dir.join("a"), dir.join("a/b.rs")]);
+        // Spans are ordered, non-overlapping, and inside the breadcrumb row.
+        for pair in frame.breadcrumb_hits.windows(2) {
+            assert!(pair[0].end < pair[1].start, "segments overlap or touch");
+        }
+        for hit in &frame.breadcrumb_hits {
+            assert!(hit.start >= frame.breadcrumb_rect.x);
+            assert!(hit.end <= frame.breadcrumb_rect.right());
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -208,6 +208,8 @@ struct PaneCtx<'a> {
 struct RenderedPane {
     tabstrip_rect: Rect,
     tab_hits: Vec<TabHit>,
+    breadcrumb_rect: Rect,
+    breadcrumb_hits: Vec<crate::app::BreadcrumbHit>,
     content_rect: Rect,
     image_area: Option<Rect>,
     commit_badge_rect: Option<Rect>,
@@ -272,6 +274,8 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             pane,
             tabstrip_rect: rendered.tabstrip_rect,
             tab_hits: rendered.tab_hits,
+            breadcrumb_rect: rendered.breadcrumb_rect,
+            breadcrumb_hits: rendered.breadcrumb_hits,
             content_rect: rendered.content_rect,
         });
     }
@@ -303,9 +307,12 @@ fn render_pane(
         ctx.root,
         parts[0],
     );
-    if bc == 1 {
-        draw_pane_breadcrumb(f, tabs.get(active), ctx.theme, parts[1]);
-    }
+    let (breadcrumb_rect, breadcrumb_hits) = if bc == 1 {
+        let hits = draw_pane_breadcrumb(f, tabs.get(active), ctx.theme, ctx.root, parts[1]);
+        (parts[1], hits)
+    } else {
+        (Rect::default(), Vec::new())
+    };
     let mut content = parts[2];
     if let Some(find) = ctx.find.as_ref() {
         // One row for find; a second when the replace field is shown.
@@ -326,6 +333,8 @@ fn render_pane(
     RenderedPane {
         tabstrip_rect,
         tab_hits,
+        breadcrumb_rect,
+        breadcrumb_hits,
         content_rect: content,
         image_area: painted.image_area,
         commit_badge_rect: painted.badge_rect,
@@ -684,18 +693,68 @@ fn save_mark(tab: &Tab) -> char {
     if tab.dirty { '\u{25cf}' } else { ' ' }
 }
 
-fn draw_pane_breadcrumb(f: &mut Frame, tab: Option<&Tab>, theme: &Theme, area: Rect) {
-    let crumbs = tab
-        .and_then(Tab::path)
-        .map(|p| {
-            p.components()
-                .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-                .join("  ›  ")
-        })
-        .unwrap_or_default();
+/// The separator drawn between breadcrumb segments.
+const BREADCRUMB_SEP: &str = "  \u{203a}  ";
+
+/// The column span (start inclusive, end exclusive) of each of `components` when
+/// joined by [`BREADCRUMB_SEP`], relative to the breadcrumb's left edge. Uses
+/// terminal display width (wide-char aware), matching how the joined line paints.
+/// Separator gaps belong to no segment. Pure, so it is unit-tested.
+fn breadcrumb_segment_spans(components: &[String]) -> Vec<(u16, u16)> {
+    let sep = cell_width(BREADCRUMB_SEP);
+    let mut spans = Vec::with_capacity(components.len());
+    let mut x = 0u16;
+    for (i, comp) in components.iter().enumerate() {
+        if i > 0 {
+            x = x.saturating_add(sep);
+        }
+        let end = x.saturating_add(cell_width(comp));
+        spans.push((x, end));
+        x = end;
+    }
+    spans
+}
+
+/// Draw the pane's breadcrumb (the active tab's path components joined by `›`) and
+/// return the clickable segment regions: each segment's on-screen column span with
+/// the path prefix it resolves to. Segments above the workspace `root` are inert
+/// (not recorded); segments past the pane's right edge are clipped.
+fn draw_pane_breadcrumb(
+    f: &mut Frame,
+    tab: Option<&Tab>,
+    theme: &Theme,
+    root: &Path,
+    area: Rect,
+) -> Vec<crate::app::BreadcrumbHit> {
+    let Some(path) = tab.and_then(Tab::path) else {
+        return Vec::new();
+    };
+    let components: Vec<String> = path
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let crumbs = components.join(BREADCRUMB_SEP);
     let style = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
     f.render_widget(Paragraph::new(Line::styled(crumbs, style)), area);
+
+    let mut hits = Vec::new();
+    let mut prefix = PathBuf::new();
+    for (comp, (start, end)) in path.components().zip(breadcrumb_segment_spans(&components)) {
+        prefix.push(comp);
+        if start >= area.width {
+            break;
+        }
+        let end = end.min(area.width);
+        // A segment resolving above the workspace root cannot be revealed: skip it.
+        if end > start && prefix.starts_with(root) {
+            hits.push(crate::app::BreadcrumbHit {
+                start: area.x.saturating_add(start),
+                end: area.x.saturating_add(end),
+                path: prefix.clone(),
+            });
+        }
+    }
+    hits
 }
 
 /// Draw the right-side outline panel: a header over the active tab's navigation
@@ -3002,6 +3061,31 @@ mod tests {
     fn a_markdown_preview_is_inset_from_its_pane_on_every_side() {
         let inner = markdown_preview_rect(Rect::new(10, 5, 40, 20));
         assert_eq!(inner, Rect::new(12, 6, 36, 18));
+    }
+
+    #[test]
+    fn breadcrumb_spans_map_segments_and_leave_separator_gaps_unmapped() {
+        let components = vec!["/".to_string(), "home".to_string(), "u".to_string()];
+        let spans = breadcrumb_segment_spans(&components);
+        // "/" + "  ›  " (5 cells) + "home" + "  ›  " + "u"
+        assert_eq!(spans, vec![(0, 1), (6, 10), (15, 16)]);
+        // The separator gap between spans belongs to no segment.
+        assert!(spans.iter().all(|&(s, e)| !(s <= 3 && 3 < e)));
+    }
+
+    #[test]
+    fn breadcrumb_spans_use_display_width_for_wide_characters() {
+        // "日本語" occupies 6 terminal cells, not 3.
+        let components = vec!["\u{65e5}\u{672c}\u{8a9e}".to_string(), "a.rs".to_string()];
+        assert_eq!(
+            breadcrumb_segment_spans(&components),
+            vec![(0, 6), (11, 15)]
+        );
+    }
+
+    #[test]
+    fn breadcrumb_spans_of_no_components_are_empty() {
+        assert!(breadcrumb_segment_spans(&[]).is_empty());
     }
 
     #[test]
