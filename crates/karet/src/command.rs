@@ -75,6 +75,16 @@ pub enum Command {
     CopyPath,
     /// Copy the active file's workspace-relative path to the clipboard.
     CopyRelativePath,
+    /// Reveal the active file in the explorer.
+    RevealActiveInExplorer,
+    /// Copy a web URL for the active file at the current `HEAD` commit on its
+    /// origin remote (GitHub, GitLab, Gitea, or Forgejo).
+    CopyRemoteFileUrl,
+    /// Copy a GitHub permalink for the active file: the blob at the `HEAD` commit,
+    /// anchored to the caret line in a code tab.
+    CopyGithubPermalink,
+    /// Copy a GitHub link to the active file on the current branch.
+    CopyGithubHeadLink,
     /// Move the sidebar selection up.
     SidebarUp,
     /// Move the sidebar selection down.
@@ -404,6 +414,10 @@ impl Command {
             Self::Copy => "Copy",
             Self::CopyPath => "Copy Path of Active File",
             Self::CopyRelativePath => "Copy Relative Path of Active File",
+            Self::RevealActiveInExplorer => "File: Reveal Active File in Explorer",
+            Self::CopyRemoteFileUrl => "Copy Remote File URL of Active File",
+            Self::CopyGithubPermalink => "Copy GitHub Permalink of Active File",
+            Self::CopyGithubHeadLink => "Copy GitHub Head Link of Active File",
             Self::SidebarUp => "Sidebar: Select Previous",
             Self::SidebarDown => "Sidebar: Select Next",
             Self::SidebarActivate => "Sidebar: Open Selected",
@@ -682,6 +696,10 @@ impl Command {
             | Self::FocusPrevPane
             | Self::CopyPath
             | Self::CopyRelativePath
+            | Self::RevealActiveInExplorer
+            | Self::CopyRemoteFileUrl
+            | Self::CopyGithubPermalink
+            | Self::CopyGithubHeadLink
             | Self::SidebarUp
             | Self::SidebarDown
             | Self::OutlineUp
@@ -765,6 +783,10 @@ impl Command {
                 | Self::Copy
                 | Self::CopyPath
                 | Self::CopyRelativePath
+                | Self::RevealActiveInExplorer
+                | Self::CopyRemoteFileUrl
+                | Self::CopyGithubPermalink
+                | Self::CopyGithubHeadLink
                 | Self::ToggleDiffLayout
                 | Self::ToggleFold
                 | Self::AddCursorAbove
@@ -848,6 +870,10 @@ pub fn palette() -> Vec<Command> {
         Command::Copy,
         Command::CopyPath,
         Command::CopyRelativePath,
+        Command::RevealActiveInExplorer,
+        Command::CopyRemoteFileUrl,
+        Command::CopyGithubPermalink,
+        Command::CopyGithubHeadLink,
         Command::NextTab,
         Command::PrevTab,
         Command::MoveTabLeft,

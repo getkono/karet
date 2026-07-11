@@ -110,6 +110,7 @@ use crate::outline::OutlineRow;
 use crate::outline::OutlineTarget;
 use crate::overlay::Overlay;
 use crate::overlay::OverlayEvent;
+use crate::remote;
 use crate::render::FileView;
 use crate::render::Section;
 use crate::tab::FindState;
@@ -439,6 +440,34 @@ impl ContextMenu {
 
     fn selected_entry(&self) -> Option<&ContextMenuEntry> {
         self.entries.get(self.selected)
+    }
+}
+
+/// The repository/remote facts behind the pane menu's link actions, gathered
+/// synchronously from a short-lived repository handle (see [`App::remote_facts`]).
+struct RemoteFacts {
+    /// The parsed origin remote.
+    remote: remote::Remote,
+    /// The full `HEAD` commit hash, or `None` on an unborn branch.
+    head: Option<String>,
+    /// The current branch's short name, or `None` when `HEAD` is detached.
+    branch: Option<String>,
+    /// The file's path relative to the repository worktree root.
+    rel_path: PathBuf,
+    /// Whether the file exists in the `HEAD` commit's tree.
+    tracked: bool,
+}
+
+impl RemoteFacts {
+    /// Borrow these facts as a [`remote::LinkTarget`] for link building.
+    fn link_target(&self) -> remote::LinkTarget<'_> {
+        remote::LinkTarget {
+            remote: &self.remote,
+            head: self.head.as_deref(),
+            branch: self.branch.as_deref(),
+            rel_path: &self.rel_path,
+            tracked: self.tracked,
+        }
     }
 }
 
@@ -1810,6 +1839,14 @@ impl App {
             Command::Copy => self.copy_selection(),
             Command::CopyPath => self.copy_path(false),
             Command::CopyRelativePath => self.copy_path(true),
+            Command::RevealActiveInExplorer => self.reveal_active_in_explorer(),
+            Command::CopyRemoteFileUrl => self.copy_remote_link(remote::LinkKind::RemoteFile),
+            Command::CopyGithubPermalink => {
+                self.copy_remote_link(remote::LinkKind::GithubPermalink);
+            },
+            Command::CopyGithubHeadLink => {
+                self.copy_remote_link(remote::LinkKind::GithubHeadLink);
+            },
             Command::SidebarUp => self.sidebar_step(-1),
             Command::SidebarDown => self.sidebar_step(1),
             Command::SidebarActivate => self.sidebar_activate(),
@@ -2820,6 +2857,55 @@ impl App {
         let x = self.sidebar_content_rect.x.saturating_add(2);
         let row = (!self.explorer.rows().is_empty()).then_some(cursor);
         self.open_context_menu(x, y, row);
+    }
+
+    /// Open the pane context menu at `(x, y)` for the focused pane's active tab.
+    /// Only file-backed tabs get one; a pathless tab (Welcome, commit graph, …)
+    /// opens nothing.
+    fn open_pane_context_menu(&mut self, x: u16, y: u16) {
+        let Some(path) = self
+            .tabs
+            .get(self.active)
+            .and_then(Tab::path)
+            .map(Path::to_path_buf)
+        else {
+            return;
+        };
+        let entries = self.pane_context_entries(&path);
+        self.context_menu = Some(ContextMenu::new(x, y, entries));
+    }
+
+    /// The pane context menu's rows for the active file at `path`. The path items
+    /// always work; the link items are enabled exactly when [`remote::link`] can
+    /// build them (the same call their dispatch runs), with its refusal reason as
+    /// the disabled note.
+    fn pane_context_entries(&self, path: &Path) -> Vec<ContextMenuEntry> {
+        let mut entries = vec![
+            ContextMenuEntry::enabled(Command::CopyPath),
+            ContextMenuEntry::enabled(Command::CopyRelativePath),
+            ContextMenuEntry::enabled(Command::RevealActiveInExplorer),
+        ];
+        let facts = self.remote_facts(path);
+        for (command, kind) in [
+            (Command::CopyRemoteFileUrl, remote::LinkKind::RemoteFile),
+            (
+                Command::CopyGithubPermalink,
+                remote::LinkKind::GithubPermalink,
+            ),
+            (
+                Command::CopyGithubHeadLink,
+                remote::LinkKind::GithubHeadLink,
+            ),
+        ] {
+            entries.push(match &facts {
+                Ok(facts) => match remote::link(&facts.link_target(), kind, None) {
+                    Ok(_) => ContextMenuEntry::enabled(command),
+                    Err(note) => ContextMenuEntry::disabled(command, note),
+                },
+                Err(note) => ContextMenuEntry::disabled(command, note.clone()),
+            });
+        }
+        entries
     }
 
     fn context_menu_step(&mut self, delta: i32) {
@@ -4892,6 +4978,15 @@ impl App {
                     self.request_close_tab_at(i);
                 }
             },
+            MouseEventKind::Down(MouseButton::Right) => {
+                // Right-click on a tab selects it and opens the pane context menu
+                // for it; the strip's empty tail opens nothing.
+                self.focus_pane_switch(pane);
+                if let Some((i, _)) = hit {
+                    self.select_tab(i);
+                    self.open_pane_context_menu(mouse.column, mouse.row);
+                }
+            },
             _ => {},
         }
         true
@@ -5136,6 +5231,20 @@ impl App {
                     .flatten();
                 self.open_context_menu(mouse.column, mouse.row, row);
             },
+            MouseEventKind::Down(MouseButton::Right) => {
+                // Right-click in a pane's content area opens the pane context menu
+                // for that pane's active tab.
+                if let Some(pane) = self
+                    .pane_frames
+                    .iter()
+                    .find(|f| rect_contains(f.content_rect, point))
+                    .map(|f| f.pane)
+                {
+                    self.focus_pane_switch(pane);
+                    self.focus = Focus::Editor;
+                    self.open_pane_context_menu(mouse.column, mouse.row);
+                }
+            },
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.sidebar_visible && mouse.column == self.sidebar_divider_x {
                     // Grab the sidebar-width divider to start a resize drag.
@@ -5370,6 +5479,94 @@ impl App {
         };
         let text = path.to_string_lossy().into_owned();
         self.copy_to_clipboard(text, "path");
+    }
+
+    /// Reveal the active tab's file in the explorer.
+    fn reveal_active_in_explorer(&mut self) {
+        let Some(path) = self
+            .tabs
+            .get(self.active)
+            .and_then(Tab::path)
+            .map(Path::to_path_buf)
+        else {
+            self.status = Some("reveal: no file".to_string());
+            return;
+        };
+        self.reveal_in_explorer(&path);
+    }
+
+    /// Gather the repository/remote facts for `path`, synchronously (fast local
+    /// reads on a short-lived repository handle, like blame). The `Err` side is a
+    /// user-facing reason, doubling as a context-menu disabled note.
+    fn remote_facts(&self, path: &Path) -> Result<RemoteFacts, String> {
+        // Absolutize first so discovery starts from the file's own directory (a
+        // file may live in a different repository than the workspace root).
+        let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        let start = abs.parent().unwrap_or(&abs);
+        let repo = karet_vcs::Repository::discover(start)
+            .map_err(|_| "not in a git repository".to_string())?;
+        let origin = repo
+            .origin_url()
+            .ok_or_else(|| "no origin remote configured".to_string())?;
+        let remote = remote::parse_remote(&origin)
+            .ok_or_else(|| format!("unrecognized origin remote URL: {origin}"))?;
+        let rel_path = repo
+            .path_in_worktree(&abs)
+            .ok_or_else(|| "file is outside the repository worktree".to_string())?;
+        // An unborn branch has no HEAD hash; file_at_rev then errors, reading as
+        // untracked — both surface as accurate notes further down.
+        let head = repo.head_hash().ok().flatten();
+        let branch = repo.current_branch().ok().flatten();
+        let tracked = repo.file_at_rev(&abs, "HEAD").ok().flatten().is_some();
+        Ok(RemoteFacts {
+            remote,
+            head,
+            branch,
+            rel_path,
+            tracked,
+        })
+    }
+
+    /// Copy the `kind` web link for the active file, or surface why it cannot be
+    /// built (mirroring the pane menu's disabled notes exactly — both sides run
+    /// the same [`remote::link`]).
+    fn copy_remote_link(&mut self, kind: remote::LinkKind) {
+        let Some(path) = self
+            .tabs
+            .get(self.active)
+            .and_then(Tab::path)
+            .map(Path::to_path_buf)
+        else {
+            self.status = Some("copy link: no file".to_string());
+            return;
+        };
+        // The caret line only anchors a permalink over a code tab (1-based).
+        let line = match (kind, self.tabs.get(self.active)) {
+            (remote::LinkKind::GithubPermalink, Some(tab))
+                if matches!(tab.kind, TabKind::Code { .. }) =>
+            {
+                Some(tab.editor.cursor().line.saturating_add(1))
+            },
+            _ => None,
+        };
+        let facts = match self.remote_facts(&path) {
+            Ok(facts) => facts,
+            Err(reason) => {
+                self.status = Some(reason);
+                return;
+            },
+        };
+        match remote::link(&facts.link_target(), kind, line) {
+            Ok(url) => {
+                let what = match kind {
+                    remote::LinkKind::RemoteFile => "remote file URL",
+                    remote::LinkKind::GithubPermalink => "GitHub permalink",
+                    remote::LinkKind::GithubHeadLink => "GitHub head link",
+                };
+                self.copy_to_clipboard(url, what);
+            },
+            Err(reason) => self.status = Some(reason),
+        }
     }
 
     /// Apply a caret `motion` to the active code tab, extending the selection when
@@ -11110,6 +11307,198 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         app.dispatch(Command::ContextMenuUp);
         assert_eq!(selected(&app), Some(1));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A committed git repo (one tracked `new.rs`) with `origin` set to `remote_url`,
+    /// or `None` when `git` is unavailable (the test then skips).
+    fn repo_with_remote(remote_url: &str) -> Option<TempRepo> {
+        let repo = init_test_repo()?;
+        if !git(&repo.path, &["add", "."])
+            || !git(&repo.path, &["commit", "-q", "-m", "init"])
+            || !git(&repo.path, &["remote", "add", "origin", remote_url])
+        {
+            return None;
+        }
+        Some(repo)
+    }
+
+    #[test]
+    fn pane_context_menu_lists_file_actions_and_disables_links_outside_a_repo() {
+        let dir = test_dir("pane-menu-norepo");
+        write_file(&dir, "a.rs", b"x\n");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.push_tab(code_tab(dir.join("a.rs").to_string_lossy().as_ref()));
+
+        app.open_pane_context_menu(3, 3);
+
+        let Some(menu) = app.context_menu.as_ref() else {
+            panic!("a file-backed tab opens a pane menu");
+        };
+        let commands: Vec<Command> = menu.entries.iter().map(|e| e.command).collect();
+        assert_eq!(
+            commands,
+            vec![
+                Command::CopyPath,
+                Command::CopyRelativePath,
+                Command::RevealActiveInExplorer,
+                Command::CopyRemoteFileUrl,
+                Command::CopyGithubPermalink,
+                Command::CopyGithubHeadLink,
+            ]
+        );
+        assert!(menu.entries[..3].iter().all(|e| e.enabled));
+        for entry in &menu.entries[3..] {
+            assert!(
+                !entry.enabled,
+                "{:?} is disabled outside a repo",
+                entry.command
+            );
+            assert_eq!(entry.note.as_deref(), Some("not in a git repository"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pane_context_menu_does_not_open_for_a_pathless_tab() {
+        let dir = test_dir("pane-menu-welcome");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
+
+        app.open_pane_context_menu(3, 3);
+
+        assert!(app.context_menu.is_none(), "a pathless tab opens no menu");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn right_click_opens_the_pane_menu_from_the_tab_strip_and_the_content_area() {
+        let dir = test_dir("pane-menu-mouse");
+        write_file(&dir, "a.rs", b"x\n");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.push_tab(code_tab(dir.join("a.rs").to_string_lossy().as_ref()));
+        let mut frame = content_frame(&app, Rect::new(0, 1, 40, 10));
+        frame.tabstrip_rect = Rect::new(0, 0, 40, 1);
+        frame.tab_hits = vec![TabHit {
+            start: 0,
+            end: 12,
+            close: 11,
+        }];
+        app.pane_frames = vec![frame];
+        let right = |col, row| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        // Over the tab in the strip: selects it and opens the menu.
+        app.handle_mouse(right(4, 0));
+        assert!(app.context_menu.is_some(), "tab-strip right-click opens");
+        app.context_menu = None;
+
+        // In the content area: opens for the pane's active tab.
+        app.handle_mouse(right(5, 5));
+        assert!(app.context_menu.is_some(), "content right-click opens");
+        app.context_menu = None;
+
+        // On the strip's empty tail (past the tab): consumed, no menu.
+        app.handle_mouse(right(20, 0));
+        assert!(app.context_menu.is_none(), "strip tail opens nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pane_menu_enables_github_links_for_a_tracked_file_on_github() {
+        let Some(repo) = repo_with_remote("git@github.com:owner/repo.git") else {
+            return;
+        };
+        let app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        let entries = app.pane_context_entries(&repo.path.join("new.rs"));
+        assert!(
+            entries.iter().all(|e| e.enabled),
+            "github + tracked enables every row: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn pane_menu_disables_github_links_for_a_gitlab_remote_with_a_note() {
+        let Some(repo) = repo_with_remote("https://gitlab.com/owner/repo.git") else {
+            return;
+        };
+        let app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        let entries = app.pane_context_entries(&repo.path.join("new.rs"));
+        let by_cmd = |cmd: Command| entries.iter().find(|e| e.command == cmd);
+        // The generic remote URL still works on GitLab…
+        assert!(by_cmd(Command::CopyRemoteFileUrl).is_some_and(|e| e.enabled));
+        // …while both GitHub links are disabled and name the detected forge.
+        for cmd in [Command::CopyGithubPermalink, Command::CopyGithubHeadLink] {
+            let Some(entry) = by_cmd(cmd) else {
+                panic!("{cmd:?} is listed");
+            };
+            assert!(!entry.enabled);
+            let note = entry.note.as_deref().unwrap_or_default();
+            assert!(
+                note.contains("GitLab") && note.contains("github.com"),
+                "note names the forge: {note}"
+            );
+        }
+    }
+
+    #[test]
+    fn pane_menu_disables_links_for_an_untracked_file() {
+        let Some(repo) = repo_with_remote("git@github.com:owner/repo.git") else {
+            return;
+        };
+        std::fs::write(repo.path.join("untracked.rs"), "y\n").unwrap_or_default();
+        let app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        let entries = app.pane_context_entries(&repo.path.join("untracked.rs"));
+        for cmd in [
+            Command::CopyRemoteFileUrl,
+            Command::CopyGithubPermalink,
+            Command::CopyGithubHeadLink,
+        ] {
+            let Some(entry) = entries.iter().find(|e| e.command == cmd) else {
+                panic!("{cmd:?} is listed");
+            };
+            assert!(!entry.enabled, "{cmd:?} is disabled for an untracked file");
+            assert!(
+                entry
+                    .note
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("not tracked"),
+                "note explains the untracked state"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_facts_reads_the_repository_state() {
+        let Some(repo) = repo_with_remote("git@github.com:owner/repo.git") else {
+            return;
+        };
+        let app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        let Ok(facts) = app.remote_facts(&repo.path.join("new.rs")) else {
+            panic!("facts resolve inside a repo with an origin");
+        };
+        assert_eq!(facts.remote.kind, crate::remote::ForgeKind::GitHub);
+        assert_eq!(facts.rel_path, PathBuf::from("new.rs"));
+        assert!(facts.tracked);
+        assert!(facts.head.is_some());
+        assert!(facts.branch.is_some());
+    }
+
+    #[test]
+    fn copy_github_permalink_reports_success_on_a_github_repo() {
+        let Some(repo) = repo_with_remote("git@github.com:owner/repo.git") else {
+            return;
+        };
+        let mut app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        app.push_tab(code_tab(
+            repo.path.join("new.rs").to_string_lossy().as_ref(),
+        ));
+        app.dispatch(Command::CopyGithubPermalink);
+        assert_eq!(app.status.as_deref(), Some("copied GitHub permalink"));
     }
 
     #[test]

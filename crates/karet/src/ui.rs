@@ -960,6 +960,12 @@ fn context_menu_label(command: Command) -> &'static str {
         Command::ExplorerCopyRelativePath => "Copy Relative Path",
         Command::ExplorerRefresh => "Refresh",
         Command::ExplorerCollapseAll => "Collapse All",
+        Command::CopyPath => "Copy Path",
+        Command::CopyRelativePath => "Copy Relative Path",
+        Command::RevealActiveInExplorer => "Show File in Explorer",
+        Command::CopyRemoteFileUrl => "Copy Remote File URL",
+        Command::CopyGithubPermalink => "Copy GitHub Permalink",
+        Command::CopyGithubHeadLink => "Copy GitHub Head Link",
         _ => command.label(),
     }
 }
