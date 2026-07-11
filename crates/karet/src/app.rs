@@ -6265,101 +6265,6 @@ impl Drop for KeyboardEnhancementGuard {
     }
 }
 
-/// Best-effort probe for Kitty graphics protocol support.
-///
-/// Emits a graphics *query* (`a=q`, which does not display anything) followed by a
-/// Primary Device Attributes request (`ESC [ c`) as a terminator, then reads the
-/// reply straight from stdin. Returns `Some(true)` when the terminal answers the
-/// graphics query, `Some(false)` when it answers DA1 but not the graphics query,
-/// and `None` on timeout or I/O error.
-///
-/// Must run in raw mode and **before** the input reader thread starts, so the
-/// query responses are consumed here rather than leaking into the UI as keystrokes.
-/// Unlike the env-var [`detect_protocol`](image::detect_protocol) heuristic, this
-/// recognizes any graphics-capable terminal, not just an allowlist.
-fn probe_kitty_graphics(timeout: Duration) -> Option<bool> {
-    use std::io::Read;
-
-    // `i=31` is an arbitrary image id echoed back in the reply; `\x1b[c` (DA1) is
-    // answered by every terminal and marks the end of the responses to read.
-    let query = "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c";
-    let mut stdout = std::io::stdout();
-    write!(stdout, "{query}").ok()?;
-    stdout.flush().ok()?;
-
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut stdin = std::io::stdin();
-        let mut buf = Vec::new();
-        let mut byte = [0u8; 1];
-        let mut saw_csi = false;
-        loop {
-            match stdin.read(&mut byte) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    let b = byte[0];
-                    buf.push(b);
-                    // Stop once the DA1 reply (CSI … 'c') has been fully consumed.
-                    saw_csi |= b == b'[';
-                    if saw_csi && b == b'c' {
-                        break;
-                    }
-                },
-            }
-        }
-        let _ = tx.send(buf);
-    });
-
-    let buf = rx.recv_timeout(timeout).ok()?;
-    // A Kitty graphics acknowledgement looks like: ESC _ G i=31 ; OK ESC \
-    let ok = buf.windows(2).any(|w| w == b"_G") && buf.windows(2).any(|w| w == b"OK");
-    Some(ok)
-}
-
-/// Probe whether the terminal supports OSC 22 (mouse pointer-shape hints, e.g.
-/// hovering a resize divider showing the OS's resize cursor) by sending its
-/// query form (`ESC ] 22 ; ? ESC \`) and checking for an OSC 22 reply before
-/// the DA1 terminator. `Some(true)`/`Some(false)` when the terminal answered
-/// before `timeout`, `None` on timeout or I/O error — in which case the
-/// caller must not send pointer-shape hints (they'd be silently ignored at
-/// best, or misinterpreted at worst). Same raw-mode/before-input-thread
-/// constraint and terminating-DA1 trick as [`probe_kitty_graphics`].
-fn probe_osc22_pointer_shape(timeout: Duration) -> Option<bool> {
-    use std::io::Read;
-
-    let query = "\x1b]22;?\x1b\\\x1b[c";
-    let mut stdout = std::io::stdout();
-    write!(stdout, "{query}").ok()?;
-    stdout.flush().ok()?;
-
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut stdin = std::io::stdin();
-        let mut buf = Vec::new();
-        let mut byte = [0u8; 1];
-        let mut saw_csi = false;
-        loop {
-            match stdin.read(&mut byte) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    let b = byte[0];
-                    buf.push(b);
-                    saw_csi |= b == b'[';
-                    if saw_csi && b == b'c' {
-                        break;
-                    }
-                },
-            }
-        }
-        let _ = tx.send(buf);
-    });
-
-    let buf = rx.recv_timeout(timeout).ok()?;
-    // An OSC 22 reply contains its own introducer echoed back: ESC ] 22 ; ...
-    let ok = buf.windows(3).any(|w| w == b"]22");
-    Some(ok)
-}
-
 /// Run the IDE shell: require the kitty keyboard protocol, set up the terminal,
 /// loop until quit, then restore it.
 ///
@@ -6389,10 +6294,7 @@ fn load_theme(name: &str) -> Result<Theme, String> {
 }
 
 pub fn run(mut app: App) -> color_eyre::Result<()> {
-    let kitty_keyboard_supported = matches!(
-        crossterm::terminal::supports_keyboard_enhancement(),
-        Ok(true)
-    );
+    let kitty_keyboard_supported = crate::term_caps::supports_kitty_keyboard();
     if !kitty_keyboard_supported {
         return Err(eyre!(
             "karet requires a terminal with kitty keyboard protocol support \
@@ -6436,13 +6338,13 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     // the input reader thread has not started yet, so we can read the reply here).
     // Upgrade to Kitty when the terminal actually answers; never downgrade a terminal
     // the heuristic already trusts.
-    if probe_kitty_graphics(Duration::from_millis(200)) == Some(true) {
+    if crate::term_caps::probe_kitty_graphics(crate::term_caps::PROBE_TIMEOUT) == Some(true) {
         app.graphics = GraphicsProtocol::Kitty;
         app.kitty_graphics_supported = true;
     }
     // Same handshake for OSC 22 pointer-shape hints (col-resize/row-resize over
     // the sidebar/SCM dividers) — confirmed support only, never assumed.
-    if probe_osc22_pointer_shape(Duration::from_millis(200)) == Some(true) {
+    if crate::term_caps::probe_osc22_pointer_shape(crate::term_caps::PROBE_TIMEOUT) == Some(true) {
         app.pointer_shapes_supported = true;
     }
 
