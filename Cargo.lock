@@ -3005,6 +3005,7 @@ dependencies = [
  "karet-core",
  "karet-dap",
  "karet-diff",
+ "karet-docx",
  "karet-editor",
  "karet-filetype",
  "karet-fileview",
@@ -3030,6 +3031,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "zip",
 ]
 
 [[package]]

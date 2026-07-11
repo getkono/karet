@@ -27,6 +27,13 @@ use karet_text::TextBuffer;
 
 use crate::render::FileView;
 
+/// The `source_view` sentinel for a [`Tab::document_preview`]: a markdown preview
+/// with no source tab. Real view ids are allocated upward from 1 (`ViewId(0)` is
+/// the pre-assignment placeholder), so `u64::MAX` can never collide with one and
+/// every source-pairing lookup (`previews_view`, scroll sync, reveal) misses it.
+#[cfg(feature = "docx")]
+pub(crate) const DETACHED_SOURCE_VIEW: ViewId = ViewId(u64::MAX);
+
 /// The find-in-file bar state: the query, the match cursor, and the replace field
 /// (mirroring the workspace Search panel's model for a consistent UI). Lives on
 /// the [`Tab`] it was opened over, so closing the find bar (but not the tab)
@@ -366,6 +373,34 @@ impl Tab {
     #[must_use]
     pub fn welcome() -> Self {
         Self::new("Welcome", TabKind::Welcome)
+    }
+
+    /// A rendered, read-only markdown view of a converted document (e.g. a Word
+    /// `.docx`) with **no source tab behind it**: `doc` stays `None` forever (no
+    /// session document is ever registered for it) and `source_view` is the
+    /// [`DETACHED_SOURCE_VIEW`] sentinel no real view id can take, so every code
+    /// path that pairs a preview with its source — scroll sync in both directions,
+    /// preview reveal, document binding, the close guard — finds no partner and
+    /// leaves this tab alone.
+    #[cfg(feature = "docx")]
+    #[must_use]
+    pub fn document_preview(path: PathBuf, markdown: &str) -> Self {
+        let title = path
+            .file_name()
+            .map_or_else(|| path.to_string_lossy(), std::ffi::OsStr::to_string_lossy)
+            .into_owned();
+        Self::new(
+            title,
+            TabKind::MarkdownPreview {
+                path,
+                doc: None,
+                source_view: DETACHED_SOURCE_VIEW,
+                buffer: TextBuffer::from_text(markdown),
+                wrapped: WrappedDocument::default(),
+                rendered: None,
+                scroll: 0,
+            },
+        )
     }
 
     /// A rendered preview of the Markdown document `source_view` holds.

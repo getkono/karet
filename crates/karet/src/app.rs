@@ -10499,6 +10499,215 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         assert_eq!(source_scroll(&app), last, "clamped to the last buffer line");
     }
 
+    /// A standalone DOCX-style preview tab over `md`, with a wrapped model (standing
+    /// in for the first draw) and an initial `scroll`.
+    #[cfg(feature = "docx")]
+    fn docx_preview_tab(md: &str, scroll: u16) -> Tab {
+        let mut tab = Tab::document_preview(PathBuf::from("report.docx"), md);
+        if let TabKind::MarkdownPreview {
+            wrapped, scroll: s, ..
+        } = &mut tab.kind
+        {
+            *wrapped = karet_markdown::parse(md).wrap(40);
+            *s = scroll;
+        }
+        tab
+    }
+
+    /// A source scrolled to line 4 drives a *real* preview to wrapped line 4 (see
+    /// `scrolling_the_source_scrolls_the_preview_to_the_matching_block`); a detached
+    /// document preview must never be adopted as that source's preview.
+    #[cfg(feature = "docx")]
+    #[test]
+    fn a_docx_preview_is_never_adopted_by_a_markdown_source() {
+        let mut app = synced_app();
+        // Swap the stored real preview for a detached docx preview at scroll 0.
+        let preview = app
+            .stored_active_mut(|t| matches!(t.kind, TabKind::MarkdownPreview { .. }))
+            .expect("a preview tab");
+        preview.kind = docx_preview_tab(SYNC_DOC, 0).kind;
+
+        app.tabs[app.active].editor.scroll_line = 4;
+        app.sync_markdown_preview();
+
+        assert_eq!(
+            preview_scroll(&app),
+            0,
+            "the sentinel source_view must not pair with a real source"
+        );
+        assert_eq!(source_scroll(&app), 4, "the source itself is unaffected");
+    }
+
+    /// A *real* focused preview at scroll 4 writes the source back to line 4 (see
+    /// `scrolling_the_preview_scrolls_the_source_back`); a focused detached preview
+    /// must drive nothing.
+    #[cfg(feature = "docx")]
+    #[test]
+    fn a_focused_docx_preview_never_drives_a_stored_source() {
+        let mut app = synced_app();
+        app.dispatch(Command::MarkdownPreviewSide); // focus the preview pane
+        // Turn the focused preview into a detached docx preview, scrolled well away
+        // from where the stored source (line 0) projects.
+        app.tabs[app.active].kind = docx_preview_tab(SYNC_DOC, 4).kind;
+
+        app.sync_markdown_preview();
+
+        assert_eq!(
+            source_scroll(&app),
+            0,
+            "a detached preview must not scroll any source tab"
+        );
+        // And its own scroll is left alone (nothing wrote it back).
+        if let TabKind::MarkdownPreview { scroll, .. } = &app.tabs[app.active].kind {
+            assert_eq!(*scroll, 4);
+        }
+    }
+
+    /// Invoking the preview command over a markdown source must open a fresh real
+    /// preview, not reveal/hijack an open docx preview (whose sentinel `source_view`
+    /// can never match the source's view).
+    #[cfg(feature = "docx")]
+    #[test]
+    fn preview_side_opens_a_real_preview_instead_of_hijacking_a_docx_tab() {
+        let mut app = markdown_app(SYNC_DOC);
+        app.push_tab(docx_preview_tab("# doc", 0));
+        app.select_tab(0); // back to the markdown source
+        let source_view = app.tabs[app.active].view;
+
+        app.dispatch(Command::MarkdownPreviewSide);
+
+        assert_eq!(app.layout.pane_count(), 2, "a new preview pane opened");
+        let preview = stored_preview(&app).expect("a preview tab in the new pane");
+        assert!(
+            App::previews_view(preview, source_view),
+            "the new preview pairs with the source"
+        );
+        // The docx tab is still in the source pane, untouched.
+        assert!(app.tabs.iter().any(
+            |t| matches!(&t.kind, TabKind::MarkdownPreview { source_view, .. }
+                if *source_view == crate::tab::DETACHED_SOURCE_VIEW)
+        ));
+    }
+
+    /// The preview command refuses politely on a focused docx preview — there is no
+    /// markdown source file behind it to preview.
+    #[cfg(feature = "docx")]
+    #[test]
+    fn preview_side_is_a_no_op_on_a_focused_docx_preview() {
+        let mut app = app();
+        app.push_tab(docx_preview_tab("# doc", 0));
+        app.main_rect = Rect::new(0, 0, 80, 24);
+
+        app.dispatch(Command::MarkdownPreviewSide);
+
+        assert_eq!(app.layout.pane_count(), 1, "no pane was opened");
+        assert!(app.status.is_some(), "the refusal is surfaced, not silent");
+    }
+
+    /// The unified close guard (#51) protects dirty *documents*; a docx preview has
+    /// none (`tab_doc` is `None`), so closing it never prompts — even if the dirty
+    /// flag were somehow set — and `reconcile_open_docs` has nothing to release.
+    #[cfg(feature = "docx")]
+    #[test]
+    fn closing_a_docx_preview_never_arms_the_close_guard() {
+        let mut app = app();
+        app.push_tab(docx_preview_tab("# doc", 0));
+        let view = app.tabs[app.active].view;
+        assert_eq!(App::tab_doc(&app.tabs[app.active]), None);
+        app.tabs[app.active].dirty = true; // impossible in practice; the guard still passes
+
+        assert!(app.docs_at_risk(CloseRequest::Tab { view }).is_empty());
+        app.guarded_close(CloseRequest::Tab { view });
+
+        assert!(app.pending_close.is_none(), "no confirmation was armed");
+        assert!(
+            !app.tabs.iter().any(|t| t.view == view),
+            "the tab closed immediately"
+        );
+    }
+
+    /// Document snapshots refresh previews by their bound `DocumentId`; a docx
+    /// preview is bound to none, so no snapshot can ever overwrite its content.
+    #[cfg(feature = "docx")]
+    #[test]
+    fn a_snapshot_never_touches_a_docx_preview() {
+        use karet_syntax::Highlights;
+        use karet_text::TextBuffer;
+        let mut app = app();
+        app.push_tab(docx_preview_tab("# original", 0));
+
+        let buffer = TextBuffer::from_text("# changed\n");
+        let version = buffer.version();
+        app.on_snapshot(
+            DocumentId(7),
+            &DocSnapshot {
+                version,
+                buffer,
+                highlights: Arc::new(Highlights::default()),
+                folds: Arc::new(FoldRegions::default()),
+                decorations: Arc::new(Vec::new()),
+                language: Some("Markdown"),
+                dirty: true,
+                cursor: None,
+            },
+        );
+
+        let TabKind::MarkdownPreview { buffer, .. } = &app.tabs[app.active].kind else {
+            panic!("expected the docx preview tab");
+        };
+        assert_eq!(buffer.text(), "# original");
+    }
+
+    /// A minimal DOCX zipped in-memory (no fixture on disk).
+    #[cfg(feature = "docx")]
+    fn tiny_docx() -> Vec<u8> {
+        use std::io::Write as _;
+        const DOCUMENT_XML: &str = r#"<?xml version="1.0"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Report</w:t></w:r></w:p>
+</w:body></w:document>"#;
+        let mut buf = Vec::new();
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        writer
+            .start_file(
+                "word/document.xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .expect("start_file");
+        writer
+            .write_all(DOCUMENT_XML.as_bytes())
+            .expect("write_all");
+        writer.finish().expect("finish");
+        buf
+    }
+
+    #[cfg(feature = "docx")]
+    #[test]
+    fn reopening_the_same_docx_focuses_the_existing_tab() {
+        let dir = test_dir("docx-dedup");
+        let file = dir.join("report.docx");
+        std::fs::write(&file, tiny_docx()).expect("write the docx");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+
+        app.open_path(&file);
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::MarkdownPreview { .. }
+        ));
+        assert_eq!(app.tabs.len(), 1);
+        let view = app.tabs[app.active].view;
+
+        // Move focus elsewhere, then open the same file again.
+        app.push_tab(text_tab("other.rs", "fn x() {}"));
+        assert_eq!(app.tabs.len(), 2);
+        app.open_path(&file);
+
+        assert_eq!(app.tabs.len(), 2, "no duplicate tab for the same document");
+        assert_eq!(app.tabs[app.active].view, view, "the existing tab focused");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Draw the whole shell into a test terminal and return the screen, row by row.
     fn screen(app: &mut App, width: u16, height: u16) -> Vec<String> {
         use ratatui::Terminal;

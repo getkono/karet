@@ -1,18 +1,22 @@
 # Binary size & the lean build
 
-The `karet` app gates its two heavy media renderers behind default-on Cargo
-features so a build can drop their dependency trees (issue #23):
+The `karet` app gates its optional media/document renderers behind default-on
+Cargo features so a build can drop their dependency trees (issue #23):
 
 - **`images`** pulls the [`image`](https://crates.io/crates/image) raster codec
   stack (PNG/JPEG/GIF/WebP/AVIF/EXR/TIFF/QOI…).
 - **`pdf`** pulls [`karet-pdf`] → [`hayro`], a pure-Rust PDF interpreter/renderer
   (`hayro_interpret`, `hayro_syntax`, `vello_cpu`, and the `skrifa`/`read-fonts`
   font stack).
+- **`docx`** pulls [`karet-docx`] → the deflate-only `zip` + `quick-xml` (a much
+  smaller, pure-Rust tree than the two above; gated for consistency and issue #21's
+  lean story rather than for its weight).
 
-Both are **on by default**, so the shipped binary is unchanged. A
-`--no-default-features` build compiles both out; a disabled file type falls
+All are **on by default**, so the shipped binary is unchanged. A
+`--no-default-features` build compiles them all out; a disabled file type falls
 through to the existing placeholder ("Image preview unavailable" / "PDF
-document"). See `mise run build-lean` and the CI "Lean build" step.
+document" / "DOCX rendering is not available yet"). See `mise run build-lean`
+and the CI "Lean build" step.
 
 ## How to reproduce
 
@@ -83,8 +87,9 @@ regularly-launched TUI. The numbers do **not** yet justify the daemon split the
 issue floats as a fallback: the remaining footprint is dominated by unavoidable
 core deps (`std`, `gix`, `rustls`/`reqwest`, `regex`), not by anything a
 process boundary would shed. Reassess if additional heavy, optional subsystems
-(e.g. a real DOCX/HTML renderer) land — they should follow this same
-feature-gated pattern.
+land — they should follow this same feature-gated pattern (as the lightweight
+DOCX→markdown reader, issue #21, since has).
 
 [`karet-pdf`]: ../crates/karet-pdf
+[`karet-docx`]: ../crates/karet-docx
 [`hayro`]: https://crates.io/crates/hayro
