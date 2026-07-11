@@ -2267,6 +2267,64 @@ impl App {
         }
     }
 
+    /// Reveal `path` in the Explorer sidebar (VS Code's "Reveal in Explorer"): show
+    /// the Explorer panel, expand every ancestor directory within the workspace root
+    /// (and the target itself when it is a directory), select the target's row,
+    /// scroll it into view (the tree clamps its offset to the cursor on the next
+    /// render), and move keyboard focus to the sidebar.
+    ///
+    /// A no-op — save a short status note — when `path` lies outside the workspace
+    /// root or no longer maps to a row in the tree.
+    pub(crate) fn reveal_in_explorer(&mut self, path: &Path) {
+        if !path_under(&self.root, path) {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("path");
+            self.status = Some(format!("reveal: {name} is outside the workspace"));
+            return;
+        }
+        // Expand every ancestor directory from the root down to the target, plus the
+        // target when it is a directory. Inserting every ancestor covers directory
+        // chain compaction: the chain's tip is always among them, so a single rebuild
+        // unfolds the whole path.
+        let root = self.root.clone();
+        for anc in path.ancestors() {
+            if anc == path {
+                continue;
+            }
+            if !path_under(&root, anc) {
+                break;
+            }
+            self.explorer.expand(anc);
+        }
+        if path.is_dir() {
+            self.explorer.expand(path);
+        }
+        self.explorer.ensure_built(&root);
+        let Some(idx) = self.explorer_row_index(path) else {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("path");
+            self.status = Some(format!("reveal: {name} is not in the explorer"));
+            return;
+        };
+        self.explorer.select_index(idx);
+        self.sidebar_panel = SidebarPanel::Explorer;
+        self.sidebar_visible = true;
+        self.focus = Focus::Sidebar;
+    }
+
+    /// The explorer row index for `path`: an exact row match (files, plain
+    /// directories, and directory-chain tips), else the shallowest compacted chain
+    /// row whose tip lies within `path` (a directory folded into an `a/b` row).
+    fn explorer_row_index(&self, path: &Path) -> Option<usize> {
+        let rows = self.explorer.rows();
+        if let Some(idx) = rows.iter().position(|row| row.path == path) {
+            return Some(idx);
+        }
+        rows.iter()
+            .enumerate()
+            .filter(|(_, row)| row.is_dir && row.path.starts_with(path))
+            .min_by_key(|(_, row)| row.path.components().count())
+            .map(|(idx, _)| idx)
+    }
+
     /// Begin creating a new file (or folder) in the explorer, ensuring the panel is
     /// visible and focused so its inline name editor is shown.
     fn explorer_begin_new(&mut self, folder: bool) {
@@ -10560,6 +10618,117 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
             b"alpha"
         );
         assert!(dir.join("a.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reveal_in_explorer_expands_ancestors_and_selects_nested_file() {
+        let dir = test_dir("reveal-nested");
+        write_file(&dir, "a/b/c.rs", b"code");
+        write_file(&dir, "a/note.txt", b"note");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        // Start from a different panel/focus to prove the reveal switches them.
+        app.sidebar_panel = SidebarPanel::Search;
+        app.sidebar_visible = false;
+        app.focus = Focus::Editor;
+
+        let target = dir.join("a/b/c.rs");
+        app.reveal_in_explorer(&target);
+
+        assert_eq!(app.explorer.selected_path(), Some(target.as_path()));
+        assert!(app.sidebar_visible);
+        assert_eq!(app.sidebar_panel, SidebarPanel::Explorer);
+        assert_eq!(app.focus, Focus::Sidebar);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reveal_in_explorer_selects_a_directory() {
+        let dir = test_dir("reveal-dir");
+        write_file(&dir, "a/b/c.rs", b"code");
+        write_file(&dir, "a/note.txt", b"note");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+
+        let target = dir.join("a/b");
+        app.reveal_in_explorer(&target);
+
+        assert_eq!(app.explorer.selected_path(), Some(target.as_path()));
+        assert_eq!(app.focus, Focus::Sidebar);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reveal_in_explorer_outside_root_is_noop_with_status() {
+        let dir = test_dir("reveal-outside");
+        write_file(&dir, "inside.txt", b"x");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_visible = false;
+        app.focus = Focus::Editor;
+
+        let outside = dir
+            .parent()
+            .map(|p| p.join("elsewhere.txt"))
+            .unwrap_or_else(|| PathBuf::from("/elsewhere.txt"));
+        app.reveal_in_explorer(&outside);
+
+        // Nothing changes but a status note.
+        assert!(!app.sidebar_visible);
+        assert_eq!(app.focus, Focus::Editor);
+        assert!(
+            app.status.as_deref().is_some_and(|s| s.contains("outside")),
+            "status: {:?}",
+            app.status
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reveal_in_explorer_missing_path_reports_status() {
+        let dir = test_dir("reveal-missing");
+        write_file(&dir, "inside.txt", b"x");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_visible = false;
+        app.focus = Focus::Editor;
+
+        app.reveal_in_explorer(&dir.join("does-not-exist.txt"));
+
+        // A path under the root but absent from the tree does not steal focus.
+        assert!(!app.sidebar_visible);
+        assert_eq!(app.focus, Focus::Editor);
+        assert!(
+            app.status
+                .as_deref()
+                .is_some_and(|s| s.contains("not in the explorer")),
+            "status: {:?}",
+            app.status
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reveal_in_explorer_scrolls_selection_into_view() {
+        let dir = test_dir("reveal-scroll");
+        for i in 0..30 {
+            write_file(&dir, &format!("d/f{i:02}.txt"), b"x");
+        }
+        write_file(&dir, "d/target.txt", b"needle");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+
+        let target = dir.join("d/target.txt");
+        app.reveal_in_explorer(&target);
+        assert_eq!(app.explorer.selected_path(), Some(target.as_path()));
+
+        // Render a short terminal: the tree clamps its offset to the cursor, so the
+        // revealed row scrolls into view even though it sits far below the fold.
+        let painted = screen(&mut app, 100, 12).join("\n");
+        assert!(
+            painted.contains("target.txt"),
+            "revealed row not scrolled into view:\n{painted}"
+        );
+        assert!(
+            app.explorer.offset() > 0,
+            "the tree did not scroll to reveal the selection"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
