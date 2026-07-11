@@ -129,7 +129,6 @@ quick-xml     = "0.38.4"
 vt100        = "0.16.2"
 portable-pty = "0.9.0"
 # Language intelligence
-async-lsp = "0.2.4"
 lsp-types = "0.97.0"
 # Version control
 # `status` pulls gix-status + dirwalk (untracked) + index + blob-diff; `sha1` is the

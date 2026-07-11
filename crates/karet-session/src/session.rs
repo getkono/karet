@@ -66,6 +66,8 @@ use crate::highlight::HighlightRequest;
 use crate::highlight::HighlightResult;
 use crate::local::DocSnapshot;
 use crate::local::SnapshotRx;
+use crate::lsp::LspManager;
+use crate::lsp::LspUpdate;
 
 /// Errors produced by the backend session.
 #[derive(Debug, thiserror::Error)]
@@ -175,6 +177,9 @@ struct Document {
     /// since. The parsed trees themselves live on the worker, not here.
     highlights: Arc<Highlights>,
     folds: Arc<FoldRegions>,
+    /// Syntax-error line ranges from the worker's last parse (see
+    /// [`DocSnapshot::syntax_error_lines`]).
+    error_lines: Arc<Vec<(u32, u32)>>,
     decorations: Vec<Decoration>,
     /// Open reference count (a path opened in N views shares one document).
     refs: u32,
@@ -244,6 +249,10 @@ pub struct Session {
     swaps: Option<SwapStore>,
     /// Swaps found on startup awaiting the user's recover/discard decision.
     pending_swaps: Vec<SwapRecord>,
+    /// Language-server orchestration (lazy per-language tasks; see [`crate::lsp`]).
+    lsp: LspManager,
+    /// The LSP tasks' results, taken by [`crate::backend::local`] for the actor.
+    lsp_rx: Option<mpsc::UnboundedReceiver<LspUpdate>>,
 }
 
 /// The most new commits [`Session::reconcile_vcs_log`] will prepend at once. Beyond
@@ -304,6 +313,9 @@ impl Session {
                 tags: semantic_comments.tags.clone(),
             });
         let (highlight_tx, highlight_rx) = crate::highlight::spawn(semantic);
+        // Language servers spawn lazily, per language, on the first matching open.
+        let (lsp, lsp_rx) =
+            LspManager::new(config.settings.lsp.clone(), config.roots.first().cloned());
         let mut session = Self {
             config,
             events,
@@ -322,6 +334,8 @@ impl Session {
             last_head,
             swaps,
             pending_swaps,
+            lsp,
+            lsp_rx: Some(lsp_rx),
         };
         // Announce any recoverable swaps so the UI can prompt on the first frame.
         session.announce_pending_swaps();
@@ -376,7 +390,9 @@ impl Session {
                     report: Box::new(self.config.loaded_config.clone()),
                 },
             ),
-            // Language-intelligence and search commands are wired in later milestones.
+            Command::Completion { doc, position } => self.completion(id, doc, position),
+            // The remaining language-intelligence and search commands are wired in
+            // later milestones.
             _ => {},
         }
     }
@@ -726,6 +742,100 @@ impl Session {
         self.highlight_rx.take()
     }
 
+    /// Take the LSP tasks' result stream, to be driven by the actor.
+    pub(crate) fn take_lsp_updates(&mut self) -> Option<mpsc::UnboundedReceiver<LspUpdate>> {
+        self.lsp_rx.take()
+    }
+
+    /// Replace how language servers are connected (tests inject an in-memory
+    /// server instead of spawning a process).
+    #[cfg(test)]
+    pub(crate) fn set_lsp_connector(&mut self, connector: crate::lsp::Connector) {
+        self.lsp.set_connector(connector);
+    }
+
+    /// Adopt one LSP task result: convert positions against the live buffer
+    /// (LSP's UTF-16 → the buffer's UTF-32 columns) and emit the answering event.
+    /// A result for a document that has since closed is dropped as stale.
+    pub(crate) fn apply_lsp_update(&mut self, update: LspUpdate) {
+        match update {
+            LspUpdate::Completions {
+                request,
+                doc,
+                version,
+                mut items,
+            } => {
+                let Some(d) = self.store.docs.get(&doc) else {
+                    return; // closed since the request: stale by definition
+                };
+                for item in &mut items {
+                    if let Some(edit) = item.edit.as_mut() {
+                        let start = edit.range.start;
+                        let end = edit.range.end;
+                        edit.range = Range {
+                            start: d.buffer.utf16_to_line_col(start.line, start.col),
+                            end: d.buffer.utf16_to_line_col(end.line, end.col),
+                        };
+                    }
+                }
+                self.emit(
+                    Some(request),
+                    Event::Completions {
+                        doc,
+                        version,
+                        items,
+                    },
+                );
+            },
+            LspUpdate::SpawnFailed { language, command } => self.emit(
+                None,
+                Event::Notification {
+                    severity: Severity::Warning,
+                    kind: NotificationKind::Lsp,
+                    message: format!(
+                        "no language server for {language}: '{command}' could not be started \
+                         (completions disabled for {language})"
+                    ),
+                },
+            ),
+            LspUpdate::ServerDied { language } => self.emit(
+                None,
+                Event::Notification {
+                    severity: Severity::Warning,
+                    kind: NotificationKind::Lsp,
+                    message: format!(
+                        "the {language} language server stopped; restart karet to relaunch it"
+                    ),
+                },
+            ),
+        }
+    }
+
+    /// Serve [`Command::Completion`]: convert the caret to the server's UTF-16
+    /// encoding and forward to the document's language server. Languages with no
+    /// server answer immediately with an empty set, so the client never waits.
+    fn completion(&mut self, id: RequestId, doc_id: DocumentId, position: LineCol) {
+        let Some(doc) = self.store.docs.get(&doc_id) else {
+            self.emit(Some(id), unknown_document(doc_id));
+            return;
+        };
+        let version = doc.buffer.version();
+        let utf16 = LineCol::new(position.line, doc.buffer.line_col_to_utf16(position));
+        let forwarded = self
+            .lsp
+            .completion(doc.language, id, doc_id, version, &doc.path, utf16);
+        if !forwarded {
+            self.emit(
+                Some(id),
+                Event::Completions {
+                    doc: doc_id,
+                    version,
+                    items: Vec::new(),
+                },
+            );
+        }
+    }
+
     /// Adopt a completed highlight, then publish the refreshed snapshot.
     ///
     /// A result for a version the buffer has already moved past is dropped: a newer
@@ -740,6 +850,7 @@ impl Session {
         }
         doc.highlights = result.highlights;
         doc.folds = result.folds;
+        doc.error_lines = result.error_lines;
         self.publish(result.doc, None);
     }
 
@@ -846,6 +957,7 @@ impl Session {
             format,
             highlights: Arc::new(Highlights::default()),
             folds: Arc::new(FoldRegions::default()),
+            error_lines: Arc::default(),
             decorations: Vec::new(),
             refs: 1,
             dirty_since: None,
@@ -853,6 +965,9 @@ impl Session {
         };
         update_syntax(&self.highlight_tx, doc_id, &mut doc, None);
         let version = doc.buffer.version();
+        // Lazily start (or address) this language's server and announce the open.
+        self.lsp
+            .document_opened(doc.language, &doc.path, version, || doc.buffer.text());
         self.store.by_path.insert(path, doc_id);
         self.store.docs.insert(doc_id, doc);
         self.emit(
@@ -874,6 +989,7 @@ impl Session {
         // of leaving it stuck rejecting every future edit forever.
         let version = {
             let highlight_tx = &self.highlight_tx;
+            let lsp = &mut self.lsp;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
                 self.events.send((Some(id), unknown_document(doc_id))).ok();
                 return;
@@ -884,11 +1000,12 @@ impl Session {
                     // Arm the backup clock on the clean→dirty transition (see
                     // `backup_tick`).
                     doc.sync_dirty_since(tick);
-                    // LSP seam: this is the single apply site. When a server is
-                    // attached for `doc.lang_id`, forward an incremental
-                    // `did_change(&doc.path, version, change.edits)` here
-                    // (translated to the negotiated encoding); a no-op while no
-                    // server is attached.
+                    // The single LSP apply site: forward the new full text
+                    // (debounced by the server task). A no-op while no server is
+                    // attached for this language.
+                    lsp.document_changed(doc.language, &doc.path, applied.version, || {
+                        doc.buffer.text()
+                    });
                     Some(applied.version)
                 },
                 Err(_) => None,
@@ -918,6 +1035,7 @@ impl Session {
         let tick = self.elapsed_ms();
         let (version, cursor) = {
             let highlight_tx = &self.highlight_tx;
+            let lsp = &mut self.lsp;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
                 return;
             };
@@ -932,6 +1050,10 @@ impl Session {
             update_syntax(highlight_tx, doc_id, doc, Some(&applied.edits));
             // Undoing back to the save point clears dirtiness (and any pending backup).
             doc.sync_dirty_since(tick);
+            // The buffer changed like any other edit: keep the server in sync.
+            lsp.document_changed(doc.language, &doc.path, applied.version, || {
+                doc.buffer.text()
+            });
             // Jump the caret to the change: undo restores the exact pre-edit cursor;
             // redo (which records none) lands at the end of the re-applied edit that
             // reaches furthest into the document.
@@ -1005,12 +1127,20 @@ impl Session {
             return;
         };
         let old = doc.path.clone();
+        let old_language = doc.language;
         self.store.by_path.remove(&old);
         doc.path = path.clone();
         doc.lang_id = language_id_from_path(&path);
         doc.language = language_name_from_path(&path);
         // The language may have changed with the extension; re-highlight from scratch.
         update_syntax(&self.highlight_tx, doc_id, doc, None);
+        // The old URI is gone; the (possibly different) new language's server
+        // adopts the new one.
+        self.lsp.document_closed(old_language, &old);
+        self.lsp
+            .document_opened(doc.language, &doc.path, doc.buffer.version(), || {
+                doc.buffer.text()
+            });
         self.store.by_path.insert(path.clone(), doc_id);
         self.emit(Some(id), Event::Retargeted { doc: doc_id, path });
         self.publish(doc_id, None);
@@ -1027,6 +1157,7 @@ impl Session {
         if removed {
             if let Some(doc) = self.store.docs.remove(&doc_id) {
                 self.store.by_path.remove(&doc.path);
+                self.lsp.document_closed(doc.language, &doc.path);
                 // Release the worker's retained trees for this document.
                 self.highlight_tx.send(HighlightJob::Drop(doc_id)).ok();
                 // The document is gone from the editor: skipping a save is an explicit
@@ -1224,6 +1355,7 @@ impl Session {
     fn reload(&mut self, doc_id: DocumentId) {
         let version = {
             let highlight_tx = &self.highlight_tx;
+            let lsp = &mut self.lsp;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
                 return;
             };
@@ -1234,6 +1366,10 @@ impl Session {
             // The buffer was replaced wholesale, so the worker's retained tree is void:
             // `None` edits force it to start over.
             update_syntax(highlight_tx, doc_id, doc, None);
+            // The on-disk content is the new truth; keep the server in sync.
+            lsp.document_changed(doc.language, &doc.path, doc.buffer.version(), || {
+                doc.buffer.text()
+            });
             doc.buffer.version()
         };
         self.emit(
@@ -1267,6 +1403,7 @@ impl Session {
                 highlights: doc.highlights.clone(),
                 folds: doc.folds.clone(),
                 decorations: Arc::new(doc.decorations.clone()),
+                syntax_error_lines: doc.error_lines.clone(),
                 language: doc.language,
                 dirty: doc.buffer.is_dirty(),
                 cursor,

@@ -16,6 +16,10 @@
       "description": "Source-control integration.",
       "$ref": "#/$defs/Git"
     },
+    "lsp": {
+      "description": "Language-server integration (completions and future language features).",
+      "$ref": "#/$defs/Lsp"
+    },
     "search": {
       "description": "Workspace search behaviour.",
       "$ref": "#/$defs/Search"
@@ -35,7 +39,8 @@
     "workbench",
     "search",
     "spellcheck",
-    "git"
+    "git",
+    "lsp"
   ],
   "$defs": {
     "AutoSave": {
@@ -58,10 +63,35 @@
         }
       ]
     },
+    "Completion": {
+      "description": "`editor.completion.*` — LSP-powered code completion.",
+      "type": "object",
+      "properties": {
+        "autoTrigger": {
+          "description": "Open the popup automatically while typing identifier or trigger\ncharacters, when the caret's line has no syntax error. Manual\ncompletion (Ctrl+Space) works regardless and bypasses the error gate.",
+          "type": "boolean",
+          "default": true
+        },
+        "enabled": {
+          "description": "Offer completions at all (the popup, manual and automatic).",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
     "Editor": {
       "description": "`editor.*` — text-editing behaviour.",
       "type": "object",
       "properties": {
+        "completion": {
+          "description": "LSP-powered code completion (the popup).",
+          "$ref": "#/$defs/Completion",
+          "default": {
+            "autoTrigger": true,
+            "enabled": true
+          }
+        },
         "cursorLine": {
           "description": "Highlight the line the caret is on.",
           "type": "boolean",
@@ -286,6 +316,48 @@
           "type": "string",
           "const": "relative"
         }
+      ]
+    },
+    "Lsp": {
+      "description": "`lsp.*` — language-server integration.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Run language servers for open documents (powers completions).",
+          "type": "boolean",
+          "default": true
+        },
+        "servers": {
+          "description": "Per-language server launch configurations, keyed by the lowercase\nlanguage name (e.g. `\"rust\"`, `\"typescript\"`, `\"python\"`). Entries are\nmerged *over* the built-in defaults (rust → `rust-analyzer`,\ntypescript/javascript → `typescript-language-server --stdio`,\npython → `pyright-langserver --stdio`), so setting a language here\noverrides its default and unlisted languages keep theirs.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/LspServer"
+          },
+          "default": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "LspServer": {
+      "description": "How to launch one language server (see [`Lsp::servers`]).",
+      "type": "object",
+      "properties": {
+        "args": {
+          "description": "Command-line arguments.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "command": {
+          "description": "The server executable, looked up on `PATH` (or an absolute path).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "command"
       ]
     },
     "Search": {

@@ -19,6 +19,7 @@ mod cli;
 mod clipboard;
 mod command;
 mod compat;
+mod completion;
 mod desktop;
 mod doctor;
 mod editing;

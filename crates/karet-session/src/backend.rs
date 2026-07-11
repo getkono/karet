@@ -15,6 +15,7 @@ const BACKUP_TICK: Duration = Duration::from_secs(2);
 use crate::api::Command;
 use crate::api::RequestId;
 use crate::highlight::HighlightResult;
+use crate::lsp::LspUpdate;
 use crate::session::Session;
 
 /// Errors produced when submitting to a [`Backend`].
@@ -84,6 +85,7 @@ pub fn local(mut session: Session) -> LocalBackend {
     let (commands, mut rx) = mpsc::unbounded_channel::<(RequestId, Command)>();
     let (watcher, mut fs_rx) = session.take_watch();
     let mut highlights = session.take_highlights();
+    let mut lsp_updates = session.take_lsp_updates();
     tokio::spawn(async move {
         // Hold the watcher alive for exactly as long as the actor consumes events.
         let _watcher = watcher;
@@ -110,6 +112,11 @@ pub fn local(mut session: Session) -> LocalBackend {
                     Some(result) => session.apply_highlights(result),
                     None => highlights = None, // the worker stopped; stop selecting it
                 },
+                // LSP answers computed on the server tasks; converted and emitted here.
+                update = recv_lsp(&mut lsp_updates) => match update {
+                    Some(update) => session.apply_lsp_update(update),
+                    None => lsp_updates = None, // no LSP; stop selecting it
+                },
                 _ = backup.tick() => session.backup_tick(),
             }
         }
@@ -133,6 +140,14 @@ async fn recv_fs(rx: &mut Option<mpsc::UnboundedReceiver<FsEvent>>) -> Option<Fs
 async fn recv_highlights(
     rx: &mut Option<mpsc::UnboundedReceiver<HighlightResult>>,
 ) -> Option<HighlightResult> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Await the next LSP task result, or never resolve when LSP is not running.
+async fn recv_lsp(rx: &mut Option<mpsc::UnboundedReceiver<LspUpdate>>) -> Option<LspUpdate> {
     match rx {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,
@@ -250,6 +265,43 @@ mod tests {
             highlighted,
             "the embedded rust fence should eventually be highlighted"
         );
+    }
+
+    #[tokio::test]
+    async fn syntax_error_lines_reach_the_snapshot_stream() {
+        use crate::session::Session;
+        use crate::session::SessionConfig;
+
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("broken.rs");
+        // Line 1 (0-based) is broken; the completion gate reads these ranges.
+        if std::fs::write(&path, "fn ok() {}\nfn broken() { let x = ; }\n").is_err() {
+            return;
+        }
+
+        let (session, _events, mut snaps) = Session::new(SessionConfig::default());
+        let backend = local(session);
+        assert!(
+            backend
+                .send(
+                    backend.next_id(),
+                    Command::OpenDocument {
+                        path,
+                        language: None
+                    }
+                )
+                .is_ok()
+        );
+
+        let flagged = await_snapshot(&mut snaps, |snap| {
+            snap.syntax_error_lines
+                .iter()
+                .any(|&(start, end)| start <= 1 && 1 <= end)
+        })
+        .await;
+        assert!(flagged, "the broken line should be flagged on the snapshot");
     }
 
     #[tokio::test]

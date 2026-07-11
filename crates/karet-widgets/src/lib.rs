@@ -17,12 +17,15 @@ use karet_core::LineCol;
 use karet_core::SymbolProvider;
 use karet_fuzzy::Matcher;
 
+pub mod completion;
 pub mod file_tree;
 pub mod glyph;
 pub mod notify;
 pub mod pane;
 pub mod select;
 
+pub use completion::CompletionPopup;
+pub use completion::CompletionState;
 pub use file_tree::FileTree;
 pub use file_tree::FileTreeRow;
 pub use file_tree::FileTreeState;
@@ -76,20 +79,6 @@ pub struct StatusBar {
     pub left: String,
     /// Right-aligned text.
     pub right: String,
-}
-
-/// The LSP completion popup (relocated here from `karet-lsp`).
-pub mod completion {
-    use karet_core::CompletionItem;
-    use karet_fuzzy::Matcher;
-
-    /// A completion popup that fuzzy-filters [`CompletionItem`]s as you type.
-    pub struct CompletionPopup<'a> {
-        /// The candidate items, supplied by the backend.
-        pub items: &'a [CompletionItem],
-        /// The matcher used for incremental filtering.
-        pub matcher: &'a mut Matcher,
-    }
 }
 
 /// The LSP hover / documentation popup (relocated here from `karet-lsp`).

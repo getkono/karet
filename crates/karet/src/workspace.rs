@@ -126,6 +126,7 @@ fn open_text(path: &Path, bytes: &[u8], syntax: bool) -> Tab {
             folded: BTreeSet::new(),
             decos: Vec::new(),
             search_decos: Vec::new(),
+            syntax_errors: Vec::new(),
         },
     )
 }
@@ -151,6 +152,7 @@ fn open_cbor(path: &Path, bytes: &[u8]) -> Tab {
                     folded: BTreeSet::new(),
                     decos: Vec::new(),
                     search_decos: Vec::new(),
+                    syntax_errors: Vec::new(),
                 },
             )
         },

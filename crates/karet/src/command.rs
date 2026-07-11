@@ -190,6 +190,8 @@ pub enum Command {
     /// Open the diffed file in a normal editor tab, at its first changed line
     /// (diff tab).
     OpenDiffFile,
+    /// Ask the language server for completions at the caret (Ctrl+Space).
+    TriggerCompletion,
     /// Insert a printable character at the caret (replacing any selection).
     InsertChar(char),
     /// Insert a newline with leading-whitespace auto-indent.
@@ -478,6 +480,7 @@ impl Command {
             Self::PrevChangedFile => "Diff: Previous Changed File",
             Self::OpenDiffFile => "Diff: Open File",
             Self::InsertChar(_) => "Insert Character",
+            Self::TriggerCompletion => "Trigger Suggest",
             Self::InsertNewline => "Insert Newline",
             Self::DeleteBackward => "Delete Backward",
             Self::DeleteForward => "Delete Forward",
@@ -752,6 +755,7 @@ impl Command {
             | Self::Top
             | Self::Bottom
             | Self::InsertChar(_)
+            | Self::TriggerCompletion
             | Self::InsertNewline
             | Self::DeleteBackward
             | Self::DeleteForward
@@ -785,6 +789,7 @@ impl Command {
                 | Self::OpenQuickOpen
                 | Self::OpenFind
                 | Self::OpenGlobalSearch
+                | Self::TriggerCompletion
                 | Self::CloseTab
                 | Self::NextTab
                 | Self::PrevTab
@@ -863,6 +868,7 @@ pub fn palette() -> Vec<Command> {
         Command::ToggleFocus,
         Command::OpenFind,
         Command::OpenGlobalSearch,
+        Command::TriggerCompletion,
         Command::ShowBlame,
         Command::ShowCommitGraph,
         Command::OpenCommitByHash,

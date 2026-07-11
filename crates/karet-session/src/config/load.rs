@@ -134,6 +134,7 @@ const SECTIONS: &[&str] = &[
     "search",
     "spellcheck",
     "git",
+    "lsp",
 ];
 
 /// Load the merged, verified [`Settings`] for a workspace rooted at `roots`, plus any
@@ -269,6 +270,7 @@ fn deserialize_sections(
             "search" => section(value, |v| settings.search = v),
             "spellcheck" => section(value, |v| settings.spellcheck = v),
             "git" => section(value, |v| settings.git = v),
+            "lsp" => section(value, |v| settings.lsp = v),
             _ => Ok(()),
         };
         if let Err(err) = outcome {

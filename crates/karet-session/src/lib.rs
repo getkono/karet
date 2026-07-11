@@ -12,9 +12,10 @@
 //! split is *additive*: lift [`api`] into a `karet-protocol` crate, add a remote
 //! `Backend` implementation, and the UI code is unchanged.
 //!
-//! The document store, the editing fast paths (open / apply / save / undo / redo)
-//! and incremental tree-sitter highlighting are live; the producer engines
-//! (file-watching, LSP, format-on-save, spell-check) attach in later milestones.
+//! The document store, the editing fast paths (open / apply / save / undo / redo),
+//! incremental tree-sitter highlighting, file-watching, and LSP completions (lazy
+//! per-language servers) are live; the remaining producers (format-on-save,
+//! spell-check, …) attach in later milestones.
 //! In local mode the UI renders from the [`DocSnapshot`]s pushed on the snapshot
 //! stream (`local`), not by borrowing a [`DocumentView`] across the actor boundary.
 
@@ -24,6 +25,7 @@ pub mod backup;
 pub mod config;
 mod highlight;
 pub mod local;
+mod lsp;
 pub mod session;
 pub mod viz;
 

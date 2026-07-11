@@ -151,6 +151,48 @@ impl SyntaxTree {
         }
     }
 
+    /// The inclusive line ranges (0-based rows) covered by syntax errors: the
+    /// outermost `ERROR` nodes plus zero-width *missing* nodes the parser
+    /// inserted to recover (a missing `;` is as much an error as a stray one).
+    /// Empty when the tree parsed cleanly.
+    ///
+    /// This is the "no outright errors" gate for features that should hold off
+    /// while the user is mid-edit — e.g. auto-triggered completion suppresses
+    /// itself when an error range intersects the caret's line. Ranges are
+    /// sorted by start line; a multi-line error covers every line it spans.
+    #[must_use]
+    pub fn error_lines(&self) -> Vec<(u32, u32)> {
+        let root = self.tree.root_node();
+        if !root.has_error() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        // Iterative walk (deep sources nest arbitrarily): descend only into
+        // subtrees that contain an error, and stop at the outermost error node.
+        let mut cursor = root.walk();
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            if node.is_error() || node.is_missing() {
+                let start = node.start_position();
+                let end = node.end_position();
+                let start_row = u32::try_from(start.row).unwrap_or(u32::MAX);
+                let mut end_row = u32::try_from(end.row).unwrap_or(u32::MAX);
+                // A node ending at column 0 of a later line doesn't occupy it.
+                if end.column == 0 && end_row > start_row {
+                    end_row -= 1;
+                }
+                out.push((start_row, end_row.max(start_row)));
+                continue;
+            }
+            if !node.has_error() {
+                continue;
+            }
+            stack.extend(node.children(&mut cursor));
+        }
+        out.sort_unstable();
+        out
+    }
+
     /// Parse only `ranges` of `text` as `lang`, leaving the rest of the document
     /// invisible to the grammar — the mechanism behind language injection.
     ///
@@ -637,6 +679,15 @@ impl LayeredTree {
     pub fn layers(&self) -> impl Iterator<Item = &SyntaxTree> {
         std::iter::once(&self.root).chain(&self.children)
     }
+
+    /// The union of every layer's [`SyntaxTree::error_lines`], sorted by start
+    /// line — the whole document's "has a syntax error on this line" index.
+    #[must_use]
+    pub fn error_lines(&self) -> Vec<(u32, u32)> {
+        let mut out: Vec<(u32, u32)> = self.layers().flat_map(SyntaxTree::error_lines).collect();
+        out.sort_unstable();
+        out
+    }
 }
 
 #[cfg(test)]
@@ -677,6 +728,66 @@ mod tests {
         let lang = language_id_from_injection_name("python").ok_or(TsError::UnknownLanguage)?;
         assert!(highlights_query(lang).is_some());
         assert!(injections_query(lang).is_none());
+        Ok(())
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn clean_trees_report_no_error_lines() -> Result<(), TsError> {
+        let lang = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+        let mut pool = ParserPool::new();
+        let tree = SyntaxTree::parse(&mut pool, lang, "fn main() { let x = 1; }\n")?;
+        assert!(tree.error_lines().is_empty());
+        Ok(())
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn error_lines_cover_the_broken_lines_only() -> Result<(), TsError> {
+        let lang = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+        let mut pool = ParserPool::new();
+        // Line 2 (0-based) is broken inside its block; the neighbours are fine.
+        let src = "fn ok() {}\n\nfn broken() { let x = ; }\n\nfn also_ok() {}\n";
+        let tree = SyntaxTree::parse(&mut pool, lang, src)?;
+        let errors = tree.error_lines();
+        assert!(
+            !errors.is_empty(),
+            "the malformed source must report errors"
+        );
+        assert!(
+            errors.iter().any(|&(s, e)| s <= 2 && 2 <= e),
+            "line 2 is broken: {errors:?}"
+        );
+        assert!(
+            errors.iter().all(|&(s, _)| s != 0),
+            "line 0 parsed cleanly: {errors:?}"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn missing_nodes_count_as_errors() -> Result<(), TsError> {
+        let lang = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+        let mut pool = ParserPool::new();
+        // An unclosed brace makes the parser insert a zero-width missing "}".
+        let tree = SyntaxTree::parse(&mut pool, lang, "fn f() {\n    let x = 1;\n")?;
+        assert!(
+            !tree.error_lines().is_empty(),
+            "a missing closing brace is an outright error"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn layered_error_lines_union_the_layers() -> Result<(), TsError> {
+        let lang = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+        let mut parser = LayeredParser::new();
+        let clean = parser.parse(lang, "fn main() {}\n")?;
+        assert!(clean.error_lines().is_empty());
+        let broken = parser.parse(lang, "fn broken( {{{\n")?;
+        assert!(!broken.error_lines().is_empty());
         Ok(())
     }
 

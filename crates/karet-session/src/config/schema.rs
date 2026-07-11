@@ -7,6 +7,8 @@
 //! tree also derives [`schemars::JsonSchema`] so the external `settings.schema.json`
 //! is generated from this one source of truth.
 
+use std::collections::BTreeMap;
+
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
@@ -28,6 +30,8 @@ pub struct Settings {
     pub spellcheck: Spellcheck,
     /// Source-control integration.
     pub git: Git,
+    /// Language-server integration (completions and future language features).
+    pub lsp: Lsp,
 }
 
 /// `editor.*` — text-editing behaviour.
@@ -59,6 +63,8 @@ pub struct Editor {
     pub format_on_save: bool,
     /// Distinct highlighting of codetag comment blocks (`TODO:`, `FIXME:`, …).
     pub semantic_comments: SemanticComments,
+    /// LSP-powered code completion (the popup).
+    pub completion: Completion,
 }
 
 impl Default for Editor {
@@ -76,6 +82,29 @@ impl Default for Editor {
             insert_final_newline: true,
             format_on_save: false,
             semantic_comments: SemanticComments::default(),
+            completion: Completion::default(),
+        }
+    }
+}
+
+/// `editor.completion.*` — LSP-powered code completion.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct Completion {
+    /// Offer completions at all (the popup, manual and automatic).
+    pub enabled: bool,
+    /// Open the popup automatically while typing identifier or trigger
+    /// characters, when the caret's line has no syntax error. Manual
+    /// completion (Ctrl+Space) works regardless and bypasses the error gate.
+    pub auto_trigger: bool,
+}
+
+impl Default for Completion {
+    /// On by default (issue #57): completions and auto-trigger both enabled.
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            auto_trigger: true,
         }
     }
 }
@@ -281,6 +310,41 @@ impl Default for Spellcheck {
     }
 }
 
+/// `lsp.*` — language-server integration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct Lsp {
+    /// Run language servers for open documents (powers completions).
+    pub enabled: bool,
+    /// Per-language server launch configurations, keyed by the lowercase
+    /// language name (e.g. `"rust"`, `"typescript"`, `"python"`). Entries are
+    /// merged *over* the built-in defaults (rust → `rust-analyzer`,
+    /// typescript/javascript → `typescript-language-server --stdio`,
+    /// python → `pyright-langserver --stdio`), so setting a language here
+    /// overrides its default and unlisted languages keep theirs.
+    pub servers: BTreeMap<String, LspServer>,
+}
+
+impl Default for Lsp {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            servers: BTreeMap::new(),
+        }
+    }
+}
+
+/// How to launch one language server (see [`Lsp::servers`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct LspServer {
+    /// The server executable, looked up on `PATH` (or an absolute path).
+    pub command: String,
+    /// Command-line arguments.
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
 /// `git.*` — source-control integration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
@@ -317,6 +381,31 @@ mod tests {
         assert!(!s.spellcheck.enabled);
         assert!(s.git.decorations);
         assert!(s.editor.semantic_comments.enabled);
+        assert!(s.lsp.enabled, "LSP is on by default (issue #57)");
+        assert!(s.editor.completion.enabled, "completion defaults on (#57)");
+        assert!(s.editor.completion.auto_trigger, "auto-trigger defaults on");
+        assert!(s.lsp.servers.is_empty(), "no user overrides by default");
+    }
+
+    #[test]
+    fn lsp_server_overrides_deserialize_camel_case() {
+        let parsed: Lsp = serde_json::from_str(
+            r#"{ "enabled": false,
+                 "servers": { "rust": { "command": "ra-custom", "args": ["--log"] } } }"#,
+        )
+        .unwrap_or_default();
+        assert!(!parsed.enabled);
+        let rust = parsed.servers.get("rust");
+        assert_eq!(rust.map(|s| s.command.as_str()), Some("ra-custom"));
+        assert_eq!(rust.map(|s| s.args.clone()), Some(vec!["--log".to_owned()]));
+        // `args` is optional.
+        let parsed: LspServer =
+            serde_json::from_str(r#"{ "command": "pylsp" }"#).unwrap_or(LspServer {
+                command: String::new(),
+                args: vec!["sentinel".into()],
+            });
+        assert_eq!(parsed.command, "pylsp");
+        assert!(parsed.args.is_empty());
     }
 
     #[test]

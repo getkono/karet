@@ -35,6 +35,12 @@ pub struct DocSnapshot {
     pub folds: Arc<FoldRegions>,
     /// Decorations merged across producers (empty until producers attach).
     pub decorations: Arc<Vec<Decoration>>,
+    /// Inclusive 0-based line ranges covered by syntax errors in the last
+    /// computed parse (tree-sitter `ERROR`/missing nodes). Like
+    /// [`highlights`](Self::highlights), this lags edits by one background
+    /// worker round-trip. Drives the completion auto-trigger's
+    /// "no outright errors on the caret's line" gate.
+    pub syntax_error_lines: Arc<Vec<(u32, u32)>>,
     /// The display language name, if detected.
     pub language: Option<&'static str>,
     /// Whether the buffer has unsaved changes.
