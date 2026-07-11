@@ -25,6 +25,7 @@ mod keymap;
 mod notify;
 mod outline;
 mod overlay;
+mod remote;
 mod render;
 mod tab;
 mod term_caps;

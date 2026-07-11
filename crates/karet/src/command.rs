@@ -75,6 +75,24 @@ pub enum Command {
     CopyPath,
     /// Copy the active file's workspace-relative path to the clipboard.
     CopyRelativePath,
+    /// Reveal the active file in the explorer.
+    RevealActiveInExplorer,
+    /// Copy a web URL for the active file at the current `HEAD` commit on its
+    /// origin remote (GitHub, GitLab, Gitea, or Forgejo).
+    CopyRemoteFileUrl,
+    /// Copy a GitHub permalink for the active file: the blob at the `HEAD` commit,
+    /// anchored to the caret line in a code tab.
+    CopyGithubPermalink,
+    /// Copy a GitHub link to the active file on the current branch.
+    CopyGithubHeadLink,
+    /// Diff the active file's working text against its content at `HEAD`.
+    OpenChangesWithPrevious,
+    /// Pick a commit from the active file's history and diff the working text
+    /// against the file's content at it.
+    OpenChangesWithRevision,
+    /// Pick a branch and diff the active file's working text against its content
+    /// at the branch tip.
+    OpenChangesWithBranch,
     /// Move the sidebar selection up.
     SidebarUp,
     /// Move the sidebar selection down.
@@ -404,6 +422,13 @@ impl Command {
             Self::Copy => "Copy",
             Self::CopyPath => "Copy Path of Active File",
             Self::CopyRelativePath => "Copy Relative Path of Active File",
+            Self::RevealActiveInExplorer => "File: Reveal Active File in Explorer",
+            Self::CopyRemoteFileUrl => "Copy Remote File URL of Active File",
+            Self::CopyGithubPermalink => "Copy GitHub Permalink of Active File",
+            Self::CopyGithubHeadLink => "Copy GitHub Head Link of Active File",
+            Self::OpenChangesWithPrevious => "Open Changes: With Previous Revision",
+            Self::OpenChangesWithRevision => "Open Changes: With Revision…",
+            Self::OpenChangesWithBranch => "Open Changes: With Branch…",
             Self::SidebarUp => "Sidebar: Select Previous",
             Self::SidebarDown => "Sidebar: Select Next",
             Self::SidebarActivate => "Sidebar: Open Selected",
@@ -682,6 +707,13 @@ impl Command {
             | Self::FocusPrevPane
             | Self::CopyPath
             | Self::CopyRelativePath
+            | Self::RevealActiveInExplorer
+            | Self::CopyRemoteFileUrl
+            | Self::CopyGithubPermalink
+            | Self::CopyGithubHeadLink
+            | Self::OpenChangesWithPrevious
+            | Self::OpenChangesWithRevision
+            | Self::OpenChangesWithBranch
             | Self::SidebarUp
             | Self::SidebarDown
             | Self::OutlineUp
@@ -765,6 +797,13 @@ impl Command {
                 | Self::Copy
                 | Self::CopyPath
                 | Self::CopyRelativePath
+                | Self::RevealActiveInExplorer
+                | Self::CopyRemoteFileUrl
+                | Self::CopyGithubPermalink
+                | Self::CopyGithubHeadLink
+                | Self::OpenChangesWithPrevious
+                | Self::OpenChangesWithRevision
+                | Self::OpenChangesWithBranch
                 | Self::ToggleDiffLayout
                 | Self::ToggleFold
                 | Self::AddCursorAbove
@@ -848,6 +887,13 @@ pub fn palette() -> Vec<Command> {
         Command::Copy,
         Command::CopyPath,
         Command::CopyRelativePath,
+        Command::RevealActiveInExplorer,
+        Command::CopyRemoteFileUrl,
+        Command::CopyGithubPermalink,
+        Command::CopyGithubHeadLink,
+        Command::OpenChangesWithPrevious,
+        Command::OpenChangesWithRevision,
+        Command::OpenChangesWithBranch,
         Command::NextTab,
         Command::PrevTab,
         Command::MoveTabLeft,

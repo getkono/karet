@@ -154,7 +154,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if let Some(rev) = &app.rev_input {
         draw_rev_input(f, rev, &theme, area);
     }
-    draw_explorer_context_menu(f, app, &theme, area);
+    draw_context_menu(f, app, &theme, area);
 
     // Toasts float above everything, including the modal overlay.
     draw_toasts(f, app, &theme, area);
@@ -863,23 +863,23 @@ fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     }
 }
 
-fn draw_explorer_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
-    let Some(menu) = app.explorer_context_menu.as_mut() else {
+fn draw_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+    let Some(menu) = app.context_menu.as_mut() else {
         return;
     };
-    if menu.items.is_empty() {
+    if menu.entries.is_empty() {
         menu.rect = Rect::default();
         return;
     }
     let hints: Vec<Option<String>> = menu
-        .items
+        .entries
         .iter()
-        .map(|cmd| keymap::hint_for(*cmd, ChordStyle::Verbose))
+        .map(|entry| keymap::hint_for(entry.command, ChordStyle::Verbose))
         .collect();
     let labels: Vec<&str> = menu
-        .items
+        .entries
         .iter()
-        .map(|cmd| context_menu_label(*cmd))
+        .map(|entry| context_menu_label(entry.command))
         .collect();
     let label_w = labels
         .iter()
@@ -893,7 +893,7 @@ fn draw_explorer_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, area:
         .max()
         .unwrap_or(0);
     let width = (label_w + hint_w + 6).clamp(18, 46).min(area.width.max(1));
-    let height = (menu.items.len() as u16 + 2).min(area.height.max(1));
+    let height = (menu.entries.len() as u16 + 2).min(area.height.max(1));
     let x = menu.x.min(area.right().saturating_sub(width));
     let y = menu.y.min(area.bottom().saturating_sub(height));
     let rect = Rect {
@@ -917,17 +917,22 @@ fn draw_explorer_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, area:
     let items: Vec<ListItem> = labels
         .iter()
         .zip(hints.iter())
-        .map(|(label, hint)| match hint {
-            Some(hint) => {
-                let used = cell_width(label) + cell_width(hint);
-                let pad = inner.width.saturating_sub(used).max(1);
-                ListItem::new(Line::from(vec![
-                    Span::raw((*label).to_string()),
-                    Span::raw(" ".repeat(pad as usize)),
-                    Span::styled(hint.clone(), dim),
-                ]))
-            },
-            None => ListItem::new(Line::raw((*label).to_string())),
+        .zip(menu.entries.iter())
+        .map(|((label, hint), entry)| {
+            // Disabled rows render fully dimmed (label and hint alike).
+            let label_style = if entry.enabled { Style::default() } else { dim };
+            match hint {
+                Some(hint) => {
+                    let used = cell_width(label) + cell_width(hint);
+                    let pad = inner.width.saturating_sub(used).max(1);
+                    ListItem::new(Line::from(vec![
+                        Span::styled((*label).to_string(), label_style),
+                        Span::raw(" ".repeat(pad as usize)),
+                        Span::styled(hint.clone(), dim),
+                    ]))
+                },
+                None => ListItem::new(Line::from(Span::styled((*label).to_string(), label_style))),
+            }
         })
         .collect();
     let mut state = ListState::default();
@@ -955,6 +960,12 @@ fn context_menu_label(command: Command) -> &'static str {
         Command::ExplorerCopyRelativePath => "Copy Relative Path",
         Command::ExplorerRefresh => "Refresh",
         Command::ExplorerCollapseAll => "Collapse All",
+        Command::CopyPath => "Copy Path",
+        Command::CopyRelativePath => "Copy Relative Path",
+        Command::RevealActiveInExplorer => "Show File in Explorer",
+        Command::CopyRemoteFileUrl => "Copy Remote File URL",
+        Command::CopyGithubPermalink => "Copy GitHub Permalink",
+        Command::CopyGithubHeadLink => "Copy GitHub Head Link",
         _ => command.label(),
     }
 }
@@ -1369,7 +1380,7 @@ fn draw_scm_commits(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
 }
 
 /// A terse `git log`-style relative time (e.g. `3d ago`) for a Unix timestamp.
-fn relative_time(secs: i64) -> String {
+pub(crate) fn relative_time(secs: i64) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()

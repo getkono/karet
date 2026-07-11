@@ -1,6 +1,7 @@
-//! Centered modal overlays: quick-open (go to file) and the command palette.
+//! Centered modal overlays: quick-open (go to file), the command palette, and the
+//! diff-target picker (a revision or branch to diff the active file against).
 //!
-//! Both are a [`Picker`] over labeled items with an incremental subsequence filter.
+//! Each is a [`Picker`] over labeled items with an incremental subsequence filter.
 //! (The richer `karet-fuzzy` ranking / `karet-widgets::Picker` widget is a future
 //! home; this keeps the skeleton dependency-light.)
 
@@ -18,6 +19,22 @@ pub enum OverlayEvent {
     AcceptFile(PathBuf),
     /// Run the chosen command.
     AcceptCommand(Command),
+    /// Diff the active file against the chosen revision.
+    AcceptDiffTarget {
+        /// The revision to diff against (a full hash or a branch name).
+        rev: String,
+        /// The short human label for the diff title (a short hash or branch name).
+        label: String,
+    },
+}
+
+/// A diff-target picker row's value: the revision to resolve and its short label.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiffTarget {
+    /// The revision to diff against (a full hash or a branch name).
+    pub rev: String,
+    /// The short human label for the diff title (a short hash or branch name).
+    pub label: String,
 }
 
 /// An incremental picker over labeled items of type `T`.
@@ -129,6 +146,8 @@ pub enum Overlay {
     QuickOpen(Picker<PathBuf>),
     /// Command palette: pick a command to run.
     CommandPalette(Picker<Command>),
+    /// Diff-target picker: pick a revision or branch to diff the active file against.
+    DiffTarget(Picker<DiffTarget>),
 }
 
 impl Overlay {
@@ -148,12 +167,19 @@ impl Overlay {
         Self::CommandPalette(Picker::new("Command Palette", items))
     }
 
+    /// Build a diff-target picker titled `title` over `(display, target)` pairs.
+    #[must_use]
+    pub fn diff_target(title: impl Into<String>, items: Vec<(String, DiffTarget)>) -> Self {
+        Self::DiffTarget(Picker::new(title, items))
+    }
+
     /// The overlay title.
     #[must_use]
     pub fn title(&self) -> &str {
         match self {
             Self::QuickOpen(p) => p.title(),
             Self::CommandPalette(p) => p.title(),
+            Self::DiffTarget(p) => p.title(),
         }
     }
 
@@ -163,6 +189,7 @@ impl Overlay {
         match self {
             Self::QuickOpen(p) => p.query(),
             Self::CommandPalette(p) => p.query(),
+            Self::DiffTarget(p) => p.query(),
         }
     }
 
@@ -172,11 +199,12 @@ impl Overlay {
         match self {
             Self::QuickOpen(p) => p.rows(),
             Self::CommandPalette(p) => p.rows(),
+            Self::DiffTarget(p) => p.rows(),
         }
     }
 
     /// The per-row right-aligned hints (key chords), aligned with [`rows`](Self::rows).
-    /// Quick-open rows have no hint.
+    /// Only command-palette rows carry hints.
     #[must_use]
     pub fn row_hints(&self) -> Vec<Option<String>> {
         match self {
@@ -186,6 +214,7 @@ impl Overlay {
                 .into_iter()
                 .map(|cmd| keymap::hint_for(*cmd, keymap::ChordStyle::Verbose))
                 .collect(),
+            Self::DiffTarget(p) => p.rows().iter().map(|_| None).collect(),
         }
     }
 
@@ -195,6 +224,7 @@ impl Overlay {
         match self {
             Self::QuickOpen(p) => p.selected(),
             Self::CommandPalette(p) => p.selected(),
+            Self::DiffTarget(p) => p.selected(),
         }
     }
 
@@ -203,6 +233,7 @@ impl Overlay {
         match self {
             Self::QuickOpen(p) => p.select_up(),
             Self::CommandPalette(p) => p.select_up(),
+            Self::DiffTarget(p) => p.select_up(),
         }
     }
 
@@ -211,6 +242,7 @@ impl Overlay {
         match self {
             Self::QuickOpen(p) => p.select_down(),
             Self::CommandPalette(p) => p.select_down(),
+            Self::DiffTarget(p) => p.select_down(),
         }
     }
 
@@ -219,6 +251,7 @@ impl Overlay {
         match self {
             Self::QuickOpen(p) => p.push_char(c),
             Self::CommandPalette(p) => p.push_char(c),
+            Self::DiffTarget(p) => p.push_char(c),
         }
     }
 
@@ -227,6 +260,7 @@ impl Overlay {
         match self {
             Self::QuickOpen(p) => p.pop_char(),
             Self::CommandPalette(p) => p.pop_char(),
+            Self::DiffTarget(p) => p.pop_char(),
         }
     }
 
@@ -235,11 +269,13 @@ impl Overlay {
         match self {
             Self::QuickOpen(p) => p.push_str(text),
             Self::CommandPalette(p) => p.push_str(text),
+            Self::DiffTarget(p) => p.push_str(text),
         }
     }
 
-    /// The outcome of accepting the highlighted row (open a file / run a command),
-    /// or [`OverlayEvent::Close`] when nothing is highlighted.
+    /// The outcome of accepting the highlighted row (open a file / run a command /
+    /// diff against a revision), or [`OverlayEvent::Close`] when nothing is
+    /// highlighted.
     #[must_use]
     pub fn accept(&self) -> OverlayEvent {
         match self {
@@ -251,6 +287,12 @@ impl Overlay {
                 .accepted()
                 .copied()
                 .map_or(OverlayEvent::Close, OverlayEvent::AcceptCommand),
+            Self::DiffTarget(p) => p.accepted().cloned().map_or(OverlayEvent::Close, |target| {
+                OverlayEvent::AcceptDiffTarget {
+                    rev: target.rev,
+                    label: target.label,
+                }
+            }),
         }
     }
 }
@@ -299,6 +341,39 @@ mod tests {
         match overlay.accept() {
             OverlayEvent::AcceptCommand(cmd) => assert_eq!(cmd, Command::Quit),
             _ => unreachable!("accept runs the filtered command"),
+        }
+    }
+
+    #[test]
+    fn diff_target_picker_filters_and_accepts_a_revision() {
+        let items = vec![
+            (
+                "abc1234 first commit".to_string(),
+                DiffTarget {
+                    rev: "abc1234deadbeef".to_string(),
+                    label: "abc1234".to_string(),
+                },
+            ),
+            (
+                "feature".to_string(),
+                DiffTarget {
+                    rev: "feature".to_string(),
+                    label: "feature".to_string(),
+                },
+            ),
+        ];
+        let mut overlay = Overlay::diff_target("Open Changes: With Revision", items);
+        assert_eq!(overlay.title(), "Open Changes: With Revision");
+        for c in "feat".chars() {
+            overlay.push_char(c);
+        }
+        assert_eq!(overlay.rows(), vec!["feature"]);
+        match overlay.accept() {
+            OverlayEvent::AcceptDiffTarget { rev, label } => {
+                assert_eq!(rev, "feature");
+                assert_eq!(label, "feature");
+            },
+            _ => unreachable!("accept picks the filtered revision"),
         }
     }
 

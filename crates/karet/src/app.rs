@@ -108,8 +108,10 @@ use crate::keymap::{self};
 use crate::notify::NotificationCenter;
 use crate::outline::OutlineRow;
 use crate::outline::OutlineTarget;
+use crate::overlay::DiffTarget;
 use crate::overlay::Overlay;
 use crate::overlay::OverlayEvent;
+use crate::remote;
 use crate::render::FileView;
 use crate::render::Section;
 use crate::tab::FindState;
@@ -349,41 +351,124 @@ struct ExplorerFileClipboard {
     paths: Vec<PathBuf>,
 }
 
-/// A positioned context menu opened from the explorer.
-pub(crate) struct ExplorerContextMenu {
+/// One row of a positioned context menu: the command it dispatches, whether it can
+/// run right now, and an optional note explaining why not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ContextMenuEntry {
+    /// The command this row dispatches when accepted.
+    pub(crate) command: Command,
+    /// Whether the row can be activated. A disabled row renders dimmed, is skipped
+    /// by keyboard navigation, and refuses Accept.
+    pub(crate) enabled: bool,
+    /// Why the row is disabled, surfaced as a status message when the user tries to
+    /// activate it anyway (e.g. by clicking it).
+    pub(crate) note: Option<String>,
+}
+
+impl ContextMenuEntry {
+    /// An enabled entry dispatching `command`.
+    fn enabled(command: Command) -> Self {
+        Self {
+            command,
+            enabled: true,
+            note: None,
+        }
+    }
+
+    /// A disabled entry for `command`, greyed out with an explanatory `note`.
+    fn disabled(command: Command, note: impl Into<String>) -> Self {
+        Self {
+            command,
+            enabled: false,
+            note: Some(note.into()),
+        }
+    }
+}
+
+/// A positioned context menu (opened from the explorer or over a pane).
+pub(crate) struct ContextMenu {
     /// The column where the menu should be anchored.
     pub(crate) x: u16,
     /// The row where the menu should be anchored.
     pub(crate) y: u16,
-    /// The commands shown in the menu, in display order.
-    pub(crate) items: Vec<Command>,
-    /// The selected item index.
+    /// The rows shown in the menu, in display order.
+    pub(crate) entries: Vec<ContextMenuEntry>,
+    /// The selected row index.
     pub(crate) selected: usize,
     /// The menu rect from the last render.
     pub(crate) rect: Rect,
 }
 
-impl ExplorerContextMenu {
-    fn new(x: u16, y: u16, items: Vec<Command>) -> Self {
+impl ContextMenu {
+    fn new(x: u16, y: u16, entries: Vec<ContextMenuEntry>) -> Self {
+        // Land the initial selection on the first activatable row.
+        let selected = entries.iter().position(|e| e.enabled).unwrap_or(0);
         Self {
             x,
             y,
-            items,
-            selected: 0,
+            entries,
+            selected,
             rect: Rect::default(),
         }
     }
 
+    /// Move the selection by `delta` rows, skipping disabled entries. When fewer
+    /// enabled rows exist in that direction, the selection lands on the last one
+    /// found (or stays put).
     fn select_by(&mut self, delta: i32) {
-        if self.items.is_empty() {
+        if self.entries.is_empty() || delta == 0 {
             return;
         }
-        let next = (self.selected as i64 + i64::from(delta)).clamp(0, self.items.len() as i64 - 1);
-        self.selected = next as usize;
+        let step: i64 = if delta > 0 { 1 } else { -1 };
+        let mut remaining = i64::from(delta).abs();
+        let mut idx = self.selected as i64;
+        let mut landed = self.selected as i64;
+        loop {
+            idx += step;
+            if idx < 0 || idx >= self.entries.len() as i64 {
+                break;
+            }
+            if self.entries[idx as usize].enabled {
+                landed = idx;
+                remaining -= 1;
+                if remaining == 0 {
+                    break;
+                }
+            }
+        }
+        self.selected = landed as usize;
     }
 
-    fn selected_command(&self) -> Option<Command> {
-        self.items.get(self.selected).copied()
+    fn selected_entry(&self) -> Option<&ContextMenuEntry> {
+        self.entries.get(self.selected)
+    }
+}
+
+/// The repository/remote facts behind the pane menu's link actions, gathered
+/// synchronously from a short-lived repository handle (see [`App::remote_facts`]).
+struct RemoteFacts {
+    /// The parsed origin remote.
+    remote: remote::Remote,
+    /// The full `HEAD` commit hash, or `None` on an unborn branch.
+    head: Option<String>,
+    /// The current branch's short name, or `None` when `HEAD` is detached.
+    branch: Option<String>,
+    /// The file's path relative to the repository worktree root.
+    rel_path: PathBuf,
+    /// Whether the file exists in the `HEAD` commit's tree.
+    tracked: bool,
+}
+
+impl RemoteFacts {
+    /// Borrow these facts as a [`remote::LinkTarget`] for link building.
+    fn link_target(&self) -> remote::LinkTarget<'_> {
+        remote::LinkTarget {
+            remote: &self.remote,
+            head: self.head.as_deref(),
+            branch: self.branch.as_deref(),
+            rel_path: &self.rel_path,
+            tracked: self.tracked,
+        }
     }
 }
 
@@ -449,8 +534,8 @@ pub struct App {
     pub(crate) explorer: FileTreeState,
     /// Files/directories selected for an explorer copy or cut operation.
     explorer_clipboard: Option<ExplorerFileClipboard>,
-    /// The active explorer context menu, if any.
-    pub(crate) explorer_context_menu: Option<ExplorerContextMenu>,
+    /// The active context menu (explorer or pane), if any.
+    pub(crate) context_menu: Option<ContextMenu>,
     /// The Source-Control panel state.
     pub(crate) scm: Scm,
     /// The focused pane's open tabs.
@@ -658,7 +743,7 @@ impl App {
             sidebar_visible: true,
             explorer: FileTreeState::new(),
             explorer_clipboard: None,
-            explorer_context_menu: None,
+            context_menu: None,
             scm: Scm {
                 selection: ListSelection::new(changes.len()),
                 changes,
@@ -1056,7 +1141,7 @@ impl App {
             Some(Modal::DiscardConfirm)
         } else if self.pending_explorer_delete.is_some() {
             Some(Modal::ExplorerDeleteConfirm)
-        } else if self.explorer_context_menu.is_some() {
+        } else if self.context_menu.is_some() {
             Some(Modal::ContextMenu)
         } else if self.find_open {
             Some(Modal::Find)
@@ -1227,6 +1312,9 @@ impl App {
             OverlayEvent::Close => {},
             OverlayEvent::AcceptFile(path) => self.open_path(&path),
             OverlayEvent::AcceptCommand(cmd) => self.dispatch(cmd),
+            OverlayEvent::AcceptDiffTarget { rev, label } => {
+                self.open_changes_with(&rev, &label);
+            },
         }
     }
 
@@ -1755,6 +1843,17 @@ impl App {
             Command::Copy => self.copy_selection(),
             Command::CopyPath => self.copy_path(false),
             Command::CopyRelativePath => self.copy_path(true),
+            Command::RevealActiveInExplorer => self.reveal_active_in_explorer(),
+            Command::CopyRemoteFileUrl => self.copy_remote_link(remote::LinkKind::RemoteFile),
+            Command::CopyGithubPermalink => {
+                self.copy_remote_link(remote::LinkKind::GithubPermalink);
+            },
+            Command::CopyGithubHeadLink => {
+                self.copy_remote_link(remote::LinkKind::GithubHeadLink);
+            },
+            Command::OpenChangesWithPrevious => self.open_changes_with("HEAD", "HEAD"),
+            Command::OpenChangesWithRevision => self.open_changes_pick_revision(),
+            Command::OpenChangesWithBranch => self.open_changes_pick_branch(),
             Command::SidebarUp => self.sidebar_step(-1),
             Command::SidebarDown => self.sidebar_step(1),
             Command::SidebarActivate => self.sidebar_activate(),
@@ -2697,8 +2796,8 @@ impl App {
         }
     }
 
-    fn row_context_items(&self) -> Vec<Command> {
-        vec![
+    fn row_context_items(&self) -> Vec<ContextMenuEntry> {
+        [
             Command::SidebarActivate,
             Command::ExplorerRename,
             Command::ExplorerNewFile,
@@ -2712,20 +2811,26 @@ impl App {
             Command::ExplorerCopyRelativePath,
             Command::ExplorerRefresh,
         ]
+        .into_iter()
+        .map(ContextMenuEntry::enabled)
+        .collect()
     }
 
-    fn blank_context_items(&self) -> Vec<Command> {
-        vec![
+    fn blank_context_items(&self) -> Vec<ContextMenuEntry> {
+        [
             Command::ExplorerNewFile,
             Command::ExplorerNewFolder,
             Command::ExplorerPaste,
             Command::ExplorerRefresh,
             Command::ExplorerCollapseAll,
         ]
+        .into_iter()
+        .map(ContextMenuEntry::enabled)
+        .collect()
     }
 
     fn context_menu_clear(&mut self) {
-        self.explorer_context_menu = None;
+        self.context_menu = None;
     }
 
     fn open_context_menu(&mut self, x: u16, y: u16, row: Option<usize>) {
@@ -2741,7 +2846,7 @@ impl App {
         } else {
             self.blank_context_items()
         };
-        self.explorer_context_menu = Some(ExplorerContextMenu::new(x, y, items));
+        self.context_menu = Some(ContextMenu::new(x, y, items));
     }
 
     fn open_context_menu_for_selection(&mut self) {
@@ -2761,21 +2866,94 @@ impl App {
         self.open_context_menu(x, y, row);
     }
 
+    /// Open the pane context menu at `(x, y)` for the focused pane's active tab.
+    /// Only file-backed tabs get one; a pathless tab (Welcome, commit graph, …)
+    /// opens nothing.
+    fn open_pane_context_menu(&mut self, x: u16, y: u16) {
+        let Some(path) = self
+            .tabs
+            .get(self.active)
+            .and_then(Tab::path)
+            .map(Path::to_path_buf)
+        else {
+            return;
+        };
+        let entries = self.pane_context_entries(&path);
+        self.context_menu = Some(ContextMenu::new(x, y, entries));
+    }
+
+    /// The pane context menu's rows for the active file at `path`. The path items
+    /// always work; the link items are enabled exactly when [`remote::link`] can
+    /// build them (the same call their dispatch runs), with its refusal reason as
+    /// the disabled note.
+    fn pane_context_entries(&self, path: &Path) -> Vec<ContextMenuEntry> {
+        let mut entries = vec![
+            ContextMenuEntry::enabled(Command::CopyPath),
+            ContextMenuEntry::enabled(Command::CopyRelativePath),
+            ContextMenuEntry::enabled(Command::RevealActiveInExplorer),
+        ];
+        let facts = self.remote_facts(path);
+        let link_entry = |command, kind| match &facts {
+            Ok(facts) => match remote::link(&facts.link_target(), kind, None) {
+                Ok(_) => ContextMenuEntry::enabled(command),
+                Err(note) => ContextMenuEntry::disabled(command, note),
+            },
+            Err(note) => ContextMenuEntry::disabled(command, note.clone()),
+        };
+        entries.push(link_entry(
+            Command::CopyRemoteFileUrl,
+            remote::LinkKind::RemoteFile,
+        ));
+        // The Open Changes actions need a repository and a tracked file, but no
+        // remote — their enablement is checked separately from the link rows.
+        let changes_note = self.open_changes_note(path);
+        for command in [
+            Command::OpenChangesWithPrevious,
+            Command::OpenChangesWithRevision,
+            Command::OpenChangesWithBranch,
+        ] {
+            entries.push(match &changes_note {
+                None => ContextMenuEntry::enabled(command),
+                Some(note) => ContextMenuEntry::disabled(command, note.clone()),
+            });
+        }
+        entries.push(link_entry(
+            Command::CopyGithubPermalink,
+            remote::LinkKind::GithubPermalink,
+        ));
+        entries.push(link_entry(
+            Command::CopyGithubHeadLink,
+            remote::LinkKind::GithubHeadLink,
+        ));
+        entries
+    }
+
     fn context_menu_step(&mut self, delta: i32) {
-        if let Some(menu) = self.explorer_context_menu.as_mut() {
+        if let Some(menu) = self.context_menu.as_mut() {
             menu.select_by(delta);
         }
     }
 
     fn accept_context_menu(&mut self) {
-        let command = self
-            .explorer_context_menu
+        let Some(entry) = self
+            .context_menu
             .as_ref()
-            .and_then(ExplorerContextMenu::selected_command);
-        self.explorer_context_menu = None;
-        if let Some(command) = command {
-            self.dispatch(command);
+            .and_then(ContextMenu::selected_entry)
+        else {
+            self.context_menu = None;
+            return;
+        };
+        if !entry.enabled {
+            // Refuse a disabled row: surface its explanatory note (when it has one)
+            // and keep the menu open so another row can be chosen.
+            if let Some(note) = entry.note.clone() {
+                self.status = Some(note);
+            }
+            return;
         }
+        let command = entry.command;
+        self.context_menu = None;
+        self.dispatch(command);
     }
 
     fn close_context_menu(&mut self) {
@@ -4820,6 +4998,15 @@ impl App {
                     self.request_close_tab_at(i);
                 }
             },
+            MouseEventKind::Down(MouseButton::Right) => {
+                // Right-click on a tab selects it and opens the pane context menu
+                // for it; the strip's empty tail opens nothing.
+                self.focus_pane_switch(pane);
+                if let Some((i, _)) = hit {
+                    self.select_tab(i);
+                    self.open_pane_context_menu(mouse.column, mouse.row);
+                }
+            },
             _ => {},
         }
         true
@@ -4892,7 +5079,7 @@ impl App {
 
     /// Handle mouse interaction with an open context menu.
     fn handle_context_menu_mouse(&mut self, mouse: MouseEvent) -> bool {
-        let Some(menu) = self.explorer_context_menu.as_ref() else {
+        let Some(menu) = self.context_menu.as_ref() else {
             return false;
         };
         let point = (mouse.column, mouse.row);
@@ -4900,8 +5087,8 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) if rect_contains(menu.rect, point) => {
                 let inner_y = mouse.row.saturating_sub(menu.rect.y).saturating_sub(1);
                 let idx = usize::from(inner_y);
-                if let Some(menu) = self.explorer_context_menu.as_mut()
-                    && idx < menu.items.len()
+                if let Some(menu) = self.context_menu.as_mut()
+                    && idx < menu.entries.len()
                 {
                     menu.selected = idx;
                 }
@@ -5063,6 +5250,20 @@ impl App {
                     })
                     .flatten();
                 self.open_context_menu(mouse.column, mouse.row, row);
+            },
+            MouseEventKind::Down(MouseButton::Right) => {
+                // Right-click in a pane's content area opens the pane context menu
+                // for that pane's active tab.
+                if let Some(pane) = self
+                    .pane_frames
+                    .iter()
+                    .find(|f| rect_contains(f.content_rect, point))
+                    .map(|f| f.pane)
+                {
+                    self.focus_pane_switch(pane);
+                    self.focus = Focus::Editor;
+                    self.open_pane_context_menu(mouse.column, mouse.row);
+                }
             },
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.sidebar_visible && mouse.column == self.sidebar_divider_x {
@@ -5298,6 +5499,295 @@ impl App {
         };
         let text = path.to_string_lossy().into_owned();
         self.copy_to_clipboard(text, "path");
+    }
+
+    /// Reveal the active tab's file in the explorer.
+    fn reveal_active_in_explorer(&mut self) {
+        let Some(path) = self
+            .tabs
+            .get(self.active)
+            .and_then(Tab::path)
+            .map(Path::to_path_buf)
+        else {
+            self.status = Some("reveal: no file".to_string());
+            return;
+        };
+        self.reveal_in_explorer(&path);
+    }
+
+    /// Gather the repository/remote facts for `path`, synchronously (fast local
+    /// reads on a short-lived repository handle, like blame). The `Err` side is a
+    /// user-facing reason, doubling as a context-menu disabled note.
+    fn remote_facts(&self, path: &Path) -> Result<RemoteFacts, String> {
+        // Absolutize first so discovery starts from the file's own directory (a
+        // file may live in a different repository than the workspace root).
+        let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        let start = abs.parent().unwrap_or(&abs);
+        let repo = karet_vcs::Repository::discover(start)
+            .map_err(|_| "not in a git repository".to_string())?;
+        let origin = repo
+            .origin_url()
+            .ok_or_else(|| "no origin remote configured".to_string())?;
+        let remote = remote::parse_remote(&origin)
+            .ok_or_else(|| format!("unrecognized origin remote URL: {origin}"))?;
+        let rel_path = repo
+            .path_in_worktree(&abs)
+            .ok_or_else(|| "file is outside the repository worktree".to_string())?;
+        // An unborn branch has no HEAD hash; file_at_rev then errors, reading as
+        // untracked — both surface as accurate notes further down.
+        let head = repo.head_hash().ok().flatten();
+        let branch = repo.current_branch().ok().flatten();
+        let tracked = repo.file_at_rev(&abs, "HEAD").ok().flatten().is_some();
+        Ok(RemoteFacts {
+            remote,
+            head,
+            branch,
+            rel_path,
+            tracked,
+        })
+    }
+
+    /// Copy the `kind` web link for the active file, or surface why it cannot be
+    /// built (mirroring the pane menu's disabled notes exactly — both sides run
+    /// the same [`remote::link`]).
+    fn copy_remote_link(&mut self, kind: remote::LinkKind) {
+        let Some(path) = self
+            .tabs
+            .get(self.active)
+            .and_then(Tab::path)
+            .map(Path::to_path_buf)
+        else {
+            self.status = Some("copy link: no file".to_string());
+            return;
+        };
+        // The caret line only anchors a permalink over a code tab (1-based).
+        let line = match (kind, self.tabs.get(self.active)) {
+            (remote::LinkKind::GithubPermalink, Some(tab))
+                if matches!(tab.kind, TabKind::Code { .. }) =>
+            {
+                Some(tab.editor.cursor().line.saturating_add(1))
+            },
+            _ => None,
+        };
+        let facts = match self.remote_facts(&path) {
+            Ok(facts) => facts,
+            Err(reason) => {
+                self.status = Some(reason);
+                return;
+            },
+        };
+        match remote::link(&facts.link_target(), kind, line) {
+            Ok(url) => {
+                let what = match kind {
+                    remote::LinkKind::RemoteFile => "remote file URL",
+                    remote::LinkKind::GithubPermalink => "GitHub permalink",
+                    remote::LinkKind::GithubHeadLink => "GitHub head link",
+                };
+                self.copy_to_clipboard(url, what);
+            },
+            Err(reason) => self.status = Some(reason),
+        }
+    }
+
+    /// The active tab's file path and, for a code tab, its live buffer text.
+    fn active_file_and_text(&self) -> Option<(PathBuf, Option<String>)> {
+        let tab = self.tabs.get(self.active)?;
+        let path = tab.path()?.to_path_buf();
+        let live = match &tab.kind {
+            TabKind::Code { text, .. } => Some(text.clone()),
+            _ => None,
+        };
+        Some((path, live))
+    }
+
+    /// Why the Open Changes actions do not apply to `path` — outside a repository,
+    /// or untracked at `HEAD` (which also covers an unborn branch) — or `None` when
+    /// they do. Doubles as the pane menu's disabled note.
+    fn open_changes_note(&self, path: &Path) -> Option<String> {
+        let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        let start = abs.parent().unwrap_or(&abs);
+        let Ok(repo) = karet_vcs::Repository::discover(start) else {
+            return Some("not in a git repository".to_string());
+        };
+        if repo.file_at_rev(&abs, "HEAD").ok().flatten().is_none() {
+            return Some("file is not tracked at HEAD".to_string());
+        }
+        None
+    }
+
+    /// Open a diff tab for the active file: old = its content at `rev`, new = the
+    /// working text (the live buffer for a code tab, the file on disk otherwise).
+    /// `label` names the old side in the tab title: `name (label ↔ working)`.
+    fn open_changes_with(&mut self, rev: &str, label: &str) {
+        let Some((path, live)) = self.active_file_and_text() else {
+            self.status = Some("open changes: no file".to_string());
+            return;
+        };
+        let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
+        let start = abs.parent().unwrap_or(&abs);
+        let repo = match karet_vcs::Repository::discover(start) {
+            Ok(repo) => repo,
+            Err(_) => {
+                self.status = Some("open changes: not in a git repository".to_string());
+                return;
+            },
+        };
+        let old_bytes = match repo.file_at_rev(&abs, rev) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                self.status = Some(format!("open changes: file does not exist at {label}"));
+                return;
+            },
+            Err(e) => {
+                self.notify(
+                    Severity::Error,
+                    NotificationKind::Vcs,
+                    format!("open changes: {e}"),
+                );
+                return;
+            },
+        };
+        let new_text = live.or_else(|| {
+            std::fs::read(&abs)
+                .ok()
+                .and_then(|b| String::from_utf8(b).ok())
+        });
+        let old_text = String::from_utf8(old_bytes).ok();
+        // Either side non-text marks the change binary (both texts then empty),
+        // matching the FileChange::is_binary contract.
+        let is_binary = old_text.is_none() || new_text.is_none();
+        let name = abs
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .to_string();
+        let change = FileChange {
+            path: abs,
+            old_path: None,
+            status: StatusKind::Modified,
+            is_binary,
+            old: if is_binary {
+                String::new()
+            } else {
+                old_text.unwrap_or_default()
+            },
+            new: if is_binary {
+                String::new()
+            } else {
+                new_text.unwrap_or_default()
+            },
+        };
+        let file = FileView::new(change, Section::Working, self.syntax);
+        self.push_tab(Tab::new(
+            format!("{name} ({label} \u{2194} working)"),
+            TabKind::Diff {
+                file: Box::new(file),
+                view: self.diff_layout,
+                scroll: 0,
+            },
+        ));
+    }
+
+    /// How many commits the With Revision picker lists at most.
+    const OPEN_CHANGES_HISTORY_CAP: usize = 200;
+
+    /// Open the diff-target picker over the active file's commit history
+    /// (newest first, capped), for "Open Changes: With Revision…".
+    fn open_changes_pick_revision(&mut self) {
+        let Some((path, _)) = self.active_file_and_text() else {
+            self.status = Some("open changes: no file".to_string());
+            return;
+        };
+        let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
+        let start = abs.parent().unwrap_or(&abs);
+        let repo = match karet_vcs::Repository::discover(start) {
+            Ok(repo) => repo,
+            Err(_) => {
+                self.status = Some("open changes: not in a git repository".to_string());
+                return;
+            },
+        };
+        let commits = match repo.file_history(&abs, 0, Self::OPEN_CHANGES_HISTORY_CAP) {
+            Ok(commits) => commits,
+            Err(e) => {
+                self.notify(
+                    Severity::Error,
+                    NotificationKind::Vcs,
+                    format!("open changes: {e}"),
+                );
+                return;
+            },
+        };
+        if commits.is_empty() {
+            self.status = Some("open changes: no commits touch this file".to_string());
+            return;
+        }
+        let items = commits
+            .into_iter()
+            .map(|c| {
+                let display = format!(
+                    "{} {} \u{2014} {}",
+                    c.short_hash,
+                    c.summary,
+                    ui::relative_time(c.time)
+                );
+                let target = DiffTarget {
+                    rev: c.hash,
+                    label: c.short_hash,
+                };
+                (display, target)
+            })
+            .collect();
+        self.overlay = Some(Overlay::diff_target("Open Changes: With Revision", items));
+    }
+
+    /// Open the diff-target picker over the repository's local branches, for
+    /// "Open Changes: With Branch…".
+    fn open_changes_pick_branch(&mut self) {
+        let Some((path, _)) = self.active_file_and_text() else {
+            self.status = Some("open changes: no file".to_string());
+            return;
+        };
+        let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
+        let start = abs.parent().unwrap_or(&abs);
+        let repo = match karet_vcs::Repository::discover(start) {
+            Ok(repo) => repo,
+            Err(_) => {
+                self.status = Some("open changes: not in a git repository".to_string());
+                return;
+            },
+        };
+        let branches = match repo.branches() {
+            Ok(branches) => branches,
+            Err(e) => {
+                self.notify(
+                    Severity::Error,
+                    NotificationKind::Vcs,
+                    format!("open changes: {e}"),
+                );
+                return;
+            },
+        };
+        if branches.is_empty() {
+            self.status = Some("open changes: no branches".to_string());
+            return;
+        }
+        let items = branches
+            .into_iter()
+            .map(|b| {
+                let display = if b.is_head {
+                    format!("{} (current)", b.name)
+                } else {
+                    b.name.clone()
+                };
+                let target = DiffTarget {
+                    rev: b.name.clone(),
+                    label: b.name,
+                };
+                (display, target)
+            })
+            .collect();
+        self.overlay = Some(Overlay::diff_target("Open Changes: With Branch", items));
     }
 
     /// Apply a caret `motion` to the active code tab, extending the selection when
@@ -10960,13 +11450,13 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         };
 
         app.open_context_menu(2, 2, Some(row));
-        let Some(menu) = app.explorer_context_menu.as_mut() else {
+        let Some(menu) = app.context_menu.as_mut() else {
             return;
         };
         let Some(duplicate) = menu
-            .items
+            .entries
             .iter()
-            .position(|cmd| *cmd == Command::ExplorerDuplicate)
+            .position(|entry| entry.command == Command::ExplorerDuplicate)
         else {
             return;
         };
@@ -10977,7 +11467,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
             std::fs::read(dir.join("a copy.txt")).unwrap_or_default(),
             b"alpha"
         );
-        assert!(app.explorer_context_menu.is_none());
+        assert!(app.context_menu.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -10995,13 +11485,458 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
 
         app.open_context_menu_for_selection();
 
-        let Some(menu) = app.explorer_context_menu.as_ref() else {
+        let Some(menu) = app.context_menu.as_ref() else {
             return;
         };
-        assert!(menu.items.contains(&Command::ExplorerNewFile));
-        assert!(menu.items.contains(&Command::ExplorerNewFolder));
-        assert!(!menu.items.contains(&Command::SidebarActivate));
-        assert!(!menu.items.contains(&Command::ExplorerRename));
+        let has = |cmd: Command| menu.entries.iter().any(|entry| entry.command == cmd);
+        assert!(has(Command::ExplorerNewFile));
+        assert!(has(Command::ExplorerNewFolder));
+        assert!(!has(Command::SidebarActivate));
+        assert!(!has(Command::ExplorerRename));
+        assert!(
+            menu.entries.iter().all(|entry| entry.enabled),
+            "explorer menu entries stay enabled"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn context_menu_opens_on_the_first_enabled_entry_and_skips_disabled_on_nav() {
+        let dir = test_dir("context-skip-disabled");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.context_menu = Some(ContextMenu::new(
+            2,
+            2,
+            vec![
+                ContextMenuEntry::disabled(Command::CopyPath, "no file"),
+                ContextMenuEntry::enabled(Command::CopyRelativePath),
+                ContextMenuEntry::disabled(Command::Quit, "blocked"),
+                ContextMenuEntry::enabled(Command::ExplorerRefresh),
+            ],
+        ));
+        let selected = |app: &App| app.context_menu.as_ref().map(|m| m.selected);
+        // The initial selection lands on the first enabled row, not row 0.
+        assert_eq!(selected(&app), Some(1));
+        // Down skips the disabled row 2 and lands on 3; another Down stays put.
+        app.dispatch(Command::ContextMenuDown);
+        assert_eq!(selected(&app), Some(3));
+        app.dispatch(Command::ContextMenuDown);
+        assert_eq!(selected(&app), Some(3));
+        // Up skips row 2 back to 1; another Up stays (row 0 is disabled).
+        app.dispatch(Command::ContextMenuUp);
+        assert_eq!(selected(&app), Some(1));
+        app.dispatch(Command::ContextMenuUp);
+        assert_eq!(selected(&app), Some(1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A committed git repo (one tracked `new.rs`) with `origin` set to `remote_url`,
+    /// or `None` when `git` is unavailable (the test then skips).
+    fn repo_with_remote(remote_url: &str) -> Option<TempRepo> {
+        let repo = init_test_repo()?;
+        if !git(&repo.path, &["add", "."])
+            || !git(&repo.path, &["commit", "-q", "-m", "init"])
+            || !git(&repo.path, &["remote", "add", "origin", remote_url])
+        {
+            return None;
+        }
+        Some(repo)
+    }
+
+    #[test]
+    fn pane_context_menu_lists_file_actions_and_disables_links_outside_a_repo() {
+        let dir = test_dir("pane-menu-norepo");
+        write_file(&dir, "a.rs", b"x\n");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.push_tab(code_tab(dir.join("a.rs").to_string_lossy().as_ref()));
+
+        app.open_pane_context_menu(3, 3);
+
+        let Some(menu) = app.context_menu.as_ref() else {
+            panic!("a file-backed tab opens a pane menu");
+        };
+        let commands: Vec<Command> = menu.entries.iter().map(|e| e.command).collect();
+        assert_eq!(
+            commands,
+            vec![
+                Command::CopyPath,
+                Command::CopyRelativePath,
+                Command::RevealActiveInExplorer,
+                Command::CopyRemoteFileUrl,
+                Command::OpenChangesWithPrevious,
+                Command::OpenChangesWithRevision,
+                Command::OpenChangesWithBranch,
+                Command::CopyGithubPermalink,
+                Command::CopyGithubHeadLink,
+            ]
+        );
+        assert!(menu.entries[..3].iter().all(|e| e.enabled));
+        for entry in &menu.entries[3..] {
+            assert!(
+                !entry.enabled,
+                "{:?} is disabled outside a repo",
+                entry.command
+            );
+            assert_eq!(entry.note.as_deref(), Some("not in a git repository"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pane_context_menu_does_not_open_for_a_pathless_tab() {
+        let dir = test_dir("pane-menu-welcome");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
+
+        app.open_pane_context_menu(3, 3);
+
+        assert!(app.context_menu.is_none(), "a pathless tab opens no menu");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn right_click_opens_the_pane_menu_from_the_tab_strip_and_the_content_area() {
+        let dir = test_dir("pane-menu-mouse");
+        write_file(&dir, "a.rs", b"x\n");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.push_tab(code_tab(dir.join("a.rs").to_string_lossy().as_ref()));
+        let mut frame = content_frame(&app, Rect::new(0, 1, 40, 10));
+        frame.tabstrip_rect = Rect::new(0, 0, 40, 1);
+        frame.tab_hits = vec![TabHit {
+            start: 0,
+            end: 12,
+            close: 11,
+        }];
+        app.pane_frames = vec![frame];
+        let right = |col, row| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        // Over the tab in the strip: selects it and opens the menu.
+        app.handle_mouse(right(4, 0));
+        assert!(app.context_menu.is_some(), "tab-strip right-click opens");
+        app.context_menu = None;
+
+        // In the content area: opens for the pane's active tab.
+        app.handle_mouse(right(5, 5));
+        assert!(app.context_menu.is_some(), "content right-click opens");
+        app.context_menu = None;
+
+        // On the strip's empty tail (past the tab): consumed, no menu.
+        app.handle_mouse(right(20, 0));
+        assert!(app.context_menu.is_none(), "strip tail opens nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pane_menu_enables_github_links_for_a_tracked_file_on_github() {
+        let Some(repo) = repo_with_remote("git@github.com:owner/repo.git") else {
+            return;
+        };
+        let app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        let entries = app.pane_context_entries(&repo.path.join("new.rs"));
+        assert!(
+            entries.iter().all(|e| e.enabled),
+            "github + tracked enables every row: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn pane_menu_disables_github_links_for_a_gitlab_remote_with_a_note() {
+        let Some(repo) = repo_with_remote("https://gitlab.com/owner/repo.git") else {
+            return;
+        };
+        let app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        let entries = app.pane_context_entries(&repo.path.join("new.rs"));
+        let by_cmd = |cmd: Command| entries.iter().find(|e| e.command == cmd);
+        // The generic remote URL still works on GitLab…
+        assert!(by_cmd(Command::CopyRemoteFileUrl).is_some_and(|e| e.enabled));
+        // …while both GitHub links are disabled and name the detected forge.
+        for cmd in [Command::CopyGithubPermalink, Command::CopyGithubHeadLink] {
+            let Some(entry) = by_cmd(cmd) else {
+                panic!("{cmd:?} is listed");
+            };
+            assert!(!entry.enabled);
+            let note = entry.note.as_deref().unwrap_or_default();
+            assert!(
+                note.contains("GitLab") && note.contains("github.com"),
+                "note names the forge: {note}"
+            );
+        }
+    }
+
+    #[test]
+    fn pane_menu_disables_links_for_an_untracked_file() {
+        let Some(repo) = repo_with_remote("git@github.com:owner/repo.git") else {
+            return;
+        };
+        std::fs::write(repo.path.join("untracked.rs"), "y\n").unwrap_or_default();
+        let app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        let entries = app.pane_context_entries(&repo.path.join("untracked.rs"));
+        for cmd in [
+            Command::CopyRemoteFileUrl,
+            Command::CopyGithubPermalink,
+            Command::CopyGithubHeadLink,
+            Command::OpenChangesWithPrevious,
+            Command::OpenChangesWithRevision,
+            Command::OpenChangesWithBranch,
+        ] {
+            let Some(entry) = entries.iter().find(|e| e.command == cmd) else {
+                panic!("{cmd:?} is listed");
+            };
+            assert!(!entry.enabled, "{cmd:?} is disabled for an untracked file");
+            assert!(
+                entry
+                    .note
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("not tracked"),
+                "note explains the untracked state"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_facts_reads_the_repository_state() {
+        let Some(repo) = repo_with_remote("git@github.com:owner/repo.git") else {
+            return;
+        };
+        let app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        let Ok(facts) = app.remote_facts(&repo.path.join("new.rs")) else {
+            panic!("facts resolve inside a repo with an origin");
+        };
+        assert_eq!(facts.remote.kind, crate::remote::ForgeKind::GitHub);
+        assert_eq!(facts.rel_path, PathBuf::from("new.rs"));
+        assert!(facts.tracked);
+        assert!(facts.head.is_some());
+        assert!(facts.branch.is_some());
+    }
+
+    #[test]
+    fn copy_github_permalink_reports_success_on_a_github_repo() {
+        let Some(repo) = repo_with_remote("git@github.com:owner/repo.git") else {
+            return;
+        };
+        let mut app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        app.push_tab(code_tab(
+            repo.path.join("new.rs").to_string_lossy().as_ref(),
+        ));
+        app.dispatch(Command::CopyGithubPermalink);
+        assert_eq!(app.status.as_deref(), Some("copied GitHub permalink"));
+    }
+
+    /// A git repo whose `new.rs` is committed (no remote), or `None` when `git`
+    /// is unavailable (the test then skips).
+    fn committed_repo() -> Option<TempRepo> {
+        let repo = init_test_repo()?;
+        if !git(&repo.path, &["add", "."]) || !git(&repo.path, &["commit", "-q", "-m", "init"]) {
+            return None;
+        }
+        Some(repo)
+    }
+
+    /// A code tab over `path` whose live buffer holds `text`.
+    fn code_tab_with_text(path: &Path, text: &str) -> Tab {
+        use karet_syntax::Highlights;
+        use karet_text::TextBuffer;
+        Tab::new(
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file")
+                .to_string(),
+            TabKind::Code {
+                path: path.to_path_buf(),
+                language: "Rust",
+                doc: None,
+                next_version: 0,
+                buffer: TextBuffer::from_text(text),
+                text: text.to_string(),
+                highlights: Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
+                decos: Vec::new(),
+                search_decos: Vec::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn open_changes_with_previous_diffs_head_against_the_live_buffer() {
+        let Some(repo) = committed_repo() else {
+            return;
+        };
+        let path = repo.path.join("new.rs");
+        let mut app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        // The live buffer differs from both HEAD and the (unchanged) disk file,
+        // proving the working side comes from the buffer, not disk.
+        app.push_tab(code_tab_with_text(&path, "fn main() { edited }\n"));
+
+        app.dispatch(Command::OpenChangesWithPrevious);
+
+        let Some(Tab {
+            title,
+            kind: TabKind::Diff { file, .. },
+            ..
+        }) = app.tabs.last()
+        else {
+            panic!("open changes opens a diff tab, got none");
+        };
+        assert_eq!(title, "new.rs (HEAD \u{2194} working)");
+        assert_eq!(
+            file.change.old, "fn main() {}\n",
+            "old side is HEAD content"
+        );
+        assert_eq!(
+            file.change.new, "fn main() { edited }\n",
+            "new side is the live buffer"
+        );
+    }
+
+    #[test]
+    fn open_changes_with_revision_picks_from_the_file_history() {
+        let Some(repo) = committed_repo() else {
+            return;
+        };
+        let path = repo.path.join("new.rs");
+        // A second commit changes the file, so its history has two entries.
+        std::fs::write(&path, "fn main() { v1 }\n").unwrap_or_default();
+        if !git(&repo.path, &["commit", "-qam", "v1"]) {
+            return;
+        }
+        let mut app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        app.push_tab(code_tab_with_text(&path, "working\n"));
+
+        app.dispatch(Command::OpenChangesWithRevision);
+        let Some(overlay) = app.overlay.as_ref() else {
+            panic!("the revision picker opens");
+        };
+        assert_eq!(overlay.title(), "Open Changes: With Revision");
+        let rows: Vec<String> = overlay.rows().iter().map(ToString::to_string).collect();
+        assert_eq!(rows.len(), 2, "both commits touch the file: {rows:?}");
+        assert!(rows[0].contains("v1"), "newest first: {rows:?}");
+
+        // Choose the older commit (the initial content).
+        app.dispatch(Command::OverlayDown);
+        app.dispatch(Command::OverlayAccept);
+
+        assert!(app.overlay.is_none(), "accept closes the picker");
+        let Some(Tab {
+            title,
+            kind: TabKind::Diff { file, .. },
+            ..
+        }) = app.tabs.last()
+        else {
+            panic!("accepting a revision opens a diff tab");
+        };
+        assert_eq!(
+            file.change.old, "fn main() {}\n",
+            "old side is the picked revision's content"
+        );
+        assert_eq!(file.change.new, "working\n");
+        assert!(
+            title.contains("\u{2194} working"),
+            "title names the comparison: {title}"
+        );
+    }
+
+    #[test]
+    fn open_changes_with_branch_diffs_against_the_branch_tip() {
+        let Some(repo) = committed_repo() else {
+            return;
+        };
+        let path = repo.path.join("new.rs");
+        // A `feature` branch changes the file; we come back to the default branch.
+        if !git(&repo.path, &["checkout", "-q", "-b", "feature"]) {
+            return;
+        }
+        std::fs::write(&path, "fn main() { feature }\n").unwrap_or_default();
+        if !git(&repo.path, &["commit", "-qam", "feature change"])
+            || !git(&repo.path, &["checkout", "-q", "-"])
+        {
+            return;
+        }
+        let mut app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        app.push_tab(code_tab_with_text(&path, "working\n"));
+
+        app.dispatch(Command::OpenChangesWithBranch);
+        let Some(overlay) = app.overlay.as_ref() else {
+            panic!("the branch picker opens");
+        };
+        assert_eq!(overlay.title(), "Open Changes: With Branch");
+        let rows: Vec<String> = overlay.rows().iter().map(ToString::to_string).collect();
+        assert!(
+            rows.iter().any(|r| r.ends_with("(current)")),
+            "the checked-out branch is marked: {rows:?}"
+        );
+        // Branches are sorted by name, so `feature` is first regardless of whether
+        // the default branch is `main` or `master`.
+        assert_eq!(rows[0], "feature");
+        app.dispatch(Command::OverlayAccept);
+
+        let Some(Tab {
+            title,
+            kind: TabKind::Diff { file, .. },
+            ..
+        }) = app.tabs.last()
+        else {
+            panic!("accepting a branch opens a diff tab");
+        };
+        assert_eq!(title, "new.rs (feature \u{2194} working)");
+        assert_eq!(
+            file.change.old, "fn main() { feature }\n",
+            "old side is the branch tip's content"
+        );
+        assert_eq!(file.change.new, "working\n");
+    }
+
+    #[test]
+    fn open_changes_reports_a_file_absent_at_the_revision() {
+        let Some(repo) = committed_repo() else {
+            return;
+        };
+        // `other.rs` only exists in the second commit, so HEAD~1 has no blob for it.
+        let path = repo.path.join("other.rs");
+        std::fs::write(&path, "x\n").unwrap_or_default();
+        if !git(&repo.path, &["add", "."]) || !git(&repo.path, &["commit", "-qm", "add other"]) {
+            return;
+        }
+        let mut app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        app.push_tab(code_tab_with_text(&path, "x\n"));
+
+        let before = app.tabs.len();
+        app.open_changes_with("HEAD~1", "HEAD~1");
+
+        assert_eq!(app.tabs.len(), before, "no diff tab is opened");
+        assert_eq!(
+            app.status.as_deref(),
+            Some("open changes: file does not exist at HEAD~1")
+        );
+    }
+
+    #[test]
+    fn context_menu_refuses_a_disabled_entry_and_surfaces_its_note() {
+        let dir = test_dir("context-disabled-accept");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.context_menu = Some(ContextMenu::new(
+            2,
+            2,
+            vec![
+                ContextMenuEntry::disabled(Command::ExplorerNewFile, "not available here"),
+                ContextMenuEntry::enabled(Command::ExplorerRefresh),
+            ],
+        ));
+        // Force the selection onto the disabled row (as a mouse click would).
+        if let Some(menu) = app.context_menu.as_mut() {
+            menu.selected = 0;
+        }
+        app.dispatch(Command::ContextMenuAccept);
+        // The command did not run, the menu stays open, and the note is surfaced.
+        assert!(!app.explorer.is_editing(), "disabled command must not run");
+        assert!(app.context_menu.is_some(), "menu stays open on refusal");
+        assert_eq!(app.status.as_deref(), Some("not available here"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
