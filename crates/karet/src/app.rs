@@ -349,41 +349,96 @@ struct ExplorerFileClipboard {
     paths: Vec<PathBuf>,
 }
 
-/// A positioned context menu opened from the explorer.
-pub(crate) struct ExplorerContextMenu {
+/// One row of a positioned context menu: the command it dispatches, whether it can
+/// run right now, and an optional note explaining why not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ContextMenuEntry {
+    /// The command this row dispatches when accepted.
+    pub(crate) command: Command,
+    /// Whether the row can be activated. A disabled row renders dimmed, is skipped
+    /// by keyboard navigation, and refuses Accept.
+    pub(crate) enabled: bool,
+    /// Why the row is disabled, surfaced as a status message when the user tries to
+    /// activate it anyway (e.g. by clicking it).
+    pub(crate) note: Option<String>,
+}
+
+impl ContextMenuEntry {
+    /// An enabled entry dispatching `command`.
+    fn enabled(command: Command) -> Self {
+        Self {
+            command,
+            enabled: true,
+            note: None,
+        }
+    }
+
+    /// A disabled entry for `command`, greyed out with an explanatory `note`.
+    fn disabled(command: Command, note: impl Into<String>) -> Self {
+        Self {
+            command,
+            enabled: false,
+            note: Some(note.into()),
+        }
+    }
+}
+
+/// A positioned context menu (opened from the explorer or over a pane).
+pub(crate) struct ContextMenu {
     /// The column where the menu should be anchored.
     pub(crate) x: u16,
     /// The row where the menu should be anchored.
     pub(crate) y: u16,
-    /// The commands shown in the menu, in display order.
-    pub(crate) items: Vec<Command>,
-    /// The selected item index.
+    /// The rows shown in the menu, in display order.
+    pub(crate) entries: Vec<ContextMenuEntry>,
+    /// The selected row index.
     pub(crate) selected: usize,
     /// The menu rect from the last render.
     pub(crate) rect: Rect,
 }
 
-impl ExplorerContextMenu {
-    fn new(x: u16, y: u16, items: Vec<Command>) -> Self {
+impl ContextMenu {
+    fn new(x: u16, y: u16, entries: Vec<ContextMenuEntry>) -> Self {
+        // Land the initial selection on the first activatable row.
+        let selected = entries.iter().position(|e| e.enabled).unwrap_or(0);
         Self {
             x,
             y,
-            items,
-            selected: 0,
+            entries,
+            selected,
             rect: Rect::default(),
         }
     }
 
+    /// Move the selection by `delta` rows, skipping disabled entries. When fewer
+    /// enabled rows exist in that direction, the selection lands on the last one
+    /// found (or stays put).
     fn select_by(&mut self, delta: i32) {
-        if self.items.is_empty() {
+        if self.entries.is_empty() || delta == 0 {
             return;
         }
-        let next = (self.selected as i64 + i64::from(delta)).clamp(0, self.items.len() as i64 - 1);
-        self.selected = next as usize;
+        let step: i64 = if delta > 0 { 1 } else { -1 };
+        let mut remaining = i64::from(delta).abs();
+        let mut idx = self.selected as i64;
+        let mut landed = self.selected as i64;
+        loop {
+            idx += step;
+            if idx < 0 || idx >= self.entries.len() as i64 {
+                break;
+            }
+            if self.entries[idx as usize].enabled {
+                landed = idx;
+                remaining -= 1;
+                if remaining == 0 {
+                    break;
+                }
+            }
+        }
+        self.selected = landed as usize;
     }
 
-    fn selected_command(&self) -> Option<Command> {
-        self.items.get(self.selected).copied()
+    fn selected_entry(&self) -> Option<&ContextMenuEntry> {
+        self.entries.get(self.selected)
     }
 }
 
@@ -449,8 +504,8 @@ pub struct App {
     pub(crate) explorer: FileTreeState,
     /// Files/directories selected for an explorer copy or cut operation.
     explorer_clipboard: Option<ExplorerFileClipboard>,
-    /// The active explorer context menu, if any.
-    pub(crate) explorer_context_menu: Option<ExplorerContextMenu>,
+    /// The active context menu (explorer or pane), if any.
+    pub(crate) context_menu: Option<ContextMenu>,
     /// The Source-Control panel state.
     pub(crate) scm: Scm,
     /// The focused pane's open tabs.
@@ -658,7 +713,7 @@ impl App {
             sidebar_visible: true,
             explorer: FileTreeState::new(),
             explorer_clipboard: None,
-            explorer_context_menu: None,
+            context_menu: None,
             scm: Scm {
                 selection: ListSelection::new(changes.len()),
                 changes,
@@ -1056,7 +1111,7 @@ impl App {
             Some(Modal::DiscardConfirm)
         } else if self.pending_explorer_delete.is_some() {
             Some(Modal::ExplorerDeleteConfirm)
-        } else if self.explorer_context_menu.is_some() {
+        } else if self.context_menu.is_some() {
             Some(Modal::ContextMenu)
         } else if self.find_open {
             Some(Modal::Find)
@@ -2697,8 +2752,8 @@ impl App {
         }
     }
 
-    fn row_context_items(&self) -> Vec<Command> {
-        vec![
+    fn row_context_items(&self) -> Vec<ContextMenuEntry> {
+        [
             Command::SidebarActivate,
             Command::ExplorerRename,
             Command::ExplorerNewFile,
@@ -2712,20 +2767,26 @@ impl App {
             Command::ExplorerCopyRelativePath,
             Command::ExplorerRefresh,
         ]
+        .into_iter()
+        .map(ContextMenuEntry::enabled)
+        .collect()
     }
 
-    fn blank_context_items(&self) -> Vec<Command> {
-        vec![
+    fn blank_context_items(&self) -> Vec<ContextMenuEntry> {
+        [
             Command::ExplorerNewFile,
             Command::ExplorerNewFolder,
             Command::ExplorerPaste,
             Command::ExplorerRefresh,
             Command::ExplorerCollapseAll,
         ]
+        .into_iter()
+        .map(ContextMenuEntry::enabled)
+        .collect()
     }
 
     fn context_menu_clear(&mut self) {
-        self.explorer_context_menu = None;
+        self.context_menu = None;
     }
 
     fn open_context_menu(&mut self, x: u16, y: u16, row: Option<usize>) {
@@ -2741,7 +2802,7 @@ impl App {
         } else {
             self.blank_context_items()
         };
-        self.explorer_context_menu = Some(ExplorerContextMenu::new(x, y, items));
+        self.context_menu = Some(ContextMenu::new(x, y, items));
     }
 
     fn open_context_menu_for_selection(&mut self) {
@@ -2762,20 +2823,31 @@ impl App {
     }
 
     fn context_menu_step(&mut self, delta: i32) {
-        if let Some(menu) = self.explorer_context_menu.as_mut() {
+        if let Some(menu) = self.context_menu.as_mut() {
             menu.select_by(delta);
         }
     }
 
     fn accept_context_menu(&mut self) {
-        let command = self
-            .explorer_context_menu
+        let Some(entry) = self
+            .context_menu
             .as_ref()
-            .and_then(ExplorerContextMenu::selected_command);
-        self.explorer_context_menu = None;
-        if let Some(command) = command {
-            self.dispatch(command);
+            .and_then(ContextMenu::selected_entry)
+        else {
+            self.context_menu = None;
+            return;
+        };
+        if !entry.enabled {
+            // Refuse a disabled row: surface its explanatory note (when it has one)
+            // and keep the menu open so another row can be chosen.
+            if let Some(note) = entry.note.clone() {
+                self.status = Some(note);
+            }
+            return;
         }
+        let command = entry.command;
+        self.context_menu = None;
+        self.dispatch(command);
     }
 
     fn close_context_menu(&mut self) {
@@ -4892,7 +4964,7 @@ impl App {
 
     /// Handle mouse interaction with an open context menu.
     fn handle_context_menu_mouse(&mut self, mouse: MouseEvent) -> bool {
-        let Some(menu) = self.explorer_context_menu.as_ref() else {
+        let Some(menu) = self.context_menu.as_ref() else {
             return false;
         };
         let point = (mouse.column, mouse.row);
@@ -4900,8 +4972,8 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) if rect_contains(menu.rect, point) => {
                 let inner_y = mouse.row.saturating_sub(menu.rect.y).saturating_sub(1);
                 let idx = usize::from(inner_y);
-                if let Some(menu) = self.explorer_context_menu.as_mut()
-                    && idx < menu.items.len()
+                if let Some(menu) = self.context_menu.as_mut()
+                    && idx < menu.entries.len()
                 {
                     menu.selected = idx;
                 }
@@ -10960,13 +11032,13 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         };
 
         app.open_context_menu(2, 2, Some(row));
-        let Some(menu) = app.explorer_context_menu.as_mut() else {
+        let Some(menu) = app.context_menu.as_mut() else {
             return;
         };
         let Some(duplicate) = menu
-            .items
+            .entries
             .iter()
-            .position(|cmd| *cmd == Command::ExplorerDuplicate)
+            .position(|entry| entry.command == Command::ExplorerDuplicate)
         else {
             return;
         };
@@ -10977,7 +11049,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
             std::fs::read(dir.join("a copy.txt")).unwrap_or_default(),
             b"alpha"
         );
-        assert!(app.explorer_context_menu.is_none());
+        assert!(app.context_menu.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -10995,13 +11067,72 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
 
         app.open_context_menu_for_selection();
 
-        let Some(menu) = app.explorer_context_menu.as_ref() else {
+        let Some(menu) = app.context_menu.as_ref() else {
             return;
         };
-        assert!(menu.items.contains(&Command::ExplorerNewFile));
-        assert!(menu.items.contains(&Command::ExplorerNewFolder));
-        assert!(!menu.items.contains(&Command::SidebarActivate));
-        assert!(!menu.items.contains(&Command::ExplorerRename));
+        let has = |cmd: Command| menu.entries.iter().any(|entry| entry.command == cmd);
+        assert!(has(Command::ExplorerNewFile));
+        assert!(has(Command::ExplorerNewFolder));
+        assert!(!has(Command::SidebarActivate));
+        assert!(!has(Command::ExplorerRename));
+        assert!(
+            menu.entries.iter().all(|entry| entry.enabled),
+            "explorer menu entries stay enabled"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn context_menu_opens_on_the_first_enabled_entry_and_skips_disabled_on_nav() {
+        let dir = test_dir("context-skip-disabled");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.context_menu = Some(ContextMenu::new(
+            2,
+            2,
+            vec![
+                ContextMenuEntry::disabled(Command::CopyPath, "no file"),
+                ContextMenuEntry::enabled(Command::CopyRelativePath),
+                ContextMenuEntry::disabled(Command::Quit, "blocked"),
+                ContextMenuEntry::enabled(Command::ExplorerRefresh),
+            ],
+        ));
+        let selected = |app: &App| app.context_menu.as_ref().map(|m| m.selected);
+        // The initial selection lands on the first enabled row, not row 0.
+        assert_eq!(selected(&app), Some(1));
+        // Down skips the disabled row 2 and lands on 3; another Down stays put.
+        app.dispatch(Command::ContextMenuDown);
+        assert_eq!(selected(&app), Some(3));
+        app.dispatch(Command::ContextMenuDown);
+        assert_eq!(selected(&app), Some(3));
+        // Up skips row 2 back to 1; another Up stays (row 0 is disabled).
+        app.dispatch(Command::ContextMenuUp);
+        assert_eq!(selected(&app), Some(1));
+        app.dispatch(Command::ContextMenuUp);
+        assert_eq!(selected(&app), Some(1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn context_menu_refuses_a_disabled_entry_and_surfaces_its_note() {
+        let dir = test_dir("context-disabled-accept");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.context_menu = Some(ContextMenu::new(
+            2,
+            2,
+            vec![
+                ContextMenuEntry::disabled(Command::ExplorerNewFile, "not available here"),
+                ContextMenuEntry::enabled(Command::ExplorerRefresh),
+            ],
+        ));
+        // Force the selection onto the disabled row (as a mouse click would).
+        if let Some(menu) = app.context_menu.as_mut() {
+            menu.selected = 0;
+        }
+        app.dispatch(Command::ContextMenuAccept);
+        // The command did not run, the menu stays open, and the note is surfaced.
+        assert!(!app.explorer.is_editing(), "disabled command must not run");
+        assert!(app.context_menu.is_some(), "menu stays open on refusal");
+        assert_eq!(app.status.as_deref(), Some("not available here"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
