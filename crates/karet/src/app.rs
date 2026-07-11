@@ -1785,6 +1785,7 @@ impl App {
             Command::ToggleFold => self.toggle_fold(),
             Command::NextChangedFile => self.step_changed_file(1),
             Command::PrevChangedFile => self.step_changed_file(-1),
+            Command::OpenDiffFile => self.open_diff_file(),
             Command::InsertChar(c) => {
                 let s = c.to_string();
                 self.submit_edit_with_cause(EditCause::Type, move |caret, sel, _b, base| {
@@ -4654,6 +4655,43 @@ impl App {
                 view,
                 scroll: 0,
             };
+        }
+    }
+
+    /// Open the active diff's underlying file in a normal editor tab — the Enter
+    /// action on a focused diff ("editor mode") — placing the caret at the diff's
+    /// first changed line. Routes through [`open_path`](Self::open_path), so an
+    /// already-open tab for the file is focused rather than duplicated. Degrades
+    /// gracefully when the file is gone from the working tree (a deleted change):
+    /// a status message, never a dead tab.
+    fn open_diff_file(&mut self) {
+        let Some(TabKind::Diff { file, .. }) = self.tabs.get(self.active).map(|t| &t.kind) else {
+            return;
+        };
+        let line = file.first_changed_line().unwrap_or(1);
+        let path = file.change.path.clone();
+        // Change paths come from the VCS repo-relative; resolve against the
+        // workspace root so the file opens (and dedups) like any explorer open.
+        let abs = if path.is_absolute() {
+            path
+        } else {
+            self.root.join(path)
+        };
+        if !abs.is_file() {
+            let name = abs.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+            self.status = Some(format!("open file: {name} is not in the working tree"));
+            return;
+        }
+        self.open_path(&abs);
+        // Land the caret on the first changed line (`goto` clamps into the buffer;
+        // a non-text tab — image, binary — simply has no caret to place).
+        let pos = LineCol::new(line.saturating_sub(1), 0);
+        let buffer = match self.tabs.get(self.active).map(|t| &t.kind) {
+            Some(TabKind::Code { buffer, .. }) => Some(buffer.clone()),
+            _ => None,
+        };
+        if let (Some(buffer), Some(tab)) = (buffer, self.tabs.get_mut(self.active)) {
+            tab.editor.goto(&buffer, pos);
         }
     }
 
@@ -8376,6 +8414,89 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         app.dispatch(Command::SidebarActivate);
         assert_eq!(app.tabs.len(), 1, "repeat Enter must not duplicate");
         assert_eq!(app.focus, Focus::Editor);
+    }
+
+    #[test]
+    fn enter_on_a_focused_diff_opens_the_file_at_its_first_changed_line() {
+        let dir = test_dir("diff-enter-into-file");
+        write_file(&dir, "a.rs", b"fn a() {}\nfn added() {}\nfn c() {}\n");
+        let changed = FileChange {
+            path: PathBuf::from("a.rs"),
+            old_path: None,
+            status: StatusKind::Modified,
+            is_binary: false,
+            old: "fn a() {}\nfn c() {}\n".to_string(),
+            new: "fn a() {}\nfn added() {}\nfn c() {}\n".to_string(),
+        };
+        let mut app = App::new(dir.clone(), Vec::new(), vec![changed], false);
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        app.focus = Focus::Sidebar;
+        app.dispatch(Command::SidebarActivate); // materialize + focus the diff
+        assert_eq!(app.focus_target(), FocusTarget::DiffEditor);
+
+        // Enter on the focused diff drops into the file, caret on the first
+        // changed line (line 2, 0-based 1) — keyboard parity with the mouse.
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            matches!(app.tabs[app.active].kind, TabKind::Code { .. }),
+            "a normal, editable editor tab"
+        );
+        assert_eq!(
+            app.tabs[app.active].path().map(canonical),
+            Some(canonical(&dir.join("a.rs")))
+        );
+        assert_eq!(app.focus, Focus::Editor);
+        assert_eq!(
+            app.tabs[app.active].editor.cursor().line,
+            1,
+            "caret lands on the first changed line"
+        );
+        assert_eq!(app.tabs.len(), 2, "the diff stays open alongside the file");
+
+        // Enter again from the diff re-focuses the existing file tab — never a
+        // duplicate.
+        let file_idx = app.active;
+        let diff_idx = app
+            .tabs
+            .iter()
+            .position(Tab::is_diff)
+            .expect("the diff tab is still open");
+        app.select_tab(diff_idx);
+        app.dispatch(Command::OpenDiffFile);
+        assert_eq!(app.tabs.len(), 2, "no duplicate editor tab");
+        assert_eq!(app.active, file_idx);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn enter_on_a_deleted_files_diff_reports_instead_of_opening() {
+        let dir = test_dir("diff-enter-deleted");
+        let deleted = FileChange {
+            path: PathBuf::from("gone.rs"),
+            old_path: None,
+            status: StatusKind::Deleted,
+            is_binary: false,
+            old: "fn gone() {}\n".to_string(),
+            new: String::new(),
+        };
+        let mut app = App::new(dir.clone(), Vec::new(), vec![deleted], false);
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        app.focus = Focus::Sidebar;
+        app.dispatch(Command::SidebarActivate);
+        assert_eq!(app.focus_target(), FocusTarget::DiffEditor);
+
+        // The file is gone from the working tree: Enter degrades to a status
+        // message — no dead tab, no panic.
+        app.dispatch(Command::OpenDiffFile);
+        assert_eq!(app.tabs.len(), 1, "nothing new opens for a deleted file");
+        assert!(app.active_is_diff(), "the diff stays active");
+        assert!(
+            app.status.as_deref().is_some_and(|s| s.contains("gone.rs")),
+            "a status message names the missing file"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

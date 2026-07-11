@@ -90,6 +90,30 @@ impl FileView {
         }
     }
 
+    /// The 1-based line, in the file's *new* (current) text, of the first change
+    /// in this diff: the first added line's position, or — for a pure removal —
+    /// the new-side line the removal collapsed onto. `None` when the diff has no
+    /// changed lines (e.g. a binary or unchanged file). Used to land the caret on
+    /// the first change when opening the underlying file from a diff view.
+    #[must_use]
+    pub fn first_changed_line(&self) -> Option<u32> {
+        for hunk in &self.diff.hunks {
+            // Track the new-side line the walk sits at, so a removal (which has
+            // no new-side number of its own) can report where it happened.
+            let mut new_line = hunk.new_start;
+            for line in &hunk.lines {
+                match line.kind {
+                    LineKind::Add => return Some(line.new_lineno.unwrap_or(new_line).max(1)),
+                    LineKind::Remove => return Some(new_line.max(1)),
+                    LineKind::Context => {
+                        new_line = line.new_lineno.map_or(new_line + 1, |n| n + 1);
+                    },
+                }
+            }
+        }
+        None
+    }
+
     /// The count of `(added, removed)` lines across this file's diff, for the commit
     /// view's per-file `+N −M` summary.
     #[must_use]
@@ -547,6 +571,47 @@ mod tests {
         assert!(text.contains("fn b() {}"));
         // The Rust grammar is compiled in, so syntax tokens were produced.
         assert!(fv.old_tokens.iter().any(|line| !line.is_empty()));
+    }
+
+    #[test]
+    fn first_changed_line_points_at_the_first_addition() {
+        // Lines 1-2 are context; line 3 changes ("c" → "x").
+        let fv = FileView::new(
+            change("notes.txt", "a\nb\nc\nd\n", "a\nb\nx\nd\n"),
+            Section::Working,
+            false,
+        );
+        assert_eq!(fv.first_changed_line(), Some(3));
+    }
+
+    #[test]
+    fn first_changed_line_for_a_pure_removal_lands_where_it_collapsed() {
+        // "b" (old line 2) is removed with nothing added: the new side collapses
+        // onto line 2 ("c"), which is where the caret should land.
+        let fv = FileView::new(
+            change("notes.txt", "a\nb\nc\n", "a\nc\n"),
+            Section::Working,
+            false,
+        );
+        assert_eq!(fv.first_changed_line(), Some(2));
+    }
+
+    #[test]
+    fn first_changed_line_is_none_when_nothing_changed() {
+        let fv = FileView::new(
+            change("notes.txt", "same\n", "same\n"),
+            Section::Working,
+            false,
+        );
+        assert_eq!(fv.first_changed_line(), None);
+    }
+
+    #[test]
+    fn first_changed_line_clamps_an_emptied_file_to_line_one() {
+        // Deleting every line leaves the new side empty (new_start 0): the caret
+        // target still clamps to a valid 1-based line.
+        let fv = FileView::new(change("notes.txt", "a\nb\n", ""), Section::Working, false);
+        assert_eq!(fv.first_changed_line(), Some(1));
     }
 
     #[test]

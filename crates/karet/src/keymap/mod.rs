@@ -292,10 +292,12 @@ static BINDINGS: &[Binding] = &[
     // Code folding (VS Code parity): `Ctrl+K Ctrl+L` toggles the fold at the cursor.
     seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('l'))], Command::ToggleFold),
 
-    // Editor focus, diff tab only.
+    // Editor focus, diff tab only. Enter drops from the read-only diff into the
+    // underlying file ("editor mode"), landing on its first changed line.
     b(DiffEditor, false, false, false, Char('\\'), Command::ToggleDiffLayout),
     b(DiffEditor, false, false, false, Char(']'),  Command::NextChangedFile),
     b(DiffEditor, false, false, false, Char('['),  Command::PrevChangedFile),
+    b(DiffEditor, false, false, false, Enter,      Command::OpenDiffFile),
 
     // Read-only scrollable views (commit / compare / blame / graph / hex): arrows and
     // PageUp/Down scroll, Home/End jump to the edges, `q` closes the tab. No caret.
@@ -691,6 +693,25 @@ mod tests {
                 key(KeyCode::Char('\\'), KeyModifiers::NONE)
             ),
             None
+        );
+        // Enter on a focused diff drops into the underlying file ("editor mode");
+        // on a plain editor tab it stays the newline key.
+        assert_eq!(
+            res(Focus::Editor, true, key(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(Command::OpenDiffFile)
+        );
+        assert_eq!(
+            res(
+                Focus::Editor,
+                false,
+                key(KeyCode::Enter, KeyModifiers::NONE)
+            ),
+            Some(Command::InsertNewline)
+        );
+        // And the sidebar still reaches the diff via the global focus toggle.
+        assert_eq!(
+            res(Focus::Sidebar, true, key(KeyCode::Tab, KeyModifiers::NONE)),
+            Some(Command::ToggleFocus)
         );
     }
 
