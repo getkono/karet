@@ -33,6 +33,7 @@ use karet_session::LoadedConfig;
 use karet_text::TextBuffer;
 use karet_theme::Theme;
 use karet_vcs::StatusKind;
+use karet_widgets::CompletionPopup;
 use karet_widgets::Corner;
 use karet_widgets::FileTree;
 use karet_widgets::Toasts;
@@ -147,6 +148,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_panes(f, app, &theme, app.main_rect);
     draw_drop_preview(f, app, &theme);
     draw_status(f, app, &theme, rows[1]);
+
+    // The completion popup floats over the editor, anchored at the caret; it
+    // sits under modal overlays and toasts.
+    draw_completion(f, app, &theme);
 
     if let Some(overlay) = &app.overlay {
         draw_overlay(f, overlay, &theme, area);
@@ -365,6 +370,79 @@ fn draw_drop_preview(f: &mut Frame, app: &App, theme: &Theme) {
 
 /// Draw the notification toast stack (bottom-right) and record each card's clickable
 /// region for dismissal hit-testing. A no-op when there are no active notifications.
+/// Draw the completion popup anchored at the caret: aligned with the start of
+/// the word being completed, below the caret's line, or above it when there is
+/// not enough room below. Sized so the widest label+detail row is fully
+/// visible within the editor area (the widget truncates details with an
+/// ellipsis when the editor itself is too narrow).
+fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme) {
+    // The filter doubles as the "popup still applies" check.
+    let Some(filter) = app.completion_filter() else {
+        return;
+    };
+    let editor = app.editor_rect;
+    if editor.width == 0 || editor.height == 0 {
+        return;
+    }
+    let caret_cell = {
+        let Some(tab) = app.tabs.get(app.active) else {
+            return;
+        };
+        let TabKind::Code {
+            buffer,
+            folds,
+            folded,
+            ..
+        } = &tab.kind
+        else {
+            return;
+        };
+        let fold_lines = crate::app::resolve_folds(folds, folded);
+        tab.editor.primary_caret_cell(editor, buffer, &fold_lines)
+    };
+    let Some((caret_x, caret_y)) = caret_cell else {
+        return; // caret scrolled out of view
+    };
+    // Align the popup with the completed word's start (identifier characters
+    // are single-column, so char count is column count here).
+    let prefix_cols = u16::try_from(filter.chars().count()).unwrap_or(0);
+    let x = caret_x
+        .saturating_sub(prefix_cols)
+        .clamp(editor.left(), editor.right().saturating_sub(1));
+
+    let Some(ui) = app.completion.as_mut() else {
+        return;
+    };
+    if filter != ui.last_filter {
+        ui.list.reset();
+        ui.last_filter.clone_from(&filter);
+    }
+    let crate::completion::CompletionUi { items, list, .. } = ui;
+    let mut popup = CompletionPopup::new(items, &mut app.completion_matcher, &filter, theme);
+    let avail_w = editor.right().saturating_sub(x).max(1);
+    let (width, rows) = popup.desired_size((avail_w, karet_widgets::completion::MAX_VISIBLE_ROWS));
+    if width == 0 || rows == 0 {
+        return; // nothing matches the filter
+    }
+    let below = editor.bottom().saturating_sub(caret_y.saturating_add(1));
+    let above = caret_y.saturating_sub(editor.top());
+    let (y, height) = if below >= rows {
+        (caret_y + 1, rows)
+    } else if above >= rows {
+        (caret_y - rows, rows)
+    } else if below >= above {
+        (caret_y + 1, below)
+    } else {
+        (caret_y.saturating_sub(above), above)
+    };
+    if height == 0 {
+        return;
+    }
+    let rect = Rect::new(x, y, width, height);
+    f.render_widget(Clear, rect);
+    f.render_stateful_widget(popup, rect, list);
+}
+
 fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     app.toast_hits.clear();
     if app.notifications.is_empty() {
@@ -3129,6 +3207,7 @@ mod tests {
                 folded: std::collections::BTreeSet::new(),
                 decos: Vec::new(),
                 search_decos: Vec::new(),
+                syntax_errors: Vec::new(),
             },
         )
     }
@@ -3375,6 +3454,7 @@ mod tests {
                 folded: std::collections::BTreeSet::new(),
                 decos: Vec::new(),
                 search_decos: Vec::new(),
+                syntax_errors: Vec::new(),
             },
         );
 

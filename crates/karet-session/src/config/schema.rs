@@ -63,6 +63,8 @@ pub struct Editor {
     pub format_on_save: bool,
     /// Distinct highlighting of codetag comment blocks (`TODO:`, `FIXME:`, …).
     pub semantic_comments: SemanticComments,
+    /// LSP-powered code completion (the popup).
+    pub completion: Completion,
 }
 
 impl Default for Editor {
@@ -80,6 +82,29 @@ impl Default for Editor {
             insert_final_newline: true,
             format_on_save: false,
             semantic_comments: SemanticComments::default(),
+            completion: Completion::default(),
+        }
+    }
+}
+
+/// `editor.completion.*` — LSP-powered code completion.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct Completion {
+    /// Offer completions at all (the popup, manual and automatic).
+    pub enabled: bool,
+    /// Open the popup automatically while typing identifier or trigger
+    /// characters, when the caret's line has no syntax error. Manual
+    /// completion (Ctrl+Space) works regardless and bypasses the error gate.
+    pub auto_trigger: bool,
+}
+
+impl Default for Completion {
+    /// On by default (issue #57): completions and auto-trigger both enabled.
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            auto_trigger: true,
         }
     }
 }
@@ -357,6 +382,8 @@ mod tests {
         assert!(s.git.decorations);
         assert!(s.editor.semantic_comments.enabled);
         assert!(s.lsp.enabled, "LSP is on by default (issue #57)");
+        assert!(s.editor.completion.enabled, "completion defaults on (#57)");
+        assert!(s.editor.completion.auto_trigger, "auto-trigger defaults on");
         assert!(s.lsp.servers.is_empty(), "no user overrides by default");
     }
 

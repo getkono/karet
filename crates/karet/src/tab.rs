@@ -128,6 +128,9 @@ pub enum TabKind {
         /// `decos` so closing/rerunning local find can't wipe them (or vice
         /// versa). Empty unless this tab's path is a current search result.
         search_decos: Vec<Decoration>,
+        /// Inclusive line ranges covered by syntax errors, from the latest
+        /// snapshot. Gates the completion auto-trigger (issue #57).
+        syntax_errors: Vec<(u32, u32)>,
     },
     /// A rendered, read-only preview of a Markdown document, shown beside the
     /// [`Code`](TabKind::Code) tab it mirrors.
@@ -646,6 +649,7 @@ mod tests {
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
                 search_decos: Vec::new(),
+                syntax_errors: Vec::new(),
             },
         );
         assert_eq!(tab.path(), Some(Path::new("/x/a.rs")));
@@ -669,6 +673,7 @@ mod tests {
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
                 search_decos: Vec::new(),
+                syntax_errors: Vec::new(),
             },
         );
         assert_eq!(tab.encoding_label().as_deref(), Some("UTF-8 · CRLF"));

@@ -696,6 +696,12 @@ pub struct App {
     /// In-flight save requests, mapping request id → document, so the tab's saving
     /// spinner clears when the answering event (saved or error) arrives.
     pending_saves: HashMap<RequestId, DocumentId>,
+    /// The in-flight completion request, if any (see [`crate::completion`]).
+    pub(crate) pending_completion: Option<crate::completion::PendingCompletion>,
+    /// The open completion popup, if any.
+    pub(crate) completion: Option<crate::completion::CompletionUi>,
+    /// The reusable fuzzy matcher backing the completion popup's filtering.
+    pub(crate) completion_matcher: karet_fuzzy::Matcher,
     /// In-flight commit-detail requests, mapping request id → where its result goes
     /// (a new standalone commit tab, or the graph browser's detail pane).
     pending_commit_detail: HashMap<RequestId, CommitDest>,
@@ -824,6 +830,9 @@ impl App {
             backend: None,
             pending_open: HashMap::new(),
             pending_saves: HashMap::new(),
+            pending_completion: None,
+            completion: None,
+            completion_matcher: karet_fuzzy::Matcher::new(),
             pending_commit_detail: HashMap::new(),
             graph_log_req: None,
             open_docs: HashSet::new(),
@@ -1118,8 +1127,19 @@ impl App {
                 Resolved::Command(command) => self.dispatch(command),
                 Resolved::Pending | Resolved::None => self.modal_text(modal, key),
             },
-            None => self.resolve_key(key),
+            None => {
+                // The completion popup is a light key layer over the editor:
+                // it consumes only its navigation/accept/dismiss keys and lets
+                // everything else (typing, movement) fall through.
+                if self.completion_key(key) {
+                    return;
+                }
+                self.resolve_key(key);
+            },
         }
+        // Any key may have moved the caret or switched tabs; a popup or pending
+        // request whose anchor no longer holds is dismissed.
+        self.reconcile_completion();
     }
 
     /// The current input context: the active modal (if any) over the focused pane.
@@ -1902,11 +1922,13 @@ impl App {
             Command::NextChangedFile => self.step_changed_file(1),
             Command::PrevChangedFile => self.step_changed_file(-1),
             Command::OpenDiffFile => self.open_diff_file(),
+            Command::TriggerCompletion => self.trigger_completion(true),
             Command::InsertChar(c) => {
                 let s = c.to_string();
                 self.submit_edit_with_cause(EditCause::Type, move |caret, sel, _b, base| {
                     Some(editing::insert(caret, sel, base, &s))
                 });
+                self.maybe_auto_complete(c);
             },
             Command::InsertNewline => {
                 self.submit_edit_with_cause(EditCause::Newline, |caret, sel, buf, base| {
@@ -4568,6 +4590,7 @@ impl App {
                     folded,
                     decos,
                     search_decos,
+                    syntax_errors,
                 } => Tab::new(
                     t.title.clone(),
                     TabKind::Code {
@@ -4582,6 +4605,7 @@ impl App {
                         folded: folded.clone(),
                         decos: decos.clone(),
                         search_decos: search_decos.clone(),
+                        syntax_errors: syntax_errors.clone(),
                     },
                 ),
                 _ => Tab::welcome(),
@@ -6676,6 +6700,11 @@ impl App {
                     }
                 }
             },
+            SessionEvent::Completions {
+                doc,
+                version,
+                items,
+            } => self.on_completions(id, doc, version, items),
             SessionEvent::Saved { doc } => {
                 for tab in self.all_tabs_mut() {
                     if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
@@ -6889,6 +6918,7 @@ impl App {
                 folded,
                 text,
                 next_version,
+                syntax_errors,
                 ..
             } = &mut tab.kind
             {
@@ -6902,6 +6932,7 @@ impl App {
                 }
                 *highlights = (*snap.highlights).clone();
                 *folds = (*snap.folds).clone();
+                *syntax_errors = snap.syntax_error_lines.as_ref().clone();
                 *next_version = (*next_version).max(snap.version);
                 // Drop collapsed markers whose fold no longer starts where it did (an
                 // edit shifted or removed it), so stale hidden lines can't linger.
@@ -6936,6 +6967,9 @@ impl App {
         if !self.search.query.is_empty() {
             self.refresh_search_decorations();
         }
+        // An undo/redo snapshot may have moved the caret away from the popup's
+        // anchor; re-validate it.
+        self.reconcile_completion();
     }
 }
 
@@ -7359,6 +7393,298 @@ fn handle_terminal_event(app: &mut App, event: Event) {
         Event::Mouse(mouse) => app.handle_mouse(mouse),
         Event::Paste(text) => app.handle_paste(text),
         _ => {},
+    }
+}
+
+/// Completion UI (issue #57): triggers, the popup key layer, accept, and the
+/// stale-answer bookkeeping. Pure logic lives in [`crate::completion`]; the
+/// popup itself is `karet_widgets::completion`. The app talks only through the
+/// session seam (`Command::Completion` → `Event::Completions`).
+impl App {
+    /// The active code tab's completion target: `(document, caret)`.
+    fn completion_target(&self) -> Option<(DocumentId, LineCol)> {
+        let tab = self.tabs.get(self.active)?;
+        let TabKind::Code { doc: Some(doc), .. } = &tab.kind else {
+            return None;
+        };
+        Some((*doc, tab.editor.cursor()))
+    }
+
+    /// Request completions at the caret. `manual` (Ctrl+Space) bypasses the
+    /// syntax-error gate; automatic triggers hold off while the caret's line
+    /// has an outright parse error (per issue #57).
+    pub(crate) fn trigger_completion(&mut self, manual: bool) {
+        if !self.settings.editor.completion.enabled {
+            return;
+        }
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        let Some((doc, caret)) = self.completion_target() else {
+            return;
+        };
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let TabKind::Code {
+            buffer,
+            syntax_errors,
+            ..
+        } = &tab.kind
+        else {
+            return;
+        };
+        if !manual && crate::completion::line_has_syntax_error(syntax_errors, caret.line) {
+            return; // the line doesn't parse yet: suggesting now is noise
+        }
+        let (anchor, _) = karet_editor::word_bounds(buffer, caret);
+        let id = backend.next_id();
+        if backend
+            .send(
+                id,
+                SessionCommand::Completion {
+                    doc,
+                    position: caret,
+                },
+            )
+            .is_ok()
+        {
+            self.pending_completion =
+                Some(crate::completion::PendingCompletion { id, doc, anchor });
+        }
+    }
+
+    /// Auto-trigger after typing `c`: identifier characters open the popup (a
+    /// one-character prefix suffices), `.` and the second `:` of `::`
+    /// re-request at the new completion boundary, anything else does nothing.
+    fn maybe_auto_complete(&mut self, c: char) {
+        let completion = &self.settings.editor.completion;
+        if !completion.enabled || !completion.auto_trigger {
+            return;
+        }
+        let boundary = c == crate::completion::TRIGGER_DOT
+            || (c == crate::completion::TRIGGER_COLON && self.typed_second_colon());
+        if boundary {
+            self.trigger_completion(false);
+            return;
+        }
+        if self.completion.is_some() {
+            return; // already open: typing narrows the filter client-side
+        }
+        if crate::completion::is_word_char(c) {
+            self.trigger_completion(false);
+        }
+    }
+
+    /// After typing `:`, whether it completed a `::` path separator.
+    fn typed_second_colon(&self) -> bool {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return false;
+        };
+        let TabKind::Code { buffer, .. } = &tab.kind else {
+            return false;
+        };
+        let caret = tab.editor.cursor();
+        buffer.line(caret.line as usize).is_some_and(|line| {
+            let chars: Vec<char> = line.chars().collect();
+            let i = caret.col as usize;
+            i >= 2 && chars.get(i - 1) == Some(&':') && chars.get(i - 2) == Some(&':')
+        })
+    }
+
+    /// The live filter: the text typed between the popup's anchor and the
+    /// caret. `None` when the popup no longer applies to the active view.
+    pub(crate) fn completion_filter(&self) -> Option<String> {
+        let ui = self.completion.as_ref()?;
+        let tab = self.tabs.get(self.active)?;
+        let TabKind::Code {
+            doc: Some(doc),
+            buffer,
+            ..
+        } = &tab.kind
+        else {
+            return None;
+        };
+        if *doc != ui.doc {
+            return None;
+        }
+        let caret = tab.editor.cursor();
+        if !crate::completion::caret_still_anchored(ui.anchor, caret) {
+            return None;
+        }
+        let line = buffer.line(ui.anchor.line as usize)?;
+        let chars: Vec<char> = line.chars().collect();
+        let start = ui.anchor.col as usize;
+        let end = (caret.col as usize).min(chars.len());
+        (start <= end).then(|| chars[start..end].iter().collect())
+    }
+
+    /// The popup's current candidate order (indices into its items), resetting
+    /// the selection when the filter changed since the last look.
+    pub(crate) fn completion_ranked(&mut self) -> Option<Vec<usize>> {
+        let filter = self.completion_filter()?;
+        let ui = self.completion.as_mut()?;
+        if filter != ui.last_filter {
+            ui.list.reset();
+            ui.last_filter.clone_from(&filter);
+        }
+        let mut popup = karet_widgets::CompletionPopup::new(
+            &ui.items,
+            &mut self.completion_matcher,
+            &filter,
+            &self.theme,
+        );
+        Some(popup.ranked())
+    }
+
+    /// Handle a key while the popup is open; returns whether it was consumed.
+    /// Up/Down navigate, Enter/Tab accept, Esc dismisses; everything else
+    /// falls through to normal editing (which refilters).
+    fn completion_key(&mut self, key: KeyEvent) -> bool {
+        if self.completion.is_none() || !key.modifiers.is_empty() {
+            return false;
+        }
+        let len = self.completion_ranked().map_or(0, |ranked| ranked.len());
+        if len == 0 {
+            // Nothing matches the typed prefix any more: the popup is over.
+            self.dismiss_completion();
+            return false;
+        }
+        match key.code {
+            KeyCode::Up => {
+                if let Some(ui) = self.completion.as_mut() {
+                    ui.list.select_prev(len);
+                }
+                true
+            },
+            KeyCode::Down => {
+                if let Some(ui) = self.completion.as_mut() {
+                    ui.list.select_next(len);
+                }
+                true
+            },
+            KeyCode::Esc => {
+                self.dismiss_completion();
+                true
+            },
+            KeyCode::Enter | KeyCode::Tab => {
+                self.accept_completion();
+                true
+            },
+            _ => false,
+        }
+    }
+
+    /// Accept the selected candidate: replace the typed prefix (anchor to
+    /// caret) with the item's resolved insert text, through the ordinary
+    /// session edit path. (The item's `insert_text` already carries its
+    /// `textEdit.newText` per the LSP precedence applied in karet-lsp.)
+    fn accept_completion(&mut self) {
+        let Some(ranked) = self.completion_ranked() else {
+            self.dismiss_completion();
+            return;
+        };
+        let text = {
+            let Some(ui) = self.completion.as_ref() else {
+                return;
+            };
+            let selected = ui.list.selected.min(ranked.len().saturating_sub(1));
+            let Some(item) = ranked.get(selected).and_then(|&i| ui.items.get(i)) else {
+                self.dismiss_completion();
+                return;
+            };
+            item.insert_text.clone()
+        };
+        let Some(anchor) = self.completion.as_ref().map(|ui| ui.anchor) else {
+            return;
+        };
+        self.dismiss_completion();
+        self.submit_edit_with_cause(EditCause::Replace, move |caret, _sel, _buf, base| {
+            // Only carets still on the anchored span complete; others no-op.
+            let range = crate::completion::accept_range(anchor, caret)?;
+            Some(editing::Edit {
+                change: Change::new(
+                    base,
+                    vec![TextEdit {
+                        range,
+                        new_text: text.clone(),
+                    }],
+                ),
+                caret: crate::completion::caret_after_insert(range.start, &text),
+            })
+        });
+    }
+
+    /// Close the popup and forget any in-flight request.
+    pub(crate) fn dismiss_completion(&mut self) {
+        self.completion = None;
+        self.pending_completion = None;
+    }
+
+    /// Drop the popup / pending request when the caret left the anchored span,
+    /// the document changed, or the active tab is no longer a code tab.
+    pub(crate) fn reconcile_completion(&mut self) {
+        let target = self.completion_target();
+        let anchored = |doc: DocumentId, anchor: LineCol| {
+            matches!(target, Some((d, caret))
+                if d == doc && crate::completion::caret_still_anchored(anchor, caret))
+        };
+        if let Some(pending) = &self.pending_completion
+            && !anchored(pending.doc, pending.anchor)
+        {
+            self.pending_completion = None;
+        }
+        if let Some(ui) = &self.completion
+            && !anchored(ui.doc, ui.anchor)
+        {
+            self.completion = None;
+        }
+    }
+
+    /// Adopt (or drop as stale) an answering `Event::Completions`.
+    fn on_completions(
+        &mut self,
+        id: Option<RequestId>,
+        doc: DocumentId,
+        version: u64,
+        items: Vec<karet_core::CompletionItem>,
+    ) {
+        // The request id is the primary staleness key (a newer request
+        // supersedes); the anchor check below covers caret movement, which
+        // also subsumes the version tag for typed-ahead edits.
+        let _ = version;
+        let Some(pending) = self.pending_completion else {
+            return;
+        };
+        if id != Some(pending.id) {
+            return; // an answer to a superseded request
+        }
+        self.pending_completion = None;
+        if pending.doc != doc {
+            return;
+        }
+        let still_valid = matches!(self.completion_target(), Some((d, caret))
+            if d == doc && crate::completion::caret_still_anchored(pending.anchor, caret));
+        if !still_valid {
+            return;
+        }
+        if items.is_empty() {
+            self.completion = None;
+            return;
+        }
+        self.completion = Some(crate::completion::CompletionUi {
+            items,
+            list: karet_widgets::CompletionState::default(),
+            doc,
+            anchor: pending.anchor,
+            last_filter: String::new(),
+        });
+        // Seed the filter so the first render doesn't spuriously reset it.
+        if let Some(filter) = self.completion_filter()
+            && let Some(ui) = self.completion.as_mut()
+        {
+            ui.last_filter = filter;
+        }
     }
 }
 
@@ -9655,6 +9981,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
                 search_decos: Vec::new(),
+                syntax_errors: Vec::new(),
             },
         ));
         app.dispatch(Command::OpenFind);
@@ -10102,6 +10429,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
                 search_decos: Vec::new(),
+                syntax_errors: Vec::new(),
             },
         ));
         app.dispatch(Command::ShowBlame);
@@ -10148,6 +10476,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
                 search_decos: Vec::new(),
+                syntax_errors: Vec::new(),
             },
         )
     }
@@ -10199,6 +10528,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
                 search_decos: Vec::new(),
+                syntax_errors: Vec::new(),
             },
         )
     }
@@ -10356,6 +10686,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 highlights: Arc::new(Highlights::default()),
                 folds: Arc::new(FoldRegions::default()),
                 decorations: Arc::new(Vec::new()),
+                syntax_error_lines: Arc::new(Vec::new()),
                 language: Some("Markdown"),
                 dirty: true,
                 cursor: None,
@@ -10646,6 +10977,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 highlights: Arc::new(Highlights::default()),
                 folds: Arc::new(FoldRegions::default()),
                 decorations: Arc::new(Vec::new()),
+                syntax_error_lines: Arc::new(Vec::new()),
                 language: Some("Markdown"),
                 dirty: true,
                 cursor: None,
@@ -11968,6 +12300,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
                 search_decos: Vec::new(),
+                syntax_errors: Vec::new(),
             },
         )
     }
@@ -12261,6 +12594,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
                 search_decos: Vec::new(),
+                syntax_errors: Vec::new(),
             },
         ));
         app.dispatch(Command::OpenFind);
@@ -12354,6 +12688,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
                 search_decos: Vec::new(),
+                syntax_errors: Vec::new(),
             },
         ));
         assert_eq!(
@@ -12701,6 +13036,309 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 .changes
                 .iter()
                 .all(|c| c.status == StatusKind::Added)
+        );
+    }
+
+    // --- completion UI (issue #57) -----------------------------------------
+
+    fn completion_item_labeled(label: &str, insert: &str) -> karet_core::CompletionItem {
+        karet_core::CompletionItem {
+            label: label.to_owned(),
+            kind: karet_core::CompletionKind::Function,
+            detail: None,
+            documentation: None,
+            insert_text: insert.to_owned(),
+            edit: None,
+            sort_text: None,
+            deprecated: false,
+        }
+    }
+
+    /// A focused editor over `text` (doc 9) wired to a recording backend, with
+    /// the caret at `caret`.
+    fn completion_app(text: &str, caret: LineCol) -> (Arc<RecordingBackend>, App) {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        app.push_tab(text_tab("main.rs", text));
+        app.focus = Focus::Editor;
+        let idx = app.active;
+        if let TabKind::Code { doc, .. } = &mut app.tabs[idx].kind {
+            *doc = Some(DocumentId(9));
+        }
+        app.tabs[idx].editor.set_carets(&[caret]);
+        (backend, app)
+    }
+
+    /// The completion requests a backend received, as `(id, position)`.
+    fn completion_requests(backend: &RecordingBackend) -> Vec<(RequestId, LineCol)> {
+        backend
+            .sent
+            .lock()
+            .map(|sent| {
+                sent.iter()
+                    .filter_map(|(id, command)| match command {
+                        SessionCommand::Completion { position, .. } => Some((*id, *position)),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn open_popup(app: &mut App, items: Vec<karet_core::CompletionItem>, anchor: LineCol) {
+        app.completion = Some(crate::completion::CompletionUi {
+            items,
+            list: karet_widgets::CompletionState::default(),
+            doc: DocumentId(9),
+            anchor,
+            last_filter: String::new(),
+        });
+    }
+
+    #[test]
+    fn ctrl_space_requests_completions_at_the_caret() {
+        let (backend, mut app) = completion_app("fo\n", LineCol::new(0, 2));
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        let sent = completion_requests(&backend);
+        assert_eq!(sent.len(), 1, "one Completion command");
+        assert_eq!(sent[0].1, LineCol::new(0, 2));
+        let pending = app.pending_completion.expect("a pending request");
+        assert_eq!(pending.id, sent[0].0, "answer correlates by request id");
+        assert_eq!(pending.anchor, LineCol::new(0, 0), "anchored at word start");
+    }
+
+    #[test]
+    fn auto_trigger_fires_on_word_chars_but_the_error_gate_blocks_it() {
+        let (backend, mut app) = completion_app("fn main() {}\n", LineCol::new(0, 0));
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::empty()));
+        assert_eq!(
+            completion_requests(&backend).len(),
+            1,
+            "a typed identifier char auto-triggers"
+        );
+
+        // A syntax error intersecting the caret line suppresses auto-trigger.
+        app.dismiss_completion();
+        let idx = app.active;
+        if let TabKind::Code { syntax_errors, .. } = &mut app.tabs[idx].kind {
+            *syntax_errors = vec![(0, 0)];
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::empty()));
+        assert_eq!(
+            completion_requests(&backend).len(),
+            1,
+            "the gate holds while the line has an outright error"
+        );
+    }
+
+    #[test]
+    fn manual_trigger_bypasses_the_error_gate() {
+        let (backend, mut app) = completion_app("broken(\n", LineCol::new(0, 7));
+        let idx = app.active;
+        if let TabKind::Code { syntax_errors, .. } = &mut app.tabs[idx].kind {
+            *syntax_errors = vec![(0, 3)];
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        assert_eq!(
+            completion_requests(&backend).len(),
+            1,
+            "Ctrl+Space ignores the gate"
+        );
+    }
+
+    #[test]
+    fn trigger_characters_re_request_at_the_boundary() {
+        // `.` triggers with an empty prefix …
+        let (backend, mut app) = completion_app("self\n", LineCol::new(0, 4));
+        app.handle_key(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::empty()));
+        let sent = completion_requests(&backend);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].1, LineCol::new(0, 5), "requested after the dot");
+        let pending = app.pending_completion.expect("pending");
+        assert_eq!(
+            pending.anchor,
+            LineCol::new(0, 5),
+            "empty prefix at a boundary"
+        );
+
+        // … a lone `:` does not, the second `:` of `::` does.
+        let (backend, mut app) = completion_app("std\n", LineCol::new(0, 3));
+        app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::empty()));
+        assert!(
+            completion_requests(&backend).is_empty(),
+            "single colon is not a boundary"
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::empty()));
+        assert_eq!(completion_requests(&backend).len(), 1, "`::` re-requests");
+    }
+
+    #[test]
+    fn completion_settings_disable_the_paths() {
+        // enabled = false kills both manual and automatic completion.
+        let (backend, mut app) = completion_app("fo\n", LineCol::new(0, 2));
+        app.settings.editor.completion.enabled = false;
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty()));
+        assert!(completion_requests(&backend).is_empty());
+
+        // autoTrigger = false keeps manual completion working.
+        let (backend, mut app) = completion_app("fo\n", LineCol::new(0, 2));
+        app.settings.editor.completion.auto_trigger = false;
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty()));
+        assert!(completion_requests(&backend).is_empty(), "no auto-trigger");
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        assert_eq!(completion_requests(&backend).len(), 1, "manual still works");
+    }
+
+    #[test]
+    fn stale_completions_are_ignored_and_fresh_ones_open_the_popup() {
+        let (backend, mut app) = completion_app("fo\n", LineCol::new(0, 2));
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        let (id, _) = completion_requests(&backend)[0];
+
+        // An answer to a different (superseded) request id is dropped.
+        app.on_backend_event(
+            Some(RequestId(id.0 + 100)),
+            SessionEvent::Completions {
+                doc: DocumentId(9),
+                version: 0,
+                items: vec![completion_item_labeled("stale", "stale")],
+            },
+        );
+        assert!(
+            app.completion.is_none(),
+            "stale answers never open the popup"
+        );
+        assert!(
+            app.pending_completion.is_some(),
+            "still awaiting the real one"
+        );
+
+        // The matching answer opens the popup.
+        app.on_backend_event(
+            Some(id),
+            SessionEvent::Completions {
+                doc: DocumentId(9),
+                version: 0,
+                items: vec![completion_item_labeled("foobar", "foobar")],
+            },
+        );
+        let ui = app.completion.as_ref().expect("popup open");
+        assert_eq!(ui.items.len(), 1);
+        assert!(app.pending_completion.is_none());
+    }
+
+    #[test]
+    fn a_moved_caret_drops_late_completions() {
+        let (backend, mut app) = completion_app("fo\nbar\n", LineCol::new(0, 2));
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        let (id, _) = completion_requests(&backend)[0];
+        // The caret leaves the anchor line before the answer arrives.
+        let idx = app.active;
+        app.tabs[idx].editor.set_carets(&[LineCol::new(1, 0)]);
+        app.on_backend_event(
+            Some(id),
+            SessionEvent::Completions {
+                doc: DocumentId(9),
+                version: 0,
+                items: vec![completion_item_labeled("foobar", "foobar")],
+            },
+        );
+        assert!(
+            app.completion.is_none(),
+            "late answers for a moved caret drop"
+        );
+    }
+
+    #[test]
+    fn accepting_replaces_the_typed_prefix() {
+        let (_backend, mut app) = completion_app("fo\n", LineCol::new(0, 2));
+        open_popup(
+            &mut app,
+            vec![completion_item_labeled("foobar", "foobar")],
+            LineCol::new(0, 0),
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()));
+        assert_eq!(code_tab_text(&app), "foobar\n", "the prefix was replaced");
+        let idx = app.active;
+        assert_eq!(app.tabs[idx].editor.cursor(), LineCol::new(0, 6));
+        assert!(app.completion.is_none(), "accepting closes the popup");
+    }
+
+    #[test]
+    fn popup_keys_navigate_and_escape_dismisses() {
+        let (_backend, mut app) = completion_app("\n", LineCol::new(0, 0));
+        open_popup(
+            &mut app,
+            vec![
+                completion_item_labeled("alpha", "alpha"),
+                completion_item_labeled("beta", "beta"),
+            ],
+            LineCol::new(0, 0),
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()));
+        assert_eq!(
+            app.completion.as_ref().map(|ui| ui.list.selected),
+            Some(1),
+            "Down moves the selection"
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::empty()));
+        assert_eq!(app.completion.as_ref().map(|ui| ui.list.selected), Some(0));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()));
+        assert!(app.completion.is_none(), "Esc dismisses");
+    }
+
+    #[test]
+    fn backspacing_past_the_anchor_dismisses_the_popup() {
+        let (_backend, mut app) = completion_app("f\n", LineCol::new(0, 1));
+        open_popup(
+            &mut app,
+            vec![completion_item_labeled("foo", "foo")],
+            LineCol::new(0, 1),
+        );
+        // Deleting the char before the anchor moves the caret to (0,0) < anchor.
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::empty()));
+        assert!(app.completion.is_none(), "the popup follows its anchor");
+    }
+
+    #[test]
+    fn typing_keeps_the_popup_filtering_without_a_new_request() {
+        let (backend, mut app) = completion_app("f\n", LineCol::new(0, 1));
+        open_popup(
+            &mut app,
+            vec![
+                completion_item_labeled("foobar", "foobar"),
+                completion_item_labeled("other", "other"),
+            ],
+            LineCol::new(0, 0),
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::empty()));
+        assert!(
+            completion_requests(&backend).is_empty(),
+            "word chars refilter client-side while open"
+        );
+        assert!(app.completion.is_some(), "the popup stays open");
+        let ranked = app.completion_ranked().unwrap_or_default();
+        assert_eq!(
+            ranked,
+            vec![0],
+            "only the matching candidate survives \"fo\""
+        );
+    }
+
+    #[test]
+    fn the_popup_paints_near_the_caret() {
+        let (_backend, mut app) = completion_app("fo\n", LineCol::new(0, 2));
+        open_popup(
+            &mut app,
+            vec![completion_item_labeled("frobnicate", "frobnicate")],
+            LineCol::new(0, 0),
+        );
+        let painted = screen(&mut app, 80, 16).join("\n");
+        assert!(
+            painted.contains("frobnicate"),
+            "the popup row is painted: {painted}"
         );
     }
 }
