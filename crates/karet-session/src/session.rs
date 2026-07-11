@@ -177,6 +177,9 @@ struct Document {
     /// since. The parsed trees themselves live on the worker, not here.
     highlights: Arc<Highlights>,
     folds: Arc<FoldRegions>,
+    /// Syntax-error line ranges from the worker's last parse (see
+    /// [`DocSnapshot::syntax_error_lines`]).
+    error_lines: Arc<Vec<(u32, u32)>>,
     decorations: Vec<Decoration>,
     /// Open reference count (a path opened in N views shares one document).
     refs: u32,
@@ -847,6 +850,7 @@ impl Session {
         }
         doc.highlights = result.highlights;
         doc.folds = result.folds;
+        doc.error_lines = result.error_lines;
         self.publish(result.doc, None);
     }
 
@@ -953,6 +957,7 @@ impl Session {
             format,
             highlights: Arc::new(Highlights::default()),
             folds: Arc::new(FoldRegions::default()),
+            error_lines: Arc::default(),
             decorations: Vec::new(),
             refs: 1,
             dirty_since: None,
@@ -1398,6 +1403,7 @@ impl Session {
                 highlights: doc.highlights.clone(),
                 folds: doc.folds.clone(),
                 decorations: Arc::new(doc.decorations.clone()),
+                syntax_error_lines: doc.error_lines.clone(),
                 language: doc.language,
                 dirty: doc.buffer.is_dirty(),
                 cursor,

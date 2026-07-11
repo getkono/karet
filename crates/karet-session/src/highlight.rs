@@ -54,6 +54,8 @@ pub(crate) struct HighlightResult {
     pub version: u64,
     pub highlights: Arc<Highlights>,
     pub folds: Arc<FoldRegions>,
+    /// Line ranges covered by syntax errors (see `SyntaxTree::error_lines`).
+    pub error_lines: Arc<Vec<(u32, u32)>>,
 }
 
 /// Start the worker thread, returning its job sender and result receiver.
@@ -198,6 +200,7 @@ fn compute(
         version: request.version,
         highlights: Arc::new(highlights),
         folds: Arc::new(karet_syntax::fold(tree.root())),
+        error_lines: Arc::new(tree.error_lines()),
     })
 }
 

@@ -268,6 +268,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn syntax_error_lines_reach_the_snapshot_stream() {
+        use crate::session::Session;
+        use crate::session::SessionConfig;
+
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("broken.rs");
+        // Line 1 (0-based) is broken; the completion gate reads these ranges.
+        if std::fs::write(&path, "fn ok() {}\nfn broken() { let x = ; }\n").is_err() {
+            return;
+        }
+
+        let (session, _events, mut snaps) = Session::new(SessionConfig::default());
+        let backend = local(session);
+        assert!(
+            backend
+                .send(
+                    backend.next_id(),
+                    Command::OpenDocument {
+                        path,
+                        language: None
+                    }
+                )
+                .is_ok()
+        );
+
+        let flagged = await_snapshot(&mut snaps, |snap| {
+            snap.syntax_error_lines
+                .iter()
+                .any(|&(start, end)| start <= 1 && 1 <= end)
+        })
+        .await;
+        assert!(flagged, "the broken line should be flagged on the snapshot");
+    }
+
+    #[tokio::test]
     async fn todo_comments_are_marked_in_a_real_rust_buffer() {
         use karet_core::StandardToken;
 
