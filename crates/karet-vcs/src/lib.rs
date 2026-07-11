@@ -144,12 +144,48 @@ impl Repository {
         todo!()
     }
 
-    /// The repository's branches.
+    /// The repository's local branches, sorted by name. Each carries whether it is the
+    /// currently checked-out branch. A branch name is itself a valid revision, so it
+    /// can be passed straight to [`file_at_rev`](Self::file_at_rev) or the diff readers.
     ///
     /// # Errors
-    /// Returns [`VcsError::Git`] on failure.
+    /// Returns [`VcsError::Git`] on failure to read the references or the head.
     pub fn branches(&self) -> Result<Vec<Branch>, VcsError> {
-        todo!()
+        use gix::bstr::ByteSlice;
+
+        use crate::repo::to_git;
+
+        let head = self.current_branch()?;
+        let platform = self.inner.references().map_err(to_git)?;
+        let iter = platform.local_branches().map_err(to_git)?;
+        let mut out = Vec::new();
+        for reference in iter {
+            let reference = reference.map_err(to_git)?;
+            let name = reference.name().shorten().to_str_lossy().into_owned();
+            let is_head = head.as_deref() == Some(name.as_str());
+            out.push(Branch { name, is_head });
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    }
+
+    /// The short name of the branch `HEAD` symbolically points to (e.g. `main`), or
+    /// `None` when `HEAD` is detached. An **unborn** branch (a fresh repository with
+    /// no commits yet) still has a symbolic name, so it is returned — callers that
+    /// need a resolvable revision should also check [`head_hash`](Self::head_hash).
+    ///
+    /// # Errors
+    /// Returns [`VcsError::Git`] on failure to read the head.
+    pub fn current_branch(&self) -> Result<Option<String>, VcsError> {
+        use gix::bstr::ByteSlice;
+
+        use crate::repo::to_git;
+
+        Ok(self
+            .inner
+            .head_name()
+            .map_err(to_git)?
+            .map(|name| name.shorten().to_str_lossy().into_owned()))
     }
 
     /// Stage `paths` (add their current worktree state to the index). A path that

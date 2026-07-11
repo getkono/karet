@@ -1273,4 +1273,54 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn branches_lists_locals_and_flags_the_head() -> Result<(), VcsError> {
+        let repo = forked_repo()?; // leaves us on `main`; also has `feature`
+        let r = Repository::discover(&repo.path)?;
+        let branches = r.branches()?;
+        let names: Vec<&str> = branches.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, vec!["feature", "main"], "sorted by name");
+        let head: Vec<&str> = branches
+            .iter()
+            .filter(|b| b.is_head)
+            .map(|b| b.name.as_str())
+            .collect();
+        assert_eq!(head, vec!["main"], "only the checked-out branch is head");
+        Ok(())
+    }
+
+    #[test]
+    fn current_branch_tracks_the_checkout() -> Result<(), VcsError> {
+        let repo = forked_repo()?;
+        let r = Repository::discover(&repo.path)?;
+        assert_eq!(r.current_branch()?.as_deref(), Some("main"));
+        git(&repo.path, &["checkout", "-q", "feature"])?;
+        let r = Repository::discover(&repo.path)?;
+        assert_eq!(r.current_branch()?.as_deref(), Some("feature"));
+        Ok(())
+    }
+
+    #[test]
+    fn unborn_branch_has_a_name_but_no_branch_refs() -> Result<(), VcsError> {
+        // A fresh repository's HEAD symbolically points at an unborn branch: it has
+        // a name, but no ref exists yet so the local branch list is empty.
+        let repo = init_repo()?;
+        git(&repo.path, &["symbolic-ref", "HEAD", "refs/heads/main"])?;
+        let r = Repository::discover(&repo.path)?;
+        assert_eq!(r.current_branch()?.as_deref(), Some("main"));
+        assert!(r.branches()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn detached_head_has_no_current_branch() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        write(&repo.path, "a.txt", b"a\n")?;
+        git(&repo.path, &["add", "."])?;
+        git(&repo.path, &["commit", "-q", "-m", "c0"])?;
+        git(&repo.path, &["checkout", "-q", "--detach"])?;
+        let r = Repository::discover(&repo.path)?;
+        assert!(r.current_branch()?.is_none());
+        Ok(())
+    }
 }
