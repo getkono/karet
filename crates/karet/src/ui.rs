@@ -1380,7 +1380,7 @@ fn draw_scm_commits(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
 }
 
 /// A terse `git log`-style relative time (e.g. `3d ago`) for a Unix timestamp.
-fn relative_time(secs: i64) -> String {
+pub(crate) fn relative_time(secs: i64) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()

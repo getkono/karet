@@ -85,6 +85,14 @@ pub enum Command {
     CopyGithubPermalink,
     /// Copy a GitHub link to the active file on the current branch.
     CopyGithubHeadLink,
+    /// Diff the active file's working text against its content at `HEAD`.
+    OpenChangesWithPrevious,
+    /// Pick a commit from the active file's history and diff the working text
+    /// against the file's content at it.
+    OpenChangesWithRevision,
+    /// Pick a branch and diff the active file's working text against its content
+    /// at the branch tip.
+    OpenChangesWithBranch,
     /// Move the sidebar selection up.
     SidebarUp,
     /// Move the sidebar selection down.
@@ -418,6 +426,9 @@ impl Command {
             Self::CopyRemoteFileUrl => "Copy Remote File URL of Active File",
             Self::CopyGithubPermalink => "Copy GitHub Permalink of Active File",
             Self::CopyGithubHeadLink => "Copy GitHub Head Link of Active File",
+            Self::OpenChangesWithPrevious => "Open Changes: With Previous Revision",
+            Self::OpenChangesWithRevision => "Open Changes: With Revision…",
+            Self::OpenChangesWithBranch => "Open Changes: With Branch…",
             Self::SidebarUp => "Sidebar: Select Previous",
             Self::SidebarDown => "Sidebar: Select Next",
             Self::SidebarActivate => "Sidebar: Open Selected",
@@ -700,6 +711,9 @@ impl Command {
             | Self::CopyRemoteFileUrl
             | Self::CopyGithubPermalink
             | Self::CopyGithubHeadLink
+            | Self::OpenChangesWithPrevious
+            | Self::OpenChangesWithRevision
+            | Self::OpenChangesWithBranch
             | Self::SidebarUp
             | Self::SidebarDown
             | Self::OutlineUp
@@ -787,6 +801,9 @@ impl Command {
                 | Self::CopyRemoteFileUrl
                 | Self::CopyGithubPermalink
                 | Self::CopyGithubHeadLink
+                | Self::OpenChangesWithPrevious
+                | Self::OpenChangesWithRevision
+                | Self::OpenChangesWithBranch
                 | Self::ToggleDiffLayout
                 | Self::ToggleFold
                 | Self::AddCursorAbove
@@ -874,6 +891,9 @@ pub fn palette() -> Vec<Command> {
         Command::CopyRemoteFileUrl,
         Command::CopyGithubPermalink,
         Command::CopyGithubHeadLink,
+        Command::OpenChangesWithPrevious,
+        Command::OpenChangesWithRevision,
+        Command::OpenChangesWithBranch,
         Command::NextTab,
         Command::PrevTab,
         Command::MoveTabLeft,

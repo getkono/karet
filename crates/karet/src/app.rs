@@ -108,6 +108,7 @@ use crate::keymap::{self};
 use crate::notify::NotificationCenter;
 use crate::outline::OutlineRow;
 use crate::outline::OutlineTarget;
+use crate::overlay::DiffTarget;
 use crate::overlay::Overlay;
 use crate::overlay::OverlayEvent;
 use crate::remote;
@@ -1311,6 +1312,9 @@ impl App {
             OverlayEvent::Close => {},
             OverlayEvent::AcceptFile(path) => self.open_path(&path),
             OverlayEvent::AcceptCommand(cmd) => self.dispatch(cmd),
+            OverlayEvent::AcceptDiffTarget { rev, label } => {
+                self.open_changes_with(&rev, &label);
+            },
         }
     }
 
@@ -1847,6 +1851,9 @@ impl App {
             Command::CopyGithubHeadLink => {
                 self.copy_remote_link(remote::LinkKind::GithubHeadLink);
             },
+            Command::OpenChangesWithPrevious => self.open_changes_with("HEAD", "HEAD"),
+            Command::OpenChangesWithRevision => self.open_changes_pick_revision(),
+            Command::OpenChangesWithBranch => self.open_changes_pick_branch(),
             Command::SidebarUp => self.sidebar_step(-1),
             Command::SidebarDown => self.sidebar_step(1),
             Command::SidebarActivate => self.sidebar_activate(),
@@ -2886,25 +2893,38 @@ impl App {
             ContextMenuEntry::enabled(Command::RevealActiveInExplorer),
         ];
         let facts = self.remote_facts(path);
-        for (command, kind) in [
-            (Command::CopyRemoteFileUrl, remote::LinkKind::RemoteFile),
-            (
-                Command::CopyGithubPermalink,
-                remote::LinkKind::GithubPermalink,
-            ),
-            (
-                Command::CopyGithubHeadLink,
-                remote::LinkKind::GithubHeadLink,
-            ),
+        let link_entry = |command, kind| match &facts {
+            Ok(facts) => match remote::link(&facts.link_target(), kind, None) {
+                Ok(_) => ContextMenuEntry::enabled(command),
+                Err(note) => ContextMenuEntry::disabled(command, note),
+            },
+            Err(note) => ContextMenuEntry::disabled(command, note.clone()),
+        };
+        entries.push(link_entry(
+            Command::CopyRemoteFileUrl,
+            remote::LinkKind::RemoteFile,
+        ));
+        // The Open Changes actions need a repository and a tracked file, but no
+        // remote — their enablement is checked separately from the link rows.
+        let changes_note = self.open_changes_note(path);
+        for command in [
+            Command::OpenChangesWithPrevious,
+            Command::OpenChangesWithRevision,
+            Command::OpenChangesWithBranch,
         ] {
-            entries.push(match &facts {
-                Ok(facts) => match remote::link(&facts.link_target(), kind, None) {
-                    Ok(_) => ContextMenuEntry::enabled(command),
-                    Err(note) => ContextMenuEntry::disabled(command, note),
-                },
-                Err(note) => ContextMenuEntry::disabled(command, note.clone()),
+            entries.push(match &changes_note {
+                None => ContextMenuEntry::enabled(command),
+                Some(note) => ContextMenuEntry::disabled(command, note.clone()),
             });
         }
+        entries.push(link_entry(
+            Command::CopyGithubPermalink,
+            remote::LinkKind::GithubPermalink,
+        ));
+        entries.push(link_entry(
+            Command::CopyGithubHeadLink,
+            remote::LinkKind::GithubHeadLink,
+        ));
         entries
     }
 
@@ -5567,6 +5587,207 @@ impl App {
             },
             Err(reason) => self.status = Some(reason),
         }
+    }
+
+    /// The active tab's file path and, for a code tab, its live buffer text.
+    fn active_file_and_text(&self) -> Option<(PathBuf, Option<String>)> {
+        let tab = self.tabs.get(self.active)?;
+        let path = tab.path()?.to_path_buf();
+        let live = match &tab.kind {
+            TabKind::Code { text, .. } => Some(text.clone()),
+            _ => None,
+        };
+        Some((path, live))
+    }
+
+    /// Why the Open Changes actions do not apply to `path` — outside a repository,
+    /// or untracked at `HEAD` (which also covers an unborn branch) — or `None` when
+    /// they do. Doubles as the pane menu's disabled note.
+    fn open_changes_note(&self, path: &Path) -> Option<String> {
+        let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        let start = abs.parent().unwrap_or(&abs);
+        let Ok(repo) = karet_vcs::Repository::discover(start) else {
+            return Some("not in a git repository".to_string());
+        };
+        if repo.file_at_rev(&abs, "HEAD").ok().flatten().is_none() {
+            return Some("file is not tracked at HEAD".to_string());
+        }
+        None
+    }
+
+    /// Open a diff tab for the active file: old = its content at `rev`, new = the
+    /// working text (the live buffer for a code tab, the file on disk otherwise).
+    /// `label` names the old side in the tab title: `name (label ↔ working)`.
+    fn open_changes_with(&mut self, rev: &str, label: &str) {
+        let Some((path, live)) = self.active_file_and_text() else {
+            self.status = Some("open changes: no file".to_string());
+            return;
+        };
+        let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
+        let start = abs.parent().unwrap_or(&abs);
+        let repo = match karet_vcs::Repository::discover(start) {
+            Ok(repo) => repo,
+            Err(_) => {
+                self.status = Some("open changes: not in a git repository".to_string());
+                return;
+            },
+        };
+        let old_bytes = match repo.file_at_rev(&abs, rev) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                self.status = Some(format!("open changes: file does not exist at {label}"));
+                return;
+            },
+            Err(e) => {
+                self.notify(
+                    Severity::Error,
+                    NotificationKind::Vcs,
+                    format!("open changes: {e}"),
+                );
+                return;
+            },
+        };
+        let new_text = live.or_else(|| {
+            std::fs::read(&abs)
+                .ok()
+                .and_then(|b| String::from_utf8(b).ok())
+        });
+        let old_text = String::from_utf8(old_bytes).ok();
+        // Either side non-text marks the change binary (both texts then empty),
+        // matching the FileChange::is_binary contract.
+        let is_binary = old_text.is_none() || new_text.is_none();
+        let name = abs
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .to_string();
+        let change = FileChange {
+            path: abs,
+            old_path: None,
+            status: StatusKind::Modified,
+            is_binary,
+            old: if is_binary {
+                String::new()
+            } else {
+                old_text.unwrap_or_default()
+            },
+            new: if is_binary {
+                String::new()
+            } else {
+                new_text.unwrap_or_default()
+            },
+        };
+        let file = FileView::new(change, Section::Working, self.syntax);
+        self.push_tab(Tab::new(
+            format!("{name} ({label} \u{2194} working)"),
+            TabKind::Diff {
+                file: Box::new(file),
+                view: self.diff_layout,
+                scroll: 0,
+            },
+        ));
+    }
+
+    /// How many commits the With Revision picker lists at most.
+    const OPEN_CHANGES_HISTORY_CAP: usize = 200;
+
+    /// Open the diff-target picker over the active file's commit history
+    /// (newest first, capped), for "Open Changes: With Revision…".
+    fn open_changes_pick_revision(&mut self) {
+        let Some((path, _)) = self.active_file_and_text() else {
+            self.status = Some("open changes: no file".to_string());
+            return;
+        };
+        let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
+        let start = abs.parent().unwrap_or(&abs);
+        let repo = match karet_vcs::Repository::discover(start) {
+            Ok(repo) => repo,
+            Err(_) => {
+                self.status = Some("open changes: not in a git repository".to_string());
+                return;
+            },
+        };
+        let commits = match repo.file_history(&abs, 0, Self::OPEN_CHANGES_HISTORY_CAP) {
+            Ok(commits) => commits,
+            Err(e) => {
+                self.notify(
+                    Severity::Error,
+                    NotificationKind::Vcs,
+                    format!("open changes: {e}"),
+                );
+                return;
+            },
+        };
+        if commits.is_empty() {
+            self.status = Some("open changes: no commits touch this file".to_string());
+            return;
+        }
+        let items = commits
+            .into_iter()
+            .map(|c| {
+                let display = format!(
+                    "{} {} \u{2014} {}",
+                    c.short_hash,
+                    c.summary,
+                    ui::relative_time(c.time)
+                );
+                let target = DiffTarget {
+                    rev: c.hash,
+                    label: c.short_hash,
+                };
+                (display, target)
+            })
+            .collect();
+        self.overlay = Some(Overlay::diff_target("Open Changes: With Revision", items));
+    }
+
+    /// Open the diff-target picker over the repository's local branches, for
+    /// "Open Changes: With Branch…".
+    fn open_changes_pick_branch(&mut self) {
+        let Some((path, _)) = self.active_file_and_text() else {
+            self.status = Some("open changes: no file".to_string());
+            return;
+        };
+        let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
+        let start = abs.parent().unwrap_or(&abs);
+        let repo = match karet_vcs::Repository::discover(start) {
+            Ok(repo) => repo,
+            Err(_) => {
+                self.status = Some("open changes: not in a git repository".to_string());
+                return;
+            },
+        };
+        let branches = match repo.branches() {
+            Ok(branches) => branches,
+            Err(e) => {
+                self.notify(
+                    Severity::Error,
+                    NotificationKind::Vcs,
+                    format!("open changes: {e}"),
+                );
+                return;
+            },
+        };
+        if branches.is_empty() {
+            self.status = Some("open changes: no branches".to_string());
+            return;
+        }
+        let items = branches
+            .into_iter()
+            .map(|b| {
+                let display = if b.is_head {
+                    format!("{} (current)", b.name)
+                } else {
+                    b.name.clone()
+                };
+                let target = DiffTarget {
+                    rev: b.name.clone(),
+                    label: b.name,
+                };
+                (display, target)
+            })
+            .collect();
+        self.overlay = Some(Overlay::diff_target("Open Changes: With Branch", items));
     }
 
     /// Apply a caret `motion` to the active code tab, extending the selection when
@@ -11342,6 +11563,9 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 Command::CopyRelativePath,
                 Command::RevealActiveInExplorer,
                 Command::CopyRemoteFileUrl,
+                Command::OpenChangesWithPrevious,
+                Command::OpenChangesWithRevision,
+                Command::OpenChangesWithBranch,
                 Command::CopyGithubPermalink,
                 Command::CopyGithubHeadLink,
             ]
@@ -11456,6 +11680,9 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
             Command::CopyRemoteFileUrl,
             Command::CopyGithubPermalink,
             Command::CopyGithubHeadLink,
+            Command::OpenChangesWithPrevious,
+            Command::OpenChangesWithRevision,
+            Command::OpenChangesWithBranch,
         ] {
             let Some(entry) = entries.iter().find(|e| e.command == cmd) else {
                 panic!("{cmd:?} is listed");
@@ -11499,6 +11726,194 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         ));
         app.dispatch(Command::CopyGithubPermalink);
         assert_eq!(app.status.as_deref(), Some("copied GitHub permalink"));
+    }
+
+    /// A git repo whose `new.rs` is committed (no remote), or `None` when `git`
+    /// is unavailable (the test then skips).
+    fn committed_repo() -> Option<TempRepo> {
+        let repo = init_test_repo()?;
+        if !git(&repo.path, &["add", "."]) || !git(&repo.path, &["commit", "-q", "-m", "init"]) {
+            return None;
+        }
+        Some(repo)
+    }
+
+    /// A code tab over `path` whose live buffer holds `text`.
+    fn code_tab_with_text(path: &Path, text: &str) -> Tab {
+        use karet_syntax::Highlights;
+        use karet_text::TextBuffer;
+        Tab::new(
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file")
+                .to_string(),
+            TabKind::Code {
+                path: path.to_path_buf(),
+                language: "Rust",
+                doc: None,
+                next_version: 0,
+                buffer: TextBuffer::from_text(text),
+                text: text.to_string(),
+                highlights: Highlights::default(),
+                folds: FoldRegions::default(),
+                folded: BTreeSet::new(),
+                decos: Vec::new(),
+                search_decos: Vec::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn open_changes_with_previous_diffs_head_against_the_live_buffer() {
+        let Some(repo) = committed_repo() else {
+            return;
+        };
+        let path = repo.path.join("new.rs");
+        let mut app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        // The live buffer differs from both HEAD and the (unchanged) disk file,
+        // proving the working side comes from the buffer, not disk.
+        app.push_tab(code_tab_with_text(&path, "fn main() { edited }\n"));
+
+        app.dispatch(Command::OpenChangesWithPrevious);
+
+        let Some(Tab {
+            title,
+            kind: TabKind::Diff { file, .. },
+            ..
+        }) = app.tabs.last()
+        else {
+            panic!("open changes opens a diff tab, got none");
+        };
+        assert_eq!(title, "new.rs (HEAD \u{2194} working)");
+        assert_eq!(
+            file.change.old, "fn main() {}\n",
+            "old side is HEAD content"
+        );
+        assert_eq!(
+            file.change.new, "fn main() { edited }\n",
+            "new side is the live buffer"
+        );
+    }
+
+    #[test]
+    fn open_changes_with_revision_picks_from_the_file_history() {
+        let Some(repo) = committed_repo() else {
+            return;
+        };
+        let path = repo.path.join("new.rs");
+        // A second commit changes the file, so its history has two entries.
+        std::fs::write(&path, "fn main() { v1 }\n").unwrap_or_default();
+        if !git(&repo.path, &["commit", "-qam", "v1"]) {
+            return;
+        }
+        let mut app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        app.push_tab(code_tab_with_text(&path, "working\n"));
+
+        app.dispatch(Command::OpenChangesWithRevision);
+        let Some(overlay) = app.overlay.as_ref() else {
+            panic!("the revision picker opens");
+        };
+        assert_eq!(overlay.title(), "Open Changes: With Revision");
+        let rows: Vec<String> = overlay.rows().iter().map(ToString::to_string).collect();
+        assert_eq!(rows.len(), 2, "both commits touch the file: {rows:?}");
+        assert!(rows[0].contains("v1"), "newest first: {rows:?}");
+
+        // Choose the older commit (the initial content).
+        app.dispatch(Command::OverlayDown);
+        app.dispatch(Command::OverlayAccept);
+
+        assert!(app.overlay.is_none(), "accept closes the picker");
+        let Some(Tab {
+            title,
+            kind: TabKind::Diff { file, .. },
+            ..
+        }) = app.tabs.last()
+        else {
+            panic!("accepting a revision opens a diff tab");
+        };
+        assert_eq!(
+            file.change.old, "fn main() {}\n",
+            "old side is the picked revision's content"
+        );
+        assert_eq!(file.change.new, "working\n");
+        assert!(
+            title.contains("\u{2194} working"),
+            "title names the comparison: {title}"
+        );
+    }
+
+    #[test]
+    fn open_changes_with_branch_diffs_against_the_branch_tip() {
+        let Some(repo) = committed_repo() else {
+            return;
+        };
+        let path = repo.path.join("new.rs");
+        // A `feature` branch changes the file; we come back to the default branch.
+        if !git(&repo.path, &["checkout", "-q", "-b", "feature"]) {
+            return;
+        }
+        std::fs::write(&path, "fn main() { feature }\n").unwrap_or_default();
+        if !git(&repo.path, &["commit", "-qam", "feature change"])
+            || !git(&repo.path, &["checkout", "-q", "-"])
+        {
+            return;
+        }
+        let mut app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        app.push_tab(code_tab_with_text(&path, "working\n"));
+
+        app.dispatch(Command::OpenChangesWithBranch);
+        let Some(overlay) = app.overlay.as_ref() else {
+            panic!("the branch picker opens");
+        };
+        assert_eq!(overlay.title(), "Open Changes: With Branch");
+        let rows: Vec<String> = overlay.rows().iter().map(ToString::to_string).collect();
+        assert!(
+            rows.iter().any(|r| r.ends_with("(current)")),
+            "the checked-out branch is marked: {rows:?}"
+        );
+        // Branches are sorted by name, so `feature` is first regardless of whether
+        // the default branch is `main` or `master`.
+        assert_eq!(rows[0], "feature");
+        app.dispatch(Command::OverlayAccept);
+
+        let Some(Tab {
+            title,
+            kind: TabKind::Diff { file, .. },
+            ..
+        }) = app.tabs.last()
+        else {
+            panic!("accepting a branch opens a diff tab");
+        };
+        assert_eq!(title, "new.rs (feature \u{2194} working)");
+        assert_eq!(
+            file.change.old, "fn main() { feature }\n",
+            "old side is the branch tip's content"
+        );
+        assert_eq!(file.change.new, "working\n");
+    }
+
+    #[test]
+    fn open_changes_reports_a_file_absent_at_the_revision() {
+        let Some(repo) = committed_repo() else {
+            return;
+        };
+        // `other.rs` only exists in the second commit, so HEAD~1 has no blob for it.
+        let path = repo.path.join("other.rs");
+        std::fs::write(&path, "x\n").unwrap_or_default();
+        if !git(&repo.path, &["add", "."]) || !git(&repo.path, &["commit", "-qm", "add other"]) {
+            return;
+        }
+        let mut app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        app.push_tab(code_tab_with_text(&path, "x\n"));
+
+        let before = app.tabs.len();
+        app.open_changes_with("HEAD~1", "HEAD~1");
+
+        assert_eq!(app.tabs.len(), before, "no diff tab is opened");
+        assert_eq!(
+            app.status.as_deref(),
+            Some("open changes: file does not exist at HEAD~1")
+        );
     }
 
     #[test]
