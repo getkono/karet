@@ -1,0 +1,22 @@
+[package]
+name        = "karet-docx"
+description = "DOCX support for karet TUI editors: parse a Word `.docx` into a neutral document model and convert it to markdown for display."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+publish = false                       # karet-internal — not published to crates.io
+
+[dependencies]
+zip = { workspace = true }            # unzip the OOXML container (deflate-only; no C-sys)
+quick-xml.workspace = true            # pure-Rust streaming XML parser
+thiserror.workspace = true
+
+[lints]
+workspace = true
