@@ -369,6 +369,28 @@ impl ExplorerContextMenu {
     }
 }
 
+/// An irreversible close routed through the unified unsaved-changes guard. Every
+/// entry point that can drop a tab (or the whole app) names its intent here so the
+/// guard can decide, uniformly, whether it must first confirm the loss of unsaved
+/// changes (see [`App::guarded_close`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CloseRequest {
+    /// Quit the application.
+    Quit,
+    /// Close a single tab in the focused pane, identified by its stable view id so
+    /// the request survives index shifts while a save-then-close is in flight.
+    Tab {
+        /// The view id of the tab to close.
+        view: ViewId,
+    },
+    /// Close every tab in the focused pane except the active one.
+    OtherTabs,
+    /// Close every tab to the right of the active one in the focused pane.
+    TabsToRight,
+    /// Close every tab in the focused pane (leaving a Welcome tab).
+    AllTabs,
+}
+
 /// The IDE shell state.
 pub struct App {
     /// The workspace root.
@@ -439,10 +461,12 @@ pub struct App {
     pub(crate) pending_discard: Option<Vec<PathBuf>>,
     /// Paths awaiting explorer-delete confirmation.
     pub(crate) pending_explorer_delete: Option<Vec<PathBuf>>,
-    /// Whether the quit-confirmation prompt (unsaved changes) is armed.
-    pub(crate) pending_quit: bool,
-    /// Whether a "save all & quit" is in flight: exit once the saves drain.
-    pub(crate) quitting: bool,
+    /// The irreversible close awaiting the unsaved-changes confirmation prompt, if
+    /// one is armed (unified across quit and tab/pane closes).
+    pub(crate) pending_close: Option<CloseRequest>,
+    /// The close parked mid-save after choosing "save & close": run it once the
+    /// issued saves drain (see [`App::on_backend_event`]).
+    pub(crate) saving_close: Option<CloseRequest>,
     /// Crash-recovery swaps offered by the backend at startup, awaiting the user's
     /// recover/discard decision.
     pub(crate) pending_swaps: Option<Vec<SwapInfo>>,
@@ -637,8 +661,8 @@ impl App {
             rev_input: None,
             pending_discard: None,
             pending_explorer_delete: None,
-            pending_quit: false,
-            quitting: false,
+            pending_close: None,
+            saving_close: None,
             pending_swaps: None,
             pending: Vec::new(),
             search: SearchPanel::default(),
@@ -879,8 +903,8 @@ impl App {
         let modal = if self.pending_swaps.is_some() {
             // A startup recovery decision blocks everything else until made.
             Some(Modal::SwapRecover)
-        } else if self.pending_quit {
-            Some(Modal::QuitConfirm)
+        } else if self.pending_close.is_some() {
+            Some(Modal::CloseConfirm)
         } else if self.overlay.is_some() {
             Some(Modal::Overlay)
         } else if self.commit_input.is_some() {
@@ -960,11 +984,9 @@ impl App {
             Modal::DiscardConfirm => self.resolve_discard(false),
             Modal::ExplorerDeleteConfirm => self.resolve_explorer_delete(false),
             Modal::ContextMenu => self.close_context_menu(),
-            // An unbound key cancels the quit prompt (stay in the editor)…
-            Modal::QuitConfirm => {
-                self.pending_quit = false;
-                self.status = Some("quit cancelled".to_string());
-            },
+            // An unbound key cancels the close prompt (stay in the editor); the
+            // default for every irreversible close is to abort.
+            Modal::CloseConfirm => self.cancel_close(),
             // …and dismisses the recovery prompt, keeping the swaps for a later launch.
             Modal::SwapRecover => {
                 self.pending_swaps = None;
@@ -1022,7 +1044,7 @@ impl App {
             | Modal::DiscardConfirm
             | Modal::ExplorerDeleteConfirm
             | Modal::ContextMenu
-            | Modal::QuitConfirm
+            | Modal::CloseConfirm
             | Modal::SwapRecover => {},
         }
     }
@@ -1571,15 +1593,15 @@ impl App {
             Command::OpenCommandPalette => self.overlay = Some(Overlay::command_palette()),
             Command::OpenFind => self.open_find(),
             Command::OpenGlobalSearch => self.start_global_search(),
-            Command::CloseTab => self.close_tab(),
+            Command::CloseTab => self.request_close_active_tab(),
             Command::NextTab => self.next_tab(),
             Command::PrevTab => self.prev_tab(),
             Command::MoveTabLeft => self.move_active_tab(-1),
             Command::MoveTabRight => self.move_active_tab(1),
             Command::GoToTab(n) => self.go_to_tab(n),
-            Command::CloseOtherTabs => self.close_other_tabs(),
-            Command::CloseTabsToRight => self.close_tabs_to_right(),
-            Command::CloseAllTabs => self.close_all_tabs(),
+            Command::CloseOtherTabs => self.guarded_close(CloseRequest::OtherTabs),
+            Command::CloseTabsToRight => self.guarded_close(CloseRequest::TabsToRight),
+            Command::CloseAllTabs => self.guarded_close(CloseRequest::AllTabs),
             Command::ReopenClosedTab => self.reopen_closed_tab(),
             Command::OpenAnyway => self.open_active_anyway(),
             Command::DismissNotification => self.notifications.dismiss_latest(),
@@ -1735,11 +1757,8 @@ impl App {
             Command::ContextMenuDown => self.context_menu_step(1),
             Command::ContextMenuAccept => self.accept_context_menu(),
             Command::ContextMenuCancel => self.close_context_menu(),
-            Command::QuitSaveAll => self.quit_save_all(),
-            Command::QuitDiscard => {
-                self.pending_quit = false;
-                self.should_quit = true;
-            },
+            Command::CloseConfirmSave => self.close_save(),
+            Command::CloseConfirmDiscard => self.close_discard(),
             Command::RecoverSwaps => {
                 // Open a tab for each backed-up file first (so the recovered content
                 // has somewhere to land), then ask the backend to restore the buffers.
@@ -4102,9 +4121,19 @@ impl App {
         }
     }
 
-    /// Close the active tab.
-    fn close_tab(&mut self) {
-        self.close_tab_at(self.active);
+    /// Close the focused pane's active tab, routed through the unsaved-changes guard.
+    fn request_close_active_tab(&mut self) {
+        if let Some(tab) = self.tabs.get(self.active) {
+            self.guarded_close(CloseRequest::Tab { view: tab.view });
+        }
+    }
+
+    /// Close the focused pane's tab at `index`, routed through the unsaved-changes
+    /// guard (the tab is captured by its stable view id).
+    fn request_close_tab_at(&mut self, index: usize) {
+        if let Some(tab) = self.tabs.get(index) {
+            self.guarded_close(CloseRequest::Tab { view: tab.view });
+        }
     }
 
     /// Close the tab at `index`, falling back to a Welcome tab when the last closes.
@@ -4402,7 +4431,7 @@ impl App {
                 self.focus_pane_switch(pane);
                 if let Some((i, on_close)) = hit {
                     if on_close {
-                        self.close_tab_at(i);
+                        self.request_close_tab_at(i);
                     } else {
                         self.select_tab(i);
                         self.tab_drag = Some(TabDrag {
@@ -4415,7 +4444,7 @@ impl App {
             MouseEventKind::Down(MouseButton::Middle) => {
                 self.focus_pane_switch(pane);
                 if let Some((i, _)) = hit {
-                    self.close_tab_at(i);
+                    self.request_close_tab_at(i);
                 }
             },
             _ => {},
@@ -5356,56 +5385,151 @@ impl App {
         }
     }
 
-    /// Save the active document, or report that there is no file to save. Tracks the
-    /// in-flight save so a slow write shows a spinner in the tab.
-    /// Handle a quit request: prompt when there are unsaved changes and
-    /// `files.confirmOnExit` is set, otherwise exit immediately. Crash-recovery
-    /// backups remain the safety net regardless of the choice.
+    /// Handle a quit request through the unified close guard.
     fn request_quit(&mut self) {
-        let has_unsaved = self.all_tabs().any(|tab| tab.dirty);
-        if has_unsaved && self.settings.files.confirm_on_exit {
-            self.pending_quit = true;
-            self.status = Some(
-                "unsaved changes — press s to save all & quit, d to discard & quit, \
-                 any other key to cancel"
-                    .to_string(),
-            );
-        } else {
-            self.should_quit = true;
+        self.guarded_close(CloseRequest::Quit);
+    }
+
+    /// The stable view ids of the tabs `request` would drop. Tab/pane closes act on
+    /// the focused pane only (mirroring the raw close operations); Quit drops every
+    /// tab across every pane.
+    fn removed_tab_views(&self, request: CloseRequest) -> Vec<ViewId> {
+        match request {
+            CloseRequest::Quit => self.all_tabs().map(|tab| tab.view).collect(),
+            CloseRequest::Tab { view } => vec![view],
+            CloseRequest::OtherTabs => self
+                .tabs
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != self.active)
+                .map(|(_, tab)| tab.view)
+                .collect(),
+            CloseRequest::TabsToRight => self
+                .tabs
+                .iter()
+                .skip(self.active + 1)
+                .map(|tab| tab.view)
+                .collect(),
+            CloseRequest::AllTabs => self.tabs.iter().map(|tab| tab.view).collect(),
         }
     }
 
-    /// At the quit prompt: save every unsaved document, then exit once the saves
-    /// drain (see [`App::on_backend_event`]). Exits immediately if nothing is dirty.
-    fn quit_save_all(&mut self) {
-        self.pending_quit = false;
-        let saved = self.save_all_dirty();
+    /// The documents `request` would irreversibly lose: the dirty documents whose
+    /// **last** referencing view is being dropped. A dirty document still shown in a
+    /// surviving tab or another pane (previews count as references, like
+    /// [`reconcile_open_docs`](Self::reconcile_open_docs)) is not at risk, so closing
+    /// one of its several views must not prompt.
+    fn docs_at_risk(&self, request: CloseRequest) -> Vec<DocumentId> {
+        let removed: HashSet<ViewId> = self.removed_tab_views(request).into_iter().collect();
+        let surviving: HashSet<DocumentId> = self
+            .all_tabs()
+            .filter(|tab| !removed.contains(&tab.view))
+            .filter_map(Self::tab_doc)
+            .collect();
+        let mut at_risk: Vec<DocumentId> = Vec::new();
+        for tab in self.all_tabs().filter(|tab| removed.contains(&tab.view)) {
+            let Some(doc) = Self::tab_doc(tab) else {
+                continue;
+            };
+            if surviving.contains(&doc) || at_risk.contains(&doc) {
+                continue;
+            }
+            // The document is fully dropped by this request; prompt only if it is
+            // dirty (checked across every view, so per-tab flag skew can't hide it).
+            if self
+                .all_tabs()
+                .any(|t| Self::tab_doc(t) == Some(doc) && t.dirty)
+            {
+                at_risk.push(doc);
+            }
+        }
+        at_risk
+    }
+
+    /// Route an irreversible close through the unified unsaved-changes guard. When it
+    /// would drop the last view of one or more dirty documents it arms the
+    /// confirmation prompt (default: abort); otherwise it runs immediately.
+    ///
+    /// Quit additionally honors `files.confirmOnExit`; tab/pane closes are always
+    /// guarded — silently discarding unsaved changes is the data-loss bug this fixes.
+    fn guarded_close(&mut self, request: CloseRequest) {
+        let at_risk = self.docs_at_risk(request);
+        let honor_setting =
+            !matches!(request, CloseRequest::Quit) || self.settings.files.confirm_on_exit;
+        if at_risk.is_empty() || !honor_setting {
+            self.execute_close(request);
+        } else {
+            self.pending_close = Some(request);
+            self.status = Some(close_prompt_message(request, at_risk.len()));
+        }
+    }
+
+    /// Run a confirmed (or unguarded) close, re-resolving a single-tab request by its
+    /// view id so a save-then-close that shifted the tab list still closes the right
+    /// tab (and harmlessly no-ops if it has since vanished).
+    fn execute_close(&mut self, request: CloseRequest) {
+        match request {
+            CloseRequest::Quit => self.should_quit = true,
+            CloseRequest::Tab { view } => {
+                if let Some(index) = self.tabs.iter().position(|tab| tab.view == view) {
+                    self.close_tab_at(index);
+                }
+            },
+            CloseRequest::OtherTabs => self.close_other_tabs(),
+            CloseRequest::TabsToRight => self.close_tabs_to_right(),
+            CloseRequest::AllTabs => self.close_all_tabs(),
+        }
+    }
+
+    /// At the close prompt: save exactly the at-risk documents, then run the parked
+    /// request once those saves drain (see [`App::on_backend_event`]). Runs
+    /// immediately if nothing needed saving.
+    fn close_save(&mut self) {
+        let Some(request) = self.pending_close.take() else {
+            return;
+        };
+        let at_risk = self.docs_at_risk(request);
+        let saved = self.save_docs(&at_risk);
         if saved == 0 {
-            self.should_quit = true;
+            self.execute_close(request);
         } else {
-            self.quitting = true;
-            self.status = Some(format!("saving {saved} file(s) before quitting…"));
+            self.saving_close = Some(request);
+            let verb = if matches!(request, CloseRequest::Quit) {
+                "quitting"
+            } else {
+                "closing"
+            };
+            self.status = Some(format!("saving {saved} file(s) before {verb}…"));
         }
     }
 
-    /// Save every dirty code document across all panes (deduplicated by document),
-    /// returning how many saves were issued. Each is tracked in `pending_saves`.
-    fn save_all_dirty(&mut self) -> usize {
+    /// At the close prompt: discard unsaved changes and run the parked request now.
+    fn close_discard(&mut self) {
+        if let Some(request) = self.pending_close.take() {
+            self.execute_close(request);
+        }
+    }
+
+    /// At the close prompt: an unbound key aborts, leaving every tab untouched.
+    fn cancel_close(&mut self) {
+        let quitting = matches!(self.pending_close, Some(CloseRequest::Quit));
+        self.pending_close = None;
+        self.status = Some(if quitting {
+            "quit cancelled".to_string()
+        } else {
+            "close cancelled".to_string()
+        });
+    }
+
+    /// Issue a save for each of `docs` (skipping any already in flight), tracking it
+    /// in `pending_saves` and marking its tabs as saving. Returns the number issued.
+    fn save_docs(&mut self, docs: &[DocumentId]) -> usize {
         let Some(backend) = self.backend.clone() else {
             return 0;
         };
-        let mut docs: Vec<DocumentId> = Vec::new();
-        for tab in self.all_tabs() {
-            if tab.dirty
-                && let TabKind::Code { doc: Some(d), .. } = &tab.kind
-                && !docs.contains(d)
-            {
-                docs.push(*d);
-            }
-        }
         let now = Instant::now();
         let mut issued = 0;
-        for doc in docs {
+        for &doc in docs {
             if self.pending_saves.values().any(|pending| *pending == doc) {
                 continue;
             }
@@ -5426,6 +5550,8 @@ impl App {
         issued
     }
 
+    /// Save the active document, or report that there is no file to save. Tracks the
+    /// in-flight save so a slow write shows a spinner in the tab.
     fn save_active(&mut self) {
         let Some(doc) = self.active_code_doc() else {
             self.status = Some("save: open a text file".to_string());
@@ -5610,9 +5736,13 @@ impl App {
                 }
             }
         }
-        if self.quitting && save_failed {
-            self.quitting = false;
-            self.status = Some("quit cancelled: save failed".to_string());
+        if save_failed && let Some(request) = self.saving_close.take() {
+            let verb = if matches!(request, CloseRequest::Quit) {
+                "quit"
+            } else {
+                "close"
+            };
+            self.status = Some(format!("{verb} cancelled: save failed"));
         }
         match event {
             SessionEvent::Opened { doc, .. } => {
@@ -5791,9 +5921,12 @@ impl App {
             SessionEvent::LoadedConfig { report } => self.open_loaded_config(*report),
             _ => {},
         }
-        // A "save all & quit" exits once every issued save has succeeded.
-        if self.quitting && self.pending_saves.is_empty() {
-            self.should_quit = true;
+        // A "save & close" runs the parked request once every issued save succeeds.
+        if self.saving_close.is_some()
+            && self.pending_saves.is_empty()
+            && let Some(request) = self.saving_close.take()
+        {
+            self.execute_close(request);
         }
     }
 
@@ -5918,6 +6051,23 @@ pub(crate) fn resolve_folds(folds: &FoldRegions, folded: &BTreeSet<u32>) -> Vec<
 /// Whether the screen point `(x, y)` lies inside `r`.
 fn rect_contains(r: Rect, (x, y): (u16, u16)) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
+}
+
+/// The unsaved-changes confirmation prompt for `request`, naming the scope and its
+/// `count` at-risk files. The default (any other key) is always to abort.
+fn close_prompt_message(request: CloseRequest, count: usize) -> String {
+    let files = if count == 1 { "file" } else { "files" };
+    if matches!(request, CloseRequest::Quit) {
+        format!(
+            "{count} unsaved {files} — press s to save all & quit, d to discard & quit, \
+             any other key to cancel"
+        )
+    } else {
+        format!(
+            "{count} unsaved {files} — press s to save & close, d to discard & close, \
+             any other key to cancel"
+        )
+    }
 }
 
 /// Whether screen row `y` lies within `r`'s vertical span (column ignored).
@@ -6519,18 +6669,22 @@ mod tests {
     #[test]
     fn quit_with_unsaved_changes_arms_the_prompt() {
         let mut app = app();
-        app.tabs[app.active].dirty = true;
+        dirty_doc_tab(&mut app, "t.rs", 1);
         app.dispatch(Command::Quit);
-        assert!(app.pending_quit, "unsaved changes arm the quit prompt");
+        assert_eq!(
+            app.pending_close,
+            Some(CloseRequest::Quit),
+            "unsaved changes arm the quit prompt"
+        );
         assert!(!app.should_quit);
         assert_eq!(
             app.input_context().modal,
-            Some(crate::keymap::Modal::QuitConfirm)
+            Some(crate::keymap::Modal::CloseConfirm)
         );
 
         // Discarding exits.
-        app.dispatch(Command::QuitDiscard);
-        assert!(!app.pending_quit);
+        app.dispatch(Command::CloseConfirmDiscard);
+        assert!(app.pending_close.is_none());
         assert!(app.should_quit);
     }
 
@@ -6538,7 +6692,7 @@ mod tests {
     fn quit_without_unsaved_changes_exits_immediately() {
         let mut app = app();
         app.dispatch(Command::Quit);
-        assert!(!app.pending_quit);
+        assert!(app.pending_close.is_none());
         assert!(app.should_quit);
     }
 
@@ -6546,7 +6700,7 @@ mod tests {
     fn quit_prompt_disabled_by_confirm_on_exit_setting() {
         let mut app = app();
         app.settings.files.confirm_on_exit = false;
-        app.tabs[app.active].dirty = true;
+        dirty_doc_tab(&mut app, "t.rs", 1);
         app.dispatch(Command::Quit);
         assert!(
             app.should_quit,
@@ -6557,10 +6711,242 @@ mod tests {
     #[test]
     fn quit_save_all_with_nothing_dirty_exits() {
         let mut app = app();
-        app.pending_quit = true;
-        app.dispatch(Command::QuitSaveAll);
+        app.pending_close = Some(CloseRequest::Quit);
+        app.dispatch(Command::CloseConfirmSave);
         assert!(app.should_quit);
-        assert!(!app.quitting, "no saves in flight");
+        assert!(app.saving_close.is_none(), "no saves in flight");
+    }
+
+    /// Push a dirty code tab backed by `doc`, returning its stable view id. The tab
+    /// becomes the focused pane's active tab.
+    fn dirty_doc_tab(app: &mut App, name: &str, doc: u64) -> ViewId {
+        app.push_tab(text_tab(name, "x"));
+        let idx = app.active;
+        if let TabKind::Code { doc: d, .. } = &mut app.tabs[idx].kind {
+            *d = Some(DocumentId(doc));
+        }
+        app.tabs[idx].dirty = true;
+        app.tabs[idx].view
+    }
+
+    /// The documents a backend was asked to save, in order.
+    fn saved_docs(backend: &RecordingBackend) -> Vec<DocumentId> {
+        backend
+            .sent
+            .lock()
+            .map(|sent| {
+                sent.iter()
+                    .filter_map(|(_, command)| match command {
+                        SessionCommand::Save { doc } => Some(*doc),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn close_tab_with_unsaved_changes_arms_the_prompt_and_does_not_close() {
+        let mut app = app();
+        dirty_doc_tab(&mut app, "t.rs", 1);
+        app.dispatch(Command::CloseTab);
+        // The close is deferred behind the confirmation, and the tab is untouched.
+        assert!(matches!(app.pending_close, Some(CloseRequest::Tab { .. })));
+        assert_eq!(app.tabs.len(), 1);
+        assert!(matches!(app.tabs[0].kind, TabKind::Code { .. }));
+        assert!(app.tabs[0].dirty);
+        assert_eq!(
+            app.input_context().modal,
+            Some(crate::keymap::Modal::CloseConfirm)
+        );
+    }
+
+    #[test]
+    fn close_tab_confirm_discard_closes_and_discards() {
+        let mut app = app();
+        dirty_doc_tab(&mut app, "t.rs", 1);
+        app.dispatch(Command::CloseTab);
+        app.dispatch(Command::CloseConfirmDiscard);
+        assert!(app.pending_close.is_none());
+        // The last tab collapses to a Welcome tab; the dirty buffer is discarded.
+        assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
+    }
+
+    #[test]
+    fn close_tab_unbound_key_cancels_and_keeps_the_tab() {
+        let mut app = app();
+        dirty_doc_tab(&mut app, "t.rs", 1);
+        app.dispatch(Command::CloseTab);
+        // Any key that is not s/d aborts (the default), leaving the tab open.
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::empty()));
+        assert!(app.pending_close.is_none());
+        assert_eq!(app.tabs.len(), 1);
+        assert!(matches!(app.tabs[0].kind, TabKind::Code { .. }));
+        assert_eq!(app.status.as_deref(), Some("close cancelled"));
+    }
+
+    #[test]
+    fn close_tab_save_parks_request_then_closes_when_saves_drain() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        dirty_doc_tab(&mut app, "t.rs", 7);
+        app.dispatch(Command::CloseTab);
+
+        app.dispatch(Command::CloseConfirmSave);
+        // The request is parked mid-save; exactly the at-risk doc is saved, and the
+        // tab stays open until the save answers.
+        assert!(matches!(app.saving_close, Some(CloseRequest::Tab { .. })));
+        assert_eq!(saved_docs(&backend), vec![DocumentId(7)]);
+        assert!(matches!(app.tabs[0].kind, TabKind::Code { .. }));
+
+        // The save drains → the parked close runs.
+        let save_id = *app
+            .pending_saves
+            .keys()
+            .next()
+            .expect("a save is in flight");
+        app.on_backend_event(Some(save_id), SessionEvent::Saved { doc: DocumentId(7) });
+        assert!(app.saving_close.is_none());
+        assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
+    }
+
+    #[test]
+    fn close_other_tabs_with_unsaved_arms_the_prompt() {
+        let mut app = app();
+        dirty_doc_tab(&mut app, "keep.rs", 1);
+        dirty_doc_tab(&mut app, "other.rs", 2);
+        // Keep the first tab active; the dirty second tab would be dropped.
+        app.active = 0;
+        app.dispatch(Command::CloseOtherTabs);
+        assert_eq!(app.pending_close, Some(CloseRequest::OtherTabs));
+        assert_eq!(app.tabs.len(), 2, "nothing closes while the prompt is up");
+    }
+
+    #[test]
+    fn close_tabs_to_right_with_unsaved_arms_the_prompt() {
+        let mut app = app();
+        dirty_doc_tab(&mut app, "left.rs", 1);
+        dirty_doc_tab(&mut app, "right.rs", 2);
+        app.active = 0;
+        app.dispatch(Command::CloseTabsToRight);
+        assert_eq!(app.pending_close, Some(CloseRequest::TabsToRight));
+        assert_eq!(app.tabs.len(), 2);
+    }
+
+    #[test]
+    fn close_all_tabs_with_unsaved_arms_the_prompt() {
+        let mut app = app();
+        dirty_doc_tab(&mut app, "a.rs", 1);
+        dirty_doc_tab(&mut app, "b.rs", 2);
+        app.dispatch(Command::CloseAllTabs);
+        assert_eq!(app.pending_close, Some(CloseRequest::AllTabs));
+        assert_eq!(app.tabs.len(), 2);
+    }
+
+    #[test]
+    fn clean_tab_closes_without_prompting() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "x"));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(1));
+        }
+        // Not dirty → close runs immediately.
+        app.dispatch(Command::CloseTab);
+        assert!(app.pending_close.is_none());
+        assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
+    }
+
+    #[test]
+    fn close_tab_does_not_prompt_when_doc_open_in_another_tab() {
+        let mut app = app();
+        // Two tabs of the same dirty document; closing one leaves the other.
+        let keep = dirty_doc_tab(&mut app, "dup.rs", 5);
+        let drop = dirty_doc_tab(&mut app, "dup.rs", 5);
+        assert_ne!(keep, drop);
+        app.dispatch(Command::CloseTab); // closes the active (second) view
+        assert!(
+            app.pending_close.is_none(),
+            "the document survives in the first tab, so no data is lost"
+        );
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.tabs[0].view, keep);
+    }
+
+    #[test]
+    fn close_tab_does_not_prompt_when_doc_open_in_another_pane() {
+        let mut app = app();
+        dirty_doc_tab(&mut app, "shared.rs", 9);
+        // Split: the duplicate (same doc) becomes the focused pane; the dirty original
+        // moves into a stored pane and keeps the document referenced.
+        app.split_focused(SplitDir::Right);
+        app.dispatch(Command::CloseTab);
+        assert!(
+            app.pending_close.is_none(),
+            "the dirty document still lives in the other pane"
+        );
+    }
+
+    #[test]
+    fn close_save_targets_only_the_at_risk_documents() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        // Two independent dirty docs; only the one being dropped should be saved.
+        dirty_doc_tab(&mut app, "keep.rs", 1);
+        let drop = dirty_doc_tab(&mut app, "drop.rs", 2);
+        app.guarded_close(CloseRequest::Tab { view: drop });
+        app.dispatch(Command::CloseConfirmSave);
+        assert_eq!(
+            saved_docs(&backend),
+            vec![DocumentId(2)],
+            "only the at-risk document is saved, not every dirty document"
+        );
+    }
+
+    #[test]
+    fn close_tab_save_revalidates_index_after_drain() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        let _a = dirty_doc_tab(&mut app, "a.rs", 1); // scaffold at index 0, cleaned below
+        app.tabs[0].dirty = false;
+        let target = dirty_doc_tab(&mut app, "target.rs", 2); // index 1
+        let c = dirty_doc_tab(&mut app, "c.rs", 3);
+        app.tabs[2].dirty = false;
+
+        app.guarded_close(CloseRequest::Tab { view: target });
+        app.dispatch(Command::CloseConfirmSave);
+        assert!(matches!(app.saving_close, Some(CloseRequest::Tab { .. })));
+
+        // A tab list mutation before the save drains shifts `target` from index 1 to 0.
+        app.tabs.remove(0);
+
+        let save_id = *app
+            .pending_saves
+            .keys()
+            .next()
+            .expect("a save is in flight");
+        app.on_backend_event(Some(save_id), SessionEvent::Saved { doc: DocumentId(2) });
+
+        // The view-id lookup closes `target` (not whatever now sits at the old index).
+        let views: Vec<ViewId> = app.tabs.iter().map(|t| t.view).collect();
+        assert!(!views.contains(&target), "the intended tab was closed");
+        assert!(views.contains(&c), "the other tab is untouched");
+    }
+
+    #[test]
+    fn non_code_tab_never_prompts_even_with_other_dirty_docs() {
+        let mut app = app();
+        dirty_doc_tab(&mut app, "dirty.rs", 1); // a dirty doc lives elsewhere
+        app.push_tab(Tab::welcome()); // a non-code tab, now active
+        app.dispatch(Command::CloseTab);
+        assert!(
+            app.pending_close.is_none(),
+            "closing a doc-less tab risks no data"
+        );
+        // The dirty code tab is still open.
+        assert!(app.all_tabs().any(|t| t.dirty));
     }
 
     #[test]
@@ -6920,7 +7306,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
             *doc = Some(DocumentId(2));
         }
         app.tabs[app.active].dirty = true;
-        app.quitting = true;
+        app.saving_close = Some(CloseRequest::Quit);
         app.pending_saves.insert(RequestId(5), DocumentId(2));
 
         app.on_backend_event(
@@ -6929,7 +7315,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         );
 
         assert!(!app.should_quit);
-        assert!(!app.quitting);
+        assert!(app.saving_close.is_none());
         assert!(app.tabs[app.active].dirty);
     }
 

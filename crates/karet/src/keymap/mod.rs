@@ -94,6 +94,7 @@ use KeyCode::PageUp;
 use KeyCode::Right;
 use KeyCode::Tab;
 use KeyCode::Up;
+use Layer::CloseConfirm;
 use Layer::CommitGraph;
 use Layer::CommitInput;
 use Layer::ContextMenu;
@@ -109,7 +110,6 @@ use Layer::Outline;
 use Layer::Overlay;
 use Layer::Oversize;
 use Layer::Pager;
-use Layer::QuitConfirm;
 use Layer::RevInput;
 use Layer::SearchInput;
 use Layer::SearchList;
@@ -369,11 +369,12 @@ static BINDINGS: &[Binding] = &[
     b(ContextMenu, false, false, false, Char('k'), Command::ContextMenuUp),
     b(ContextMenu, false, false, false, Down,      Command::ContextMenuDown),
     b(ContextMenu, false, false, false, Char('j'), Command::ContextMenuDown),
-    // Quit confirmation (unsaved changes): save-all, discard, or (any other key) cancel.
-    b(QuitConfirm, false, false, false, Char('s'), Command::QuitSaveAll),
-    b(QuitConfirm, false, false, false, Char('S'), Command::QuitSaveAll),
-    b(QuitConfirm, false, false, false, Char('d'), Command::QuitDiscard),
-    b(QuitConfirm, false, false, false, Char('D'), Command::QuitDiscard),
+    // Close confirmation (unsaved changes: quit or tab/pane close): save, discard, or
+    // (any other key) cancel — the default is always to abort.
+    b(CloseConfirm, false, false, false, Char('s'), Command::CloseConfirmSave),
+    b(CloseConfirm, false, false, false, Char('S'), Command::CloseConfirmSave),
+    b(CloseConfirm, false, false, false, Char('d'), Command::CloseConfirmDiscard),
+    b(CloseConfirm, false, false, false, Char('D'), Command::CloseConfirmDiscard),
     // Startup crash-recovery prompt: recover, discard, or (any other key) dismiss.
     b(SwapRecover, false, false, false, Char('r'), Command::RecoverSwaps),
     b(SwapRecover, false, false, false, Char('R'), Command::RecoverSwaps),
