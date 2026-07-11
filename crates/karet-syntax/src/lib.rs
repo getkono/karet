@@ -8,6 +8,8 @@
 //! [`Highlighter`] highlights one language. [`LayeredHighlighter`] highlights a
 //! `LayeredTree` — a document plus its injected languages — so a markdown code fence
 //! is coloured as the language it names and a Rust doc comment as the markdown it is.
+//! [`mark_semantic_comments`] is an optional post-pass that retints codetag comment
+//! blocks (`TODO: …` and friends) so they stand out from ordinary comments.
 //!
 //! Fold regions, bracket pairs and structural selection are reserved (the public
 //! joints are defined; their tree-walking is filled in with the editor).
@@ -21,9 +23,12 @@ use karet_treesitter::SyntaxTree;
 
 mod highlight;
 mod map;
+mod semantic;
 
 pub use highlight::Highlighter;
 pub use highlight::LayeredHighlighter;
+pub use semantic::SemanticCommentConfig;
+pub use semantic::mark_semantic_comments;
 
 /// Errors produced by syntactic analysis.
 #[derive(Debug, thiserror::Error)]
