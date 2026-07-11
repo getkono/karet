@@ -389,6 +389,38 @@ impl Repository {
         self.diff_trees(parent_tree.as_ref(), Some(&new_tree))
     }
 
+    /// The raw bytes of the file at `path` as it existed in revision `rev` (a hash,
+    /// ref, branch, `HEAD`, `HEAD~2`, …), or `None` when no blob exists there at that
+    /// revision — the path is absent, or names a directory/submodule rather than a
+    /// file.
+    ///
+    /// `path` is resolved the same way as [`file_history`](Self::file_history): a
+    /// relative path is relative to the process's current directory, and a path
+    /// outside the worktree yields `Ok(None)`. Bytes are returned verbatim (binary
+    /// content included), so the caller decides how to interpret them.
+    ///
+    /// # Errors
+    /// Returns [`VcsError::Git`] if `rev` does not resolve to a commit, or on read
+    /// failure.
+    pub fn file_at_rev(&self, path: &Path, rev: &str) -> Result<Option<Vec<u8>>, VcsError> {
+        let Some(rel) = repo_relative(&self.inner, path) else {
+            return Ok(None);
+        };
+        let commit = self.inner.find_commit(self.resolve(rev)?).map_err(to_git)?;
+        let tree = commit.tree().map_err(to_git)?;
+        let Some(entry) = tree.lookup_entry_by_path(&rel).map_err(to_git)? else {
+            return Ok(None);
+        };
+        if !entry.mode().is_blob_or_symlink() {
+            return Ok(None);
+        }
+        let object = self
+            .inner
+            .find_object(entry.id().detach())
+            .map_err(to_git)?;
+        Ok(Some(object.data.clone()))
+    }
+
     /// Collect one [`FileChange`] per file that differs between two arbitrary revisions,
     /// each carrying full before/after text so the caller can diff it (via `karet-diff`).
     ///
@@ -1185,4 +1217,60 @@ mod tests {
         assert!(r.upstream_of_head()?.is_none());
         Ok(())
     }
+
+    #[test]
+    fn file_at_rev_reads_each_revision_and_reports_absence() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        write(&repo.path, "a.txt", b"v0\n")?;
+        git(&repo.path, &["add", "."])?;
+        git(&repo.path, &["commit", "-q", "-m", "c0"])?;
+        write(&repo.path, "a.txt", b"v1\n")?;
+        git(&repo.path, &["commit", "-q", "-am", "c1"])?;
+        let r = Repository::discover(&repo.path)?;
+
+        let path = repo.path.join("a.txt");
+        // HEAD holds the newest content; the previous commit holds the older one.
+        assert_eq!(r.file_at_rev(&path, "HEAD")?.as_deref(), Some(&b"v1\n"[..]));
+        assert_eq!(
+            r.file_at_rev(&path, "HEAD~1")?.as_deref(),
+            Some(&b"v0\n"[..])
+        );
+        // A path that does not exist at that revision is `None`, not an error.
+        assert!(
+            r.file_at_rev(&repo.path.join("missing.txt"), "HEAD")?
+                .is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn file_at_rev_returns_bytes_verbatim_for_binary_content() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        let bytes = b"\x00\x01\x02rust\xff\xfe";
+        write(&repo.path, "bin.dat", bytes)?;
+        git(&repo.path, &["add", "."])?;
+        git(&repo.path, &["commit", "-q", "-m", "add binary"])?;
+        let r = Repository::discover(&repo.path)?;
+        assert_eq!(
+            r.file_at_rev(&repo.path.join("bin.dat"), "HEAD")?
+                .as_deref(),
+            Some(&bytes[..])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn file_at_rev_of_a_bad_revision_errors() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        write(&repo.path, "a.txt", b"x\n")?;
+        git(&repo.path, &["add", "."])?;
+        git(&repo.path, &["commit", "-q", "-m", "c0"])?;
+        let r = Repository::discover(&repo.path)?;
+        assert!(
+            r.file_at_rev(&repo.path.join("a.txt"), "no-such-rev")
+                .is_err()
+        );
+        Ok(())
+    }
+
 }
