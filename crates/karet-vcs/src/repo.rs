@@ -58,6 +58,17 @@ impl Repository {
             .map(|v| v.to_str_lossy().into_owned())
     }
 
+    /// The path of `path` relative to the repository's worktree root, or `None` when
+    /// `path` lies outside the worktree (or the repository is bare). Both sides are
+    /// canonicalized first (resolving `.`, `..`, and symlinks), so a relative `path`
+    /// resolves against the process's current directory — the same resolution
+    /// [`file_history`](Self::file_history) and [`file_at_rev`](Self::file_at_rev)
+    /// apply to their `path` argument.
+    #[must_use]
+    pub fn path_in_worktree(&self, path: &Path) -> Option<PathBuf> {
+        crate::changes::repo_relative(&self.inner, path)
+    }
+
     /// The git-metadata directories whose contents a file watcher should observe to
     /// keep status fresh: the per-worktree git directory (holding `index`, `HEAD`,
     /// `MERGE_HEAD`) and, for a linked worktree, the common directory (holding
@@ -117,6 +128,29 @@ mod tests {
         assert_eq!(dirs.len(), 1);
         assert!(dirs[0].ends_with(".git"));
         assert!(dirs[0].is_dir());
+        Ok(())
+    }
+
+    #[test]
+    fn path_in_worktree_maps_inside_and_rejects_outside() -> Result<(), VcsError> {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("karet-vcs-rel-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).map_err(|e| VcsError::Git(e.to_string()))?;
+        let _guard = TempDir(dir.clone());
+        let status = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .map_err(|e| VcsError::Git(e.to_string()))?;
+        assert!(status.success());
+        std::fs::write(dir.join("sub/a.txt"), "x\n").map_err(|e| VcsError::Git(e.to_string()))?;
+
+        let repo = Repository::discover(&dir)?;
+        assert_eq!(
+            repo.path_in_worktree(&dir.join("sub/a.txt")),
+            Some(std::path::PathBuf::from("sub/a.txt"))
+        );
+        assert!(repo.path_in_worktree(&std::env::temp_dir()).is_none());
         Ok(())
     }
 }
