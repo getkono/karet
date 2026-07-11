@@ -69,6 +69,9 @@ toml.workspace = true                # `input` module keymap config, merged from
 serde.workspace = true               # `input` module keymap config
 serde_json.workspace = true          # loaded-settings inspector formatting
 
+[dev-dependencies]
+tempfile.workspace = true            # temp roots for the desktop-entry executor tests
+
 # Build-time only: reuse the existing pure-Rust `gix` (already pinned with `status`)
 # to read the commit / dirty / commit-time provenance baked into `karet -V`. No new
 # dependency and no external `git` binary — see build.rs.

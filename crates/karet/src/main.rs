@@ -41,6 +41,17 @@ use clap::Parser;
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
     let cli = cli::Cli::parse();
+
+    // `--install-desktop` / `--uninstall-desktop` act like subcommands: manage the
+    // per-user desktop entry and exit — no config load, never enter the TUI. (clap
+    // rejects passing both together.)
+    if cli.install_desktop {
+        std::process::exit(desktop::run_install());
+    }
+    if cli.uninstall_desktop {
+        std::process::exit(desktop::run_uninstall());
+    }
+
     let path = cli.path.clone().unwrap_or_else(|| PathBuf::from("."));
     let syntax = !cli.no_syntax && std::env::var_os("NO_COLOR").is_none();
 

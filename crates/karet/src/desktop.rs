@@ -15,8 +15,17 @@
 //! - **Planners** ([`linux_plan`], [`macos_plan`], [`windows_plan`]) compose a
 //!   [`Plan`] from *injected* base directories, the executable path, and the
 //!   version — no environment reads, so tests pass synthetic roots.
-//! - The impure half (real base-directory resolution behind `cfg(target_os)`, and
-//!   the executor that writes/removes files) lives in a separate change.
+//! - **Executors** ([`install`], [`uninstall`]) apply a plan to the filesystem;
+//!   they take the plan as data, so tests drive them against temp roots.
+//! - Only [`current_plan`] (base-directory resolution) is `cfg(target_os)`-gated,
+//!   and only [`run_install`]/[`run_uninstall`] read the real environment.
+//!
+//! On Windows the Start-Menu artifact is a plain-text `.cmd` launcher rather than
+//! a binary `.lnk` shortcut: the pure-Rust `.lnk` writer (`mslnk`) is stale (last
+//! release 2022) and its binary output cannot be exercised by this workspace's
+//! cross-platform tests, whereas the `.cmd` is a fully-tested string with zero
+//! added dependencies. The accepted tradeoff: the Windows Start-Menu entry has no
+//! custom icon or description field.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -320,6 +329,200 @@ pub(crate) fn windows_plan(start_menu_programs: &Path, exe: &Path) -> Plan {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Executors (impure: apply a plan to the filesystem)
+// ---------------------------------------------------------------------------
+
+/// A desktop-integration failure, rendered on stderr by the CLI entry points.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum DesktopError {
+    /// The host is not one of the supported desktop platforms (Linux/XDG, macOS,
+    /// Windows 10/11).
+    #[error("desktop integration is not supported on this platform")]
+    Unsupported,
+    /// The per-user base directory could not be determined (no home directory).
+    #[error("cannot determine the user's home directory")]
+    NoBaseDirs,
+    /// The running executable's path could not be resolved.
+    #[error("cannot resolve the karet executable path: {0}")]
+    CurrentExe(#[source] std::io::Error),
+    /// A planned file (or one of its parent directories) could not be written.
+    #[error("cannot write {path}: {source}")]
+    Write {
+        /// The destination that failed.
+        path: String,
+        /// The underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// A planned path could not be removed.
+    #[error("cannot remove {path}: {source}")]
+    Remove {
+        /// The path that failed.
+        path: String,
+        /// The underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// Execute a plan's install half: create parent directories, write every planned
+/// file (overwriting a previous install — idempotent by construction), and mark
+/// launcher scripts executable on Unix. Returns the written paths in order.
+pub(crate) fn install(plan: &Plan) -> Result<Vec<PathBuf>, DesktopError> {
+    let write_err = |path: &Path, source: std::io::Error| DesktopError::Write {
+        path: path.display().to_string(),
+        source,
+    };
+    let mut written = Vec::with_capacity(plan.files.len());
+    for file in &plan.files {
+        if let Some(parent) = file.path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| write_err(parent, e))?;
+        }
+        std::fs::write(&file.path, &file.contents).map_err(|e| write_err(&file.path, e))?;
+        #[cfg(unix)]
+        if file.executable {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file.path, std::fs::Permissions::from_mode(0o755))
+                .map_err(|e| write_err(&file.path, e))?;
+        }
+        written.push(file.path.clone());
+    }
+    Ok(written)
+}
+
+/// Execute a plan's uninstall half: remove every planned path (a file or, for the
+/// macOS bundle, a whole directory). Returns `(removed, already_absent)` — an
+/// absent path is a success with a note, not an error, so uninstall is idempotent.
+pub(crate) fn uninstall(plan: &Plan) -> Result<(Vec<PathBuf>, Vec<PathBuf>), DesktopError> {
+    let remove_err = |path: &Path, source: std::io::Error| DesktopError::Remove {
+        path: path.display().to_string(),
+        source,
+    };
+    let mut removed = Vec::new();
+    let mut absent = Vec::new();
+    for path in &plan.remove {
+        // `symlink_metadata` treats a dangling symlink as present (it should be
+        // removed) while a truly missing path lands in `absent`.
+        match std::fs::symlink_metadata(path) {
+            Err(_) => absent.push(path.clone()),
+            Ok(meta) => {
+                let result = if meta.is_dir() {
+                    std::fs::remove_dir_all(path)
+                } else {
+                    std::fs::remove_file(path)
+                };
+                result.map_err(|e| remove_err(path, e))?;
+                removed.push(path.clone());
+            },
+        }
+    }
+    Ok((removed, absent))
+}
+
+// ---------------------------------------------------------------------------
+// Platform resolution + CLI entry points
+// ---------------------------------------------------------------------------
+
+/// Compose the current platform's plan for `exe`: XDG data home on Linux,
+/// `~/Applications` on macOS, the Start-Menu programs folder on Windows.
+#[cfg(target_os = "linux")]
+fn current_plan(exe: &Path) -> Result<Plan, DesktopError> {
+    let dirs = directories::BaseDirs::new().ok_or(DesktopError::NoBaseDirs)?;
+    Ok(linux_plan(dirs.data_dir(), exe))
+}
+
+/// Compose the current platform's plan for `exe`: XDG data home on Linux,
+/// `~/Applications` on macOS, the Start-Menu programs folder on Windows.
+#[cfg(target_os = "macos")]
+fn current_plan(exe: &Path) -> Result<Plan, DesktopError> {
+    let dirs = directories::BaseDirs::new().ok_or(DesktopError::NoBaseDirs)?;
+    Ok(macos_plan(
+        &dirs.home_dir().join("Applications"),
+        exe,
+        env!("CARGO_PKG_VERSION"),
+    ))
+}
+
+/// Compose the current platform's plan for `exe`: XDG data home on Linux,
+/// `~/Applications` on macOS, the Start-Menu programs folder on Windows.
+#[cfg(windows)]
+fn current_plan(exe: &Path) -> Result<Plan, DesktopError> {
+    let dirs = directories::BaseDirs::new().ok_or(DesktopError::NoBaseDirs)?;
+    // `data_dir()` is `%APPDATA%` (FOLDERID_RoamingAppData) on Windows.
+    let programs = dirs
+        .data_dir()
+        .join("Microsoft")
+        .join("Windows")
+        .join("Start Menu")
+        .join("Programs");
+    Ok(windows_plan(&programs, exe))
+}
+
+/// Compose the current platform's plan for `exe` — always [`DesktopError::Unsupported`]
+/// on a platform without desktop integration (BSDs, other unix).
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn current_plan(_exe: &Path) -> Result<Plan, DesktopError> {
+    Err(DesktopError::Unsupported)
+}
+
+/// The running executable's canonical path — the target every launcher points at.
+/// Canonicalization resolves the symlink a `cargo install` or packaging shim may
+/// have put on `$PATH`; when it fails (rare), the raw path is still usable.
+fn current_exe() -> Result<PathBuf, DesktopError> {
+    let exe = std::env::current_exe().map_err(DesktopError::CurrentExe)?;
+    Ok(std::fs::canonicalize(&exe).unwrap_or(exe))
+}
+
+/// Run `--install-desktop`: plan for this platform and executable, write the
+/// files, and report each created path plus the disclaimer on stdout. Returns the
+/// process exit code (0 on success; 1 with a stderr message on failure).
+pub(crate) fn run_install() -> i32 {
+    let result = current_exe().and_then(|exe| {
+        let plan = current_plan(&exe)?;
+        install(&plan)
+    });
+    match result {
+        Ok(written) => {
+            for path in &written {
+                println!("installed {}", path.display());
+            }
+            println!("note: {DISCLAIMER}");
+            0
+        },
+        Err(error) => {
+            eprintln!("karet: --install-desktop: {error}");
+            1
+        },
+    }
+}
+
+/// Run `--uninstall-desktop`: plan for this platform and executable, remove the
+/// planned paths, and report each on stdout (an already-absent path is a note, not
+/// a failure). Returns the process exit code (0 on success; 1 with a stderr
+/// message on failure).
+pub(crate) fn run_uninstall() -> i32 {
+    let result = current_exe().and_then(|exe| {
+        let plan = current_plan(&exe)?;
+        uninstall(&plan)
+    });
+    match result {
+        Ok((removed, absent)) => {
+            for path in &removed {
+                println!("removed {}", path.display());
+            }
+            for path in &absent {
+                println!("already absent: {}", path.display());
+            }
+            0
+        },
+        Err(error) => {
+            eprintln!("karet: --uninstall-desktop: {error}");
+            1
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,5 +737,108 @@ mod tests {
         assert_eq!(plan.files[0].path, programs.join("karet.cmd"));
         assert!(!plan.files[0].executable);
         assert_eq!(plan.remove, vec![programs.join("karet.cmd")]);
+    }
+
+    // --- Executors (temp roots, never the real HOME/XDG paths) -------------
+
+    #[test]
+    fn install_writes_exactly_the_planned_files() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let plan = linux_plan(root.path(), Path::new("/usr/bin/karet"));
+        let written = install(&plan)?;
+        assert_eq!(
+            written,
+            plan.files
+                .iter()
+                .map(|f| f.path.clone())
+                .collect::<Vec<_>>()
+        );
+        for file in &plan.files {
+            assert_eq!(std::fs::read(&file.path)?, file.contents, "{:?}", file.path);
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_marks_the_launcher_executable() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir()?;
+        let plan = macos_plan(root.path(), Path::new("/usr/local/bin/karet"), "1.0.0");
+        install(&plan)?;
+        let launcher = &plan.files[1];
+        assert!(launcher.executable, "fixture: files[1] is the launcher");
+        let mode = std::fs::metadata(&launcher.path)?.permissions().mode();
+        assert_eq!(mode & 0o777, 0o755, "launcher must be 0755");
+        let plist_mode = std::fs::metadata(&plan.files[0].path)?.permissions().mode();
+        assert_eq!(plist_mode & 0o111, 0, "the plist must not be executable");
+        Ok(())
+    }
+
+    #[test]
+    fn double_install_is_idempotent() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let plan = linux_plan(root.path(), Path::new("/usr/bin/karet"));
+        install(&plan)?;
+        // A second install (even after the entry pointed elsewhere) overwrites
+        // cleanly and converges on the new plan's contents.
+        let moved = linux_plan(root.path(), Path::new("/opt/new home/karet"));
+        install(&moved)?;
+        let entry = std::fs::read_to_string(&moved.files[0].path)?;
+        assert!(entry.contains("\"/opt/new home/karet\""), "got:\n{entry}");
+        Ok(())
+    }
+
+    #[test]
+    fn uninstall_removes_installed_files() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let plan = linux_plan(root.path(), Path::new("/usr/bin/karet"));
+        install(&plan)?;
+        let (removed, absent) = uninstall(&plan)?;
+        assert_eq!(removed, plan.remove);
+        assert!(absent.is_empty());
+        for path in &plan.remove {
+            assert!(!path.exists(), "{path:?} must be gone");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn uninstall_removes_the_whole_macos_bundle() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let plan = macos_plan(root.path(), Path::new("/usr/local/bin/karet"), "1.0.0");
+        install(&plan)?;
+        let bundle = root.path().join("karet.app");
+        assert!(bundle.is_dir());
+        let (removed, absent) = uninstall(&plan)?;
+        assert_eq!(removed, vec![bundle.clone()]);
+        assert!(absent.is_empty());
+        assert!(!bundle.exists(), "the bundle directory must be gone");
+        Ok(())
+    }
+
+    #[test]
+    fn uninstall_when_absent_succeeds_with_notes() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let plan = linux_plan(root.path(), Path::new("/usr/bin/karet"));
+        let (removed, absent) = uninstall(&plan)?;
+        assert!(removed.is_empty());
+        assert_eq!(absent, plan.remove);
+        Ok(())
+    }
+
+    #[test]
+    fn install_reports_an_unwritable_destination() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        // Occupy the `applications` parent with a *file* so create_dir_all fails.
+        std::fs::write(root.path().join("applications"), b"in the way")?;
+        let plan = linux_plan(root.path(), Path::new("/usr/bin/karet"));
+        let error = install(&plan).err().ok_or("install must fail")?;
+        assert!(
+            matches!(error, DesktopError::Write { .. }),
+            "expected Write error, got {error:?}"
+        );
+        assert!(error.to_string().contains("cannot write"));
+        Ok(())
     }
 }
