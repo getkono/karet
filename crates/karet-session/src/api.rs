@@ -396,9 +396,16 @@ pub enum Event {
         /// The symbols.
         symbols: Vec<Symbol>,
     },
-    /// Completion results answering a [`Command::Completion`].
+    /// Completion results answering a [`Command::Completion`]. Delivered with the
+    /// originating command's [`RequestId`]; `doc` and `version` echo the request's
+    /// target so the client can drop sets that are stale by the time they arrive
+    /// (document switched, or edited past `version`).
     Completions {
-        /// The completion items.
+        /// The document the completions are for.
+        doc: DocumentId,
+        /// The document version the request was made against.
+        version: u64,
+        /// The completion items, with edit ranges in buffer (UTF-32) columns.
         items: Vec<CompletionItem>,
     },
     /// Hover result answering a [`Command::Hover`].
