@@ -798,6 +798,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn requests_after_eof_fail_fast_with_closed() -> TestResult {
+        let ((read, write), server) = wire();
+        let connection = conn::Connection::start(read, write);
+        drop(server); // the server is gone before any request is issued
+        // Give the reader task a chance to observe the EOF.
+        tokio::task::yield_now().await;
+        // A generous deadline proves we do NOT wait it out: the request must
+        // fail promptly with Closed, not eventually with Timeout.
+        let started = std::time::Instant::now();
+        let err = connection
+            .request_with::<_, Value>("test/late", Value::Null, Duration::from_secs(30))
+            .await;
+        assert!(matches!(err, Err(LspError::Closed)), "got {err:?}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn malformed_json_frames_are_skipped() -> TestResult {
         let ((read, write), mut server) = wire();
         let connection = conn::Connection::start(read, write);

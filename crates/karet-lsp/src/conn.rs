@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -61,6 +62,10 @@ pub(crate) struct Connection {
     pending: Pending,
     next_id: AtomicI64,
     diagnostics: broadcast::Sender<(PathBuf, Vec<Diagnostic>)>,
+    /// Set once either I/O task stops, so requests issued *after* the
+    /// connection died fail fast with [`LspError::Closed`] instead of sitting in
+    /// the pending map until they time out.
+    closed: Arc<AtomicBool>,
     reader_task: JoinHandle<()>,
     writer_task: JoinHandle<()>,
 }
@@ -75,7 +80,9 @@ impl Connection {
         let (outbound, mut outbound_rx) = mpsc::unbounded_channel::<Outbound>();
         let (diagnostics, _) = broadcast::channel(DIAGNOSTICS_CHANNEL_CAPACITY);
         let pending: Pending = Arc::default();
+        let closed = Arc::new(AtomicBool::new(false));
 
+        let writer_closed = Arc::clone(&closed);
         let writer_task = tokio::spawn(async move {
             let mut write = write;
             while let Some(item) = outbound_rx.recv().await {
@@ -88,12 +95,14 @@ impl Connection {
                     break;
                 }
             }
+            writer_closed.store(true, Ordering::SeqCst);
         });
         let reader_task = tokio::spawn(read_loop(
             BufReader::new(read),
             Arc::clone(&pending),
             diagnostics.clone(),
             outbound.clone(),
+            Arc::clone(&closed),
         ));
 
         Self {
@@ -101,6 +110,7 @@ impl Connection {
             pending,
             next_id: AtomicI64::new(1),
             diagnostics,
+            closed,
             reader_task,
             writer_task,
         }
@@ -133,6 +143,14 @@ impl Connection {
         {
             let mut map = self.pending.lock().map_err(|_| LspError::Closed)?;
             map.insert(id, tx);
+        }
+        // Checked *after* registering: if the reader exits first it drains the
+        // map (failing us via the dropped sender); if it exited before our
+        // insert, this flag is already set. Either way we never wait out the
+        // timeout on a dead connection.
+        if self.closed.load(Ordering::SeqCst) {
+            self.forget(id);
+            return Err(LspError::Closed);
         }
         if self.outbound.send(Outbound::Frame(frame)).is_err() {
             self.forget(id);
@@ -201,6 +219,7 @@ async fn read_loop<R>(
     pending: Pending,
     diagnostics: broadcast::Sender<(PathBuf, Vec<Diagnostic>)>,
     outbound: mpsc::UnboundedSender<Outbound>,
+    closed: Arc<AtomicBool>,
 ) where
     R: AsyncRead + Send + Unpin + 'static,
 {
@@ -216,6 +235,9 @@ async fn read_loop<R>(
             },
         }
     }
+    // Flag first, then drain: a request that raced past the flag check has
+    // already registered and is failed by the drain below.
+    closed.store(true, Ordering::SeqCst);
     if let Ok(mut map) = pending.lock() {
         map.clear(); // dropping the senders fails the awaiting requests
     }
