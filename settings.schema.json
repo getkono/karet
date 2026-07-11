@@ -114,6 +114,20 @@
           "maximum": 65535,
           "minimum": 0
         },
+        "semanticComments": {
+          "description": "Distinct highlighting of codetag comment blocks (`TODO:`, `FIXME:`, …).",
+          "$ref": "#/$defs/SemanticComments",
+          "default": {
+            "enabled": true,
+            "tags": [
+              "TODO",
+              "FIXME",
+              "HACK",
+              "XXX",
+              "BUG"
+            ]
+          }
+        },
         "tabSize": {
           "description": "Number of columns a tab renders as / spaces inserted for one indent level.",
           "type": "integer",
@@ -295,6 +309,32 @@
           "description": "Honour `.gitignore` / `.ignore` files when searching.",
           "type": "boolean",
           "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "SemanticComments": {
+      "description": "`editor.semanticComments.*` — distinct highlighting of codetag comment blocks.\n\nA comment whose content opens with a configured tag — plus the immediately\nfollowing non-empty comment lines — is highlighted with an attention-drawing\nstyle instead of the ordinary comment color.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Highlight codetag comment blocks distinctly.",
+          "type": "boolean",
+          "default": true
+        },
+        "tags": {
+          "description": "The codetags that open a block. Matching is case-sensitive and whole-word:\nthe tag must start the comment's content and be followed by `:`, `(`,\nwhitespace, or the end of the line. Setting this replaces the defaults.",
+          "type": "array",
+          "default": [
+            "TODO",
+            "FIXME",
+            "HACK",
+            "XXX",
+            "BUG"
+          ],
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false

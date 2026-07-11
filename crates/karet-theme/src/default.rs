@@ -55,6 +55,10 @@ pub(crate) fn dark() -> Theme {
     tok(StandardToken::MarkupListMarker, rgb(0xff, 0x9e, 0x64));
     // Struck text is text the author retracted: dim it toward the comment grey.
     tok(StandardToken::MarkupStrikethrough, rgb(0x56, 0x5f, 0x89));
+    // A codetag comment (`TODO`/`FIXME`/…) is the loudest kind of comment: paint it
+    // the theme's warning amber (well clear of both the grey comment and the muted
+    // doc-comment) so it draws the eye instead of blending into the skim-past noise.
+    tok(StandardToken::CommentMark, rgb(0xe0, 0xaf, 0x68));
 
     // Markup carries weight and slant, not just hue: bold/italic are what make a
     // heading read as a heading and `*em*` read as emphasis.
@@ -66,6 +70,8 @@ pub(crate) fn dark() -> Theme {
     em(StandardToken::MarkupItalic, Emphasis::ITALIC);
     em(StandardToken::MarkupQuote, Emphasis::ITALIC);
     em(StandardToken::MarkupStrikethrough, Emphasis::STRIKETHROUGH);
+    // Bold reinforces the amber: a codetag comment should be impossible to skim past.
+    em(StandardToken::CommentMark, Emphasis::BOLD);
 
     let mut roles = [fg; ROLE_COUNT];
     let mut role = |r: ThemeRole, c: Rgba| roles[r as usize] = c;

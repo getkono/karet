@@ -18,6 +18,7 @@ use std::sync::mpsc::Sender;
 use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
 use karet_syntax::LayeredHighlighter;
+use karet_syntax::SemanticCommentConfig;
 use karet_treesitter::Edit;
 use karet_treesitter::LanguageId;
 use karet_treesitter::LayeredParser;
@@ -57,9 +58,16 @@ pub(crate) struct HighlightResult {
 
 /// Start the worker thread, returning its job sender and result receiver.
 ///
+/// `semantic` is the semantic-comment pass to run over every fresh highlight
+/// (`None` when `editor.semanticComments` is disabled). It is fixed at spawn
+/// because settings are loaded once per session; a settings-reload seam would
+/// respawn or re-message the worker.
+///
 /// If the thread cannot be spawned the result sender is dropped, the receiver closes,
 /// and the session simply never receives highlights — degraded, not broken.
-pub(crate) fn spawn() -> (
+pub(crate) fn spawn(
+    semantic: Option<SemanticCommentConfig>,
+) -> (
     Sender<HighlightJob>,
     tokio_mpsc::UnboundedReceiver<HighlightResult>,
 ) {
@@ -69,7 +77,7 @@ pub(crate) fn spawn() -> (
     // actor then stops selecting that arm and the editor runs without highlights.
     std::thread::Builder::new()
         .name("karet-highlight".to_owned())
-        .spawn(move || run(&jobs_rx, &results_tx))
+        .spawn(move || run(&jobs_rx, &results_tx, semantic.as_ref()))
         .ok();
     (jobs_tx, results_rx)
 }
@@ -80,7 +88,11 @@ pub(crate) fn spawn() -> (
 /// we drain everything already queued, so a keystroke burst that arrived while the
 /// previous batch was computing collapses into a single reparse of the newest text. An
 /// idle editor pays no added latency; a busy one batches automatically.
-fn run(jobs: &Receiver<HighlightJob>, results: &tokio_mpsc::UnboundedSender<HighlightResult>) {
+fn run(
+    jobs: &Receiver<HighlightJob>,
+    results: &tokio_mpsc::UnboundedSender<HighlightResult>,
+    semantic: Option<&SemanticCommentConfig>,
+) {
     let mut parser = LayeredParser::new();
     let mut highlighter = LayeredHighlighter::new();
     let mut trees: HashMap<DocumentId, LayeredTree> = HashMap::new();
@@ -96,7 +108,8 @@ fn run(jobs: &Receiver<HighlightJob>, results: &tokio_mpsc::UnboundedSender<High
         }
 
         for (_, request) in pending.drain() {
-            if let Some(result) = compute(&mut parser, &mut highlighter, &mut trees, request)
+            if let Some(result) =
+                compute(&mut parser, &mut highlighter, &mut trees, request, semantic)
                 && results.send(result).is_err()
             {
                 return; // the session is gone
@@ -144,12 +157,14 @@ fn merge(previous: HighlightRequest, next: HighlightRequest) -> HighlightRequest
     HighlightRequest { edits, ..next }
 }
 
-/// Parse (incrementally where possible) and highlight one document version.
+/// Parse (incrementally where possible) and highlight one document version,
+/// running the semantic-comment pass over the result when `semantic` is set.
 fn compute(
     parser: &mut LayeredParser,
     highlighter: &mut LayeredHighlighter,
     trees: &mut HashMap<DocumentId, LayeredTree>,
     request: HighlightRequest,
+    semantic: Option<&SemanticCommentConfig>,
 ) -> Option<HighlightResult> {
     let reusable = request.edits.is_some()
         && trees
@@ -174,10 +189,14 @@ fn compute(
     }
     let tree = trees.get(&request.doc)?;
 
+    let mut highlights = highlighter.highlight(tree, &request.text);
+    if let Some(config) = semantic {
+        highlights = karet_syntax::mark_semantic_comments(&request.text, &highlights, config);
+    }
     Some(HighlightResult {
         doc: request.doc,
         version: request.version,
-        highlights: Arc::new(highlighter.highlight(tree, &request.text)),
+        highlights: Arc::new(highlights),
         folds: Arc::new(karet_syntax::fold(tree.root())),
     })
 }
@@ -264,6 +283,53 @@ mod tests {
         assert_eq!(pending.len(), 1, "a burst collapses to one request");
         let request = pending.remove(&DocumentId(1)).map(|r| (r.version, r.text));
         assert_eq!(request, Some((2, "ab".to_owned())));
+    }
+
+    /// Run `compute` over a rust buffer with a TODO comment, with the pass
+    /// configured or not, and return the produced token ids.
+    fn compute_tokens(semantic: Option<&SemanticCommentConfig>) -> Option<Vec<u16>> {
+        let rust = karet_treesitter::language_id_from_injection_name("rust")?;
+        let text = "// TODO: fix this\nfn main() {}\n";
+        let mut parser = LayeredParser::new();
+        let mut highlighter = LayeredHighlighter::new();
+        let mut trees = HashMap::new();
+        let request = HighlightRequest {
+            doc: DocumentId(1),
+            version: 1,
+            lang: rust,
+            text: text.to_owned(),
+            edits: None,
+        };
+        let result = compute(&mut parser, &mut highlighter, &mut trees, request, semantic)?;
+        Some(result.highlights.all().iter().map(|s| s.token.0).collect())
+    }
+
+    #[test]
+    fn compute_runs_the_semantic_pass_when_configured() {
+        let mark = karet_core::StandardToken::CommentMark.id().0;
+        let config = SemanticCommentConfig::default();
+        let Some(tokens) = compute_tokens(Some(&config)) else {
+            return; // rust grammar not compiled in; nothing to test
+        };
+        assert!(
+            tokens.contains(&mark),
+            "the TODO comment should be restamped CommentMark, got {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn compute_skips_the_semantic_pass_when_disabled() {
+        let mark = karet_core::StandardToken::CommentMark.id().0;
+        let comment = karet_core::TokenId::COMMENT.0;
+        let Some(tokens) = compute_tokens(None) else {
+            return; // rust grammar not compiled in; nothing to test
+        };
+        // The comment is still highlighted — just as an ordinary comment.
+        assert!(tokens.contains(&comment));
+        assert!(
+            !tokens.contains(&mark),
+            "disabled pass must leave comments unmarked, got {tokens:?}"
+        );
     }
 
     #[test]
