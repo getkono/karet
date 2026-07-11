@@ -17,8 +17,9 @@
 //! parse / highlight — and [`FileView`] renders the result cheaply each frame,
 //! dispatching text to a read-only [`karet_editor::Editor`], images to the Kitty /
 //! halfblock renderer, binaries to [`HexView`], and everything else to a
-//! [`Placeholder`](viewer::Placeholder). [`Limits`] bounds the size and highlight
-//! budgets per context.
+//! [`Placeholder`](viewer::Placeholder). Word documents (behind the `docx`
+//! feature) convert to markdown via `karet-docx` and render through the text
+//! branch. [`Limits`] bounds the size and highlight budgets per context.
 //!
 //! ```no_run
 //! use karet_fileview::{FileDoc, FileView, FileViewState, Limits};

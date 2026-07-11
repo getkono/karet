@@ -3106,6 +3106,7 @@ dependencies = [
  "crossterm",
  "image",
  "karet-core",
+ "karet-docx",
  "karet-editor",
  "karet-filetype",
  "karet-pdf",
@@ -3115,6 +3116,7 @@ dependencies = [
  "karet-treesitter",
  "ratatui",
  "thiserror 2.0.18",
+ "zip",
 ]
 
 [[package]]

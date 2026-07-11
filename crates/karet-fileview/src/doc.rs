@@ -136,7 +136,19 @@ impl FileDoc {
                 },
                 Err(_) => Content::Placeholder,
             },
-            // TooLarge, DOCX, PDF (without the `pdf` feature), and any future
+            // A Word document converts to markdown (via karet-docx) and renders
+            // through the text branch, highlighted as markdown whatever the
+            // original extension. An unparseable file falls back gracefully.
+            #[cfg(feature = "docx")]
+            FileKind::Docx => match karet_docx::parse(bytes) {
+                Ok(docx) => prepare_text(
+                    Path::new("converted.md"),
+                    karet_docx::to_markdown(&docx).as_bytes(),
+                    limits,
+                ),
+                Err(_) => Content::Placeholder,
+            },
+            // TooLarge, DOCX/PDF (without their features), and any future
             // `#[non_exhaustive]` kind → placeholder.
             _ => Content::Placeholder,
         };
@@ -347,6 +359,72 @@ trailer<</Size 4/Root 1 0 R>>\n%%EOF";
         assert_eq!(doc.kind(), FileKind::Pdf);
         assert!(matches!(doc.content, Content::Document { .. }));
         assert_eq!(doc.page_count(), Some(1));
+    }
+
+    /// A minimal DOCX (one heading + one bold run) zipped in-memory (no fixture).
+    #[cfg(feature = "docx")]
+    fn tiny_docx() -> Vec<u8> {
+        use std::io::Write as _;
+        const DOCUMENT_XML: &str = r#"<?xml version="1.0"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Report</w:t></w:r></w:p>
+<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>bold</w:t></w:r></w:p>
+</w:body></w:document>"#;
+        let mut buf = Vec::new();
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        // In-memory ZIP writes do not realistically fail; ignore the results
+        // rather than `unwrap`/`expect` (denied by the workspace lints).
+        let _ = writer.start_file(
+            "word/document.xml",
+            zip::write::SimpleFileOptions::default(),
+        );
+        let _ = writer.write_all(DOCUMENT_XML.as_bytes());
+        let _ = writer.finish();
+        buf
+    }
+
+    #[cfg(feature = "docx")]
+    #[test]
+    fn docx_prepares_to_converted_markdown_text() {
+        let bytes = tiny_docx();
+        let doc = FileDoc::prepare(
+            Path::new("report.docx"),
+            &bytes,
+            bytes.len() as u64,
+            &Limits::default(),
+        );
+        assert_eq!(doc.kind(), FileKind::Docx);
+        // The converted markdown renders through the text branch, as Markdown.
+        assert_eq!(doc.language(), Some("Markdown"));
+        assert!(
+            matches!(&doc.content, Content::Text { .. }),
+            "expected Text content"
+        );
+        if let Content::Text { buffer, .. } = &doc.content {
+            assert_eq!(buffer.text(), "# Report\n\n**bold**");
+        }
+    }
+
+    #[cfg(feature = "docx")]
+    #[test]
+    fn unparseable_docx_falls_back_to_placeholder() {
+        // The `.docx` extension classifies Docx, but the bytes are not a ZIP.
+        let doc = FileDoc::prepare(Path::new("bad.docx"), b"not a zip", 9, &Limits::default());
+        assert_eq!(doc.kind(), FileKind::Docx);
+        assert!(matches!(doc.content, Content::Placeholder));
+    }
+
+    #[cfg(not(feature = "docx"))]
+    #[test]
+    fn docx_without_the_feature_is_a_placeholder() {
+        let doc = FileDoc::prepare(
+            Path::new("report.docx"),
+            b"PK\x03\x04",
+            4,
+            &Limits::default(),
+        );
+        assert_eq!(doc.kind(), FileKind::Docx);
+        assert!(matches!(doc.content, Content::Placeholder));
     }
 
     #[cfg(feature = "pdf")]

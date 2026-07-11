@@ -29,6 +29,10 @@ images = ["raster"]
 # default so a consumer that never opens PDFs pulls neither hayro nor its deps; it
 # reuses the shared `raster` primitives to display the rendered page.
 pdf = ["dep:karet-pdf", "raster"]
+# Convert Word `.docx` documents (via karet-docx) to markdown and render them
+# through the text branch. Off by default so a consumer that never opens DOCX
+# pulls neither `zip` nor `quick-xml`.
+docx = ["dep:karet-docx"]
 
 [dependencies]
 karet-core.workspace = true
@@ -39,6 +43,7 @@ karet-syntax.workspace = true         # tree-sitter highlighting -> Highlights
 karet-theme = { workspace = true, features = ["view"] }  # role colors for the views
 karet-editor.workspace = true         # renders the highlighted text branch (read-only)
 karet-pdf = { workspace = true, optional = true }  # PDF page rasterization (behind `pdf`)
+karet-docx = { workspace = true, optional = true } # DOCX → markdown conversion (behind `docx`)
 ratatui.workspace = true
 image = { workspace = true, optional = true }   # image decode + halfblock rendering (behind `raster`)
 base64 = { workspace = true, optional = true }  # Kitty graphics protocol payload encoding (behind `raster`)
@@ -49,6 +54,7 @@ thiserror.workspace = true
 # highlights out of the box; real consumers opt in via the `all-languages` feature.
 karet-treesitter = { workspace = true, features = ["all-languages"] }
 crossterm.workspace = true
+zip.workspace = true                  # build in-test DOCX fixtures for the docx branch
 
 [lints]
 workspace = true
