@@ -30,15 +30,16 @@
 //!   servers send plain-text completions; snippet syntax that leaks through anyway
 //!   is degraded to plain text at the completion mapping.
 //!
-//! Transport, lifecycle, and document sync are implemented. The typed request
-//! methods are being wired incrementally: the ones still marked `todo!` in their
-//! bodies (`hover`, `definition`, `rename`, …) have final signatures but panic if
-//! called.
+//! Transport, lifecycle, document sync, and completion are implemented. The
+//! remaining typed request methods are being wired incrementally: the ones still
+//! marked `todo!` in their bodies (`hover`, `definition`, `rename`, …) have final
+//! signatures but panic if called.
 
 mod codec;
 mod conn;
 mod convert;
 mod jsonrpc;
+mod snippet;
 mod uri;
 
 use std::path::Path;
@@ -275,7 +276,16 @@ impl LspClient {
         self.conn.notify("textDocument/didClose", params)
     }
 
-    /// Request completions at `pos` in `doc`.
+    /// Request completions at `pos` in `doc` (`pos.col` in UTF-16 units, per
+    /// the crate docs).
+    ///
+    /// The response is flattened to a plain list: a `CompletionList`'s
+    /// `isIncomplete` flag is deliberately dropped because this contract
+    /// returns `Vec<CompletionItem>`. Consumers compensate by **re-requesting
+    /// on trigger characters** (and on any prefix the server might narrow
+    /// differently) instead of tracking incompleteness. Snippet-format insert
+    /// text is degraded to plain text — this client does not advertise
+    /// `snippetSupport`.
     ///
     /// # Errors
     /// Returns [`LspError::Server`] or [`LspError::Timeout`].
@@ -284,8 +294,18 @@ impl LspClient {
         doc: &Path,
         pos: LineCol,
     ) -> Result<Vec<CompletionItem>, LspError> {
-        let _ = (doc, pos);
-        todo!()
+        let params = lsp_types::CompletionParams {
+            text_document_position: lsp_types::TextDocumentPositionParams {
+                text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
+                position: convert::position_to_lsp(pos),
+            },
+            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+            partial_result_params: lsp_types::PartialResultParams::default(),
+            context: None,
+        };
+        let response: Option<lsp_types::CompletionResponse> =
+            self.conn.request("textDocument/completion", params).await?;
+        Ok(convert::completions_from_lsp(response))
     }
 
     /// Request hover information at `pos` in `doc`.
@@ -792,6 +812,94 @@ mod tests {
         });
         let result: String = connection.request("test/resilient", Value::Null).await?;
         assert_eq!(result, "survived");
+        server_task.await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn completion_end_to_end() -> TestResult {
+        let ((read, write), mut server) = wire();
+        let server_task = tokio::spawn(async move {
+            server.handshake().await;
+
+            // 1: a CompletionList (isIncomplete flattened) with a snippet edit.
+            let req = server.recv().await;
+            assert_eq!(req["method"], "textDocument/completion");
+            assert_eq!(
+                req["params"]["textDocument"]["uri"],
+                json!("file:///tmp/ws/a.rs")
+            );
+            // UTF-16 position passthrough.
+            assert_eq!(
+                req["params"]["position"],
+                json!({"line": 3, "character": 7})
+            );
+            let id = req["id"].clone();
+            server
+                .respond(
+                    &id,
+                    json!({
+                        "isIncomplete": true,
+                        "items": [
+                            {
+                                "label": "push",
+                                "kind": 2,
+                                "detail": "fn push(&mut self, ch: char)",
+                                "sortText": "0000",
+                                "insertTextFormat": 2,
+                                "textEdit": {
+                                    "range": {"start": {"line": 3, "character": 5},
+                                              "end": {"line": 3, "character": 7}},
+                                    "newText": "push(${1:ch})$0"
+                                },
+                                "tags": [1]
+                            },
+                            {"label": "plain"}
+                        ]
+                    }),
+                )
+                .await;
+
+            // 2: a bare array response.
+            let req = server.recv().await;
+            let id = req["id"].clone();
+            server.respond(&id, json!([{"label": "sole"}])).await;
+
+            // 3: a null response (no completions).
+            let req = server.recv().await;
+            let id = req["id"].clone();
+            server.respond(&id, Value::Null).await;
+        });
+
+        let client = LspClient::connect(read, write, Path::new("/tmp/ws")).await?;
+        let doc = Path::new("/tmp/ws/a.rs");
+
+        let items = client.completion(doc, LineCol::new(3, 7)).await?;
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].label, "push");
+        assert_eq!(items[0].kind, karet_core::CompletionKind::Method);
+        assert_eq!(
+            items[0].detail.as_deref(),
+            Some("fn push(&mut self, ch: char)")
+        );
+        assert_eq!(items[0].sort_text.as_deref(), Some("0000"));
+        assert_eq!(items[0].insert_text, "push(ch)"); // snippet degraded
+        assert!(items[0].deprecated); // via tag
+        let edit = items[0].edit.clone().ok_or("expected a text edit")?;
+        assert_eq!(edit.range.start, LineCol::new(3, 5));
+        assert_eq!(edit.range.end, LineCol::new(3, 7));
+        assert_eq!(edit.new_text, "push(ch)");
+        assert_eq!(items[1].label, "plain");
+        assert_eq!(items[1].insert_text, "plain"); // label fallback
+        assert_eq!(items[1].kind, karet_core::CompletionKind::Text);
+
+        let items = client.completion(doc, LineCol::new(0, 0)).await?;
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "sole");
+
+        let items = client.completion(doc, LineCol::new(0, 0)).await?;
+        assert!(items.is_empty());
+
         server_task.await?;
         Ok(())
     }
