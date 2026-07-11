@@ -125,6 +125,11 @@ fn describe(kind: FileKind) -> &'static str {
         // Shown only when PDF rendering is not compiled in (the `pdf` feature); when
         // it is, a PDF either renders or shows the requires-Kitty placeholder.
         FileKind::Pdf => "PDF document",
+        // Shown when DOCX conversion is not compiled in (the `docx` feature), or —
+        // with it on — when the bytes fail to parse as a Word document.
+        #[cfg(feature = "docx")]
+        FileKind::Docx => "Word document",
+        #[cfg(not(feature = "docx"))]
         FileKind::Docx => "DOCX rendering is not available yet",
         FileKind::Binary => "Binary file",
         FileKind::TooLarge { .. } => "File too large to open",
@@ -198,6 +203,15 @@ mod tests {
         assert!(rendered.contains("Kitty graphics protocol"));
     }
 
+    #[cfg(feature = "docx")]
+    #[test]
+    fn describe_docx_names_the_format() {
+        // With conversion compiled in, the placeholder (shown only for an
+        // unparseable file) describes the format rather than a missing feature.
+        assert_eq!(describe(FileKind::Docx), "Word document");
+    }
+
+    #[cfg(not(feature = "docx"))]
     #[test]
     fn describe_docx_is_pending_not_unsupported() {
         assert_eq!(

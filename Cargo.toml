@@ -41,6 +41,7 @@ karet-theme      = { path = "crates/karet-theme", version = "0.2.2" }
 karet-diff       = { path = "crates/karet-diff", version = "0.2.2" }
 karet-markdown   = { path = "crates/karet-markdown" }
 karet-cbor       = { path = "crates/karet-cbor" }
+karet-docx       = { path = "crates/karet-docx" }
 karet-terminal   = { path = "crates/karet-terminal" }
 karet-lsp        = { path = "crates/karet-lsp", version = "0.2.2" }
 karet-dap        = { path = "crates/karet-dap", version = "0.2.2" }
@@ -117,6 +118,13 @@ image         = "0.25.10"
 hayro         = "0.7.1"
 # CBOR (binary serialization) — decode/encode backing karet-cbor's textual layer
 ciborium      = "0.2.2"
+# DOCX (karet-docx) — a `.docx` is a ZIP of XML, so we hand-roll a minimal reader
+# from two lean pure-Rust deps instead of a heavy third-party DOCX crate (rdocx /
+# docx-rs drag zstd/bzip2 C-backed trees). `zip` is trimmed to `deflate` only — the
+# sole compression a DOCX uses — so its default `bzip2`/`zstd` (C-`*-sys`) features
+# never enter the build. `quick-xml` is a pure-Rust streaming XML parser.
+zip           = { version = "5.1.1", default-features = false, features = ["deflate"] }
+quick-xml     = "0.38.4"
 # Terminal emulation
 vt100        = "0.16.2"
 portable-pty = "0.9.0"

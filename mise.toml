@@ -37,8 +37,10 @@ run = [
   "cargo build -p karet --no-default-features",
   "cargo build -p karet --no-default-features --features pdf",
   "cargo build -p karet --no-default-features --features images",
+  "cargo build -p karet --no-default-features --features docx",
   "cargo build -p karet-fileview --no-default-features",
   "cargo build -p karet-fileview --no-default-features --features pdf",
+  "cargo build -p karet-fileview --no-default-features --features docx",
 ]
 
 [tasks.coverage]

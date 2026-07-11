@@ -87,6 +87,7 @@ published to crates.io (everything else is `publish = false`).
 | `karet-graph` | engine | — | DAG lane-assignment layout + rail renderer (`view` feat) for the commit graph & code visualizations; consumes `karet_core::GraphView` |
 | `karet-markdown` | engine | — | markdown parse → wrap → render model, with source-line anchors for scroll sync; `highlight` colours code fences, `view` paints ratatui (incl. a scrollable `MarkdownView`) |
 | `karet-cbor` | engine | — | CBOR decode/encode ↔ editable diagnostic-notation text (via `ciborium`); no presentation |
+| `karet-docx` | engine | — | DOCX (OOXML) parse → neutral document model → markdown text, hand-rolled on deflate-only `zip` + `quick-xml` (pure-Rust, no zstd/bzip2); no presentation |
 | `karet-pdf` | engine | ✓ | pure-Rust PDF page → RGBA rasterization (via `hayro`); no presentation |
 | `karet-terminal` | engine | — | VT/PTY emulator, scrollback, OSC 133 (`view` feat) |
 | `karet-lsp` | engine | ✓ | async LSP client → core models (headless; ratatui popups live in `karet-widgets`) |
@@ -98,8 +99,8 @@ published to crates.io (everything else is `publish = false`).
 | `karet-session` | backend | — | headless editor backend: owns documents/workspace, orchestrates producers, applies `Command`s, emits `Event`s; runs layered highlighting on a background worker; holds format-on-save, spell-check, settings/session |
 | `karet-widgets` | widget | — | ratatui UI toolkit: file tree, picker/palette, outline+breadcrumbs, status bar, dialogs, dock, problems, pane layout, LSP completion/hover popups |
 | `karet-editor` | widget | ✓ | the editor widget: gutter, minimap, scroll, visual aids, snippets (modules); `read_only` pager mode |
-| `karet-fileview` | widget | ✓ | read-only "render any file" widget: dispatches `FileKind` → editor/hex/image/placeholder; hosts the hex view + terminal image (behind `raster`/`images`) and PDF (behind `pdf`); Markdown renders as source |
-| `karet` | app | — | composition root / TUI client (local mode); merges the clipboard + input (keymap) modules; default-on `images`/`pdf` features gate the heavy media deps (`--no-default-features` → lean build, see `docs/binary-size.md`); `publish = false` |
+| `karet-fileview` | widget | ✓ | read-only "render any file" widget: dispatches `FileKind` → editor/hex/image/placeholder; hosts the hex view + terminal image (behind `raster`/`images`), PDF (behind `pdf`), and DOCX→markdown (behind `docx`); Markdown renders as source |
+| `karet` | app | — | composition root / TUI client (local mode); merges the clipboard + input (keymap) modules; default-on `images`/`pdf`/`docx` features gate the optional media/document deps (`--no-default-features` → lean build, see `docs/binary-size.md`); `publish = false` |
 | `blameline` | standalone | ✓ | semantic git-blame (via `gix`): group lines by commit, tree-sitter function narrowing, serde/JSON output; headless, on its **own** SemVer line (see [Versioning](#versioning)) |
 
 ## Quality

@@ -84,9 +84,11 @@ fn open_classified(path: &Path, syntax: bool, kind: FileKind, bytes: Vec<u8>, le
         ),
         #[cfg(feature = "pdf")]
         FileKind::Pdf => open_document(path, bytes, len),
+        #[cfg(feature = "docx")]
+        FileKind::Docx => open_docx(path, &bytes, len),
         FileKind::TooLarge { .. } => placeholder(path, kind, &bytes, len),
-        // DOCX (rendering deferred — no pure-Rust rasterizer yet) and any future
-        // `#[non_exhaustive]` kind route to a placeholder describing them.
+        // DOCX/PDF (without their features) and any future `#[non_exhaustive]`
+        // kind route to a placeholder describing them.
         _ => placeholder(path, kind, &bytes, len),
     }
 }
@@ -199,6 +201,18 @@ fn open_document(path: &Path, bytes: Vec<u8>, len: u64) -> Tab {
             )
         },
         Err(_) => placeholder(path, FileKind::Pdf, &[], len),
+    }
+}
+
+/// Open a Word document as a rendered, read-only markdown preview: convert the
+/// bytes via `karet-docx` and seed a **standalone** [`TabKind::MarkdownPreview`]
+/// (no source tab, no session document — see [`Tab::document_preview`]).
+/// Unparseable bytes degrade to a placeholder, like a corrupt PDF.
+#[cfg(feature = "docx")]
+fn open_docx(path: &Path, bytes: &[u8], len: u64) -> Tab {
+    match karet_docx::parse(bytes) {
+        Ok(doc) => Tab::document_preview(path.to_path_buf(), &karet_docx::to_markdown(&doc)),
+        Err(_) => placeholder(path, FileKind::Docx, bytes, len),
     }
 }
 
@@ -447,6 +461,71 @@ trailer<</Size 4/Root 1 0 R>>\n%%EOF";
             tab.kind,
             TabKind::Placeholder {
                 kind: FileKind::Pdf,
+                ..
+            }
+        ));
+    }
+
+    /// A minimal DOCX (a Heading1 + a bold run) zipped in-memory (no fixture).
+    #[cfg(feature = "docx")]
+    fn tiny_docx() -> Vec<u8> {
+        use std::io::Write as _;
+        const DOCUMENT_XML: &str = r#"<?xml version="1.0"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Report</w:t></w:r></w:p>
+<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>bold</w:t></w:r></w:p>
+</w:body></w:document>"#;
+        let mut buf = Vec::new();
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        writer
+            .start_file(
+                "word/document.xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .expect("start_file");
+        writer
+            .write_all(DOCUMENT_XML.as_bytes())
+            .expect("write_all");
+        writer.finish().expect("finish");
+        buf
+    }
+
+    #[cfg(feature = "docx")]
+    #[test]
+    fn opens_docx_as_a_standalone_markdown_preview() {
+        let dir = temp_dir();
+        let file = dir.path.join("report.docx");
+        let _ = std::fs::write(&file, tiny_docx());
+        let tab = open_file(&file, true);
+        assert_eq!(tab.title, "report.docx");
+        let TabKind::MarkdownPreview {
+            doc,
+            source_view,
+            buffer,
+            ..
+        } = tab.kind
+        else {
+            panic!("expected a markdown preview tab for a .docx file");
+        };
+        // Standalone: no session document will ever bind, and the source-view
+        // sentinel keeps the preview↔source machinery away from this tab.
+        assert_eq!(doc, None);
+        assert_eq!(source_view, crate::tab::DETACHED_SOURCE_VIEW);
+        assert_eq!(buffer.text(), "# Report\n\n**bold**");
+    }
+
+    #[cfg(feature = "docx")]
+    #[test]
+    fn opens_corrupt_docx_as_placeholder() {
+        let dir = temp_dir();
+        let file = dir.path.join("broken.docx");
+        // The `.docx` extension classifies Docx, but the bytes are not a ZIP.
+        let _ = std::fs::write(&file, b"this is not a zip archive");
+        let tab = open_file(&file, true);
+        assert!(matches!(
+            tab.kind,
+            TabKind::Placeholder {
+                kind: FileKind::Docx,
                 ..
             }
         ));
