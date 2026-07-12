@@ -18,6 +18,8 @@
 //! In local mode the UI renders from the [`DocSnapshot`]s pushed on the snapshot
 //! stream (`local`), not by borrowing a [`DocumentView`] across the actor boundary.
 
+#[cfg(feature = "aicommit")]
+mod aicommit;
 pub mod api;
 pub mod backend;
 pub mod backup;

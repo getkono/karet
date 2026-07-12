@@ -38,6 +38,71 @@
     "git"
   ],
   "$defs": {
+    "AiCommit": {
+      "description": "`git.aiCommit.*` — generate a commit message from the staged diff.",
+      "type": "object",
+      "properties": {
+        "binary": {
+          "description": "Path to the `claude` binary. `null` searches `PATH`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "effort": {
+          "description": "Thinking effort for the model. `null` leaves the model's default; ignored when\n`model` is `\"auto\"` (which chooses its own effort).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AiCommitEffort"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "enabled": {
+          "description": "Allow generating commit messages from the staged diff (needs the `claude`\nCLI on `PATH`). When off, the generate action reports that it is disabled.",
+          "type": "boolean",
+          "default": true
+        },
+        "instructions": {
+          "description": "Extra natural-language instructions appended to the prompt (e.g. \"mention the\nuser-visible effect\", \"reference the ticket in the branch name\").",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "model": {
+          "description": "The model to run: `\"auto\"` picks a cheap model for small diffs and a stronger\none for large or many-file diffs; any other value pins that model name\n(e.g. `\"haiku\"`, `\"sonnet\"`, or a full model id).",
+          "type": "string",
+          "default": "auto"
+        }
+      },
+      "additionalProperties": false
+    },
+    "AiCommitEffort": {
+      "description": "How much thinking the commit-message model spends (`git.aiCommit.effort`).",
+      "oneOf": [
+        {
+          "description": "Fastest, cheapest.",
+          "type": "string",
+          "const": "low"
+        },
+        {
+          "description": "A balance of speed and quality.",
+          "type": "string",
+          "const": "medium"
+        },
+        {
+          "description": "Slowest, most thorough.",
+          "type": "string",
+          "const": "high"
+        }
+      ]
+    },
     "AutoSave": {
       "description": "When dirty buffers are written back to disk automatically.",
       "oneOf": [
@@ -221,6 +286,17 @@
       "description": "`git.*` — source-control integration.",
       "type": "object",
       "properties": {
+        "aiCommit": {
+          "description": "AI-generated commit messages from the staged diff.",
+          "$ref": "#/$defs/AiCommit",
+          "default": {
+            "binary": null,
+            "effort": null,
+            "enabled": true,
+            "instructions": [],
+            "model": "auto"
+          }
+        },
         "blame": {
           "description": "Show inline blame for the current line.",
           "type": "boolean",

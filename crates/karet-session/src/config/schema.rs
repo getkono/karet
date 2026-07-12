@@ -259,6 +259,8 @@ pub struct Git {
     pub decorations: bool,
     /// Show inline blame for the current line.
     pub blame: bool,
+    /// AI-generated commit messages from the staged diff.
+    pub ai_commit: AiCommit,
 }
 
 impl Default for Git {
@@ -266,8 +268,55 @@ impl Default for Git {
         Self {
             decorations: true,
             blame: false,
+            ai_commit: AiCommit::default(),
         }
     }
+}
+
+/// `git.aiCommit.*` — generate a commit message from the staged diff.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct AiCommit {
+    /// Allow generating commit messages from the staged diff (needs the `claude`
+    /// CLI on `PATH`). When off, the generate action reports that it is disabled.
+    pub enabled: bool,
+    /// The model to run: `"auto"` picks a cheap model for small diffs and a stronger
+    /// one for large or many-file diffs; any other value pins that model name
+    /// (e.g. `"haiku"`, `"sonnet"`, or a full model id).
+    pub model: String,
+    /// Thinking effort for the model. `null` leaves the model's default; ignored when
+    /// `model` is `"auto"` (which chooses its own effort).
+    pub effort: Option<AiCommitEffort>,
+    /// Extra natural-language instructions appended to the prompt (e.g. "mention the
+    /// user-visible effect", "reference the ticket in the branch name").
+    pub instructions: Vec<String>,
+    /// Path to the `claude` binary. `null` searches `PATH`.
+    pub binary: Option<String>,
+}
+
+impl Default for AiCommit {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            model: "auto".to_string(),
+            effort: None,
+            instructions: Vec::new(),
+            binary: None,
+        }
+    }
+}
+
+/// How much thinking the commit-message model spends (`git.aiCommit.effort`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum AiCommitEffort {
+    /// Fastest, cheapest.
+    #[default]
+    Low,
+    /// A balance of speed and quality.
+    Medium,
+    /// Slowest, most thorough.
+    High,
 }
 
 #[cfg(test)]
