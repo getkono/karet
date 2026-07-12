@@ -1727,6 +1727,7 @@ impl App {
             Command::FindToggleWord => self.find_toggle_option(SearchOption::Word),
             Command::CommitSubmit => self.commit_submit(),
             Command::CommitCancel => self.commit_cancel(),
+            Command::CommitGenerate => self.commit_generate(),
             Command::ExplorerEditSubmit => self.explorer_commit_edit(),
             Command::ExplorerEditCancel => self.explorer.cancel_edit(),
             Command::ConfirmDiscard => self.resolve_discard(true),
@@ -3286,6 +3287,15 @@ impl App {
         } else {
             self.send_vcs(SessionCommand::Commit { message });
         }
+    }
+
+    /// Ask the backend to draft a commit message from the staged diff. The result
+    /// arrives asynchronously as [`SessionEvent::CommitMessageGenerated`] and replaces
+    /// the input; problems (nothing staged, disabled, generator error) come back as a
+    /// notification.
+    fn commit_generate(&mut self) {
+        self.status = Some("generating commit message…".to_string());
+        self.send_vcs(SessionCommand::GenerateCommitMessage);
     }
 
     /// Edit the commit message with an unbound key (backspace / printable).
@@ -5751,6 +5761,14 @@ impl App {
                     NotificationKind::Vcs,
                     format!("committed {short}"),
                 );
+            },
+            SessionEvent::CommitMessageGenerated { message } => {
+                // Only adopt it if the commit input is still open (the user may have
+                // cancelled while the generator ran).
+                if self.commit_input.is_some() {
+                    self.commit_input = Some(message);
+                    self.status = Some("commit message generated".to_string());
+                }
             },
             SessionEvent::SwapsFound { swaps } => self.arm_swap_recovery(swaps),
             SessionEvent::CommitDetailReady { detail } => {

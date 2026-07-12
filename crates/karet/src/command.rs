@@ -283,6 +283,8 @@ pub enum Command {
     CommitSubmit,
     /// Cancel the commit input.
     CommitCancel,
+    /// Generate a commit message from the staged diff (AI).
+    CommitGenerate,
     /// Commit the explorer inline name editor (create / rename).
     ExplorerEditSubmit,
     /// Cancel the explorer inline name editor.
@@ -501,6 +503,7 @@ impl Command {
             Self::FindToggleWord => "Find: Toggle Whole Word",
             Self::CommitSubmit => "Commit: Submit",
             Self::CommitCancel => "Commit: Cancel",
+            Self::CommitGenerate => "Commit: Generate Message (AI)",
             Self::ExplorerEditSubmit => "Explorer: Confirm Name",
             Self::ExplorerEditCancel => "Explorer: Cancel Edit",
             Self::ConfirmDiscard => "Source Control: Confirm Discard",
@@ -632,6 +635,7 @@ impl Command {
             Self::FindToggleWord => "word",
             Self::CommitSubmit => "submit",
             Self::CommitCancel => "cancel",
+            Self::CommitGenerate => "generate",
             Self::ExplorerEditSubmit => "confirm",
             Self::ExplorerEditCancel => "cancel",
             Self::ConfirmDiscard => "confirm",

@@ -351,6 +351,7 @@ static BINDINGS: &[Binding] = &[
     // Commit-message input.
     b(CommitInput, false, false, false, Esc,   Command::CommitCancel),
     b(CommitInput, false, false, false, Enter, Command::CommitSubmit),
+    b(CommitInput, true,  false, false, Char('g'), Command::CommitGenerate),
     // Go-to-commit (revision) input.
     b(RevInput, false, false, false, Esc,   Command::RevInputCancel),
     b(RevInput, false, false, false, Enter, Command::RevInputSubmit),
