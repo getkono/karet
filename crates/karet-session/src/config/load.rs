@@ -461,6 +461,63 @@ mod tests {
     }
 
     #[test]
+    fn language_specificity_wins_after_layer_merging() {
+        let Some((dir, _system)) = scratch(
+            "system.jsonc",
+            r#"{
+                "editor": {
+                    "tabSize": 8,
+                    "[rust]": {
+                        "tabSize": 6,
+                        "completion": { "enabled": false, "autoTrigger": true }
+                    }
+                }
+            }"#,
+        ) else {
+            return;
+        };
+        let system = dir.path().join("system.jsonc");
+        let project = dir.path().join("project.jsonc");
+        if std::fs::write(
+            &project,
+            r#"{
+                "editor": {
+                    "tabSize": 2,
+                    "[rust]": { "completion": { "autoTrigger": false } }
+                }
+            }"#,
+        )
+        .is_err()
+        {
+            return;
+        }
+
+        let report = load_layer_reports([
+            (ConfigLayer::System, system),
+            (ConfigLayer::Project, project),
+        ]);
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let rust = report.settings.editor.for_language(Some("Rust"));
+        let python = report.settings.editor.for_language(Some("python"));
+        assert_eq!(rust.tab_size(), 6, "selector specificity wins");
+        assert!(!rust.completion().enabled());
+        assert!(!rust.completion().auto_trigger(), "nested patches merge");
+        assert_eq!(
+            python.tab_size(),
+            2,
+            "project global wins for other languages"
+        );
+        assert_eq!(
+            report.explicit.get("editor.[rust].completion.autoTrigger"),
+            Some(&ConfigLayer::Project)
+        );
+        assert_eq!(
+            report.explicit.get("editor.[rust].tabSize"),
+            Some(&ConfigLayer::System)
+        );
+    }
+
+    #[test]
     fn report_tracks_loaded_layers_and_explicit_leaf_sources() {
         let Some((dir, _system)) = scratch(
             "system.jsonc",
