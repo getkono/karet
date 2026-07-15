@@ -203,7 +203,7 @@ struct PaneCtx<'a> {
     editor_focused: bool,
     /// Whether the app will draw a Kitty graphics caret after this frame.
     graphical_cursor: bool,
-    /// Global word-wrap override; `None` delegates to the active file type.
+    /// Language-resolved word-wrap override; `None` delegates to the active file type.
     word_wrap: Option<bool>,
     /// The find bar to draw atop this pane's content, if any (focused pane only).
     /// Owned (not borrowed): it now lives on the active `Tab` itself, and
@@ -244,6 +244,15 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     for (pane, rect) in app.layout.layout(area) {
         let is_focused = pane == focused;
         let rendered = if is_focused {
+            let word_wrap = app
+                .tabs
+                .get(app.active)
+                .map_or(app.settings.editor.word_wrap, |tab| {
+                    app.settings
+                        .editor
+                        .for_language(crate::app::tab_language(tab))
+                        .word_wrap()
+                });
             let ctx = PaneCtx {
                 theme,
                 root: &app.root,
@@ -251,7 +260,7 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                 pane_focused: true,
                 editor_focused,
                 graphical_cursor,
-                word_wrap: app.settings.editor.word_wrap,
+                word_wrap,
                 find: app
                     .find_open
                     .then(|| app.tabs.get(app.active))
@@ -260,6 +269,16 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             };
             render_pane(f, &mut app.tabs, app.active, rect, &ctx)
         } else if let Some(stored) = app.stored.get_mut(&pane) {
+            let word_wrap =
+                stored
+                    .tabs
+                    .get(stored.active)
+                    .map_or(app.settings.editor.word_wrap, |tab| {
+                        app.settings
+                            .editor
+                            .for_language(crate::app::tab_language(tab))
+                            .word_wrap()
+                    });
             let ctx = PaneCtx {
                 theme,
                 root: &app.root,
@@ -267,7 +286,7 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                 pane_focused: false,
                 editor_focused: false,
                 graphical_cursor: false,
-                word_wrap: app.settings.editor.word_wrap,
+                word_wrap,
                 find: None,
             };
             render_pane(f, &mut stored.tabs, stored.active, rect, &ctx)
