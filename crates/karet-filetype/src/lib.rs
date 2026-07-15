@@ -29,6 +29,7 @@ pub use icon::IconStyle;
 pub use icon::chevron;
 pub use icon::directory_icon;
 pub use registry::FileType;
+pub use registry::WrapMode;
 pub use registry::category_for_path;
 pub use registry::file_type_for_path;
 pub use registry::icon_for_path;

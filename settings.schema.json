@@ -172,9 +172,12 @@
           "default": true
         },
         "wordWrap": {
-          "description": "Soft-wrap long lines instead of scrolling horizontally.",
-          "type": "boolean",
-          "default": false
+          "description": "Override file-type wrapping: `null` uses the file default, `true` wraps,\nand `false` uses horizontal overflow.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
         }
       },
       "additionalProperties": false

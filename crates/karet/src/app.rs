@@ -47,6 +47,8 @@ use karet_editor::EditorState;
 use karet_editor::Fold;
 use karet_filetype::FileKind;
 use karet_filetype::IconStyle;
+use karet_filetype::WrapMode;
+use karet_filetype::file_type_for_path;
 use karet_fileview::image::GraphicsProtocol;
 use karet_fileview::image::{self};
 use karet_search::FileHit;
@@ -4757,14 +4759,23 @@ impl App {
             self.graph_select(delta.signum());
             return;
         }
+        let word_wrap = self
+            .tabs
+            .get(self.active)
+            .is_some_and(|tab| effective_word_wrap(tab, self.settings.editor.word_wrap));
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
         match &mut tab.kind {
-            TabKind::Code { buffer, .. } => {
-                let max = buffer.line_count().saturating_sub(1) as i64;
-                let next = (i64::from(tab.editor.scroll_line) + i64::from(delta)).clamp(0, max);
-                tab.editor.scroll_line = next as u32;
+            TabKind::Code {
+                buffer,
+                folds,
+                folded,
+                ..
+            } => {
+                let fold_lines = resolve_folds(folds, folded);
+                tab.editor
+                    .scroll_rows(buffer, &fold_lines, word_wrap, delta);
             },
             // The wrapped length is known, so clamp to it rather than to `u16::MAX` —
             // otherwise scrolling past the end would silently bank offset that the
@@ -4801,6 +4812,19 @@ impl App {
                 *page = (*page as i64 + step).clamp(0, max) as usize;
             },
             _ => {},
+        }
+    }
+
+    /// Scroll the active overflow-mode code tab horizontally by `delta` columns.
+    fn scroll_columns(&mut self, delta: i32) {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        if effective_word_wrap(tab, self.settings.editor.word_wrap) {
+            return;
+        }
+        if let TabKind::Code { buffer, .. } = &tab.kind {
+            tab.editor.scroll_columns(buffer, delta);
         }
     }
 
@@ -5254,11 +5278,17 @@ impl App {
         let point = (mouse.column, mouse.row);
         let in_sidebar = self.sidebar_visible && rect_contains(self.sidebar_rect, point);
         let in_outline = self.outline_visible && rect_contains(self.outline_rect, point);
+        let in_editor = rect_contains(self.editor_rect, point);
+        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         match mouse.kind {
             MouseEventKind::ScrollDown if in_outline => self.outline_step(1),
             MouseEventKind::ScrollUp if in_outline => self.outline_step(-1),
             MouseEventKind::ScrollDown if in_sidebar => self.sidebar_wheel(3, mouse.row),
             MouseEventKind::ScrollUp if in_sidebar => self.sidebar_wheel(-3, mouse.row),
+            MouseEventKind::ScrollRight if in_editor => self.scroll_columns(3),
+            MouseEventKind::ScrollLeft if in_editor => self.scroll_columns(-3),
+            MouseEventKind::ScrollDown if in_editor && shift => self.scroll_columns(3),
+            MouseEventKind::ScrollUp if in_editor && shift => self.scroll_columns(-3),
             MouseEventKind::ScrollDown => self.scroll_lines(3),
             MouseEventKind::ScrollUp => self.scroll_lines(-3),
             MouseEventKind::Down(MouseButton::Left) if in_outline => {
@@ -7019,6 +7049,17 @@ fn tab_at(hits: &[TabHit], x: u16) -> Option<(usize, bool)> {
     hits.iter()
         .enumerate()
         .find_map(|(i, h)| (x >= h.start && x < h.end).then_some((i, x == h.close)))
+}
+
+/// Resolve a code tab's long-line behavior from the global override or its file type.
+pub(crate) fn effective_word_wrap(tab: &Tab, override_: Option<bool>) -> bool {
+    override_.unwrap_or_else(|| {
+        matches!(
+            &tab.kind,
+            TabKind::Code { path, .. }
+                if file_type_for_path(path).wrap_mode() == WrapMode::Wrap
+        )
+    })
 }
 
 fn loading_delay_remaining(since: Instant, now: Instant) -> Option<Duration> {
@@ -10531,6 +10572,49 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 syntax_errors: Vec::new(),
             },
         )
+    }
+
+    #[test]
+    fn wrap_mode_uses_file_defaults_and_global_overrides() {
+        let markdown = text_tab("notes.md", "a long prose line");
+        let rust = text_tab("main.rs", "fn main() {}");
+        assert!(effective_word_wrap(&markdown, None));
+        assert!(!effective_word_wrap(&rust, None));
+        assert!(!effective_word_wrap(&markdown, Some(false)));
+        assert!(effective_word_wrap(&rust, Some(true)));
+    }
+
+    #[test]
+    fn horizontal_mouse_events_scroll_only_overflow_views() {
+        let mut app = app();
+        app.sidebar_visible = false;
+        app.push_tab(text_tab(
+            "main.rs",
+            "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\nsecond\nthird\nfourth",
+        ));
+        let _ = screen(&mut app, 24, 8);
+        let column = app.editor_rect.x.saturating_add(5);
+        let row = app.editor_rect.y;
+        let mouse = |kind, modifiers| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers,
+        };
+
+        app.handle_mouse(mouse(MouseEventKind::ScrollRight, KeyModifiers::NONE));
+        assert_eq!(app.tabs[app.active].editor.scroll_col, 3);
+        app.handle_mouse(mouse(MouseEventKind::ScrollUp, KeyModifiers::SHIFT));
+        assert_eq!(app.tabs[app.active].editor.scroll_col, 0);
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, KeyModifiers::SHIFT));
+        assert_eq!(app.tabs[app.active].editor.scroll_col, 3);
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, KeyModifiers::NONE));
+        assert_eq!(app.tabs[app.active].editor.scroll_line, 3);
+
+        app.tabs[app.active] = text_tab("notes.md", "prose that is much wider than the pane");
+        let _ = screen(&mut app, 24, 8);
+        app.handle_mouse(mouse(MouseEventKind::ScrollRight, KeyModifiers::NONE));
+        assert_eq!(app.tabs[app.active].editor.scroll_col, 0);
     }
 
     /// An app with one Markdown code tab, in a pane wide enough to split.

@@ -70,6 +70,16 @@ pub struct EditorState {
     cursors: CursorState,
     /// The viewport height captured at the last render.
     last_height: u16,
+    /// The continuation row within [`scroll_line`](Self::scroll_line) at the top of
+    /// a soft-wrapped viewport.
+    scroll_subrow: u32,
+    /// The content width (after the gutter) captured at the last render.
+    last_content_width: u16,
+    /// Whether the last render used soft wrapping.
+    last_word_wrap: bool,
+    /// Whether the next wrapped render should reveal a cursor moved by an editor
+    /// command rather than preserve a manually-scrolled viewport.
+    follow_cursor: bool,
 }
 
 impl Default for EditorState {
@@ -79,6 +89,10 @@ impl Default for EditorState {
             scroll_col: 0,
             cursors: CursorState::single(Selection::caret(LineCol::new(0, 0))),
             last_height: 0,
+            scroll_subrow: 0,
+            last_content_width: 0,
+            last_word_wrap: false,
+            follow_cursor: false,
         }
     }
 }
@@ -110,12 +124,85 @@ impl EditorState {
 
     /// Scroll vertically so that `pos` is within the viewport.
     pub fn scroll_to(&mut self, pos: LineCol) {
+        self.follow_cursor = true;
         let height = u32::from(self.last_height.max(1));
         if pos.line < self.scroll_line {
             self.scroll_line = pos.line;
+            self.scroll_subrow = 0;
         } else if pos.line >= self.scroll_line + height {
             self.scroll_line = pos.line + 1 - height;
+            self.scroll_subrow = 0;
         }
+
+        if !self.last_word_wrap && self.last_content_width > 0 {
+            let width = u32::from(self.last_content_width);
+            let margin = 10_u32.min(width.saturating_sub(1) / 2);
+            let left_guard = self.scroll_col.saturating_add(margin);
+            let right_guard = self.scroll_col.saturating_add(width.saturating_sub(margin));
+            if pos.col < left_guard {
+                self.scroll_col = pos.col.saturating_sub(margin);
+            } else if pos.col >= right_guard {
+                self.scroll_col = pos
+                    .col
+                    .saturating_add(margin)
+                    .saturating_add(1)
+                    .saturating_sub(width);
+            }
+        }
+    }
+
+    /// Scroll the viewport vertically by display rows.
+    ///
+    /// In overflow mode a display row is one buffer line. In soft-wrap mode this
+    /// walks continuation rows before advancing to the next visible buffer line.
+    pub fn scroll_rows(
+        &mut self,
+        buffer: &TextBuffer,
+        folds: &[Fold],
+        word_wrap: bool,
+        delta: i32,
+    ) {
+        self.follow_cursor = false;
+        let width = u32::from(self.last_content_width.max(1));
+        if !word_wrap {
+            let max = i64::from(last_line(buffer));
+            self.scroll_line =
+                (i64::from(self.scroll_line) + i64::from(delta)).clamp(0, max) as u32;
+            self.scroll_subrow = 0;
+            return;
+        }
+        let mut anchor = VisualAnchor {
+            line: self.scroll_line.min(last_line(buffer)),
+            subrow: self.scroll_subrow,
+        };
+        let steps = delta.unsigned_abs();
+        for _ in 0..steps {
+            anchor = if delta.is_negative() {
+                previous_visual_anchor(buffer, folds, width, anchor)
+            } else {
+                next_visual_anchor(buffer, folds, width, anchor)
+            };
+        }
+        self.scroll_line = anchor.line;
+        self.scroll_subrow = anchor.subrow;
+    }
+
+    /// Scroll an overflow-mode viewport horizontally without moving the caret.
+    /// Soft-wrapped views always remain at column zero.
+    pub fn scroll_columns(&mut self, buffer: &TextBuffer, delta: i32) {
+        self.follow_cursor = false;
+        if self.last_word_wrap {
+            self.scroll_col = 0;
+            return;
+        }
+        let longest = (0..buffer.line_count())
+            .map(|line| line_len(buffer, line as u32))
+            .max()
+            .unwrap_or(0);
+        let width = u32::from(self.last_content_width.max(1));
+        let max = longest.saturating_add(1).saturating_sub(width);
+        self.scroll_col =
+            (i64::from(self.scroll_col) + i64::from(delta)).clamp(0, i64::from(max)) as u32;
     }
 
     /// The currently-visible line range `[top, top + height)`.
@@ -471,6 +558,31 @@ impl EditorState {
     ) -> LineCol {
         let line_count = buffer.line_count().max(1) as u32;
         let rel_row = u32::from(row.saturating_sub(area.y));
+        let gutter = 1 + digit_count(line_count) as u16 + 1;
+        let content_x = area.x.saturating_add(gutter);
+        let rel_col = u32::from(col.saturating_sub(content_x));
+        if self.last_word_wrap {
+            let width = u32::from(area.width.saturating_sub(gutter).max(1));
+            let anchor = visual_anchor_at_row(
+                buffer,
+                folds,
+                width,
+                VisualAnchor {
+                    line: self.scroll_line,
+                    subrow: self.scroll_subrow,
+                },
+                rel_row,
+            );
+            let ranges = visual_ranges(buffer, anchor.line, width);
+            let range = ranges
+                .get(anchor.subrow as usize)
+                .copied()
+                .unwrap_or_else(|| VisualRange::empty(line_len(buffer, anchor.line)));
+            return LineCol::new(
+                anchor.line,
+                range.start.saturating_add(rel_col).min(range.end),
+            );
+        }
         // Walk visible lines from the (clamped) viewport top to the clicked row.
         let mut line = self.scroll_line;
         while line < line_count && hidden_in(folds, line) {
@@ -487,12 +599,215 @@ impl EditorState {
             line = next;
         }
         let line = line.min(line_count - 1);
-        let gutter = 1 + digit_count(line_count) as u16 + 1;
-        let content_x = area.x.saturating_add(gutter);
-        let rel_col = u32::from(col.saturating_sub(content_x));
         let want = self.scroll_col + rel_col;
         LineCol::new(line, want.min(line_len(buffer, line)))
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct VisualAnchor {
+    line: u32,
+    subrow: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct VisualRange {
+    start: u32,
+    end: u32,
+}
+
+impl VisualRange {
+    const fn empty(at: u32) -> Self {
+        Self { start: at, end: at }
+    }
+}
+
+/// Split one logical line into source-column ranges for soft wrapping. Whitespace is
+/// kept in the range before the break so every source column maps to exactly one row;
+/// words wider than the viewport are split at the hard width.
+fn visual_ranges(buffer: &TextBuffer, line: u32, width: u32) -> Vec<VisualRange> {
+    let chars: Vec<char> = buffer
+        .line(line as usize)
+        .unwrap_or_default()
+        .chars()
+        .collect();
+    let len = chars.len() as u32;
+    if len == 0 {
+        return vec![VisualRange::empty(0)];
+    }
+    let width = width.max(1);
+    let mut ranges = Vec::new();
+    let mut start = 0_u32;
+    while start < len {
+        let hard_end = start.saturating_add(width).min(len);
+        let end = if hard_end < len {
+            chars[start as usize..hard_end as usize]
+                .iter()
+                .rposition(|ch| ch.is_whitespace())
+                .map_or(hard_end, |index| start + index as u32 + 1)
+        } else {
+            hard_end
+        };
+        let end = end.max(start.saturating_add(1)).min(len);
+        ranges.push(VisualRange { start, end });
+        start = end;
+    }
+    ranges
+}
+
+fn normalize_visual_anchor(
+    buffer: &TextBuffer,
+    folds: &[Fold],
+    width: u32,
+    anchor: VisualAnchor,
+) -> VisualAnchor {
+    let last = last_line(buffer);
+    let mut line = anchor.line.min(last);
+    while line < last && hidden_in(folds, line) {
+        line += 1;
+    }
+    while line > 0 && hidden_in(folds, line) {
+        line -= 1;
+    }
+    let rows = visual_ranges(buffer, line, width).len().max(1) as u32;
+    VisualAnchor {
+        line,
+        subrow: anchor.subrow.min(rows - 1),
+    }
+}
+
+fn next_visual_anchor(
+    buffer: &TextBuffer,
+    folds: &[Fold],
+    width: u32,
+    anchor: VisualAnchor,
+) -> VisualAnchor {
+    let anchor = normalize_visual_anchor(buffer, folds, width, anchor);
+    let rows = visual_ranges(buffer, anchor.line, width).len() as u32;
+    if anchor.subrow + 1 < rows {
+        return VisualAnchor {
+            subrow: anchor.subrow + 1,
+            ..anchor
+        };
+    }
+    let last = last_line(buffer);
+    let mut line = anchor.line.saturating_add(1);
+    while line <= last && hidden_in(folds, line) {
+        line += 1;
+    }
+    if line > last {
+        anchor
+    } else {
+        VisualAnchor { line, subrow: 0 }
+    }
+}
+
+fn previous_visual_anchor(
+    buffer: &TextBuffer,
+    folds: &[Fold],
+    width: u32,
+    anchor: VisualAnchor,
+) -> VisualAnchor {
+    let anchor = normalize_visual_anchor(buffer, folds, width, anchor);
+    if anchor.subrow > 0 {
+        return VisualAnchor {
+            subrow: anchor.subrow - 1,
+            ..anchor
+        };
+    }
+    let mut line = anchor.line;
+    while line > 0 {
+        line -= 1;
+        if !hidden_in(folds, line) {
+            let rows = visual_ranges(buffer, line, width).len().max(1) as u32;
+            return VisualAnchor {
+                line,
+                subrow: rows - 1,
+            };
+        }
+    }
+    anchor
+}
+
+fn next_line_anchor(folds: &[Fold], line_count: u32, anchor: VisualAnchor) -> VisualAnchor {
+    let mut line = anchor.line.saturating_add(1);
+    while line < line_count && hidden_in(folds, line) {
+        line += 1;
+    }
+    if line >= line_count {
+        anchor
+    } else {
+        VisualAnchor { line, subrow: 0 }
+    }
+}
+
+fn visual_anchor_at_row(
+    buffer: &TextBuffer,
+    folds: &[Fold],
+    width: u32,
+    start: VisualAnchor,
+    row: u32,
+) -> VisualAnchor {
+    let mut anchor = normalize_visual_anchor(buffer, folds, width, start);
+    for _ in 0..row {
+        let next = next_visual_anchor(buffer, folds, width, anchor);
+        if next == anchor {
+            break;
+        }
+        anchor = next;
+    }
+    anchor
+}
+
+fn visual_anchor_for_position(buffer: &TextBuffer, width: u32, pos: LineCol) -> VisualAnchor {
+    let line = pos.line.min(last_line(buffer));
+    let ranges = visual_ranges(buffer, line, width);
+    let last = ranges.len().saturating_sub(1);
+    let subrow = ranges
+        .iter()
+        .enumerate()
+        .find_map(|(index, range)| {
+            (range.start <= pos.col
+                && (pos.col < range.end || (index == last && pos.col == range.end)))
+                .then_some(index as u32)
+        })
+        .unwrap_or(last as u32);
+    VisualAnchor { line, subrow }
+}
+
+fn reveal_visual_anchor(
+    buffer: &TextBuffer,
+    folds: &[Fold],
+    width: u32,
+    height: u16,
+    current: VisualAnchor,
+    cursor: LineCol,
+) -> VisualAnchor {
+    let current = normalize_visual_anchor(buffer, folds, width, current);
+    let target = visual_anchor_for_position(buffer, width, cursor);
+    let mut probe = current;
+    for _ in 0..height.max(1) {
+        if probe == target {
+            return current;
+        }
+        let next = next_visual_anchor(buffer, folds, width, probe);
+        if next == probe {
+            break;
+        }
+        probe = next;
+    }
+    if target < current {
+        return target;
+    }
+    let mut revealed = target;
+    for _ in 1..height.max(1) {
+        let previous = previous_visual_anchor(buffer, folds, width, revealed);
+        if previous == revealed {
+            break;
+        }
+        revealed = previous;
+    }
+    revealed
 }
 
 fn caret_cell(
@@ -503,12 +818,54 @@ fn caret_cell(
     at: LineCol,
 ) -> Option<(u16, u16)> {
     let line_count = buffer.line_count() as u32;
+    let gutter = 1 + digit_count(line_count.max(1)) as u16 + 1;
+    let content_x = area.x.saturating_add(gutter);
+    if content_x >= area.right() || area.height == 0 {
+        return None;
+    }
+    let content_width = area.right().saturating_sub(content_x);
+
+    if state.last_word_wrap {
+        let width = u32::from(content_width.max(1));
+        let mut anchor = normalize_visual_anchor(
+            buffer,
+            folds,
+            width,
+            VisualAnchor {
+                line: state.scroll_line,
+                subrow: state.scroll_subrow,
+            },
+        );
+        for row in 0..area.height {
+            let ranges = visual_ranges(buffer, anchor.line, width);
+            let index = (anchor.subrow as usize).min(ranges.len().saturating_sub(1));
+            let range = ranges
+                .get(index)
+                .copied()
+                .unwrap_or_else(|| VisualRange::empty(0));
+            let last = index + 1 == ranges.len();
+            if anchor.line == at.line
+                && (range.start <= at.col)
+                && (at.col < range.end || (last && at.col == range.end))
+            {
+                let rel = at.col.saturating_sub(range.start);
+                let x = content_x.saturating_add(
+                    u16::try_from(rel.min(u32::from(content_width.saturating_sub(1))))
+                        .unwrap_or(u16::MAX),
+                );
+                return Some((x, area.y.saturating_add(row)));
+            }
+            anchor = next_visual_anchor(buffer, folds, width, anchor);
+        }
+        return None;
+    }
+
     let top = first_visible(
         folds,
         state.scroll_line.min(line_count.saturating_sub(1)),
         line_count,
     );
-    if at.line < top || hidden_in(folds, at.line) || at.col < state.scroll_col {
+    if at.line < top || hidden_in(folds, at.line) {
         return None;
     }
     let mut vis_row: u16 = 0;
@@ -522,13 +879,11 @@ fn caret_cell(
     if vis_row >= area.height {
         return None;
     }
-    let gutter = 1 + digit_count(line_count.max(1)) as u16 + 1;
-    let cx = area
-        .x
-        .saturating_add(gutter)
-        .saturating_add(u16::try_from(at.col - state.scroll_col).unwrap_or(u16::MAX));
+    let rel = i64::from(at.col) - i64::from(state.scroll_col);
+    let max_rel = i64::from(content_width.saturating_sub(1));
+    let cx = content_x.saturating_add(u16::try_from(rel.clamp(0, max_rel)).unwrap_or(0));
     let cy = area.y.saturating_add(vis_row);
-    (cx < area.right() && cy < area.bottom()).then_some((cx, cy))
+    (cy < area.bottom()).then_some((cx, cy))
 }
 
 fn first_visible(folds: &[Fold], mut line: u32, line_count: u32) -> u32 {
@@ -560,6 +915,7 @@ pub struct Editor<'a> {
     focused: bool,
     cell_caret: bool,
     read_only: bool,
+    word_wrap: bool,
 }
 
 impl<'a> Editor<'a> {
@@ -577,6 +933,7 @@ impl<'a> Editor<'a> {
             focused: false,
             cell_caret: true,
             read_only: false,
+            word_wrap: false,
         }
     }
 
@@ -604,6 +961,13 @@ impl<'a> Editor<'a> {
     #[must_use]
     pub fn read_only(mut self, read_only: bool) -> Self {
         self.read_only = read_only;
+        self
+    }
+
+    /// Soft-wrap long buffer lines to the available content width.
+    #[must_use]
+    pub fn word_wrap(mut self, word_wrap: bool) -> Self {
+        self.word_wrap = word_wrap;
         self
     }
 
@@ -650,22 +1014,9 @@ impl<'a> Editor<'a> {
         self
     }
 
-    /// Whether buffer line `l` is hidden inside a collapsed fold's interior.
-    fn is_hidden(&self, l: u32) -> bool {
-        hidden_in(self.folds, l)
-    }
-
     /// The fold whose header is line `l`, if any.
     fn fold_at(&self, l: u32) -> Option<Fold> {
         self.folds.iter().copied().find(|f| f.start == l)
-    }
-
-    /// The first visible line at or after `l` (skipping collapsed-fold interiors).
-    fn first_visible(&self, mut l: u32, line_count: u32) -> u32 {
-        while l < line_count && self.is_hidden(l) {
-            l += 1;
-        }
-        l
     }
 }
 
@@ -708,7 +1059,7 @@ impl Editor<'_> {
         l: u32,
         theme: &Theme,
         default_fg: Rgba,
-        scroll_col: u32,
+        range: VisualRange,
         selections: &[Range],
     ) {
         let Some(content) = self.buffer.line(l as usize) else {
@@ -724,9 +1075,12 @@ impl Editor<'_> {
         let mut run_style: Option<Style> = None;
         let mut col: u32 = 0;
         for (boff, ch) in content.char_indices() {
-            if col < scroll_col {
+            if col < range.start {
                 col += 1;
                 continue;
+            }
+            if col >= range.end {
+                break;
             }
             let mut style = token_style(line_start + boff, hl, theme, default_fg);
             let bg = if in_any(selections, l, col) {
@@ -756,46 +1110,19 @@ impl Editor<'_> {
     /// Draw the caret at buffer position `at` as a reversed cell, when it falls within
     /// the visible, non-folded region of `area`. Called once per caret so multi-cursor
     /// renders every head.
-    fn draw_caret(
-        &self,
-        buf: &mut Buffer,
-        area: Rect,
-        digits: usize,
-        state: &EditorState,
-        line_count: u32,
-        at: LineCol,
-    ) {
-        let top = self.first_visible(state.scroll_line, line_count);
-        if at.line < top || self.is_hidden(at.line) || at.col < state.scroll_col {
+    fn draw_caret(&self, buf: &mut Buffer, area: Rect, state: &EditorState, at: LineCol) {
+        let Some((cx, cy)) = caret_cell(area, self.buffer, self.folds, state, at) else {
             return;
-        }
-        // The caret's screen row is the count of visible lines from the viewport top up
-        // to its line (folds between them collapse the gap).
-        let mut vis_row: u16 = 0;
-        let mut ll = top;
-        while ll < at.line {
-            if !self.is_hidden(ll) {
-                vis_row = vis_row.saturating_add(1);
-            }
-            ll += 1;
-        }
-        if vis_row >= area.height {
-            return;
-        }
-        let gutter = 1 + digits as u16 + 1;
-        let cx = area.x + gutter + u16::try_from(at.col - state.scroll_col).unwrap_or(u16::MAX);
-        let cy = area.y + vis_row;
-        if cx < area.right() && cy < area.bottom() {
-            buf.set_style(
-                Rect {
-                    x: cx,
-                    y: cy,
-                    width: 1,
-                    height: 1,
-                },
-                Style::default().add_modifier(Modifier::REVERSED),
-            );
-        }
+        };
+        buf.set_style(
+            Rect {
+                x: cx,
+                y: cy,
+                width: 1,
+                height: 1,
+            },
+            Style::default().add_modifier(Modifier::REVERSED),
+        );
     }
 }
 
@@ -821,9 +1148,44 @@ impl StatefulWidget for Editor<'_> {
         let default_fg = theme.role(ThemeRole::Foreground);
         let digits = digit_count(line_count.max(1));
 
-        // Clamp scroll to the buffer and record the viewport height for motions.
+        let gutter = 1 + digits as u16 + 1;
+        let content_width = area.width.saturating_sub(gutter).max(1);
+
+        // Clamp scroll to the buffer and record viewport geometry for motions and
+        // mouse scrolling between frames.
         state.last_height = area.height;
+        state.last_content_width = content_width;
+        state.last_word_wrap = self.word_wrap;
         state.scroll_line = state.scroll_line.min(line_count.saturating_sub(1));
+        if self.word_wrap {
+            state.scroll_col = 0;
+        } else {
+            state.scroll_subrow = 0;
+        }
+
+        let width = u32::from(content_width);
+        let mut anchor = normalize_visual_anchor(
+            self.buffer,
+            self.folds,
+            width,
+            VisualAnchor {
+                line: state.scroll_line,
+                subrow: state.scroll_subrow,
+            },
+        );
+        if self.word_wrap && state.follow_cursor {
+            anchor = reveal_visual_anchor(
+                self.buffer,
+                self.folds,
+                width,
+                area.height,
+                anchor,
+                state.cursor(),
+            );
+        }
+        state.scroll_line = anchor.line;
+        state.scroll_subrow = if self.word_wrap { anchor.subrow } else { 0 };
+        state.follow_cursor = false;
 
         // Snapshot the cursor set for painting: every non-empty selection's range and
         // the line of every caret (each caret's line gets the cursor-line emphasis).
@@ -838,13 +1200,11 @@ impl StatefulWidget for Editor<'_> {
         // Base background for the whole editor area (covers rows past end-of-file).
         buf.set_style(area, Style::default().bg(background.to_ratatui()));
 
-        // Walk visible lines only: start at the first non-hidden line at/after the
-        // scroll top, and after each rendered line skip any collapsed-fold interior.
-        let mut l = self.first_visible(state.scroll_line, line_count);
         for row in 0..area.height {
-            if l >= line_count {
+            if anchor.line >= line_count {
                 break;
             }
+            let l = anchor.line;
             let y = area.y + row;
             // In read-only (pager) mode there is no active cursor line to emphasize.
             let is_cursor = !self.read_only && caret_lines.contains(&l);
@@ -865,15 +1225,17 @@ impl StatefulWidget for Editor<'_> {
 
             // A fold header shows a collapse/expand chevron in the marker column;
             // other lines show their usual decoration marker (git/diagnostic).
+            let first_row = !self.word_wrap || anchor.subrow == 0;
             let fold = self.fold_at(l);
-            let (marker_ch, marker_color) = match fold {
-                Some(f) => (
+            let (marker_ch, marker_color) = match (first_row, fold) {
+                (true, Some(f)) => (
                     if f.collapsed { '\u{25b8}' } else { '\u{25be}' },
                     theme.role(ThemeRole::LineNumberActive),
                 ),
-                None => self
+                (true, None) => self
                     .gutter_marker(l, theme, default_fg)
                     .unwrap_or((' ', default_fg)),
+                (false, _) => (' ', default_fg),
             };
             let number_color = if is_cursor {
                 theme.role(ThemeRole::LineNumberActive)
@@ -886,20 +1248,34 @@ impl StatefulWidget for Editor<'_> {
                     Style::default().fg(marker_color.to_ratatui()),
                 ),
                 Span::styled(
-                    format!("{:>width$} ", l + 1, width = digits),
+                    if first_row {
+                        format!("{:>width$} ", l + 1, width = digits)
+                    } else {
+                        " ".repeat(digits + 1)
+                    },
                     Style::default().fg(number_color.to_ratatui()),
                 ),
             ];
-            self.push_content_spans(
-                &mut spans,
-                l,
-                theme,
-                default_fg,
-                state.scroll_col,
-                &selections,
-            );
+            let ranges = if self.word_wrap {
+                visual_ranges(self.buffer, l, width)
+            } else {
+                vec![VisualRange {
+                    start: state.scroll_col,
+                    end: u32::MAX,
+                }]
+            };
+            let range_index = if self.word_wrap {
+                (anchor.subrow as usize).min(ranges.len().saturating_sub(1))
+            } else {
+                0
+            };
+            let range = ranges
+                .get(range_index)
+                .copied()
+                .unwrap_or_else(|| VisualRange::empty(0));
+            self.push_content_spans(&mut spans, l, theme, default_fg, range, &selections);
             // A collapsed header hints at the hidden lines it conceals.
-            if fold.is_some_and(|f| f.collapsed) {
+            if fold.is_some_and(|f| f.collapsed) && range_index + 1 == ranges.len() {
                 spans.push(Span::styled(
                     " \u{22ef}", // ⋯
                     Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
@@ -907,13 +1283,21 @@ impl StatefulWidget for Editor<'_> {
             }
             buf.set_line(area.x, y, &Line::from(spans), area.width);
 
-            l = self.first_visible(l + 1, line_count);
+            let next = if self.word_wrap {
+                next_visual_anchor(self.buffer, self.folds, width, anchor)
+            } else {
+                next_line_anchor(self.folds, line_count, anchor)
+            };
+            if next == anchor {
+                break;
+            }
+            anchor = next;
         }
 
         // Draw a reversed caret cell for every head when focused and editable.
         if self.focused && self.cell_caret && !self.read_only {
             for sel in &state.cursors().selections {
-                self.draw_caret(buf, area, digits, state, line_count, sel.head);
+                self.draw_caret(buf, area, state, sel.head);
             }
         }
     }
@@ -1212,6 +1596,92 @@ mod tests {
         assert_eq!(
             state.pos_at(area, &buffer, &folds, 3, 1),
             LineCol::new(4, 0)
+        );
+    }
+
+    #[test]
+    fn word_wrap_renders_continuations_and_maps_clicks() {
+        let buffer = TextBuffer::from_text("alpha beta gamma");
+        let mut state = EditorState::new();
+        let area = Rect::new(0, 0, 10, 3); // 3-cell gutter, 7 content cells.
+        let mut buf = Buffer::empty(area);
+        Editor::new(&buffer)
+            .word_wrap(true)
+            .focused(true)
+            .render(area, &mut buf, &mut state);
+
+        let painted = |row| {
+            (0..area.width)
+                .map(|x| buf[(x, row)].symbol().chars().next().unwrap_or(' '))
+                .collect::<String>()
+        };
+        assert!(painted(0).contains("alpha"));
+        assert!(painted(1).contains("beta"));
+        assert!(painted(2).contains("gamma"));
+        assert_eq!(state.pos_at(area, &buffer, &[], 4, 1), LineCol::new(0, 7));
+
+        state.place_caret(LineCol::new(0, 8));
+        assert_eq!(state.primary_caret_cell(area, &buffer, &[]), Some((5, 1)));
+    }
+
+    #[test]
+    fn wrapped_row_scrolling_walks_continuations_before_lines() {
+        let buffer = TextBuffer::from_text("alpha beta gamma\ntail");
+        let mut state = EditorState::new();
+        let area = Rect::new(0, 0, 10, 2);
+        let mut buf = Buffer::empty(area);
+        Editor::new(&buffer)
+            .word_wrap(true)
+            .render(area, &mut buf, &mut state);
+
+        state.scroll_rows(&buffer, &[], true, 1);
+        assert_eq!((state.scroll_line, state.scroll_subrow), (0, 1));
+        state.scroll_rows(&buffer, &[], true, 2);
+        assert_eq!((state.scroll_line, state.scroll_subrow), (1, 0));
+        state.scroll_rows(&buffer, &[], true, -1);
+        assert_eq!((state.scroll_line, state.scroll_subrow), (0, 2));
+    }
+
+    #[test]
+    fn overflow_scrolling_and_cursor_margin_are_clamped() {
+        let buffer = TextBuffer::from_text("abcdefghijklmnopqrstuvwxyz");
+        let mut state = EditorState::new();
+        let area = Rect::new(0, 0, 25, 1); // 22 content cells, 10-cell margin.
+        let mut buf = Buffer::empty(area);
+        Editor::new(&buffer).render(area, &mut buf, &mut state);
+
+        state.goto(&buffer, LineCol::new(0, 15));
+        assert_eq!(state.scroll_col, 4);
+        state.goto(&buffer, LineCol::new(0, 2));
+        assert_eq!(state.scroll_col, 0);
+
+        state.scroll_columns(&buffer, 3);
+        assert_eq!(state.scroll_col, 3);
+        state.scroll_columns(&buffer, i32::MAX);
+        assert_eq!(state.scroll_col, 5, "longest line clamps manual scrolling");
+    }
+
+    #[test]
+    fn overflow_caret_clamps_to_horizontal_edges() {
+        let buffer = TextBuffer::from_text("abcdefghijklmnopqrstuvwxyz");
+        let mut state = EditorState::new();
+        let area = Rect::new(0, 0, 10, 1); // 3-cell gutter, 7 content cells.
+        let mut buf = Buffer::empty(area);
+        Editor::new(&buffer).render(area, &mut buf, &mut state);
+        state.scroll_col = 10;
+
+        state.place_caret(LineCol::new(0, 2));
+        assert_eq!(state.primary_caret_cell(area, &buffer, &[]), Some((3, 0)));
+        state.place_caret(LineCol::new(0, 22));
+        assert_eq!(state.primary_caret_cell(area, &buffer, &[]), Some((9, 0)));
+
+        Editor::new(&buffer)
+            .word_wrap(true)
+            .render(area, &mut buf, &mut state);
+        state.scroll_columns(&buffer, 3);
+        assert_eq!(
+            state.scroll_col, 0,
+            "wrapped views never scroll horizontally"
         );
     }
 

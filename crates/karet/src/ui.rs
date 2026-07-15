@@ -203,6 +203,8 @@ struct PaneCtx<'a> {
     editor_focused: bool,
     /// Whether the app will draw a Kitty graphics caret after this frame.
     graphical_cursor: bool,
+    /// Global word-wrap override; `None` delegates to the active file type.
+    word_wrap: Option<bool>,
     /// The find bar to draw atop this pane's content, if any (focused pane only).
     /// Owned (not borrowed): it now lives on the active `Tab` itself, and
     /// `render_pane` needs a mutable borrow of the tabs slice at the same time.
@@ -249,6 +251,7 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                 pane_focused: true,
                 editor_focused,
                 graphical_cursor,
+                word_wrap: app.settings.editor.word_wrap,
                 find: app
                     .find_open
                     .then(|| app.tabs.get(app.active))
@@ -264,6 +267,7 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                 pane_focused: false,
                 editor_focused: false,
                 graphical_cursor: false,
+                word_wrap: app.settings.editor.word_wrap,
                 find: None,
             };
             render_pane(f, &mut stored.tabs, stored.active, rect, &ctx)
@@ -1653,6 +1657,7 @@ fn draw_pane_content(
     let Some(tab) = tabs.get_mut(active) else {
         return PaneContent::default();
     };
+    let word_wrap = crate::app::effective_word_wrap(tab, ctx.word_wrap);
     // Written by the image/PDF render arms; stays `None` (and non-`mut`) when neither
     // media feature is compiled in.
     #[cfg(any(feature = "images", feature = "pdf"))]
@@ -1683,7 +1688,8 @@ fn draw_pane_content(
                 .decorations(&combined)
                 .folds(&fold_lines)
                 .focused(ctx.editor_focused)
-                .cell_caret(!ctx.graphical_cursor);
+                .cell_caret(!ctx.graphical_cursor)
+                .word_wrap(word_wrap);
             f.render_stateful_widget(editor, area, &mut tab.editor);
         },
         TabKind::MarkdownPreview {
