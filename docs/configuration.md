@@ -21,10 +21,11 @@ personal preferences under XDG, and an administrator can set machine-wide defaul
 
 ## Schema & validation
 
-Loading **never fails**. A missing file is skipped; a malformed file — a JSONC syntax
-error, an unknown key, or a wrong-typed value — degrades the affected *section* to its
-defaults and raises a startup notification pointing at the problem, leaving the rest of
-your settings in effect.
+Loading **never fails**. At startup, a missing file is skipped; a malformed file — a
+JSONC syntax error, an unknown key, or a wrong-typed value — degrades the affected
+*section* to its defaults and raises a notification pointing at the problem, leaving the
+rest of your settings in effect. During live reload, karet instead keeps that layer's
+last valid value until the edit becomes valid again.
 
 An external JSON Schema is published at
 [`settings.schema.json`](../settings.schema.json) and generated from the same Rust types
@@ -56,6 +57,39 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 | `trimTrailingWhitespace` | bool | `true` | Strip trailing whitespace on save. |
 | `insertFinalNewline` | bool | `true` | Ensure a trailing newline on save. |
 | `formatOnSave` | bool | `false` | Run the formatter on save. |
+| `semanticComments` | object | enabled | Codetag highlighting (`enabled`, `tags`). |
+| `completion` | object | enabled | LSP completion (`enabled`, `autoTrigger`). |
+
+#### Per-language editor settings
+
+Every `editor` key can be overridden for one language with a `[language]` selector in
+the same object. Selectors are matched case-insensitively against the language reported
+for the open document:
+
+```jsonc
+{
+  "editor": {
+    "tabSize": 4,
+    "wordWrap": true,
+    "[rust]": {
+      "tabSize": 2,
+      "wordWrap": false,
+      "completion": { "autoTrigger": false }
+    },
+    "[markdown]": {
+      "semanticComments": { "enabled": false }
+    }
+  }
+}
+```
+
+The three configuration layers are merged first, including nested selector objects;
+the matching language patch is then applied over the merged global `editor` settings.
+This means language specificity wins over layer specificity: a system-level `[rust]`
+value still beats a project-level global value for a Rust document. Within the same
+selector, the normal layer precedence still applies. Arrays such as `rulers` and
+`semanticComments.tags` replace rather than concatenate. Explicit `null` for
+`wordWrap` or `graphicalCursor` restores that setting's automatic behavior.
 
 ### `files`
 
@@ -104,6 +138,20 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 
 > An explicit `--icons` flag (or the `KARET_ICONS` environment variable) overrides
 > `workbench.iconStyle`.
+
+## Live reload
+
+karet watches every discovered system, user, and project configuration path, including
+files that do not exist yet and hidden `.karet` directories. Creating, editing,
+atomically replacing, or deleting one of those files reloads only that layer; the other
+layers stay in memory and are not reread. The newly merged snapshot is then shared by
+the backend and every open pane.
+
+Malformed live edits raise a notification and keep the affected layer's last valid
+value, avoiding a temporary reset while a file is half-written. Saving a valid version
+applies it immediately; deleting a layer falls back to the remaining layers and
+defaults. `workbench.startupPanel` is intentionally not replayed during reload, and
+command-line overrides such as `--icons` remain authoritative.
 
 ## Crash recovery (unsaved-change backups)
 
