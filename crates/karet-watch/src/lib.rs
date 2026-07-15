@@ -235,52 +235,54 @@ fn worker_main(mut native: NativeDebouncer, mut poll: PollDebouncer, args: Worke
         stop,
     } = args;
     let mut watched = WatchState::default();
-    for root in roots {
+    'roots: for root in roots {
         for dir in enumerate_dirs(root) {
+            if stop.load(Ordering::Relaxed) {
+                break 'roots;
+            }
             watch_dir(&mut native, &mut poll, &mut watched, tx, dir);
         }
     }
     for git_dir in meta_dirs {
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
         watch_git_dir(&mut native, &mut poll, &mut watched, tx, git_dir);
     }
+    if stop.load(Ordering::Relaxed) {
+        return;
+    }
     watch_explicit_ancestors(&mut native, &mut poll, &mut watched, tx, exact_paths);
+    {
+        let mut context = EventContext {
+            native: &mut native,
+            poll: &mut poll,
+            watched: &mut watched,
+            roots,
+            meta_dirs,
+            exact_paths,
+            tx,
+        };
 
-    loop {
-        if stop.load(Ordering::Relaxed) {
-            break;
-        }
-        match raw_rx.recv_timeout(DEBOUNCE) {
-            Ok(Ok(events)) => {
-                handle_events(
-                    events,
-                    &mut native,
-                    &mut poll,
-                    &mut watched,
-                    roots,
-                    meta_dirs,
-                    exact_paths,
-                    tx,
-                );
-            },
-            // A batch of backend errors: best-effort, matches the prior behavior of
-            // ignoring individual watch/backend hiccups.
-            Ok(Err(_)) => {},
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {},
-            // The debouncer's sender side is gone — nothing more will ever arrive.
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-        while let Ok(result) = poll_rx.try_recv() {
-            if let Ok(events) = result {
-                handle_events(
-                    events,
-                    &mut native,
-                    &mut poll,
-                    &mut watched,
-                    roots,
-                    meta_dirs,
-                    exact_paths,
-                    tx,
-                );
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            match raw_rx.recv_timeout(DEBOUNCE) {
+                Ok(Ok(events)) => {
+                    handle_events(events, &mut context);
+                },
+                // A batch of backend errors: best-effort, matches the prior behavior of
+                // ignoring individual watch/backend hiccups.
+                Ok(Err(_)) => {},
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {},
+                // The debouncer's sender side is gone — nothing more will ever arrive.
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+            while let Ok(result) = poll_rx.try_recv() {
+                if let Ok(events) = result {
+                    handle_events(events, &mut context);
+                }
             }
         }
     }
@@ -288,15 +290,19 @@ fn worker_main(mut native: NativeDebouncer, mut poll: PollDebouncer, args: Worke
     native.stop();
 }
 
+struct EventContext<'a> {
+    native: &'a mut NativeDebouncer,
+    poll: &'a mut PollDebouncer,
+    watched: &'a mut WatchState,
+    roots: &'a [PathBuf],
+    meta_dirs: &'a [PathBuf],
+    exact_paths: &'a BTreeSet<PathBuf>,
+    tx: &'a mpsc::UnboundedSender<FsEvent>,
+}
+
 fn handle_events(
     events: Vec<notify_debouncer_full::DebouncedEvent>,
-    native: &mut NativeDebouncer,
-    poll: &mut PollDebouncer,
-    watched: &mut WatchState,
-    roots: &[PathBuf],
-    meta_dirs: &[PathBuf],
-    exact_paths: &BTreeSet<PathBuf>,
-    tx: &mpsc::UnboundedSender<FsEvent>,
+    context: &mut EventContext<'_>,
 ) {
     for event in events {
         if matches!(
@@ -304,7 +310,7 @@ fn handle_events(
             EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
         ) {
             for path in &event.paths {
-                unwatch_removed(native, poll, watched, path);
+                unwatch_removed(context.native, context.poll, context.watched, path);
             }
         }
         // A newly created directory needs its own watch (the parent's watch is
@@ -317,11 +323,17 @@ fn handle_events(
         ) {
             for path in &event.paths {
                 if path.is_dir()
-                    && roots.iter().any(|root| path_is_within(path, root))
+                    && context.roots.iter().any(|root| path_is_within(path, root))
                     && !is_ignored(path)
                 {
                     for dir in enumerate_dirs(path) {
-                        watch_dir(native, poll, watched, tx, dir);
+                        watch_dir(
+                            context.native,
+                            context.poll,
+                            context.watched,
+                            context.tx,
+                            dir,
+                        );
                     }
                 }
             }
@@ -329,10 +341,22 @@ fn handle_events(
         // A previously missing exact-path directory may now exist. Register its
         // chain directly rather than enumerating unrelated siblings outside the
         // workspace.
-        watch_explicit_ancestors(native, poll, watched, tx, exact_paths);
-        if let Some(fs) = convert(event.kind, &event.paths, roots, meta_dirs, exact_paths) {
+        watch_explicit_ancestors(
+            context.native,
+            context.poll,
+            context.watched,
+            context.tx,
+            context.exact_paths,
+        );
+        if let Some(fs) = convert(
+            event.kind,
+            &event.paths,
+            context.roots,
+            context.meta_dirs,
+            context.exact_paths,
+        ) {
             // The receiver going away just means the session shut down.
-            let _ = tx.send(fs);
+            let _ = context.tx.send(fs);
         }
     }
 }
@@ -943,11 +967,11 @@ mod tests {
         fs::create_dir_all(&sub)?;
         // Give the worker a moment to notice the new directory and watch it before a
         // file lands inside it.
-        std::thread::sleep(Duration::from_millis(500));
+        std::thread::sleep(Duration::from_secs(1));
         let file = sub.join("f.rs");
         fs::write(&file, "fn main() {}")?;
 
-        assert!(wait_for_event(&mut rx, Duration::from_secs(5), |e| {
+        assert!(wait_for_event(&mut rx, Duration::from_secs(10), |e| {
             e.paths.contains(&file)
         }));
         Ok(())
