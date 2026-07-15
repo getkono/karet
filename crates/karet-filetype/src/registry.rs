@@ -13,6 +13,15 @@ use std::path::Path;
 use crate::icon::Category;
 use crate::icon::IconStyle;
 
+/// The default long-line behavior for an editable file type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WrapMode {
+    /// Soft-wrap long lines to the editor viewport.
+    Wrap,
+    /// Keep logical lines intact and allow horizontal scrolling.
+    Overflow,
+}
+
 /// Static presentation metadata for one recognized file type.
 ///
 /// Resolve one from a path with [`file_type_for_path`]. Icons are resolved per
@@ -26,6 +35,7 @@ pub struct FileType {
     nerd: Option<char>,
     extensions: &'static [&'static str],
     filenames: &'static [&'static str],
+    wrap_mode: WrapMode,
 }
 
 impl FileType {
@@ -57,6 +67,12 @@ impl FileType {
             IconStyle::Ascii => self.category.ascii_icon(),
         }
     }
+
+    /// The default long-line behavior for this file type.
+    #[must_use]
+    pub fn wrap_mode(&self) -> WrapMode {
+        self.wrap_mode
+    }
 }
 
 /// The fallback for an unrecognized file.
@@ -66,10 +82,11 @@ const UNKNOWN: FileType = FileType {
     nerd: None,
     extensions: &[],
     filenames: &[],
+    wrap_mode: WrapMode::Overflow,
 };
 
-/// Compact constructor for a registry entry.
-const fn ft(
+/// Compact constructor for an overflow-mode registry entry.
+const fn overflow(
     name: &'static str,
     category: Category,
     nerd: Option<char>,
@@ -82,6 +99,25 @@ const fn ft(
         nerd,
         extensions,
         filenames,
+        wrap_mode: WrapMode::Overflow,
+    }
+}
+
+/// Compact constructor for a soft-wrapping registry entry.
+const fn wrap(
+    name: &'static str,
+    category: Category,
+    nerd: Option<char>,
+    extensions: &'static [&'static str],
+    filenames: &'static [&'static str],
+) -> FileType {
+    FileType {
+        name,
+        category,
+        nerd,
+        extensions,
+        filenames,
+        wrap_mode: WrapMode::Wrap,
     }
 }
 
@@ -99,130 +135,130 @@ use Category::Shell;
 /// keep entries unambiguous (no two entries should claim the same extension).
 static REGISTRY: &[FileType] = &[
     // --- programming languages ---
-    ft("Rust", Code, Some('\u{e7a8}'), &["rs"], &[]),
-    ft("Python", Code, Some('\u{e606}'), &["py", "pyi", "pyw"], &[]),
-    ft("C", Code, Some('\u{e61e}'), &["c", "h"], &[]),
-    ft(
+    overflow("Rust", Code, Some('\u{e7a8}'), &["rs"], &[]),
+    overflow("Python", Code, Some('\u{e606}'), &["py", "pyi", "pyw"], &[]),
+    overflow("C", Code, Some('\u{e61e}'), &["c", "h"], &[]),
+    overflow(
         "C++",
         Code,
         Some('\u{e61d}'),
         &["cc", "cpp", "cxx", "hpp", "hh", "hxx"],
         &[],
     ),
-    ft("C#", Code, None, &["cs"], &[]),
-    ft("Java", Code, Some('\u{e738}'), &["java"], &[]),
-    ft("Kotlin", Code, None, &["kt", "kts"], &[]),
-    ft("Go", Code, Some('\u{e627}'), &["go"], &[]),
-    ft("Ruby", Code, Some('\u{e739}'), &["rb", "erb"], &[]),
-    ft("PHP", Code, Some('\u{e73d}'), &["php"], &[]),
-    ft("Swift", Code, None, &["swift"], &[]),
-    ft("Scala", Code, None, &["scala", "sbt", "sc"], &[]),
-    ft("Lua", Code, Some('\u{e620}'), &["lua"], &[]),
-    ft("Haskell", Code, None, &["hs", "lhs"], &[]),
-    ft("OCaml", Code, None, &["ml", "mli"], &[]),
-    ft("Elixir", Code, None, &["ex", "exs"], &[]),
-    ft("Erlang", Code, None, &["erl", "hrl"], &[]),
-    ft("Dart", Code, None, &["dart"], &[]),
-    ft("R", Code, None, &["r"], &[]),
-    ft("Zig", Code, None, &["zig"], &[]),
-    ft("Perl", Code, None, &["pl", "pm"], &[]),
-    ft("Clojure", Code, None, &["clj", "cljs", "cljc", "edn"], &[]),
-    ft("Emacs Lisp", Code, None, &["el"], &[]),
-    ft("Vim script", Code, None, &["vim"], &[]),
+    overflow("C#", Code, None, &["cs"], &[]),
+    overflow("Java", Code, Some('\u{e738}'), &["java"], &[]),
+    overflow("Kotlin", Code, None, &["kt", "kts"], &[]),
+    overflow("Go", Code, Some('\u{e627}'), &["go"], &[]),
+    overflow("Ruby", Code, Some('\u{e739}'), &["rb", "erb"], &[]),
+    overflow("PHP", Code, Some('\u{e73d}'), &["php"], &[]),
+    overflow("Swift", Code, None, &["swift"], &[]),
+    overflow("Scala", Code, None, &["scala", "sbt", "sc"], &[]),
+    overflow("Lua", Code, Some('\u{e620}'), &["lua"], &[]),
+    overflow("Haskell", Code, None, &["hs", "lhs"], &[]),
+    overflow("OCaml", Code, None, &["ml", "mli"], &[]),
+    overflow("Elixir", Code, None, &["ex", "exs"], &[]),
+    overflow("Erlang", Code, None, &["erl", "hrl"], &[]),
+    overflow("Dart", Code, None, &["dart"], &[]),
+    overflow("R", Code, None, &["r"], &[]),
+    overflow("Zig", Code, None, &["zig"], &[]),
+    overflow("Perl", Code, None, &["pl", "pm"], &[]),
+    overflow("Clojure", Code, None, &["clj", "cljs", "cljc", "edn"], &[]),
+    overflow("Emacs Lisp", Code, None, &["el"], &[]),
+    overflow("Vim script", Code, None, &["vim"], &[]),
     // --- web ---
-    ft(
+    overflow(
         "JavaScript",
         Code,
         Some('\u{e74e}'),
         &["js", "mjs", "cjs"],
         &[],
     ),
-    ft("JSX", Code, Some('\u{e7ba}'), &["jsx"], &[]),
-    ft(
+    overflow("JSX", Code, Some('\u{e7ba}'), &["jsx"], &[]),
+    overflow(
         "TypeScript",
         Code,
         Some('\u{e628}'),
         &["ts", "mts", "cts"],
         &[],
     ),
-    ft("TSX", Code, Some('\u{e7ba}'), &["tsx"], &[]),
-    ft(
+    overflow("TSX", Code, Some('\u{e7ba}'), &["tsx"], &[]),
+    overflow(
         "HTML",
         Markup,
         Some('\u{e736}'),
         &["html", "htm", "xhtml"],
         &[],
     ),
-    ft("CSS", Markup, Some('\u{e749}'), &["css"], &[]),
-    ft("Sass", Markup, Some('\u{e74b}'), &["scss", "sass"], &[]),
-    ft("Less", Markup, None, &["less"], &[]),
-    ft("Vue", Markup, None, &["vue"], &[]),
-    ft("Svelte", Markup, None, &["svelte"], &[]),
+    overflow("CSS", Markup, Some('\u{e749}'), &["css"], &[]),
+    overflow("Sass", Markup, Some('\u{e74b}'), &["scss", "sass"], &[]),
+    overflow("Less", Markup, None, &["less"], &[]),
+    overflow("Vue", Markup, None, &["vue"], &[]),
+    overflow("Svelte", Markup, None, &["svelte"], &[]),
     // --- data / config ---
-    ft(
+    overflow(
         "JSON",
         Data,
         Some('\u{e60b}'),
         &["json", "jsonc", "json5"],
         &[],
     ),
-    ft("YAML", Config, None, &["yml", "yaml"], &[]),
-    ft("TOML", Config, None, &["toml"], &[]),
-    ft("INI", Config, None, &["ini", "cfg", "conf"], &[]),
-    ft("Properties", Config, None, &["properties"], &[]),
-    ft("Pkl", Config, None, &["pkl"], &[]),
-    ft("XML", Markup, None, &["xml"], &[]),
-    ft("SVG", Markup, None, &["svg"], &[]),
-    ft("CSV", Data, None, &["csv", "tsv"], &[]),
-    ft("SQL", Data, Some('\u{f1c0}'), &["sql"], &[]),
-    ft("GraphQL", Data, None, &["graphql", "gql"], &[]),
-    ft("Protobuf", Data, None, &["proto"], &[]),
-    ft("CBOR", Data, None, &["cbor"], &[]),
-    ft("Lockfile", Config, Some('\u{f023}'), &["lock"], &[]),
+    overflow("YAML", Config, None, &["yml", "yaml"], &[]),
+    overflow("TOML", Config, None, &["toml"], &[]),
+    overflow("INI", Config, None, &["ini", "cfg", "conf"], &[]),
+    overflow("Properties", Config, None, &["properties"], &[]),
+    overflow("Pkl", Config, None, &["pkl"], &[]),
+    overflow("XML", Markup, None, &["xml"], &[]),
+    overflow("SVG", Markup, None, &["svg"], &[]),
+    overflow("CSV", Data, None, &["csv", "tsv"], &[]),
+    overflow("SQL", Data, Some('\u{f1c0}'), &["sql"], &[]),
+    overflow("GraphQL", Data, None, &["graphql", "gql"], &[]),
+    overflow("Protobuf", Data, None, &["proto"], &[]),
+    overflow("CBOR", Data, None, &["cbor"], &[]),
+    overflow("Lockfile", Config, Some('\u{f023}'), &["lock"], &[]),
     // --- shell ---
-    ft(
+    overflow(
         "Shell",
         Shell,
         Some('\u{f489}'),
         &["sh", "bash", "zsh", "fish", "ksh"],
         &[],
     ),
-    ft("PowerShell", Shell, None, &["ps1", "psm1"], &[]),
-    ft("Batch", Shell, None, &["bat", "cmd"], &[]),
+    overflow("PowerShell", Shell, None, &["ps1", "psm1"], &[]),
+    overflow("Batch", Shell, None, &["bat", "cmd"], &[]),
     // --- docs / prose ---
-    ft(
+    wrap(
         "Markdown",
         Markup,
         Some('\u{e73e}'),
         &["md", "markdown", "mdown", "mkd", "mdx"],
         &[],
     ),
-    ft(
+    wrap(
         "Plain Text",
         Document,
         Some('\u{f15c}'),
         &["txt", "text"],
         &[],
     ),
-    ft("reStructuredText", Markup, None, &["rst"], &[]),
-    ft("AsciiDoc", Markup, None, &["adoc", "asciidoc"], &[]),
-    ft("TeX", Document, None, &["tex"], &[]),
-    ft("PDF", Document, Some('\u{f1c1}'), &["pdf"], &[]),
-    ft(
+    wrap("reStructuredText", Markup, None, &["rst"], &[]),
+    wrap("AsciiDoc", Markup, None, &["adoc", "asciidoc"], &[]),
+    overflow("TeX", Document, None, &["tex"], &[]),
+    overflow("PDF", Document, Some('\u{f1c1}'), &["pdf"], &[]),
+    wrap(
         "Word",
         Document,
         Some('\u{f1c2}'),
         &["doc", "docx", "odt", "rtf"],
         &[],
     ),
-    ft(
+    overflow(
         "Spreadsheet",
         Data,
         Some('\u{f1c3}'),
         &["xls", "xlsx", "ods"],
         &[],
     ),
-    ft(
+    overflow(
         "Presentation",
         Document,
         Some('\u{f1c4}'),
@@ -230,7 +266,7 @@ static REGISTRY: &[FileType] = &[
         &[],
     ),
     // --- images ---
-    ft(
+    overflow(
         "Image",
         Image,
         Some('\u{f1c5}'),
@@ -240,7 +276,7 @@ static REGISTRY: &[FileType] = &[
         &[],
     ),
     // --- archives ---
-    ft(
+    overflow(
         "Archive",
         Archive,
         Some('\u{f1c6}'),
@@ -250,35 +286,35 @@ static REGISTRY: &[FileType] = &[
         &[],
     ),
     // --- media / binary ---
-    ft(
+    overflow(
         "Audio",
         Binary,
         Some('\u{f1c7}'),
         &["mp3", "wav", "flac", "ogg", "m4a", "aac"],
         &[],
     ),
-    ft(
+    overflow(
         "Video",
         Binary,
         Some('\u{f1c8}'),
         &["mp4", "mkv", "mov", "avi", "webm", "wmv"],
         &[],
     ),
-    ft(
+    overflow(
         "Font",
         Binary,
         Some('\u{f031}'),
         &["ttf", "otf", "woff", "woff2", "eot"],
         &[],
     ),
-    ft(
+    overflow(
         "Database",
         Data,
         Some('\u{f1c0}'),
         &["db", "sqlite", "sqlite3"],
         &[],
     ),
-    ft(
+    overflow(
         "Binary",
         Binary,
         None,
@@ -288,36 +324,36 @@ static REGISTRY: &[FileType] = &[
         &[],
     ),
     // --- special filenames (matched before extensions) ---
-    ft(
+    overflow(
         "Dockerfile",
         Config,
         Some('\u{e7b0}'),
         &[],
         &["Dockerfile", "Containerfile"],
     ),
-    ft(
+    overflow(
         "Makefile",
         Config,
         None,
         &["mk"],
         &["Makefile", "GNUmakefile", "makefile", "CMakeLists.txt"],
     ),
-    ft(
+    overflow(
         "Git config",
         Config,
         Some('\u{f1d3}'),
         &[],
         &[".gitignore", ".gitattributes", ".gitmodules", ".gitkeep"],
     ),
-    ft(
+    wrap(
         "License",
         Document,
         Some('\u{f02d}'),
         &[],
         &["LICENSE", "LICENCE", "COPYING", "README", "AUTHORS"],
     ),
-    ft("EditorConfig", Config, None, &[], &[".editorconfig"]),
-    ft("Environment", Config, None, &[], &[".env"]),
+    overflow("EditorConfig", Config, None, &[], &[".editorconfig"]),
+    overflow("Environment", Config, None, &[], &[".env"]),
 ];
 
 /// Resolve a path to its [`FileType`], or the `"File"` fallback when unrecognized.
@@ -406,6 +442,32 @@ mod tests {
         let ft = file_type_for_path(Path::new("mystery.zzz"));
         assert_eq!(ft.name(), "File");
         assert_eq!(ft.category(), Category::Unknown);
+        assert_eq!(ft.wrap_mode(), WrapMode::Overflow);
+    }
+
+    #[test]
+    fn prose_wraps_and_source_formats_overflow() {
+        for path in [
+            "README",
+            "notes.md",
+            "notes.txt",
+            "guide.rst",
+            "guide.asciidoc",
+            "draft.docx",
+        ] {
+            assert_eq!(
+                file_type_for_path(Path::new(path)).wrap_mode(),
+                WrapMode::Wrap,
+                "{path} should wrap"
+            );
+        }
+        for path in ["main.rs", "page.html", "config.toml", "paper.tex"] {
+            assert_eq!(
+                file_type_for_path(Path::new(path)).wrap_mode(),
+                WrapMode::Overflow,
+                "{path} should overflow"
+            );
+        }
     }
 
     #[test]
