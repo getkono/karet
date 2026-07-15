@@ -7269,10 +7269,23 @@ fn copy_name(source: &Path, fallback: &str, n: usize) -> String {
     }
 }
 
-/// The canonical form of `path` for tab de-duplication, falling back to the path
-/// as given when it cannot be resolved (e.g. it no longer exists).
+/// The canonical form of `path` for tab de-duplication. For a missing leaf, resolve
+/// its nearest existing ancestor and append the unresolved suffix; this preserves
+/// macOS `/var` → `/private/var` normalization before a new file is created.
 fn canonical(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    if let Ok(resolved) = std::fs::canonicalize(path) {
+        return resolved;
+    }
+    for ancestor in path.ancestors().skip(1) {
+        let Ok(resolved) = std::fs::canonicalize(ancestor) else {
+            continue;
+        };
+        let Ok(suffix) = path.strip_prefix(ancestor) else {
+            continue;
+        };
+        return resolved.join(suffix);
+    }
+    path.to_path_buf()
 }
 
 /// The (anchor, head) span of the word under `pos`, or the single character there
