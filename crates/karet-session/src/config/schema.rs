@@ -53,8 +53,9 @@ pub struct Editor {
     pub scroll_off: u16,
     /// Columns to draw vertical rulers at (empty = none).
     pub rulers: Vec<u16>,
-    /// Soft-wrap long lines instead of scrolling horizontally.
-    pub word_wrap: bool,
+    /// Override file-type wrapping: `null` uses the file default, `true` wraps,
+    /// and `false` uses horizontal overflow.
+    pub word_wrap: Option<bool>,
     /// Strip trailing whitespace from each line on save.
     pub trim_trailing_whitespace: bool,
     /// Ensure the file ends with a single trailing newline on save.
@@ -77,7 +78,7 @@ impl Default for Editor {
             graphical_cursor: None,
             scroll_off: 3,
             rulers: Vec::new(),
-            word_wrap: false,
+            word_wrap: None,
             trim_trailing_whitespace: true,
             insert_final_newline: true,
             format_on_save: false,
@@ -375,6 +376,7 @@ mod tests {
         assert!(s.editor.insert_spaces);
         assert_eq!(s.editor.line_numbers, LineNumbers::On);
         assert_eq!(s.editor.graphical_cursor, None);
+        assert_eq!(s.editor.word_wrap, None);
         assert_eq!(s.files.auto_save, AutoSave::Off);
         assert_eq!(s.workbench.color_theme, "dark");
         assert!(s.search.smart_case);
@@ -385,6 +387,16 @@ mod tests {
         assert!(s.editor.completion.enabled, "completion defaults on (#57)");
         assert!(s.editor.completion.auto_trigger, "auto-trigger defaults on");
         assert!(s.lsp.servers.is_empty(), "no user overrides by default");
+    }
+
+    #[test]
+    fn word_wrap_accepts_auto_and_boolean_overrides() {
+        let automatic: Editor = serde_json::from_str(r#"{ "wordWrap": null }"#).unwrap_or_default();
+        let wrapped: Editor = serde_json::from_str(r#"{ "wordWrap": true }"#).unwrap_or_default();
+        let overflow: Editor = serde_json::from_str(r#"{ "wordWrap": false }"#).unwrap_or_default();
+        assert_eq!(automatic.word_wrap, None);
+        assert_eq!(wrapped.word_wrap, Some(true));
+        assert_eq!(overflow.word_wrap, Some(false));
     }
 
     #[test]
