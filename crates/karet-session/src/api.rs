@@ -366,6 +366,11 @@ pub enum Event {
         /// The affected paths, as reported by the debounced watcher.
         paths: Vec<PathBuf>,
     },
+    /// The watched configuration changed and a new in-memory snapshot is active.
+    ConfigChanged {
+        /// The merged settings, diagnostics, and provenance now used by the session.
+        report: Box<LoadedConfig>,
+    },
     /// New diagnostics were published for a document.
     DiagnosticsPublished {
         /// The document.

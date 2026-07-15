@@ -61,6 +61,7 @@ use crate::backup::SwapRecord;
 use crate::backup::SwapStore;
 use crate::backup::discard;
 use crate::backup::scan;
+use crate::config::load::ConfigManager;
 use crate::highlight::HighlightJob;
 use crate::highlight::HighlightRequest;
 use crate::highlight::HighlightResult;
@@ -223,6 +224,8 @@ struct DocumentStore {
 /// [`crate::backend::local`].
 pub struct Session {
     config: SessionConfig,
+    /// Cached configuration layers used for targeted live reloads.
+    config_manager: Option<ConfigManager>,
     events: mpsc::UnboundedSender<(Option<RequestId>, Event)>,
     snapshots: mpsc::UnboundedSender<(DocumentId, Arc<DocSnapshot>)>,
     store: DocumentStore,
@@ -279,12 +282,17 @@ impl Session {
             .as_ref()
             .map(Repository::metadata_dirs)
             .unwrap_or_default();
+        let config_manager = ConfigManager::from_loaded(&config.loaded_config);
+        let config_paths = config_manager
+            .as_ref()
+            .map(ConfigManager::paths)
+            .unwrap_or_default();
         // Best-effort: a watcher failure (or no roots) just disables external-change
         // detection; editing still works.
-        let (watcher, fs_rx) = if config.roots.is_empty() {
+        let (watcher, fs_rx) = if config.roots.is_empty() && config_paths.is_empty() {
             (None, None)
         } else {
-            match Watcher::spawn(&config.roots, &git_dirs) {
+            match Watcher::spawn_with_paths(&config.roots, &git_dirs, &config_paths) {
                 Ok((w, rx)) => (Some(w), Some(rx)),
                 Err(_) => (None, None),
             }
@@ -297,27 +305,25 @@ impl Session {
         let swaps = config
             .swap_dir
             .clone()
-            .filter(|_| config.settings.files.backup)
             .map(|dir| SwapStore::with_dir(dir, session_id));
-        let pending_swaps = swaps
-            .as_ref()
-            .map(|store| scan(store.dir()))
-            .unwrap_or_default();
+        let pending_swaps = if config.settings.files.backup {
+            swaps
+                .as_ref()
+                .map(|store| scan(store.dir()))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         // Layered highlighting runs on its own thread; the actor only sends it text and
-        // applies the spans it sends back. The worker also runs the semantic-comment
-        // pass (codetag blocks → CommentMark) when `editor.semanticComments` is on.
-        let semantic_comments = &config.settings.editor.semantic_comments;
-        let semantic = semantic_comments
-            .enabled
-            .then(|| karet_syntax::SemanticCommentConfig {
-                tags: semantic_comments.tags.clone(),
-            });
-        let (highlight_tx, highlight_rx) = crate::highlight::spawn(semantic);
+        // applies the spans it sends back. Each request carries the document's resolved
+        // semantic-comment settings, so language overrides can update live.
+        let (highlight_tx, highlight_rx) = crate::highlight::spawn();
         // Language servers spawn lazily, per language, on the first matching open.
         let (lsp, lsp_rx) =
             LspManager::new(config.settings.lsp.clone(), config.roots.first().cloned());
         let mut session = Self {
             config,
+            config_manager,
             events,
             snapshots,
             store: DocumentStore {
@@ -758,12 +764,16 @@ impl Session {
     /// (LSP's UTF-16 → the buffer's UTF-32 columns) and emit the answering event.
     /// A result for a document that has since closed is dropped as stale.
     pub(crate) fn apply_lsp_update(&mut self, update: LspUpdate) {
+        if !self.lsp.accepts(&update) {
+            return;
+        }
         match update {
             LspUpdate::Completions {
                 request,
                 doc,
                 version,
                 mut items,
+                ..
             } => {
                 let Some(d) = self.store.docs.get(&doc) else {
                     return; // closed since the request: stale by definition
@@ -787,7 +797,9 @@ impl Session {
                     },
                 );
             },
-            LspUpdate::SpawnFailed { language, command } => self.emit(
+            LspUpdate::SpawnFailed {
+                language, command, ..
+            } => self.emit(
                 None,
                 Event::Notification {
                     severity: Severity::Warning,
@@ -798,7 +810,7 @@ impl Session {
                     ),
                 },
             ),
-            LspUpdate::ServerDied { language } => self.emit(
+            LspUpdate::ServerDied { language, .. } => self.emit(
                 None,
                 Event::Notification {
                     severity: Severity::Warning,
@@ -868,10 +880,38 @@ impl Session {
             );
             return;
         }
-        for path in &event.paths {
+        let config_paths: Vec<PathBuf> = self
+            .config_manager
+            .as_ref()
+            .map(|manager| {
+                event
+                    .paths
+                    .iter()
+                    .filter(|path| manager.is_config_path(path))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let changed_config = self
+            .config_manager
+            .as_mut()
+            .and_then(|manager| manager.reload(&config_paths));
+        if let Some(report) = changed_config {
+            self.apply_config_report(report);
+        }
+
+        let workspace_paths: Vec<PathBuf> = event
+            .paths
+            .into_iter()
+            .filter(|path| !config_paths.contains(path))
+            .collect();
+        for path in &workspace_paths {
             if let Some(&doc_id) = self.store.by_path.get(path) {
                 self.on_external_change(doc_id, path);
             }
+        }
+        if workspace_paths.is_empty() {
+            return;
         }
         // A generic "something changed" signal for anything else the client
         // derives from the workspace (e.g. a live-updating search) — distinct
@@ -880,7 +920,7 @@ impl Session {
         self.emit(
             None,
             Event::FsChanged {
-                paths: event.paths.clone(),
+                paths: workspace_paths,
             },
         );
         // Any worktree edit or watched git-metadata change can alter status. The
@@ -890,6 +930,39 @@ impl Session {
         // A watched `refs/**` / `HEAD` change may mean new commits; reconcile the log
         // incrementally. The head read is cheap and this early-returns when unchanged.
         self.reconcile_vcs_log();
+    }
+
+    /// Adopt one validated live configuration snapshot and refresh producers whose
+    /// behavior is derived from it. Existing LSP tasks are retired on an LSP change;
+    /// their generation-tagged late answers are ignored by [`Self::apply_lsp_update`].
+    fn apply_config_report(&mut self, report: crate::config::LoadedConfig) {
+        let lsp_changed = self.lsp.reconfigure(report.settings.lsp.clone());
+        self.config.settings = report.settings.clone();
+        self.config.loaded_config = report.clone();
+
+        // Semantic-comment settings can vary by language. Requeue every open
+        // document from scratch so both global and selector changes take effect.
+        let settings = &self.config.settings;
+        let highlight_tx = &self.highlight_tx;
+        for (&doc_id, doc) in &mut self.store.docs {
+            update_syntax(settings, highlight_tx, doc_id, doc, None);
+        }
+
+        if lsp_changed {
+            let lsp = &mut self.lsp;
+            for doc in self.store.docs.values() {
+                lsp.document_opened(doc.language, &doc.path, doc.buffer.version(), || {
+                    doc.buffer.text()
+                });
+            }
+        }
+
+        self.emit(
+            None,
+            Event::ConfigChanged {
+                report: Box::new(report),
+            },
+        );
     }
 
     /// Borrow a read-only view of a document for local-mode rendering or tests.
@@ -963,7 +1036,13 @@ impl Session {
             dirty_since: None,
             backed_up_version: None,
         };
-        update_syntax(&self.highlight_tx, doc_id, &mut doc, None);
+        update_syntax(
+            &self.config.settings,
+            &self.highlight_tx,
+            doc_id,
+            &mut doc,
+            None,
+        );
         let version = doc.buffer.version();
         // Lazily start (or address) this language's server and announce the open.
         self.lsp
@@ -989,6 +1068,7 @@ impl Session {
         // of leaving it stuck rejecting every future edit forever.
         let version = {
             let highlight_tx = &self.highlight_tx;
+            let settings = &self.config.settings;
             let lsp = &mut self.lsp;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
                 self.events.send((Some(id), unknown_document(doc_id))).ok();
@@ -996,7 +1076,7 @@ impl Session {
             };
             match doc.buffer.apply(change, ctx) {
                 Ok(applied) => {
-                    update_syntax(highlight_tx, doc_id, doc, Some(&applied.edits));
+                    update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
                     // Arm the backup clock on the clean→dirty transition (see
                     // `backup_tick`).
                     doc.sync_dirty_since(tick);
@@ -1035,6 +1115,7 @@ impl Session {
         let tick = self.elapsed_ms();
         let (version, cursor) = {
             let highlight_tx = &self.highlight_tx;
+            let settings = &self.config.settings;
             let lsp = &mut self.lsp;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
                 return;
@@ -1047,7 +1128,7 @@ impl Session {
             let Some(applied) = applied else {
                 return; // nothing to undo/redo
             };
-            update_syntax(highlight_tx, doc_id, doc, Some(&applied.edits));
+            update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
             // Undoing back to the save point clears dirtiness (and any pending backup).
             doc.sync_dirty_since(tick);
             // The buffer changed like any other edit: keep the server in sync.
@@ -1133,7 +1214,7 @@ impl Session {
         doc.lang_id = language_id_from_path(&path);
         doc.language = language_name_from_path(&path);
         // The language may have changed with the extension; re-highlight from scratch.
-        update_syntax(&self.highlight_tx, doc_id, doc, None);
+        update_syntax(&self.config.settings, &self.highlight_tx, doc_id, doc, None);
         // The old URI is gone; the (possibly different) new language's server
         // adopts the new one.
         self.lsp.document_closed(old_language, &old);
@@ -1355,6 +1436,7 @@ impl Session {
     fn reload(&mut self, doc_id: DocumentId) {
         let version = {
             let highlight_tx = &self.highlight_tx;
+            let settings = &self.config.settings;
             let lsp = &mut self.lsp;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
                 return;
@@ -1365,7 +1447,7 @@ impl Session {
             doc.buffer.adopt_content(fresh);
             // The buffer was replaced wholesale, so the worker's retained tree is void:
             // `None` edits force it to start over.
-            update_syntax(highlight_tx, doc_id, doc, None);
+            update_syntax(settings, highlight_tx, doc_id, doc, None);
             // The on-disk content is the new truth; keep the server in sync.
             lsp.document_changed(doc.language, &doc.path, doc.buffer.version(), || {
                 doc.buffer.text()
@@ -1421,6 +1503,7 @@ impl Session {
 /// tree (the query still materializes the text — the rope-native query is a
 /// follow-up).
 fn update_syntax(
+    settings: &crate::config::Settings,
     highlight_tx: &std::sync::mpsc::Sender<HighlightJob>,
     doc_id: DocumentId,
     doc: &mut Document,
@@ -1450,6 +1533,17 @@ fn update_syntax(
         version: doc.buffer.version(),
         lang,
         text: doc.buffer.text(),
+        semantic: {
+            let semantic = settings
+                .editor
+                .for_language(doc.language)
+                .semantic_comments();
+            semantic
+                .enabled()
+                .then(|| karet_syntax::SemanticCommentConfig {
+                    tags: semantic.tags().to_vec(),
+                })
+        },
         edits: edits.map(|es| es.iter().map(to_edit).collect()),
     };
     // A dead worker only means no highlights; editing carries on.
@@ -2645,6 +2739,27 @@ mod tests {
             return;
         };
         assert_eq!(report.settings.editor.tab_size, 2);
+    }
+
+    #[test]
+    fn applying_live_config_updates_the_snapshot_and_emits_the_contract_event() {
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+        let mut settings = crate::config::Settings::default();
+        settings.editor.tab_size = 7;
+        let report = crate::config::LoadedConfig::from_settings(settings);
+
+        session.apply_config_report(report);
+
+        assert_eq!(session.config.settings.editor.tab_size, 7);
+        let received = events.try_recv();
+        assert!(
+            matches!(
+                &received,
+                Some((None, Event::ConfigChanged { report }))
+                    if report.settings.editor.tab_size == 7
+            ),
+            "live reload should emit its active report, got {received:?}"
+        );
     }
 
     #[test]

@@ -83,6 +83,8 @@ pub(crate) enum LspUpdate {
     /// Completion items answering a [`ServerCmd::Completion`] (ranges still in
     /// UTF-16 columns; the session converts them against the buffer).
     Completions {
+        /// The manager generation that spawned the server task.
+        generation: u64,
         /// The originating request.
         request: RequestId,
         /// The target document.
@@ -94,6 +96,8 @@ pub(crate) enum LspUpdate {
     },
     /// The server binary could not be started (reported once per language).
     SpawnFailed {
+        /// The manager generation that spawned the server task.
+        generation: u64,
         /// The language the server was for.
         language: String,
         /// The executable that failed to start.
@@ -101,6 +105,8 @@ pub(crate) enum LspUpdate {
     },
     /// A running server's connection closed (reported once per language).
     ServerDied {
+        /// The manager generation that spawned the server task.
+        generation: u64,
         /// The language whose server died.
         language: String,
     },
@@ -150,6 +156,7 @@ fn version_i32(version: u64) -> i32 {
 /// Lazy per-language language-server orchestration (see the module docs).
 pub(crate) struct LspManager {
     settings: LspSettings,
+    generation: u64,
     root: Option<PathBuf>,
     servers: HashMap<String, mpsc::UnboundedSender<ServerCmd>>,
     updates: mpsc::UnboundedSender<LspUpdate>,
@@ -166,6 +173,7 @@ impl LspManager {
         (
             Self {
                 settings,
+                generation: 0,
                 root,
                 servers: HashMap::new(),
                 updates,
@@ -179,6 +187,28 @@ impl LspManager {
     #[cfg(test)]
     pub(crate) fn set_connector(&mut self, connector: Connector) {
         self.connector = connector;
+    }
+
+    /// Apply new settings, retiring every task created under the old snapshot.
+    /// Returns whether documents need to be reopened against fresh servers.
+    pub(crate) fn reconfigure(&mut self, settings: LspSettings) -> bool {
+        if self.settings == settings {
+            return false;
+        }
+        self.settings = settings;
+        self.generation = self.generation.wrapping_add(1);
+        self.servers.clear();
+        true
+    }
+
+    /// Whether an asynchronous update belongs to the current server generation.
+    pub(crate) fn accepts(&self, update: &LspUpdate) -> bool {
+        let generation = match update {
+            LspUpdate::Completions { generation, .. }
+            | LspUpdate::SpawnFailed { generation, .. }
+            | LspUpdate::ServerDied { generation, .. } => *generation,
+        };
+        generation == self.generation
     }
 
     /// The launch spec for `language`: user config first, then the built-ins.
@@ -217,6 +247,7 @@ impl LspManager {
                 rx,
                 self.updates.clone(),
                 Arc::clone(&self.connector),
+                self.generation,
             ));
             self.servers.insert(key.clone(), tx);
         }
@@ -307,7 +338,7 @@ impl LspManager {
 
 /// Answer a completion command with an empty set (used whenever no live server
 /// can answer, so the client is never left waiting).
-fn answer_empty(updates: &mpsc::UnboundedSender<LspUpdate>, cmd: ServerCmd) {
+fn answer_empty(updates: &mpsc::UnboundedSender<LspUpdate>, cmd: ServerCmd, generation: u64) {
     if let ServerCmd::Completion {
         request,
         doc,
@@ -316,6 +347,7 @@ fn answer_empty(updates: &mpsc::UnboundedSender<LspUpdate>, cmd: ServerCmd) {
     } = cmd
     {
         let _ = updates.send(LspUpdate::Completions {
+            generation,
             request,
             doc,
             version,
@@ -333,19 +365,21 @@ async fn server_task(
     mut rx: mpsc::UnboundedReceiver<ServerCmd>,
     updates: mpsc::UnboundedSender<LspUpdate>,
     connector: Connector,
+    generation: u64,
 ) {
     let client = match connector(spec.clone(), root).await {
         Ok(client) => client,
         Err(e) => {
             tracing::warn!(language, command = %spec.command, error = %e, "language server failed to start");
             let _ = updates.send(LspUpdate::SpawnFailed {
+                generation,
                 language,
                 command: spec.command,
             });
             // Stay alive answering requests empty; the manager keeps this entry,
             // so the failure is remembered and nothing respawns.
             while let Some(cmd) = rx.recv().await {
-                answer_empty(&updates, cmd);
+                answer_empty(&updates, cmd, generation);
             }
             return;
         },
@@ -360,7 +394,15 @@ async fn server_task(
             match tokio::time::timeout(CHANGE_DEBOUNCE, rx.recv()).await {
                 Ok(cmd) => cmd,
                 Err(_quiet) => {
-                    flush_pending(&client, &mut pending, &mut dead, &updates, &language).await;
+                    flush_pending(
+                        &client,
+                        &mut pending,
+                        &mut dead,
+                        &updates,
+                        &language,
+                        generation,
+                    )
+                    .await;
                     continue;
                 },
             }
@@ -371,7 +413,7 @@ async fn server_task(
             break; // the session dropped the manager
         };
         if dead {
-            answer_empty(&updates, cmd);
+            answer_empty(&updates, cmd, generation);
             continue;
         }
         match cmd {
@@ -383,7 +425,15 @@ async fn server_task(
                 // Coalesce successive edits to the same document; an edit to a
                 // different document flushes the previous one first (order).
                 if pending.as_ref().is_some_and(|(p, ..)| *p != path) {
-                    flush_pending(&client, &mut pending, &mut dead, &updates, &language).await;
+                    flush_pending(
+                        &client,
+                        &mut pending,
+                        &mut dead,
+                        &updates,
+                        &language,
+                        generation,
+                    )
+                    .await;
                 }
                 if !dead {
                     pending = Some((path, version, text));
@@ -394,17 +444,33 @@ async fn server_task(
                 version,
                 text,
             } => {
-                flush_pending(&client, &mut pending, &mut dead, &updates, &language).await;
+                flush_pending(
+                    &client,
+                    &mut pending,
+                    &mut dead,
+                    &updates,
+                    &language,
+                    generation,
+                )
+                .await;
                 if !dead {
                     let result = client.did_open(&path, &language, version, &text).await;
-                    note_failure(result, &mut dead, &updates, &language);
+                    note_failure(result, &mut dead, &updates, &language, generation);
                 }
             },
             ServerCmd::DidClose { path } => {
-                flush_pending(&client, &mut pending, &mut dead, &updates, &language).await;
+                flush_pending(
+                    &client,
+                    &mut pending,
+                    &mut dead,
+                    &updates,
+                    &language,
+                    generation,
+                )
+                .await;
                 if !dead {
                     let result = client.did_close(&path).await;
-                    note_failure(result, &mut dead, &updates, &language);
+                    note_failure(result, &mut dead, &updates, &language, generation);
                 }
             },
             ServerCmd::Completion {
@@ -415,19 +481,28 @@ async fn server_task(
                 position,
             } => {
                 // The server must see the latest text before completing in it.
-                flush_pending(&client, &mut pending, &mut dead, &updates, &language).await;
+                flush_pending(
+                    &client,
+                    &mut pending,
+                    &mut dead,
+                    &updates,
+                    &language,
+                    generation,
+                )
+                .await;
                 let items = if dead {
                     Vec::new()
                 } else {
                     match client.completion(&path, position).await {
                         Ok(items) => items,
                         Err(e) => {
-                            note_failure::<()>(Err(e), &mut dead, &updates, &language);
+                            note_failure::<()>(Err(e), &mut dead, &updates, &language, generation);
                             Vec::new()
                         },
                     }
                 };
                 let _ = updates.send(LspUpdate::Completions {
+                    generation,
                     request,
                     doc,
                     version,
@@ -447,6 +522,7 @@ async fn flush_pending(
     dead: &mut bool,
     updates: &mpsc::UnboundedSender<LspUpdate>,
     language: &str,
+    generation: u64,
 ) {
     if *dead {
         *pending = None;
@@ -454,7 +530,7 @@ async fn flush_pending(
     }
     if let Some((path, version, text)) = pending.take() {
         let result = client.did_change(&path, version, &text).await;
-        note_failure(result, dead, updates, language);
+        note_failure(result, dead, updates, language, generation);
     }
 }
 
@@ -465,6 +541,7 @@ fn note_failure<T>(
     dead: &mut bool,
     updates: &mpsc::UnboundedSender<LspUpdate>,
     language: &str,
+    generation: u64,
 ) {
     match result {
         Ok(_) => {},
@@ -472,6 +549,7 @@ fn note_failure<T>(
             if !*dead {
                 *dead = true;
                 let _ = updates.send(LspUpdate::ServerDied {
+                    generation,
                     language: language.to_owned(),
                 });
             }
@@ -513,6 +591,30 @@ mod tests {
     use crate::session::SessionConfig;
 
     type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    #[test]
+    fn reconfigure_retires_updates_from_old_server_tasks() {
+        let (mut manager, _updates) = LspManager::new(LspSettings::default(), None);
+        let old = LspUpdate::Completions {
+            generation: 0,
+            request: RequestId(1),
+            doc: DocumentId(1),
+            version: 1,
+            items: Vec::new(),
+        };
+        assert!(manager.accepts(&old));
+
+        let settings = LspSettings {
+            enabled: false,
+            ..LspSettings::default()
+        };
+        assert!(manager.reconfigure(settings.clone()));
+        assert!(!manager.accepts(&old));
+        assert!(
+            !manager.reconfigure(settings),
+            "an identical snapshot is a no-op"
+        );
+    }
 
     // --- a minimal LSP wire for the fake server (framing + JSON) -----------
 

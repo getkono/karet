@@ -43,6 +43,8 @@ pub(crate) struct HighlightRequest {
     pub version: u64,
     pub lang: LanguageId,
     pub text: String,
+    /// Language-resolved semantic-comment settings for this document version.
+    pub semantic: Option<SemanticCommentConfig>,
     /// `Some(edits)` advances the retained tree incrementally; `None` forces a full
     /// parse (a fresh open, a reload, or a language change).
     pub edits: Option<Vec<Edit>>,
@@ -60,16 +62,9 @@ pub(crate) struct HighlightResult {
 
 /// Start the worker thread, returning its job sender and result receiver.
 ///
-/// `semantic` is the semantic-comment pass to run over every fresh highlight
-/// (`None` when `editor.semanticComments` is disabled). It is fixed at spawn
-/// because settings are loaded once per session; a settings-reload seam would
-/// respawn or re-message the worker.
-///
 /// If the thread cannot be spawned the result sender is dropped, the receiver closes,
 /// and the session simply never receives highlights — degraded, not broken.
-pub(crate) fn spawn(
-    semantic: Option<SemanticCommentConfig>,
-) -> (
+pub(crate) fn spawn() -> (
     Sender<HighlightJob>,
     tokio_mpsc::UnboundedReceiver<HighlightResult>,
 ) {
@@ -79,7 +74,7 @@ pub(crate) fn spawn(
     // actor then stops selecting that arm and the editor runs without highlights.
     std::thread::Builder::new()
         .name("karet-highlight".to_owned())
-        .spawn(move || run(&jobs_rx, &results_tx, semantic.as_ref()))
+        .spawn(move || run(&jobs_rx, &results_tx))
         .ok();
     (jobs_tx, results_rx)
 }
@@ -90,11 +85,7 @@ pub(crate) fn spawn(
 /// we drain everything already queued, so a keystroke burst that arrived while the
 /// previous batch was computing collapses into a single reparse of the newest text. An
 /// idle editor pays no added latency; a busy one batches automatically.
-fn run(
-    jobs: &Receiver<HighlightJob>,
-    results: &tokio_mpsc::UnboundedSender<HighlightResult>,
-    semantic: Option<&SemanticCommentConfig>,
-) {
+fn run(jobs: &Receiver<HighlightJob>, results: &tokio_mpsc::UnboundedSender<HighlightResult>) {
     let mut parser = LayeredParser::new();
     let mut highlighter = LayeredHighlighter::new();
     let mut trees: HashMap<DocumentId, LayeredTree> = HashMap::new();
@@ -110,8 +101,7 @@ fn run(
         }
 
         for (_, request) in pending.drain() {
-            if let Some(result) =
-                compute(&mut parser, &mut highlighter, &mut trees, request, semantic)
+            if let Some(result) = compute(&mut parser, &mut highlighter, &mut trees, request)
                 && results.send(result).is_err()
             {
                 return; // the session is gone
@@ -166,7 +156,6 @@ fn compute(
     highlighter: &mut LayeredHighlighter,
     trees: &mut HashMap<DocumentId, LayeredTree>,
     request: HighlightRequest,
-    semantic: Option<&SemanticCommentConfig>,
 ) -> Option<HighlightResult> {
     let reusable = request.edits.is_some()
         && trees
@@ -192,7 +181,7 @@ fn compute(
     let tree = trees.get(&request.doc)?;
 
     let mut highlights = highlighter.highlight(tree, &request.text);
-    if let Some(config) = semantic {
+    if let Some(config) = request.semantic.as_ref() {
         highlights = karet_syntax::mark_semantic_comments(&request.text, &highlights, config);
     }
     Some(HighlightResult {
@@ -225,6 +214,7 @@ mod tests {
             version,
             lang: LanguageId(1),
             text: text.to_owned(),
+            semantic: None,
             edits,
         }
     }
@@ -290,7 +280,7 @@ mod tests {
 
     /// Run `compute` over a rust buffer with a TODO comment, with the pass
     /// configured or not, and return the produced token ids.
-    fn compute_tokens(semantic: Option<&SemanticCommentConfig>) -> Option<Vec<u16>> {
+    fn compute_tokens(semantic: Option<SemanticCommentConfig>) -> Option<Vec<u16>> {
         let rust = karet_treesitter::language_id_from_injection_name("rust")?;
         let text = "// TODO: fix this\nfn main() {}\n";
         let mut parser = LayeredParser::new();
@@ -301,9 +291,10 @@ mod tests {
             version: 1,
             lang: rust,
             text: text.to_owned(),
+            semantic,
             edits: None,
         };
-        let result = compute(&mut parser, &mut highlighter, &mut trees, request, semantic)?;
+        let result = compute(&mut parser, &mut highlighter, &mut trees, request)?;
         Some(result.highlights.all().iter().map(|s| s.token.0).collect())
     }
 
@@ -311,7 +302,7 @@ mod tests {
     fn compute_runs_the_semantic_pass_when_configured() {
         let mark = karet_core::StandardToken::CommentMark.id().0;
         let config = SemanticCommentConfig::default();
-        let Some(tokens) = compute_tokens(Some(&config)) else {
+        let Some(tokens) = compute_tokens(Some(config)) else {
             return; // rust grammar not compiled in; nothing to test
         };
         assert!(
