@@ -7,9 +7,13 @@
 //! tree also derives [`schemars::JsonSchema`] so the external `settings.schema.json`
 //! is generated from this one source of truth.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::fmt;
 
 use schemars::JsonSchema;
+use schemars::Schema;
+use schemars::SchemaGenerator;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -36,7 +40,8 @@ pub struct Settings {
 
 /// `editor.*` — text-editing behaviour.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
+#[schemars(transform = deny_additional_properties)]
 pub struct Editor {
     /// Number of columns a tab renders as / spaces inserted for one indent level.
     pub tab_size: u8,
@@ -66,6 +71,16 @@ pub struct Editor {
     pub semantic_comments: SemanticComments,
     /// LSP-powered code completion (the popup).
     pub completion: Completion,
+    /// Per-language patches keyed by selectors such as `[rust]`.
+    ///
+    /// This map is flattened in `setting.jsonc`, so its entries sit beside the
+    /// global editor keys rather than under a separate `languageOverrides` key.
+    #[serde(flatten)]
+    pub language_overrides: BTreeMap<LanguageSelector, EditorOverride>,
+}
+
+fn deny_additional_properties(schema: &mut Schema) {
+    schema.insert("additionalProperties".to_string(), false.into());
 }
 
 impl Default for Editor {
@@ -84,7 +99,357 @@ impl Default for Editor {
             format_on_save: false,
             semantic_comments: SemanticComments::default(),
             completion: Completion::default(),
+            language_overrides: BTreeMap::new(),
         }
+    }
+}
+
+impl Editor {
+    /// Resolve this editor configuration for `language`.
+    ///
+    /// Language names are matched case-insensitively after trimming outer
+    /// whitespace. The selected language patch is applied over the already-merged
+    /// global editor values, so language specificity wins over config-layer
+    /// specificity.
+    #[must_use]
+    pub fn for_language(&self, language: Option<&str>) -> ResolvedEditor<'_> {
+        let override_ = language
+            .and_then(LanguageSelector::from_language)
+            .and_then(|selector| self.language_overrides.get(&selector));
+        ResolvedEditor {
+            base: self,
+            override_,
+        }
+    }
+}
+
+/// A normalized `[language]` key used by [`Editor::language_overrides`].
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LanguageSelector(String);
+
+impl LanguageSelector {
+    /// Build a selector from a display language or language id.
+    #[must_use]
+    pub fn from_language(language: &str) -> Option<Self> {
+        let language = language.trim();
+        (!language.is_empty() && !language.contains(['[', ']']))
+            .then(|| Self(language.to_ascii_lowercase()))
+    }
+
+    /// Return the normalized language name without surrounding brackets.
+    #[must_use]
+    pub fn language(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for LanguageSelector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{}]", self.0)
+    }
+}
+
+impl Serialize for LanguageSelector {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for LanguageSelector {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        let key = String::deserialize(deserializer)?;
+        let Some(language) = key.strip_prefix('[').and_then(|k| k.strip_suffix(']')) else {
+            return Err(D::Error::custom(format!(
+                "unknown editor setting `{key}`; expected a `[language]` selector"
+            )));
+        };
+        Self::from_language(language)
+            .ok_or_else(|| D::Error::custom(format!("invalid language selector `{key}`")))
+    }
+}
+
+impl JsonSchema for LanguageSelector {
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("LanguageSelector")
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "pattern": r"^\[[^\[\]]+\]$"
+        })
+    }
+}
+
+/// A partial per-language patch for [`Editor`].
+///
+/// Every field is optional: omitted fields inherit the merged global editor value.
+/// Arrays replace the global value when present, and nested objects merge field by
+/// field through their own partial patch types.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct EditorOverride {
+    /// Override columns per indent level.
+    pub tab_size: Option<u8>,
+    /// Override spaces-versus-tabs indentation.
+    pub insert_spaces: Option<bool>,
+    /// Override line-number gutter mode.
+    pub line_numbers: Option<LineNumbers>,
+    /// Override current-line highlighting.
+    pub cursor_line: Option<bool>,
+    /// Override graphical-cursor behavior; explicit `null` restores auto mode.
+    #[serde(default, skip_serializing_if = "NullableOverride::is_unset")]
+    #[schemars(with = "Option<bool>")]
+    pub graphical_cursor: NullableOverride<bool>,
+    /// Override the caret scroll margin.
+    pub scroll_off: Option<u16>,
+    /// Replace the global ruler columns.
+    pub rulers: Option<Vec<u16>>,
+    /// Override wrapping; explicit `null` restores the file-type default.
+    #[serde(default, skip_serializing_if = "NullableOverride::is_unset")]
+    #[schemars(with = "Option<bool>")]
+    pub word_wrap: NullableOverride<bool>,
+    /// Override trailing-whitespace trimming.
+    pub trim_trailing_whitespace: Option<bool>,
+    /// Override final-newline insertion.
+    pub insert_final_newline: Option<bool>,
+    /// Override format-on-save.
+    pub format_on_save: Option<bool>,
+    /// Partially override semantic-comment behavior.
+    pub semantic_comments: Option<SemanticCommentsOverride>,
+    /// Partially override completion behavior.
+    pub completion: Option<CompletionOverride>,
+}
+
+/// A partial per-language patch for [`Completion`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct CompletionOverride {
+    /// Override whether completion is enabled.
+    pub enabled: Option<bool>,
+    /// Override automatic completion triggering.
+    pub auto_trigger: Option<bool>,
+}
+
+/// A partial per-language patch for [`SemanticComments`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct SemanticCommentsOverride {
+    /// Override whether semantic comments are highlighted.
+    pub enabled: Option<bool>,
+    /// Replace the global semantic-comment tag list.
+    pub tags: Option<Vec<String>>,
+}
+
+/// An optional override that distinguishes an omitted field from explicit `null`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum NullableOverride<T> {
+    /// The language patch inherits the global value.
+    #[default]
+    Unset,
+    /// The language patch explicitly supplies a nullable value.
+    Set(Option<T>),
+}
+
+impl<T> NullableOverride<T> {
+    fn is_unset(&self) -> bool {
+        matches!(self, Self::Unset)
+    }
+}
+
+impl<T: Serialize> Serialize for NullableOverride<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Unset | Self::Set(None) => serializer.serialize_none(),
+            Self::Set(Some(value)) => serializer.serialize_some(value),
+        }
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for NullableOverride<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Option::<T>::deserialize(deserializer).map(Self::Set)
+    }
+}
+
+/// A zero-copy view of the final editor settings for one language.
+#[derive(Clone, Copy, Debug)]
+pub struct ResolvedEditor<'a> {
+    base: &'a Editor,
+    override_: Option<&'a EditorOverride>,
+}
+
+impl<'a> ResolvedEditor<'a> {
+    /// Final columns per indent level.
+    #[must_use]
+    pub fn tab_size(self) -> u8 {
+        self.override_
+            .and_then(|o| o.tab_size)
+            .unwrap_or(self.base.tab_size)
+    }
+
+    /// Final spaces-versus-tabs indentation setting.
+    #[must_use]
+    pub fn insert_spaces(self) -> bool {
+        self.override_
+            .and_then(|o| o.insert_spaces)
+            .unwrap_or(self.base.insert_spaces)
+    }
+
+    /// Final line-number gutter mode.
+    #[must_use]
+    pub fn line_numbers(self) -> LineNumbers {
+        self.override_
+            .and_then(|o| o.line_numbers)
+            .unwrap_or(self.base.line_numbers)
+    }
+
+    /// Final current-line highlighting setting.
+    #[must_use]
+    pub fn cursor_line(self) -> bool {
+        self.override_
+            .and_then(|o| o.cursor_line)
+            .unwrap_or(self.base.cursor_line)
+    }
+
+    /// Final graphical-cursor setting.
+    #[must_use]
+    pub fn graphical_cursor(self) -> Option<bool> {
+        match self.override_.map(|o| &o.graphical_cursor) {
+            Some(NullableOverride::Set(value)) => *value,
+            _ => self.base.graphical_cursor,
+        }
+    }
+
+    /// Final caret scroll margin.
+    #[must_use]
+    pub fn scroll_off(self) -> u16 {
+        self.override_
+            .and_then(|o| o.scroll_off)
+            .unwrap_or(self.base.scroll_off)
+    }
+
+    /// Final ruler columns.
+    #[must_use]
+    pub fn rulers(self) -> &'a [u16] {
+        self.override_
+            .and_then(|o| o.rulers.as_deref())
+            .unwrap_or(&self.base.rulers)
+    }
+
+    /// Final wrapping override.
+    #[must_use]
+    pub fn word_wrap(self) -> Option<bool> {
+        match self.override_.map(|o| &o.word_wrap) {
+            Some(NullableOverride::Set(value)) => *value,
+            _ => self.base.word_wrap,
+        }
+    }
+
+    /// Final trailing-whitespace trimming setting.
+    #[must_use]
+    pub fn trim_trailing_whitespace(self) -> bool {
+        self.override_
+            .and_then(|o| o.trim_trailing_whitespace)
+            .unwrap_or(self.base.trim_trailing_whitespace)
+    }
+
+    /// Final final-newline insertion setting.
+    #[must_use]
+    pub fn insert_final_newline(self) -> bool {
+        self.override_
+            .and_then(|o| o.insert_final_newline)
+            .unwrap_or(self.base.insert_final_newline)
+    }
+
+    /// Final format-on-save setting.
+    #[must_use]
+    pub fn format_on_save(self) -> bool {
+        self.override_
+            .and_then(|o| o.format_on_save)
+            .unwrap_or(self.base.format_on_save)
+    }
+
+    /// Final semantic-comment settings.
+    #[must_use]
+    pub fn semantic_comments(self) -> ResolvedSemanticComments<'a> {
+        ResolvedSemanticComments {
+            base: &self.base.semantic_comments,
+            override_: self.override_.and_then(|o| o.semantic_comments.as_ref()),
+        }
+    }
+
+    /// Final completion settings.
+    #[must_use]
+    pub fn completion(self) -> ResolvedCompletion<'a> {
+        ResolvedCompletion {
+            base: &self.base.completion,
+            override_: self.override_.and_then(|o| o.completion.as_ref()),
+        }
+    }
+}
+
+/// A zero-copy view of resolved completion settings.
+#[derive(Clone, Copy, Debug)]
+pub struct ResolvedCompletion<'a> {
+    base: &'a Completion,
+    override_: Option<&'a CompletionOverride>,
+}
+
+impl ResolvedCompletion<'_> {
+    /// Whether completion is enabled.
+    #[must_use]
+    pub fn enabled(self) -> bool {
+        self.override_
+            .and_then(|o| o.enabled)
+            .unwrap_or(self.base.enabled)
+    }
+
+    /// Whether completion triggers automatically.
+    #[must_use]
+    pub fn auto_trigger(self) -> bool {
+        self.override_
+            .and_then(|o| o.auto_trigger)
+            .unwrap_or(self.base.auto_trigger)
+    }
+}
+
+/// A zero-copy view of resolved semantic-comment settings.
+#[derive(Clone, Copy, Debug)]
+pub struct ResolvedSemanticComments<'a> {
+    base: &'a SemanticComments,
+    override_: Option<&'a SemanticCommentsOverride>,
+}
+
+impl<'a> ResolvedSemanticComments<'a> {
+    /// Whether semantic-comment highlighting is enabled.
+    #[must_use]
+    pub fn enabled(self) -> bool {
+        self.override_
+            .and_then(|o| o.enabled)
+            .unwrap_or(self.base.enabled)
+    }
+
+    /// The semantic-comment tags to recognize.
+    #[must_use]
+    pub fn tags(self) -> &'a [String] {
+        self.override_
+            .and_then(|o| o.tags.as_deref())
+            .unwrap_or(&self.base.tags)
     }
 }
 
@@ -397,6 +762,81 @@ mod tests {
         assert_eq!(automatic.word_wrap, None);
         assert_eq!(wrapped.word_wrap, Some(true));
         assert_eq!(overflow.word_wrap, Some(false));
+    }
+
+    #[test]
+    fn language_selector_normalizes_and_displays() {
+        let selector = LanguageSelector::from_language(" Rust ");
+        assert_eq!(
+            selector.as_ref().map(LanguageSelector::language),
+            Some("rust")
+        );
+        assert_eq!(selector.map(|s| s.to_string()).as_deref(), Some("[rust]"));
+        assert!(LanguageSelector::from_language("").is_none());
+        assert!(LanguageSelector::from_language("[rust]").is_none());
+    }
+
+    #[test]
+    fn language_override_resolves_every_editor_setting() {
+        let parsed: Editor = serde_json::from_str(
+            r#"{
+                "tabSize": 8,
+                "wordWrap": true,
+                "graphicalCursor": true,
+                "semanticComments": { "enabled": true, "tags": ["TODO"] },
+                "completion": { "enabled": true, "autoTrigger": true },
+                "[Rust]": {
+                    "tabSize": 2,
+                    "insertSpaces": false,
+                    "lineNumbers": "relative",
+                    "cursorLine": false,
+                    "graphicalCursor": null,
+                    "scrollOff": 9,
+                    "rulers": [80, 100],
+                    "wordWrap": null,
+                    "trimTrailingWhitespace": false,
+                    "insertFinalNewline": false,
+                    "formatOnSave": true,
+                    "semanticComments": { "enabled": false, "tags": ["NOTE"] },
+                    "completion": { "enabled": false, "autoTrigger": false }
+                }
+            }"#,
+        )
+        .unwrap_or_default();
+
+        let rust = parsed.for_language(Some("rust"));
+        assert_eq!(rust.tab_size(), 2);
+        assert!(!rust.insert_spaces());
+        assert_eq!(rust.line_numbers(), LineNumbers::Relative);
+        assert!(!rust.cursor_line());
+        assert_eq!(rust.graphical_cursor(), None);
+        assert_eq!(rust.scroll_off(), 9);
+        assert_eq!(rust.rulers(), [80, 100]);
+        assert_eq!(rust.word_wrap(), None);
+        assert!(!rust.trim_trailing_whitespace());
+        assert!(!rust.insert_final_newline());
+        assert!(rust.format_on_save());
+        assert!(!rust.semantic_comments().enabled());
+        assert_eq!(rust.semantic_comments().tags(), ["NOTE"]);
+        assert!(!rust.completion().enabled());
+        assert!(!rust.completion().auto_trigger());
+
+        let python = parsed.for_language(Some("python"));
+        assert_eq!(python.tab_size(), 8);
+        assert_eq!(python.graphical_cursor(), Some(true));
+        assert_eq!(python.word_wrap(), Some(true));
+        assert!(python.semantic_comments().enabled());
+        assert_eq!(python.semantic_comments().tags(), ["TODO"]);
+        assert!(python.completion().enabled());
+        assert!(python.completion().auto_trigger());
+    }
+
+    #[test]
+    fn language_override_rejects_malformed_selectors_and_unknown_keys() {
+        assert!(serde_json::from_str::<Editor>(r#"{ "rust": { "tabSize": 2 } }"#).is_err());
+        assert!(serde_json::from_str::<Editor>(r#"{ "[]": { "tabSize": 2 } }"#).is_err());
+        assert!(serde_json::from_str::<Editor>(r#"{ "[rust][toml]": { "tabSize": 2 } }"#).is_err());
+        assert!(serde_json::from_str::<Editor>(r#"{ "[rust]": { "wat": 1 } }"#).is_err());
     }
 
     #[test]

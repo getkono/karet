@@ -123,6 +123,25 @@ impl Watcher {
         roots: &[PathBuf],
         git_dirs: &[PathBuf],
     ) -> Result<(Self, UnboundedReceiver<FsEvent>), WatchError> {
+        Self::spawn_with_paths(roots, git_dirs, &[])
+    }
+
+    /// Start watching workspace roots plus a narrow set of exact file paths.
+    ///
+    /// Exact paths are useful for configuration files that may live outside the
+    /// workspace or under hidden directories. Their existing ancestor directories
+    /// are watched non-recursively so an absent file or directory can be created
+    /// later, and unrelated events from those ancestors are filtered out. This also
+    /// covers editors that save by atomically renaming a temporary file over the
+    /// destination.
+    ///
+    /// # Errors
+    /// Returns [`WatchError::Backend`] if the platform watch backend cannot start.
+    pub fn spawn_with_paths(
+        roots: &[PathBuf],
+        git_dirs: &[PathBuf],
+        exact_paths: &[PathBuf],
+    ) -> Result<(Self, UnboundedReceiver<FsEvent>), WatchError> {
         let (tx, rx) = mpsc::unbounded_channel();
         let (raw_tx, raw_rx) = std::sync::mpsc::channel::<DebounceEventResult>();
         let (poll_tx, poll_rx) = std::sync::mpsc::channel::<DebounceEventResult>();
@@ -146,6 +165,7 @@ impl Watcher {
         meta_dirs.sort_by_key(|p| std::cmp::Reverse(p.as_os_str().len()));
 
         let roots = roots.to_vec();
+        let exact_paths: BTreeSet<PathBuf> = exact_paths.iter().cloned().collect();
         let stop = Arc::new(AtomicBool::new(false));
         let worker = {
             let stop = Arc::clone(&stop);
@@ -160,6 +180,7 @@ impl Watcher {
                             poll_rx: &poll_rx,
                             roots: &roots,
                             meta_dirs: &meta_dirs,
+                            exact_paths: &exact_paths,
                             tx: &tx,
                             stop: &stop,
                         },
@@ -198,6 +219,7 @@ struct WorkerMainArgs<'a> {
     poll_rx: &'a std::sync::mpsc::Receiver<DebounceEventResult>,
     roots: &'a [PathBuf],
     meta_dirs: &'a [PathBuf],
+    exact_paths: &'a BTreeSet<PathBuf>,
     tx: &'a mpsc::UnboundedSender<FsEvent>,
     stop: &'a AtomicBool,
 }
@@ -208,37 +230,59 @@ fn worker_main(mut native: NativeDebouncer, mut poll: PollDebouncer, args: Worke
         poll_rx,
         roots,
         meta_dirs,
+        exact_paths,
         tx,
         stop,
     } = args;
     let mut watched = WatchState::default();
-    for root in roots {
+    'roots: for root in roots {
         for dir in enumerate_dirs(root) {
+            if stop.load(Ordering::Relaxed) {
+                break 'roots;
+            }
             watch_dir(&mut native, &mut poll, &mut watched, tx, dir);
         }
     }
     for git_dir in meta_dirs {
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
         watch_git_dir(&mut native, &mut poll, &mut watched, tx, git_dir);
     }
+    if stop.load(Ordering::Relaxed) {
+        return;
+    }
+    watch_explicit_ancestors(&mut native, &mut poll, &mut watched, tx, exact_paths);
+    {
+        let mut context = EventContext {
+            native: &mut native,
+            poll: &mut poll,
+            watched: &mut watched,
+            roots,
+            meta_dirs,
+            exact_paths,
+            tx,
+        };
 
-    loop {
-        if stop.load(Ordering::Relaxed) {
-            break;
-        }
-        match raw_rx.recv_timeout(DEBOUNCE) {
-            Ok(Ok(events)) => {
-                handle_events(events, &mut native, &mut poll, &mut watched, meta_dirs, tx);
-            },
-            // A batch of backend errors: best-effort, matches the prior behavior of
-            // ignoring individual watch/backend hiccups.
-            Ok(Err(_)) => {},
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {},
-            // The debouncer's sender side is gone — nothing more will ever arrive.
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-        while let Ok(result) = poll_rx.try_recv() {
-            if let Ok(events) = result {
-                handle_events(events, &mut native, &mut poll, &mut watched, meta_dirs, tx);
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            match raw_rx.recv_timeout(DEBOUNCE) {
+                Ok(Ok(events)) => {
+                    handle_events(events, &mut context);
+                },
+                // A batch of backend errors: best-effort, matches the prior behavior of
+                // ignoring individual watch/backend hiccups.
+                Ok(Err(_)) => {},
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {},
+                // The debouncer's sender side is gone — nothing more will ever arrive.
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+            while let Ok(result) = poll_rx.try_recv() {
+                if let Ok(events) = result {
+                    handle_events(events, &mut context);
+                }
             }
         }
     }
@@ -246,13 +290,19 @@ fn worker_main(mut native: NativeDebouncer, mut poll: PollDebouncer, args: Worke
     native.stop();
 }
 
+struct EventContext<'a> {
+    native: &'a mut NativeDebouncer,
+    poll: &'a mut PollDebouncer,
+    watched: &'a mut WatchState,
+    roots: &'a [PathBuf],
+    meta_dirs: &'a [PathBuf],
+    exact_paths: &'a BTreeSet<PathBuf>,
+    tx: &'a mpsc::UnboundedSender<FsEvent>,
+}
+
 fn handle_events(
     events: Vec<notify_debouncer_full::DebouncedEvent>,
-    native: &mut NativeDebouncer,
-    poll: &mut PollDebouncer,
-    watched: &mut WatchState,
-    meta_dirs: &[PathBuf],
-    tx: &mpsc::UnboundedSender<FsEvent>,
+    context: &mut EventContext<'_>,
 ) {
     for event in events {
         if matches!(
@@ -260,7 +310,7 @@ fn handle_events(
             EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
         ) {
             for path in &event.paths {
-                unwatch_removed(native, poll, watched, path);
+                unwatch_removed(context.native, context.poll, context.watched, path);
             }
         }
         // A newly created directory needs its own watch (the parent's watch is
@@ -272,16 +322,68 @@ fn handle_events(
             EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
         ) {
             for path in &event.paths {
-                if path.is_dir() && !is_ignored(path) {
+                if path.is_dir()
+                    && context.roots.iter().any(|root| path_is_within(path, root))
+                    && !is_ignored(path)
+                {
                     for dir in enumerate_dirs(path) {
-                        watch_dir(native, poll, watched, tx, dir);
+                        watch_dir(
+                            context.native,
+                            context.poll,
+                            context.watched,
+                            context.tx,
+                            dir,
+                        );
                     }
                 }
             }
         }
-        if let Some(fs) = convert(event.kind, &event.paths, meta_dirs) {
+        // A previously missing exact-path directory may now exist. Register its
+        // chain directly rather than enumerating unrelated siblings outside the
+        // workspace.
+        watch_explicit_ancestors(
+            context.native,
+            context.poll,
+            context.watched,
+            context.tx,
+            context.exact_paths,
+        );
+        if let Some(fs) = convert(
+            event.kind,
+            &event.paths,
+            context.roots,
+            context.meta_dirs,
+            context.exact_paths,
+        ) {
             // The receiver going away just means the session shut down.
-            let _ = tx.send(fs);
+            let _ = context.tx.send(fs);
+        }
+    }
+}
+
+/// Watch the closest existing directory for each exact file path, plus its parent
+/// as an anchor when the immediate directory already exists. This observes later
+/// creation and removal/recreation without registering noisy watches all the way to
+/// the filesystem root.
+fn watch_explicit_ancestors(
+    native: &mut NativeDebouncer,
+    poll: &mut PollDebouncer,
+    watched: &mut WatchState,
+    tx: &mpsc::UnboundedSender<FsEvent>,
+    exact_paths: &BTreeSet<PathBuf>,
+) {
+    for path in exact_paths {
+        let mut ancestor = path.parent();
+        let mut watched_closest = false;
+        while let Some(dir) = ancestor {
+            if dir.is_dir() {
+                watch_dir(native, poll, watched, tx, dir.to_path_buf());
+                if watched_closest {
+                    break;
+                }
+                watched_closest = true;
+            }
+            ancestor = dir.parent();
         }
     }
 }
@@ -431,7 +533,13 @@ fn watch_git_dir(
 
 /// Convert a `notify` event into a neutral [`FsEvent`], dropping ignored paths and
 /// uninteresting (access-only) events.
-fn convert(kind: EventKind, paths: &[PathBuf], git_dirs: &[PathBuf]) -> Option<FsEvent> {
+fn convert(
+    kind: EventKind,
+    paths: &[PathBuf],
+    roots: &[PathBuf],
+    git_dirs: &[PathBuf],
+    exact_paths: &BTreeSet<PathBuf>,
+) -> Option<FsEvent> {
     let kind = match kind {
         EventKind::Create(_) => FsEventKind::Created,
         EventKind::Remove(_) => FsEventKind::Removed,
@@ -442,8 +550,17 @@ fn convert(kind: EventKind, paths: &[PathBuf], git_dirs: &[PathBuf]) -> Option<F
     };
     let paths: Vec<PathBuf> = paths
         .iter()
-        .filter(|p| keep_path(p, git_dirs))
-        .cloned()
+        .filter_map(|path| {
+            exact_paths
+                .iter()
+                .find(|exact| same_path(path, exact))
+                .cloned()
+                .or_else(|| {
+                    keep_path(path, roots, git_dirs, exact_paths).then(|| {
+                        path_under_caller_root(path, roots).unwrap_or_else(|| path.clone())
+                    })
+                })
+        })
         .collect();
     if paths.is_empty() {
         return None;
@@ -453,13 +570,70 @@ fn convert(kind: EventKind, paths: &[PathBuf], git_dirs: &[PathBuf]) -> Option<F
 
 /// Whether `path` should be surfaced. A path inside one of `git_dirs` is kept only
 /// when it names allowlisted git metadata; otherwise the usual ignore rules apply.
-fn keep_path(path: &Path, git_dirs: &[PathBuf]) -> bool {
+fn keep_path(
+    path: &Path,
+    roots: &[PathBuf],
+    git_dirs: &[PathBuf],
+    exact_paths: &BTreeSet<PathBuf>,
+) -> bool {
+    if exact_paths.iter().any(|exact| same_path(path, exact)) {
+        return true;
+    }
     for git_dir in git_dirs {
         if let Ok(rel) = path.strip_prefix(git_dir) {
             return is_interesting_git_meta(rel);
         }
     }
-    !is_ignored(path)
+    roots.iter().any(|root| path_is_within(path, root)) && !is_ignored(path)
+}
+
+/// Compare paths through the nearest existing ancestor as well as lexically. On
+/// macOS, for example, notify may report `/private/var/...` for a watched
+/// `/var/...` path; keeping the caller's spelling in emitted exact-path events makes
+/// downstream identity checks stable.
+fn same_path(left: &Path, right: &Path) -> bool {
+    left == right || normalize_path(left) == normalize_path(right)
+}
+
+fn path_is_within(path: &Path, root: &Path) -> bool {
+    path.starts_with(root) || normalize_path(path).starts_with(normalize_path(root))
+}
+
+fn path_under_caller_root(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
+    for root in roots {
+        if let Ok(relative) = path.strip_prefix(root) {
+            return Some(root.join(relative));
+        }
+        let normalized_root = normalize_path(root);
+        if let Ok(relative) = normalize_path(path).strip_prefix(&normalized_root) {
+            return Some(root.join(relative));
+        }
+    }
+    None
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path))
+    };
+    let mut existing = absolute.as_path();
+    let mut suffix = Vec::new();
+    while !existing.exists() {
+        if let Some(name) = existing.file_name() {
+            suffix.push(name.to_os_string());
+        }
+        let Some(parent) = existing.parent() else {
+            break;
+        };
+        existing = parent;
+    }
+    let mut normalized = std::fs::canonicalize(existing).unwrap_or_else(|_| existing.to_path_buf());
+    for component in suffix.into_iter().rev() {
+        normalized.push(component);
+    }
+    normalized
 }
 
 /// Whether `rel` (a path relative to a git dir) is a git-metadata file worth
@@ -502,11 +676,16 @@ fn is_ignored(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::Mutex;
     use std::time::Instant;
 
     use tempfile::TempDir;
 
     use super::*;
+
+    /// Native watcher backends are process-global on some platforms, so the
+    /// integration-style watcher tests must not compete for one event stream.
+    static WATCH_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn ignores_build_and_vcs_dirs() {
@@ -520,7 +699,15 @@ mod tests {
     fn convert_maps_kinds_and_filters_ignored() {
         use notify::event::CreateKind;
         let src = vec![PathBuf::from("/r/src/a.rs")];
-        let got = convert(EventKind::Create(CreateKind::File), &src, &[]);
+        let roots = vec![PathBuf::from("/r")];
+        let exact = BTreeSet::new();
+        let got = convert(
+            EventKind::Create(CreateKind::File),
+            &src,
+            &roots,
+            &[],
+            &exact,
+        );
         assert!(got.is_some());
         if let Some(got) = got {
             assert_eq!(got.kind, FsEventKind::Created);
@@ -529,17 +716,41 @@ mod tests {
 
         // An event only touching an ignored path is dropped entirely.
         let ignored = vec![PathBuf::from("/r/target/a")];
-        assert!(convert(EventKind::Create(CreateKind::File), &ignored, &[]).is_none());
+        assert!(
+            convert(
+                EventKind::Create(CreateKind::File),
+                &ignored,
+                &roots,
+                &[],
+                &exact,
+            )
+            .is_none()
+        );
 
         // Access events are not changes.
         assert!(
             convert(
                 EventKind::Access(notify::event::AccessKind::Read),
                 &src,
-                &[]
+                &roots,
+                &[],
+                &exact,
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn exact_path_bypasses_workspace_and_hidden_filters() {
+        let exact_path = PathBuf::from("/outside/.karet/setting.jsonc");
+        let exact = BTreeSet::from([exact_path.clone()]);
+        assert!(keep_path(&exact_path, &[], &[], &exact));
+        assert!(!keep_path(
+            Path::new("/outside/.karet/other.jsonc"),
+            &[],
+            &[],
+            &exact
+        ));
     }
 
     #[test]
@@ -560,44 +771,88 @@ mod tests {
 
     #[test]
     fn keep_path_applies_git_allowlist_under_git_dir() {
+        let roots = vec![PathBuf::from("/repo")];
         let git_dirs = vec![PathBuf::from("/repo/.git")];
+        let exact = BTreeSet::new();
         // Inside the git dir: only allowlisted metadata survives.
-        assert!(keep_path(Path::new("/repo/.git/index"), &git_dirs));
+        assert!(keep_path(
+            Path::new("/repo/.git/index"),
+            &roots,
+            &git_dirs,
+            &exact
+        ));
         assert!(keep_path(
             Path::new("/repo/.git/refs/heads/main"),
-            &git_dirs
+            &roots,
+            &git_dirs,
+            &exact
         ));
-        assert!(!keep_path(Path::new("/repo/.git/objects/ab/cd"), &git_dirs));
-        assert!(!keep_path(Path::new("/repo/.git/index.lock"), &git_dirs));
+        assert!(!keep_path(
+            Path::new("/repo/.git/objects/ab/cd"),
+            &roots,
+            &git_dirs,
+            &exact
+        ));
+        assert!(!keep_path(
+            Path::new("/repo/.git/index.lock"),
+            &roots,
+            &git_dirs,
+            &exact
+        ));
         // Outside the git dir: the usual ignore rules apply.
-        assert!(keep_path(Path::new("/repo/src/main.rs"), &git_dirs));
-        assert!(!keep_path(Path::new("/repo/target/x"), &git_dirs));
+        assert!(keep_path(
+            Path::new("/repo/src/main.rs"),
+            &roots,
+            &git_dirs,
+            &exact
+        ));
+        assert!(!keep_path(
+            Path::new("/repo/target/x"),
+            &roots,
+            &git_dirs,
+            &exact
+        ));
         // With no git dirs tracked, `.git` is dropped wholesale as before.
-        assert!(!keep_path(Path::new("/repo/.git/index"), &[]));
+        assert!(!keep_path(
+            Path::new("/repo/.git/index"),
+            &roots,
+            &[],
+            &exact
+        ));
     }
 
     #[test]
     fn keep_path_handles_worktree_git_dirs() {
+        let roots = vec![PathBuf::from("/main")];
         // The per-worktree git dir (longest) is listed before the common dir.
         let git_dirs = vec![
             PathBuf::from("/main/.git/worktrees/wt"),
             PathBuf::from("/main/.git"),
         ];
+        let exact = BTreeSet::new();
         assert!(keep_path(
             Path::new("/main/.git/worktrees/wt/index"),
-            &git_dirs
+            &roots,
+            &git_dirs,
+            &exact
         ));
         assert!(keep_path(
             Path::new("/main/.git/worktrees/wt/HEAD"),
-            &git_dirs
+            &roots,
+            &git_dirs,
+            &exact
         ));
         assert!(keep_path(
             Path::new("/main/.git/refs/heads/main"),
-            &git_dirs
+            &roots,
+            &git_dirs,
+            &exact
         ));
         assert!(!keep_path(
             Path::new("/main/.git/worktrees/wt/ORIG_HEAD.lock"),
-            &git_dirs
+            &roots,
+            &git_dirs,
+            &exact
         ));
     }
 
@@ -677,13 +932,16 @@ mod tests {
 
     #[test]
     fn watcher_surfaces_nested_source_file() -> Result<(), Box<dyn std::error::Error>> {
+        let _guard = WATCH_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = TempDir::new()?;
         let deep = root.path().join("src/deep");
         fs::create_dir_all(&deep)?;
 
         let (_watcher, mut rx) = Watcher::spawn(&[root.path().to_path_buf()], &[])?;
         // Let the background worker finish registering watches.
-        std::thread::sleep(Duration::from_millis(300));
+        std::thread::sleep(Duration::from_secs(1));
 
         let file = deep.join("new.rs");
         fs::write(&file, "fn main() {}")?;
@@ -696,34 +954,94 @@ mod tests {
 
     #[test]
     fn watcher_covers_dynamically_created_dir() -> Result<(), Box<dyn std::error::Error>> {
+        let _guard = WATCH_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = TempDir::new()?;
         fs::create_dir_all(root.path().join("src"))?;
 
         let (_watcher, mut rx) = Watcher::spawn(&[root.path().to_path_buf()], &[])?;
-        std::thread::sleep(Duration::from_millis(300));
+        std::thread::sleep(Duration::from_secs(1));
 
         let sub = root.path().join("src/added/sub");
         fs::create_dir_all(&sub)?;
         // Give the worker a moment to notice the new directory and watch it before a
         // file lands inside it.
-        std::thread::sleep(Duration::from_millis(300));
+        std::thread::sleep(Duration::from_secs(1));
         let file = sub.join("f.rs");
         fs::write(&file, "fn main() {}")?;
 
-        assert!(wait_for_event(&mut rx, Duration::from_secs(5), |e| {
+        assert!(wait_for_event(&mut rx, Duration::from_secs(10), |e| {
             e.paths.contains(&file)
         }));
         Ok(())
     }
 
     #[test]
+    fn watcher_surfaces_exact_hidden_file_outside_roots() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let _guard = WATCH_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let root = TempDir::new()?;
+        let config_dir = root.path().join(".karet");
+        fs::create_dir_all(&config_dir)?;
+        let config = config_dir.join("setting.jsonc");
+        fs::write(&config, "{}")?;
+
+        let (_watcher, mut rx) =
+            Watcher::spawn_with_paths(&[], &[], std::slice::from_ref(&config))?;
+        std::thread::sleep(Duration::from_secs(1));
+        fs::write(&config, r#"{ "editor": {} }"#)?;
+
+        assert!(wait_for_event(&mut rx, Duration::from_secs(5), |e| {
+            e.paths.contains(&config)
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn watcher_follows_missing_exact_path_and_atomic_replace()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let _guard = WATCH_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let root = TempDir::new()?;
+        let config_dir = root.path().join("config/karet");
+        let config = config_dir.join("setting.jsonc");
+
+        let (_watcher, mut rx) =
+            Watcher::spawn_with_paths(&[], &[], std::slice::from_ref(&config))?;
+        std::thread::sleep(Duration::from_secs(1));
+
+        fs::create_dir_all(&config_dir)?;
+        std::thread::sleep(Duration::from_millis(500));
+        let unrelated = config_dir.join("other.jsonc");
+        fs::write(&unrelated, "{}")?;
+        assert!(!wait_for_event(&mut rx, Duration::from_millis(600), |e| e
+            .paths
+            .contains(&unrelated)));
+
+        let temporary = config_dir.join("setting.jsonc.tmp");
+        fs::write(&temporary, r#"{ "editor": { "tabSize": 2 } }"#)?;
+        fs::rename(&temporary, &config)?;
+        assert!(wait_for_event(&mut rx, Duration::from_secs(5), |e| {
+            e.paths.contains(&config)
+        }));
+        Ok(())
+    }
+
+    #[test]
     fn watcher_filters_build_dirs() -> Result<(), Box<dyn std::error::Error>> {
+        let _guard = WATCH_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = TempDir::new()?;
         fs::create_dir_all(root.path().join("target"))?;
         fs::create_dir_all(root.path().join("node_modules"))?;
 
         let (_watcher, mut rx) = Watcher::spawn(&[root.path().to_path_buf()], &[])?;
-        std::thread::sleep(Duration::from_millis(300));
+        std::thread::sleep(Duration::from_secs(1));
 
         fs::write(root.path().join("target/x"), "x")?;
         fs::write(root.path().join("node_modules/y"), "y")?;

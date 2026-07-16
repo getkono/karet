@@ -93,6 +93,8 @@ pub struct LoadedConfig {
     pub layers: Vec<ConfigLayerReport>,
     /// Effective setting key paths that were explicitly set by a valid layer.
     pub explicit: BTreeMap<String, ConfigLayer>,
+    /// Parsed per-layer values used to seed live reload without rereading files.
+    sources: Option<Vec<CachedLayer>>,
 }
 
 impl LoadedConfig {
@@ -105,7 +107,94 @@ impl LoadedConfig {
             diagnostics: Vec::new(),
             layers: Vec::new(),
             explicit: BTreeMap::new(),
+            sources: None,
         }
+    }
+}
+
+/// One config layer's current disk status and last valid parsed object.
+#[derive(Clone, Debug, PartialEq)]
+struct CachedLayer {
+    layer: ConfigLayer,
+    path: PathBuf,
+    value: Option<Map<String, Value>>,
+    status: ConfigLayerStatus,
+    diagnostic: Option<ConfigDiagnostic>,
+}
+
+/// Cached live configuration owned by the session actor.
+pub(crate) struct ConfigManager {
+    sources: Vec<CachedLayer>,
+    report: LoadedConfig,
+}
+
+impl ConfigManager {
+    pub(crate) fn from_loaded(report: &LoadedConfig) -> Option<Self> {
+        let sources = report.sources.clone()?;
+        Some(Self {
+            sources,
+            report: report.clone(),
+        })
+    }
+
+    pub(crate) fn paths(&self) -> Vec<PathBuf> {
+        self.sources
+            .iter()
+            .map(|source| source.path.clone())
+            .collect()
+    }
+
+    pub(crate) fn is_config_path(&self, path: &Path) -> bool {
+        self.sources.iter().any(|source| source.path == path)
+    }
+
+    /// Reload only layers named by `paths`, retaining each layer's last valid value
+    /// when the new file is malformed. Returns a new report only when observable
+    /// settings, provenance, statuses, or diagnostics changed.
+    pub(crate) fn reload(&mut self, paths: &[PathBuf]) -> Option<LoadedConfig> {
+        let previous = self.report.clone();
+        for index in 0..self.sources.len() {
+            if !paths.iter().any(|path| path == &self.sources[index].path) {
+                continue;
+            }
+            let old_value = self.sources[index].value.clone();
+            let previous_validation: BTreeSet<String> = report_from_sources(&self.sources)
+                .diagnostics
+                .into_iter()
+                .filter(|diag| diag.path == Path::new("<config>"))
+                .map(|diag| diag.message)
+                .collect();
+            let layer = self.sources[index].layer;
+            let path = self.sources[index].path.clone();
+            let candidate = read_cached_layer(layer, path.clone());
+            match candidate.status {
+                ConfigLayerStatus::Loaded | ConfigLayerStatus::Missing => {
+                    self.sources[index] = candidate;
+                    let trial = report_from_sources(&self.sources);
+                    let validation: Vec<String> = trial
+                        .diagnostics
+                        .iter()
+                        .filter(|diag| diag.path == Path::new("<config>"))
+                        .map(|diag| diag.message.clone())
+                        .filter(|message| !previous_validation.contains(message))
+                        .collect();
+                    if !validation.is_empty() {
+                        self.sources[index].value = old_value;
+                        let message = validation.join("; ");
+                        self.sources[index].status = ConfigLayerStatus::Invalid(message.clone());
+                        self.sources[index].diagnostic =
+                            Some(ConfigDiagnostic::warning(&path, message));
+                    }
+                },
+                ConfigLayerStatus::Invalid(_) => {
+                    self.sources[index].status = candidate.status;
+                    self.sources[index].diagnostic = candidate.diagnostic;
+                    self.sources[index].value = old_value;
+                },
+            }
+        }
+        self.report = report_from_sources(&self.sources);
+        (self.report != previous).then(|| self.report.clone())
     }
 }
 
@@ -173,46 +262,74 @@ fn load_layers(paths: impl IntoIterator<Item = PathBuf>) -> (Settings, Vec<Confi
 
 /// The provenance-aware precedence loader.
 fn load_layer_reports(paths: impl IntoIterator<Item = (ConfigLayer, PathBuf)>) -> LoadedConfig {
-    let mut diags = Vec::new();
-    let mut reports = Vec::new();
+    let sources: Vec<CachedLayer> = paths
+        .into_iter()
+        .map(|(layer, path)| read_cached_layer(layer, path))
+        .collect();
+    report_from_sources(&sources)
+}
+
+fn read_cached_layer(layer: ConfigLayer, path: PathBuf) -> CachedLayer {
+    match read_layer(&path) {
+        Ok(None) => CachedLayer {
+            layer,
+            path,
+            value: None,
+            status: ConfigLayerStatus::Missing,
+            diagnostic: None,
+        },
+        Ok(Some(Value::Object(value))) => CachedLayer {
+            layer,
+            path,
+            value: Some(value),
+            status: ConfigLayerStatus::Loaded,
+            diagnostic: None,
+        },
+        Ok(Some(_)) => {
+            let message = "expected a JSON object at the top level".to_string();
+            CachedLayer {
+                layer,
+                diagnostic: Some(ConfigDiagnostic::warning(&path, message.clone())),
+                path,
+                value: None,
+                status: ConfigLayerStatus::Invalid(message),
+            }
+        },
+        Err(message) => CachedLayer {
+            layer,
+            diagnostic: Some(ConfigDiagnostic::warning(&path, message.clone())),
+            path,
+            value: None,
+            status: ConfigLayerStatus::Invalid(message),
+        },
+    }
+}
+
+fn report_from_sources(sources: &[CachedLayer]) -> LoadedConfig {
+    let mut diags: Vec<ConfigDiagnostic> = sources
+        .iter()
+        .filter_map(|source| source.diagnostic.clone())
+        .collect();
+    let reports: Vec<ConfigLayerReport> = sources
+        .iter()
+        .map(|source| ConfigLayerReport {
+            layer: source.layer,
+            path: source.path.clone(),
+            status: source.status.clone(),
+        })
+        .collect();
     let mut explicit = BTreeMap::new();
     // Start from the defaults as a JSON object and merge each present layer over it.
     let mut merged = to_object(&Settings::default());
-    for (layer, path) in paths {
-        match read_layer(&path) {
-            Ok(None) => reports.push(ConfigLayerReport {
-                layer,
-                path,
-                status: ConfigLayerStatus::Missing,
-            }),
-            Ok(Some(value)) => match value {
-                Value::Object(obj) => {
-                    mark_explicit(&mut explicit, layer, "", &Value::Object(obj.clone()));
-                    deep_merge(&mut merged, obj);
-                    reports.push(ConfigLayerReport {
-                        layer,
-                        path,
-                        status: ConfigLayerStatus::Loaded,
-                    });
-                },
-                _ => {
-                    let message = "expected a JSON object at the top level";
-                    diags.push(ConfigDiagnostic::warning(&path, message));
-                    reports.push(ConfigLayerReport {
-                        layer,
-                        path,
-                        status: ConfigLayerStatus::Invalid(message.to_string()),
-                    });
-                },
-            },
-            Err(err) => {
-                diags.push(ConfigDiagnostic::warning(&path, err.clone()));
-                reports.push(ConfigLayerReport {
-                    layer,
-                    path,
-                    status: ConfigLayerStatus::Invalid(err),
-                });
-            },
+    for source in sources {
+        if let Some(value) = &source.value {
+            mark_explicit(
+                &mut explicit,
+                source.layer,
+                "",
+                &Value::Object(value.clone()),
+            );
+            deep_merge(&mut merged, value.clone());
         }
     }
     let mut invalid_sections = BTreeSet::new();
@@ -227,6 +344,7 @@ fn load_layer_reports(paths: impl IntoIterator<Item = (ConfigLayer, PathBuf)>) -
         diagnostics: diags,
         layers: reports,
         explicit,
+        sources: Some(sources.to_vec()),
     }
 }
 
@@ -461,6 +579,63 @@ mod tests {
     }
 
     #[test]
+    fn language_specificity_wins_after_layer_merging() {
+        let Some((dir, _system)) = scratch(
+            "system.jsonc",
+            r#"{
+                "editor": {
+                    "tabSize": 8,
+                    "[rust]": {
+                        "tabSize": 6,
+                        "completion": { "enabled": false, "autoTrigger": true }
+                    }
+                }
+            }"#,
+        ) else {
+            return;
+        };
+        let system = dir.path().join("system.jsonc");
+        let project = dir.path().join("project.jsonc");
+        if std::fs::write(
+            &project,
+            r#"{
+                "editor": {
+                    "tabSize": 2,
+                    "[rust]": { "completion": { "autoTrigger": false } }
+                }
+            }"#,
+        )
+        .is_err()
+        {
+            return;
+        }
+
+        let report = load_layer_reports([
+            (ConfigLayer::System, system),
+            (ConfigLayer::Project, project),
+        ]);
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let rust = report.settings.editor.for_language(Some("Rust"));
+        let python = report.settings.editor.for_language(Some("python"));
+        assert_eq!(rust.tab_size(), 6, "selector specificity wins");
+        assert!(!rust.completion().enabled());
+        assert!(!rust.completion().auto_trigger(), "nested patches merge");
+        assert_eq!(
+            python.tab_size(),
+            2,
+            "project global wins for other languages"
+        );
+        assert_eq!(
+            report.explicit.get("editor.[rust].completion.autoTrigger"),
+            Some(&ConfigLayer::Project)
+        );
+        assert_eq!(
+            report.explicit.get("editor.[rust].tabSize"),
+            Some(&ConfigLayer::System)
+        );
+    }
+
+    #[test]
     fn report_tracks_loaded_layers_and_explicit_leaf_sources() {
         let Some((dir, _system)) = scratch(
             "system.jsonc",
@@ -493,6 +668,88 @@ mod tests {
         assert!(matches!(
             report.layers[1].status,
             ConfigLayerStatus::Missing
+        ));
+    }
+
+    #[test]
+    fn manager_rereads_only_changed_layers_and_falls_back_after_deletion() {
+        let Some((dir, path)) = scratch("setting.jsonc", r#"{ "editor": { "tabSize": 2 } }"#)
+        else {
+            return;
+        };
+        let report = load_layer_reports([(ConfigLayer::Project, path.clone())]);
+        let Some(mut manager) = ConfigManager::from_loaded(&report) else {
+            return;
+        };
+        assert!(
+            manager
+                .reload(&[dir.path().join("unrelated.jsonc")])
+                .is_none()
+        );
+
+        if std::fs::write(&path, r#"{ "editor": { "tabSize": 6 } }"#).is_err() {
+            return;
+        }
+        let Some(updated) = manager.reload(std::slice::from_ref(&path)) else {
+            return;
+        };
+        assert_eq!(updated.settings.editor.tab_size, 6);
+        assert_eq!(
+            updated.explicit.get("editor.tabSize"),
+            Some(&ConfigLayer::Project)
+        );
+
+        if std::fs::remove_file(&path).is_err() {
+            return;
+        }
+        let Some(missing) = manager.reload(std::slice::from_ref(&path)) else {
+            return;
+        };
+        assert_eq!(missing.settings.editor.tab_size, 4);
+        assert!(matches!(
+            missing.layers[0].status,
+            ConfigLayerStatus::Missing
+        ));
+    }
+
+    #[test]
+    fn manager_retains_last_valid_layer_until_an_invalid_edit_recovers() {
+        let Some((_dir, path)) = scratch("setting.jsonc", r#"{ "editor": { "tabSize": 2 } }"#)
+        else {
+            return;
+        };
+        let report = load_layer_reports([(ConfigLayer::Project, path.clone())]);
+        let Some(mut manager) = ConfigManager::from_loaded(&report) else {
+            return;
+        };
+
+        if std::fs::write(&path, r#"{ "editor": { "tabSize": "wide" } }"#).is_err() {
+            return;
+        }
+        let Some(invalid) = manager.reload(std::slice::from_ref(&path)) else {
+            return;
+        };
+        assert_eq!(
+            invalid.settings.editor.tab_size, 2,
+            "a malformed live edit must not replace the last valid layer"
+        );
+        assert!(matches!(
+            invalid.layers[0].status,
+            ConfigLayerStatus::Invalid(_)
+        ));
+        assert_eq!(invalid.diagnostics.len(), 1);
+
+        if std::fs::write(&path, r#"{ "editor": { "tabSize": 3 } }"#).is_err() {
+            return;
+        }
+        let Some(recovered) = manager.reload(std::slice::from_ref(&path)) else {
+            return;
+        };
+        assert_eq!(recovered.settings.editor.tab_size, 3);
+        assert!(recovered.diagnostics.is_empty());
+        assert!(matches!(
+            recovered.layers[0].status,
+            ConfigLayerStatus::Loaded
         ));
     }
 

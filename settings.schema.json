@@ -80,6 +80,29 @@
       },
       "additionalProperties": false
     },
+    "CompletionOverride": {
+      "description": "A partial per-language patch for [`Completion`].",
+      "type": "object",
+      "properties": {
+        "autoTrigger": {
+          "description": "Override automatic completion triggering.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "enabled": {
+          "description": "Override whether completion is enabled.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
     "Editor": {
       "description": "`editor.*` — text-editing behaviour.",
       "type": "object",
@@ -178,6 +201,144 @@
             "null"
           ],
           "default": null
+        }
+      },
+      "additionalProperties": false,
+      "patternProperties": {
+        "^\\[[^\\[\\]]+\\]$": {
+          "$ref": "#/$defs/EditorOverride"
+        }
+      }
+    },
+    "EditorOverride": {
+      "description": "A partial per-language patch for [`Editor`].\n\nEvery field is optional: omitted fields inherit the merged global editor value.\nArrays replace the global value when present, and nested objects merge field by\nfield through their own partial patch types.",
+      "type": "object",
+      "properties": {
+        "completion": {
+          "description": "Partially override completion behavior.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompletionOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "cursorLine": {
+          "description": "Override current-line highlighting.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "formatOnSave": {
+          "description": "Override format-on-save.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "graphicalCursor": {
+          "description": "Override graphical-cursor behavior; explicit `null` restores auto mode.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "insertFinalNewline": {
+          "description": "Override final-newline insertion.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "insertSpaces": {
+          "description": "Override spaces-versus-tabs indentation.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "lineNumbers": {
+          "description": "Override line-number gutter mode.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LineNumbers"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "rulers": {
+          "description": "Replace the global ruler columns.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "integer",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0
+          }
+        },
+        "scrollOff": {
+          "description": "Override the caret scroll margin.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "default": null,
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "semanticComments": {
+          "description": "Partially override semantic-comment behavior.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SemanticCommentsOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tabSize": {
+          "description": "Override columns per indent level.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "default": null,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "trimTrailingWhitespace": {
+          "description": "Override trailing-whitespace trimming.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "wordWrap": {
+          "description": "Override wrapping; explicit `null` restores the file-type default.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "additionalProperties": false
@@ -407,6 +568,32 @@
             "XXX",
             "BUG"
           ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "SemanticCommentsOverride": {
+      "description": "A partial per-language patch for [`SemanticComments`].",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Override whether semantic comments are highlighted.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "tags": {
+          "description": "Replace the global semantic-comment tag list.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
           "items": {
             "type": "string"
           }

@@ -513,6 +513,8 @@ pub struct App {
     pub(crate) syntax: bool,
     /// The icon style for the explorer and activity bar.
     pub(crate) icon_style: IconStyle,
+    /// Command-line icon selection, which remains authoritative across config reloads.
+    icon_override: Option<IconStyle>,
     /// The detected terminal graphics protocol.
     pub(crate) graphics: GraphicsProtocol,
     /// Whether Kitty graphics support was detected or confirmed at startup.
@@ -741,6 +743,7 @@ impl App {
             theme: Theme::dark(),
             syntax,
             icon_style: IconStyle::default(),
+            icon_override: None,
             graphics,
             kitty_graphics_supported: graphics == GraphicsProtocol::Kitty,
             kitty_keyboard_supported: false,
@@ -846,6 +849,7 @@ impl App {
     #[must_use]
     pub fn with_icons(mut self, style: IconStyle) -> Self {
         self.icon_style = style;
+        self.icon_override = Some(style);
         self
     }
 
@@ -855,17 +859,22 @@ impl App {
     /// icon style, and the startup sidebar panel.
     #[must_use]
     pub fn with_settings(mut self, settings: Settings, diagnostics: Vec<ConfigDiagnostic>) -> Self {
-        self = self.with_loaded_config(LoadedConfig {
-            settings,
-            diagnostics,
-            ..LoadedConfig::default()
-        });
+        let mut loaded = LoadedConfig::from_settings(settings);
+        loaded.diagnostics = diagnostics;
+        self = self.with_loaded_config(loaded);
         self
     }
 
     /// Apply a loaded configuration report to the UI shell (builder-style).
     #[must_use]
     pub fn with_loaded_config(mut self, loaded: LoadedConfig) -> Self {
+        self.apply_loaded_config(loaded, true);
+        self
+    }
+
+    /// Apply a configuration snapshot. Live reload deliberately leaves the startup
+    /// panel alone; it is a startup action rather than persistent UI state.
+    fn apply_loaded_config(&mut self, loaded: LoadedConfig, apply_startup_panel: bool) {
         use karet_session::config::schema::IconStyleSetting;
         use karet_session::config::schema::StartupPanel;
 
@@ -883,30 +892,33 @@ impl App {
             }),
         }
 
-        self.icon_style = match settings.workbench.icon_style {
-            IconStyleSetting::NerdFont => IconStyle::NerdFont,
-            IconStyleSetting::Unicode => IconStyle::Unicode,
-            IconStyleSetting::Ascii => IconStyle::Ascii,
-        };
+        if self.icon_override.is_none() {
+            self.icon_style = match settings.workbench.icon_style {
+                IconStyleSetting::NerdFont => IconStyle::NerdFont,
+                IconStyleSetting::Unicode => IconStyle::Unicode,
+                IconStyleSetting::Ascii => IconStyle::Ascii,
+            };
+        }
 
-        match settings.workbench.startup_panel {
-            StartupPanel::Explorer => {
-                self.sidebar_panel = SidebarPanel::Explorer;
-                self.sidebar_visible = true;
-            },
-            StartupPanel::Search => {
-                self.sidebar_panel = SidebarPanel::Search;
-                self.sidebar_visible = true;
-            },
-            StartupPanel::SourceControl => {
-                self.sidebar_panel = SidebarPanel::SourceControl;
-                self.sidebar_visible = true;
-            },
-            StartupPanel::None => self.sidebar_visible = false,
+        if apply_startup_panel {
+            match settings.workbench.startup_panel {
+                StartupPanel::Explorer => {
+                    self.sidebar_panel = SidebarPanel::Explorer;
+                    self.sidebar_visible = true;
+                },
+                StartupPanel::Search => {
+                    self.sidebar_panel = SidebarPanel::Search;
+                    self.sidebar_visible = true;
+                },
+                StartupPanel::SourceControl => {
+                    self.sidebar_panel = SidebarPanel::SourceControl;
+                    self.sidebar_visible = true;
+                },
+                StartupPanel::None => self.sidebar_visible = false,
+            }
         }
 
         self.settings = settings;
-        self
     }
 
     /// Open `path` as the initial tab at startup (used when `karet <file>` is run).
@@ -1094,7 +1106,16 @@ impl App {
     /// Whether the active frame should suppress the editor's cell caret because the
     /// app will draw the Kitty graphics caret after ratatui flushes the frame.
     pub(crate) fn graphical_cursor_enabled(&self) -> bool {
-        match self.settings.editor.graphical_cursor {
+        let configured =
+            self.tabs
+                .get(self.active)
+                .map_or(self.settings.editor.graphical_cursor, |tab| {
+                    self.settings
+                        .editor
+                        .for_language(tab_language(tab))
+                        .graphical_cursor()
+                });
+        match configured {
             Some(false) => false,
             Some(true) => self.graphical_cursor_compatible(),
             None => self.graphical_cursor_compatible(),
@@ -4759,10 +4780,15 @@ impl App {
             self.graph_select(delta.signum());
             return;
         }
-        let word_wrap = self
-            .tabs
-            .get(self.active)
-            .is_some_and(|tab| effective_word_wrap(tab, self.settings.editor.word_wrap));
+        let word_wrap = self.tabs.get(self.active).is_some_and(|tab| {
+            effective_word_wrap(
+                tab,
+                self.settings
+                    .editor
+                    .for_language(tab_language(tab))
+                    .word_wrap(),
+            )
+        });
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
@@ -4817,10 +4843,19 @@ impl App {
 
     /// Scroll the active overflow-mode code tab horizontally by `delta` columns.
     fn scroll_columns(&mut self, delta: i32) {
+        let word_wrap = self.tabs.get(self.active).is_some_and(|tab| {
+            effective_word_wrap(
+                tab,
+                self.settings
+                    .editor
+                    .for_language(tab_language(tab))
+                    .word_wrap(),
+            )
+        });
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
-        if effective_word_wrap(tab, self.settings.editor.word_wrap) {
+        if word_wrap {
             return;
         }
         if let TabKind::Code { buffer, .. } = &tab.kind {
@@ -6794,6 +6829,50 @@ impl App {
                     self.run_global_search();
                 }
             },
+            SessionEvent::ConfigChanged { report } => {
+                let report = *report;
+                self.apply_loaded_config(report.clone(), false);
+                for tab in self.all_tabs_mut() {
+                    if let TabKind::LoadedConfig {
+                        report: open_report,
+                        ..
+                    } = &mut tab.kind
+                    {
+                        *open_report = report.clone();
+                    }
+                }
+                for diag in std::mem::take(&mut self.config_diagnostics) {
+                    self.notify(
+                        diag.severity,
+                        NotificationKind::System,
+                        format!("config: {}", diag.message),
+                    );
+                }
+                let graphical_cursor_requested = self.tabs.get(self.active).is_some_and(|tab| {
+                    self.settings
+                        .editor
+                        .for_language(tab_language(tab))
+                        .graphical_cursor()
+                        == Some(true)
+                });
+                if graphical_cursor_requested && !self.graphical_cursor_compatible() {
+                    self.notify(
+                        Severity::Error,
+                        NotificationKind::System,
+                        "graphical cursor is not compatible with this terminal",
+                    );
+                }
+                let completion_enabled = self.tabs.get(self.active).is_some_and(|tab| {
+                    self.settings
+                        .editor
+                        .for_language(tab_language(tab))
+                        .completion()
+                        .enabled()
+                });
+                if !completion_enabled {
+                    self.dismiss_completion();
+                }
+            },
             SessionEvent::Progress { message, .. } => self.status = Some(message),
             // The single high-up funnel: every backend-reported condition becomes a
             // notification, so nothing is silently dropped.
@@ -7051,7 +7130,13 @@ fn tab_at(hits: &[TabHit], x: u16) -> Option<(usize, bool)> {
         .find_map(|(i, h)| (x >= h.start && x < h.end).then_some((i, x == h.close)))
 }
 
-/// Resolve a code tab's long-line behavior from the global override or its file type.
+/// A non-empty language selector for resolving editor configuration.
+pub(crate) fn tab_language(tab: &Tab) -> Option<&str> {
+    let language = tab.language();
+    (!language.is_empty()).then_some(language)
+}
+
+/// Resolve a code tab's long-line behavior from its configured override or file type.
 pub(crate) fn effective_word_wrap(tab: &Tab, override_: Option<bool>) -> bool {
     override_.unwrap_or_else(|| {
         matches!(
@@ -7184,10 +7269,23 @@ fn copy_name(source: &Path, fallback: &str, n: usize) -> String {
     }
 }
 
-/// The canonical form of `path` for tab de-duplication, falling back to the path
-/// as given when it cannot be resolved (e.g. it no longer exists).
+/// The canonical form of `path` for tab de-duplication. For a missing leaf, resolve
+/// its nearest existing ancestor and append the unresolved suffix; this preserves
+/// macOS `/var` → `/private/var` normalization before a new file is created.
 fn canonical(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    if let Ok(resolved) = std::fs::canonicalize(path) {
+        return resolved;
+    }
+    for ancestor in path.ancestors().skip(1) {
+        let Ok(resolved) = std::fs::canonicalize(ancestor) else {
+            continue;
+        };
+        let Ok(suffix) = path.strip_prefix(ancestor) else {
+            continue;
+        };
+        return resolved.join(suffix);
+    }
+    path.to_path_buf()
 }
 
 /// The (anchor, head) span of the word under `pos`, or the single character there
@@ -7341,8 +7439,14 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
                 format!("config: {}", diag.message),
             );
         }
-        if app.settings.editor.graphical_cursor == Some(true) && !app.graphical_cursor_compatible()
-        {
+        let graphical_cursor_requested = app.tabs.get(app.active).is_some_and(|tab| {
+            app.settings
+                .editor
+                .for_language(tab_language(tab))
+                .graphical_cursor()
+                == Some(true)
+        });
+        if graphical_cursor_requested && !app.graphical_cursor_compatible() {
             app.notify(
                 Severity::Error,
                 NotificationKind::System,
@@ -7455,7 +7559,14 @@ impl App {
     /// syntax-error gate; automatic triggers hold off while the caret's line
     /// has an outright parse error (per issue #57).
     pub(crate) fn trigger_completion(&mut self, manual: bool) {
-        if !self.settings.editor.completion.enabled {
+        let completion_enabled = self.tabs.get(self.active).is_some_and(|tab| {
+            self.settings
+                .editor
+                .for_language(tab_language(tab))
+                .completion()
+                .enabled()
+        });
+        if !completion_enabled {
             return;
         }
         let Some(backend) = self.backend.clone() else {
@@ -7499,8 +7610,13 @@ impl App {
     /// one-character prefix suffices), `.` and the second `:` of `::`
     /// re-request at the new completion boundary, anything else does nothing.
     fn maybe_auto_complete(&mut self, c: char) {
-        let completion = &self.settings.editor.completion;
-        if !completion.enabled || !completion.auto_trigger {
+        let completion = self.tabs.get(self.active).map(|tab| {
+            self.settings
+                .editor
+                .for_language(tab_language(tab))
+                .completion()
+        });
+        if !completion.is_some_and(|completion| completion.enabled() && completion.auto_trigger()) {
             return;
         }
         let boundary = c == crate::completion::TRIGGER_DOT
@@ -8189,6 +8305,40 @@ mod tests {
         let app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false)
             .with_settings(settings, Vec::new());
         assert!(!app.sidebar_visible);
+    }
+
+    #[test]
+    fn live_config_preserves_cli_icons_and_current_sidebar_state() {
+        use karet_session::config::schema::IconStyleSetting;
+        use karet_session::config::schema::StartupPanel;
+
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false)
+            .with_icons(IconStyle::Ascii);
+        app.sidebar_panel = SidebarPanel::SourceControl;
+        app.sidebar_visible = true;
+
+        let mut settings = Settings::default();
+        settings.editor.tab_size = 8;
+        settings.workbench.icon_style = IconStyleSetting::Unicode;
+        settings.workbench.startup_panel = StartupPanel::None;
+        app.on_backend_event(
+            None,
+            SessionEvent::ConfigChanged {
+                report: Box::new(LoadedConfig::from_settings(settings)),
+            },
+        );
+
+        assert_eq!(app.settings.editor.tab_size, 8);
+        assert_eq!(
+            app.icon_style,
+            IconStyle::Ascii,
+            "CLI override remains authoritative"
+        );
+        assert_eq!(app.sidebar_panel, SidebarPanel::SourceControl);
+        assert!(
+            app.sidebar_visible,
+            "startupPanel is not replayed on reload"
+        );
     }
 
     #[test]
@@ -10582,6 +10732,36 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         assert!(!effective_word_wrap(&rust, None));
         assert!(!effective_word_wrap(&markdown, Some(false)));
         assert!(effective_word_wrap(&rust, Some(true)));
+    }
+
+    #[test]
+    fn word_wrap_resolves_against_the_tab_language() {
+        let settings = Settings {
+            editor: serde_json::from_str(
+                r#"{
+                    "wordWrap": false,
+                    "[rust]": { "wordWrap": true }
+                }"#,
+            )
+            .unwrap_or_default(),
+            ..Settings::default()
+        };
+        let rust = text_tab("main.rs", "fn main() {}");
+        let resolved = settings
+            .editor
+            .for_language(tab_language(&rust))
+            .word_wrap();
+        assert!(effective_word_wrap(&rust, resolved));
+
+        let mut python = text_tab("main.py", "print('hi')");
+        if let TabKind::Code { language, .. } = &mut python.kind {
+            *language = "Python";
+        }
+        let resolved = settings
+            .editor
+            .for_language(tab_language(&python))
+            .word_wrap();
+        assert!(!effective_word_wrap(&python, resolved));
     }
 
     #[test]
@@ -13190,6 +13370,27 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         let pending = app.pending_completion.expect("a pending request");
         assert_eq!(pending.id, sent[0].0, "answer correlates by request id");
         assert_eq!(pending.anchor, LineCol::new(0, 0), "anchored at word start");
+    }
+
+    #[test]
+    fn completion_enablement_resolves_against_the_tab_language() {
+        let (backend, mut app) = completion_app("fo\n", LineCol::new(0, 2));
+        app.settings.editor = serde_json::from_str(
+            r#"{
+                "completion": { "enabled": true },
+                "[rust]": { "completion": { "enabled": false } }
+            }"#,
+        )
+        .unwrap_or_default();
+
+        app.trigger_completion(true);
+        assert!(completion_requests(&backend).is_empty());
+
+        if let TabKind::Code { language, .. } = &mut app.tabs[app.active].kind {
+            *language = "Python";
+        }
+        app.trigger_completion(true);
+        assert_eq!(completion_requests(&backend).len(), 1);
     }
 
     #[test]
