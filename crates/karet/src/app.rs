@@ -975,7 +975,7 @@ impl App {
             self.open_path(path);
             return;
         }
-        let mut tab = workspace::open_file(path, self.syntax);
+        let mut tab = workspace::open_file(path);
         tab.view = self.alloc_view();
         self.stash_focused();
         let new_pane = self.layout.split(from, SplitDir::Right);
@@ -3944,7 +3944,7 @@ impl App {
             self.select_tab(idx);
             return;
         }
-        let tab = workspace::open_file(path, self.syntax);
+        let tab = workspace::open_file(path);
         self.push_tab(tab);
     }
 
@@ -3974,7 +3974,7 @@ impl App {
             }
             return;
         }
-        let mut tab = workspace::open_file(path, self.syntax);
+        let mut tab = workspace::open_file(path);
         tab.is_preview = true;
         self.install_preview_tab(tab, steal_focus);
     }
@@ -4034,7 +4034,7 @@ impl App {
             }) => path.clone(),
             _ => return,
         };
-        let mut tab = workspace::open_file_ignoring_size(&path, self.syntax);
+        let mut tab = workspace::open_file_ignoring_size(&path);
         tab.view = self.alloc_view();
         self.tabs[self.active] = tab;
         self.focus = Focus::Editor;
@@ -11827,7 +11827,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         let _ = std::fs::write(&file, "fn main() {}\n");
 
         let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
-        app.push_tab(workspace::open_file(&file, false));
+        app.push_tab(workspace::open_file(&file));
         app.push_tab(code_tab("scratch"));
         app.active = 0;
         app.close_tab_at(0);

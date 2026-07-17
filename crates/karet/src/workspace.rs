@@ -15,11 +15,8 @@ use karet_fileview::viewer::FileKind;
 use karet_fileview::viewer::{self};
 use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
-use karet_syntax::LayeredHighlighter;
 use karet_syntax::SemanticBlocks;
 use karet_text::TextBuffer;
-use karet_treesitter::LayeredParser;
-use karet_treesitter::language_id_from_path;
 use karet_treesitter::language_name_from_path;
 
 use crate::tab::Tab;
@@ -33,22 +30,22 @@ pub(crate) const HEAD_BYTES: usize = 8192;
 /// placeholder; [`open_file_ignoring_size`] bypasses that guard. Failures degrade
 /// gracefully to a placeholder rather than erroring.
 #[must_use]
-pub fn open_file(path: &Path, syntax: bool) -> Tab {
+pub fn open_file(path: &Path) -> Tab {
     let (bytes, len) = read_file(path);
     let head = &bytes[..bytes.len().min(HEAD_BYTES)];
     let kind = viewer::classify(path, head, len);
-    open_classified(path, syntax, kind, bytes, len)
+    open_classified(path, kind, bytes, len)
 }
 
 /// Open `path`, bypassing the [size guard](viewer::SIZE_GUARD) so an over-large
 /// file opens with the renderer its content warrants (never a too-large
 /// placeholder). Backs the TUI "open anyway" override on a too-large placeholder.
 #[must_use]
-pub fn open_file_ignoring_size(path: &Path, syntax: bool) -> Tab {
+pub fn open_file_ignoring_size(path: &Path) -> Tab {
     let (bytes, len) = read_file(path);
     let head = &bytes[..bytes.len().min(HEAD_BYTES)];
     let kind = viewer::classify_ignoring_size(path, head);
-    open_classified(path, syntax, kind, bytes, len)
+    open_classified(path, kind, bytes, len)
 }
 
 /// Read `path`'s bytes (empty on error) and its length, the shared inputs to both
@@ -60,9 +57,9 @@ fn read_file(path: &Path) -> (Vec<u8>, u64) {
 }
 
 /// Route an already-classified file to its renderer tab.
-fn open_classified(path: &Path, syntax: bool, kind: FileKind, bytes: Vec<u8>, len: u64) -> Tab {
+fn open_classified(path: &Path, kind: FileKind, bytes: Vec<u8>, len: u64) -> Tab {
     match kind {
-        FileKind::Text | FileKind::Markdown => open_text(path, &bytes, syntax),
+        FileKind::Text | FileKind::Markdown => open_text(path, &bytes),
         #[cfg(feature = "images")]
         FileKind::Image => match image::decode(&bytes) {
             Ok(img) => Tab::new(
@@ -94,8 +91,8 @@ fn open_classified(path: &Path, syntax: bool, kind: FileKind, bytes: Vec<u8>, le
     }
 }
 
-/// Build a read-only code/text tab, highlighting when a grammar is available.
-fn open_text(path: &Path, bytes: &[u8], syntax: bool) -> Tab {
+/// Build a code/text tab with highlighting deferred to the session worker.
+fn open_text(path: &Path, bytes: &[u8]) -> Tab {
     let Ok(buffer) = TextBuffer::from_bytes(bytes) else {
         return Tab::new(
             title(path),
@@ -108,11 +105,6 @@ fn open_text(path: &Path, bytes: &[u8], syntax: bool) -> Tab {
     };
     let text = buffer.text();
     let language = language_name_from_path(path).unwrap_or("plaintext");
-    let highlights = if syntax {
-        highlight(path, &text)
-    } else {
-        Highlights::default()
-    };
     Tab::new(
         title(path),
         TabKind::Code {
@@ -122,7 +114,7 @@ fn open_text(path: &Path, bytes: &[u8], syntax: bool) -> Tab {
             next_version: 0,
             buffer,
             text,
-            highlights,
+            highlights: Highlights::default(),
             semantic_blocks: SemanticBlocks::default(),
             folds: FoldRegions::default(),
             folded: BTreeSet::new(),
@@ -168,21 +160,6 @@ fn open_cbor(path: &Path, bytes: &[u8]) -> Tab {
             },
         ),
     }
-}
-
-/// Highlight `text` for `path`'s language, or return empty highlights.
-///
-/// Layered, so a read-only view colours embedded languages — a markdown fence, a Rust
-/// doctest — exactly as the editable one does.
-fn highlight(path: &Path, text: &str) -> Highlights {
-    let Some(lang) = language_id_from_path(path) else {
-        return Highlights::default();
-    };
-    let mut parser = LayeredParser::new();
-    let Ok(tree) = parser.parse(lang, text) else {
-        return Highlights::default();
-    };
-    LayeredHighlighter::new().highlight(&tree, text)
 }
 
 /// Open a PDF as a document tab whose pages rasterize on demand (via `karet-pdf`),
@@ -312,67 +289,27 @@ mod tests {
         let dir = temp_dir();
         let file = dir.path.join("a.rs");
         let _ = std::fs::write(&file, "fn main() {}\n");
-        let tab = open_file(&file, true);
+        let tab = open_file(&file);
         assert!(matches!(tab.kind, TabKind::Code { .. }));
     }
 
-    /// The token covering `needle`'s first byte, per a tab's highlights.
-    fn token_of(tab: &Tab, needle: &str) -> Option<karet_core::TokenId> {
-        let TabKind::Code {
-            text, highlights, ..
-        } = &tab.kind
-        else {
-            return None;
-        };
-        let at = text.find(needle)?;
-        highlights
-            .all()
-            .iter()
-            .find(|s| s.span.start.0 <= at && at < s.span.end.0)
-            .map(|s| s.token)
-    }
-
     #[test]
-    fn markdown_code_fence_opens_highlighted_as_its_language() {
-        let dir = temp_dir();
-        let file = dir.path.join("notes.md");
-        let _ = std::fs::write(&file, "# Title\n\n```rust\nfn main() {}\n```\n");
-        let tab = open_file(&file, true);
-        // The embedded rust must colour through the injection layers, not render as
-        // undifferentiated markdown.
-        assert_eq!(
-            token_of(&tab, "fn main"),
-            Some(karet_core::TokenId::KEYWORD)
-        );
-        assert_eq!(
-            token_of(&tab, "Title"),
-            Some(karet_core::StandardToken::MarkupHeading.id())
-        );
-    }
-
-    #[test]
-    fn rust_doctest_in_a_doc_comment_opens_highlighted_as_rust() {
-        let dir = temp_dir();
-        let file = dir.path.join("lib.rs");
-        let _ = std::fs::write(
-            &file,
-            "/// Doc.\n///\n/// ```rust\n/// let y = 1;\n/// ```\npub fn f() {}\n",
-        );
-        let tab = open_file(&file, true);
-        assert_eq!(token_of(&tab, "let y"), Some(karet_core::TokenId::KEYWORD));
-        assert_eq!(
-            token_of(&tab, "Doc."),
-            Some(karet_core::StandardToken::CommentDoc.id())
-        );
-    }
-
-    #[test]
-    fn no_syntax_flag_disables_highlighting() {
+    fn code_opens_with_text_and_defers_highlighting() {
         let dir = temp_dir();
         let file = dir.path.join("notes.md");
         let _ = std::fs::write(&file, "```rust\nfn main() {}\n```\n");
-        let tab = open_file(&file, false);
-        assert_eq!(token_of(&tab, "fn main"), None);
+        let tab = open_file(&file);
+        let TabKind::Code {
+            text, highlights, ..
+        } = tab.kind
+        else {
+            panic!("expected a code tab");
+        };
+        assert_eq!(text, "```rust\nfn main() {}\n```\n");
+        assert!(
+            highlights.all().is_empty(),
+            "the session worker supplies syntax after the tab opens"
+        );
     }
 
     #[test]
@@ -380,7 +317,7 @@ mod tests {
         let dir = temp_dir();
         let file = dir.path.join("bad.rs");
         let _ = std::fs::write(&file, b"fn main() {}\n\xff");
-        let tab = open_file(&file, true);
+        let tab = open_file(&file);
         assert!(matches!(tab.kind, TabKind::Hex { .. }));
     }
 
@@ -394,7 +331,7 @@ mod tests {
         ]);
         let bytes = karet_cbor::encode(&value).unwrap_or_default();
         let _ = std::fs::write(&file, &bytes);
-        let tab = open_file(&file, true);
+        let tab = open_file(&file);
         let TabKind::Code { language, text, .. } = tab.kind else {
             panic!("expected a decoded code tab for a .cbor file");
         };
@@ -410,7 +347,7 @@ mod tests {
         // placeholder…
         let _ = std::fs::write(&file, vec![0u8; viewer::SIZE_GUARD as usize + 1]);
         assert!(matches!(
-            open_file(&file, false).kind,
+            open_file(&file).kind,
             TabKind::Placeholder {
                 kind: FileKind::TooLarge { .. },
                 ..
@@ -419,7 +356,7 @@ mod tests {
         // …while the override opens it with the renderer its content warrants (a
         // NUL-filled blob is binary → the hex view).
         assert!(matches!(
-            open_file_ignoring_size(&file, false).kind,
+            open_file_ignoring_size(&file).kind,
             TabKind::Hex { .. }
         ));
     }
@@ -430,7 +367,7 @@ mod tests {
         let file = dir.path.join("broken.cbor");
         // Truncated / invalid CBOR (a map header promising entries, with none).
         let _ = std::fs::write(&file, [0xa1u8]);
-        let tab = open_file(&file, true);
+        let tab = open_file(&file);
         assert!(matches!(tab.kind, TabKind::Hex { .. }));
     }
 
@@ -448,7 +385,7 @@ trailer<</Size 4/Root 1 0 R>>\n%%EOF";
         let dir = temp_dir();
         let file = dir.path.join("a.pdf");
         let _ = std::fs::write(&file, MINIMAL_PDF);
-        let tab = open_file(&file, true);
+        let tab = open_file(&file);
         let TabKind::Document { page_count, .. } = tab.kind else {
             panic!("expected a document tab for a .pdf file");
         };
@@ -461,7 +398,7 @@ trailer<</Size 4/Root 1 0 R>>\n%%EOF";
         let file = dir.path.join("broken.pdf");
         // A `.pdf` extension classifies Pdf, but the bytes are not a parseable PDF.
         let _ = std::fs::write(&file, b"this is not a pdf at all");
-        let tab = open_file(&file, true);
+        let tab = open_file(&file);
         assert!(matches!(
             tab.kind,
             TabKind::Placeholder {
@@ -501,7 +438,7 @@ trailer<</Size 4/Root 1 0 R>>\n%%EOF";
         let dir = temp_dir();
         let file = dir.path.join("report.docx");
         let _ = std::fs::write(&file, tiny_docx());
-        let tab = open_file(&file, true);
+        let tab = open_file(&file);
         assert_eq!(tab.title, "report.docx");
         let TabKind::MarkdownPreview {
             doc,
@@ -526,7 +463,7 @@ trailer<</Size 4/Root 1 0 R>>\n%%EOF";
         let file = dir.path.join("broken.docx");
         // The `.docx` extension classifies Docx, but the bytes are not a ZIP.
         let _ = std::fs::write(&file, b"this is not a zip archive");
-        let tab = open_file(&file, true);
+        let tab = open_file(&file);
         assert!(matches!(
             tab.kind,
             TabKind::Placeholder {
@@ -541,7 +478,7 @@ trailer<</Size 4/Root 1 0 R>>\n%%EOF";
         let dir = temp_dir();
         let file = dir.path.join("blob.bin");
         let _ = std::fs::write(&file, [0u8, 1, 2, 3]);
-        let tab = open_file(&file, true);
+        let tab = open_file(&file);
         assert!(matches!(tab.kind, TabKind::Hex { .. }));
     }
 
