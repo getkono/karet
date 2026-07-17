@@ -23,6 +23,8 @@ use karet_core::ThemeRole;
 use karet_core::TokenId;
 use karet_syntax::HighlightSpan;
 use karet_syntax::Highlights;
+use karet_syntax::SemanticBlock;
+use karet_syntax::SemanticBlocks;
 use karet_text::TextBuffer;
 use karet_theme::Rgba;
 use karet_theme::Theme;
@@ -80,6 +82,10 @@ pub struct EditorState {
     /// Whether the next wrapped render should reveal a cursor moved by an editor
     /// command rather than preserve a manually-scrolled viewport.
     follow_cursor: bool,
+    /// Source lines currently occupying the sticky-scroll rows, outermost first.
+    sticky_rows: Vec<u32>,
+    /// Rows reserved above the live document viewport by the last render.
+    sticky_height: u16,
 }
 
 impl Default for EditorState {
@@ -93,6 +99,8 @@ impl Default for EditorState {
             last_content_width: 0,
             last_word_wrap: false,
             follow_cursor: false,
+            sticky_rows: Vec::new(),
+            sticky_height: 0,
         }
     }
 }
@@ -557,10 +565,21 @@ impl EditorState {
         row: u16,
     ) -> LineCol {
         let line_count = buffer.line_count().max(1) as u32;
-        let rel_row = u32::from(row.saturating_sub(area.y));
+        let mut rel_row = u32::from(row.saturating_sub(area.y));
         let gutter = 1 + digit_count(line_count) as u16 + 1;
         let content_x = area.x.saturating_add(gutter);
         let rel_col = u32::from(col.saturating_sub(content_x));
+        if rel_row < u32::from(self.sticky_height) {
+            let line = self
+                .sticky_rows
+                .get(rel_row as usize)
+                .copied()
+                .unwrap_or(self.scroll_line)
+                .min(line_count - 1);
+            let want = self.scroll_col.saturating_add(rel_col);
+            return LineCol::new(line, want.min(line_len(buffer, line)));
+        }
+        rel_row = rel_row.saturating_sub(u32::from(self.sticky_height));
         if self.last_word_wrap {
             let width = u32::from(area.width.saturating_sub(gutter).max(1));
             let anchor = visual_anchor_at_row(
@@ -820,7 +839,9 @@ fn caret_cell(
     let line_count = buffer.line_count() as u32;
     let gutter = 1 + digit_count(line_count.max(1)) as u16 + 1;
     let content_x = area.x.saturating_add(gutter);
-    if content_x >= area.right() || area.height == 0 {
+    let content_y = area.y.saturating_add(state.sticky_height);
+    let content_height = area.height.saturating_sub(state.sticky_height);
+    if content_x >= area.right() || content_height == 0 {
         return None;
     }
     let content_width = area.right().saturating_sub(content_x);
@@ -836,7 +857,7 @@ fn caret_cell(
                 subrow: state.scroll_subrow,
             },
         );
-        for row in 0..area.height {
+        for row in 0..content_height {
             let ranges = visual_ranges(buffer, anchor.line, width);
             let index = (anchor.subrow as usize).min(ranges.len().saturating_sub(1));
             let range = ranges
@@ -853,7 +874,7 @@ fn caret_cell(
                     u16::try_from(rel.min(u32::from(content_width.saturating_sub(1))))
                         .unwrap_or(u16::MAX),
                 );
-                return Some((x, area.y.saturating_add(row)));
+                return Some((x, content_y.saturating_add(row)));
             }
             anchor = next_visual_anchor(buffer, folds, width, anchor);
         }
@@ -876,13 +897,13 @@ fn caret_cell(
         }
         ll += 1;
     }
-    if vis_row >= area.height {
+    if vis_row >= content_height {
         return None;
     }
     let rel = i64::from(at.col) - i64::from(state.scroll_col);
     let max_rel = i64::from(content_width.saturating_sub(1));
     let cx = content_x.saturating_add(u16::try_from(rel.clamp(0, max_rel)).unwrap_or(0));
-    let cy = area.y.saturating_add(vis_row);
+    let cy = content_y.saturating_add(vis_row);
     (cy < area.bottom()).then_some((cx, cy))
 }
 
@@ -916,6 +937,8 @@ pub struct Editor<'a> {
     cell_caret: bool,
     read_only: bool,
     word_wrap: bool,
+    semantic_blocks: Option<&'a SemanticBlocks>,
+    sticky_scroll: bool,
 }
 
 impl<'a> Editor<'a> {
@@ -934,6 +957,8 @@ impl<'a> Editor<'a> {
             cell_caret: true,
             read_only: false,
             word_wrap: false,
+            semantic_blocks: None,
+            sticky_scroll: false,
         }
     }
 
@@ -968,6 +993,20 @@ impl<'a> Editor<'a> {
     #[must_use]
     pub fn word_wrap(mut self, word_wrap: bool) -> Self {
         self.word_wrap = word_wrap;
+        self
+    }
+
+    /// Supply semantic source blocks used by sticky scroll.
+    #[must_use]
+    pub fn semantic_blocks(mut self, blocks: &'a SemanticBlocks) -> Self {
+        self.semantic_blocks = Some(blocks);
+        self
+    }
+
+    /// Keep active semantic block headers pinned above the scrolling document.
+    #[must_use]
+    pub fn sticky_scroll(mut self, enabled: bool) -> Self {
+        self.sticky_scroll = enabled;
         self
     }
 
@@ -1124,6 +1163,108 @@ impl Editor<'_> {
             Style::default().add_modifier(Modifier::REVERSED),
         );
     }
+
+    fn sticky_blocks(&self, anchor: VisualAnchor, height: u16) -> Vec<SemanticBlock> {
+        if !self.sticky_scroll {
+            return Vec::new();
+        }
+        let budget = usize::from(height.saturating_sub(1));
+        if budget == 0 {
+            return Vec::new();
+        }
+        let mut active: Vec<SemanticBlock> = self
+            .semantic_blocks
+            .map_or(&[][..], SemanticBlocks::blocks)
+            .iter()
+            .copied()
+            .filter(|block| {
+                block.scope_end >= anchor.line
+                    && (block.header_start < anchor.line
+                        || (block.header_start == anchor.line && anchor.subrow > 0))
+            })
+            .collect();
+        if active.len() > budget {
+            active.drain(..active.len() - budget);
+        }
+        active
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    // The arguments are the already-resolved render palette/geometry shared with the
+    // normal row painter; bundling them would obscure the one-row operation.
+    fn draw_sticky_row(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        y: u16,
+        block: SemanticBlock,
+        state: &EditorState,
+        theme: &Theme,
+        default_fg: Rgba,
+        digits: usize,
+        selections: &[Range],
+    ) {
+        let line = block.header_start;
+        let background = theme.role(ThemeRole::CursorLine);
+        buf.set_style(
+            Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: 1,
+            },
+            Style::default().bg(background.to_ratatui()),
+        );
+        let fold = self.fold_at(line);
+        let (marker, marker_color) = fold.map_or_else(
+            || {
+                self.gutter_marker(line, theme, default_fg)
+                    .unwrap_or((' ', default_fg))
+            },
+            |fold| {
+                (
+                    if fold.collapsed {
+                        '\u{25b8}'
+                    } else {
+                        '\u{25be}'
+                    },
+                    theme.role(ThemeRole::LineNumberActive),
+                )
+            },
+        );
+        let mut spans = vec![
+            Span::styled(
+                marker.to_string(),
+                Style::default().fg(marker_color.to_ratatui()),
+            ),
+            Span::styled(
+                format!("{:>width$} ", line + 1, width = digits),
+                Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui()),
+            ),
+        ];
+        self.push_content_spans(
+            &mut spans,
+            line,
+            theme,
+            default_fg,
+            VisualRange {
+                start: state.scroll_col,
+                end: u32::MAX,
+            },
+            selections,
+        );
+        buf.set_line(area.x, y, &Line::from(spans), area.width);
+        if block.has_multiline_header() && area.width > 0 {
+            buf.set_string(
+                area.right().saturating_sub(1),
+                y,
+                "\u{2026}",
+                Style::default()
+                    .fg(theme.role(ThemeRole::LineNumber).to_ratatui())
+                    .bg(background.to_ratatui()),
+            );
+        }
+    }
 }
 
 impl StatefulWidget for Editor<'_> {
@@ -1151,9 +1292,8 @@ impl StatefulWidget for Editor<'_> {
         let gutter = 1 + digits as u16 + 1;
         let content_width = area.width.saturating_sub(gutter).max(1);
 
-        // Clamp scroll to the buffer and record viewport geometry for motions and
-        // mouse scrolling between frames.
-        state.last_height = area.height;
+        // Clamp scroll to the buffer and record horizontal geometry. The vertical
+        // content height is resolved after semantic sticky rows are selected.
         state.last_content_width = content_width;
         state.last_word_wrap = self.word_wrap;
         state.scroll_line = state.scroll_line.min(line_count.saturating_sub(1));
@@ -1173,12 +1313,16 @@ impl StatefulWidget for Editor<'_> {
                 subrow: state.scroll_subrow,
             },
         );
+        let initial_sticky = self.sticky_blocks(anchor, area.height);
+        let initial_content_height = area
+            .height
+            .saturating_sub(u16::try_from(initial_sticky.len()).unwrap_or(u16::MAX));
         if self.word_wrap && state.follow_cursor {
             anchor = reveal_visual_anchor(
                 self.buffer,
                 self.folds,
                 width,
-                area.height,
+                initial_content_height,
                 anchor,
                 state.cursor(),
             );
@@ -1186,6 +1330,11 @@ impl StatefulWidget for Editor<'_> {
         state.scroll_line = anchor.line;
         state.scroll_subrow = if self.word_wrap { anchor.subrow } else { 0 };
         state.follow_cursor = false;
+
+        let sticky = self.sticky_blocks(anchor, area.height);
+        state.sticky_rows = sticky.iter().map(|block| block.header_start).collect();
+        state.sticky_height = u16::try_from(sticky.len()).unwrap_or(u16::MAX);
+        state.last_height = area.height.saturating_sub(state.sticky_height);
 
         // Snapshot the cursor set for painting: every non-empty selection's range and
         // the line of every caret (each caret's line gets the cursor-line emphasis).
@@ -1200,12 +1349,32 @@ impl StatefulWidget for Editor<'_> {
         // Base background for the whole editor area (covers rows past end-of-file).
         buf.set_style(area, Style::default().bg(background.to_ratatui()));
 
-        for row in 0..area.height {
+        for (row, block) in sticky.iter().copied().enumerate() {
+            let y = area
+                .y
+                .saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
+            self.draw_sticky_row(
+                buf,
+                area,
+                y,
+                block,
+                state,
+                theme,
+                default_fg,
+                digits,
+                &selections,
+            );
+        }
+
+        for row in 0..state.last_height {
             if anchor.line >= line_count {
                 break;
             }
             let l = anchor.line;
-            let y = area.y + row;
+            let y = area
+                .y
+                .saturating_add(state.sticky_height)
+                .saturating_add(row);
             // In read-only (pager) mode there is no active cursor line to emphasize.
             let is_cursor = !self.read_only && caret_lines.contains(&l);
             let row_bg = if is_cursor {
@@ -1935,6 +2104,106 @@ mod tests {
         let any_caret = (0..area.width)
             .any(|x| (0..area.height).any(|y| buf[(x, y)].modifier.contains(Modifier::REVERSED)));
         assert!(!any_caret, "read-only mode must not draw a caret");
+    }
+
+    #[test]
+    fn sticky_scroll_pins_the_active_chain_and_collapses_signatures() {
+        let buffer = TextBuffer::from_text(
+            "class A {\n  void run(\n      int value\n  ) {\n    value++;\n  }\n}\n",
+        );
+        let blocks = SemanticBlocks::new(vec![
+            SemanticBlock {
+                header_start: 0,
+                header_end: 0,
+                scope_end: 6,
+            },
+            SemanticBlock {
+                header_start: 1,
+                header_end: 3,
+                scope_end: 5,
+            },
+        ]);
+        let mut state = EditorState::new();
+        state.scroll_line = 4;
+        let area = Rect::new(0, 0, 24, 4);
+        let mut buf = Buffer::empty(area);
+        Editor::new(&buffer)
+            .semantic_blocks(&blocks)
+            .sticky_scroll(true)
+            .render(area, &mut buf, &mut state);
+
+        let row = |y| {
+            (0..area.width)
+                .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+                .collect::<String>()
+        };
+        assert!(row(0).contains("class A"));
+        assert!(row(1).contains("void run"));
+        assert_eq!(buf[(area.right() - 1, 1)].symbol(), "\u{2026}");
+        assert!(
+            row(2).contains("value++"),
+            "one live content row is retained"
+        );
+        assert_eq!(state.pos_at(area, &buffer, &[], 4, 0).line, 0);
+        assert_eq!(state.pos_at(area, &buffer, &[], 4, 1).line, 1);
+        assert_eq!(state.pos_at(area, &buffer, &[], 4, 2).line, 4);
+    }
+
+    #[test]
+    fn disabled_sticky_scroll_preserves_the_original_viewport() {
+        let buffer = TextBuffer::from_text("header\none\ntwo\nthree\n");
+        let blocks = SemanticBlocks::new(vec![SemanticBlock {
+            header_start: 0,
+            header_end: 0,
+            scope_end: 3,
+        }]);
+        let mut state = EditorState::new();
+        state.scroll_line = 2;
+        let area = Rect::new(0, 0, 16, 2);
+        let mut buf = Buffer::empty(area);
+        Editor::new(&buffer)
+            .semantic_blocks(&blocks)
+            .sticky_scroll(false)
+            .render(area, &mut buf, &mut state);
+        let first: String = (0..area.width)
+            .map(|x| buf[(x, 0)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(first.contains("two"));
+        assert!(state.sticky_rows.is_empty());
+        assert_eq!(state.last_height, area.height);
+    }
+
+    #[test]
+    fn a_tiny_viewport_keeps_the_deepest_header_and_one_content_row() {
+        let buffer = TextBuffer::from_text("outer\ninner\ndeep\nbody\n");
+        let blocks = SemanticBlocks::new(vec![
+            SemanticBlock {
+                header_start: 0,
+                header_end: 0,
+                scope_end: 3,
+            },
+            SemanticBlock {
+                header_start: 1,
+                header_end: 1,
+                scope_end: 3,
+            },
+            SemanticBlock {
+                header_start: 2,
+                header_end: 2,
+                scope_end: 3,
+            },
+        ]);
+        let mut state = EditorState::new();
+        state.scroll_line = 3;
+        let area = Rect::new(0, 0, 16, 2);
+        let mut buf = Buffer::empty(area);
+        Editor::new(&buffer)
+            .semantic_blocks(&blocks)
+            .sticky_scroll(true)
+            .render(area, &mut buf, &mut state);
+        assert_eq!(state.sticky_rows, [2]);
+        assert_eq!(state.last_height, 1);
+        assert_eq!(state.primary_caret_cell(area, &buffer, &[]), None);
     }
 
     #[test]
