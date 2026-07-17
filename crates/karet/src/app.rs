@@ -4619,6 +4619,7 @@ impl App {
                     buffer,
                     text,
                     highlights,
+                    semantic_blocks,
                     folds,
                     folded,
                     decos,
@@ -4634,6 +4635,7 @@ impl App {
                         buffer: buffer.clone(),
                         text: text.clone(),
                         highlights: highlights.clone(),
+                        semantic_blocks: semantic_blocks.clone(),
                         folds: folds.clone(),
                         folded: folded.clone(),
                         decos: decos.clone(),
@@ -7041,6 +7043,7 @@ impl App {
             if let TabKind::Code {
                 buffer,
                 highlights,
+                semantic_blocks,
                 folds,
                 folded,
                 text,
@@ -7058,6 +7061,7 @@ impl App {
                     *text = snap.buffer.text();
                 }
                 *highlights = (*snap.highlights).clone();
+                *semantic_blocks = (*snap.semantic_blocks).clone();
                 *folds = (*snap.folds).clone();
                 *syntax_errors = snap.syntax_error_lines.as_ref().clone();
                 *next_version = (*next_version).max(snap.version);
@@ -10186,6 +10190,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 buffer: TextBuffer::from_text("foo bar foo"),
                 text: "foo bar foo".to_string(),
                 highlights: Highlights::default(),
+                semantic_blocks: karet_syntax::SemanticBlocks::default(),
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
@@ -10634,6 +10639,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 buffer: TextBuffer::from_text("fn main() {}\n"),
                 text: "fn main() {}\n".to_string(),
                 highlights: Highlights::default(),
+                semantic_blocks: karet_syntax::SemanticBlocks::default(),
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
@@ -10681,6 +10687,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 buffer: TextBuffer::from_text("x\n"),
                 text: "x\n".to_string(),
                 highlights: Highlights::default(),
+                semantic_blocks: karet_syntax::SemanticBlocks::default(),
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
@@ -10733,6 +10740,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 buffer: TextBuffer::from_text(text),
                 text: text.to_string(),
                 highlights: Highlights::default(),
+                semantic_blocks: karet_syntax::SemanticBlocks::default(),
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
@@ -10966,6 +10974,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 version,
                 buffer,
                 highlights: Arc::new(Highlights::default()),
+                semantic_blocks: Arc::new(karet_syntax::SemanticBlocks::default()),
                 folds: Arc::new(FoldRegions::default()),
                 decorations: Arc::new(Vec::new()),
                 syntax_error_lines: Arc::new(Vec::new()),
@@ -11257,6 +11266,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 version,
                 buffer,
                 highlights: Arc::new(Highlights::default()),
+                semantic_blocks: Arc::new(karet_syntax::SemanticBlocks::default()),
                 folds: Arc::new(FoldRegions::default()),
                 decorations: Arc::new(Vec::new()),
                 syntax_error_lines: Arc::new(Vec::new()),
@@ -12578,6 +12588,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 buffer: TextBuffer::from_text(text),
                 text: text.to_string(),
                 highlights: Highlights::default(),
+                semantic_blocks: karet_syntax::SemanticBlocks::default(),
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
@@ -12872,6 +12883,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 buffer: TextBuffer::from_text(""),
                 text: String::new(),
                 highlights: Highlights::default(),
+                semantic_blocks: karet_syntax::SemanticBlocks::default(),
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
@@ -12966,6 +12978,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
                 buffer: karet_text::TextBuffer::from_text(""),
                 text: String::new(),
                 highlights: karet_syntax::Highlights::default(),
+                semantic_blocks: karet_syntax::SemanticBlocks::default(),
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),

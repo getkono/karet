@@ -23,6 +23,7 @@ use karet_session::LoadedConfig;
 use karet_session::ViewId;
 use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
+use karet_syntax::SemanticBlocks;
 use karet_text::TextBuffer;
 
 use crate::render::FileView;
@@ -118,6 +119,8 @@ pub enum TabKind {
         text: String,
         /// Syntax highlight spans (empty when no grammar / disabled).
         highlights: Highlights,
+        /// Semantic block scopes from the latest syntax snapshot.
+        semantic_blocks: SemanticBlocks,
         /// Foldable line regions from the latest snapshot (empty when no grammar).
         folds: FoldRegions,
         /// The set of collapsed fold header lines (per-view UI state).
@@ -645,6 +648,7 @@ mod tests {
                 buffer: TextBuffer::from_text("fn main() {}"),
                 text: "fn main() {}".to_string(),
                 highlights: Highlights::default(),
+                semantic_blocks: SemanticBlocks::default(),
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),
@@ -669,6 +673,7 @@ mod tests {
                 buffer,
                 text: "a\nb\n".to_string(),
                 highlights: Highlights::default(),
+                semantic_blocks: SemanticBlocks::default(),
                 folds: FoldRegions::default(),
                 folded: BTreeSet::new(),
                 decos: Vec::new(),

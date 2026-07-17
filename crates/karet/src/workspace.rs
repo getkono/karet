@@ -16,6 +16,7 @@ use karet_fileview::viewer::{self};
 use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
 use karet_syntax::LayeredHighlighter;
+use karet_syntax::SemanticBlocks;
 use karet_text::TextBuffer;
 use karet_treesitter::LayeredParser;
 use karet_treesitter::language_id_from_path;
@@ -122,6 +123,7 @@ fn open_text(path: &Path, bytes: &[u8], syntax: bool) -> Tab {
             buffer,
             text,
             highlights,
+            semantic_blocks: SemanticBlocks::default(),
             folds: FoldRegions::default(),
             folded: BTreeSet::new(),
             decos: Vec::new(),
@@ -148,6 +150,7 @@ fn open_cbor(path: &Path, bytes: &[u8]) -> Tab {
                     buffer,
                     text,
                     highlights: Highlights::default(),
+                    semantic_blocks: SemanticBlocks::default(),
                     folds: FoldRegions::default(),
                     folded: BTreeSet::new(),
                     decos: Vec::new(),

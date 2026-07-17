@@ -18,6 +18,8 @@ use std::sync::mpsc::Sender;
 use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
 use karet_syntax::LayeredHighlighter;
+use karet_syntax::SemanticBlocker;
+use karet_syntax::SemanticBlocks;
 use karet_syntax::SemanticCommentConfig;
 use karet_treesitter::Edit;
 use karet_treesitter::LanguageId;
@@ -56,6 +58,7 @@ pub(crate) struct HighlightResult {
     pub version: u64,
     pub highlights: Arc<Highlights>,
     pub folds: Arc<FoldRegions>,
+    pub semantic_blocks: Arc<SemanticBlocks>,
     /// Line ranges covered by syntax errors (see `SyntaxTree::error_lines`).
     pub error_lines: Arc<Vec<(u32, u32)>>,
 }
@@ -88,6 +91,7 @@ pub(crate) fn spawn() -> (
 fn run(jobs: &Receiver<HighlightJob>, results: &tokio_mpsc::UnboundedSender<HighlightResult>) {
     let mut parser = LayeredParser::new();
     let mut highlighter = LayeredHighlighter::new();
+    let mut blocker = SemanticBlocker::new();
     let mut trees: HashMap<DocumentId, LayeredTree> = HashMap::new();
     let mut pending: HashMap<DocumentId, HighlightRequest> = HashMap::new();
 
@@ -101,8 +105,13 @@ fn run(jobs: &Receiver<HighlightJob>, results: &tokio_mpsc::UnboundedSender<High
         }
 
         for (_, request) in pending.drain() {
-            if let Some(result) = compute(&mut parser, &mut highlighter, &mut trees, request)
-                && results.send(result).is_err()
+            if let Some(result) = compute(
+                &mut parser,
+                &mut highlighter,
+                &mut blocker,
+                &mut trees,
+                request,
+            ) && results.send(result).is_err()
             {
                 return; // the session is gone
             }
@@ -154,6 +163,7 @@ fn merge(previous: HighlightRequest, next: HighlightRequest) -> HighlightRequest
 fn compute(
     parser: &mut LayeredParser,
     highlighter: &mut LayeredHighlighter,
+    blocker: &mut SemanticBlocker,
     trees: &mut HashMap<DocumentId, LayeredTree>,
     request: HighlightRequest,
 ) -> Option<HighlightResult> {
@@ -189,6 +199,7 @@ fn compute(
         version: request.version,
         highlights: Arc::new(highlights),
         folds: Arc::new(karet_syntax::fold(tree.root())),
+        semantic_blocks: Arc::new(blocker.analyze(tree.root(), &request.text)),
         error_lines: Arc::new(tree.error_lines()),
     })
 }
@@ -285,6 +296,7 @@ mod tests {
         let text = "// TODO: fix this\nfn main() {}\n";
         let mut parser = LayeredParser::new();
         let mut highlighter = LayeredHighlighter::new();
+        let mut blocker = SemanticBlocker::new();
         let mut trees = HashMap::new();
         let request = HighlightRequest {
             doc: DocumentId(1),
@@ -294,7 +306,13 @@ mod tests {
             semantic,
             edits: None,
         };
-        let result = compute(&mut parser, &mut highlighter, &mut trees, request)?;
+        let result = compute(
+            &mut parser,
+            &mut highlighter,
+            &mut blocker,
+            &mut trees,
+            request,
+        )?;
         Some(result.highlights.all().iter().map(|s| s.token.0).collect())
     }
 

@@ -61,6 +61,8 @@ pub struct Editor {
     /// Override file-type wrapping: `null` uses the file default, `true` wraps,
     /// and `false` uses horizontal overflow.
     pub word_wrap: Option<bool>,
+    /// Keep the active semantic block hierarchy pinned above scrolled text.
+    pub sticky_scroll: bool,
     /// Strip trailing whitespace from each line on save.
     pub trim_trailing_whitespace: bool,
     /// Ensure the file ends with a single trailing newline on save.
@@ -94,6 +96,7 @@ impl Default for Editor {
             scroll_off: 3,
             rulers: Vec::new(),
             word_wrap: None,
+            sticky_scroll: true,
             trim_trailing_whitespace: true,
             insert_final_newline: true,
             format_on_save: false,
@@ -217,6 +220,8 @@ pub struct EditorOverride {
     #[serde(default, skip_serializing_if = "NullableOverride::is_unset")]
     #[schemars(with = "Option<bool>")]
     pub word_wrap: NullableOverride<bool>,
+    /// Override semantic sticky-scroll rendering.
+    pub sticky_scroll: Option<bool>,
     /// Override trailing-whitespace trimming.
     pub trim_trailing_whitespace: Option<bool>,
     /// Override final-newline insertion.
@@ -358,6 +363,14 @@ impl<'a> ResolvedEditor<'a> {
             Some(NullableOverride::Set(value)) => *value,
             _ => self.base.word_wrap,
         }
+    }
+
+    /// Final semantic sticky-scroll setting.
+    #[must_use]
+    pub fn sticky_scroll(self) -> bool {
+        self.override_
+            .and_then(|o| o.sticky_scroll)
+            .unwrap_or(self.base.sticky_scroll)
     }
 
     /// Final trailing-whitespace trimming setting.
@@ -791,6 +804,7 @@ mod tests {
         assert_eq!(s.editor.line_numbers, LineNumbers::On);
         assert_eq!(s.editor.graphical_cursor, None);
         assert_eq!(s.editor.word_wrap, None);
+        assert!(s.editor.sticky_scroll);
         assert_eq!(s.files.auto_save, AutoSave::Off);
         assert_eq!(s.workbench.color_theme, "dark");
         assert!(s.search.smart_case);
@@ -831,6 +845,7 @@ mod tests {
             r#"{
                 "tabSize": 8,
                 "wordWrap": true,
+                "stickyScroll": true,
                 "graphicalCursor": true,
                 "semanticComments": { "enabled": true, "tags": ["TODO"] },
                 "completion": { "enabled": true, "autoTrigger": true },
@@ -843,6 +858,7 @@ mod tests {
                     "scrollOff": 9,
                     "rulers": [80, 100],
                     "wordWrap": null,
+                    "stickyScroll": false,
                     "trimTrailingWhitespace": false,
                     "insertFinalNewline": false,
                     "formatOnSave": true,
@@ -862,6 +878,7 @@ mod tests {
         assert_eq!(rust.scroll_off(), 9);
         assert_eq!(rust.rulers(), [80, 100]);
         assert_eq!(rust.word_wrap(), None);
+        assert!(!rust.sticky_scroll());
         assert!(!rust.trim_trailing_whitespace());
         assert!(!rust.insert_final_newline());
         assert!(rust.format_on_save());
@@ -874,6 +891,7 @@ mod tests {
         assert_eq!(python.tab_size(), 8);
         assert_eq!(python.graphical_cursor(), Some(true));
         assert_eq!(python.word_wrap(), Some(true));
+        assert!(python.sticky_scroll());
         assert!(python.semantic_comments().enabled());
         assert_eq!(python.semantic_comments().tags(), ["TODO"]);
         assert!(python.completion().enabled());

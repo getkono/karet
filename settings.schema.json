@@ -246,6 +246,11 @@
             ]
           }
         },
+        "stickyScroll": {
+          "description": "Keep the active semantic block hierarchy pinned above scrolled text.",
+          "type": "boolean",
+          "default": true
+        },
         "tabSize": {
           "description": "Number of columns a tab renders as / spaces inserted for one indent level.",
           "type": "integer",
@@ -376,6 +381,14 @@
             {
               "type": "null"
             }
+          ],
+          "default": null
+        },
+        "stickyScroll": {
+          "description": "Override semantic sticky-scroll rendering.",
+          "type": [
+            "boolean",
+            "null"
           ],
           "default": null
         },
