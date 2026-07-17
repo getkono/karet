@@ -128,6 +128,50 @@ impl Repository {
             .map_err(to_git)?;
         Ok(oid.to_string())
     }
+
+    pub(crate) fn git2_staged_diff(&self) -> Result<crate::StagedDiff, VcsError> {
+        let index = self.git2.index().map_err(to_git)?;
+        // The `HEAD` tree, or `None` on an unborn branch — libgit2 then diffs the
+        // index against the empty tree, so the first commit's staged files show as
+        // additions rather than erroring.
+        let head_tree = match self.git2_head_commit()? {
+            Some(obj) => Some(obj.peel_to_tree().map_err(to_git)?),
+            None => None,
+        };
+        let mut opts = git2::DiffOptions::new();
+        let diff = self
+            .git2
+            .diff_tree_to_index(head_tree.as_ref(), Some(&index), Some(&mut opts))
+            .map_err(to_git)?;
+
+        let mut patch = String::new();
+        diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+            // Context / added / removed lines carry their origin in a separate byte;
+            // re-emit it so the text reads as a real `+`/`-`/` ` unified diff. Header
+            // and hunk lines already embed their full text, so they pass through as-is.
+            if matches!(line.origin(), '+' | '-' | ' ') {
+                patch.push(line.origin());
+            }
+            patch.push_str(&String::from_utf8_lossy(line.content()));
+            true
+        })
+        .map_err(to_git)?;
+
+        let stats = diff.stats().map_err(to_git)?;
+        let file_count = stats.files_changed();
+        let stat = stats
+            .to_buf(git2::DiffStatsFormat::FULL, 80)
+            .map_err(to_git)?
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+
+        Ok(crate::StagedDiff {
+            patch,
+            stat,
+            file_count,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -217,6 +261,56 @@ mod tests {
         let working = r.changes(Selection::Unstaged, None)?;
         assert_eq!(working.len(), 1);
         assert_eq!(working[0].status, StatusKind::Untracked);
+        Ok(())
+    }
+
+    #[test]
+    fn staged_diff_on_unborn_head_shows_additions() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        write(&repo.0, "a.txt", b"hello\nworld\n")?;
+        let r = Repository::discover(&repo.0)?;
+        r.stage(&[PathBuf::from("a.txt")])?;
+
+        let diff = r.staged_diff()?;
+        assert_eq!(diff.file_count, 1);
+        assert!(diff.patch.contains("+hello"), "patch: {}", diff.patch);
+        assert!(diff.patch.contains("+world"), "patch: {}", diff.patch);
+        assert!(diff.stat.contains("a.txt"), "stat: {}", diff.stat);
+        Ok(())
+    }
+
+    #[test]
+    fn staged_diff_reflects_only_staged_changes() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        write(&repo.0, "a.txt", b"one\n")?;
+        git(&repo.0, &["add", "a.txt"])?;
+        git(&repo.0, &["commit", "-q", "-m", "init"])?;
+        // Stage a modification, then make a further unstaged edit on top of it.
+        write(&repo.0, "a.txt", b"two\n")?;
+        let r = Repository::discover(&repo.0)?;
+        r.stage(&[PathBuf::from("a.txt")])?;
+        write(&repo.0, "a.txt", b"three\n")?;
+
+        let diff = r.staged_diff()?;
+        assert_eq!(diff.file_count, 1);
+        // The staged content is `two`; the unstaged `three` must not leak in.
+        assert!(diff.patch.contains("+two"), "patch: {}", diff.patch);
+        assert!(diff.patch.contains("-one"), "patch: {}", diff.patch);
+        assert!(!diff.patch.contains("three"), "patch: {}", diff.patch);
+        Ok(())
+    }
+
+    #[test]
+    fn staged_diff_is_empty_with_nothing_staged() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        write(&repo.0, "a.txt", b"one\n")?;
+        git(&repo.0, &["add", "a.txt"])?;
+        git(&repo.0, &["commit", "-q", "-m", "init"])?;
+        let r = Repository::discover(&repo.0)?;
+
+        let diff = r.staged_diff()?;
+        assert_eq!(diff.file_count, 0);
+        assert!(diff.patch.is_empty(), "patch: {}", diff.patch);
         Ok(())
     }
 

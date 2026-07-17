@@ -212,6 +212,11 @@ pub enum Command {
         /// The commit message.
         message: String,
     },
+    /// Generate a commit message from the staged diff (answered asynchronously by
+    /// [`Event::CommitMessageGenerated`], or an [`Event::Notification`] when nothing
+    /// is staged, generation fails, or the `aicommit` feature / `git.aiCommit`
+    /// setting is disabled). Honours the `git.aiCommit.*` settings.
+    GenerateCommitMessage,
     /// Recompute and re-emit the source-control status.
     RefreshVcs,
     /// Fetch a page of the commit-history log (newest first), for lazy loading.
@@ -458,6 +463,12 @@ pub enum Event {
     Committed {
         /// The new commit's hex object id.
         oid: String,
+    },
+    /// A commit message was generated from the staged diff, answering
+    /// [`Command::GenerateCommitMessage`]. The client fills its commit input with it.
+    CommitMessageGenerated {
+        /// The generated commit message.
+        message: String,
     },
     /// A page of the commit-history log, answering a [`Command::VcsLog`].
     VcsLog {

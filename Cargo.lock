@@ -27,6 +27,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "aicommit-core"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4792e674ea500c7030f52ae2dd4a054023b2c1b81adb8c26859273147ee3dd83"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "aligned"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3151,6 +3162,7 @@ dependencies = [
 name = "karet-session"
 version = "0.2.2"
 dependencies = [
+ "aicommit-core",
  "dependable-core",
  "directories",
  "ec4rs",

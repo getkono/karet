@@ -169,6 +169,10 @@ schemars     = "1.2.1"
 # Package dependency-graph backend (karet-session viz): the pure-Rust core of
 # `dependable` parses a Cargo.lock into a resolved graph offline (no network stack).
 dependable-core = "0.1.2"
+# AI commit-message generation (karet-session `aicommit` feature): builds the prompt,
+# picks the model, and shells out to the `claude` CLI. Frontend-agnostic and
+# git-agnostic (we hand it the staged diff), pure-Rust, no network stack of its own.
+aicommit-core = "0.1.0"
 # GitHub REST client (karet-github). Pure-Rust TLS via rustls (ring), no OpenSSL /
 # native-tls system dependency. Blocking API so callers need no async runtime.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }

@@ -91,6 +91,19 @@ pub struct BlameLine {
     pub author: String,
 }
 
+/// The staged changes rendered as a unified diff, for feeding an external
+/// commit-message generator (`git diff --cached`, without a `git` subprocess).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct StagedDiff {
+    /// The unified-diff text of every staged change.
+    pub patch: String,
+    /// A `--stat`-style per-file summary (files changed, insertions, deletions).
+    pub stat: String,
+    /// The number of files the staged diff touches.
+    pub file_count: usize,
+}
+
 /// A git branch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Branch {
@@ -289,6 +302,25 @@ impl Repository {
         #[cfg(not(feature = "git2"))]
         {
             let _ = message;
+            Err(VcsError::FeatureDisabled)
+        }
+    }
+
+    /// The staged changes as a unified diff plus a `--stat` summary and file count.
+    ///
+    /// This is the input an external commit-message generator needs; the diff is
+    /// taken between `HEAD` (or the empty tree on an unborn branch) and the index.
+    ///
+    /// # Errors
+    /// Returns [`VcsError::FeatureDisabled`] if the `git2` feature is off, or
+    /// [`VcsError::Git`] if the diff cannot be computed.
+    pub fn staged_diff(&self) -> Result<StagedDiff, VcsError> {
+        #[cfg(feature = "git2")]
+        {
+            self.git2_staged_diff()
+        }
+        #[cfg(not(feature = "git2"))]
+        {
             Err(VcsError::FeatureDisabled)
         }
     }

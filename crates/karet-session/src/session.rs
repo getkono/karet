@@ -379,6 +379,7 @@ impl Session {
             Command::StageAll => self.vcs_write(id, Repository::stage_all),
             Command::UnstageAll => self.vcs_write(id, Repository::unstage_all),
             Command::Commit { message } => self.commit(id, &message),
+            Command::GenerateCommitMessage => self.generate_commit_message(id),
             Command::RefreshVcs => self.emit_vcs_status(Some(id)),
             Command::VcsLog { skip, limit } => self.emit_vcs_log(Some(id), skip, limit),
             Command::CommitDetail { rev } => self.emit_commit_detail(id, &rev),
@@ -725,6 +726,78 @@ impl Session {
                 },
             ),
         }
+    }
+
+    /// Generate a commit message from the staged diff and emit it as an
+    /// [`Event::CommitMessageGenerated`]. The generation is blocking (it shells out
+    /// to the `claude` CLI), so it runs on a worker thread; failures — nothing
+    /// staged, a disabled setting, or a generator error — surface as an
+    /// [`Event::Notification`]. A no-op notification when the `aicommit` feature is off.
+    #[cfg(feature = "aicommit")]
+    fn generate_commit_message(&mut self, id: RequestId) {
+        let cfg = self.config.settings.git.ai_commit.clone();
+        if !cfg.enabled {
+            self.emit_vcs_notice(
+                id,
+                Severity::Warning,
+                "AI commit messages are disabled (git.aiCommit.enabled)".to_string(),
+            );
+            return;
+        }
+        let Some(repo) = self.vcs.as_ref() else {
+            return;
+        };
+        let diff = match repo.staged_diff() {
+            Ok(diff) => diff,
+            Err(e) => {
+                self.emit_vcs_notice(id, Severity::Error, e.to_string());
+                return;
+            },
+        };
+        if diff.file_count == 0 || diff.patch.trim().is_empty() {
+            self.emit_vcs_notice(
+                id,
+                Severity::Warning,
+                "commit message: stage changes first".to_string(),
+            );
+            return;
+        }
+
+        let events = self.events.clone();
+        // Off the actor thread: the CLI round-trip can take seconds. Fire-and-forget.
+        std::thread::spawn(move || {
+            let event = match crate::aicommit::generate(&diff, &cfg) {
+                Ok(message) => Event::CommitMessageGenerated { message },
+                Err(message) => Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::Vcs,
+                    message: format!("commit message generation failed: {message}"),
+                },
+            };
+            events.send((Some(id), event)).ok();
+        });
+    }
+
+    /// Without the `aicommit` feature, message generation is unavailable — report it.
+    #[cfg(not(feature = "aicommit"))]
+    fn generate_commit_message(&mut self, id: RequestId) {
+        self.emit_vcs_notice(
+            id,
+            Severity::Warning,
+            "AI commit messages are unavailable (built without the `aicommit` feature)".to_string(),
+        );
+    }
+
+    /// Emit a source-control [`Event::Notification`] tagged with `id`.
+    fn emit_vcs_notice(&mut self, id: RequestId, severity: Severity, message: String) {
+        self.emit(
+            Some(id),
+            Event::Notification {
+                severity,
+                kind: NotificationKind::Vcs,
+                message,
+            },
+        );
     }
 
     /// The session's configuration (workspace roots, format-on-save, spell-check).
