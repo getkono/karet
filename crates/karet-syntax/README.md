@@ -6,7 +6,9 @@ editors. It produces **data, not rendering**: highlight spans tagged with semant
 
 This is the crate behind the standalone "highlight a code snippet" use case.
 Highlighting runs a grammar's query through `karet-treesitter`'s single parse host;
-fold regions, bracket pairs, and structural selection round out the API.
+fold regions, semantic block hierarchies, bracket pairs, and structural selection round
+out the API. `SemanticBlocker` derives the active header/scope model used by sticky-scroll
+renderers without introducing a presentation dependency.
 
 `Highlighter` highlights one language. `LayeredHighlighter` highlights a `LayeredTree` —
 a document together with the languages it embeds — merging every layer's captures into one

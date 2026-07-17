@@ -54,6 +54,7 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 | `scrollOff` | number | `3` | Lines kept visible above/below the caret. |
 | `rulers` | number[] | `[]` | Columns to draw vertical rulers at. |
 | `wordWrap` | bool\|null | `null` | Override long-line handling; `null` uses the file-type default, `true` wraps, and `false` scrolls horizontally. |
+| `stickyScroll` | bool | `true` | Pin the active semantic block hierarchy above scrolled text. Multi-line signatures collapse to one row with an ellipsis. |
 | `trimTrailingWhitespace` | bool | `true` | Strip trailing whitespace on save. |
 | `insertFinalNewline` | bool | `true` | Ensure a trailing newline on save. |
 | `formatOnSave` | bool | `false` | Run the formatter on save. |
@@ -77,7 +78,8 @@ for the open document:
       "completion": { "autoTrigger": false }
     },
     "[markdown]": {
-      "semanticComments": { "enabled": false }
+      "semanticComments": { "enabled": false },
+      "stickyScroll": false
     }
   }
 }
