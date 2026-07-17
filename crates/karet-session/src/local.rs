@@ -17,6 +17,7 @@ use karet_core::CursorState;
 use karet_core::Decoration;
 use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
+use karet_syntax::SemanticBlocks;
 use karet_text::TextBuffer;
 use tokio::sync::mpsc;
 
@@ -33,6 +34,8 @@ pub struct DocSnapshot {
     pub highlights: Arc<Highlights>,
     /// Foldable regions for this version (tree-sitter fold ranges).
     pub folds: Arc<FoldRegions>,
+    /// Semantic block headers and scope ranges for sticky-scroll rendering.
+    pub semantic_blocks: Arc<SemanticBlocks>,
     /// Decorations merged across producers (empty until producers attach).
     pub decorations: Arc<Vec<Decoration>>,
     /// Inclusive 0-based line ranges covered by syntax errors in the last

@@ -305,6 +305,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn semantic_blocks_reach_the_snapshot_stream() {
+        use crate::session::Session;
+        use crate::session::SessionConfig;
+
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("notes.md");
+        if std::fs::write(&path, "# Top\n\n## Child\n\nbody\n").is_err() {
+            return;
+        }
+
+        let (session, _events, mut snaps) = Session::new(SessionConfig::default());
+        let backend = local(session);
+        assert!(
+            backend
+                .send(
+                    backend.next_id(),
+                    Command::OpenDocument {
+                        path,
+                        language: None
+                    }
+                )
+                .is_ok()
+        );
+
+        let published = await_snapshot(&mut snaps, |snap| {
+            snap.semantic_blocks.active_at(4).len() == 2
+        })
+        .await;
+        assert!(
+            published,
+            "the Markdown H1/H2 chain should reach the UI snapshot"
+        );
+    }
+
+    #[tokio::test]
     async fn todo_comments_are_marked_in_a_real_rust_buffer() {
         use karet_core::StandardToken;
 

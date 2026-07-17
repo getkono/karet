@@ -205,6 +205,8 @@ struct PaneCtx<'a> {
     graphical_cursor: bool,
     /// Language-resolved word-wrap override; `None` delegates to the active file type.
     word_wrap: Option<bool>,
+    /// Language-resolved semantic sticky-scroll setting.
+    sticky_scroll: bool,
     /// The find bar to draw atop this pane's content, if any (focused pane only).
     /// Owned (not borrowed): it now lives on the active `Tab` itself, and
     /// `render_pane` needs a mutable borrow of the tabs slice at the same time.
@@ -244,15 +246,14 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     for (pane, rect) in app.layout.layout(area) {
         let is_focused = pane == focused;
         let rendered = if is_focused {
-            let word_wrap = app
-                .tabs
-                .get(app.active)
-                .map_or(app.settings.editor.word_wrap, |tab| {
-                    app.settings
-                        .editor
-                        .for_language(crate::app::tab_language(tab))
-                        .word_wrap()
-                });
+            let resolved = app.tabs.get(app.active).map(|tab| {
+                app.settings
+                    .editor
+                    .for_language(crate::app::tab_language(tab))
+            });
+            let word_wrap = resolved.map_or(app.settings.editor.word_wrap, |r| r.word_wrap());
+            let sticky_scroll =
+                resolved.map_or(app.settings.editor.sticky_scroll, |r| r.sticky_scroll());
             let ctx = PaneCtx {
                 theme,
                 root: &app.root,
@@ -261,6 +262,7 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                 editor_focused,
                 graphical_cursor,
                 word_wrap,
+                sticky_scroll,
                 find: app
                     .find_open
                     .then(|| app.tabs.get(app.active))
@@ -269,16 +271,14 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             };
             render_pane(f, &mut app.tabs, app.active, rect, &ctx)
         } else if let Some(stored) = app.stored.get_mut(&pane) {
-            let word_wrap =
-                stored
-                    .tabs
-                    .get(stored.active)
-                    .map_or(app.settings.editor.word_wrap, |tab| {
-                        app.settings
-                            .editor
-                            .for_language(crate::app::tab_language(tab))
-                            .word_wrap()
-                    });
+            let resolved = stored.tabs.get(stored.active).map(|tab| {
+                app.settings
+                    .editor
+                    .for_language(crate::app::tab_language(tab))
+            });
+            let word_wrap = resolved.map_or(app.settings.editor.word_wrap, |r| r.word_wrap());
+            let sticky_scroll =
+                resolved.map_or(app.settings.editor.sticky_scroll, |r| r.sticky_scroll());
             let ctx = PaneCtx {
                 theme,
                 root: &app.root,
@@ -287,6 +287,7 @@ fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                 editor_focused: false,
                 graphical_cursor: false,
                 word_wrap,
+                sticky_scroll,
                 find: None,
             };
             render_pane(f, &mut stored.tabs, stored.active, rect, &ctx)
@@ -1689,6 +1690,7 @@ fn draw_pane_content(
         TabKind::Code {
             buffer,
             highlights,
+            semantic_blocks,
             folds,
             folded,
             decos,
@@ -1703,12 +1705,14 @@ fn draw_pane_content(
                 decos.iter().chain(search_decos.iter()).cloned().collect();
             let editor = Editor::new(buffer)
                 .highlights(highlights)
+                .semantic_blocks(semantic_blocks)
                 .theme(theme)
                 .decorations(&combined)
                 .folds(&fold_lines)
                 .focused(ctx.editor_focused)
                 .cell_caret(!ctx.graphical_cursor)
                 .word_wrap(word_wrap);
+            let editor = editor.sticky_scroll(ctx.sticky_scroll);
             f.render_stateful_widget(editor, area, &mut tab.editor);
         },
         TabKind::MarkdownPreview {
@@ -3228,6 +3232,7 @@ mod tests {
                 buffer,
                 text: String::new(),
                 highlights: karet_syntax::Highlights::default(),
+                semantic_blocks: karet_syntax::SemanticBlocks::default(),
                 folds: karet_syntax::FoldRegions::default(),
                 folded: std::collections::BTreeSet::new(),
                 decos: Vec::new(),
@@ -3475,6 +3480,7 @@ mod tests {
                 buffer: buffer.clone(),
                 text: "hello\nworld\n".to_string(),
                 highlights: karet_syntax::Highlights::default(),
+                semantic_blocks: karet_syntax::SemanticBlocks::default(),
                 folds: karet_syntax::FoldRegions::default(),
                 folded: std::collections::BTreeSet::new(),
                 decos: Vec::new(),

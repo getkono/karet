@@ -5,6 +5,10 @@ The composable ratatui code-editor widget for
 (`karet-text`, `karet-syntax`, `karet-theme`) into one `Editor` widget with a gutter,
 scrolling, and visual aids.
 
+Consumers can supply `SemanticBlocks` and enable `sticky_scroll` to keep the active
+outer-to-inner source headers pinned above the viewport. Multi-line signatures occupy one
+sticky row, leaving the document usable even in a short terminal pane.
+
 By design it depends on **none** of the feature producers
 (`karet-lsp`/`karet-vcs`/`karet-dap`/`karet-search`): diagnostics, git markers,
 breakpoints, inlay hints, and code lenses all arrive as `karet-core` decorations that

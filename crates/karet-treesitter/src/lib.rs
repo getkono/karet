@@ -64,6 +64,18 @@ pub fn injections_query(lang: LanguageId) -> Option<Cow<'static, str>> {
     }
 }
 
+/// The semantic-block query source for `lang`, if that grammar has meaningful
+/// nested text scopes.
+///
+/// Queries use `semantic.scope` for the full lifetime of a block, optionally
+/// `semantic.header` for the source header and `semantic.body` for the body that
+/// follows a signature. Markdown headings instead use
+/// `semantic.heading.{1..6}` so consumers can derive CommonMark section ranges.
+#[must_use]
+pub fn semantic_query(lang: LanguageId) -> Option<&'static str> {
+    registry::semantic_query(lang)
+}
+
 /// A pool of reusable tree-sitter parsers, keyed by [`LanguageId`].
 #[derive(Default)]
 pub struct ParserPool {
@@ -352,6 +364,36 @@ impl SyntaxTree {
         out
     }
 
+    /// Run `query` and retain captures grouped by their original query match.
+    ///
+    /// Grouping is required when several captures describe one construct, such
+    /// as a method's full scope, signature and body.
+    #[must_use]
+    pub fn matches(&self, query: &Query, text: &str) -> Vec<QueryMatch> {
+        use tree_sitter::StreamingIterator;
+
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut it = cursor.matches(&query.inner, self.tree.root_node(), text.as_bytes());
+        let mut out = Vec::new();
+        while let Some(m) = it.next() {
+            out.push(QueryMatch {
+                pattern: m.pattern_index,
+                captures: m
+                    .captures
+                    .iter()
+                    .map(|cap| RawCapture {
+                        capture: cap.index,
+                        span: Span {
+                            start: BytePos(cap.node.start_byte()),
+                            end: BytePos(cap.node.end_byte()),
+                        },
+                    })
+                    .collect(),
+            });
+        }
+        out
+    }
+
     /// Every *named* node that begins and ends on different lines, in a pre-order
     /// walk (outermost before inner). This is the neutral raw material for deriving
     /// fold regions — the grammar-agnostic tree geometry, with no tree-sitter types
@@ -414,6 +456,15 @@ pub struct RawCapture {
     pub capture: u32,
     /// The byte span the capture covers.
     pub span: Span,
+}
+
+/// One tree-sitter query match with all of its captures kept together.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueryMatch {
+    /// The index of the matching pattern in the query source.
+    pub pattern: usize,
+    /// The captures belonging to this match.
+    pub captures: Vec<RawCapture>,
 }
 
 /// A compiled tree-sitter query (highlights, folds, locals, …).
@@ -709,6 +760,26 @@ mod tests {
     fn unknown_language_has_no_highlights() {
         assert!(highlights_query(LanguageId(60000)).is_none());
         assert!(injections_query(LanguageId(60000)).is_none());
+        assert!(semantic_query(LanguageId(60000)).is_none());
+    }
+
+    #[test]
+    fn every_registered_semantic_query_compiles() -> Result<(), TsError> {
+        for grammar in registry::all() {
+            let Some(source) = semantic_query(grammar.id) else {
+                continue;
+            };
+            let query = Query::compile(grammar.id, source)?;
+            assert!(
+                query
+                    .capture_names()
+                    .iter()
+                    .any(|name| name.starts_with("semantic.")),
+                "{} semantic query has no semantic captures",
+                grammar.name
+            );
+        }
+        Ok(())
     }
 
     #[cfg(feature = "lang-rust")]

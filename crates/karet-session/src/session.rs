@@ -32,6 +32,7 @@ use karet_filetype::FileKind;
 use karet_filetype::classify_ignoring_size;
 use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
+use karet_syntax::SemanticBlocks;
 use karet_text::AppliedEdit;
 use karet_text::EditCause;
 use karet_text::EditContext;
@@ -178,6 +179,8 @@ struct Document {
     /// since. The parsed trees themselves live on the worker, not here.
     highlights: Arc<Highlights>,
     folds: Arc<FoldRegions>,
+    /// Semantic block scopes produced by the syntax worker for this version.
+    semantic_blocks: Arc<SemanticBlocks>,
     /// Syntax-error line ranges from the worker's last parse (see
     /// [`DocSnapshot::syntax_error_lines`]).
     error_lines: Arc<Vec<(u32, u32)>>,
@@ -935,6 +938,7 @@ impl Session {
         }
         doc.highlights = result.highlights;
         doc.folds = result.folds;
+        doc.semantic_blocks = result.semantic_blocks;
         doc.error_lines = result.error_lines;
         self.publish(result.doc, None);
     }
@@ -1103,6 +1107,7 @@ impl Session {
             format,
             highlights: Arc::new(Highlights::default()),
             folds: Arc::new(FoldRegions::default()),
+            semantic_blocks: Arc::new(SemanticBlocks::default()),
             error_lines: Arc::default(),
             decorations: Vec::new(),
             refs: 1,
@@ -1557,6 +1562,7 @@ impl Session {
                 buffer: doc.buffer.content_snapshot(),
                 highlights: doc.highlights.clone(),
                 folds: doc.folds.clone(),
+                semantic_blocks: doc.semantic_blocks.clone(),
                 decorations: Arc::new(doc.decorations.clone()),
                 syntax_error_lines: doc.error_lines.clone(),
                 language: doc.language,
@@ -1586,12 +1592,16 @@ fn update_syntax(
         // Plaintext: nothing to parse, and no worker round-trip to wait for.
         doc.highlights = Arc::new(Highlights::default());
         doc.folds = Arc::new(FoldRegions::default());
+        doc.semantic_blocks = Arc::new(SemanticBlocks::default());
         return;
     };
 
     // Keep the spans we already have usable until the worker answers. Rendering them
     // unshifted would smear color across the text the edit moved.
     if let Some(edits) = edits {
+        // Block scopes are line-based and cannot be translated safely across an
+        // arbitrary edit. Hide them briefly rather than render stale source context.
+        doc.semantic_blocks = Arc::new(SemanticBlocks::default());
         for ae in edits {
             doc.highlights = Arc::new(doc.highlights.translate(
                 BytePos(ae.start_byte),

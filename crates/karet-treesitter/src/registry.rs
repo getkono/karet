@@ -8,6 +8,237 @@ use std::sync::OnceLock;
 
 use crate::LanguageId;
 
+#[cfg(feature = "lang-rust")]
+const RUST_SEMANTIC: &str = r#"
+(function_item (block) @semantic.body) @semantic.scope
+(struct_item (field_declaration_list) @semantic.body) @semantic.scope
+(enum_item (enum_variant_list) @semantic.body) @semantic.scope
+(union_item (field_declaration_list) @semantic.body) @semantic.scope
+(trait_item (declaration_list) @semantic.body) @semantic.scope
+(impl_item (declaration_list) @semantic.body) @semantic.scope
+(mod_item (declaration_list) @semantic.body) @semantic.scope
+"#;
+
+#[cfg(feature = "lang-python")]
+const PYTHON_SEMANTIC: &str = r#"
+(class_definition body: (block) @semantic.body) @semantic.scope
+(function_definition body: (block) @semantic.body) @semantic.scope
+"#;
+
+#[cfg(feature = "lang-javascript")]
+const JAVASCRIPT_SEMANTIC: &str = r#"
+(class_declaration body: (class_body) @semantic.body) @semantic.scope
+(class body: (class_body) @semantic.body) @semantic.scope
+(function_declaration body: (statement_block) @semantic.body) @semantic.scope
+(generator_function_declaration body: (statement_block) @semantic.body) @semantic.scope
+(method_definition body: (statement_block) @semantic.body) @semantic.scope
+"#;
+
+#[cfg(feature = "lang-typescript")]
+const TYPESCRIPT_SEMANTIC: &str = r#"
+(class_declaration body: (class_body) @semantic.body) @semantic.scope
+(abstract_class_declaration body: (class_body) @semantic.body) @semantic.scope
+(function_declaration body: (statement_block) @semantic.body) @semantic.scope
+(generator_function_declaration body: (statement_block) @semantic.body) @semantic.scope
+(method_definition body: (statement_block) @semantic.body) @semantic.scope
+(interface_declaration body: (interface_body) @semantic.body) @semantic.scope
+"#;
+
+#[cfg(feature = "lang-json")]
+const JSON_SEMANTIC: &str = r#"
+(pair key: (string) @semantic.header value: [(object) (array)] @semantic.body) @semantic.scope
+"#;
+
+#[cfg(feature = "lang-go")]
+const GO_SEMANTIC: &str = r#"
+(function_declaration body: (block) @semantic.body) @semantic.scope
+(method_declaration body: (block) @semantic.body) @semantic.scope
+(type_declaration (type_spec type: [(struct_type) (interface_type)] @semantic.body)) @semantic.scope
+"#;
+
+#[cfg(feature = "lang-c")]
+const C_SEMANTIC: &str = r#"
+(function_definition body: (compound_statement) @semantic.body) @semantic.scope
+(struct_specifier body: (field_declaration_list) @semantic.body) @semantic.scope
+(union_specifier body: (field_declaration_list) @semantic.body) @semantic.scope
+(enum_specifier body: (enumerator_list) @semantic.body) @semantic.scope
+"#;
+
+#[cfg(feature = "lang-cpp")]
+const CPP_SEMANTIC: &str = r#"
+(function_definition body: (compound_statement) @semantic.body) @semantic.scope
+(class_specifier body: (field_declaration_list) @semantic.body) @semantic.scope
+(struct_specifier body: (field_declaration_list) @semantic.body) @semantic.scope
+(namespace_definition body: (declaration_list) @semantic.body) @semantic.scope
+(enum_specifier body: (enumerator_list) @semantic.body) @semantic.scope
+"#;
+
+#[cfg(feature = "lang-csharp")]
+const CSHARP_SEMANTIC: &str = r#"
+(namespace_declaration body: (declaration_list) @semantic.body) @semantic.scope
+(class_declaration body: (declaration_list) @semantic.body) @semantic.scope
+(interface_declaration body: (declaration_list) @semantic.body) @semantic.scope
+(struct_declaration body: (declaration_list) @semantic.body) @semantic.scope
+(record_declaration body: (declaration_list) @semantic.body) @semantic.scope
+(method_declaration body: (block) @semantic.body) @semantic.scope
+(constructor_declaration body: (block) @semantic.body) @semantic.scope
+"#;
+
+#[cfg(feature = "lang-java")]
+const JAVA_SEMANTIC: &str = r#"
+(class_declaration body: (class_body) @semantic.body) @semantic.scope
+(interface_declaration body: (interface_body) @semantic.body) @semantic.scope
+(enum_declaration body: (enum_body) @semantic.body) @semantic.scope
+(record_declaration body: (class_body) @semantic.body) @semantic.scope
+(method_declaration body: (block) @semantic.body) @semantic.scope
+(constructor_declaration body: (constructor_body) @semantic.body) @semantic.scope
+"#;
+
+#[cfg(feature = "lang-ruby")]
+const RUBY_SEMANTIC: &str = r#"
+(class) @semantic.scope
+(singleton_class) @semantic.scope
+(module) @semantic.scope
+(method) @semantic.scope
+(singleton_method) @semantic.scope
+"#;
+
+#[cfg(feature = "lang-php")]
+const PHP_SEMANTIC: &str = r#"
+(namespace_definition body: (compound_statement) @semantic.body) @semantic.scope
+(class_declaration body: (declaration_list) @semantic.body) @semantic.scope
+(interface_declaration body: (declaration_list) @semantic.body) @semantic.scope
+(trait_declaration body: (declaration_list) @semantic.body) @semantic.scope
+(function_definition body: (compound_statement) @semantic.body) @semantic.scope
+(method_declaration body: (compound_statement) @semantic.body) @semantic.scope
+"#;
+
+#[cfg(feature = "lang-bash")]
+const BASH_SEMANTIC: &str = r#"
+(function_definition body: (_) @semantic.body) @semantic.scope
+(if_statement) @semantic.scope
+(for_statement) @semantic.scope
+(c_style_for_statement) @semantic.scope
+(while_statement) @semantic.scope
+(case_statement) @semantic.scope
+"#;
+
+#[cfg(feature = "lang-toml")]
+const TOML_SEMANTIC: &str = r#"
+(table) @semantic.scope
+(table_array_element) @semantic.scope
+"#;
+
+#[cfg(feature = "lang-html")]
+const HTML_SEMANTIC: &str = r#"
+(element (start_tag) @semantic.header) @semantic.scope
+(script_element (start_tag) @semantic.header) @semantic.scope
+(style_element (start_tag) @semantic.header) @semantic.scope
+"#;
+
+#[cfg(feature = "lang-css")]
+const CSS_SEMANTIC: &str = r#"
+(rule_set (selectors) @semantic.header (block) @semantic.body) @semantic.scope
+(media_statement (block) @semantic.body) @semantic.scope
+(supports_statement (block) @semantic.body) @semantic.scope
+(keyframes_statement (keyframe_block_list) @semantic.body) @semantic.scope
+"#;
+
+#[cfg(feature = "lang-yaml")]
+const YAML_SEMANTIC: &str = r#"
+(block_mapping_pair
+  key: (_) @semantic.header
+  value: (block_node [(block_mapping) (block_sequence)] @semantic.body)) @semantic.scope
+"#;
+
+#[cfg(feature = "lang-markdown")]
+const MARKDOWN_SEMANTIC: &str = r#"
+(atx_heading (atx_h1_marker)) @semantic.heading.1
+(atx_heading (atx_h2_marker)) @semantic.heading.2
+(atx_heading (atx_h3_marker)) @semantic.heading.3
+(atx_heading (atx_h4_marker)) @semantic.heading.4
+(atx_heading (atx_h5_marker)) @semantic.heading.5
+(atx_heading (atx_h6_marker)) @semantic.heading.6
+(setext_heading (setext_h1_underline)) @semantic.heading.1
+(setext_heading (setext_h2_underline)) @semantic.heading.2
+"#;
+
+pub(crate) fn semantic_query(_lang: LanguageId) -> Option<&'static str> {
+    #[cfg(feature = "lang-rust")]
+    if _lang == RUST {
+        return Some(RUST_SEMANTIC);
+    }
+    #[cfg(feature = "lang-python")]
+    if _lang == PYTHON {
+        return Some(PYTHON_SEMANTIC);
+    }
+    #[cfg(feature = "lang-javascript")]
+    if _lang == JAVASCRIPT {
+        return Some(JAVASCRIPT_SEMANTIC);
+    }
+    #[cfg(feature = "lang-typescript")]
+    if _lang == TYPESCRIPT || _lang == TSX {
+        return Some(TYPESCRIPT_SEMANTIC);
+    }
+    #[cfg(feature = "lang-json")]
+    if _lang == JSON {
+        return Some(JSON_SEMANTIC);
+    }
+    #[cfg(feature = "lang-go")]
+    if _lang == GO {
+        return Some(GO_SEMANTIC);
+    }
+    #[cfg(feature = "lang-c")]
+    if _lang == C {
+        return Some(C_SEMANTIC);
+    }
+    #[cfg(feature = "lang-cpp")]
+    if _lang == CPP {
+        return Some(CPP_SEMANTIC);
+    }
+    #[cfg(feature = "lang-csharp")]
+    if _lang == CSHARP {
+        return Some(CSHARP_SEMANTIC);
+    }
+    #[cfg(feature = "lang-java")]
+    if _lang == JAVA {
+        return Some(JAVA_SEMANTIC);
+    }
+    #[cfg(feature = "lang-ruby")]
+    if _lang == RUBY {
+        return Some(RUBY_SEMANTIC);
+    }
+    #[cfg(feature = "lang-php")]
+    if _lang == PHP {
+        return Some(PHP_SEMANTIC);
+    }
+    #[cfg(feature = "lang-bash")]
+    if _lang == BASH {
+        return Some(BASH_SEMANTIC);
+    }
+    #[cfg(feature = "lang-toml")]
+    if _lang == TOML {
+        return Some(TOML_SEMANTIC);
+    }
+    #[cfg(feature = "lang-html")]
+    if _lang == HTML {
+        return Some(HTML_SEMANTIC);
+    }
+    #[cfg(feature = "lang-css")]
+    if _lang == CSS {
+        return Some(CSS_SEMANTIC);
+    }
+    #[cfg(feature = "lang-yaml")]
+    if _lang == YAML {
+        return Some(YAML_SEMANTIC);
+    }
+    #[cfg(feature = "lang-markdown")]
+    if _lang == MARKDOWN {
+        return Some(MARKDOWN_SEMANTIC);
+    }
+    None
+}
+
 /// Static metadata for one registered grammar.
 pub(crate) struct GrammarInfo {
     /// The grammar's stable identifier.
