@@ -25,7 +25,7 @@ thiserror.workspace = true
 [dev-dependencies]
 # Compile in the Rust + Markdown grammars so the end-to-end highlight tests — including
 # embedded code fences and markdown-in-doc-comments — are self-contained.
-karet-treesitter = { workspace = true, features = ["lang-rust", "lang-markdown"] }
+karet-treesitter = { workspace = true, features = ["lang-rust", "lang-markdown", "lang-java"] }
 
 [lints]
 workspace = true

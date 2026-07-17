@@ -21,10 +21,14 @@ use karet_core::Span;
 use karet_core::TokenId;
 use karet_treesitter::SyntaxTree;
 
+mod blocks;
 mod highlight;
 mod map;
 mod semantic;
 
+pub use blocks::SemanticBlock;
+pub use blocks::SemanticBlocker;
+pub use blocks::SemanticBlocks;
 pub use highlight::Highlighter;
 pub use highlight::LayeredHighlighter;
 pub use semantic::SemanticCommentConfig;
