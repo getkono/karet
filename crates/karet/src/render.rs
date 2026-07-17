@@ -301,13 +301,10 @@ fn diff_line(
         LineKind::Remove => '-',
         LineKind::Context => ' ',
     };
-    let lineno = match dl.kind {
-        LineKind::Add => dl.new_lineno,
-        _ => dl.old_lineno,
-    };
     let tokens = file.tokens_for(dl.kind, dl.old_lineno, dl.new_lineno);
     let mut spans = vec![
-        gutter_span(lineno, theme),
+        gutter_span(dl.old_lineno, theme),
+        gutter_span(dl.new_lineno, theme),
         Span::styled(
             marker.to_string(),
             color(marker_glyph_color(dl.kind, theme)),
@@ -557,6 +554,16 @@ mod tests {
             .collect()
     }
 
+    fn has_gutter(line: &Line<'_>, old: &str, new: &str, marker: &str) -> bool {
+        matches!(
+            line.spans.as_slice(),
+            [old_span, new_span, marker_span, ..]
+                if old_span.content == old
+                    && new_span.content == new
+                    && marker_span.content == marker
+        )
+    }
+
     #[test]
     fn rust_file_is_highlighted_and_rendered() {
         let fv = FileView::new(
@@ -648,6 +655,36 @@ mod tests {
         let (left, right) = side_by_side_lines(&fv, &Theme::dark());
         assert_eq!(left.len(), right.len());
         assert!(!left.is_empty());
+    }
+
+    #[test]
+    fn unified_gutters_keep_old_and_new_line_boundaries_distinct() {
+        let fv = FileView::new(
+            change(
+                "notes.txt",
+                "one\ntwo\nthree\nfour\n## Performance\n\n- bullet\n \nafter\n",
+                "one\ntwo\nthree\nfour\n## Performance\n\n- bullet\n\nafter\n",
+            ),
+            Section::Working,
+            false,
+        );
+        let lines = unified_lines(&fv, &Theme::dark());
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| has_gutter(line, "   8 ", "     ", "-"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| has_gutter(line, "     ", "   8 ", "+"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| has_gutter(line, "   9 ", "   9 ", " "))
+        );
     }
 
     #[test]
