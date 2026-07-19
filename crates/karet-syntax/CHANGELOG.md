@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/getkono/karet/compare/karet-syntax-v0.2.2...karet-syntax-v0.3.0) - 2026-07-19
+
+### Added
+
+- *(karet-syntax)* derive semantic block hierarchies
+- *(karet-syntax)* detect semantic comment blocks
+
+### Other
+
+- *(config)* document semantic sticky scroll
+
 ## [0.2.2](https://github.com/getkono/karet/compare/karet-syntax-v0.2.1...karet-syntax-v0.2.2) - 2026-07-10
 
 ### Added

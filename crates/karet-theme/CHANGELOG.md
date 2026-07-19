@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/getkono/karet/compare/karet-theme-v0.2.2...karet-theme-v0.3.0) - 2026-07-19
+
+### Added
+
+- *(karet-core)* add a semantic-comment token
+
 ## [0.2.2](https://github.com/getkono/karet/compare/karet-theme-v0.2.1...karet-theme-v0.2.2) - 2026-07-10
 
 ### Added

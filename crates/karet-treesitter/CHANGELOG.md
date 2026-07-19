@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/getkono/karet/compare/karet-treesitter-v0.2.2...karet-treesitter-v0.3.0) - 2026-07-19
+
+### Added
+
+- *(karet-treesitter)* expose semantic structure queries
+- *(karet-treesitter)* expose syntax-error line ranges
+
+### Other
+
+- *(engines)* move oversized unit suites into modules
+- *(config)* document semantic sticky scroll
+
 ## [0.2.2](https://github.com/getkono/karet/compare/karet-treesitter-v0.2.1...karet-treesitter-v0.2.2) - 2026-07-10
 
 ### Added
