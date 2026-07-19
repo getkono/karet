@@ -69,8 +69,10 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(SourceControl, false, false, false, Char('g'), Command::ShowCommitGraph),
 
     // Explorer panel (sidebar focus, Explorer active). Listed before the generic
-    // sidebar bindings so its keys win. New file/folder, rename, refresh; collapse-all
-    // and new file/folder are also on the panel's toolbar buttons and in the palette.
+    // sidebar bindings so its keys win. Path-copy shortcuts follow VS Code; placing
+    // them first also keeps them visible in the width-limited status hints bar.
+    b(Explorer, false, true,  true,  Char('c'), Command::ExplorerCopyPath),
+    seq(Explorer, chord(true, false, false, Char('k')), &[chord(true, true, false, Char('c'))], Command::ExplorerCopyRelativePath),
     b(Explorer, false, false, false, Char('a'), Command::ExplorerNewFile),
     b(Explorer, false, false, false, Char('A'), Command::ExplorerNewFolder),
     b(Explorer, true,  false, false, Char('c'), Command::ExplorerCopy),
