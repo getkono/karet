@@ -465,6 +465,53 @@
     }
 
     #[test]
+    fn explorer_right_click_selects_the_row_and_offers_path_commands() {
+        let dir = test_dir("context-copy-path");
+        let target = dir.join("a.txt");
+        write_file(&dir, "a.txt", b"alpha");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_visible = true;
+        app.sidebar_panel = SidebarPanel::Explorer;
+        app.sidebar_rect = Rect {
+            x: 0,
+            y: 0,
+            width: 30,
+            height: 8,
+        };
+        app.sidebar_content_rect = Rect {
+            x: 0,
+            y: 1,
+            width: 30,
+            height: 7,
+        };
+        app.explorer.ensure_built(&dir);
+        let Some(row) = app
+            .explorer
+            .rows()
+            .iter()
+            .position(|row| row.path == target)
+        else {
+            return;
+        };
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column: 2,
+            row: app.sidebar_content_rect.y + row as u16,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(app.explorer.selected_path(), Some(target.as_path()));
+        let Some(menu) = app.context_menu.as_ref() else {
+            return;
+        };
+        let has = |command| menu.entries.iter().any(|entry| entry.command == command);
+        assert!(has(Command::ExplorerCopyPath));
+        assert!(has(Command::ExplorerCopyRelativePath));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn explorer_keyboard_context_menu_uses_blank_items_when_empty() {
         let dir = test_dir("context-empty");
         let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
@@ -522,4 +569,3 @@
         assert_eq!(selected(&app), Some(1));
         let _ = std::fs::remove_dir_all(&dir);
     }
-
