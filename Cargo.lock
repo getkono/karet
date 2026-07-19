@@ -326,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "blameline"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "gix",
  "karet-core",
@@ -2955,7 +2955,7 @@ dependencies = [
 
 [[package]]
 name = "karet"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "base64",
  "blameline",
@@ -3001,7 +3001,7 @@ dependencies = [
 
 [[package]]
 name = "karet-cbor"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "ciborium",
  "tempfile",
@@ -3010,7 +3010,7 @@ dependencies = [
 
 [[package]]
 name = "karet-core"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -3018,7 +3018,7 @@ dependencies = [
 
 [[package]]
 name = "karet-dap"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "karet-core",
  "ratatui",
@@ -3031,7 +3031,7 @@ dependencies = [
 
 [[package]]
 name = "karet-diff"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "imara-diff",
  "thiserror 2.0.18",
@@ -3039,7 +3039,7 @@ dependencies = [
 
 [[package]]
 name = "karet-docx"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "quick-xml 0.38.4",
  "thiserror 2.0.18",
@@ -3048,7 +3048,7 @@ dependencies = [
 
 [[package]]
 name = "karet-editor"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "crossterm",
  "karet-core",
@@ -3063,11 +3063,11 @@ dependencies = [
 
 [[package]]
 name = "karet-filetype"
-version = "0.2.2"
+version = "0.3.0"
 
 [[package]]
 name = "karet-fileview"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "base64",
  "crossterm",
@@ -3088,7 +3088,7 @@ dependencies = [
 
 [[package]]
 name = "karet-fuzzy"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "nucleo",
  "thiserror 2.0.18",
@@ -3096,7 +3096,7 @@ dependencies = [
 
 [[package]]
 name = "karet-github"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "reqwest",
  "serde_json",
@@ -3105,7 +3105,7 @@ dependencies = [
 
 [[package]]
 name = "karet-graph"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "karet-core",
  "ratatui",
@@ -3113,7 +3113,7 @@ dependencies = [
 
 [[package]]
 name = "karet-lsp"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "karet-core",
  "lsp-types",
@@ -3126,7 +3126,7 @@ dependencies = [
 
 [[package]]
 name = "karet-markdown"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "karet-core",
  "karet-syntax",
@@ -3140,7 +3140,7 @@ dependencies = [
 
 [[package]]
 name = "karet-pdf"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "hayro",
  "thiserror 2.0.18",
@@ -3148,7 +3148,7 @@ dependencies = [
 
 [[package]]
 name = "karet-search"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "grep-matcher",
  "grep-regex",
@@ -3161,7 +3161,7 @@ dependencies = [
 
 [[package]]
 name = "karet-session"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "aicommit-core",
  "dependable-core",
@@ -3195,7 +3195,7 @@ dependencies = [
 
 [[package]]
 name = "karet-syntax"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "karet-core",
  "karet-treesitter",
@@ -3204,7 +3204,7 @@ dependencies = [
 
 [[package]]
 name = "karet-terminal"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "karet-core",
  "portable-pty",
@@ -3217,7 +3217,7 @@ dependencies = [
 
 [[package]]
 name = "karet-text"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "karet-core",
  "memchr",
@@ -3231,7 +3231,7 @@ dependencies = [
 
 [[package]]
 name = "karet-theme"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "karet-core",
  "palette",
@@ -3244,7 +3244,7 @@ dependencies = [
 
 [[package]]
 name = "karet-treesitter"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "karet-core",
  "karet-filetype",
@@ -3272,7 +3272,7 @@ dependencies = [
 
 [[package]]
 name = "karet-vcs"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "git2",
  "gix",
@@ -3286,7 +3286,7 @@ dependencies = [
 
 [[package]]
 name = "karet-watch"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "ignore",
  "notify",
@@ -3299,7 +3299,7 @@ dependencies = [
 
 [[package]]
 name = "karet-widgets"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "ignore",
  "karet-core",

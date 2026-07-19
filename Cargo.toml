@@ -10,7 +10,7 @@ resolver = "3"
 members  = ["crates/*"]
 
 [workspace.package]
-version      = "0.2.2"
+version      = "0.3.0"
 edition      = "2024"
 rust-version = "1.90"                  # edition 2024 needs 1.85; pinned deps (ratatui 0.30,
                                        # image, ratatui-image→quantette) raise the real floor
@@ -32,33 +32,33 @@ categories   = ["text-editors", "command-line-utilities"]
 # unpublished crate would go stale on the next bump (`karet-cbor = "^0.1.0"` can't match
 # the bumped `0.2.0` package) and break `cargo update`. Path-only keeps them resolvable.
 # (`karet-pdf` keeps its version: it IS published — `karet-fileview` depends on it.)
-karet-core       = { path = "crates/karet-core", version = "0.2.2" }
-karet-filetype   = { path = "crates/karet-filetype", version = "0.2.2" }
-karet-text       = { path = "crates/karet-text", version = "0.2.2" }
-karet-treesitter = { path = "crates/karet-treesitter", version = "0.2.2" }
-karet-syntax     = { path = "crates/karet-syntax", version = "0.2.2" }
-karet-theme      = { path = "crates/karet-theme", version = "0.2.2" }
-karet-diff       = { path = "crates/karet-diff", version = "0.2.2" }
+karet-core       = { path = "crates/karet-core", version = "0.3.0" }
+karet-filetype   = { path = "crates/karet-filetype", version = "0.3.0" }
+karet-text       = { path = "crates/karet-text", version = "0.3.0" }
+karet-treesitter = { path = "crates/karet-treesitter", version = "0.3.0" }
+karet-syntax     = { path = "crates/karet-syntax", version = "0.3.0" }
+karet-theme      = { path = "crates/karet-theme", version = "0.3.0" }
+karet-diff       = { path = "crates/karet-diff", version = "0.3.0" }
 karet-markdown   = { path = "crates/karet-markdown" }
 karet-cbor       = { path = "crates/karet-cbor" }
 karet-docx       = { path = "crates/karet-docx" }
 karet-terminal   = { path = "crates/karet-terminal" }
-karet-lsp        = { path = "crates/karet-lsp", version = "0.2.2" }
-karet-dap        = { path = "crates/karet-dap", version = "0.2.2" }
-karet-vcs        = { path = "crates/karet-vcs", version = "0.2.2" }
-karet-search     = { path = "crates/karet-search", version = "0.2.2" }
+karet-lsp        = { path = "crates/karet-lsp", version = "0.3.0" }
+karet-dap        = { path = "crates/karet-dap", version = "0.3.0" }
+karet-vcs        = { path = "crates/karet-vcs", version = "0.3.0" }
+karet-search     = { path = "crates/karet-search", version = "0.3.0" }
 karet-fuzzy      = { path = "crates/karet-fuzzy" }
 karet-widgets    = { path = "crates/karet-widgets" }
-karet-editor     = { path = "crates/karet-editor", version = "0.2.2" }
-karet-fileview   = { path = "crates/karet-fileview", version = "0.2.2" }
-karet-pdf        = { path = "crates/karet-pdf", version = "0.2.2" }
+karet-editor     = { path = "crates/karet-editor", version = "0.3.0" }
+karet-fileview   = { path = "crates/karet-fileview", version = "0.3.0" }
+karet-pdf        = { path = "crates/karet-pdf", version = "0.3.0" }
 karet-session    = { path = "crates/karet-session" }
 karet-watch      = { path = "crates/karet-watch" }
 karet-graph      = { path = "crates/karet-graph" }
 karet-github     = { path = "crates/karet-github" }
 # blameline is a standalone library on its OWN SemVer line (NOT the workspace lockstep);
 # pin its independent version here. See crates/blameline/README.md.
-blameline        = { path = "crates/blameline", version = "1.0.3" }
+blameline        = { path = "crates/blameline", version = "1.0.4" }
 
 # --- shared external dependencies (versions verified via `cargo add`) ---
 # Foundational
