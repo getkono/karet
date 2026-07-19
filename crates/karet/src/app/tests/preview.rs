@@ -8,6 +8,7 @@
             breadcrumb_rect: Rect::default(),
             breadcrumb_hits: Vec::new(),
             content_rect: rect,
+            commit_file_hits: Vec::new(),
         }
     }
 
@@ -753,4 +754,3 @@
             "the preview must re-render once the document version moves:\n{after}"
         );
     }
-

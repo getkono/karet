@@ -324,6 +324,7 @@
                 width: 40,
                 height: 10,
             },
+            commit_file_hits: Vec::new(),
         }
     }
 
@@ -522,4 +523,3 @@
         assert_eq!(selected(&app), Some(1));
         let _ = std::fs::remove_dir_all(&dir);
     }
-

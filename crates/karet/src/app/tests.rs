@@ -5,6 +5,7 @@ include!("tests/save.rs");
 include!("tests/scm.rs");
 include!("tests/tabs_search.rs");
 include!("tests/preview.rs");
+include!("tests/commit_view.rs");
 include!("tests/editor_mouse.rs");
 include!("tests/explorer.rs");
 include!("tests/remote.rs");

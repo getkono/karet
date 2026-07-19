@@ -241,6 +241,7 @@ struct RenderedPane {
     content_rect: Rect,
     image_area: Option<Rect>,
     commit_badge_rect: Option<Rect>,
+    commit_file_hits: Vec<crate::app::CommitFileHit>,
 }
 
 /// Geometry a tab's content reported for post-draw use: a reserved Kitty image rect
@@ -249,6 +250,7 @@ struct RenderedPane {
 struct PaneContent {
     image_area: Option<Rect>,
     badge_rect: Option<Rect>,
+    file_hits: Vec<crate::app::CommitFileHit>,
 }
 
 /// A `width`×`height` rect centered within `area`.
