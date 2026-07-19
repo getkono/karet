@@ -536,6 +536,82 @@ fn active_file_row_is_bold() {
 }
 
 #[test]
+fn active_file_uses_deepest_visible_directory_ancestor() {
+    let dir = temp_dir();
+    write(&dir.path, "a/b/foo.rs", b"fn main() {}\n");
+    write(&dir.path, "a/note.txt", b"note\n");
+    let mut state = FileTreeState::new();
+    let theme = Theme::dark();
+    let active = dir.path.join("a/b/foo.rs");
+    let a = dir.path.join("a");
+    let b = dir.path.join("a/b");
+    let area = Rect::new(0, 0, 30, 6);
+    let width = area.width as usize;
+    let active_bg = theme.role(ThemeRole::ActiveEditorRow).to_ratatui();
+
+    state.expand(&a);
+    let mut collapsed = Buffer::empty(area);
+    FileTree::new(&dir.path)
+        .theme(&theme)
+        .active(Some(&active))
+        .render(area, &mut collapsed, &mut state);
+
+    let a_index = state.rows().iter().position(|row| row.path == a);
+    let b_index = state.rows().iter().position(|row| row.path == b);
+    assert!(a_index.is_some());
+    assert!(b_index.is_some());
+    let (Some(a_index), Some(b_index)) = (a_index, b_index) else {
+        return;
+    };
+    assert_ne!(collapsed.content()[a_index * width].bg, active_bg);
+    assert_eq!(collapsed.content()[b_index * width].bg, active_bg);
+    assert!(
+        collapsed.content()[b_index * width..(b_index + 1) * width]
+            .iter()
+            .any(|cell| cell.modifier.contains(Modifier::BOLD))
+    );
+
+    state.expand(&b);
+    let mut expanded = Buffer::empty(area);
+    FileTree::new(&dir.path)
+        .theme(&theme)
+        .active(Some(&active))
+        .render(area, &mut expanded, &mut state);
+
+    let b_index = state.rows().iter().position(|row| row.path == b);
+    let file_index = state.rows().iter().position(|row| row.path == active);
+    assert!(b_index.is_some());
+    assert!(file_index.is_some());
+    let (Some(b_index), Some(file_index)) = (b_index, file_index) else {
+        return;
+    };
+    assert_ne!(expanded.content()[b_index * width].bg, active_bg);
+    assert_eq!(expanded.content()[file_index * width].bg, active_bg);
+}
+
+#[test]
+fn active_file_highlights_collapsed_compact_directory_chain() {
+    let dir = temp_dir();
+    write(&dir.path, "a/b/c/leaf.txt", b"leaf\n");
+    let mut state = FileTreeState::new();
+    let theme = Theme::dark();
+    let active = dir.path.join("a/b/c/leaf.txt");
+    let area = Rect::new(0, 0, 30, 2);
+    let mut buf = Buffer::empty(area);
+
+    FileTree::new(&dir.path)
+        .theme(&theme)
+        .active(Some(&active))
+        .render(area, &mut buf, &mut state);
+
+    assert_eq!(state.rows()[0].path, dir.path.join("a/b/c"));
+    assert_eq!(
+        buf.content()[0].bg,
+        theme.role(ThemeRole::ActiveEditorRow).to_ratatui()
+    );
+}
+
+#[test]
 fn visible_file_row_is_accent_not_bold() {
     let dir = temp_dir();
     write(&dir.path, "a.txt", b"a");
