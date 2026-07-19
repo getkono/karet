@@ -74,6 +74,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
             breadcrumb_rect: rendered.breadcrumb_rect,
             breadcrumb_hits: rendered.breadcrumb_hits,
             content_rect: rendered.content_rect,
+            commit_file_hits: rendered.commit_file_hits,
         });
     }
 }
@@ -135,6 +136,7 @@ pub(super) fn render_pane(
         content_rect: content,
         image_area: painted.image_area,
         commit_badge_rect: painted.badge_rect,
+        commit_file_hits: painted.file_hits,
     }
 }
 

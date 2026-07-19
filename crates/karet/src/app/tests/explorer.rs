@@ -324,6 +324,7 @@
                 width: 40,
                 height: 10,
             },
+            commit_file_hits: Vec::new(),
         }
     }
 

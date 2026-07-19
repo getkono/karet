@@ -314,9 +314,8 @@ impl App {
             tab.title = title;
             if let Some(detail) = detail.take() {
                 let scroll = match &tab.kind {
-                    TabKind::CommitLoading { scroll, .. } | TabKind::Commit { scroll, .. } => {
-                        *scroll
-                    },
+                    TabKind::CommitLoading { scroll, .. } => *scroll,
+                    TabKind::Commit { view, .. } => view.scroll,
                     _ => 0,
                 };
                 tab.kind = TabKind::Commit {
@@ -326,7 +325,10 @@ impl App {
                     files_error: None,
                     verification: None,
                     explain_since: None,
-                    scroll,
+                    view: CommitViewState {
+                        scroll,
+                        ..CommitViewState::default()
+                    },
                 };
                 filled = true;
             }
@@ -381,7 +383,7 @@ impl App {
                                 files_error: None,
                                 verification: None,
                                 explain_since: None,
-                                scroll: 0,
+                                view: CommitViewState::default(),
                             };
                         },
                     }

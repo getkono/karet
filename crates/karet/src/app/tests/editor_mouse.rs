@@ -320,6 +320,7 @@
             breadcrumb_rect: Rect::default(),
             breadcrumb_hits: Vec::new(),
             content_rect: Rect::default(),
+            commit_file_hits: Vec::new(),
         }];
         app.active = 0;
         app.tab_drag = Some(TabDrag {
@@ -418,4 +419,3 @@
 
         let _ = std::fs::remove_dir_all(&dir);
     }
-

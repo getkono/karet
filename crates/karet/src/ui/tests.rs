@@ -215,6 +215,38 @@ fn file_cards_are_boxed_and_width_sized() {
 }
 
 #[test]
+fn narrow_file_card_headers_never_exceed_the_pane() {
+    use karet_vcs::FileChange;
+    use karet_vcs::StatusKind;
+    use unicode_width::UnicodeWidthStr;
+
+    let file = render::FileView::new(
+        FileChange {
+            path: PathBuf::from("very/long/\u{65e5}\u{672c}\u{8a9e}/filename.rs"),
+            old_path: None,
+            status: StatusKind::Modified,
+            is_binary: false,
+            old: String::new(),
+            new: "x\n".to_string(),
+        },
+        render::Section::Staged,
+        false,
+    );
+    for width in 1..24u16 {
+        let top = file_card(&Theme::dark(), &file, width)
+            .into_iter()
+            .next()
+            .expect("a card header");
+        let text: String = top.spans.iter().map(|span| span.content.as_ref()).collect();
+        assert!(UnicodeWidthStr::width(text.as_str()) <= usize::from(width));
+    }
+    assert_eq!(
+        truncate_start("a/\u{65e5}\u{672c}\u{8a9e}/file.rs", 8),
+        "\u{2026}file.rs"
+    );
+}
+
+#[test]
 fn badge_hit_spans_the_badge_and_reveal_explains_it() {
     use karet_vcs::CommitDetail;
     use karet_vcs::CommitSignature;

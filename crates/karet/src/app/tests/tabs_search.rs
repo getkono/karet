@@ -552,21 +552,21 @@
                 head_label,
                 merge_base,
                 files,
-                scroll,
+                view,
             } => {
                 assert_eq!(base_label, "main");
                 assert_eq!(head_label, "HEAD");
                 assert!(*merge_base);
                 assert_eq!(files.len(), 1);
-                assert_eq!(*scroll, 0);
+                assert_eq!(view.scroll, 0);
             },
             _ => panic!("expected a compare tab"),
         }
         // A compare tab scrolls via the shared pager arm.
         app.scroll_lines(2);
         assert!(matches!(
-            app.tabs[app.active].kind,
-            TabKind::Compare { scroll: 2, .. }
+            &app.tabs[app.active].kind,
+            TabKind::Compare { view, .. } if view.scroll == 2
         ));
     }
 
@@ -643,14 +643,14 @@
         )];
         app.push_tab(Tab::commit(Box::new(detail), files));
         assert!(matches!(
-            app.tabs[app.active].kind,
-            TabKind::Commit { scroll: 0, .. }
+            &app.tabs[app.active].kind,
+            TabKind::Commit { view, .. } if view.scroll == 0
         ));
 
         // A wheel notch / ScrollDown advances the offset (the draw-time clamp caps it).
         app.scroll_lines(3);
-        let scrolled = match app.tabs[app.active].kind {
-            TabKind::Commit { scroll, .. } => scroll,
+        let scrolled = match &app.tabs[app.active].kind {
+            TabKind::Commit { view, .. } => view.scroll,
             _ => unreachable!(),
         };
         assert_eq!(scrolled, 3, "the commit view scrolls on a wheel notch");
@@ -658,16 +658,13 @@
         // Bottom pins to u16::MAX (clamped against content only during draw); Top returns to 0.
         app.scroll_edge(false);
         assert!(matches!(
-            app.tabs[app.active].kind,
-            TabKind::Commit {
-                scroll: u16::MAX,
-                ..
-            }
+            &app.tabs[app.active].kind,
+            TabKind::Commit { view, .. } if view.scroll == u16::MAX
         ));
         app.scroll_edge(true);
         assert!(matches!(
-            app.tabs[app.active].kind,
-            TabKind::Commit { scroll: 0, .. }
+            &app.tabs[app.active].kind,
+            TabKind::Commit { view, .. } if view.scroll == 0
         ));
     }
 
@@ -864,4 +861,3 @@
 
         let _ = std::fs::remove_dir_all(&dir);
     }
-

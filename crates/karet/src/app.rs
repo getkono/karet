@@ -138,6 +138,7 @@ use crate::overlay::OverlayEvent;
 use crate::remote;
 use crate::render::FileView;
 use crate::render::Section;
+use crate::tab::CommitViewState;
 use crate::tab::FindState;
 use crate::tab::SearchField;
 use crate::tab::Tab;
@@ -312,6 +313,17 @@ pub(crate) struct BreadcrumbHit {
     pub(crate) path: PathBuf,
 }
 
+/// A clickable changed-file row from a commit or compare view's last frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CommitFileHit {
+    /// The rendered row in screen coordinates.
+    pub(crate) rect: Rect,
+    /// The changed file's index in the tab.
+    pub(crate) file: usize,
+    /// The layout-specific scroll offset that puts its card header at the top.
+    pub(crate) scroll: u16,
+}
+
 /// A rendered pane's clickable regions, recorded during the last frame for mouse
 /// hit-testing (which pane a click lands in, and its tab strip / content).
 #[derive(Clone)]
@@ -328,6 +340,8 @@ pub(crate) struct PaneFrame {
     pub(crate) breadcrumb_hits: Vec<BreadcrumbHit>,
     /// The pane's content (editor) area.
     pub(crate) content_rect: Rect,
+    /// Changed-file rows clickable within the pane's commit-like view.
+    pub(crate) commit_file_hits: Vec<CommitFileHit>,
 }
 
 /// An in-progress tab drag: the pane it started from and the current drop target
