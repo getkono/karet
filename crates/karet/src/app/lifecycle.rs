@@ -1,0 +1,281 @@
+use super::*;
+
+impl App {
+    /// The active tab's session document, if it is a registered code tab.
+    pub(super) fn active_code_doc(&self) -> Option<DocumentId> {
+        match self.tabs.get(self.active) {
+            Some(Tab {
+                kind: TabKind::Code { doc: Some(doc), .. },
+                ..
+            }) => Some(*doc),
+            _ => None,
+        }
+    }
+
+    /// The active tab's find-in-file state, if any (find-in-file lives per tab so
+    /// it survives closing the bar, but not closing the tab).
+    pub(super) fn active_find(&self) -> Option<&FindState> {
+        self.tabs.get(self.active)?.find.as_ref()
+    }
+
+    /// A mutable handle to the active tab's find-in-file state.
+    pub(super) fn active_find_mut(&mut self) -> Option<&mut FindState> {
+        self.tabs.get_mut(self.active)?.find.as_mut()
+    }
+
+    /// Send a document command for the active code tab, if any.
+    pub(super) fn send_doc_command(&mut self, make: impl FnOnce(DocumentId) -> SessionCommand) {
+        let Some(doc) = self.active_code_doc() else {
+            return;
+        };
+        let result = self.backend.as_ref().map(|backend| {
+            let id = backend.next_id();
+            backend.send(id, make(doc))
+        });
+        if let Some(Err(e)) = result {
+            self.notify_backend_error(e);
+        }
+    }
+
+    /// Handle a quit request through the unified close guard.
+    pub(super) fn request_quit(&mut self) {
+        self.guarded_close(CloseRequest::Quit);
+    }
+
+    /// The stable view ids of the tabs `request` would drop. Tab/pane closes act on
+    /// the focused pane only (mirroring the raw close operations); Quit drops every
+    /// tab across every pane.
+    pub(super) fn removed_tab_views(&self, request: CloseRequest) -> Vec<ViewId> {
+        match request {
+            CloseRequest::Quit => self.all_tabs().map(|tab| tab.view).collect(),
+            CloseRequest::Tab { view } => vec![view],
+            CloseRequest::OtherTabs => self
+                .tabs
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != self.active)
+                .map(|(_, tab)| tab.view)
+                .collect(),
+            CloseRequest::TabsToRight => self
+                .tabs
+                .iter()
+                .skip(self.active + 1)
+                .map(|tab| tab.view)
+                .collect(),
+            CloseRequest::AllTabs => self.tabs.iter().map(|tab| tab.view).collect(),
+        }
+    }
+
+    /// The documents `request` would irreversibly lose: the dirty documents whose
+    /// **last** referencing view is being dropped. A dirty document still shown in a
+    /// surviving tab or another pane (previews count as references, like
+    /// [`reconcile_open_docs`](Self::reconcile_open_docs)) is not at risk, so closing
+    /// one of its several views must not prompt.
+    pub(super) fn docs_at_risk(&self, request: CloseRequest) -> Vec<DocumentId> {
+        let removed: HashSet<ViewId> = self.removed_tab_views(request).into_iter().collect();
+        let surviving: HashSet<DocumentId> = self
+            .all_tabs()
+            .filter(|tab| !removed.contains(&tab.view))
+            .filter_map(Self::tab_doc)
+            .collect();
+        let mut at_risk: Vec<DocumentId> = Vec::new();
+        for tab in self.all_tabs().filter(|tab| removed.contains(&tab.view)) {
+            let Some(doc) = Self::tab_doc(tab) else {
+                continue;
+            };
+            if surviving.contains(&doc) || at_risk.contains(&doc) {
+                continue;
+            }
+            // The document is fully dropped by this request; prompt only if it is
+            // dirty (checked across every view, so per-tab flag skew can't hide it).
+            if self
+                .all_tabs()
+                .any(|t| Self::tab_doc(t) == Some(doc) && t.dirty)
+            {
+                at_risk.push(doc);
+            }
+        }
+        at_risk
+    }
+
+    /// Route an irreversible close through the unified unsaved-changes guard. When it
+    /// would drop the last view of one or more dirty documents it arms the
+    /// confirmation prompt (default: abort); otherwise it runs immediately.
+    ///
+    /// Quit additionally honors `files.confirmOnExit`; tab/pane closes are always
+    /// guarded — silently discarding unsaved changes is the data-loss bug this fixes.
+    pub(super) fn guarded_close(&mut self, request: CloseRequest) {
+        let at_risk = self.docs_at_risk(request);
+        let honor_setting =
+            !matches!(request, CloseRequest::Quit) || self.settings.files.confirm_on_exit;
+        if at_risk.is_empty() || !honor_setting {
+            self.execute_close(request);
+        } else {
+            self.pending_close = Some(request);
+            self.status = Some(close_prompt_message(request, at_risk.len()));
+        }
+    }
+
+    /// Run a confirmed (or unguarded) close, re-resolving a single-tab request by its
+    /// view id so a save-then-close that shifted the tab list still closes the right
+    /// tab (and harmlessly no-ops if it has since vanished).
+    pub(super) fn execute_close(&mut self, request: CloseRequest) {
+        match request {
+            CloseRequest::Quit => self.should_quit = true,
+            CloseRequest::Tab { view } => {
+                if let Some(index) = self.tabs.iter().position(|tab| tab.view == view) {
+                    self.close_tab_at(index);
+                }
+            },
+            CloseRequest::OtherTabs => self.close_other_tabs(),
+            CloseRequest::TabsToRight => self.close_tabs_to_right(),
+            CloseRequest::AllTabs => self.close_all_tabs(),
+        }
+    }
+
+    /// At the close prompt: save exactly the at-risk documents, then run the parked
+    /// request once those saves drain (see [`App::on_backend_event`]). Runs
+    /// immediately if nothing needed saving.
+    pub(super) fn close_save(&mut self) {
+        let Some(request) = self.pending_close.take() else {
+            return;
+        };
+        let at_risk = self.docs_at_risk(request);
+        let saved = self.save_docs(&at_risk);
+        if saved == 0 {
+            self.execute_close(request);
+        } else {
+            self.saving_close = Some(request);
+            let verb = if matches!(request, CloseRequest::Quit) {
+                "quitting"
+            } else {
+                "closing"
+            };
+            self.status = Some(format!("saving {saved} file(s) before {verb}…"));
+        }
+    }
+
+    /// At the close prompt: discard unsaved changes and run the parked request now.
+    pub(super) fn close_discard(&mut self) {
+        if let Some(request) = self.pending_close.take() {
+            self.execute_close(request);
+        }
+    }
+
+    /// At the close prompt: an unbound key aborts, leaving every tab untouched.
+    pub(super) fn cancel_close(&mut self) {
+        let quitting = matches!(self.pending_close, Some(CloseRequest::Quit));
+        self.pending_close = None;
+        self.status = Some(if quitting {
+            "quit cancelled".to_string()
+        } else {
+            "close cancelled".to_string()
+        });
+    }
+
+    /// Issue a save for each of `docs` (skipping any already in flight), tracking it
+    /// in `pending_saves` and marking its tabs as saving. Returns the number issued.
+    pub(super) fn save_docs(&mut self, docs: &[DocumentId]) -> usize {
+        let Some(backend) = self.backend.clone() else {
+            return 0;
+        };
+        let now = Instant::now();
+        let mut issued = 0;
+        for &doc in docs {
+            if self.pending_saves.values().any(|pending| *pending == doc) {
+                continue;
+            }
+            let id = backend.next_id();
+            match backend.send(id, SessionCommand::Save { doc }) {
+                Ok(()) => {
+                    self.pending_saves.insert(id, doc);
+                    issued += 1;
+                    for tab in self.all_tabs_mut() {
+                        if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
+                            tab.saving_since = Some(now);
+                        }
+                    }
+                },
+                Err(e) => self.notify_backend_error(e),
+            }
+        }
+        issued
+    }
+
+    /// Save the active document, or report that there is no file to save. Tracks the
+    /// in-flight save so a slow write shows a spinner in the tab.
+    pub(super) fn save_active(&mut self) {
+        let Some(doc) = self.active_code_doc() else {
+            self.status = Some("save: open a text file".to_string());
+            return;
+        };
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        if self.pending_saves.values().any(|pending| *pending == doc) {
+            self.status = Some("save already in progress".to_string());
+            return;
+        }
+        let id = backend.next_id();
+        match backend.send(id, SessionCommand::Save { doc }) {
+            Ok(()) => {
+                self.pending_saves.insert(id, doc);
+                let now = Instant::now();
+                for tab in self.all_tabs_mut() {
+                    if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
+                        tab.saving_since = Some(now);
+                    }
+                }
+            },
+            Err(e) => self.notify_backend_error(e),
+        }
+    }
+
+    /// Cut the current selection (copy then delete); a no-op without a selection.
+    pub(super) fn cut(&mut self) {
+        if self.focus_target() == FocusTarget::Explorer {
+            self.explorer_cut_files();
+            return;
+        }
+        let has_selection = matches!(
+            self.tabs.get(self.active),
+            Some(Tab { kind: TabKind::Code { .. }, editor, .. })
+                if editor.selection_range().is_some_and(|r| !r.is_empty())
+        );
+        if !has_selection {
+            return;
+        }
+        self.copy_selection();
+        self.submit_edit_with_cause(EditCause::Cut, editing::backspace);
+    }
+
+    /// Paste the system clipboard at the caret (or the active modal's text field).
+    pub(super) fn paste_from_clipboard(&mut self) {
+        if self.focus_target() == FocusTarget::Explorer {
+            self.explorer_paste_files();
+            return;
+        }
+        match self.clipboard.get() {
+            Ok(text) => self.handle_paste(text),
+            Err(_) => self.status = Some("paste: clipboard unavailable".to_string()),
+        }
+    }
+
+    /// Route pasted text (from the paste command or bracketed paste) to whatever
+    /// actually owns text input right now: the active modal's field if one is
+    /// open, else the editor buffer. Shared by both paste sources, so pasted text
+    /// is never interpreted as keys and never lands in the wrong place.
+    pub(super) fn handle_paste(&mut self, text: String) {
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        if normalized.is_empty() {
+            return;
+        }
+        if let Some(modal) = self.input_context().modal {
+            self.modal_paste(modal, &normalized);
+            return;
+        }
+        self.submit_edit_with_cause(EditCause::Paste, move |caret, sel, _b, base| {
+            Some(editing::insert(caret, sel, base, &normalized))
+        });
+    }
+}

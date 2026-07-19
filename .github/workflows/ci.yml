@@ -44,6 +44,11 @@ jobs:
           rustup toolchain install --profile minimal --component rustfmt "$(cat rust-nightly.txt)"
           rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: tokei@12.1.2
+      - name: Rust file size
+        run: ./scripts/check-rust-file-lines.sh
       - name: Format check
         run: cargo "+$(cat rust-nightly.txt)" fmt --all -- --check
       - name: Clippy

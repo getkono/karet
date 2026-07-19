@@ -1,0 +1,11 @@
+include!("tests/support.rs");
+include!("tests/lifecycle.rs");
+include!("tests/startup.rs");
+include!("tests/save.rs");
+include!("tests/scm.rs");
+include!("tests/tabs_search.rs");
+include!("tests/preview.rs");
+include!("tests/editor_mouse.rs");
+include!("tests/explorer.rs");
+include!("tests/remote.rs");
+include!("tests/search_completion.rs");

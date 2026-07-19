@@ -10,6 +10,8 @@ hk = "latest"                  # git hooks manager (reads hk.pkl)
 pkl = "latest"                 # config language hk.pkl is written in
 "cargo:cargo-llvm-cov" = "latest"  # code coverage
 "cargo:convco" = "latest"          # conventional-commit validation (commit-msg hook + CI)
+"cargo:tokei" = "12.1.2"           # per-file source line enforcement (issue #81)
+jq = "1.8.1"                        # parse tokei's stable JSON output
 
 [tasks.format]
 description = "Format code with rustfmt (pinned nightly: rustfmt.toml uses unstable import opts)"
@@ -26,6 +28,10 @@ run = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
 [tasks.lint-fix]
 description = "Lint and auto-fix with clippy"
 run = "cargo clippy --workspace --all-targets --all-features --fix --allow-dirty --allow-staged"
+
+[tasks.file-lines]
+description = "Enforce the 800-code-line ceiling for every Rust source file"
+run = "{{config_root}}/scripts/check-rust-file-lines.sh"
 
 [tasks.test]
 description = "Run the test suite"
