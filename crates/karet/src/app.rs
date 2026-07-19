@@ -138,6 +138,7 @@ use crate::overlay::OverlayEvent;
 use crate::remote;
 use crate::render::FileView;
 use crate::render::Section;
+use crate::tab::CommitViewState;
 use crate::tab::FindState;
 use crate::tab::SearchField;
 use crate::tab::Tab;

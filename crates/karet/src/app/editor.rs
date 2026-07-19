@@ -48,11 +48,14 @@ impl App {
             | TabKind::Blame { scroll, .. }
             | TabKind::Graph { scroll, .. }
             | TabKind::LoadedConfig { scroll, .. }
-            | TabKind::CommitLoading { scroll, .. }
-            | TabKind::Commit { scroll, .. }
-            | TabKind::Compare { scroll, .. } => {
+            | TabKind::CommitLoading { scroll, .. } => {
                 let next = (i64::from(*scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
                 *scroll = next as u16;
+            },
+            TabKind::Commit { view, .. } | TabKind::Compare { view, .. } => {
+                let next =
+                    (i64::from(view.scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
+                view.scroll = next as u16;
             },
             TabKind::Hex { bytes, scroll, .. } => {
                 let max = bytes.len().div_ceil(16).saturating_sub(1) as i64;
@@ -117,10 +120,11 @@ impl App {
             | TabKind::Blame { scroll, .. }
             | TabKind::Graph { scroll, .. }
             | TabKind::LoadedConfig { scroll, .. }
-            | TabKind::CommitLoading { scroll, .. }
-            | TabKind::Commit { scroll, .. }
-            | TabKind::Compare { scroll, .. } => {
+            | TabKind::CommitLoading { scroll, .. } => {
                 *scroll = if top { 0 } else { u16::MAX };
+            },
+            TabKind::Commit { view, .. } | TabKind::Compare { view, .. } => {
+                view.scroll = if top { 0 } else { u16::MAX };
             },
             TabKind::Hex { bytes, scroll, .. } => {
                 *scroll = if top {

@@ -75,7 +75,7 @@ pub(super) fn draw_pane_content(
             files_error,
             verification,
             explain_since,
-            scroll,
+            view,
         } => {
             badge_rect = draw_commit(
                 f,
@@ -86,7 +86,7 @@ pub(super) fn draw_pane_content(
                 file_load_status(*files_loading_since, files_error.as_deref()),
                 verification.as_ref(),
                 *explain_since,
-                scroll,
+                &mut view.scroll,
             );
         },
         TabKind::CommitLoading {
@@ -108,7 +108,7 @@ pub(super) fn draw_pane_content(
             head_label,
             merge_base,
             files,
-            scroll,
+            view,
         } => draw_compare(
             f,
             theme,
@@ -117,7 +117,7 @@ pub(super) fn draw_pane_content(
             head_label,
             *merge_base,
             files,
-            scroll,
+            &mut view.scroll,
         ),
         TabKind::CommitGraph {
             history_path: _,

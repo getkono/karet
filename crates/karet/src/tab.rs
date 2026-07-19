@@ -93,6 +93,28 @@ pub enum ViewMode {
     SideBySide,
 }
 
+/// The responsive arrangement last used to draw a commit-like view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CommitLayoutMode {
+    /// Metadata, file index, and diff cards form one vertical document.
+    Stacked,
+    /// Metadata precedes a pinned file rail beside the diff cards.
+    Wide,
+}
+
+/// View-local navigation state shared by commit and compare tabs.
+#[derive(Debug, Default)]
+pub(crate) struct CommitViewState {
+    /// Vertical offset in the current layout's virtual document.
+    pub(crate) scroll: u16,
+    /// The layout used by the previous frame, for resize-aware anchor remapping.
+    pub(crate) layout: Option<CommitLayoutMode>,
+    /// Per-file card-header offsets from the previous frame.
+    pub(crate) file_anchors: Vec<u16>,
+    /// First file shown in the wide layout's pinned rail.
+    pub(crate) rail_offset: usize,
+}
+
 /// The content of a tab and how to render it.
 // The `Code` variant is intentionally the heavy one (it carries the buffer and its
 // derived render state); there are only ever a handful of tabs, so boxing every
@@ -271,8 +293,8 @@ pub enum TabKind {
         /// When the signature badge was last double-clicked, if its explanatory
         /// tooltip is being revealed. The reveal auto-hides a few seconds later.
         explain_since: Option<Instant>,
-        /// Vertical scroll offset (display rows).
-        scroll: u16,
+        /// Responsive scrolling, anchor, and file-rail state.
+        view: CommitViewState,
     },
     /// A read-only "compare" view: the diff between two points (a range), with the same
     /// summary + table-of-contents + per-file cards as the commit view, but a range
@@ -287,8 +309,8 @@ pub enum TabKind {
         merge_base: bool,
         /// Each changed file between the two points, diffed and highlighted for display.
         files: Vec<FileView>,
-        /// Vertical scroll offset (display rows).
-        scroll: u16,
+        /// Responsive scrolling, anchor, and file-rail state.
+        view: CommitViewState,
     },
     /// The full-screen commit graph browser: a scrollable DAG commit log on the left
     /// and the selected commit's detail on the right.
@@ -471,7 +493,7 @@ impl Tab {
                 files_error: None,
                 verification: None,
                 explain_since: None,
-                scroll: 0,
+                view: CommitViewState::default(),
             },
         )
     }
@@ -534,7 +556,7 @@ impl Tab {
                 head_label,
                 merge_base,
                 files,
-                scroll: 0,
+                view: CommitViewState::default(),
             },
         )
     }
