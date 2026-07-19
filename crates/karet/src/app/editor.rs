@@ -206,6 +206,24 @@ impl App {
 
     /// Replace the active diff tab with the next/previous changed file.
     pub(super) fn step_changed_file(&mut self, delta: i32) {
+        if let Some(TabKind::Commit { files, view, .. } | TabKind::Compare { files, view, .. }) =
+            self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
+        {
+            if files.is_empty() || view.file_anchors.is_empty() {
+                return;
+            }
+            let current = view
+                .file_anchors
+                .iter()
+                .rposition(|anchor| *anchor <= view.scroll);
+            let next = current.map_or(0, |file| {
+                (file as i64 + i64::from(delta))
+                    .clamp(0, view.file_anchors.len().saturating_sub(1) as i64)
+                    as usize
+            });
+            view.scroll = view.file_anchors[next];
+            return;
+        }
         if !self.active_is_diff() {
             return;
         }
@@ -377,16 +395,33 @@ impl App {
     pub(super) fn handle_editor_click(&mut self, mouse: MouseEvent) {
         let point = (mouse.column, mouse.row);
         // Route the click to the pane whose content it landed in, focusing it.
-        let Some((pane, area)) = self
+        let Some((pane, area, file_hit)) = self
             .pane_frames
             .iter()
             .find(|f| rect_contains(f.content_rect, point))
-            .map(|f| (f.pane, f.content_rect))
+            .map(|f| {
+                (
+                    f.pane,
+                    f.content_rect,
+                    f.commit_file_hits
+                        .iter()
+                        .find(|hit| rect_contains(hit.rect, point))
+                        .copied(),
+                )
+            })
         else {
             return;
         };
         self.focus_pane_switch(pane);
         self.focus = Focus::Editor;
+        if let Some(hit) = file_hit
+            && let Some(TabKind::Commit { view, .. } | TabKind::Compare { view, .. }) =
+                self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
+        {
+            view.scroll = hit.scroll;
+            self.editor_selecting = false;
+            return;
+        }
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         let alt = mouse.modifiers.contains(KeyModifiers::ALT);
         let streak = self.click_streak(mouse.column, mouse.row);

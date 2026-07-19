@@ -88,8 +88,9 @@ word; `Home`/`End` go to the line start/end and `Ctrl+Home`/`Ctrl+End` to the
 document edges; `PageUp`/`PageDown` page. Hold **`Shift`** with any of these to
 *extend* the selection, and `Ctrl+A` selects the whole file. `Ctrl+C` copies the
 selection (or the cursor line). `Esc` collapses multiple carets to one, then returns
-focus to the sidebar. In a **diff** tab: `\` toggles unified/side-by-side, `[` / `]`
-walk changed files.
+focus to the sidebar. In a **diff** tab, `\` toggles unified/side-by-side. In diff,
+commit, and compare tabs, `[` / `]` walk changed files; commit and compare file-index
+rows are also clickable.
 
 **Editor — multi-cursor.** `Ctrl+Alt+↑`/`Ctrl+Alt+↓` add a caret above / below the
 primary; `Ctrl+D` selects the word under the caret, then adds a caret at the next
