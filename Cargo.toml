@@ -58,7 +58,7 @@ karet-graph      = { path = "crates/karet-graph" }
 karet-github     = { path = "crates/karet-github" }
 # blameline is a standalone library on its OWN SemVer line (NOT the workspace lockstep);
 # pin its independent version here. See crates/blameline/README.md.
-blameline        = { path = "crates/blameline", version = "1.0.4" }
+blameline        = { path = "crates/blameline", version = "1.0.4", default-features = false }
 
 # --- shared external dependencies (versions verified via `cargo add`) ---
 # Foundational

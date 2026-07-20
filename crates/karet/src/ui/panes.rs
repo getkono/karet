@@ -6,6 +6,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
     app.pane_frames.clear();
     app.image_area = None;
     app.editor_rect = Rect::default();
+    app.blame_rect = None;
     app.commit_badge_rect = None;
     let focused = app.focus_pane();
     let editor_focused = app.focus == Focus::Editor;
@@ -41,6 +42,11 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
                     .flatten()
                     .and_then(|t| t.find.clone()),
                 blame,
+                blame_clickable: app
+                    .live_blame
+                    .as_ref()
+                    .and_then(crate::app::LiveBlame::commit_hash)
+                    .is_some(),
             };
             render_pane(f, &mut app.tabs, app.active, rect, &ctx)
         } else if let Some(stored) = app.stored.get_mut(&pane) {
@@ -63,6 +69,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
                 sticky_scroll,
                 find: None,
                 blame: None,
+                blame_clickable: false,
             };
             render_pane(f, &mut stored.tabs, stored.active, rect, &ctx)
         } else {
@@ -71,6 +78,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
         if is_focused {
             app.editor_rect = rendered.content_rect;
             app.image_area = rendered.image_area;
+            app.blame_rect = rendered.blame_rect;
             app.commit_badge_rect = rendered.commit_badge_rect;
         }
         app.pane_frames.push(crate::app::PaneFrame {
@@ -143,6 +151,7 @@ pub(super) fn render_pane(
         image_area: painted.image_area,
         commit_badge_rect: painted.badge_rect,
         commit_file_hits: painted.file_hits,
+        blame_rect: painted.blame_rect,
     }
 }
 
@@ -241,99 +250,6 @@ pub(super) fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme) {
     let rect = Rect::new(x, y, width, height);
     f.render_widget(Clear, rect);
     f.render_stateful_widget(popup, rect, list);
-}
-
-/// Draw the current attribution's commit card over the editor. Semantic mode adds
-/// every contributing range in the enclosing block below the full current commit.
-pub(super) fn draw_live_blame(f: &mut Frame, app: &App, theme: &Theme) {
-    use karet_core::BlameAttribution;
-
-    let Some(blame) = app.live_blame.as_ref() else {
-        return;
-    };
-    let editor = app.editor_rect;
-    if editor.width < 24 || editor.height < 5 {
-        return;
-    }
-    let current = blame
-        .hunks
-        .iter()
-        .find(|hunk| hunk.lines.contains(blame.line));
-    let Some(current) = current else { return };
-    let mut lines = match &current.attribution {
-        BlameAttribution::Commit(commit) => {
-            let mut rows = vec![
-                Line::styled(
-                    format!("{}  {}", commit.short_hash(), commit.author),
-                    Style::default()
-                        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Line::styled(
-                    commit.date.clone(),
-                    Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
-                ),
-            ];
-            rows.extend(
-                commit
-                    .message
-                    .lines()
-                    .take(4)
-                    .map(|line| Line::raw(line.to_string())),
-            );
-            rows
-        },
-        BlameAttribution::Uncommitted => vec![Line::styled(
-            "Uncommitted changes",
-            Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui()),
-        )],
-        _ => vec![Line::raw("Attribution unavailable")],
-    };
-    if blame.mode == karet_core::BlameMode::Semantic && blame.hunks.len() > 1 {
-        lines.push(Line::styled(
-            "Contributors",
-            Style::default()
-                .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
-                .add_modifier(Modifier::BOLD),
-        ));
-        for hunk in blame.hunks.iter().take(5) {
-            let label = match &hunk.attribution {
-                BlameAttribution::Commit(commit) => format!(
-                    "L{}–{}  {}  {}",
-                    hunk.lines.start + 1,
-                    hunk.lines.end + 1,
-                    commit.short_hash(),
-                    commit.author
-                ),
-                BlameAttribution::Uncommitted => format!(
-                    "L{}–{}  uncommitted",
-                    hunk.lines.start + 1,
-                    hunk.lines.end + 1
-                ),
-                _ => "attribution unavailable".to_string(),
-            };
-            lines.push(Line::raw(label));
-        }
-    }
-    let width = editor.width.clamp(24, 58);
-    let height = u16::try_from(lines.len().saturating_add(2))
-        .unwrap_or(editor.height)
-        .min(editor.height);
-    let rect = Rect::new(
-        editor.right().saturating_sub(width),
-        editor.bottom().saturating_sub(height),
-        width,
-        height,
-    );
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Blame ")
-        .border_style(Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui()))
-        .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui()));
-    let inner = block.inner(rect);
-    f.render_widget(Clear, rect);
-    f.render_widget(block, rect);
-    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 pub(super) fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {

@@ -53,8 +53,6 @@ use crossterm::event::PushKeyboardEnhancementFlags;
 use crossterm::event::{self};
 use crossterm::terminal::SetTitle;
 use karet_core::BlameAttribution;
-use karet_core::BlameHunk;
-use karet_core::BlameMode;
 use karet_core::BytePos;
 use karet_core::Change;
 use karet_core::Decoration;
@@ -189,29 +187,34 @@ pub(crate) struct LiveBlame {
     pub(crate) doc: DocumentId,
     pub(crate) version: u64,
     pub(crate) line: u32,
-    pub(crate) mode: BlameMode,
-    pub(crate) hunks: Vec<BlameHunk>,
+    pub(crate) attribution: Option<BlameAttribution>,
 }
 
 impl LiveBlame {
+    /// Compact attribution text shown after the active line.
+    pub(crate) fn text(&self) -> Option<String> {
+        match self.attribution.as_ref()? {
+            BlameAttribution::Commit(commit) => Some(format!(
+                "  {} {}",
+                commit.author,
+                crate::ui::relative_time(commit.author_time)
+            )),
+            BlameAttribution::Uncommitted => Some("  Uncommitted changes".to_string()),
+            _ => None,
+        }
+    }
+
+    /// Commit opened by the inline attribution's detail action.
+    pub(crate) fn commit_hash(&self) -> Option<&str> {
+        match self.attribution.as_ref()? {
+            BlameAttribution::Commit(commit) => Some(&commit.hash),
+            _ => None,
+        }
+    }
+
     /// Compact current-line attribution rendered as editor virtual text.
     pub(crate) fn decoration(&self) -> Option<Decoration> {
-        let hunk = self
-            .hunks
-            .iter()
-            .find(|hunk| hunk.lines.contains(self.line))?;
-        let text = match &hunk.attribution {
-            BlameAttribution::Commit(commit) => {
-                format!(
-                    "  {} · {} · {}",
-                    commit.author,
-                    commit.short_hash(),
-                    commit.summary()
-                )
-            },
-            BlameAttribution::Uncommitted => "  Uncommitted changes".to_string(),
-            _ => "  Uncommitted changes".to_string(),
-        };
+        let text = self.text()?;
         Some(Decoration {
             range: Range {
                 start: LineCol::new(self.line, 0),
@@ -641,9 +644,9 @@ pub struct App {
     /// Most recent stale-checked live blame result.
     pub(crate) live_blame: Option<LiveBlame>,
     /// Request currently computing live blame.
-    pub(crate) pending_blame: Option<(RequestId, DocumentId, u64, u32, BlameMode)>,
+    pub(crate) pending_blame: Option<(RequestId, DocumentId, u64, u32)>,
     /// Failed blame anchor, suppressed until its inputs change.
-    pub(crate) failed_blame: Option<(DocumentId, u64, u32, BlameMode)>,
+    pub(crate) failed_blame: Option<(DocumentId, u64, u32)>,
     /// Open-pull-request query currently filling the picker.
     pub(crate) pending_pull_requests: Option<RequestId>,
     /// Pull-request pages accumulated until GitHub has no next page.
@@ -780,6 +783,8 @@ pub struct App {
     pub(crate) status_hits: Vec<(u16, u16, Command)>,
     /// The active code tab's editor content area from the last frame.
     pub(crate) editor_rect: Rect,
+    /// Visible committed-attribution text from the last frame, for click routing.
+    pub(crate) blame_rect: Option<Rect>,
     /// The focused commit view's signature-badge rect (screen coords) from the last
     /// frame, for double-click hit-testing. `None` when no badge is on screen.
     pub(crate) commit_badge_rect: Option<Rect>,

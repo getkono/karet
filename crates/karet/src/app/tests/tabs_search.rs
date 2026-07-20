@@ -803,24 +803,3 @@
 
         let _ = std::fs::remove_dir_all(&dir);
     }
-
-    #[test]
-    fn blame_without_a_code_tab_reports_status() {
-        let mut app = app();
-        app.settings.git.blame = false;
-        app.dispatch(Command::ShowBlame);
-        assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
-        assert!(app.settings.git.blame);
-        assert_eq!(app.settings.git.blame_mode.as_str(), "line");
-    }
-
-    #[test]
-    fn blame_command_cycles_line_semantic_and_off() {
-        let mut app = app();
-        app.settings.git.blame = true;
-        app.settings.git.blame_mode = karet_session::config::GitBlameMode::Line;
-        app.dispatch(Command::ShowBlame);
-        assert_eq!(app.settings.git.blame_mode.as_str(), "semantic");
-        app.dispatch(Command::ShowBlame);
-        assert!(!app.settings.git.blame);
-    }

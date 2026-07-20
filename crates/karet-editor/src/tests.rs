@@ -376,6 +376,27 @@ fn primary_caret_cell_matches_rendered_gutter_geometry() {
 }
 
 #[test]
+fn screen_cell_maps_arbitrary_visible_positions() {
+    let buffer = TextBuffer::from_text("abc\ndef\n");
+    let mut state = EditorState::new();
+    let area = Rect::new(10, 5, 20, 4);
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer).render(area, &mut target, &mut state);
+    assert_eq!(
+        state.screen_cell(area, &buffer, &[], LineCol::new(1, 3)),
+        Some((16, 6))
+    );
+    assert_eq!(
+        state.screen_cell(area, &buffer, &[], LineCol::new(8, 0)),
+        None
+    );
+    assert_eq!(
+        state.screen_cell(area, &buffer, &[], LineCol::new(0, 30)),
+        None
+    );
+}
+
+#[test]
 fn set_carets_preserves_count_and_merges_coincident() {
     let mut state = EditorState::new();
     state.set_carets(&[LineCol::new(0, 0), LineCol::new(1, 2)]);

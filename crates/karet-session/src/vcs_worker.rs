@@ -7,12 +7,10 @@ use std::sync::mpsc;
 
 use karet_core::BlameAttribution;
 use karet_core::BlameCommit;
-use karet_core::BlameHunk;
-use karet_core::BlameLineRange;
-use karet_core::BlameMode;
 use karet_vcs::Repository;
 use karet_vcs::Selection;
 use karet_vcs::SyncOutcome;
+use karet_vcs::VcsError;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::DocumentId;
@@ -44,9 +42,18 @@ pub(crate) enum VcsJob {
         path: PathBuf,
         text: String,
         line: u32,
-        mode: BlameMode,
     },
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct BlameCacheKey {
+    doc: DocumentId,
+    version: u64,
+    path: PathBuf,
+    head: String,
+}
+
+type BlameCache = HashMap<BlameCacheKey, Vec<BlameAttribution>>;
 
 /// Start the one-per-session ordered repository worker.
 pub(crate) fn spawn(
@@ -55,14 +62,20 @@ pub(crate) fn spawn(
 ) -> mpsc::Sender<VcsJob> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
+        let mut blame_cache = BlameCache::new();
         while let Ok(job) = rx.recv() {
-            run(&root, &events, job);
+            run(&root, &events, &mut blame_cache, job);
         }
     });
     tx
 }
 
-fn run(root: &Option<PathBuf>, events: &UnboundedSender<(Option<RequestId>, Event)>, job: VcsJob) {
+fn run(
+    root: &Option<PathBuf>,
+    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    blame_cache: &mut BlameCache,
+    job: VcsJob,
+) {
     match job {
         VcsJob::Snapshot { id } => match repository(root).and_then(|repo| snapshot(&repo)) {
             Ok(snapshot) => emit(
@@ -141,18 +154,15 @@ fn run(root: &Option<PathBuf>, events: &UnboundedSender<(Option<RequestId>, Even
             path,
             text,
             line,
-            mode,
-        } => match blame(root, &path, &text, line, mode) {
-            Ok((scope, hunks)) => emit(
+        } => match blame(blame_cache, root, doc, version, &path, &text, line) {
+            Ok(attribution) => emit(
                 events,
                 id,
                 Event::BlameResult {
                     doc,
                     version,
                     line,
-                    mode,
-                    scope,
-                    hunks,
+                    attribution,
                 },
             ),
             Err(message) => notify(events, id, format!("blame: {message}")),
@@ -296,47 +306,59 @@ fn pull_requests(
 }
 
 fn blame(
+    cache: &mut BlameCache,
     root: &Option<PathBuf>,
+    doc: DocumentId,
+    version: u64,
     path: &Path,
     text: &str,
     line: u32,
-    mode: BlameMode,
-) -> Result<(BlameLineRange, Vec<BlameHunk>), String> {
-    let root = root
-        .as_ref()
-        .ok_or_else(|| "no workspace repository is open".to_string())?;
-    let repo = Repository::discover(root).map_err(|error| error.to_string())?;
-    let head = repo
+) -> Result<Option<BlameAttribution>, String> {
+    let Some(root) = root.as_ref() else {
+        return Ok(None);
+    };
+    let repo = match Repository::discover(root) {
+        Ok(repo) => repo,
+        Err(VcsError::NotARepository) => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    let Some(head_hash) = repo.head_hash().map_err(|error| error.to_string())? else {
+        return Ok(None);
+    };
+    let key = BlameCacheKey {
+        doc,
+        version,
+        path: path.to_path_buf(),
+        head: head_hash,
+    };
+    if let Some(attribution) = cache.get(&key) {
+        return Ok(attribution.get(line as usize).cloned());
+    }
+    let Some(head) = repo
         .file_at_rev(path, "HEAD")
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "file has no committed history yet".to_string())?;
-    let head = String::from_utf8(head).map_err(|_| "committed file is not UTF-8".to_string())?;
-    let groups = blameline::blame_file(root, path).map_err(|error| error.to_string())?;
+    else {
+        return Ok(None);
+    };
+    let Ok(head) = String::from_utf8(head) else {
+        return Ok(None);
+    };
+    let groups = match blameline::blame_file(root, path) {
+        Ok(groups) => groups,
+        Err(blameline::BlameError::NotARepository | blameline::BlameError::NotCommitted(_)) => {
+            return Ok(None);
+        },
+        Err(error) => return Err(error.to_string()),
+    };
     let current_lines: Vec<&str> = text.lines().collect();
     let head_lines: Vec<&str> = head.lines().collect();
-    let last = current_lines.len().saturating_sub(1) as u32;
-    let cursor = line.min(last);
-    let scope = match mode {
-        BlameMode::Line => BlameLineRange {
-            start: cursor,
-            end: cursor,
-        },
-        BlameMode::Semantic => blameline::enclosing_function_range(text, path, cursor)
-            .map(|range| BlameLineRange {
-                start: range.start.saturating_sub(1).min(last),
-                end: range.end.saturating_sub(1).min(last),
-            })
-            .unwrap_or(BlameLineRange {
-                start: cursor,
-                end: cursor,
-            }),
-        _ => BlameLineRange {
-            start: cursor,
-            end: cursor,
-        },
-    };
     let attribution = map_attribution(&current_lines, &head_lines, &groups);
-    Ok((scope, group_scope(&attribution, scope)))
+    let result = attribution.get(line as usize).cloned();
+    // Cursor movement reuses this full-file mapping. Keep only the newest version
+    // for a document so typing cannot grow the worker cache without bound.
+    cache.retain(|cached, _| cached.doc != doc);
+    cache.insert(key, attribution);
+    Ok(result)
 }
 
 fn map_attribution(
@@ -350,11 +372,13 @@ fn map_attribution(
     }
     let mut by_head = vec![BlameAttribution::Uncommitted; head.len()];
     for group in groups {
+        let Some(author_time) = group.author_time() else {
+            continue;
+        };
         let commit = BlameCommit {
             hash: group.commit_hash.clone(),
             author: group.author.clone(),
-            date: group.date.clone(),
-            message: group.message.clone(),
+            author_time,
         };
         let start = group.lines.start.saturating_sub(1) as usize;
         let end = (group.lines.end as usize).min(by_head.len());
@@ -383,30 +407,6 @@ fn map_attribution(
         .collect()
 }
 
-fn group_scope(attribution: &[BlameAttribution], scope: BlameLineRange) -> Vec<BlameHunk> {
-    let mut hunks: Vec<BlameHunk> = Vec::new();
-    for line in scope.start..=scope.end {
-        let item = attribution
-            .get(line as usize)
-            .cloned()
-            .unwrap_or(BlameAttribution::Uncommitted);
-        if let Some(last) = hunks.last_mut()
-            && last.attribution == item
-        {
-            last.lines.end = line;
-        } else {
-            hunks.push(BlameHunk {
-                lines: BlameLineRange {
-                    start: line,
-                    end: line,
-                },
-                attribution: item,
-            });
-        }
-    }
-    hunks
-}
-
 fn emit(events: &UnboundedSender<(Option<RequestId>, Event)>, id: RequestId, event: Event) {
     let _ = events.send((Some(id), event));
 }
@@ -431,8 +431,7 @@ mod tests {
         BlameAttribution::Commit(BlameCommit {
             hash: hash.to_string(),
             author: "Ada".to_string(),
-            date: "today".to_string(),
-            message: "change".to_string(),
+            author_time: 1_773_619_200,
         })
     }
 
@@ -443,7 +442,7 @@ mod tests {
             commit_hash: "one".to_string(),
             message: "change".to_string(),
             author: "Ada".to_string(),
-            date: "today".to_string(),
+            date: "1773619200 +0000".to_string(),
         }];
         let mapped = map_attribution(&["a", "new", "c", "b"], &["a", "b", "c"], &groups);
         assert_eq!(mapped[0], commit("one"));
@@ -456,13 +455,5 @@ mod tests {
     fn ambiguous_moved_lines_are_uncommitted() {
         let mapped = map_attribution(&["x"], &["a", "x", "x"], &[]);
         assert_eq!(mapped, vec![BlameAttribution::Uncommitted]);
-    }
-
-    #[test]
-    fn consecutive_attribution_is_grouped() {
-        let attribution = vec![commit("a"), commit("a"), commit("b")];
-        let hunks = group_scope(&attribution, BlameLineRange { start: 0, end: 2 });
-        assert_eq!(hunks.len(), 2);
-        assert_eq!(hunks[0].lines, BlameLineRange { start: 0, end: 1 });
     }
 }

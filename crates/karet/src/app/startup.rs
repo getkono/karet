@@ -112,6 +112,7 @@ impl App {
             status_rect: Rect::default(),
             status_hits: Vec::new(),
             editor_rect: Rect::default(),
+            blame_rect: None,
             commit_badge_rect: None,
             editor_selecting: false,
             last_click: None,

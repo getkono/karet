@@ -206,7 +206,6 @@ mod tests {
     #[tokio::test]
     async fn repository_actions_and_blame_run_off_actor() {
         use karet_core::BlameAttribution;
-        use karet_core::BlameMode;
         use karet_vcs::CreateBranchOptions;
 
         use crate::api::Event;
@@ -279,7 +278,6 @@ mod tests {
                         doc,
                         version,
                         line: 0,
-                        mode: BlameMode::Line,
                     },
                 )
                 .is_ok()
@@ -287,18 +285,78 @@ mod tests {
         let blamed = tokio::time::timeout(Duration::from_secs(10), async {
             while let Some((id, event)) = events.recv().await {
                 if id == Some(blame_id)
-                    && let Event::BlameResult { hunks, .. } = event
+                    && let Event::BlameResult { attribution, .. } = event
                 {
-                    return hunks;
+                    return attribution;
                 }
             }
-            Vec::new()
+            None
         })
         .await
         .unwrap_or_default();
+        assert!(matches!(blamed, Some(BlameAttribution::Commit(_))));
+
+        if std::fs::write(root.join("untracked.rs"), "fn new_file() {}\n").is_err() {
+            return;
+        }
+        let untracked_open_id = backend.next_id();
+        assert!(
+            backend
+                .send(
+                    untracked_open_id,
+                    Command::OpenDocument {
+                        path: root.join("untracked.rs"),
+                        language: None,
+                    },
+                )
+                .is_ok()
+        );
+        let untracked = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some((id, event)) = events.recv().await {
+                if id == Some(untracked_open_id)
+                    && let Event::Opened { doc, version } = event
+                {
+                    return Some((doc, version));
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some((untracked_doc, untracked_version)) = untracked else {
+            return;
+        };
+        let untracked_blame_id = backend.next_id();
+        assert!(
+            backend
+                .send(
+                    untracked_blame_id,
+                    Command::Blame {
+                        doc: untracked_doc,
+                        version: untracked_version,
+                        line: 0,
+                    },
+                )
+                .is_ok()
+        );
+        let unavailable = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some((id, event)) = events.recv().await {
+                if id == Some(untracked_blame_id) {
+                    return Some(event);
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
         assert!(matches!(
-            blamed.first().map(|hunk| &hunk.attribution),
-            Some(BlameAttribution::Commit(_))
+            unavailable,
+            Some(Event::BlameResult {
+                attribution: None,
+                ..
+            })
         ));
 
         let branch_id = backend.next_id();

@@ -35,9 +35,6 @@ pub mod token;
 
 pub use blame::BlameAttribution;
 pub use blame::BlameCommit;
-pub use blame::BlameHunk;
-pub use blame::BlameLineRange;
-pub use blame::BlameMode;
 pub use coord::BytePos;
 pub use coord::CharPos;
 pub use coord::LineCol;

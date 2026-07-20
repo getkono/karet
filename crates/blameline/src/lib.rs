@@ -62,6 +62,15 @@ impl BlameGroup {
     pub fn summary(&self) -> &str {
         self.message.lines().next().unwrap_or("")
     }
+
+    /// The author's timestamp in seconds since the Unix epoch, when `date` is a
+    /// valid Git or ISO-8601 date.
+    #[must_use]
+    pub fn author_time(&self) -> Option<i64> {
+        gix::date::parse(&self.date, None)
+            .ok()
+            .map(|time| time.seconds)
+    }
 }
 
 /// Errors produced by the blame engine.
@@ -156,6 +165,16 @@ mod tests {
     fn short_hash_handles_tiny_hashes() {
         let g = group(1, 1, "abc");
         assert_eq!(g.short_hash(), "abc");
+    }
+
+    #[test]
+    fn author_time_parses_iso_and_raw_git_dates() {
+        let mut g = group(1, 1, "abc");
+        assert_eq!(g.author_time(), Some(1_773_619_200));
+        g.date = "1773619200 +0000".to_string();
+        assert_eq!(g.author_time(), Some(1_773_619_200));
+        g.date = "not a date".to_string();
+        assert_eq!(g.author_time(), None);
     }
 
     #[test]

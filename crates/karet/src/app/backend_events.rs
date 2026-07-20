@@ -290,14 +290,19 @@ impl App {
                 }
                 if let Some(pending) = self.pending_blame.filter(|pending| Some(pending.0) == id) {
                     self.pending_blame = None;
-                    self.failed_blame = Some((pending.1, pending.2, pending.3, pending.4));
+                    self.failed_blame = Some((pending.1, pending.2, pending.3));
                 }
                 if let Some(req) = id {
                     self.fail_pending_commit_detail(req, &message);
                 }
                 self.notify(severity, kind, message);
             },
-            SessionEvent::VcsStatus { staged, working } => self.apply_vcs_status(staged, working),
+            SessionEvent::VcsStatus { staged, working } => {
+                self.live_blame = None;
+                self.pending_blame = None;
+                self.failed_blame = None;
+                self.apply_vcs_status(staged, working);
+            },
             SessionEvent::RepositorySnapshot { snapshot } => {
                 self.scm.repository = Some(*snapshot);
                 self.scm.repository_loading_since = None;
@@ -368,16 +373,13 @@ impl App {
                 doc,
                 version,
                 line,
-                mode,
-                hunks,
-                ..
+                attribution,
             } => {
                 let matches = self.pending_blame.as_ref().is_some_and(|pending| {
                     Some(pending.0) == id
                         && pending.1 == doc
                         && pending.2 == version
                         && pending.3 == line
-                        && pending.4 == mode
                 });
                 if matches {
                     self.pending_blame = None;
@@ -393,8 +395,7 @@ impl App {
                             doc,
                             version,
                             line,
-                            mode,
-                            hunks,
+                            attribution,
                         });
                     }
                 }

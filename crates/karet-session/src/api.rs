@@ -7,9 +7,7 @@
 
 use std::path::PathBuf;
 
-use karet_core::BlameHunk;
-use karet_core::BlameLineRange;
-use karet_core::BlameMode;
+use karet_core::BlameAttribution;
 use karet_core::Change;
 use karet_core::CompletionItem;
 use karet_core::CursorState;
@@ -411,7 +409,7 @@ pub enum Command {
         /// Maximum entries per page, from 1 to 100.
         per_page: u8,
     },
-    /// Attribute the current buffer at and around its cursor line.
+    /// Attribute the current buffer's cursor line.
     Blame {
         /// Open document to attribute.
         doc: DocumentId,
@@ -419,8 +417,6 @@ pub enum Command {
         version: u64,
         /// Zero-based cursor line.
         line: u32,
-        /// Current-line or enclosing-semantic-block scope.
-        mode: BlameMode,
     },
     /// Fetch a page of the commit-history log (newest first), for lazy loading.
     VcsLog {
@@ -698,12 +694,9 @@ pub enum Event {
         version: u64,
         /// Cursor line used for the request.
         line: u32,
-        /// Requested blame mode.
-        mode: BlameMode,
-        /// Current-buffer scope covered by `hunks`.
-        scope: BlameLineRange,
-        /// Consecutive attribution groups within `scope`.
-        hunks: Vec<BlameHunk>,
+        /// Attribution for the requested line, or `None` when the file has no
+        /// committed history available.
+        attribution: Option<BlameAttribution>,
     },
     /// A commit was created.
     Committed {

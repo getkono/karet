@@ -23,7 +23,6 @@ pub use load::ConfigLayerStatus;
 pub use load::LoadedConfig;
 pub use load::load;
 pub use load::load_report;
-pub use schema::GitBlameMode;
 pub use schema::Settings;
 
 /// Errors while updating a user-owned JSONC setting.
@@ -47,23 +46,19 @@ pub enum ConfigWriteError {
 /// # Errors
 /// Returns [`ConfigWriteError`] when the user path is unavailable, the existing file
 /// is invalid JSONC, or the atomic write fails.
-pub fn set_user_blame(enabled: bool, mode: GitBlameMode) -> Result<PathBuf, ConfigWriteError> {
+pub fn set_user_blame(enabled: bool) -> Result<PathBuf, ConfigWriteError> {
     let path = load::user_config_path().ok_or(ConfigWriteError::NoUserDirectory)?;
     let current = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => "{}\n".to_string(),
         Err(error) => return Err(ConfigWriteError::Io(error.to_string())),
     };
-    let updated = update_blame_jsonc(&current, enabled, mode)?;
+    let updated = update_blame_jsonc(&current, enabled)?;
     atomic_write(&path, updated.as_bytes())?;
     Ok(path)
 }
 
-fn update_blame_jsonc(
-    text: &str,
-    enabled: bool,
-    mode: GitBlameMode,
-) -> Result<String, ConfigWriteError> {
+fn update_blame_jsonc(text: &str, enabled: bool) -> Result<String, ConfigWriteError> {
     let root = CstRootNode::parse(text, &Default::default())
         .map_err(|error| ConfigWriteError::Parse(error.to_string()))?;
     let object = root.object_value_or_set();
@@ -74,9 +69,7 @@ fn update_blame_jsonc(
         git.append("blame", json!(enabled));
     }
     if let Some(property) = git.get("blameMode") {
-        property.set_value(json!(mode.as_str()));
-    } else {
-        git.append("blameMode", json!(mode.as_str()));
+        property.remove();
     }
     Ok(root.to_string())
 }
@@ -124,12 +117,12 @@ mod tests {
   "editor": { "tabSize": 2 },
   "git": { "decorations": false, "blameMode": "line" }
 }"#;
-        let updated = update_blame_jsonc(source, true, GitBlameMode::Semantic)?;
+        let updated = update_blame_jsonc(source, true)?;
         assert!(updated.contains("// retain this explanation"));
         assert!(updated.contains("\"tabSize\": 2"));
         assert!(updated.contains("\"decorations\": false"));
         assert!(updated.contains("\"blame\": true"));
-        assert!(updated.contains("\"blameMode\": \"semantic\""));
+        assert!(!updated.contains("blameMode"));
         Ok(())
     }
 

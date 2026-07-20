@@ -280,10 +280,10 @@ pub enum Command {
     ScmAbort,
     /// Skip the current rebase or cherry-pick step.
     ScmSkip,
-    /// Cycle live current-line blame through line, semantic, and off modes.
-    ShowBlame,
-    /// Open a semantic-blame view narrowed to the function under the caret.
-    BlameFunction,
+    /// Toggle inline current-line blame.
+    ToggleInlineBlame,
+    /// Open the current line's attributed commit.
+    OpenBlameDetail,
     /// Open a read-only view of the loaded settings and their provenance.
     ShowLoadedConfig,
     /// Begin creating a new file in the explorer (inline name editor).
@@ -562,8 +562,8 @@ impl Command {
             Self::ScmContinue => "Source Control: Continue Operation",
             Self::ScmAbort => "Source Control: Abort Operation",
             Self::ScmSkip => "Source Control: Skip Operation Step",
-            Self::ShowBlame => "Source Control: Show Blame",
-            Self::BlameFunction => "Source Control: Blame This Function",
+            Self::ToggleInlineBlame => "Source Control: Toggle Inline Blame",
+            Self::OpenBlameDetail => "Source Control: Open Blame Details",
             Self::ShowLoadedConfig => "Settings: Show Loaded Configuration",
             Self::ExplorerNewFile => "Explorer: New File…",
             Self::ExplorerNewFolder => "Explorer: New Folder…",
@@ -679,8 +679,8 @@ impl Command {
             Self::Save => "save",
             Self::Cut => "cut",
             Self::Paste => "paste",
-            Self::ShowBlame => "blame",
-            Self::BlameFunction => "blame fn",
+            Self::ToggleInlineBlame => "blame",
+            Self::OpenBlameDetail => "blame detail",
             Self::ShowLoadedConfig => "settings",
             Self::ToggleFold => "fold",
             Self::AddCursorNextOccurrence => "add cursor",
@@ -914,8 +914,8 @@ impl Command {
                 | Self::ScmContinue
                 | Self::ScmAbort
                 | Self::ScmSkip
-                | Self::ShowBlame
-                | Self::BlameFunction
+                | Self::ToggleInlineBlame
+                | Self::OpenBlameDetail
                 | Self::ShowLoadedConfig
                 | Self::ExplorerNewFile
                 | Self::ExplorerNewFolder

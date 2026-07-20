@@ -35,7 +35,7 @@ karet-diff.workspace = true
 karet-lsp.workspace = true            # headless
 karet-dap.workspace = true            # headless
 karet-vcs.workspace = true                  # headless; writes use the installed git executable
-blameline = { workspace = true, features = ["all-languages"] } # current-buffer semantic blame
+blameline.workspace = true # current-buffer line blame; workspace disables language features
 karet-github = { workspace = true, optional = true }    # GitHub commit-verification (feature `github`)
 aicommit-core = { workspace = true, optional = true }   # AI commit-message generation (feature `aicommit`)
 karet-search.workspace = true

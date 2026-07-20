@@ -167,8 +167,8 @@ impl App {
             Command::ScmContinue => self.run_vcs_action(VcsAction::Continue),
             Command::ScmAbort => self.run_vcs_action(VcsAction::Abort),
             Command::ScmSkip => self.run_vcs_action(VcsAction::Skip),
-            Command::ShowBlame => self.cycle_live_blame(),
-            Command::BlameFunction => self.enable_semantic_blame(),
+            Command::ToggleInlineBlame => self.toggle_live_blame(),
+            Command::OpenBlameDetail => self.open_live_blame_detail(),
             Command::ShowLoadedConfig => {
                 if self.backend.is_some() {
                     self.send_command(SessionCommand::LoadedConfig);

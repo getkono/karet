@@ -88,8 +88,8 @@ collapse · `Space` toggle a directory.
 
 **Source Control:** use the header buttons for Commit, Sync, branch switching, and
 More Actions. Branch creation includes a start point, switch behavior, remote publish,
-and upstream controls. `Ctrl+Shift+B` cycles current-line blame through line,
-semantic, and off; `Alt+B` enables semantic blame directly.
+and upstream controls. `Ctrl+Shift+B` toggles muted current-line blame;
+click the attribution or press `Alt+B` to open its commit details.
 
 **Editor — motion & selection.** Arrows move the caret; `Ctrl+←`/`Ctrl+→` move by
 word; `Home`/`End` go to the line start/end and `Ctrl+Home`/`Ctrl+End` to the

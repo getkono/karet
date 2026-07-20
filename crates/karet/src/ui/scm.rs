@@ -315,6 +315,10 @@ pub(crate) fn relative_time(secs: i64) -> String {
         .ok()
         .and_then(|d| i64::try_from(d.as_secs()).ok())
         .unwrap_or(0);
+    relative_time_at(secs, now)
+}
+
+pub(super) fn relative_time_at(secs: i64, now: i64) -> String {
     let delta = now - secs;
     if delta < 0 {
         return "just now".to_string();

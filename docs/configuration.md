@@ -136,11 +136,11 @@ selector, the normal layer precedence still applies. Arrays such as `rulers` and
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `decorations` | bool | `true` | Gutter change decorations + file-tree status colouring. |
-| `blame` | bool | `true` | Cursor-following inline blame and commit details for the current line or semantic scope. |
-| `blameMode` | `"line"` \| `"semantic"` | `"line"` | Attribute the current line or its enclosing semantic scope. |
+| `blame` | bool | `true` | Muted cursor-line attribution; click it or press `Alt+B` to open the commit. |
 
-Changing blame mode from the command palette persists these two fields in the user
-JSONC file while retaining comments and unrelated settings.
+`Ctrl+Shift+B` toggles inline blame and persists this field in the user JSONC file
+while retaining comments and unrelated settings. Files without committed Git history
+show no attribution and do not report an error.
 
 > An explicit `--icons` flag (or the `KARET_ICONS` environment variable) overrides
 > `workbench.iconStyle`.

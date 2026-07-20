@@ -523,11 +523,6 @@
           "type": "boolean",
           "default": true
         },
-        "blameMode": {
-          "description": "Attribution scope shown around the current line.",
-          "$ref": "#/$defs/GitBlameMode",
-          "default": "line"
-        },
         "decorations": {
           "description": "Show gutter change decorations and file-tree status colouring.",
           "type": "boolean",
@@ -535,21 +530,6 @@
         }
       },
       "additionalProperties": false
-    },
-    "GitBlameMode": {
-      "description": "Scope used by live blame in the editor.",
-      "oneOf": [
-        {
-          "description": "Attribute the current line only.",
-          "type": "string",
-          "const": "line"
-        },
-        {
-          "description": "Attribute all commit groups in the enclosing semantic block.",
-          "type": "string",
-          "const": "semantic"
-        }
-      ]
     },
     "IconStyleSetting": {
       "description": "Icon glyph set (mirrors `karet_filetype::IconStyle`).",

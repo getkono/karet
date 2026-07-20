@@ -4,6 +4,7 @@ include!("tests/startup.rs");
 include!("tests/save.rs");
 include!("tests/scm.rs");
 include!("tests/tabs_search.rs");
+include!("tests/blame.rs");
 include!("tests/preview.rs");
 include!("tests/commit_view.rs");
 include!("tests/commit_navigation.rs");

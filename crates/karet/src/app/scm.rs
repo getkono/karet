@@ -268,7 +268,7 @@ impl App {
         }
     }
 
-    /// Request live blame when its document/version/cursor/mode anchor changed.
+    /// Request live blame when its document/version/cursor anchor changed.
     pub(super) fn request_live_blame(&mut self) {
         if !self.settings.git.blame {
             self.live_blame = None;
@@ -276,10 +276,6 @@ impl App {
             self.failed_blame = None;
             return;
         }
-        let mode = match self.settings.git.blame_mode {
-            karet_session::config::GitBlameMode::Line => BlameMode::Line,
-            karet_session::config::GitBlameMode::Semantic => BlameMode::Semantic,
-        };
         let target = self.tabs.get(self.active).and_then(|tab| match &tab.kind {
             TabKind::Code {
                 doc: Some(doc),
@@ -294,55 +290,51 @@ impl App {
             self.failed_blame = None;
             return;
         };
-        if self.failed_blame == Some((doc, version, line, mode)) {
+        if self.failed_blame == Some((doc, version, line)) {
             return;
         }
         self.failed_blame = None;
-        if self.live_blame.as_ref().is_some_and(|blame| {
-            blame.doc == doc && blame.version == version && blame.line == line && blame.mode == mode
-        }) || self.pending_blame.as_ref().is_some_and(|pending| {
-            pending.1 == doc && pending.2 == version && pending.3 == line && pending.4 == mode
-        }) {
+        if self
+            .live_blame
+            .as_ref()
+            .is_some_and(|blame| blame.doc == doc && blame.version == version && blame.line == line)
+        {
             return;
         }
         self.live_blame = None;
-        if let Some(id) = self.send_command_id(SessionCommand::Blame {
-            doc,
-            version,
-            line,
-            mode,
-        }) {
-            self.pending_blame = Some((id, doc, version, line, mode));
+        // Let the one in-flight computation finish instead of queueing a full blame
+        // for every intermediate cursor row. Its result handler immediately requests
+        // the latest anchor when the cursor has moved in the meantime.
+        if self.pending_blame.is_some() {
+            return;
+        }
+        if let Some(id) = self.send_command_id(SessionCommand::Blame { doc, version, line }) {
+            self.pending_blame = Some((id, doc, version, line));
         }
     }
 
-    /// Cycle live blame through line, semantic, and off, persisting the user layer.
-    pub(super) fn cycle_live_blame(&mut self) {
-        use karet_session::config::GitBlameMode;
-
-        let (enabled, mode) = if !self.settings.git.blame {
-            (true, GitBlameMode::Line)
-        } else {
-            match self.settings.git.blame_mode {
-                GitBlameMode::Line => (true, GitBlameMode::Semantic),
-                GitBlameMode::Semantic => (false, GitBlameMode::Line),
-            }
-        };
-        self.apply_blame_setting(enabled, mode);
+    /// Toggle current-line blame and persist the user setting.
+    pub(super) fn toggle_live_blame(&mut self) {
+        self.apply_blame_setting(!self.settings.git.blame);
     }
 
-    /// Enable semantic live blame directly.
-    pub(super) fn enable_semantic_blame(&mut self) {
-        self.apply_blame_setting(true, karet_session::config::GitBlameMode::Semantic);
+    /// Open the attributed commit for the current line in the standard commit tab.
+    pub(super) fn open_live_blame_detail(&mut self) {
+        let hash = self
+            .live_blame
+            .as_ref()
+            .and_then(LiveBlame::commit_hash)
+            .map(str::to_string);
+        if let Some(hash) = hash {
+            self.open_commit(hash);
+        }
     }
 
-    fn apply_blame_setting(&mut self, enabled: bool, mode: karet_session::config::GitBlameMode) {
+    fn apply_blame_setting(&mut self, enabled: bool) {
         self.settings.git.blame = enabled;
-        self.settings.git.blame_mode = mode;
         self.loaded_config.settings.git.blame = enabled;
-        self.loaded_config.settings.git.blame_mode = mode;
         #[cfg(not(test))]
-        if let Err(error) = karet_session::config::set_user_blame(enabled, mode) {
+        if let Err(error) = karet_session::config::set_user_blame(enabled) {
             self.notify(
                 Severity::Error,
                 NotificationKind::System,
@@ -353,8 +345,8 @@ impl App {
         self.failed_blame = None;
         self.live_blame = None;
         self.request_live_blame();
-        let label = if enabled { mode.as_str() } else { "off" };
-        self.status = Some(format!("live blame: {label}"));
+        let label = if enabled { "on" } else { "off" };
+        self.status = Some(format!("inline blame: {label}"));
     }
 
     /// Open the Source-Control cursor's change as a materialized (permanent) diff

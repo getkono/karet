@@ -426,12 +426,7 @@ impl Session {
                         per_page,
                     });
             },
-            Command::Blame {
-                doc,
-                version,
-                line,
-                mode,
-            } => self.request_blame(id, doc, version, line, mode),
+            Command::Blame { doc, version, line } => self.request_blame(id, doc, version, line),
             Command::VcsLog { skip, limit } => self.emit_vcs_log(Some(id), skip, limit),
             Command::CommitDetail { rev } => self.emit_commit_detail(id, &rev),
             Command::RangeChanges { spec } => self.emit_range_changes(id, spec),
@@ -457,14 +452,7 @@ impl Session {
 
     // --- source control ---------------------------------------------------
 
-    fn request_blame(
-        &self,
-        id: RequestId,
-        doc: DocumentId,
-        version: u64,
-        line: u32,
-        mode: karet_core::BlameMode,
-    ) {
+    fn request_blame(&self, id: RequestId, doc: DocumentId, version: u64, line: u32) {
         let Some(document) = self.store.docs.get(&doc) else {
             self.emit(
                 Some(id),
@@ -486,7 +474,6 @@ impl Session {
             path: document.path.clone(),
             text: document.buffer.text(),
             line,
-            mode,
         });
     }
 }
