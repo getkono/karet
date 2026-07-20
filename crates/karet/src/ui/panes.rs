@@ -22,6 +22,10 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
             let word_wrap = resolved.map_or(app.settings.editor.word_wrap, |r| r.word_wrap());
             let sticky_scroll =
                 resolved.map_or(app.settings.editor.sticky_scroll, |r| r.sticky_scroll());
+            let blame = app
+                .live_blame
+                .as_ref()
+                .and_then(crate::app::LiveBlame::decoration);
             let ctx = PaneCtx {
                 theme,
                 root: &app.root,
@@ -36,6 +40,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
                     .then(|| app.tabs.get(app.active))
                     .flatten()
                     .and_then(|t| t.find.clone()),
+                blame,
             };
             render_pane(f, &mut app.tabs, app.active, rect, &ctx)
         } else if let Some(stored) = app.stored.get_mut(&pane) {
@@ -57,6 +62,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
                 word_wrap,
                 sticky_scroll,
                 find: None,
+                blame: None,
             };
             render_pane(f, &mut stored.tabs, stored.active, rect, &ctx)
         } else {
@@ -235,6 +241,99 @@ pub(super) fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme) {
     let rect = Rect::new(x, y, width, height);
     f.render_widget(Clear, rect);
     f.render_stateful_widget(popup, rect, list);
+}
+
+/// Draw the current attribution's commit card over the editor. Semantic mode adds
+/// every contributing range in the enclosing block below the full current commit.
+pub(super) fn draw_live_blame(f: &mut Frame, app: &App, theme: &Theme) {
+    use karet_core::BlameAttribution;
+
+    let Some(blame) = app.live_blame.as_ref() else {
+        return;
+    };
+    let editor = app.editor_rect;
+    if editor.width < 24 || editor.height < 5 {
+        return;
+    }
+    let current = blame
+        .hunks
+        .iter()
+        .find(|hunk| hunk.lines.contains(blame.line));
+    let Some(current) = current else { return };
+    let mut lines = match &current.attribution {
+        BlameAttribution::Commit(commit) => {
+            let mut rows = vec![
+                Line::styled(
+                    format!("{}  {}", commit.short_hash(), commit.author),
+                    Style::default()
+                        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Line::styled(
+                    commit.date.clone(),
+                    Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
+                ),
+            ];
+            rows.extend(
+                commit
+                    .message
+                    .lines()
+                    .take(4)
+                    .map(|line| Line::raw(line.to_string())),
+            );
+            rows
+        },
+        BlameAttribution::Uncommitted => vec![Line::styled(
+            "Uncommitted changes",
+            Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui()),
+        )],
+        _ => vec![Line::raw("Attribution unavailable")],
+    };
+    if blame.mode == karet_core::BlameMode::Semantic && blame.hunks.len() > 1 {
+        lines.push(Line::styled(
+            "Contributors",
+            Style::default()
+                .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+                .add_modifier(Modifier::BOLD),
+        ));
+        for hunk in blame.hunks.iter().take(5) {
+            let label = match &hunk.attribution {
+                BlameAttribution::Commit(commit) => format!(
+                    "L{}–{}  {}  {}",
+                    hunk.lines.start + 1,
+                    hunk.lines.end + 1,
+                    commit.short_hash(),
+                    commit.author
+                ),
+                BlameAttribution::Uncommitted => format!(
+                    "L{}–{}  uncommitted",
+                    hunk.lines.start + 1,
+                    hunk.lines.end + 1
+                ),
+                _ => "attribution unavailable".to_string(),
+            };
+            lines.push(Line::raw(label));
+        }
+    }
+    let width = editor.width.clamp(24, 58);
+    let height = u16::try_from(lines.len().saturating_add(2))
+        .unwrap_or(editor.height)
+        .min(editor.height);
+    let rect = Rect::new(
+        editor.right().saturating_sub(width),
+        editor.bottom().saturating_sub(height),
+        width,
+        height,
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Blame ")
+        .border_style(Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui()))
+        .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui()));
+    let inner = block.inner(rect);
+    f.render_widget(Clear, rect);
+    f.render_widget(block, rect);
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 pub(super) fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {

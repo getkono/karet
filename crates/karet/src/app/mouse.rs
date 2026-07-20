@@ -391,6 +391,17 @@ impl App {
             self.dispatch(Command::SelectPanel(panel));
             return;
         }
+        if self.sidebar_panel == SidebarPanel::SourceControl
+            && let Some(command) =
+                self.scm_header_hits
+                    .iter()
+                    .find_map(|&(start, end, row, command)| {
+                        (row_y == row && col >= start && col < end).then_some(command)
+                    })
+        {
+            self.dispatch(command);
+            return;
+        }
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);
         let shift = modifiers.contains(KeyModifiers::SHIFT);
         match self.sidebar_panel {

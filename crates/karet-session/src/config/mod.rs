@@ -10,6 +10,12 @@
 pub mod load;
 pub mod schema;
 
+use std::io::Write;
+use std::path::Path;
+use std::path::PathBuf;
+
+use jsonc_parser::cst::CstRootNode;
+use jsonc_parser::json;
 pub use load::ConfigDiagnostic;
 pub use load::ConfigLayer;
 pub use load::ConfigLayerReport;
@@ -17,7 +23,78 @@ pub use load::ConfigLayerStatus;
 pub use load::LoadedConfig;
 pub use load::load;
 pub use load::load_report;
+pub use schema::GitBlameMode;
 pub use schema::Settings;
+
+/// Errors while updating a user-owned JSONC setting.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ConfigWriteError {
+    /// The platform has no discoverable user configuration directory.
+    #[error("user configuration directory is unavailable")]
+    NoUserDirectory,
+    /// Existing JSONC could not be parsed safely.
+    #[error("invalid user configuration: {0}")]
+    Parse(String),
+    /// Reading, writing, or atomically replacing the file failed.
+    #[error("configuration I/O failed: {0}")]
+    Io(String),
+}
+
+/// Persist live-blame settings in the user layer while retaining JSONC comments and
+/// unrelated formatting. Returns the updated file path.
+///
+/// # Errors
+/// Returns [`ConfigWriteError`] when the user path is unavailable, the existing file
+/// is invalid JSONC, or the atomic write fails.
+pub fn set_user_blame(enabled: bool, mode: GitBlameMode) -> Result<PathBuf, ConfigWriteError> {
+    let path = load::user_config_path().ok_or(ConfigWriteError::NoUserDirectory)?;
+    let current = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "{}\n".to_string(),
+        Err(error) => return Err(ConfigWriteError::Io(error.to_string())),
+    };
+    let updated = update_blame_jsonc(&current, enabled, mode)?;
+    atomic_write(&path, updated.as_bytes())?;
+    Ok(path)
+}
+
+fn update_blame_jsonc(
+    text: &str,
+    enabled: bool,
+    mode: GitBlameMode,
+) -> Result<String, ConfigWriteError> {
+    let root = CstRootNode::parse(text, &Default::default())
+        .map_err(|error| ConfigWriteError::Parse(error.to_string()))?;
+    let object = root.object_value_or_set();
+    let git = object.object_value_or_set("git");
+    if let Some(property) = git.get("blame") {
+        property.set_value(json!(enabled));
+    } else {
+        git.append("blame", json!(enabled));
+    }
+    if let Some(property) = git.get("blameMode") {
+        property.set_value(json!(mode.as_str()));
+    } else {
+        git.append("blameMode", json!(mode.as_str()));
+    }
+    Ok(root.to_string())
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ConfigWriteError> {
+    let parent = path.parent().ok_or_else(|| {
+        ConfigWriteError::Io("configuration path has no parent directory".to_string())
+    })?;
+    std::fs::create_dir_all(parent).map_err(|error| ConfigWriteError::Io(error.to_string()))?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| ConfigWriteError::Io(error.to_string()))?;
+    temp.write_all(bytes)
+        .and_then(|()| temp.flush())
+        .map_err(|error| ConfigWriteError::Io(error.to_string()))?;
+    temp.persist(path)
+        .map_err(|error| ConfigWriteError::Io(error.error.to_string()))?;
+    Ok(())
+}
 
 /// The JSON Schema for [`Settings`], pretty-printed. This is the single source the
 /// checked-in `settings.schema.json` is generated from; a test asserts they match.
@@ -38,6 +115,22 @@ mod tests {
         assert!(schema.contains("\"editor\""));
         assert!(schema.contains("\"tabSize\""));
         assert!(schema.contains("\"formatOnSave\""));
+    }
+
+    #[test]
+    fn blame_update_preserves_comments_and_unrelated_settings() -> Result<(), ConfigWriteError> {
+        let source = r#"{
+  // retain this explanation
+  "editor": { "tabSize": 2 },
+  "git": { "decorations": false, "blameMode": "line" }
+}"#;
+        let updated = update_blame_jsonc(source, true, GitBlameMode::Semantic)?;
+        assert!(updated.contains("// retain this explanation"));
+        assert!(updated.contains("\"tabSize\": 2"));
+        assert!(updated.contains("\"decorations\": false"));
+        assert!(updated.contains("\"blame\": true"));
+        assert!(updated.contains("\"blameMode\": \"semantic\""));
+        Ok(())
     }
 
     /// Guards the checked-in schema against drift: regenerate with

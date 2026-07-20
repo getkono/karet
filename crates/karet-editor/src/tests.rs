@@ -5,6 +5,32 @@ use super::text::*;
 use super::*;
 
 #[test]
+fn inline_text_decoration_renders_after_the_line() {
+    let buffer = TextBuffer::from_text("let answer = 42;\n");
+    let Ok(range) = Range::new(LineCol::new(0, 0), LineCol::new(0, 1)) else {
+        return;
+    };
+    let decoration = Decoration {
+        range,
+        kind: DecorationKind::InlineText {
+            text: "  Ada, initial".to_string(),
+            before: false,
+        },
+        role: Some(ThemeRole::Muted),
+    };
+    let mut state = EditorState::new();
+    let area = Rect::new(0, 0, 40, 1);
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .decorations(&[decoration])
+        .render(area, &mut target, &mut state);
+    let rendered: String = (0..area.width)
+        .map(|x| target[(x, 0)].symbol().chars().next().unwrap_or(' '))
+        .collect();
+    assert!(rendered.contains("Ada, initial"));
+}
+
+#[test]
 fn editor_builder_collects_layers() {
     let buffer = TextBuffer::from_text("fn main() {}");
     let _editor = Editor::new(&buffer).diagnostics(&[]).decorations(&[]);

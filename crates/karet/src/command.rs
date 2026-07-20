@@ -250,7 +250,37 @@ pub enum Command {
     ScmCommit,
     /// Recompute the Source-Control status.
     ScmRefresh,
-    /// Open a semantic-blame view (blameline) for the active file.
+    /// Pull then push using repository configuration.
+    ScmSync,
+    /// Open the Source-Control actions menu.
+    ScmMenu,
+    /// Pick a local or remote branch to switch to.
+    ScmSwitchBranch,
+    /// Open the full create-branch form.
+    ScmCreateBranch,
+    /// Pick and check out an open GitHub pull request.
+    ScmPickPullRequest,
+    /// Guardedly undo the latest commit.
+    ScmUndoCommit,
+    /// Open the stash creation form.
+    ScmStash,
+    /// Open the stash manager.
+    ScmManageStashes,
+    /// Publish the current branch.
+    ScmPublish,
+    /// Rename the current local branch.
+    ScmRenameBranch,
+    /// Pick a local branch for safe deletion.
+    ScmDeleteBranch,
+    /// Pick a remote branch for typed-confirmation deletion.
+    ScmDeleteRemoteBranch,
+    /// Continue an in-progress Git operation.
+    ScmContinue,
+    /// Abort an in-progress Git operation.
+    ScmAbort,
+    /// Skip the current rebase or cherry-pick step.
+    ScmSkip,
+    /// Cycle live current-line blame through line, semantic, and off modes.
     ShowBlame,
     /// Open a semantic-blame view narrowed to the function under the caret.
     BlameFunction,
@@ -517,6 +547,21 @@ impl Command {
             Self::ScmDiscard => "Source Control: Discard Selected Changes",
             Self::ScmCommit => "Source Control: Commit…",
             Self::ScmRefresh => "Source Control: Refresh",
+            Self::ScmSync => "Source Control: Sync",
+            Self::ScmMenu => "Source Control: More Actions…",
+            Self::ScmSwitchBranch => "Source Control: Switch Branch…",
+            Self::ScmCreateBranch => "Source Control: Create Branch…",
+            Self::ScmPickPullRequest => "Source Control: Pick Open Pull Request…",
+            Self::ScmUndoCommit => "Source Control: Undo Last Commit",
+            Self::ScmStash => "Source Control: Stash Changes…",
+            Self::ScmManageStashes => "Source Control: Manage Stashes…",
+            Self::ScmPublish => "Source Control: Publish Branch…",
+            Self::ScmRenameBranch => "Source Control: Rename Current Branch…",
+            Self::ScmDeleteBranch => "Source Control: Delete Local Branch…",
+            Self::ScmDeleteRemoteBranch => "Source Control: Delete Remote Branch…",
+            Self::ScmContinue => "Source Control: Continue Operation",
+            Self::ScmAbort => "Source Control: Abort Operation",
+            Self::ScmSkip => "Source Control: Skip Operation Step",
             Self::ShowBlame => "Source Control: Show Blame",
             Self::BlameFunction => "Source Control: Blame This Function",
             Self::ShowLoadedConfig => "Settings: Show Loaded Configuration",
@@ -653,6 +698,21 @@ impl Command {
             Self::ScmDiscard => "discard",
             Self::ScmCommit => "commit",
             Self::ScmRefresh => "refresh",
+            Self::ScmSync => "sync",
+            Self::ScmMenu => "more",
+            Self::ScmSwitchBranch => "switch branch",
+            Self::ScmCreateBranch => "create branch",
+            Self::ScmPickPullRequest => "pull requests",
+            Self::ScmUndoCommit => "undo commit",
+            Self::ScmStash => "stash",
+            Self::ScmManageStashes => "stashes",
+            Self::ScmPublish => "publish",
+            Self::ScmRenameBranch => "rename branch",
+            Self::ScmDeleteBranch => "delete branch",
+            Self::ScmDeleteRemoteBranch => "delete remote branch",
+            Self::ScmContinue => "continue",
+            Self::ScmAbort => "abort",
+            Self::ScmSkip => "skip",
             // Explorer.
             Self::ExplorerNewFile => "new file",
             Self::ExplorerNewFolder => "new folder",
@@ -839,6 +899,21 @@ impl Command {
                 | Self::ScmUnstageAll
                 | Self::ScmCommit
                 | Self::ScmRefresh
+                | Self::ScmSync
+                | Self::ScmMenu
+                | Self::ScmSwitchBranch
+                | Self::ScmCreateBranch
+                | Self::ScmPickPullRequest
+                | Self::ScmUndoCommit
+                | Self::ScmStash
+                | Self::ScmManageStashes
+                | Self::ScmPublish
+                | Self::ScmRenameBranch
+                | Self::ScmDeleteBranch
+                | Self::ScmDeleteRemoteBranch
+                | Self::ScmContinue
+                | Self::ScmAbort
+                | Self::ScmSkip
                 | Self::ShowBlame
                 | Self::BlameFunction
                 | Self::ShowLoadedConfig

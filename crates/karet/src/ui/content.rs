@@ -38,8 +38,12 @@ pub(super) fn draw_pane_content(
             // Local find and global search highlights are kept in separate
             // fields (so closing/rerunning one can't wipe the other) and
             // combined only here, at render time.
-            let combined: Vec<Decoration> =
-                decos.iter().chain(search_decos.iter()).cloned().collect();
+            let combined: Vec<Decoration> = decos
+                .iter()
+                .chain(search_decos.iter())
+                .chain(ctx.blame.iter())
+                .cloned()
+                .collect();
             let editor = Editor::new(buffer)
                 .highlights(highlights)
                 .semantic_blocks(semantic_blocks)
@@ -60,7 +64,15 @@ pub(super) fn draw_pane_content(
             ..
         } => draw_markdown_preview(f, theme, area, buffer, wrapped, rendered, scroll),
         TabKind::Diff { file, view, scroll } => draw_diff(f, theme, area, file, *view, scroll),
-        TabKind::Blame { groups, scroll, .. } => draw_blame(f, theme, area, groups, scroll),
+        TabKind::StashPreview { patch, scroll, .. } => {
+            let lines: Vec<Line> = patch
+                .lines()
+                .map(|line| Line::raw(line.to_string()))
+                .collect();
+            let max = lines.len().saturating_sub(area.height as usize);
+            *scroll = (*scroll).min(u16::try_from(max).unwrap_or(u16::MAX));
+            f.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), area);
+        },
         TabKind::Graph {
             title,
             view,

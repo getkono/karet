@@ -171,6 +171,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // The completion popup floats over the editor, anchored at the caret; it
     // sits under modal overlays and toasts.
     draw_completion(f, app, &theme);
+    draw_live_blame(f, app, &theme);
 
     if let Some(overlay) = &app.overlay {
         draw_overlay(f, overlay, &theme, area);
@@ -230,6 +231,8 @@ struct PaneCtx<'a> {
     /// Owned (not borrowed): it now lives on the active `Tab` itself, and
     /// `render_pane` needs a mutable borrow of the tabs slice at the same time.
     find: Option<FindState>,
+    /// Stale-checked virtual text for the focused editor.
+    blame: Option<Decoration>,
 }
 
 /// What a rendered pane reported back for hit-testing and image placement.

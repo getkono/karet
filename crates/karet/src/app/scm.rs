@@ -1,6 +1,362 @@
 use super::*;
 
 impl App {
+    /// Refresh branch, remote, recovery, and stash facts without blocking the UI.
+    pub(super) fn request_repository_snapshot(&mut self) {
+        if self.scm.repository_loading_since.is_some() {
+            return;
+        }
+        self.scm.repository_loading_since = Some(Instant::now());
+        self.scm.repository_request = self.send_command_id(SessionCommand::RepositorySnapshot);
+    }
+
+    /// Submit one ordered repository action.
+    pub(super) fn run_vcs_action(&mut self, action: VcsAction) {
+        self.send_vcs(SessionCommand::VcsAction { action });
+    }
+
+    /// Refuse to change the worktree while any editor has unsaved content, offering
+    /// the explicit save-all path instead.
+    pub(super) fn guard_branch_switch(&mut self, target: karet_vcs::BranchTarget) {
+        if self.all_tabs().any(|tab| tab.dirty) {
+            self.overlay = Some(Overlay::text(
+                "Unsaved editors · type save to save all and switch",
+                TextPurpose::SaveAndSwitch { target },
+            ));
+        } else {
+            self.run_vcs_action(VcsAction::SwitchBranch(target));
+        }
+    }
+
+    /// Save every distinct dirty document and park the switch until all answers arrive.
+    pub(super) fn save_then_switch(&mut self, target: karet_vcs::BranchTarget) {
+        let mut docs: Vec<DocumentId> = self
+            .all_tabs()
+            .filter(|tab| tab.dirty)
+            .filter_map(Self::tab_doc)
+            .collect();
+        docs.sort();
+        docs.dedup();
+        let action = VcsAction::SwitchBranch(target);
+        if self.save_docs(&docs) == 0 {
+            self.run_vcs_action(action);
+        } else {
+            self.vcs_after_save = Some(action);
+            self.status = Some(format!("saving {} editor(s) before switching…", docs.len()));
+        }
+    }
+
+    /// Open the discoverable overflow menu for repository workflows.
+    pub(super) fn open_scm_menu(&mut self) {
+        let mut commands = vec![
+            Command::ScmSync,
+            Command::ScmSwitchBranch,
+            Command::ScmCreateBranch,
+            Command::ScmPickPullRequest,
+            Command::ScmUndoCommit,
+            Command::ScmStash,
+            Command::ScmManageStashes,
+            Command::ScmPublish,
+            Command::ScmRenameBranch,
+            Command::ScmDeleteBranch,
+            Command::ScmDeleteRemoteBranch,
+            Command::ScmRefresh,
+        ];
+        if let Some(operation) = self
+            .scm
+            .repository
+            .as_ref()
+            .and_then(|snapshot| snapshot.state.operation)
+        {
+            commands.insert(0, Command::ScmAbort);
+            commands.insert(0, Command::ScmContinue);
+            if !matches!(operation, karet_vcs::RepositoryOperation::Merge) {
+                commands.insert(2, Command::ScmSkip);
+            }
+        }
+        self.overlay = Some(Overlay::commands("Source Control", commands));
+    }
+
+    /// Open a combined local/remote branch picker.
+    pub(super) fn open_branch_picker(&mut self) {
+        let Some(snapshot) = self.scm.repository.as_ref() else {
+            self.request_repository_snapshot();
+            self.status = Some("branches: loading repository state".to_string());
+            return;
+        };
+        let mut items = Vec::new();
+        for branch in &snapshot.branches {
+            let head = if branch.is_head { "✓ " } else { "  " };
+            items.push((
+                format!("{head}{}", branch.name),
+                karet_vcs::BranchTarget::Local(branch.name.clone()),
+            ));
+        }
+        for branch in &snapshot.remote_branches {
+            let local_name = branch.name.clone();
+            items.push((
+                format!("  {}/{}", branch.remote, branch.name),
+                karet_vcs::BranchTarget::Remote {
+                    remote: branch.remote.clone(),
+                    branch: branch.name.clone(),
+                    local_name,
+                },
+            ));
+        }
+        self.overlay = Some(Overlay::branches(items));
+    }
+
+    /// Open the full branch-creation form with every configured remote available.
+    pub(super) fn open_create_branch_form(&mut self) {
+        let remotes = self
+            .scm
+            .repository
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .remotes
+                    .iter()
+                    .map(|remote| remote.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.overlay = Some(Overlay::create_branch(remotes));
+    }
+
+    /// Query open pull requests for the upstream-aware primary remote.
+    pub(super) fn open_pull_request_picker(&mut self) {
+        let Some(snapshot) = self.scm.repository.as_ref() else {
+            self.request_repository_snapshot();
+            self.status = Some("pull requests: loading repository state".to_string());
+            return;
+        };
+        let preferred = snapshot
+            .state
+            .upstream
+            .as_deref()
+            .and_then(|upstream| upstream.split_once('/').map(|(remote, _)| remote));
+        let remote = preferred
+            .and_then(|name| snapshot.remotes.iter().find(|remote| remote.name == name))
+            .or_else(|| {
+                snapshot
+                    .remotes
+                    .iter()
+                    .find(|remote| remote.name == "origin")
+            })
+            .or_else(|| snapshot.remotes.first())
+            .map(|remote| remote.name.clone());
+        let Some(remote) = remote else {
+            self.status = Some("pull requests: no remote is configured".to_string());
+            return;
+        };
+        self.status = Some(format!("loading open pull requests from {remote}"));
+        self.pull_request_items.clear();
+        self.pull_request_remote = Some(remote.clone());
+        self.pending_pull_requests = self.send_command_id(SessionCommand::PullRequests {
+            remote,
+            page: 1,
+            per_page: 100,
+        });
+    }
+
+    /// Open stash creation controls.
+    pub(super) fn open_stash_form(&mut self) {
+        self.overlay = Some(Overlay::stash_form());
+    }
+
+    /// Open actions for every current stash entry.
+    pub(super) fn open_stash_manager(&mut self) {
+        let Some(snapshot) = self.scm.repository.as_ref() else {
+            self.request_repository_snapshot();
+            return;
+        };
+        if snapshot.stashes.is_empty() {
+            self.status = Some("stashes: none".to_string());
+            return;
+        }
+        self.overlay = Some(Overlay::stashes(&snapshot.stashes));
+    }
+
+    /// Publish the current branch to its upstream remote, `origin`, or first remote.
+    pub(super) fn publish_current_branch(&mut self) {
+        let Some(snapshot) = self.scm.repository.as_ref() else {
+            self.request_repository_snapshot();
+            return;
+        };
+        let Some(branch) = snapshot.state.branch.clone() else {
+            self.status = Some("publish: HEAD is detached".to_string());
+            return;
+        };
+        let preferred = snapshot
+            .state
+            .upstream
+            .as_deref()
+            .and_then(|upstream| upstream.split_once('/').map(|(remote, _)| remote));
+        let remote = preferred
+            .and_then(|name| snapshot.remotes.iter().find(|remote| remote.name == name))
+            .or_else(|| {
+                snapshot
+                    .remotes
+                    .iter()
+                    .find(|remote| remote.name == "origin")
+            })
+            .or_else(|| snapshot.remotes.first())
+            .map(|remote| remote.name.clone());
+        let Some(remote) = remote else {
+            self.status = Some("publish: no remote is configured".to_string());
+            return;
+        };
+        self.run_vcs_action(VcsAction::PublishBranch {
+            remote,
+            branch,
+            set_upstream: true,
+        });
+    }
+
+    /// Prompt for a replacement name for the current local branch.
+    pub(super) fn prompt_rename_current_branch(&mut self) {
+        let current = self
+            .scm
+            .repository
+            .as_ref()
+            .and_then(|snapshot| snapshot.state.branch.clone());
+        let Some(old) = current else {
+            self.status = Some("rename branch: HEAD is detached".to_string());
+            return;
+        };
+        self.overlay = Some(Overlay::text(
+            format!("Rename {old}"),
+            TextPurpose::RenameBranch { old },
+        ));
+    }
+
+    /// Pick a non-current local branch for safe (`git branch -d`) deletion.
+    pub(super) fn open_delete_branch_picker(&mut self) {
+        let Some(snapshot) = self.scm.repository.as_ref() else {
+            self.request_repository_snapshot();
+            return;
+        };
+        let items: Vec<String> = snapshot
+            .branches
+            .iter()
+            .filter(|branch| !branch.is_head)
+            .map(|branch| branch.name.clone())
+            .collect();
+        if items.is_empty() {
+            self.status = Some("delete branch: no eligible local branches".to_string());
+        } else {
+            self.overlay = Some(Overlay::delete_local_branches(items));
+        }
+    }
+
+    /// Pick a non-default remote branch, then require its exact name as confirmation.
+    pub(super) fn open_delete_remote_branch_picker(&mut self) {
+        let Some(snapshot) = self.scm.repository.as_ref() else {
+            self.request_repository_snapshot();
+            return;
+        };
+        let items: Vec<(String, String)> = snapshot
+            .remote_branches
+            .iter()
+            .filter(|branch| !branch.is_default)
+            .map(|branch| (branch.remote.clone(), branch.name.clone()))
+            .collect();
+        if items.is_empty() {
+            self.status = Some("delete remote branch: no eligible branches".to_string());
+        } else {
+            self.overlay = Some(Overlay::delete_remote_branches(items));
+        }
+    }
+
+    /// Request live blame when its document/version/cursor/mode anchor changed.
+    pub(super) fn request_live_blame(&mut self) {
+        if !self.settings.git.blame {
+            self.live_blame = None;
+            self.pending_blame = None;
+            self.failed_blame = None;
+            return;
+        }
+        let mode = match self.settings.git.blame_mode {
+            karet_session::config::GitBlameMode::Line => BlameMode::Line,
+            karet_session::config::GitBlameMode::Semantic => BlameMode::Semantic,
+        };
+        let target = self.tabs.get(self.active).and_then(|tab| match &tab.kind {
+            TabKind::Code {
+                doc: Some(doc),
+                buffer,
+                ..
+            } => Some((*doc, buffer.version(), tab.editor.cursor().line)),
+            _ => None,
+        });
+        let Some((doc, version, line)) = target else {
+            self.live_blame = None;
+            self.pending_blame = None;
+            self.failed_blame = None;
+            return;
+        };
+        if self.failed_blame == Some((doc, version, line, mode)) {
+            return;
+        }
+        self.failed_blame = None;
+        if self.live_blame.as_ref().is_some_and(|blame| {
+            blame.doc == doc && blame.version == version && blame.line == line && blame.mode == mode
+        }) || self.pending_blame.as_ref().is_some_and(|pending| {
+            pending.1 == doc && pending.2 == version && pending.3 == line && pending.4 == mode
+        }) {
+            return;
+        }
+        self.live_blame = None;
+        if let Some(id) = self.send_command_id(SessionCommand::Blame {
+            doc,
+            version,
+            line,
+            mode,
+        }) {
+            self.pending_blame = Some((id, doc, version, line, mode));
+        }
+    }
+
+    /// Cycle live blame through line, semantic, and off, persisting the user layer.
+    pub(super) fn cycle_live_blame(&mut self) {
+        use karet_session::config::GitBlameMode;
+
+        let (enabled, mode) = if !self.settings.git.blame {
+            (true, GitBlameMode::Line)
+        } else {
+            match self.settings.git.blame_mode {
+                GitBlameMode::Line => (true, GitBlameMode::Semantic),
+                GitBlameMode::Semantic => (false, GitBlameMode::Line),
+            }
+        };
+        self.apply_blame_setting(enabled, mode);
+    }
+
+    /// Enable semantic live blame directly.
+    pub(super) fn enable_semantic_blame(&mut self) {
+        self.apply_blame_setting(true, karet_session::config::GitBlameMode::Semantic);
+    }
+
+    fn apply_blame_setting(&mut self, enabled: bool, mode: karet_session::config::GitBlameMode) {
+        self.settings.git.blame = enabled;
+        self.settings.git.blame_mode = mode;
+        self.loaded_config.settings.git.blame = enabled;
+        self.loaded_config.settings.git.blame_mode = mode;
+        #[cfg(not(test))]
+        if let Err(error) = karet_session::config::set_user_blame(enabled, mode) {
+            self.notify(
+                Severity::Error,
+                NotificationKind::System,
+                format!("settings: {error}"),
+            );
+        }
+        self.pending_blame = None;
+        self.failed_blame = None;
+        self.live_blame = None;
+        self.request_live_blame();
+        let label = if enabled { mode.as_str() } else { "off" };
+        self.status = Some(format!("live blame: {label}"));
+    }
+
     /// Open the Source-Control cursor's change as a materialized (permanent) diff
     /// view and move keyboard focus into it — the explicit Enter / double-click
     /// "take me into the view" action. Browsing (arrow moves, single click) goes

@@ -45,7 +45,7 @@ impl App {
                 *scroll = next as u16;
             },
             TabKind::Diff { scroll, .. }
-            | TabKind::Blame { scroll, .. }
+            | TabKind::StashPreview { scroll, .. }
             | TabKind::Graph { scroll, .. }
             | TabKind::LoadedConfig { scroll, .. }
             | TabKind::CommitLoading { scroll, .. } => {
@@ -117,7 +117,7 @@ impl App {
                 *scroll = if top { 0 } else { last };
             },
             TabKind::Diff { scroll, .. }
-            | TabKind::Blame { scroll, .. }
+            | TabKind::StashPreview { scroll, .. }
             | TabKind::Graph { scroll, .. }
             | TabKind::LoadedConfig { scroll, .. }
             | TabKind::CommitLoading { scroll, .. } => {

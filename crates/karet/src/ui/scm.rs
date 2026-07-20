@@ -1,6 +1,9 @@
 use super::*;
 
 pub(super) fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+    let header_rows = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(area);
+    draw_repository_header(f, app, theme, header_rows[0]);
+    let area = header_rows[1];
     // Reserve a top row for the commit-message input while it is open.
     let list_area = if app.commit_input.is_some() {
         let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
@@ -41,6 +44,90 @@ pub(super) fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
         app.scm_commits_total = 0;
         app.scm_more_row = None;
     }
+}
+
+/// Draw current branch/divergence plus direct Sync, Commit, and overflow actions.
+pub(super) fn draw_repository_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+    app.scm_header_hits.clear();
+    if area.height < 2 {
+        return;
+    }
+    let branch = match app.scm.repository.as_ref() {
+        Some(snapshot) => snapshot.state.branch.as_deref().unwrap_or("detached HEAD"),
+        None if app
+            .scm
+            .repository_loading_since
+            .is_some_and(loading_visible) =>
+        {
+            "Loading repository…"
+        },
+        None => "Repository",
+    };
+    let state = app.scm.repository.as_ref().map(|snapshot| &snapshot.state);
+    let divergence = state.map_or(String::new(), |state| {
+        let mut parts = Vec::new();
+        if state.ahead > 0 {
+            parts.push(format!("↑{}", state.ahead));
+        }
+        if state.behind > 0 {
+            parts.push(format!("↓{}", state.behind));
+        }
+        if let Some(operation) = state.operation {
+            parts.push(format!("{operation:?}"));
+        }
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!("  {}", parts.join(" "))
+        }
+    });
+    let branch_style = Style::default()
+        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+        .add_modifier(Modifier::BOLD);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" ⎇ ", branch_style),
+            Span::styled(branch.to_string(), branch_style),
+            Span::styled(
+                divergence,
+                Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
+            ),
+        ])),
+        Rect { height: 1, ..area },
+    );
+    let action_row = area.y + 1;
+    let labels = [
+        (" Sync ", Command::ScmSync),
+        (" Commit ", Command::ScmCommit),
+        (" Branch ", Command::ScmSwitchBranch),
+        (" ⋯ ", Command::ScmMenu),
+    ];
+    let mut x = area.x;
+    let mut spans = Vec::new();
+    for (label, command) in labels {
+        let width = label.chars().count() as u16;
+        if x.saturating_add(width) > area.right() {
+            break;
+        }
+        app.scm_header_hits
+            .push((x, x + width, action_row, command));
+        spans.push(Span::styled(
+            label,
+            Style::default()
+                .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+                .bg(theme.role(ThemeRole::HoverHighlight).to_ratatui()),
+        ));
+        spans.push(Span::raw(" "));
+        x = x.saturating_add(width + 1);
+    }
+    f.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect {
+            y: action_row,
+            height: 1,
+            ..area
+        },
+    );
 }
 /// Draw the horizontal drag divider between the changes and commit-log regions. It
 /// brightens while a resize is active (mirrors the sidebar-width divider).

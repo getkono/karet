@@ -42,7 +42,18 @@ impl App {
                 log_has_more: false,
                 log_loading: false,
                 log_loading_since: None,
+                repository: None,
+                repository_loading_since: None,
+                repository_request: None,
+                operation: None,
             },
+            live_blame: None,
+            pending_blame: None,
+            failed_blame: None,
+            pending_pull_requests: None,
+            pull_request_items: Vec::new(),
+            pull_request_remote: None,
+            vcs_after_save: None,
             tabs: vec![Tab::welcome()],
             active: 0,
             layout: PaneLayout::new(),
@@ -82,6 +93,7 @@ impl App {
             outline_scroll: 0,
             header_action_hits: Vec::new(),
             scm_row_map: Vec::new(),
+            scm_header_hits: Vec::new(),
             scm_offset: 0,
             scm_changes_rect: Rect::default(),
             scm_total_rows: 0,
@@ -361,7 +373,7 @@ impl App {
                 TabKind::CommitLoading { .. }
                 | TabKind::Commit { .. }
                 | TabKind::Compare { .. }
-                | TabKind::Blame { .. }
+                | TabKind::StashPreview { .. }
                 | TabKind::Graph { .. }
                 | TabKind::LoadedConfig { .. }
                 | TabKind::MarkdownPreview { .. }

@@ -807,57 +807,20 @@
     #[test]
     fn blame_without_a_code_tab_reports_status() {
         let mut app = app();
-        // The Welcome tab is active — there is nothing to blame.
+        app.settings.git.blame = false;
         app.dispatch(Command::ShowBlame);
         assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
-        assert_eq!(app.status.as_deref(), Some("blame: open a text file first"));
+        assert!(app.settings.git.blame);
+        assert_eq!(app.settings.git.blame_mode.as_str(), "line");
     }
 
     #[test]
-    fn blame_outside_a_repo_surfaces_an_error() {
-        use karet_syntax::Highlights;
-        use karet_text::TextBuffer;
-
-        // A scratch directory that is not a git repository.
-        let n = std::sync::atomic::AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "karet-blame-{}-{}",
-            std::process::id(),
-            n.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        let _ = std::fs::create_dir_all(&dir);
-        let file = dir.join("orphan.rs");
-        let _ = std::fs::write(&file, "fn main() {}\n");
-
+    fn blame_command_cycles_line_semantic_and_off() {
         let mut app = app();
-        app.push_tab(Tab::new(
-            "orphan.rs",
-            TabKind::Code {
-                path: file,
-                language: "Rust",
-                doc: None,
-                next_version: 0,
-                buffer: TextBuffer::from_text("fn main() {}\n"),
-                text: "fn main() {}\n".to_string(),
-                highlights: Highlights::default(),
-                semantic_blocks: karet_syntax::SemanticBlocks::default(),
-                folds: FoldRegions::default(),
-                folded: BTreeSet::new(),
-                decos: Vec::new(),
-                search_decos: Vec::new(),
-                syntax_errors: Vec::new(),
-            },
-        ));
+        app.settings.git.blame = true;
+        app.settings.git.blame_mode = karet_session::config::GitBlameMode::Line;
         app.dispatch(Command::ShowBlame);
-
-        // No Blame tab is created; the failure is surfaced as an error notification.
-        assert!(!matches!(app.tabs[app.active].kind, TabKind::Blame { .. }));
-        let active = app.notifications.active();
-        assert!(
-            active
-                .iter()
-                .any(|n| n.severity == Severity::Error && n.title.starts_with("blame:"))
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(app.settings.git.blame_mode.as_str(), "semantic");
+        app.dispatch(Command::ShowBlame);
+        assert!(!app.settings.git.blame);
     }

@@ -161,7 +161,7 @@ spellbook   = "0.4.2"
 directories = "6.0.0"
 # Configuration file (karet-session): JSONC parsing (pure-Rust, byte-span errors)
 # and JSON Schema generation from the typed `Settings` for editor autocomplete.
-jsonc-parser = { version = "0.32.4", features = ["serde"] }
+jsonc-parser = { version = "0.32.4", features = ["serde", "cst"] }
 schemars     = "1.2.1"
 # Package dependency-graph backend (karet-session viz): the pure-Rust core of
 # `dependable` parses a Cargo.lock into a resolved graph offline (no network stack).

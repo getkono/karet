@@ -172,6 +172,34 @@ impl Editor<'_> {
         None
     }
 
+    /// Inline virtual text attached to `l`, filtered by whether it belongs before or
+    /// after the decorated range.
+    fn push_inline_spans(
+        &self,
+        spans: &mut Vec<Span<'static>>,
+        l: u32,
+        before: bool,
+        theme: &Theme,
+    ) {
+        for decoration in self.decorations {
+            if let DecorationKind::InlineText {
+                text,
+                before: decoration_before,
+            } = &decoration.kind
+                && *decoration_before == before
+                && line_in_range(l, decoration.range)
+            {
+                let color = decoration
+                    .role
+                    .map_or_else(|| theme.role(ThemeRole::Muted), |role| theme.role(role));
+                spans.push(Span::styled(
+                    text.clone(),
+                    Style::default().fg(color.to_ratatui()),
+                ));
+            }
+        }
+    }
+
     /// Append the syntax-colored content spans for line `l`, honoring horizontal
     /// scroll, active selections, and text-background decorations.
     fn push_content_spans(
@@ -524,6 +552,9 @@ impl StatefulWidget for Editor<'_> {
                 .get(range_index)
                 .copied()
                 .unwrap_or_else(|| VisualRange::empty(0));
+            if range_index == 0 {
+                self.push_inline_spans(&mut spans, l, true, theme);
+            }
             self.push_content_spans(&mut spans, l, theme, default_fg, range, &selections);
             // A collapsed header hints at the hidden lines it conceals.
             if fold.is_some_and(|f| f.collapsed) && range_index + 1 == ranges.len() {
@@ -531,6 +562,9 @@ impl StatefulWidget for Editor<'_> {
                     " \u{22ef}", // ⋯
                     Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
                 ));
+            }
+            if range_index + 1 == ranges.len() {
+                self.push_inline_spans(&mut spans, l, false, theme);
             }
             buf.set_line(area.x, y, &Line::from(spans), area.width);
 

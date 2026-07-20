@@ -732,6 +732,8 @@ pub struct Git {
     pub decorations: bool,
     /// Show inline blame for the current line.
     pub blame: bool,
+    /// Attribution scope shown around the current line.
+    pub blame_mode: GitBlameMode,
     /// AI-generated commit messages from the staged diff.
     pub ai_commit: AiCommit,
 }
@@ -740,8 +742,31 @@ impl Default for Git {
     fn default() -> Self {
         Self {
             decorations: true,
-            blame: false,
+            blame: true,
+            blame_mode: GitBlameMode::Line,
             ai_commit: AiCommit::default(),
+        }
+    }
+}
+
+/// Scope used by live blame in the editor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum GitBlameMode {
+    /// Attribute the current line only.
+    #[default]
+    Line,
+    /// Attribute all commit groups in the enclosing semantic block.
+    Semantic,
+}
+
+impl GitBlameMode {
+    /// The configuration-file label for this mode.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Line => "line",
+            Self::Semantic => "semantic",
         }
     }
 }
