@@ -50,6 +50,8 @@ pub struct RepositoryState {
     pub behind: usize,
     /// In-progress Git operation, if any.
     pub operation: Option<RepositoryOperation>,
+    /// GitHub pull request number for a managed `pr/<number>` branch.
+    pub pull_request: Option<u64>,
 }
 
 /// Result of synchronizing the current branch.
@@ -60,6 +62,8 @@ pub enum SyncOutcome {
     Synced,
     /// The current branch has no upstream and must be published first.
     NeedsPublish,
+    /// A managed pull-request branch was fetched and fast-forwarded without pushing.
+    PullRequestUpdated,
 }
 
 impl Repository {
@@ -80,12 +84,16 @@ impl Repository {
         } else {
             (0, 0)
         };
+        let pull_request = branch
+            .as_deref()
+            .and_then(|name| self.managed_pull_request(name));
         Ok(RepositoryState {
             branch,
             upstream,
             ahead,
             behind,
             operation: self.repository_operation(),
+            pull_request,
         })
     }
 
@@ -154,12 +162,73 @@ impl Repository {
     /// # Errors
     /// Returns [`VcsError`] when pull or push fails.
     pub fn sync(&self) -> Result<SyncOutcome, VcsError> {
-        if self.upstream_of_head()?.is_none() {
+        let state = self.repository_state()?;
+        if let Some(number) = state.pull_request {
+            let branch = state.branch.as_deref().ok_or_else(|| {
+                VcsError::Git("managed pull-request branch is detached".to_string())
+            })?;
+            let remote = self.managed_pull_remote(branch).ok_or_else(|| {
+                VcsError::Git("managed pull-request branch has no remote".to_string())
+            })?;
+            self.checkout_github_pull_request(&remote, number)?;
+            return Ok(SyncOutcome::PullRequestUpdated);
+        }
+        if state.upstream.is_none() {
             return Ok(SyncOutcome::NeedsPublish);
         }
         self.git_checked(["pull", "--no-edit"])?;
         self.git_checked(["push"])?;
         Ok(SyncOutcome::Synced)
+    }
+
+    /// Fetch a GitHub pull-request head and switch to the reusable `pr/<number>`
+    /// local branch. Existing branches are updated by fast-forward only.
+    ///
+    /// # Errors
+    /// Returns [`VcsError`] for an unknown remote, missing PR ref, dirty switch, or
+    /// divergent local PR branch. Existing local commits are never reset.
+    pub fn checkout_github_pull_request(
+        &self,
+        remote: &str,
+        number: u64,
+    ) -> Result<String, VcsError> {
+        self.validate_remote(remote)?;
+        if number == 0 {
+            return Err(VcsError::Git(
+                "pull request number must be positive".to_string(),
+            ));
+        }
+        let local = format!("pr/{number}");
+        let tracking = format!("{remote}/pull/{number}");
+        let refspec = format!("+refs/pull/{number}/head:refs/remotes/{remote}/pull/{number}");
+        self.git_checked(["fetch", remote, refspec.as_str()])?;
+        let exists = self
+            .git_output([
+                "show-ref",
+                "--verify",
+                "--quiet",
+                format!("refs/heads/{local}").as_str(),
+            ])?
+            .status
+            .success();
+        if exists {
+            self.git_checked(["switch", local.as_str()])?;
+            self.git_checked(["merge", "--ff-only", tracking.as_str()])?;
+        } else {
+            self.git_checked([
+                "switch",
+                "--create",
+                local.as_str(),
+                "--track",
+                tracking.as_str(),
+            ])?;
+        }
+        let number_text = number.to_string();
+        let number_key = format!("branch.{local}.karetPullRequest");
+        self.git_checked(["config", number_key.as_str(), number_text.as_str()])?;
+        let remote_key = format!("branch.{local}.karetPullRemote");
+        self.git_checked(["config", remote_key.as_str(), remote])?;
+        Ok(local)
     }
 
     /// Continue the detected merge, rebase, or cherry-pick.
@@ -250,6 +319,24 @@ impl Repository {
             None
         }
     }
+
+    fn managed_pull_request(&self, branch: &str) -> Option<u64> {
+        let key = format!("branch.{branch}.karetPullRequest");
+        let output = self.git_output(["config", "--get", key.as_str()]).ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+    }
+
+    fn managed_pull_remote(&self, branch: &str) -> Option<String> {
+        let key = format!("branch.{branch}.karetPullRemote");
+        let output = self.git_output(["config", "--get", key.as_str()]).ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
 }
 
 fn parse_counts(text: &str) -> Result<(usize, usize), VcsError> {
@@ -297,6 +384,7 @@ mod tests {
         assert_eq!(state.branch.as_deref(), Some("main"));
         assert_eq!(state.upstream.as_deref(), Some("origin/main"));
         assert_eq!((state.ahead, state.behind), (0, 0));
+        assert_eq!(state.pull_request, None);
         assert_eq!(vcs.sync()?, SyncOutcome::Synced);
         Ok(())
     }
@@ -339,5 +427,25 @@ mod tests {
     fn count_parser_rejects_bad_output() {
         assert_eq!(parse_counts("2 3").unwrap_or_default(), (2, 3));
         assert!(parse_counts("bad").is_err());
+    }
+
+    #[test]
+    fn github_pull_ref_checks_out_and_updates_without_push() -> Result<(), VcsError> {
+        let repo = test_support::init("pull-request")?;
+        let remote = test_support::bare_remote("pull-request")?;
+        let first = test_support::commit(&repo, "one\n", "initial")?;
+        test_support::git(
+            &repo.0,
+            &["remote", "add", "origin", &remote.0.to_string_lossy()],
+        )?;
+        test_support::git(&repo.0, &["push", "-q", "origin", "HEAD:refs/pull/7/head"])?;
+        assert!(!first.is_empty());
+        let vcs = Repository::discover(&repo.0)?;
+        assert_eq!(vcs.checkout_github_pull_request("origin", 7)?, "pr/7");
+        let state = vcs.repository_state()?;
+        assert_eq!(state.pull_request, Some(7));
+        assert_eq!(vcs.sync()?, SyncOutcome::PullRequestUpdated);
+        assert!(vcs.checkout_github_pull_request("origin", 0).is_err());
+        Ok(())
     }
 }

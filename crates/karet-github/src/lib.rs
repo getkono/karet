@@ -1,16 +1,17 @@
 //! `karet-github` — a minimal GitHub REST client for karet.
 //!
-//! This crate is the single home for GitHub-specific networking. Today it exposes just
-//! the one call the commit view needs — a commit's signature-verification status — but
-//! it is deliberately a standalone crate so the surface can grow (eventually via
-//! codegen of the GitHub API) without leaking `reqwest` or GitHub URL shapes into the
-//! rest of the workspace.
+//! This crate is the single home for GitHub-specific networking: commit verification
+//! and open pull-request discovery without leaking `reqwest` or GitHub wire shapes
+//! into the rest of the workspace.
 //!
 //! The transport is blocking ([`reqwest::blocking`]) so callers need no async runtime;
 //! run [`commit_verification`] on a worker thread. TLS is pure-Rust rustls (ring), so
 //! there is no OpenSSL/native-tls system dependency.
 
 use std::time::Duration;
+
+const API: &str = "https://api.github.com";
+const API_VERSION: &str = "2022-11-28";
 
 /// Errors produced by the GitHub client.
 #[derive(Debug, thiserror::Error)]
@@ -38,6 +39,40 @@ pub struct Verification {
     pub reason: String,
     /// The signer GitHub attributes the commit to (a login), when present. Best-effort.
     pub signer: Option<String>,
+}
+
+/// A compact open pull request suitable for a branch picker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PullRequest {
+    /// Repository-local pull request number.
+    pub number: u64,
+    /// Pull request title.
+    pub title: String,
+    /// Author login, when GitHub supplied one.
+    pub author: Option<String>,
+    /// Whether the pull request is still a draft.
+    pub draft: bool,
+    /// Source branch name.
+    pub head_ref: String,
+    /// Source repository's `owner/name`, including a fork when applicable.
+    pub head_repo: String,
+    /// Current source commit.
+    pub head_sha: String,
+    /// Target branch name.
+    pub base_ref: String,
+    /// Target repository's `owner/name`.
+    pub base_repo: String,
+    /// Browser URL for the pull request.
+    pub url: String,
+}
+
+/// One page of open pull requests.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PullRequestPage {
+    /// Pull requests in GitHub's updated-descending order.
+    pub items: Vec<PullRequest>,
+    /// Next page number when GitHub advertised one.
+    pub next_page: Option<u32>,
 }
 
 /// Parse an `(owner, repo)` pair from a GitHub remote URL, accepting the common HTTPS,
@@ -79,16 +114,11 @@ pub fn commit_verification(
     repo: &str,
     sha: &str,
 ) -> Result<Verification, GithubError> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("karet")
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| GithubError::Http(e.to_string()))?;
-    let url = format!("https://api.github.com/repos/{owner}/{repo}/commits/{sha}");
-    let mut req = client
+    let url = format!("{API}/repos/{owner}/{repo}/commits/{sha}");
+    let mut req = client()?
         .get(url)
         .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28");
+        .header("X-GitHub-Api-Version", API_VERSION);
     if let Some(token) = auth_token() {
         req = req.bearer_auth(token);
     }
@@ -102,6 +132,67 @@ pub fn commit_verification(
     parse_verification(&body)
 }
 
+/// Fetch one page of open pull requests for `owner/repo`.
+///
+/// Authentication uses `GITHUB_TOKEN`, then `GH_TOKEN`, then a non-interactive
+/// `gh auth token` lookup. Public repositories also work without authentication.
+/// `per_page` must be between 1 and 100 and `page` is 1-based.
+///
+/// # Errors
+/// Returns [`GithubError::Http`] for invalid paging or an HTTP failure, and
+/// [`GithubError::Decode`] when GitHub returns an unexpected response shape.
+pub fn open_pull_requests(
+    owner: &str,
+    repo: &str,
+    page: u32,
+    per_page: u8,
+) -> Result<PullRequestPage, GithubError> {
+    if owner.is_empty() || repo.is_empty() || page == 0 || !(1..=100).contains(&per_page) {
+        return Err(GithubError::Http("invalid pull-request query".to_string()));
+    }
+    let url = format!("{API}/repos/{owner}/{repo}/pulls");
+    let mut request = client()?
+        .get(url)
+        .query(&[
+            ("state", "open".to_string()),
+            ("sort", "updated".to_string()),
+            ("direction", "desc".to_string()),
+            ("page", page.to_string()),
+            ("per_page", per_page.to_string()),
+        ])
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", API_VERSION);
+    if let Some(token) = auth_token() {
+        request = request.bearer_auth(token);
+    }
+    let response = request
+        .send()
+        .map_err(|error| GithubError::Http(error.to_string()))?;
+    if !response.status().is_success() {
+        return Err(GithubError::Http(format!("HTTP {}", response.status())));
+    }
+    let next_page = response
+        .headers()
+        .get(reqwest::header::LINK)
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_next_page);
+    let body: serde_json::Value = response
+        .json()
+        .map_err(|error| GithubError::Decode(error.to_string()))?;
+    Ok(PullRequestPage {
+        items: parse_pull_requests(&body)?,
+        next_page,
+    })
+}
+
+fn client() -> Result<reqwest::blocking::Client, GithubError> {
+    reqwest::blocking::Client::builder()
+        .user_agent("karet")
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|error| GithubError::Http(error.to_string()))
+}
+
 /// The GitHub token from the environment, if any non-empty one is set.
 fn auth_token() -> Option<String> {
     for var in ["GITHUB_TOKEN", "GH_TOKEN"] {
@@ -111,7 +202,64 @@ fn auth_token() -> Option<String> {
             return Some(token);
         }
     }
-    None
+    std::process::Command::new("gh")
+        .args(["auth", "token", "--hostname", "github.com"])
+        .env("GH_PROMPT_DISABLED", "1")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|token| !token.is_empty())
+}
+
+fn parse_pull_requests(body: &serde_json::Value) -> Result<Vec<PullRequest>, GithubError> {
+    let rows = body
+        .as_array()
+        .ok_or_else(|| GithubError::Decode("expected a pull-request array".to_string()))?;
+    rows.iter().map(parse_pull_request).collect()
+}
+
+fn parse_pull_request(row: &serde_json::Value) -> Result<PullRequest, GithubError> {
+    Ok(PullRequest {
+        number: required_u64(row, "number")?,
+        title: required(row, "title")?.to_string(),
+        author: row["user"]["login"].as_str().map(str::to_string),
+        draft: row["draft"].as_bool().unwrap_or(false),
+        head_ref: required(&row["head"], "ref")?.to_string(),
+        head_repo: required(&row["head"]["repo"], "full_name")?.to_string(),
+        head_sha: required(&row["head"], "sha")?.to_string(),
+        base_ref: required(&row["base"], "ref")?.to_string(),
+        base_repo: required(&row["base"]["repo"], "full_name")?.to_string(),
+        url: required(row, "html_url")?.to_string(),
+    })
+}
+
+fn required<'a>(value: &'a serde_json::Value, key: &str) -> Result<&'a str, GithubError> {
+    value[key]
+        .as_str()
+        .ok_or_else(|| GithubError::Decode(format!("missing `{key}`")))
+}
+
+fn required_u64(value: &serde_json::Value, key: &str) -> Result<u64, GithubError> {
+    value[key]
+        .as_u64()
+        .ok_or_else(|| GithubError::Decode(format!("missing `{key}`")))
+}
+
+fn parse_next_page(header: &str) -> Option<u32> {
+    header.split(',').find_map(|part| {
+        let (url, relation) = part.trim().split_once(';')?;
+        if !relation.contains("rel=\"next\"") {
+            return None;
+        }
+        url.trim()
+            .trim_start_matches('<')
+            .trim_end_matches('>')
+            .split('?')
+            .nth(1)?
+            .split('&')
+            .find_map(|field| field.strip_prefix("page=")?.parse().ok())
+    })
 }
 
 /// Extract the [`Verification`] from a `GET /commits/{sha}` response body.
@@ -194,6 +342,57 @@ mod tests {
         assert!(matches!(
             parse_verification(&body),
             Err(GithubError::Decode(_))
+        ));
+    }
+
+    #[test]
+    fn pull_request_page_parses_forks_and_drafts() -> Result<(), GithubError> {
+        let body = serde_json::json!([{
+            "number": 42,
+            "title": "Improve checkout",
+            "draft": true,
+            "html_url": "https://github.com/getkono/karet/pull/42",
+            "user": { "login": "octocat" },
+            "head": {
+                "ref": "topic",
+                "sha": "abc123",
+                "repo": { "full_name": "octocat/karet" }
+            },
+            "base": {
+                "ref": "master",
+                "repo": { "full_name": "getkono/karet" }
+            }
+        }]);
+        let pulls = parse_pull_requests(&body)?;
+        assert_eq!(pulls.len(), 1);
+        assert_eq!(pulls[0].number, 42);
+        assert_eq!(pulls[0].head_repo, "octocat/karet");
+        assert!(pulls[0].draft);
+        Ok(())
+    }
+
+    #[test]
+    fn pull_request_parser_rejects_missing_required_fields() {
+        assert!(parse_pull_requests(&serde_json::json!([{"number": 1}])).is_err());
+    }
+
+    #[test]
+    fn next_link_extracts_page() {
+        let header = "<https://api.github.com/repos/o/r/pulls?page=2>; rel=\"next\", \
+                      <https://api.github.com/repos/o/r/pulls?page=4>; rel=\"last\"";
+        assert_eq!(parse_next_page(header), Some(2));
+        assert_eq!(parse_next_page(""), None);
+    }
+
+    #[test]
+    fn open_pull_requests_validates_paging_before_network() {
+        assert!(matches!(
+            open_pull_requests("owner", "repo", 0, 100),
+            Err(GithubError::Http(_))
+        ));
+        assert!(matches!(
+            open_pull_requests("owner", "repo", 1, 0),
+            Err(GithubError::Http(_))
         ));
     }
 }
