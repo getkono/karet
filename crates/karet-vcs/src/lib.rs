@@ -13,20 +13,35 @@ use std::path::PathBuf;
 
 use karet_core::Decoration;
 
+mod branch;
 mod changes;
 mod detail;
 mod log;
+mod remote;
 mod repo;
 mod selection;
+mod stash;
+#[cfg(test)]
+mod test_support;
 mod write;
 
+pub use branch::BranchTarget;
+pub use branch::CreateBranchOptions;
+pub use branch::UndoCommitOutcome;
 pub use changes::FileChange;
 pub use detail::CommitDetail;
 pub use detail::CommitSignature;
 pub use detail::Identity;
 pub use detail::SignatureKind;
 pub use log::Commit;
+pub use remote::Remote;
+pub use remote::RemoteBranch;
+pub use remote::RepositoryOperation;
+pub use remote::RepositoryState;
+pub use remote::SyncOutcome;
 pub use selection::Selection;
+pub use stash::StashEntry;
+pub use stash::StashOptions;
 
 /// Errors produced by the VCS engine.
 #[derive(Debug, thiserror::Error)]
@@ -41,6 +56,9 @@ pub enum VcsError {
     /// The `git` executable required for a write or network operation was unavailable.
     #[error("git executable is unavailable: {0}")]
     GitUnavailable(String),
+    /// An otherwise valid destructive action requires explicit confirmation.
+    #[error("confirmation required: {0}")]
+    ConfirmationRequired(String),
     /// Legacy error retained for source compatibility with the former optional writer.
     #[error("the requested VCS feature is disabled")]
     FeatureDisabled,

@@ -32,6 +32,8 @@ impl Repository {
             .args(args)
             .current_dir(self.workdir()?)
             .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_EDITOR", "true")
+            .env("GIT_SEQUENCE_EDITOR", "true")
             .output()
             .map_err(|error| VcsError::GitUnavailable(error.to_string()))
     }
