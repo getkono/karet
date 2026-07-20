@@ -35,16 +35,7 @@ impl Repository {
     /// [`VcsError::Git`] for any other discovery failure.
     pub fn discover(path: &Path) -> Result<Self, VcsError> {
         let inner = gix::discover(path).map_err(map_discover)?;
-        // `git2::Repository::discover` (not `open`) follows a linked worktree's
-        // `.git` file to its per-worktree git directory, so `repo.index()` reads and
-        // writes the correct (per-worktree) index. gix already succeeded above.
-        #[cfg(feature = "git2")]
-        let git2 = git2::Repository::discover(path).map_err(to_git)?;
-        Ok(Self {
-            inner,
-            #[cfg(feature = "git2")]
-            git2,
-        })
+        Ok(Self { inner })
     }
 
     /// The URL of the `origin` remote, if one is configured. Used to derive the

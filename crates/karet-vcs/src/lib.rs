@@ -1,12 +1,12 @@
 //! `karet-vcs` — editor-oriented git integration for karet.
 //!
-//! A `gix`-backed engine for status, blame, branches and staging, emitting
+//! A `gix`-backed engine for repository reads with argument-safe `git` subprocesses
+//! for mature write operations, emitting
 //! per-line change markers and blame annotations as neutral `karet-core`
 //! [`Decoration`]s. Headless by default; the ratatui source-control panels live
 //! behind the `view` feature (and render `karet-diff` hunk data directly).
 //!
-//! This is the implementation *skeleton*: the public joints are defined; the gix
-//! logic is filled in separately.
+//! The write path requires the `git` executable on `PATH`; it never invokes a shell.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -18,7 +18,6 @@ mod detail;
 mod log;
 mod repo;
 mod selection;
-#[cfg(feature = "git2")]
 mod write;
 
 pub use changes::FileChange;
@@ -39,8 +38,11 @@ pub enum VcsError {
     /// A git operation failed.
     #[error("git error: {0}")]
     Git(String),
-    /// A write action was requested but the `git2` feature is not enabled.
-    #[error("staging requires the `git2` feature")]
+    /// The `git` executable required for a write or network operation was unavailable.
+    #[error("git executable is unavailable: {0}")]
+    GitUnavailable(String),
+    /// Legacy error retained for source compatibility with the former optional writer.
+    #[error("the requested VCS feature is disabled")]
     FeatureDisabled,
 }
 
@@ -118,11 +120,6 @@ pub struct Repository {
     /// The underlying `gix` repository (status and diff reads). Note:
     /// `gix::Repository` is not `Sync`.
     inner: gix::Repository,
-    /// The `libgit2` handle backing the write actions (stage/discard/commit).
-    /// Opened from the same path as `inner`, so it resolves the same (possibly
-    /// linked-worktree) repository.
-    #[cfg(feature = "git2")]
-    git2: git2::Repository,
 }
 
 impl Repository {
@@ -205,36 +202,20 @@ impl Repository {
     /// no longer exists in the worktree is staged as a deletion.
     ///
     /// # Errors
-    /// Returns [`VcsError::FeatureDisabled`] if the `git2` feature is off, or
+    /// Returns [`VcsError::GitUnavailable`] when `git` cannot be launched, or
     /// [`VcsError::Git`] on failure.
     pub fn stage(&self, paths: &[PathBuf]) -> Result<(), VcsError> {
-        #[cfg(feature = "git2")]
-        {
-            self.git2_stage(paths)
-        }
-        #[cfg(not(feature = "git2"))]
-        {
-            let _ = paths;
-            Err(VcsError::FeatureDisabled)
-        }
+        self.git_stage(paths)
     }
 
     /// Unstage `paths` (reset their index entries to `HEAD`, or remove them when
     /// there is no commit yet).
     ///
     /// # Errors
-    /// Returns [`VcsError::FeatureDisabled`] if the `git2` feature is off, or
+    /// Returns [`VcsError::GitUnavailable`] when `git` cannot be launched, or
     /// [`VcsError::Git`] on failure.
     pub fn unstage(&self, paths: &[PathBuf]) -> Result<(), VcsError> {
-        #[cfg(feature = "git2")]
-        {
-            self.git2_unstage(paths)
-        }
-        #[cfg(not(feature = "git2"))]
-        {
-            let _ = paths;
-            Err(VcsError::FeatureDisabled)
-        }
+        self.git_unstage(paths)
     }
 
     /// Discard the working-tree changes to `paths`: tracked files are restored to
@@ -242,68 +223,38 @@ impl Repository {
     /// deleted. This is destructive and cannot be undone.
     ///
     /// # Errors
-    /// Returns [`VcsError::FeatureDisabled`] if the `git2` feature is off, or
+    /// Returns [`VcsError::GitUnavailable`] when `git` cannot be launched, or
     /// [`VcsError::Git`] on failure.
     pub fn discard(&self, paths: &[PathBuf]) -> Result<(), VcsError> {
-        #[cfg(feature = "git2")]
-        {
-            self.git2_discard(paths)
-        }
-        #[cfg(not(feature = "git2"))]
-        {
-            let _ = paths;
-            Err(VcsError::FeatureDisabled)
-        }
+        self.git_discard(paths)
     }
 
     /// Stage every change in the worktree (new, modified, and deleted files).
     ///
     /// # Errors
-    /// Returns [`VcsError::FeatureDisabled`] if the `git2` feature is off, or
+    /// Returns [`VcsError::GitUnavailable`] when `git` cannot be launched, or
     /// [`VcsError::Git`] on failure.
     pub fn stage_all(&self) -> Result<(), VcsError> {
-        #[cfg(feature = "git2")]
-        {
-            self.git2_stage_all()
-        }
-        #[cfg(not(feature = "git2"))]
-        {
-            Err(VcsError::FeatureDisabled)
-        }
+        self.git_stage_all()
     }
 
     /// Unstage every staged change (reset the whole index to `HEAD`).
     ///
     /// # Errors
-    /// Returns [`VcsError::FeatureDisabled`] if the `git2` feature is off, or
+    /// Returns [`VcsError::GitUnavailable`] when `git` cannot be launched, or
     /// [`VcsError::Git`] on failure.
     pub fn unstage_all(&self) -> Result<(), VcsError> {
-        #[cfg(feature = "git2")]
-        {
-            self.git2_unstage_all()
-        }
-        #[cfg(not(feature = "git2"))]
-        {
-            Err(VcsError::FeatureDisabled)
-        }
+        self.git_unstage_all()
     }
 
     /// Commit the staged changes with `message`, returning the new commit's hex id.
     ///
     /// # Errors
-    /// Returns [`VcsError::FeatureDisabled`] if the `git2` feature is off, or
+    /// Returns [`VcsError::GitUnavailable`] when `git` cannot be launched, or
     /// [`VcsError::Git`] on failure (including unresolved conflicts or a missing
     /// `user.name`/`user.email` identity).
     pub fn commit(&self, message: &str) -> Result<String, VcsError> {
-        #[cfg(feature = "git2")]
-        {
-            self.git2_commit(message)
-        }
-        #[cfg(not(feature = "git2"))]
-        {
-            let _ = message;
-            Err(VcsError::FeatureDisabled)
-        }
+        self.git_commit(message)
     }
 
     /// The staged changes as a unified diff plus a `--stat` summary and file count.
@@ -312,17 +263,10 @@ impl Repository {
     /// taken between `HEAD` (or the empty tree on an unborn branch) and the index.
     ///
     /// # Errors
-    /// Returns [`VcsError::FeatureDisabled`] if the `git2` feature is off, or
+    /// Returns [`VcsError::GitUnavailable`] when `git` cannot be launched, or
     /// [`VcsError::Git`] if the diff cannot be computed.
     pub fn staged_diff(&self) -> Result<StagedDiff, VcsError> {
-        #[cfg(feature = "git2")]
-        {
-            self.git2_staged_diff()
-        }
-        #[cfg(not(feature = "git2"))]
-        {
-            Err(VcsError::FeatureDisabled)
-        }
+        self.git_staged_diff()
     }
 }
 

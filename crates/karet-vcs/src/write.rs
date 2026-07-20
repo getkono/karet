@@ -1,179 +1,200 @@
-//! The `libgit2`-backed write actions (stage / unstage / discard / commit).
+//! Argument-safe `git` write operations.
 //!
-//! Status and diffs are read with `gix`; only the mutating index/worktree
-//! operations use `git2`, which has a complete, battle-tested staging API. The
-//! whole module is gated behind the `git2` feature, and the public entry points in
-//! [`crate::Repository`] return [`VcsError::FeatureDisabled`] when it is off.
+//! Repository reads stay in-process through `gix`. Mutations use the user's Git so
+//! worktree/index semantics, hooks, identities, and configuration match the command
+//! line without adding a C-backed library dependency. No operation invokes a shell.
 
+use std::ffi::OsStr;
+use std::ffi::OsString;
+use std::path::Component;
+use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
+use std::process::Output;
 
 use crate::Repository;
+use crate::StagedDiff;
 use crate::VcsError;
-use crate::repo::to_git;
 
 impl Repository {
-    /// The working directory, or a [`VcsError::Git`] for a bare repository (which
-    /// has no worktree to stage from).
-    fn git2_workdir(&self) -> Result<PathBuf, VcsError> {
-        self.git2
+    fn workdir(&self) -> Result<&Path, VcsError> {
+        self.inner
             .workdir()
-            .map(std::path::Path::to_path_buf)
-            .ok_or_else(|| VcsError::Git("repository has no working directory".into()))
+            .ok_or_else(|| VcsError::Git("repository has no working directory".to_string()))
     }
 
-    /// The `HEAD` commit as an [`git2::Object`], or `None` on an unborn branch (a
-    /// repository with no commits yet).
-    fn git2_head_commit(&self) -> Result<Option<git2::Object<'_>>, VcsError> {
-        match self.git2.head() {
-            Ok(head) => Ok(Some(head.peel(git2::ObjectType::Commit).map_err(to_git)?)),
-            Err(e) if e.code() == git2::ErrorCode::UnbornBranch => Ok(None),
-            Err(e) => Err(to_git(e)),
-        }
+    pub(crate) fn git_output<I, S>(&self, args: I) -> Result<Output, VcsError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        Command::new("git")
+            .args(args)
+            .current_dir(self.workdir()?)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .map_err(|error| VcsError::GitUnavailable(error.to_string()))
     }
 
-    pub(crate) fn git2_stage(&self, paths: &[PathBuf]) -> Result<(), VcsError> {
-        let workdir = self.git2_workdir()?;
-        let mut index = self.git2.index().map_err(to_git)?;
-        for rel in paths {
-            // A path still on disk is added from the worktree (an explicit add
-            // bypasses gitignore); a vanished path is staged as a deletion.
-            if workdir.join(rel).symlink_metadata().is_ok() {
-                index.add_path(rel).map_err(to_git)?;
+    pub(crate) fn git_checked<I, S>(&self, args: I) -> Result<Output, VcsError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let output = self.git_output(args)?;
+        if output.status.success() {
+            Ok(output)
+        } else {
+            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            Err(VcsError::Git(if message.is_empty() {
+                format!("git exited with {}", output.status)
             } else {
-                index.remove_path(rel).map_err(to_git)?;
-            }
+                message
+            }))
         }
-        index.write().map_err(to_git)
     }
 
-    pub(crate) fn git2_unstage(&self, paths: &[PathBuf]) -> Result<(), VcsError> {
-        let head = self.git2_head_commit()?;
-        // With a target, entries reset to their HEAD state; with `None` (unborn
-        // branch) libgit2 removes the matching entries from the index.
-        self.git2
-            .reset_default(head.as_ref(), paths.iter())
-            .map_err(to_git)
+    fn has_head(&self) -> Result<bool, VcsError> {
+        Ok(self
+            .git_output(["rev-parse", "--verify", "--quiet", "HEAD"])?
+            .status
+            .success())
     }
 
-    pub(crate) fn git2_stage_all(&self) -> Result<(), VcsError> {
-        let mut index = self.git2.index().map_err(to_git)?;
-        // `add_all` stages new and modified files; `update_all` additionally stages
-        // deletions of tracked files.
-        index
-            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
-            .map_err(to_git)?;
-        index.update_all(["*"].iter(), None).map_err(to_git)?;
-        index.write().map_err(to_git)
-    }
-
-    pub(crate) fn git2_unstage_all(&self) -> Result<(), VcsError> {
-        let head = self.git2_head_commit()?;
-        self.git2
-            .reset_default(head.as_ref(), ["*"].iter())
-            .map_err(to_git)
-    }
-
-    pub(crate) fn git2_discard(&self, paths: &[PathBuf]) -> Result<(), VcsError> {
-        let workdir = self.git2_workdir()?;
-        let head_tree = self.git2.head().ok().and_then(|h| h.peel_to_tree().ok());
-        let mut index = self.git2.index().map_err(to_git)?;
-        let mut checkout = git2::build::CheckoutBuilder::new();
-        checkout.force();
-        let mut any_checkout = false;
-        let mut index_dirty = false;
-        for rel in paths {
-            let in_head = head_tree.as_ref().is_some_and(|t| t.get_path(rel).is_ok());
-            if in_head {
-                // Restore the worktree and index entry to the committed version.
-                checkout.path(rel);
-                any_checkout = true;
-            } else if index.get_path(rel, 0).is_some() {
-                // Staged but never committed: un-add it, then delete the file.
-                index.remove_path(rel).map_err(to_git)?;
-                index_dirty = true;
-                let _ = std::fs::remove_file(workdir.join(rel));
-            } else {
-                // Untracked: just remove it. `checkout_head` never deletes files
-                // that are absent from HEAD, so this is the only way to drop them.
-                let _ = std::fs::remove_file(workdir.join(rel));
-            }
+    fn path_args(prefix: &[&str], paths: &[PathBuf]) -> Result<Vec<OsString>, VcsError> {
+        let mut args: Vec<OsString> = prefix.iter().map(OsString::from).collect();
+        args.push(OsString::from("--"));
+        for path in paths {
+            validate_relative(path)?;
+            args.push(path.as_os_str().to_owned());
         }
-        if index_dirty {
-            index.write().map_err(to_git)?;
+        Ok(args)
+    }
+
+    pub(crate) fn git_stage(&self, paths: &[PathBuf]) -> Result<(), VcsError> {
+        if paths.is_empty() {
+            return Ok(());
         }
-        if any_checkout {
-            self.git2
-                .checkout_head(Some(&mut checkout))
-                .map_err(to_git)?;
+        self.git_checked(Self::path_args(&["add"], paths)?)?;
+        Ok(())
+    }
+
+    pub(crate) fn git_unstage(&self, paths: &[PathBuf]) -> Result<(), VcsError> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let prefix = if self.has_head()? {
+            vec!["reset", "--quiet", "HEAD"]
+        } else {
+            vec!["rm", "--cached", "--quiet", "--ignore-unmatch", "-r"]
+        };
+        self.git_checked(Self::path_args(&prefix, paths)?)?;
+        Ok(())
+    }
+
+    pub(crate) fn git_stage_all(&self) -> Result<(), VcsError> {
+        self.git_checked(["add", "--all", "--", "."])?;
+        Ok(())
+    }
+
+    pub(crate) fn git_unstage_all(&self) -> Result<(), VcsError> {
+        if self.has_head()? {
+            self.git_checked(["reset", "--quiet", "HEAD", "--", "."])?;
+        } else {
+            self.git_checked([
+                "rm",
+                "--cached",
+                "--quiet",
+                "--ignore-unmatch",
+                "-r",
+                "--",
+                ".",
+            ])?;
         }
         Ok(())
     }
 
-    pub(crate) fn git2_commit(&self, message: &str) -> Result<String, VcsError> {
-        let mut index = self.git2.index().map_err(to_git)?;
-        // Errors with an "unmerged" git error when conflicts are still present.
-        let tree_oid = index.write_tree().map_err(to_git)?;
-        let tree = self.git2.find_tree(tree_oid).map_err(to_git)?;
-        // Uses the repository's configured `user.name`/`user.email`; errors if unset.
-        let sig = self.git2.signature().map_err(to_git)?;
-        let parents = match self.git2.head() {
-            Ok(head) => vec![head.peel_to_commit().map_err(to_git)?],
-            Err(e) if e.code() == git2::ErrorCode::UnbornBranch => Vec::new(),
-            Err(e) => return Err(to_git(e)),
-        };
-        let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
-        let oid = self
-            .git2
-            .commit(Some("HEAD"), &sig, &sig, message, &tree, &parent_refs)
-            .map_err(to_git)?;
-        Ok(oid.to_string())
+    pub(crate) fn git_discard(&self, paths: &[PathBuf]) -> Result<(), VcsError> {
+        let workdir = self.workdir()?.to_path_buf();
+        for path in paths {
+            validate_relative(path)?;
+            let in_head = self
+                .git_output([OsStr::new("cat-file"), OsStr::new("-e"), &head_path(path)])?
+                .status
+                .success();
+            if in_head {
+                self.git_checked(Self::path_args(
+                    &["restore", "--source=HEAD", "--staged", "--worktree"],
+                    std::slice::from_ref(path),
+                )?)?;
+            } else {
+                self.git_checked(Self::path_args(
+                    &["rm", "--cached", "--quiet", "--ignore-unmatch", "-r", "-f"],
+                    std::slice::from_ref(path),
+                )?)?;
+                remove_untracked(&workdir.join(path))?;
+            }
+        }
+        Ok(())
     }
 
-    pub(crate) fn git2_staged_diff(&self) -> Result<crate::StagedDiff, VcsError> {
-        let index = self.git2.index().map_err(to_git)?;
-        // The `HEAD` tree, or `None` on an unborn branch — libgit2 then diffs the
-        // index against the empty tree, so the first commit's staged files show as
-        // additions rather than erroring.
-        let head_tree = match self.git2_head_commit()? {
-            Some(obj) => Some(obj.peel_to_tree().map_err(to_git)?),
-            None => None,
-        };
-        let mut opts = git2::DiffOptions::new();
-        let diff = self
-            .git2
-            .diff_tree_to_index(head_tree.as_ref(), Some(&index), Some(&mut opts))
-            .map_err(to_git)?;
+    pub(crate) fn git_commit(&self, message: &str) -> Result<String, VcsError> {
+        self.git_checked([
+            OsStr::new("commit"),
+            OsStr::new("--quiet"),
+            OsStr::new("-m"),
+            OsStr::new(message),
+        ])?;
+        let output = self.git_checked(["rev-parse", "HEAD"])?;
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
 
-        let mut patch = String::new();
-        diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
-            // Context / added / removed lines carry their origin in a separate byte;
-            // re-emit it so the text reads as a real `+`/`-`/` ` unified diff. Header
-            // and hunk lines already embed their full text, so they pass through as-is.
-            if matches!(line.origin(), '+' | '-' | ' ') {
-                patch.push(line.origin());
-            }
-            patch.push_str(&String::from_utf8_lossy(line.content()));
-            true
-        })
-        .map_err(to_git)?;
-
-        let stats = diff.stats().map_err(to_git)?;
-        let file_count = stats.files_changed();
-        let stat = stats
-            .to_buf(git2::DiffStatsFormat::FULL, 80)
-            .map_err(to_git)?
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
-
-        Ok(crate::StagedDiff {
-            patch,
-            stat,
-            file_count,
+    pub(crate) fn git_staged_diff(&self) -> Result<StagedDiff, VcsError> {
+        let patch = self.git_checked(["diff", "--cached", "--binary", "--no-ext-diff"])?;
+        let stat = self.git_checked(["diff", "--cached", "--stat", "--no-ext-diff"])?;
+        let names = self.git_checked(["diff", "--cached", "--name-only", "--no-ext-diff"])?;
+        Ok(StagedDiff {
+            patch: String::from_utf8_lossy(&patch.stdout).into_owned(),
+            stat: String::from_utf8_lossy(&stat.stdout).into_owned(),
+            file_count: names
+                .stdout
+                .split(|byte| *byte == b'\n')
+                .filter(|row| !row.is_empty())
+                .count(),
         })
     }
 }
 
+fn validate_relative(path: &Path) -> Result<(), VcsError> {
+    let valid = !path.as_os_str().is_empty()
+        && !path.is_absolute()
+        && path
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)));
+    valid.then_some(()).ok_or_else(|| {
+        VcsError::Git(format!(
+            "unsafe repository-relative path: {}",
+            path.display()
+        ))
+    })
+}
+
+fn head_path(path: &Path) -> OsString {
+    let mut value = OsString::from("HEAD:");
+    value.push(path);
+    value
+}
+
+fn remove_untracked(path: &Path) -> Result<(), VcsError> {
+    match path.symlink_metadata() {
+        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
+            std::fs::remove_dir_all(path).map_err(|error| VcsError::Git(error.to_string()))
+        },
+        Ok(_) => std::fs::remove_file(path).map_err(|error| VcsError::Git(error.to_string())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(VcsError::Git(error.to_string())),
+    }
+}
 #[cfg(test)]
 mod tests {
     use std::path::Path;

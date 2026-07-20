@@ -16,9 +16,9 @@ categories.workspace   = true
 default = ["signature"]
 # ratatui source-control panels (status, branch picker, staging, blame overlay).
 view = ["dep:ratatui", "dep:karet-diff"]
-# Optional libgit2 write backend for staging/discard/commit (needs the git2 crate
-# + a C toolchain to build vendored libgit2). Off by default; status/diff use gix.
-git2 = ["dep:git2"]
+# Compatibility feature retained for consumers that previously enabled the optional
+# libgit2 writer. Writes now use the installed `git` executable and this is a no-op.
+git2 = []
 # Recover the signer's public key + fingerprint from an SSH commit signature (via the
 # pure-Rust `ssh-key` crate). On by default; turn it off to drop the dependency, and
 # signatures then report only their kind, not the signer. Extraction only — this crate
@@ -32,7 +32,6 @@ thiserror.workspace = true
 tracing.workspace = true
 karet-diff = { workspace = true, optional = true }
 ratatui = { workspace = true, optional = true }
-git2 = { workspace = true, optional = true }
 ssh-key = { workspace = true, optional = true }
 
 [lints]

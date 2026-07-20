@@ -137,9 +137,6 @@ lsp-types = "0.97.0"
 # NOTE: the `blameline` crate enables gix's `blame` feature; feature unification means
 # the workspace build compiles gix's blame module even though it's not listed here.
 gix = { version = "0.85.0", default-features = false, features = ["status", "max-performance-safe", "sha1", "revision"] }
-# Optional libgit2 write backend for karet-vcs staging (no ssh/https system deps;
-# libgit2-sys still vendors and builds libgit2 via a C toolchain when enabled).
-git2 = { version = "0.20", default-features = false }
 # SSH commit-signature parsing (karet-vcs `signature` feature): decode an SSHSIG
 # armored blob to recover the signer's public key + SHA256 fingerprint. Pure-Rust
 # (RustCrypto), no C deps — we trim the optional cipher/curve features we don't use.
