@@ -203,6 +203,133 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn repository_actions_and_blame_run_off_actor() {
+        use karet_core::BlameAttribution;
+        use karet_core::BlameMode;
+        use karet_vcs::CreateBranchOptions;
+
+        use crate::api::Event;
+        use crate::api::VcsAction;
+        use crate::session::Session;
+        use crate::session::SessionConfig;
+
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let root = dir.path().to_path_buf();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .status()
+                .ok()
+                .is_some_and(|status| status.success())
+        };
+        if !git(&["init", "-q"])
+            || !git(&["config", "user.email", "test@example.com"])
+            || !git(&["config", "user.name", "karet test"])
+            || std::fs::write(root.join("code.rs"), "fn main() {}\n").is_err()
+            || !git(&["add", "code.rs"])
+            || !git(&["commit", "-q", "-m", "initial"])
+        {
+            return;
+        }
+
+        let (session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root.clone()],
+            ..SessionConfig::default()
+        });
+        let backend = local(session);
+        let open_id = backend.next_id();
+        assert!(
+            backend
+                .send(
+                    open_id,
+                    Command::OpenDocument {
+                        path: root.join("code.rs"),
+                        language: None,
+                    },
+                )
+                .is_ok()
+        );
+        let opened = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some((id, event)) = events.recv().await {
+                if id == Some(open_id)
+                    && let Event::Opened { doc, version } = event
+                {
+                    return Some((doc, version));
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some((doc, version)) = opened else {
+            return;
+        };
+
+        let blame_id = backend.next_id();
+        assert!(
+            backend
+                .send(
+                    blame_id,
+                    Command::Blame {
+                        doc,
+                        version,
+                        line: 0,
+                        mode: BlameMode::Line,
+                    },
+                )
+                .is_ok()
+        );
+        let blamed = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some((id, event)) = events.recv().await {
+                if id == Some(blame_id)
+                    && let Event::BlameResult { hunks, .. } = event
+                {
+                    return hunks;
+                }
+            }
+            Vec::new()
+        })
+        .await
+        .unwrap_or_default();
+        assert!(matches!(
+            blamed.first().map(|hunk| &hunk.attribution),
+            Some(BlameAttribution::Commit(_))
+        ));
+
+        let branch_id = backend.next_id();
+        let mut branch_options = CreateBranchOptions::default();
+        branch_options.name = "feature".to_string();
+        assert!(
+            backend
+                .send(
+                    branch_id,
+                    Command::VcsAction {
+                        action: VcsAction::CreateBranch(branch_options),
+                    },
+                )
+                .is_ok()
+        );
+        let branch = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some((id, event)) = events.recv().await {
+                if id == Some(branch_id)
+                    && let Event::RepositorySnapshot { snapshot } = event
+                {
+                    return snapshot.state.branch;
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
+        assert_eq!(branch.as_deref(), Some("feature"));
+    }
+
     /// Drain snapshots until one satisfies `wanted`, or time out.
     #[cfg(test)]
     async fn await_snapshot(

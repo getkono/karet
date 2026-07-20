@@ -13,6 +13,7 @@
 //! a future client-server split.
 //!
 //! # Modules
+//! - [`blame`] — neutral current-buffer attribution models.
 //! - [`geometry`] — `Point`, `Size`, `Rect`, offsets, and the [`clamp`] helper.
 //! - [`coord`] — text coordinates: `BytePos`, `CharPos`, `LineCol`, `Range`, `Span`.
 //! - [`model`] — neutral models: diagnostics, decorations, symbols, completion, hover, ….
@@ -21,6 +22,7 @@
 //! - [`provider`] — interop traits such as [`SymbolProvider`].
 //! - [`token`] — semantic [`TokenId`] / [`ThemeRole`] vocabulary shared by syntax & theme.
 
+pub mod blame;
 pub mod coord;
 pub mod edit;
 pub mod error;
@@ -31,6 +33,11 @@ pub mod notify;
 pub mod provider;
 pub mod token;
 
+pub use blame::BlameAttribution;
+pub use blame::BlameCommit;
+pub use blame::BlameHunk;
+pub use blame::BlameLineRange;
+pub use blame::BlameMode;
 pub use coord::BytePos;
 pub use coord::CharPos;
 pub use coord::LineCol;

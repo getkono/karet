@@ -3000,6 +3000,7 @@ name = "karet-core"
 version = "0.3.0"
 dependencies = [
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 
@@ -3151,6 +3152,7 @@ name = "karet-session"
 version = "0.3.0"
 dependencies = [
  "aicommit-core",
+ "blameline",
  "dependable-core",
  "directories",
  "ec4rs",
