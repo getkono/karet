@@ -11,7 +11,10 @@ karet [PATH]
 `PATH` (default `.`) is the workspace root. A file opens directly in a code
 window; a directory opens the shell rooted there. When the path is inside a git
 repository, the **Source Control** panel lists the staged and working-tree changes
-and each opens as a diff tab.
+and each opens as a diff tab. Its branch header exposes commit, sync, branch switching,
+and a complete actions menu for undo, stash, publish, branch lifecycle, pull-request
+checkout, and recovery workflows. The active editor also shows cursor-following blame
+attribution, with line and semantic-scope modes.
 
 > **Modern terminal required.** karet uses the **kitty keyboard protocol** and
 > **truecolor**, and exits early with a clear message if the keyboard protocol is
@@ -82,6 +85,11 @@ to the Right / Close All live in the command palette.
 
 **Sidebar:** `j`/`k`+arrows move · `Enter`/`l`/`→` open or expand · `h`/`←`
 collapse · `Space` toggle a directory.
+
+**Source Control:** use the header buttons for Commit, Sync, branch switching, and
+More Actions. Branch creation includes a start point, switch behavior, remote publish,
+and upstream controls. `Ctrl+Shift+B` cycles current-line blame through line,
+semantic, and off; `Alt+B` enables semantic blame directly.
 
 **Editor — motion & selection.** Arrows move the caret; `Ctrl+←`/`Ctrl+→` move by
 word; `Home`/`End` go to the line start/end and `Ctrl+Home`/`Ctrl+End` to the

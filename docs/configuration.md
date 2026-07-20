@@ -136,7 +136,11 @@ selector, the normal layer precedence still applies. Arrays such as `rulers` and
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `decorations` | bool | `true` | Gutter change decorations + file-tree status colouring. |
-| `blame` | bool | `false` | Inline blame for the current line. |
+| `blame` | bool | `true` | Cursor-following inline blame and commit details for the current line or semantic scope. |
+| `blameMode` | `"line"` \| `"semantic"` | `"line"` | Attribute the current line or its enclosing semantic scope. |
+
+Changing blame mode from the command palette persists these two fields in the user
+JSONC file while retaining comments and unrelated settings.
 
 > An explicit `--icons` flag (or the `KARET_ICONS` environment variable) overrides
 > `workbench.iconStyle`.
