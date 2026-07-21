@@ -419,6 +419,12 @@
             app.tabs[app.active].kind,
             TabKind::MarkdownPreview { .. }
         ));
+        assert_eq!(
+            app.active_outline_rows()
+                .first()
+                .map(|row| row.label.as_str()),
+            Some("Report")
+        );
         assert_eq!(app.tabs.len(), 1);
         let view = app.tabs[app.active].view;
 
@@ -469,6 +475,72 @@
             painted.contains('\u{2022}'),
             "the preview pane should render a bullet:\n{painted}"
         );
+    }
+
+    #[test]
+    fn global_outline_navigates_markdown_headings() {
+        let mut app = markdown_app("# Root\n\n## Child\n\nBody\n");
+        let rows = app.active_outline_rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!((rows[0].depth, rows[0].label.as_str()), (0, "Root"));
+        assert_eq!((rows[1].depth, rows[1].label.as_str()), (1, "Child"));
+
+        app.dispatch(Command::ToggleOutline);
+        app.outline_sel.move_to(1);
+        app.dispatch(Command::OutlineActivate);
+        assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(2, 0));
+    }
+
+    #[test]
+    fn global_outline_adopts_language_server_symbols() {
+        let mut app = app();
+        app.push_tab(text_tab("main.rs", "😀fn run() {}\n"));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(17));
+        }
+        app.on_backend_event(
+            None,
+            SessionEvent::Symbols {
+                doc: DocumentId(17),
+                symbols: vec![karet_core::Symbol {
+                    name: "run".into(),
+                    kind: karet_core::SymbolKind::Function,
+                    detail: Some("fn run()".into()),
+                    range: Range {
+                        start: LineCol::new(0, 1),
+                        end: LineCol::new(0, 12),
+                    },
+                    selection_range: Range {
+                        start: LineCol::new(0, 4),
+                        end: LineCol::new(0, 7),
+                    },
+                    container_name: None,
+                    children: Vec::new(),
+                }],
+            },
+        );
+        let rows = app.active_outline_rows();
+        assert_eq!(rows.first().map(|row| row.label.as_str()), Some("run"));
+        assert_eq!(rows.first().and_then(|row| row.detail.as_deref()), Some("fn run()"));
+        app.dispatch(Command::ToggleOutline);
+        app.dispatch(Command::OutlineActivate);
+        assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 4));
+    }
+
+    #[test]
+    fn narrow_outline_overlays_then_dismisses_on_editor_input() {
+        let mut app = markdown_app("# Contents\n\nBody\n");
+        app.sidebar_visible = false;
+        app.dispatch(Command::ToggleOutline);
+        let painted = screen(&mut app, 36, 10).join("\n");
+        assert!(painted.contains("OUTLINE"));
+        assert!(painted.contains("Contents"));
+        assert!(app.outline_overlay);
+
+        app.dispatch(Command::OutlineCollapse);
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(!app.outline_visible);
+        assert!(!app.outline_overlay);
     }
 
     /// The draw-time render cache is keyed on the document version, so an edit re-renders

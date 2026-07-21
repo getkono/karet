@@ -447,6 +447,9 @@ impl App {
         let in_editor = rect_contains(self.editor_rect, point);
         let in_markdown_preview = rect_contains(self.markdown_preview_rect, point);
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+        if in_editor && !in_outline && !matches!(mouse.kind, MouseEventKind::Moved) {
+            self.dismiss_outline_overlay();
+        }
         match mouse.kind {
             MouseEventKind::ScrollDown if in_outline => self.outline_step(1),
             MouseEventKind::ScrollUp if in_outline => self.outline_step(-1),

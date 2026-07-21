@@ -33,6 +33,9 @@ impl App {
             .min();
         let caret = self.graphics_caret_next_wake(now);
         let loading = self.loading_reveal_wake(now);
+        let outline = self
+            .active_outline_loading_since()
+            .and_then(|since| loading_delay_remaining(since, now));
         let operation = self
             .operation_blocker
             .as_ref()
@@ -45,10 +48,12 @@ impl App {
             }) => COMMIT_REVEAL.checked_sub(since.elapsed()),
             _ => None,
         };
-        [notif, spinner, auto_save, caret, loading, operation, reveal]
-            .into_iter()
-            .flatten()
-            .min()
+        [
+            notif, spinner, auto_save, caret, loading, outline, operation, reveal,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     pub(super) fn loading_reveal_wake(&self, now: Instant) -> Option<Duration> {
@@ -193,6 +198,30 @@ impl App {
             },
             SessionEvent::Closed { doc } => {
                 self.document_settings.remove(&doc);
+                self.document_symbols.remove(&doc);
+                self.outline_versions.remove(&doc);
+                self.outline_loading.remove(&doc);
+            },
+            SessionEvent::Symbols { doc, symbols } => {
+                let version = self
+                    .outline_loading
+                    .remove(&doc)
+                    .map(|(version, _)| version)
+                    .or_else(|| {
+                        self.all_tabs().find_map(|tab| match &tab.kind {
+                            TabKind::Code {
+                                doc: Some(candidate),
+                                buffer,
+                                ..
+                            } if *candidate == doc => Some(buffer.version()),
+                            _ => None,
+                        })
+                    });
+                self.document_symbols.insert(doc, symbols);
+                if let Some(version) = version {
+                    self.outline_versions.insert(doc, version);
+                }
+                self.sync_outline_selection();
             },
             SessionEvent::Completions {
                 doc,
@@ -659,6 +688,7 @@ impl App {
         {
             self.auto_save_pending.remove(&doc);
         }
+        self.request_active_outline();
         // If the find bar is open, an edit (e.g. a replace) just changed the buffer,
         // so recompute the match highlights against the fresh text.
         if self.find_open {

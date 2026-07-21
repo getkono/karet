@@ -2,12 +2,14 @@
 //!
 //! A format-agnostic navigation tree: each producer converts its own model into an
 //! [`OutlineEntry`], so one panel renders and one activation path drives them all.
-//! Today PDF bookmarks are the only source (see the [`From`] impl); code symbols
-//! (`karet_core::Symbol`, whose `selection_range.start` maps to
-//! [`OutlineTarget::Text`]) and markdown headings are the intended next producers,
-//! wired the same way without touching the panel.
+//! PDF bookmarks, Markdown headings, and language-server symbols all convert into
+//! this model without coupling the panel to their producer.
 
 use karet_core::LineCol;
+use karet_core::Symbol;
+use karet_core::SymbolKind;
+use karet_markdown::Block;
+use karet_markdown::Inline;
 
 /// Where activating an outline entry navigates to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +55,121 @@ pub fn flatten(entries: &[OutlineEntry]) -> Vec<OutlineRow> {
     let mut rows = Vec::new();
     push_rows(entries, 0, &mut rows);
     rows
+}
+
+/// Build a nested outline from the headings in Markdown source.
+#[must_use]
+pub fn from_markdown(source: &str) -> Vec<OutlineEntry> {
+    let document = karet_markdown::parse(source);
+    let headings: Vec<(u8, OutlineEntry)> = document
+        .blocks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| {
+            let Block::Heading { level, content } = block else {
+                return None;
+            };
+            let label = inline_text(content);
+            let line = u32::try_from(document.block_line(index)?).ok()?;
+            Some((
+                *level,
+                OutlineEntry {
+                    label,
+                    detail: Some(format!("H{level}")),
+                    target: Some(OutlineTarget::Text(LineCol::new(line, 0))),
+                    children: Vec::new(),
+                },
+            ))
+        })
+        .collect();
+    let mut index = 0;
+    nest_headings(&headings, &mut index, 0)
+}
+
+fn nest_headings(
+    headings: &[(u8, OutlineEntry)],
+    index: &mut usize,
+    parent_level: u8,
+) -> Vec<OutlineEntry> {
+    let mut entries = Vec::new();
+    while let Some((level, source)) = headings.get(*index) {
+        if *level <= parent_level {
+            break;
+        }
+        let level = *level;
+        let mut entry = source.clone();
+        *index += 1;
+        entry.children = nest_headings(headings, index, level);
+        entries.push(entry);
+    }
+    entries
+}
+
+fn inline_text(content: &[Inline]) -> String {
+    let mut text = String::new();
+    for inline in content {
+        match inline {
+            Inline::Text(value) | Inline::Code(value) => text.push_str(value),
+            Inline::Emphasis(children) | Inline::Strong(children) => {
+                text.push_str(&inline_text(children));
+            },
+            Inline::Link { text: value, .. } => text.push_str(value),
+            _ => {},
+        }
+    }
+    text
+}
+
+/// Build a navigation outline from a language server's symbol tree.
+#[must_use]
+pub fn from_symbols(symbols: &[Symbol]) -> Vec<OutlineEntry> {
+    symbols.iter().map(OutlineEntry::from).collect()
+}
+
+impl From<&Symbol> for OutlineEntry {
+    fn from(symbol: &Symbol) -> Self {
+        Self {
+            label: symbol.name.clone(),
+            detail: symbol
+                .detail
+                .clone()
+                .or_else(|| Some(symbol_kind_label(symbol.kind).to_string())),
+            target: Some(OutlineTarget::Text(symbol.selection_range.start)),
+            children: symbol.children.iter().map(Self::from).collect(),
+        }
+    }
+}
+
+fn symbol_kind_label(kind: SymbolKind) -> &'static str {
+    match kind {
+        SymbolKind::File => "file",
+        SymbolKind::Module => "module",
+        SymbolKind::Namespace => "namespace",
+        SymbolKind::Package => "package",
+        SymbolKind::Class => "class",
+        SymbolKind::Method => "method",
+        SymbolKind::Property => "property",
+        SymbolKind::Field => "field",
+        SymbolKind::Constructor => "constructor",
+        SymbolKind::Enum => "enum",
+        SymbolKind::Interface => "interface",
+        SymbolKind::Function => "function",
+        SymbolKind::Variable => "variable",
+        SymbolKind::Constant => "constant",
+        SymbolKind::String => "string",
+        SymbolKind::Number => "number",
+        SymbolKind::Boolean => "boolean",
+        SymbolKind::Array => "array",
+        SymbolKind::Object => "object",
+        SymbolKind::Key => "key",
+        SymbolKind::Null => "null",
+        SymbolKind::EnumMember => "enum member",
+        SymbolKind::Struct => "struct",
+        SymbolKind::Event => "event",
+        SymbolKind::Operator => "operator",
+        SymbolKind::TypeParameter => "type parameter",
+        _ => "symbol",
+    }
 }
 
 fn push_rows(entries: &[OutlineEntry], depth: usize, rows: &mut Vec<OutlineRow>) {
@@ -122,5 +239,41 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].label, "Chapter 1");
         assert_eq!(entries[0].target, Some(OutlineTarget::Page(2)));
+    }
+
+    #[test]
+    fn markdown_headings_form_a_hierarchy_and_strip_inline_markup() {
+        let entries = from_markdown("# Root *title*\n\n### Deep `code`\n\n## Sibling [link](x)\n");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].label, "Root title");
+        assert_eq!(entries[0].children.len(), 2);
+        assert_eq!(entries[0].children[0].label, "Deep code");
+        assert_eq!(entries[0].children[1].label, "Sibling link");
+        assert_eq!(
+            entries[0].children[1].target,
+            Some(OutlineTarget::Text(LineCol::new(4, 0)))
+        );
+    }
+
+    #[test]
+    fn symbols_keep_children_details_and_selection_targets() {
+        let symbols = vec![Symbol {
+            name: "App".into(),
+            kind: SymbolKind::Struct,
+            detail: None,
+            range: karet_core::Range::default(),
+            selection_range: karet_core::Range {
+                start: LineCol::new(3, 7),
+                end: LineCol::new(3, 10),
+            },
+            container_name: None,
+            children: Vec::new(),
+        }];
+        let entries = from_symbols(&symbols);
+        assert_eq!(entries[0].detail.as_deref(), Some("struct"));
+        assert_eq!(
+            entries[0].target,
+            Some(OutlineTarget::Text(LineCol::new(3, 7)))
+        );
     }
 }
