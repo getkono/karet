@@ -34,12 +34,13 @@ lang-html       = ["dep:tree-sitter-html"]
 lang-css        = ["dep:tree-sitter-css"]
 lang-yaml       = ["dep:tree-sitter-yaml"]
 lang-markdown   = ["dep:tree-sitter-md"]
+lang-latex      = ["dep:codebook-tree-sitter-latex"]
 # Convenience bundle: every grammar above. The `karet` app enables this.
 all-languages = [
     "lang-rust", "lang-python", "lang-javascript", "lang-typescript", "lang-json",
     "lang-go", "lang-c", "lang-cpp", "lang-csharp", "lang-java", "lang-ruby",
     "lang-php", "lang-bash", "lang-toml", "lang-html", "lang-css", "lang-yaml",
-    "lang-markdown",
+    "lang-markdown", "lang-latex",
 ]
 
 [dependencies]
@@ -65,6 +66,7 @@ tree-sitter-html       = { workspace = true, optional = true }
 tree-sitter-css        = { workspace = true, optional = true }
 tree-sitter-yaml       = { workspace = true, optional = true }
 tree-sitter-md         = { workspace = true, optional = true }
+codebook-tree-sitter-latex = { workspace = true, optional = true }
 
 [lints]
 workspace = true

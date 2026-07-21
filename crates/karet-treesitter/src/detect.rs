@@ -119,4 +119,12 @@ mod tests {
             Some("Markdown")
         );
     }
+
+    #[cfg(feature = "lang-latex")]
+    #[test]
+    fn latex_sources_resolve_to_the_tex_grammar() {
+        assert!(language_id_from_path(Path::new("paper.tex")).is_some());
+        assert_eq!(language_name_from_path(Path::new("paper.TEX")), Some("TeX"));
+        assert!(language_id_from_injection_name("latex").is_some());
+    }
 }

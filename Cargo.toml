@@ -107,6 +107,7 @@ tree-sitter-css        = "0.25.0"
 tree-sitter-yaml       = "0.7.2"
 tree-sitter-typescript = "0.23.2"
 tree-sitter-md         = "0.5.3"
+codebook-tree-sitter-latex = "0.6.1"
 # Diff / markdown / image
 imara-diff    = "0.2.0"
 pulldown-cmark = "0.13.4"

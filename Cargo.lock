@@ -467,6 +467,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "codebook-tree-sitter-latex"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3ab764ede0961a43ee3121cd8a71dd01d355f836181ebf2ede04f4c24636ca0"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "color"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3144,6 +3154,7 @@ dependencies = [
 name = "karet-treesitter"
 version = "0.3.0"
 dependencies = [
+ "codebook-tree-sitter-latex",
  "karet-core",
  "karet-filetype",
  "thiserror 2.0.18",
