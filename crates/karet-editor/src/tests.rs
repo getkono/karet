@@ -5,6 +5,32 @@ use super::text::*;
 use super::*;
 
 #[test]
+fn inline_text_decoration_renders_after_the_line() {
+    let buffer = TextBuffer::from_text("let answer = 42;\n");
+    let Ok(range) = Range::new(LineCol::new(0, 0), LineCol::new(0, 1)) else {
+        return;
+    };
+    let decoration = Decoration {
+        range,
+        kind: DecorationKind::InlineText {
+            text: "  Ada, initial".to_string(),
+            before: false,
+        },
+        role: Some(ThemeRole::Muted),
+    };
+    let mut state = EditorState::new();
+    let area = Rect::new(0, 0, 40, 1);
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .decorations(&[decoration])
+        .render(area, &mut target, &mut state);
+    let rendered: String = (0..area.width)
+        .map(|x| target[(x, 0)].symbol().chars().next().unwrap_or(' '))
+        .collect();
+    assert!(rendered.contains("Ada, initial"));
+}
+
+#[test]
 fn editor_builder_collects_layers() {
     let buffer = TextBuffer::from_text("fn main() {}");
     let _editor = Editor::new(&buffer).diagnostics(&[]).decorations(&[]);
@@ -347,6 +373,27 @@ fn primary_caret_cell_matches_rendered_gutter_geometry() {
     state.place_caret(LineCol::new(0, 2));
     let area = Rect::new(10, 5, 20, 4);
     assert_eq!(state.primary_caret_cell(area, &buffer, &[]), Some((15, 5)));
+}
+
+#[test]
+fn screen_cell_maps_arbitrary_visible_positions() {
+    let buffer = TextBuffer::from_text("abc\ndef\n");
+    let mut state = EditorState::new();
+    let area = Rect::new(10, 5, 20, 4);
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer).render(area, &mut target, &mut state);
+    assert_eq!(
+        state.screen_cell(area, &buffer, &[], LineCol::new(1, 3)),
+        Some((16, 6))
+    );
+    assert_eq!(
+        state.screen_cell(area, &buffer, &[], LineCol::new(8, 0)),
+        None
+    );
+    assert_eq!(
+        state.screen_cell(area, &buffer, &[], LineCol::new(0, 30)),
+        None
+    );
 }
 
 #[test]

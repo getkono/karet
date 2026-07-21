@@ -52,6 +52,7 @@ use crossterm::event::PopKeyboardEnhancementFlags;
 use crossterm::event::PushKeyboardEnhancementFlags;
 use crossterm::event::{self};
 use crossterm::terminal::SetTitle;
+use karet_core::BlameAttribution;
 use karet_core::BytePos;
 use karet_core::Change;
 use karet_core::Decoration;
@@ -86,13 +87,17 @@ use karet_session::Event as SessionEvent;
 use karet_session::EventRx;
 use karet_session::GithubVerification;
 use karet_session::LoadedConfig;
+use karet_session::PullRequestSummary;
 use karet_session::RangeSpec;
+use karet_session::RepositorySnapshot;
 use karet_session::RequestId;
 use karet_session::Session;
 use karet_session::SessionConfig;
 use karet_session::Settings;
 use karet_session::SnapshotRx;
 use karet_session::SwapInfo;
+use karet_session::VcsAction;
+use karet_session::VcsOutcome;
 use karet_session::ViewId;
 use karet_session::local;
 use karet_syntax::FoldRegions;
@@ -135,6 +140,8 @@ use crate::outline::OutlineTarget;
 use crate::overlay::DiffTarget;
 use crate::overlay::Overlay;
 use crate::overlay::OverlayEvent;
+use crate::overlay::StashAction;
+use crate::overlay::TextPurpose;
 use crate::remote;
 use crate::render::FileView;
 use crate::render::Section;
@@ -164,6 +171,62 @@ pub(crate) struct Scm {
     pub(crate) log_loading: bool,
     /// When the current log-page request began, if one is in flight.
     pub(crate) log_loading_since: Option<Instant>,
+    /// Latest branch, remote, recovery, and stash snapshot.
+    pub(crate) repository: Option<RepositorySnapshot>,
+    /// Whether a repository snapshot is being loaded.
+    pub(crate) repository_loading_since: Option<Instant>,
+    /// Request currently loading the repository snapshot.
+    pub(crate) repository_request: Option<RequestId>,
+    /// The repository action currently running, if any.
+    pub(crate) operation: Option<VcsAction>,
+}
+
+/// Live current-buffer blame that still matches the active document and cursor.
+#[derive(Clone)]
+pub(crate) struct LiveBlame {
+    pub(crate) doc: DocumentId,
+    pub(crate) version: u64,
+    pub(crate) line: u32,
+    pub(crate) attribution: Option<BlameAttribution>,
+}
+
+impl LiveBlame {
+    /// Compact attribution text shown after the active line.
+    pub(crate) fn text(&self) -> Option<String> {
+        match self.attribution.as_ref()? {
+            BlameAttribution::Commit(commit) => Some(format!(
+                "  {} {}",
+                commit.author,
+                crate::ui::relative_time(commit.author_time)
+            )),
+            BlameAttribution::Uncommitted => Some("  Uncommitted changes".to_string()),
+            _ => None,
+        }
+    }
+
+    /// Commit opened by the inline attribution's detail action.
+    pub(crate) fn commit_hash(&self) -> Option<&str> {
+        match self.attribution.as_ref()? {
+            BlameAttribution::Commit(commit) => Some(&commit.hash),
+            _ => None,
+        }
+    }
+
+    /// Compact current-line attribution rendered as editor virtual text.
+    pub(crate) fn decoration(&self) -> Option<Decoration> {
+        let text = self.text()?;
+        Some(Decoration {
+            range: Range {
+                start: LineCol::new(self.line, 0),
+                end: LineCol::new(self.line, 1),
+            },
+            kind: DecorationKind::InlineText {
+                text,
+                before: false,
+            },
+            role: Some(ThemeRole::Muted),
+        })
+    }
 }
 
 impl Scm {
@@ -578,6 +641,20 @@ pub struct App {
     pub(crate) context_menu: Option<ContextMenu>,
     /// The Source-Control panel state.
     pub(crate) scm: Scm,
+    /// Most recent stale-checked live blame result.
+    pub(crate) live_blame: Option<LiveBlame>,
+    /// Request currently computing live blame.
+    pub(crate) pending_blame: Option<(RequestId, DocumentId, u64, u32)>,
+    /// Failed blame anchor, suppressed until its inputs change.
+    pub(crate) failed_blame: Option<(DocumentId, u64, u32)>,
+    /// Open-pull-request query currently filling the picker.
+    pub(crate) pending_pull_requests: Option<RequestId>,
+    /// Pull-request pages accumulated until GitHub has no next page.
+    pub(crate) pull_request_items: Vec<PullRequestSummary>,
+    /// Remote associated with the accumulating pull-request query.
+    pub(crate) pull_request_remote: Option<String>,
+    /// Repository action parked until all dirty editors save successfully.
+    pub(crate) vcs_after_save: Option<VcsAction>,
     /// The focused pane's open tabs.
     pub(crate) tabs: Vec<Tab>,
     /// The focused pane's active tab index.
@@ -667,6 +744,8 @@ pub struct App {
     pub(crate) header_action_hits: Vec<(u16, u16, Command)>,
     /// Source-Control *changes* display-row → change-index map from the last frame.
     pub(crate) scm_row_map: Vec<Option<usize>>,
+    /// Source-Control header controls `(start, end, row, command)`.
+    pub(crate) scm_header_hits: Vec<(u16, u16, u16, Command)>,
     /// The changes-region scroll offset (top region; wheel + selection-follow).
     pub(crate) scm_offset: usize,
     /// The changes-region viewport rect from the last frame (hit-testing/hover).
@@ -704,6 +783,8 @@ pub struct App {
     pub(crate) status_hits: Vec<(u16, u16, Command)>,
     /// The active code tab's editor content area from the last frame.
     pub(crate) editor_rect: Rect,
+    /// Visible committed-attribution text from the last frame, for click routing.
+    pub(crate) blame_rect: Option<Rect>,
     /// The focused commit view's signature-badge rect (screen coords) from the last
     /// frame, for double-click hit-testing. `None` when no badge is on screen.
     pub(crate) commit_badge_rect: Option<Rect>,
@@ -878,8 +959,7 @@ fn retarget_tab_path(tab: &mut Tab, path: &Path) {
     let target = match &mut tab.kind {
         TabKind::Code { path: p, .. }
         | TabKind::Hex { path: p, .. }
-        | TabKind::Placeholder { path: p, .. }
-        | TabKind::Blame { path: p, .. } => Some(p),
+        | TabKind::Placeholder { path: p, .. } => Some(p),
         #[cfg(feature = "images")]
         TabKind::Image { path: p, .. } => Some(p),
         #[cfg(feature = "pdf")]

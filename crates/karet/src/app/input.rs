@@ -36,6 +36,7 @@ impl App {
         // Any key may have moved the caret or switched tabs; a popup or pending
         // request whose anchor no longer holds is dismissed.
         self.reconcile_completion();
+        self.request_live_blame();
     }
 
     /// The current input context: the active modal (if any) over the focused pane.
@@ -230,6 +231,114 @@ impl App {
             OverlayEvent::AcceptCommand(cmd) => self.dispatch(cmd),
             OverlayEvent::AcceptDiffTarget { rev, label } => {
                 self.open_changes_with(&rev, &label);
+            },
+            OverlayEvent::AcceptBranch(target) => {
+                self.guard_branch_switch(target);
+            },
+            OverlayEvent::AcceptCreateBranch(options) => {
+                if options.name.trim().is_empty() || options.start_point.trim().is_empty() {
+                    self.status =
+                        Some("create branch: name and start point are required".to_string());
+                } else {
+                    self.run_vcs_action(VcsAction::CreateBranch(options));
+                }
+            },
+            OverlayEvent::AcceptPullRequest { remote, number } => {
+                self.run_vcs_action(VcsAction::CheckoutPullRequest { remote, number });
+            },
+            OverlayEvent::AcceptStash(options) => {
+                self.run_vcs_action(VcsAction::StashPush(options));
+            },
+            OverlayEvent::AcceptStashAction(action) => match action {
+                StashAction::Preview(reference) => {
+                    self.run_vcs_action(VcsAction::StashPreview { reference });
+                },
+                StashAction::Apply(reference) => {
+                    self.run_vcs_action(VcsAction::StashApply { reference });
+                },
+                StashAction::Pop(reference) => {
+                    self.run_vcs_action(VcsAction::StashPop { reference });
+                },
+                StashAction::Drop(reference) => {
+                    self.overlay = Some(Overlay::text(
+                        "Type drop to permanently remove the stash",
+                        TextPurpose::ConfirmDropStash { reference },
+                    ));
+                },
+                StashAction::Branch(reference) => {
+                    self.overlay = Some(Overlay::text(
+                        "Branch from stash",
+                        TextPurpose::StashBranch { reference },
+                    ));
+                },
+            },
+            OverlayEvent::AcceptText { purpose, text } => match purpose {
+                TextPurpose::StashBranch { reference } => {
+                    if text.trim().is_empty() {
+                        self.status = Some("stash branch: enter a branch name".to_string());
+                    } else {
+                        self.run_vcs_action(VcsAction::StashBranch {
+                            name: text,
+                            reference,
+                        });
+                    }
+                },
+                TextPurpose::SaveAndSwitch { target } => {
+                    if text == "save" {
+                        self.save_then_switch(target);
+                    } else {
+                        self.status = Some("branch switch cancelled".to_string());
+                    }
+                },
+                TextPurpose::StashAndSwitch { target } => {
+                    if text == "stash" {
+                        self.run_vcs_action(VcsAction::StashPush(
+                            karet_vcs::StashOptions::default(),
+                        ));
+                        self.run_vcs_action(VcsAction::SwitchBranch(target));
+                    } else {
+                        self.status = Some("branch switch cancelled".to_string());
+                    }
+                },
+                TextPurpose::ConfirmDropStash { reference } => {
+                    if text == "drop" {
+                        self.run_vcs_action(VcsAction::StashDrop { reference });
+                    } else {
+                        self.status = Some("stash drop cancelled".to_string());
+                    }
+                },
+                TextPurpose::ConfirmPublishedUndo => {
+                    if text == "undo" {
+                        self.run_vcs_action(VcsAction::UndoCommit {
+                            allow_upstream: true,
+                        });
+                    } else {
+                        self.status = Some("undo commit cancelled".to_string());
+                    }
+                },
+                TextPurpose::RenameBranch { old } => {
+                    if text.trim().is_empty() {
+                        self.status = Some("rename branch: enter a new name".to_string());
+                    } else {
+                        self.run_vcs_action(VcsAction::RenameBranch { old, new: text });
+                    }
+                },
+                TextPurpose::ConfirmDeleteRemoteBranch { remote, branch } => {
+                    if text == branch {
+                        self.run_vcs_action(VcsAction::DeleteRemoteBranch { remote, branch });
+                    } else {
+                        self.status = Some("remote branch deletion cancelled".to_string());
+                    }
+                },
+            },
+            OverlayEvent::AcceptDeleteLocalBranch(name) => {
+                self.run_vcs_action(VcsAction::DeleteBranch { name });
+            },
+            OverlayEvent::AcceptDeleteRemoteBranch { remote, branch } => {
+                self.overlay = Some(Overlay::text(
+                    format!("Type {branch} to delete {remote}/{branch}"),
+                    TextPurpose::ConfirmDeleteRemoteBranch { remote, branch },
+                ));
             },
         }
     }

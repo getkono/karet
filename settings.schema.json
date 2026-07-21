@@ -521,7 +521,7 @@
         "blame": {
           "description": "Show inline blame for the current line.",
           "type": "boolean",
-          "default": false
+          "default": true
         },
         "decorations": {
           "description": "Show gutter change decorations and file-tree status colouring.",

@@ -7,6 +7,7 @@
 
 use std::path::PathBuf;
 
+use karet_core::BlameAttribution;
 use karet_core::Change;
 use karet_core::CompletionItem;
 use karet_core::CursorState;
@@ -22,9 +23,182 @@ use karet_search::FileHit;
 use karet_search::SearchQuery;
 use karet_syntax::HighlightSpan;
 use karet_text::EditCause;
+use karet_vcs::Branch;
+use karet_vcs::BranchTarget;
 use karet_vcs::Commit;
 use karet_vcs::CommitDetail;
+use karet_vcs::CreateBranchOptions;
 use karet_vcs::FileChange;
+use karet_vcs::Remote;
+use karet_vcs::RemoteBranch;
+use karet_vcs::RepositoryState;
+use karet_vcs::StashEntry;
+use karet_vcs::StashOptions;
+
+/// A complete repository snapshot for Source Control controls and pickers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RepositorySnapshot {
+    /// Current branch, upstream divergence, and recovery state.
+    pub state: RepositoryState,
+    /// Local branches.
+    pub branches: Vec<Branch>,
+    /// Configured remotes.
+    pub remotes: Vec<Remote>,
+    /// Locally known remote-tracking branches.
+    pub remote_branches: Vec<RemoteBranch>,
+    /// Stash entries, newest first.
+    pub stashes: Vec<StashEntry>,
+}
+
+/// A forge-neutral open pull request suitable for the branch picker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PullRequestSummary {
+    /// Repository-local pull request number.
+    pub number: u64,
+    /// Pull request title.
+    pub title: String,
+    /// Author login, when available.
+    pub author: Option<String>,
+    /// Whether the pull request is a draft.
+    pub draft: bool,
+    /// Source branch name.
+    pub head_ref: String,
+    /// Source repository, including fork owner.
+    pub head_repo: String,
+    /// Current source commit.
+    pub head_sha: String,
+    /// Target branch name.
+    pub base_ref: String,
+    /// Target repository.
+    pub base_repo: String,
+    /// Browser URL.
+    pub url: String,
+}
+
+/// One serialized repository mutation. The backend runs these off the actor thread.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum VcsAction {
+    /// Create, optionally switch to, and optionally publish a branch.
+    CreateBranch(CreateBranchOptions),
+    /// Switch to a local or remote-tracking branch.
+    SwitchBranch(BranchTarget),
+    /// Rename a local branch.
+    RenameBranch {
+        /// Existing local name.
+        old: String,
+        /// Replacement local name.
+        new: String,
+    },
+    /// Safely delete a merged local branch.
+    DeleteBranch {
+        /// Local branch to delete.
+        name: String,
+    },
+    /// Publish a local branch.
+    PublishBranch {
+        /// Destination remote.
+        remote: String,
+        /// Local branch to publish.
+        branch: String,
+        /// Whether to configure the published branch as upstream.
+        set_upstream: bool,
+    },
+    /// Delete a remote branch.
+    DeleteRemoteBranch {
+        /// Destination remote.
+        remote: String,
+        /// Remote branch to delete.
+        branch: String,
+    },
+    /// Undo the latest commit with a soft reset.
+    UndoCommit {
+        /// Explicit confirmation when the commit is already upstream.
+        allow_upstream: bool,
+    },
+    /// Create a stash.
+    StashPush(StashOptions),
+    /// Load a stash patch without changing the repository.
+    StashPreview {
+        /// Stable stash selector.
+        reference: String,
+    },
+    /// Apply a stash while keeping it.
+    StashApply {
+        /// Stable stash selector.
+        reference: String,
+    },
+    /// Apply and remove a stash.
+    StashPop {
+        /// Stable stash selector.
+        reference: String,
+    },
+    /// Permanently remove a stash.
+    StashDrop {
+        /// Stable stash selector.
+        reference: String,
+    },
+    /// Create and switch to a branch from a stash.
+    StashBranch {
+        /// New local branch name.
+        name: String,
+        /// Stable stash selector.
+        reference: String,
+    },
+    /// Fetch and prune a remote.
+    Fetch {
+        /// Remote to fetch and prune.
+        remote: String,
+    },
+    /// Pull using Git configuration and push the current branch.
+    Sync,
+    /// Continue the in-progress merge, rebase, or cherry-pick.
+    Continue,
+    /// Abort the in-progress merge, rebase, or cherry-pick.
+    Abort,
+    /// Skip the current rebase or cherry-pick commit.
+    Skip,
+    /// Fetch and switch to a reusable local GitHub pull-request branch.
+    CheckoutPullRequest {
+        /// GitHub remote that owns the pull-request ref.
+        remote: String,
+        /// Repository-local pull-request number.
+        number: u64,
+    },
+}
+
+/// Structured result from a repository action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum VcsOutcome {
+    /// The action completed without a more specific result.
+    Completed,
+    /// A stash was created; false means there were no changes to save.
+    StashCreated(bool),
+    /// Patch text for a stash preview.
+    StashPreview {
+        /// Previewed stash selector.
+        reference: String,
+        /// Unified diff and stat text.
+        patch: String,
+    },
+    /// Sync cannot proceed until the current branch is published.
+    NeedsPublish,
+    /// A managed pull-request branch was fast-forwarded.
+    PullRequestUpdated,
+    /// The new local branch used for a checked-out pull request.
+    PullRequestCheckedOut {
+        /// Reusable local branch name.
+        branch: String,
+    },
+    /// Commit removed from `HEAD` by undo.
+    CommitUndone {
+        /// Commit removed from `HEAD`.
+        commit: String,
+        /// Whether the removed commit was already reachable upstream.
+        was_upstream: bool,
+    },
+}
 
 use crate::config::LoadedConfig;
 
@@ -219,6 +393,31 @@ pub enum Command {
     GenerateCommitMessage,
     /// Recompute and re-emit the source-control status.
     RefreshVcs,
+    /// Load branch, remote, operation, and stash state for Source Control.
+    RepositorySnapshot,
+    /// Run one repository mutation on the serialized background worker.
+    VcsAction {
+        /// Action to run.
+        action: VcsAction,
+    },
+    /// Fetch a page of open pull requests for one GitHub remote.
+    PullRequests {
+        /// Configured remote whose URL identifies the GitHub repository.
+        remote: String,
+        /// One-based page number.
+        page: u32,
+        /// Maximum entries per page, from 1 to 100.
+        per_page: u8,
+    },
+    /// Attribute the current buffer's cursor line.
+    Blame {
+        /// Open document to attribute.
+        doc: DocumentId,
+        /// Buffer version the client currently renders.
+        version: u64,
+        /// Zero-based cursor line.
+        line: u32,
+    },
     /// Fetch a page of the commit-history log (newest first), for lazy loading.
     VcsLog {
         /// How many commits to skip from `HEAD`.
@@ -458,6 +657,46 @@ pub enum Event {
         staged: Vec<FileChange>,
         /// The working-tree changes (unstaged, untracked, conflicted).
         working: Vec<FileChange>,
+    },
+    /// Branch, remote, operation, and stash state for Source Control.
+    RepositorySnapshot {
+        /// Complete snapshot captured after a read or successful action.
+        snapshot: Box<RepositorySnapshot>,
+    },
+    /// A repository action was accepted by the serialized worker.
+    VcsOperationStarted {
+        /// Accepted action.
+        action: VcsAction,
+    },
+    /// A repository action finished successfully or failed.
+    VcsOperationFinished {
+        /// Completed action.
+        action: VcsAction,
+        /// Structured success result; absent when `error` is present.
+        outcome: Option<VcsOutcome>,
+        /// Human-readable failure, if the action failed.
+        error: Option<String>,
+    },
+    /// One page of open pull requests for a remote.
+    PullRequests {
+        /// Remote queried by the command.
+        remote: String,
+        /// Returned entries.
+        items: Vec<PullRequestSummary>,
+        /// Next page advertised by the forge.
+        next_page: Option<u32>,
+    },
+    /// Current-buffer blame, safe to discard when document/version/cursor changed.
+    BlameResult {
+        /// Attributed document.
+        doc: DocumentId,
+        /// Buffer version used for mapping.
+        version: u64,
+        /// Cursor line used for the request.
+        line: u32,
+        /// Attribution for the requested line, or `None` when the file has no
+        /// committed history available.
+        attribution: Option<BlameAttribution>,
     },
     /// A commit was created.
     Committed {
