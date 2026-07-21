@@ -37,12 +37,26 @@ pub(super) fn draw_pane_content(
             ..
         } => {
             let fold_lines = crate::app::resolve_folds(folds, folded);
+            let version = buffer.version();
+            if tab
+                .conflict_decorations
+                .as_ref()
+                .is_none_or(|(cached, _)| *cached != version)
+            {
+                tab.conflict_decorations =
+                    Some((version, karet_editor::conflict_decorations(&buffer.text())));
+            }
+            let conflict_decorations = tab
+                .conflict_decorations
+                .as_ref()
+                .map_or(&[][..], |(_, decorations)| decorations.as_slice());
             // Local find and global search highlights are kept in separate
             // fields (so closing/rerunning one can't wipe the other) and
             // combined only here, at render time.
             let combined: Vec<Decoration> = decos
                 .iter()
                 .chain(search_decos.iter())
+                .chain(conflict_decorations.iter())
                 .chain(ctx.blame.iter())
                 .cloned()
                 .collect();
