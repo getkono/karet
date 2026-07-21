@@ -195,6 +195,25 @@ fn word_wrap_renders_continuations_and_maps_clicks() {
 }
 
 #[test]
+fn configured_tab_width_controls_rendering_caret_and_click_geometry() {
+    let buffer = TextBuffer::from_text("\tX");
+    let mut state = EditorState::new();
+    state.place_caret(LineCol::new(0, 1));
+    let area = Rect::new(0, 0, 12, 1);
+    let mut buf = Buffer::empty(area);
+    Editor::new(&buffer)
+        .tab_width(4)
+        .focused(true)
+        .render(area, &mut buf, &mut state);
+
+    // The one-digit gutter occupies three cells, followed by four tab cells.
+    assert_eq!(buf[(7, 0)].symbol(), "X");
+    assert!(buf[(7, 0)].modifier.contains(Modifier::REVERSED));
+    assert_eq!(state.pos_at(area, &buffer, &[], 5, 0), LineCol::new(0, 0));
+    assert_eq!(state.pos_at(area, &buffer, &[], 7, 0), LineCol::new(0, 1));
+}
+
+#[test]
 fn wrapped_row_scrolling_walks_continuations_before_lines() {
     let buffer = TextBuffer::from_text("alpha beta gamma\ntail");
     let mut state = EditorState::new();

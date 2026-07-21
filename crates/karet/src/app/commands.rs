@@ -123,10 +123,16 @@ impl App {
                 self.submit_edit_with_cause(EditCause::Delete, editing::delete_forward);
             },
             Command::Indent => {
-                self.submit_edit(|caret, sel, _b, base| Some(editing::indent(caret, sel, base)));
+                let indentation = self.active_indentation();
+                self.submit_edit(|caret, sel, _b, base| {
+                    editing::indent(caret, sel, base, &indentation)
+                });
             },
             Command::Dedent => {
-                self.submit_edit(|caret, _sel, buf, base| editing::dedent(caret, buf, base));
+                let indentation = self.active_indentation();
+                self.submit_edit(|caret, _sel, buf, base| {
+                    editing::dedent(caret, buf, base, &indentation)
+                });
             },
             Command::Undo => self.send_doc_command(|doc| SessionCommand::Undo { doc }),
             Command::Redo => self.send_doc_command(|doc| SessionCommand::Redo { doc }),

@@ -87,7 +87,8 @@ pub(super) fn draw_pane_content(
                 .folds(&fold_lines)
                 .focused(ctx.editor_focused)
                 .cell_caret(!ctx.graphical_cursor)
-                .word_wrap(word_wrap);
+                .word_wrap(word_wrap)
+                .tab_width(ctx.tab_width);
             let editor = editor.sticky_scroll(ctx.sticky_scroll);
             f.render_stateful_widget(editor, editor_rect, &mut tab.editor);
             if ctx.blame_clickable

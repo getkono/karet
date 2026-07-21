@@ -1,6 +1,44 @@
 use super::*;
 
 impl App {
+    /// The display width of hard tabs in `tab`, after per-document EditorConfig and
+    /// language settings have been resolved.
+    pub(crate) fn tab_width_for(&self, tab: &Tab) -> u16 {
+        let fallback = u16::from(
+            self.settings
+                .editor
+                .for_language(tab_language(tab))
+                .tab_size(),
+        );
+        App::tab_doc(tab)
+            .and_then(|doc| self.document_settings.get(&doc))
+            .map_or(fallback, |settings| settings.tab_width)
+            .max(1)
+    }
+
+    /// The concrete indentation string for the active document. EditorConfig may
+    /// combine hard tabs and spaces when an indent is not divisible by tab width.
+    pub(super) fn active_indentation(&self) -> String {
+        let tab = self.tabs.get(self.active);
+        let resolved = tab.map(|tab| self.settings.editor.for_language(tab_language(tab)));
+        let fallback_size = resolved.map_or(4, |settings| u16::from(settings.tab_size()));
+        let fallback_spaces = resolved.is_none_or(|settings| settings.insert_spaces());
+        let document = tab
+            .and_then(App::tab_doc)
+            .and_then(|doc| self.document_settings.get(&doc).copied());
+        let size = usize::from(document.map_or(fallback_size, |settings| settings.indent_size));
+        let insert_spaces = document.map_or(fallback_spaces, |settings| settings.insert_spaces);
+        if insert_spaces {
+            return " ".repeat(size);
+        }
+        let tab_width = tab.map_or(1, |tab| self.tab_width_for(tab)) as usize;
+        format!(
+            "{}{}",
+            "\t".repeat(size / tab_width),
+            " ".repeat(size % tab_width)
+        )
+    }
+
     /// Scroll the active tab by `delta` lines/rows (clamped to its content).
     pub(super) fn scroll_lines(&mut self, delta: i32) {
         // The browser has no free scroll: a wheel notch moves the commit selection.
