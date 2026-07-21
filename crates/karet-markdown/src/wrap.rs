@@ -26,6 +26,11 @@ pub struct TextSpan {
     pub text: String,
     /// The semantic class to color it with, or `None` for default foreground.
     pub token: Option<TokenId>,
+    /// Hyperlink target carried by this run, or `None` for ordinary text.
+    ///
+    /// The target remains renderer-neutral. A presentation layer decides whether and
+    /// how to expose or activate it after applying its own trust policy.
+    pub link: Option<String>,
 }
 
 /// One wrapped, painted line.
@@ -195,6 +200,7 @@ fn wrap_block(block: &Block, width: usize, prefix: &[TextSpan], out: &mut Vec<Wr
             let marker = TextSpan {
                 text: format!("{} ", "#".repeat(usize::from(*level).min(6))),
                 token: Some(StandardToken::MarkupHeading.id()),
+                link: None,
             };
             let mut runs = vec![marker];
             flatten(content, Some(StandardToken::MarkupHeading.id()), &mut runs);
@@ -221,11 +227,13 @@ fn wrap_block(block: &Block, width: usize, prefix: &[TextSpan], out: &mut Vec<Wr
                 marked.push(TextSpan {
                     text: marker.clone() + &" ".repeat(marker_width - marker.width()),
                     token: Some(StandardToken::MarkupListMarker.id()),
+                    link: None,
                 });
                 let mut continuation = prefix.to_vec();
                 continuation.push(TextSpan {
                     text: " ".repeat(marker_width),
                     token: None,
+                    link: None,
                 });
 
                 let first_line = out.len();
@@ -241,6 +249,7 @@ fn wrap_block(block: &Block, width: usize, prefix: &[TextSpan], out: &mut Vec<Wr
             gutter.push(TextSpan {
                 text: QUOTE_GUTTER.to_owned(),
                 token: Some(StandardToken::MarkupQuote.id()),
+                link: None,
             });
             wrap_blocks(blocks, width, &gutter, out);
         },
@@ -254,6 +263,7 @@ fn wrap_block(block: &Block, width: usize, prefix: &[TextSpan], out: &mut Vec<Wr
             vec![TextSpan {
                 text: RULE.to_string().repeat(inner),
                 token: Some(StandardToken::MarkupListMarker.id()),
+                link: None,
             }],
         )),
     }
@@ -357,6 +367,7 @@ fn table_border(widths: &[usize], left: char, mid: char, right: char) -> Vec<Tex
     vec![TextSpan {
         text,
         token: Some(StandardToken::MarkupListMarker.id()),
+        link: None,
     }]
 }
 
@@ -412,6 +423,7 @@ fn bar() -> TextSpan {
     TextSpan {
         text: BAR.to_string(),
         token: Some(StandardToken::MarkupListMarker.id()),
+        link: None,
     }
 }
 
@@ -420,6 +432,7 @@ fn space(count: usize) -> TextSpan {
     TextSpan {
         text: " ".repeat(count),
         token: None,
+        link: None,
     }
 }
 
@@ -512,10 +525,12 @@ fn flatten(inlines: &[Inline], token: Option<TokenId>, out: &mut Vec<TextSpan>) 
             Inline::Text(text) => out.push(TextSpan {
                 text: text.clone(),
                 token,
+                link: None,
             }),
             Inline::Code(text) => out.push(TextSpan {
                 text: text.clone(),
                 token: Some(StandardToken::MarkupRaw.id()),
+                link: None,
             }),
             // Emphasis inside a heading stays a heading: the outer token wins, because a
             // theme colors headings as a unit.
@@ -531,9 +546,10 @@ fn flatten(inlines: &[Inline], token: Option<TokenId>, out: &mut Vec<TextSpan>) 
                     out,
                 );
             },
-            Inline::Link { text, .. } => out.push(TextSpan {
+            Inline::Link { text, href } => out.push(TextSpan {
                 text: text.clone(),
                 token: Some(StandardToken::MarkupLink.id()),
+                link: Some(href.clone()),
             }),
         }
     }
@@ -622,7 +638,7 @@ fn wrap_runs_inner(
                     if used == 0 && is_space {
                         continue;
                     }
-                    push_word(&mut line, piece, run.token);
+                    push_word(&mut line, piece, run.token, run.link.as_deref());
                     used += w;
                 }
             }
@@ -649,12 +665,15 @@ fn trim_trailing_space(line: &mut Vec<TextSpan>) {
 }
 
 /// Append `word` to `line`, coalescing with a preceding run of the same token.
-fn push_word(line: &mut Vec<TextSpan>, word: &str, token: Option<TokenId>) {
+fn push_word(line: &mut Vec<TextSpan>, word: &str, token: Option<TokenId>, link: Option<&str>) {
     match line.last_mut() {
-        Some(last) if last.token == token => last.text.push_str(word),
+        Some(last) if last.token == token && last.link.as_deref() == link => {
+            last.text.push_str(word);
+        },
         _ => line.push(TextSpan {
             text: word.to_owned(),
             token,
+            link: link.map(str::to_owned),
         }),
     }
 }
@@ -691,6 +710,7 @@ fn code_lines(lang: Option<&str>, code: &str) -> Vec<Vec<TextSpan>> {
             vec![TextSpan {
                 text: line.to_owned(),
                 token: Some(StandardToken::MarkupRaw.id()),
+                link: None,
             }]
         })
         .collect()
