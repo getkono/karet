@@ -100,6 +100,8 @@ impl App {
             header_action_hits: Vec::new(),
             scm_row_map: Vec::new(),
             scm_header_hits: Vec::new(),
+            nested_repository_status: HashMap::new(),
+            nested_repository_pending: HashMap::new(),
             scm_offset: 0,
             scm_changes_rect: Rect::default(),
             scm_commit_rect: Rect::default(),
