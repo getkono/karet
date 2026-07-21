@@ -354,13 +354,22 @@ impl App {
         }
     }
 
-    /// Close the tab at `index`, falling back to a Welcome tab when the last closes.
+    /// Close the tab at `index`. When it is the pane's final tab, collapse the pane
+    /// if another pane remains; the sole pane falls back to a Welcome tab.
     pub(super) fn close_tab_at(&mut self, index: usize) {
         if index >= self.tabs.len() {
             return;
         }
         self.remember_closed(index);
-        if self.tabs.len() == 1 {
+        if self.tabs.len() == 1 && self.layout.pane_count() > 1 {
+            let closing = self.focus_pane();
+            self.stash_focused();
+            self.stored.remove(&closing);
+            if self.layout.close(closing).is_some() {
+                self.load_focused();
+                self.focus = Focus::Editor;
+            }
+        } else if self.tabs.len() == 1 {
             self.tabs = vec![Tab::welcome()];
             self.active = 0;
             self.focus = Focus::Sidebar;
