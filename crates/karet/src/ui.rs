@@ -4,6 +4,7 @@
 
 mod commit;
 mod content;
+mod github;
 mod panes;
 mod scm;
 mod secondary;
@@ -21,6 +22,7 @@ use std::time::UNIX_EPOCH;
 
 use commit::*;
 use content::*;
+use github::*;
 use karet_core::Decoration;
 use karet_core::Severity;
 use karet_core::ThemeRole;
@@ -313,14 +315,15 @@ fn draw_pane_tabs(
         }
         spans.push(Span::styled(title.name.clone(), style));
         spans.push(Span::styled(" ", style));
-        spans.push(Span::styled("\u{00d7}", style)); // × close glyph
+        let pinned = tab.is_github_dashboard();
+        spans.push(Span::styled(if pinned { " " } else { "\u{00d7}" }, style));
         spans.push(Span::styled(" ", style));
         let close = start + label_w;
         x = close + 2;
         hits.push(TabHit {
             start,
             end: x,
-            close,
+            close: if pinned { u16::MAX } else { close },
         });
     }
     let bar = Style::default().bg(theme.role(ThemeRole::Background).to_ratatui());

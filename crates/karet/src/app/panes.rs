@@ -70,6 +70,9 @@ impl App {
             return;
         }
         let idx = self.active.min(self.tabs.len().saturating_sub(1));
+        if self.tabs[idx].is_github_dashboard() {
+            return;
+        }
         let tab = self.tabs.remove(idx);
         self.active = self.active.min(self.tabs.len().saturating_sub(1));
 

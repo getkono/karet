@@ -367,6 +367,7 @@ impl App {
                 | TabKind::MarkdownPreview { .. }
                 | TabKind::Hex { .. },
             ) => EditorTab::Pager,
+            Some(TabKind::Github(_)) => EditorTab::Github,
             Some(TabKind::CommitGraph { .. }) => EditorTab::CommitGraph,
             Some(TabKind::Placeholder {
                 kind: FileKind::TooLarge { .. },
