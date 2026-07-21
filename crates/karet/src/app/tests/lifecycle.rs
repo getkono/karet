@@ -383,3 +383,59 @@
             Some(crate::keymap::Modal::SwapRecover)
         );
     }
+
+    #[test]
+    fn diagnostics_and_spell_language_follow_the_document_lifecycle() {
+        let mut app = app();
+        let doc = DocumentId(9);
+        let diagnostic = Diagnostic {
+            range: Range {
+                start: LineCol::new(0, 0),
+                end: LineCol::new(0, 4),
+            },
+            severity: Severity::Warning,
+            message: "Unknown word".to_owned(),
+            source: Some("karet-spell".to_owned()),
+            code: Some("en_GB".to_owned()),
+            tags: Vec::new(),
+            related: Vec::new(),
+        };
+        let settings = DocumentSettings {
+            spelling_language: karet_session::SpellingLanguage::parse("en_GB"),
+            ..DocumentSettings::default()
+        };
+
+        app.on_backend_event(
+            None,
+            SessionEvent::DocumentSettingsChanged { doc, settings },
+        );
+        app.on_backend_event(
+            None,
+            SessionEvent::DiagnosticsPublished {
+                doc,
+                diagnostics: vec![diagnostic.clone()],
+            },
+        );
+        assert_eq!(app.document_settings.get(&doc), Some(&settings));
+        assert_eq!(app.document_diagnostics.get(&doc), Some(&vec![diagnostic]));
+
+        app.on_backend_event(None, SessionEvent::Closed { doc });
+        assert!(!app.document_settings.contains_key(&doc));
+        assert!(!app.document_diagnostics.contains_key(&doc));
+    }
+
+    #[test]
+    fn active_spell_language_is_named_beside_the_file_language() {
+        let mut app = app();
+        dirty_doc_tab(&mut app, "notes.md", 4);
+        app.document_settings.insert(
+            DocumentId(4),
+            DocumentSettings {
+                spelling_language: karet_session::SpellingLanguage::parse("en_GB"),
+                ..DocumentSettings::default()
+            },
+        );
+
+        let rendered = screen(&mut app, 100, 12).join("\n");
+        assert!(rendered.contains("Rust · English (UK)"), "{rendered}");
+    }

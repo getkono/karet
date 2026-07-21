@@ -59,6 +59,7 @@ use karet_core::BytePos;
 use karet_core::Change;
 use karet_core::Decoration;
 use karet_core::DecorationKind;
+use karet_core::Diagnostic;
 use karet_core::LineCol;
 use karet_core::Notification;
 use karet_core::NotificationId;
@@ -894,7 +895,9 @@ pub struct App {
     /// spinner clears when the answering event (saved or error) arrives.
     pending_saves: HashMap<RequestId, backend_events::PendingSave>,
     /// Editing/save behavior resolved per open session document.
-    document_settings: HashMap<DocumentId, DocumentSettings>,
+    pub(crate) document_settings: HashMap<DocumentId, DocumentSettings>,
+    /// Latest complete diagnostic set per editable backend document.
+    pub(crate) document_diagnostics: HashMap<DocumentId, Vec<Diagnostic>>,
     /// Latest language-server symbol tree for each open document.
     document_symbols: HashMap<DocumentId, Vec<Symbol>>,
     /// Buffer version represented by each cached symbol tree.

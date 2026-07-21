@@ -208,8 +208,16 @@ impl App {
             SessionEvent::DocumentSettingsChanged { doc, settings } => {
                 self.document_settings.insert(doc, settings);
             },
+            SessionEvent::DiagnosticsPublished { doc, diagnostics } => {
+                if diagnostics.is_empty() {
+                    self.document_diagnostics.remove(&doc);
+                } else {
+                    self.document_diagnostics.insert(doc, diagnostics);
+                }
+            },
             SessionEvent::Closed { doc } => {
                 self.document_settings.remove(&doc);
+                self.document_diagnostics.remove(&doc);
                 self.document_symbols.remove(&doc);
                 self.outline_versions.remove(&doc);
                 self.outline_loading.remove(&doc);
