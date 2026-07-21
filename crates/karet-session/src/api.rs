@@ -260,6 +260,14 @@ pub enum RangeSpec {
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum Command {
+    /// Cancel a safely-droppable background request.
+    ///
+    /// Cancellation is cooperative: a worker suppresses results and stops before
+    /// the next expensive phase. Repository mutations are never cancellable.
+    Cancel {
+        /// The original request to cancel.
+        request: RequestId,
+    },
     /// Open a document.
     OpenDocument {
         /// The file path to open.

@@ -16,15 +16,17 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::api::DocumentId;
 use crate::api::Event;
 use crate::api::PullRequestSummary;
+use crate::api::RangeSpec;
 use crate::api::RepositorySnapshot;
 use crate::api::RequestId;
 use crate::api::VcsAction;
 use crate::api::VcsOutcome;
+use crate::cancellation::Cancellation;
 
 /// A unit of work sent by the session actor to its serialized VCS worker.
 pub(crate) enum VcsJob {
     /// Load the current repository snapshot.
-    Snapshot { id: RequestId },
+    Snapshot { id: RequestId, cancel: Cancellation },
     /// Run one repository action.
     Action { id: RequestId, action: VcsAction },
     /// Query open GitHub pull requests.
@@ -33,6 +35,7 @@ pub(crate) enum VcsJob {
         remote: String,
         page: u32,
         per_page: u8,
+        cancel: Cancellation,
     },
     /// Attribute a current document buffer.
     Blame {
@@ -42,6 +45,40 @@ pub(crate) enum VcsJob {
         path: PathBuf,
         text: String,
         line: u32,
+        cancel: Cancellation,
+    },
+    /// Fetch a page of repository history.
+    Log {
+        id: RequestId,
+        skip: usize,
+        limit: usize,
+        cancel: Cancellation,
+    },
+    /// Resolve a commit, then load its changed files progressively.
+    CommitDetail {
+        id: RequestId,
+        rev: String,
+        cancel: Cancellation,
+    },
+    /// Compute a comparison between revisions.
+    RangeChanges {
+        id: RequestId,
+        spec: RangeSpec,
+        cancel: Cancellation,
+    },
+    /// Fetch one file's history.
+    FileHistory {
+        id: RequestId,
+        path: PathBuf,
+        skip: usize,
+        limit: usize,
+        cancel: Cancellation,
+    },
+    /// Fetch a commit's forge verification.
+    CommitVerification {
+        id: RequestId,
+        hash: String,
+        cancel: Cancellation,
     },
 }
 
@@ -77,15 +114,18 @@ fn run(
     job: VcsJob,
 ) {
     match job {
-        VcsJob::Snapshot { id } => match repository(root).and_then(|repo| snapshot(&repo)) {
-            Ok(snapshot) => emit(
-                events,
-                id,
-                Event::RepositorySnapshot {
-                    snapshot: Box::new(snapshot),
-                },
-            ),
-            Err(message) => notify(events, id, message),
+        VcsJob::Snapshot { id, cancel } => {
+            match repository(root).and_then(|repo| snapshot(&repo)) {
+                Ok(snapshot) => emit_cancellable(
+                    events,
+                    id,
+                    &cancel,
+                    Event::RepositorySnapshot {
+                        snapshot: Box::new(snapshot),
+                    },
+                ),
+                Err(message) => notify_cancellable(events, id, &cancel, message),
+            }
         },
         VcsJob::Action { id, action } => {
             let result = repository(root).and_then(|repo| {
@@ -135,17 +175,19 @@ fn run(
             remote,
             page,
             per_page,
+            cancel,
         } => match pull_requests(root, &remote, page, per_page) {
-            Ok((items, next_page)) => emit(
+            Ok((items, next_page)) => emit_cancellable(
                 events,
                 id,
+                &cancel,
                 Event::PullRequests {
                     remote,
                     items,
                     next_page,
                 },
             ),
-            Err(message) => notify(events, id, message),
+            Err(message) => notify_cancellable(events, id, &cancel, message),
         },
         VcsJob::Blame {
             id,
@@ -154,10 +196,12 @@ fn run(
             path,
             text,
             line,
+            cancel,
         } => match blame(blame_cache, root, doc, version, &path, &text, line) {
-            Ok(attribution) => emit(
+            Ok(attribution) => emit_cancellable(
                 events,
                 id,
+                &cancel,
                 Event::BlameResult {
                     doc,
                     version,
@@ -165,9 +209,270 @@ fn run(
                     attribution,
                 },
             ),
-            Err(message) => notify(events, id, format!("blame: {message}")),
+            Err(message) => {
+                notify_cancellable(events, id, &cancel, format!("blame: {message}"));
+            },
+        },
+        VcsJob::Log {
+            id,
+            skip,
+            limit,
+            cancel,
+        } => run_log(root, events, id, skip, limit, &cancel),
+        VcsJob::CommitDetail { id, rev, cancel } => {
+            run_commit_detail(root, events, id, &rev, &cancel);
+        },
+        VcsJob::RangeChanges { id, spec, cancel } => {
+            run_range_changes(root, events, id, &spec, &cancel);
+        },
+        VcsJob::FileHistory {
+            id,
+            path,
+            skip,
+            limit,
+            cancel,
+        } => run_file_history(root, events, id, path, skip, limit, &cancel),
+        VcsJob::CommitVerification { id, hash, cancel } => {
+            run_commit_verification(root, events, id, hash, &cancel);
         },
     }
+}
+
+fn run_log(
+    root: &Option<PathBuf>,
+    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    id: RequestId,
+    skip: usize,
+    limit: usize,
+    cancel: &Cancellation,
+) {
+    if cancel.is_cancelled() {
+        return;
+    }
+    let result = repository(root).and_then(|repo| {
+        let mut commits = repo
+            .log(skip, limit.saturating_add(1))
+            .map_err(|error| error.to_string())?;
+        let has_more = commits.len() > limit;
+        commits.truncate(limit);
+        Ok((commits, has_more))
+    });
+    match result {
+        Ok((commits, has_more)) => emit_cancellable(
+            events,
+            id,
+            cancel,
+            Event::VcsLog {
+                skip,
+                commits,
+                has_more,
+            },
+        ),
+        Err(message) => notify_cancellable(events, id, cancel, message),
+    }
+}
+
+fn run_commit_detail(
+    root: &Option<PathBuf>,
+    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    id: RequestId,
+    rev: &str,
+    cancel: &Cancellation,
+) {
+    if cancel.is_cancelled() {
+        return;
+    }
+    let Ok(repo) = repository(root) else {
+        return;
+    };
+    let detail = match repo.commit_detail(rev) {
+        Ok(detail) => detail,
+        Err(error) => {
+            notify_cancellable(events, id, cancel, error.to_string());
+            return;
+        },
+    };
+    emit_cancellable(
+        events,
+        id,
+        cancel,
+        Event::CommitDetailReady {
+            detail: Box::new(detail.clone()),
+        },
+    );
+    if cancel.is_cancelled() {
+        return;
+    }
+    match repo.commit_changes(rev) {
+        Ok(changes) => emit_cancellable(
+            events,
+            id,
+            cancel,
+            Event::CommitReady {
+                detail: Box::new(detail),
+                changes,
+            },
+        ),
+        Err(error) => notify_cancellable(events, id, cancel, error.to_string()),
+    }
+}
+
+fn run_range_changes(
+    root: &Option<PathBuf>,
+    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    id: RequestId,
+    spec: &RangeSpec,
+    cancel: &Cancellation,
+) {
+    if cancel.is_cancelled() {
+        return;
+    }
+    let outcome = repository(root).and_then(|repo| {
+        let (base_rev, head_rev, merge_base, base_label, head_label) = match spec {
+            RangeSpec::Unpushed => {
+                let upstream = repo
+                    .upstream_of_head()
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| {
+                        "no upstream branch is set for the current branch".to_string()
+                    })?;
+                (
+                    upstream.clone(),
+                    "HEAD".to_string(),
+                    true,
+                    upstream,
+                    "HEAD".to_string(),
+                )
+            },
+            RangeSpec::SinceBase { base } => {
+                let base = base
+                    .clone()
+                    .or_else(|| repo.default_base_branch())
+                    .ok_or_else(|| {
+                        "could not determine a base branch; use a range like main...HEAD"
+                            .to_string()
+                    })?;
+                (
+                    base.clone(),
+                    "HEAD".to_string(),
+                    true,
+                    base,
+                    "HEAD".to_string(),
+                )
+            },
+            RangeSpec::Between {
+                base,
+                head,
+                merge_base,
+            } => (
+                base.clone(),
+                head.clone(),
+                *merge_base,
+                base.clone(),
+                head.clone(),
+            ),
+        };
+        let changes = repo
+            .range_changes(&base_rev, &head_rev, merge_base)
+            .map_err(|error| error.to_string())?;
+        Ok((base_label, head_label, merge_base, changes))
+    });
+    match outcome {
+        Ok((base_label, head_label, merge_base, changes)) => emit_cancellable(
+            events,
+            id,
+            cancel,
+            Event::RangeReady {
+                base_label,
+                head_label,
+                merge_base,
+                changes,
+            },
+        ),
+        Err(message) => notify_cancellable(events, id, cancel, message),
+    }
+}
+
+fn run_file_history(
+    root: &Option<PathBuf>,
+    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    id: RequestId,
+    path: PathBuf,
+    skip: usize,
+    limit: usize,
+    cancel: &Cancellation,
+) {
+    if cancel.is_cancelled() {
+        return;
+    }
+    let result = repository(root).and_then(|repo| {
+        let mut commits = repo
+            .file_history(&path, skip, limit.saturating_add(1))
+            .map_err(|error| error.to_string())?;
+        let has_more = commits.len() > limit;
+        commits.truncate(limit);
+        Ok((commits, has_more))
+    });
+    match result {
+        Ok((commits, has_more)) => emit_cancellable(
+            events,
+            id,
+            cancel,
+            Event::FileHistory {
+                path,
+                skip,
+                commits,
+                has_more,
+            },
+        ),
+        Err(message) => notify_cancellable(events, id, cancel, message),
+    }
+}
+
+#[cfg(feature = "github")]
+fn run_commit_verification(
+    root: &Option<PathBuf>,
+    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    id: RequestId,
+    hash: String,
+    cancel: &Cancellation,
+) {
+    if cancel.is_cancelled() {
+        return;
+    }
+    let result = repository(root).and_then(|repo| {
+        let url = repo
+            .origin_url()
+            .ok_or_else(|| "no origin remote".to_string())?;
+        let (owner, name) = karet_github::parse_remote(&url)
+            .ok_or_else(|| "origin is not hosted on GitHub".to_string())?;
+        karet_github::commit_verification(&owner, &name, &hash).map_err(|error| error.to_string())
+    });
+    if let Ok(verification) = result {
+        emit_cancellable(
+            events,
+            id,
+            cancel,
+            Event::CommitVerification {
+                hash,
+                status: crate::api::GithubVerification {
+                    verified: verification.verified,
+                    reason: verification.reason,
+                    signer: verification.signer,
+                },
+            },
+        );
+    }
+}
+
+#[cfg(not(feature = "github"))]
+fn run_commit_verification(
+    _root: &Option<PathBuf>,
+    _events: &UnboundedSender<(Option<RequestId>, Event)>,
+    _id: RequestId,
+    _hash: String,
+    _cancel: &Cancellation,
+) {
 }
 
 fn repository(root: &Option<PathBuf>) -> Result<Repository, String> {
@@ -411,6 +716,17 @@ fn emit(events: &UnboundedSender<(Option<RequestId>, Event)>, id: RequestId, eve
     let _ = events.send((Some(id), event));
 }
 
+fn emit_cancellable(
+    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    id: RequestId,
+    cancel: &Cancellation,
+    event: Event,
+) {
+    if !cancel.is_cancelled() {
+        emit(events, id, event);
+    }
+}
+
 fn notify(events: &UnboundedSender<(Option<RequestId>, Event)>, id: RequestId, message: String) {
     emit(
         events,
@@ -421,6 +737,17 @@ fn notify(events: &UnboundedSender<(Option<RequestId>, Event)>, id: RequestId, m
             message,
         },
     );
+}
+
+fn notify_cancellable(
+    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    id: RequestId,
+    cancel: &Cancellation,
+    message: String,
+) {
+    if !cancel.is_cancelled() {
+        notify(events, id, message);
+    }
 }
 
 #[cfg(test)]
@@ -455,5 +782,21 @@ mod tests {
     fn ambiguous_moved_lines_are_uncommitted() {
         let mapped = map_attribution(&["x"], &["a", "x", "x"], &[]);
         assert_eq!(mapped, vec![BlameAttribution::Uncommitted]);
+    }
+
+    #[test]
+    fn cancellation_hub_signals_live_job_and_forgets_finished_job() {
+        let hub = crate::cancellation::CancellationHub::default();
+        let token = hub.register(RequestId(41));
+        assert!(!token.is_cancelled());
+        hub.cancel(RequestId(41));
+        assert!(token.is_cancelled());
+        drop(token);
+
+        // Cancelling after completion is a harmless no-op and does not poison a
+        // later request that happens to use a different id.
+        hub.cancel(RequestId(41));
+        let next = hub.register(RequestId(42));
+        assert!(!next.is_cancelled());
     }
 }

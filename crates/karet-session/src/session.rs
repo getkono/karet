@@ -61,8 +61,7 @@ use tokio::sync::mpsc;
 use crate::api::Command;
 use crate::api::DocumentId;
 use crate::api::Event;
-#[cfg(feature = "github")]
-use crate::api::GithubVerification;
+#[cfg(test)]
 use crate::api::RangeSpec;
 use crate::api::RequestId;
 use crate::api::SwapInfo;
@@ -254,6 +253,8 @@ pub struct Session {
     vcs: Option<Repository>,
     /// Ordered background repository actions and network reads.
     vcs_worker: std::sync::mpsc::Sender<crate::vcs_worker::VcsJob>,
+    /// Cancellation registry for safely-droppable repository reads.
+    vcs_cancellations: crate::cancellation::CancellationHub,
     /// The last emitted `(staged, working)` status. Spontaneous recomputes (from
     /// filesystem events) emit only when this changes, which absorbs the feedback
     /// from the session's own index writes.
@@ -312,6 +313,7 @@ impl Session {
         };
         // Seed the tip so the first ref change reconciles against a known baseline.
         let last_head = vcs.as_ref().and_then(|r| r.head_hash().ok().flatten());
+        let vcs_cancellations = crate::cancellation::CancellationHub::default();
         let vcs_worker = crate::vcs_worker::spawn(config.roots.first().cloned(), events.clone());
         // Open this session's swap store and scan for swaps a previous run left behind
         // (a crash, or a save that failed). They are offered to the UI for recovery.
@@ -351,6 +353,7 @@ impl Session {
             fs_rx,
             vcs,
             vcs_worker,
+            vcs_cancellations,
             last_vcs: None,
             last_head,
             swaps,
@@ -378,6 +381,7 @@ impl Session {
     /// [`Event`] is tagged with `id`.
     pub fn handle(&mut self, id: RequestId, command: Command) {
         match command {
+            Command::Cancel { request } => self.vcs_cancellations.cancel(request),
             Command::OpenDocument { path, language } => self.open(id, path, language.as_deref()),
             Command::CloseDocument { doc } => self.close(id, doc),
             Command::ApplyChange { doc, change, cause } => self.apply(id, doc, &change, cause),
@@ -397,9 +401,10 @@ impl Session {
             Command::GenerateCommitMessage => self.generate_commit_message(id),
             Command::RefreshVcs => self.emit_vcs_status(Some(id)),
             Command::RepositorySnapshot => {
+                let cancel = self.vcs_cancellations.register(id);
                 let _ = self
                     .vcs_worker
-                    .send(crate::vcs_worker::VcsJob::Snapshot { id });
+                    .send(crate::vcs_worker::VcsJob::Snapshot { id, cancel });
             },
             Command::VcsAction { action } => {
                 self.emit(
@@ -417,6 +422,7 @@ impl Session {
                 page,
                 per_page,
             } => {
+                let cancel = self.vcs_cancellations.register(id);
                 let _ = self
                     .vcs_worker
                     .send(crate::vcs_worker::VcsJob::PullRequests {
@@ -424,16 +430,49 @@ impl Session {
                         remote,
                         page,
                         per_page,
+                        cancel,
                     });
             },
             Command::Blame { doc, version, line } => self.request_blame(id, doc, version, line),
-            Command::VcsLog { skip, limit } => self.emit_vcs_log(Some(id), skip, limit),
-            Command::CommitDetail { rev } => self.emit_commit_detail(id, &rev),
-            Command::RangeChanges { spec } => self.emit_range_changes(id, spec),
-            Command::FileHistory { path, skip, limit } => {
-                self.emit_file_history(id, path, skip, limit)
+            Command::VcsLog { skip, limit } => {
+                let cancel = self.vcs_cancellations.register(id);
+                let _ = self.vcs_worker.send(crate::vcs_worker::VcsJob::Log {
+                    id,
+                    skip,
+                    limit,
+                    cancel,
+                });
             },
-            Command::FetchCommitVerification { hash } => self.fetch_commit_verification(id, hash),
+            Command::CommitDetail { rev } => {
+                let cancel = self.vcs_cancellations.register(id);
+                let _ = self
+                    .vcs_worker
+                    .send(crate::vcs_worker::VcsJob::CommitDetail { id, rev, cancel });
+            },
+            Command::RangeChanges { spec } => {
+                let cancel = self.vcs_cancellations.register(id);
+                let _ = self
+                    .vcs_worker
+                    .send(crate::vcs_worker::VcsJob::RangeChanges { id, spec, cancel });
+            },
+            Command::FileHistory { path, skip, limit } => {
+                let cancel = self.vcs_cancellations.register(id);
+                let _ = self
+                    .vcs_worker
+                    .send(crate::vcs_worker::VcsJob::FileHistory {
+                        id,
+                        path,
+                        skip,
+                        limit,
+                        cancel,
+                    });
+            },
+            Command::FetchCommitVerification { hash } => {
+                let cancel = self.vcs_cancellations.register(id);
+                let _ = self
+                    .vcs_worker
+                    .send(crate::vcs_worker::VcsJob::CommitVerification { id, hash, cancel });
+            },
             Command::RecoverSwaps => self.recover_swaps(id),
             Command::DiscardSwaps => self.discard_swaps(),
             Command::DependencyGraph => self.emit_dependency_graph(id),
@@ -474,6 +513,7 @@ impl Session {
             path: document.path.clone(),
             text: document.buffer.text(),
             line,
+            cancel: self.vcs_cancellations.register(id),
         });
     }
 }
