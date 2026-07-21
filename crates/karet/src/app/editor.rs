@@ -649,6 +649,7 @@ impl App {
                 },
             );
         }
+        let mut auto_save_version = None;
         if let Some(Tab {
             kind:
                 TabKind::Code {
@@ -676,10 +677,14 @@ impl App {
             ) {
                 *next_version = applied.version;
                 *text = buffer.text();
+                auto_save_version = Some(applied.version);
             }
             editor.set_carets(&carets);
             let head = editor.cursor();
             editor.scroll_to(head);
+        }
+        if let Some(version) = auto_save_version {
+            self.schedule_auto_save(doc, version, Instant::now());
         }
     }
 }

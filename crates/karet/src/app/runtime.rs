@@ -39,7 +39,12 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     };
     // Bracketed paste makes a multi-line paste arrive as one `Event::Paste`, never a
     // storm of keystrokes the keymap would misinterpret.
-    let _ = crossterm::execute!(io::stdout(), EnableMouseCapture, EnableBracketedPaste);
+    let _ = crossterm::execute!(
+        io::stdout(),
+        EnableMouseCapture,
+        EnableBracketedPaste,
+        EnableFocusChange
+    );
 
     // Refine the env-var graphics heuristic with a real handshake (raw mode is on and
     // the input reader thread has not started yet, so we can read the reply here).
@@ -86,7 +91,12 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     });
 
     let _ = write!(io::stdout(), "{}", image::kitty_delete_all());
-    let _ = crossterm::execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
+    let _ = crossterm::execute!(
+        io::stdout(),
+        DisableFocusChange,
+        DisableBracketedPaste,
+        DisableMouseCapture
+    );
     drop(_keyboard);
     ratatui::restore();
     result
@@ -139,6 +149,7 @@ async fn event_loop(
         }
         app.notifications.expire(Instant::now());
         app.expire_operation_blocker(Instant::now());
+        app.fire_auto_save(Instant::now());
 
         // Drain everything else that is ready so a burst collapses into one frame.
         while let Ok(event) = input_rx.try_recv() {
@@ -163,10 +174,15 @@ async fn event_loop(
 /// Dispatch one terminal event to the app.
 fn handle_terminal_event(app: &mut App, event: Event) {
     app.reset_graphics_caret_blink();
+    let previous = (app.focus == Focus::Editor)
+        .then(|| app.active_code_doc())
+        .flatten();
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => app.handle_key(key),
         Event::Mouse(mouse) => app.handle_mouse(mouse),
         Event::Paste(text) => app.handle_paste(text),
+        Event::FocusLost => app.auto_save_focus_lost(),
         _ => {},
     }
+    app.auto_save_context_changed(previous);
 }

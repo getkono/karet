@@ -237,30 +237,69 @@ impl App {
     /// Issue a save for each of `docs` (skipping any already in flight), tracking it
     /// in `pending_saves` and marking its tabs as saving. Returns the number issued.
     pub(super) fn save_docs(&mut self, docs: &[DocumentId]) -> usize {
-        let Some(backend) = self.backend.clone() else {
-            return 0;
-        };
-        let now = Instant::now();
         let mut issued = 0;
         for &doc in docs {
-            if self.pending_saves.values().any(|pending| *pending == doc) {
-                continue;
-            }
-            let id = backend.next_id();
-            match backend.send(id, SessionCommand::Save { doc }) {
-                Ok(()) => {
-                    self.pending_saves.insert(id, doc);
-                    issued += 1;
-                    for tab in self.all_tabs_mut() {
-                        if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
-                            tab.saving_since = Some(now);
-                        }
-                    }
-                },
-                Err(e) => self.notify_backend_error(e),
+            if self.send_save(doc) {
+                issued += 1;
             }
         }
         issued
+    }
+
+    /// Send one save through the same backend path used by manual, close-guard, and
+    /// automatic saves. The session owns the last-read fingerprint check, so every
+    /// caller gets identical external-change protection.
+    fn send_save(&mut self, doc: DocumentId) -> bool {
+        let Some(backend) = self.backend.clone() else {
+            return false;
+        };
+        if self
+            .pending_saves
+            .values()
+            .any(|pending| pending.doc == doc)
+        {
+            return false;
+        }
+        let version = self.document_version(doc);
+        let id = backend.next_id();
+        match backend.send(id, SessionCommand::Save { doc }) {
+            Ok(()) => {
+                self.pending_saves
+                    .insert(id, backend_events::PendingSave { doc });
+                if self
+                    .auto_save_pending
+                    .get(&doc)
+                    .is_some_and(|pending| pending.version <= version)
+                {
+                    self.auto_save_pending.remove(&doc);
+                }
+                let now = Instant::now();
+                for tab in self.all_tabs_mut() {
+                    if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
+                        tab.saving_since = Some(now);
+                    }
+                }
+                true
+            },
+            Err(e) => {
+                self.notify_backend_error(e);
+                false
+            },
+        }
+    }
+
+    fn document_version(&self, doc: DocumentId) -> u64 {
+        self.all_tabs()
+            .filter_map(|tab| match &tab.kind {
+                TabKind::Code {
+                    doc: Some(candidate),
+                    next_version,
+                    ..
+                } if *candidate == doc => Some(*next_version),
+                _ => None,
+            })
+            .max()
+            .unwrap_or_default()
     }
 
     /// Save the active document, or report that there is no file to save. Tracks the
@@ -270,25 +309,122 @@ impl App {
             self.status = Some("save: open a text file".to_string());
             return;
         };
-        let Some(backend) = self.backend.clone() else {
-            return;
-        };
-        if self.pending_saves.values().any(|pending| *pending == doc) {
+        if self
+            .pending_saves
+            .values()
+            .any(|pending| pending.doc == doc)
+        {
             self.status = Some("save already in progress".to_string());
             return;
         }
-        let id = backend.next_id();
-        match backend.send(id, SessionCommand::Save { doc }) {
-            Ok(()) => {
-                self.pending_saves.insert(id, doc);
-                let now = Instant::now();
-                for tab in self.all_tabs_mut() {
-                    if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
-                        tab.saving_since = Some(now);
-                    }
-                }
+        self.send_save(doc);
+    }
+
+    /// Record a new dirty version for the configured automatic-save trigger. A
+    /// repeated snapshot for the same version does not restart the inactivity timer.
+    pub(super) fn schedule_auto_save(&mut self, doc: DocumentId, version: u64, now: Instant) {
+        let mode = self.settings.files.auto_save;
+        let deadline = match mode {
+            AutoSave::Off => {
+                self.auto_save_pending.remove(&doc);
+                return;
             },
-            Err(e) => self.notify_backend_error(e),
+            AutoSave::AfterDelay => Some(
+                now.checked_add(Duration::from_millis(self.settings.files.auto_save_delay))
+                    .unwrap_or(now),
+            ),
+            AutoSave::OnFocusChange => None,
+        };
+        if self
+            .auto_save_pending
+            .get(&doc)
+            .is_some_and(|pending| pending.version >= version)
+        {
+            return;
+        }
+        self.auto_save_pending
+            .insert(doc, backend_events::PendingAutoSave { version, deadline });
+        let focused = (self.focus == Focus::Editor)
+            .then(|| self.active_code_doc())
+            .flatten();
+        if mode == AutoSave::OnFocusChange && focused != Some(doc) {
+            self.save_docs(&[doc]);
+        }
+    }
+
+    /// Fire every elapsed inactivity save. Called by the event loop after its timer
+    /// wake, and exposed to unit tests with an explicit clock.
+    pub(super) fn fire_auto_save(&mut self, now: Instant) {
+        let due: Vec<DocumentId> = self
+            .auto_save_pending
+            .iter()
+            .filter_map(|(doc, pending)| {
+                (pending.deadline.is_some_and(|deadline| deadline <= now)
+                    && !self.pending_saves.values().any(|save| save.doc == *doc))
+                .then_some(*doc)
+            })
+            .collect();
+        for doc in &due {
+            self.auto_save_pending.remove(doc);
+        }
+        self.save_docs(&due);
+    }
+
+    /// Save the previously-focused editor document when a user action moves focus
+    /// elsewhere or selects another document.
+    pub(super) fn auto_save_context_changed(&mut self, previous: Option<DocumentId>) {
+        if self.settings.files.auto_save != AutoSave::OnFocusChange {
+            return;
+        }
+        let current = (self.focus == Focus::Editor)
+            .then(|| self.active_code_doc())
+            .flatten();
+        if previous != current
+            && let Some(doc) = previous
+            && self.auto_save_pending.contains_key(&doc)
+        {
+            self.save_docs(&[doc]);
+        }
+    }
+
+    /// Save the active editor document when the terminal window itself loses focus.
+    pub(super) fn auto_save_focus_lost(&mut self) {
+        if self.settings.files.auto_save == AutoSave::OnFocusChange
+            && self.focus == Focus::Editor
+            && let Some(doc) = self.active_code_doc()
+            && self.auto_save_pending.contains_key(&doc)
+        {
+            self.save_docs(&[doc]);
+        }
+    }
+
+    /// Reconcile pending triggers after a live configuration change.
+    pub(super) fn reconcile_auto_save_settings(&mut self, now: Instant) {
+        if self.settings.files.auto_save == AutoSave::Off {
+            self.auto_save_pending.clear();
+            return;
+        }
+        let mut versions: HashMap<DocumentId, u64> = self
+            .auto_save_pending
+            .iter()
+            .map(|(doc, pending)| (*doc, pending.version))
+            .collect();
+        for tab in self.all_tabs().filter(|tab| tab.dirty) {
+            if let TabKind::Code {
+                doc: Some(doc),
+                next_version,
+                ..
+            } = &tab.kind
+            {
+                versions
+                    .entry(*doc)
+                    .and_modify(|version| *version = (*version).max(*next_version))
+                    .or_insert(*next_version);
+            }
+        }
+        self.auto_save_pending.clear();
+        for (doc, version) in versions {
+            self.schedule_auto_save(doc, version, now);
         }
     }
 

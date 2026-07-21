@@ -2,7 +2,12 @@
     fn pending_save_drives_the_animation_tick() {
         let mut app = app();
         assert!(app.next_wake().is_none());
-        app.pending_saves.insert(RequestId(1), DocumentId(1));
+        app.pending_saves.insert(
+            RequestId(1),
+            backend_events::PendingSave {
+                doc: DocumentId(1),
+            },
+        );
         assert_eq!(app.next_wake(), Some(Duration::from_millis(100)));
     }
 
@@ -14,7 +19,12 @@
             *doc = Some(DocumentId(2));
         }
         app.tabs[app.active].saving_since = Some(Instant::now());
-        app.pending_saves.insert(RequestId(5), DocumentId(2));
+        app.pending_saves.insert(
+            RequestId(5),
+            backend_events::PendingSave {
+                doc: DocumentId(2),
+            },
+        );
         app.on_backend_event(
             Some(RequestId(5)),
             SessionEvent::Saved { doc: DocumentId(2) },
@@ -54,6 +64,136 @@
     }
 
     #[test]
+    fn after_delay_auto_save_debounces_to_the_newest_edit() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        app.settings.files.auto_save = AutoSave::AfterDelay;
+        app.settings.files.auto_save_delay = 100;
+        app.push_tab(text_tab("t.rs", "x"));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(2));
+        }
+        let start = Instant::now();
+
+        app.schedule_auto_save(DocumentId(2), 1, start);
+        app.schedule_auto_save(DocumentId(2), 1, start + Duration::from_millis(50));
+        app.fire_auto_save(start + Duration::from_millis(100));
+        assert_eq!(saved_docs(&backend), [DocumentId(2)]);
+
+        let request = app.pending_saves.keys().next().copied();
+        if let Some(request) = request {
+            app.on_backend_event(
+                Some(request),
+                SessionEvent::Saved { doc: DocumentId(2) },
+            );
+        }
+        app.schedule_auto_save(DocumentId(2), 2, start + Duration::from_millis(110));
+        app.schedule_auto_save(DocumentId(2), 3, start + Duration::from_millis(150));
+        app.fire_auto_save(start + Duration::from_millis(249));
+        assert_eq!(saved_docs(&backend).len(), 1);
+        app.fire_auto_save(start + Duration::from_millis(250));
+        assert_eq!(saved_docs(&backend).len(), 2);
+    }
+
+    #[test]
+    fn focus_change_auto_save_only_fires_when_the_edited_document_loses_focus() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        app.settings.files.auto_save = AutoSave::OnFocusChange;
+        app.push_tab(text_tab("t.rs", "x"));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(2));
+        }
+        app.schedule_auto_save(DocumentId(2), 1, Instant::now());
+
+        app.auto_save_context_changed(Some(DocumentId(2)));
+        assert!(saved_docs(&backend).is_empty(), "the same editor keeps focus");
+        app.focus = Focus::Sidebar;
+        app.auto_save_context_changed(Some(DocumentId(2)));
+        assert_eq!(saved_docs(&backend), [DocumentId(2)]);
+    }
+
+    #[test]
+    fn a_late_dirty_snapshot_saves_when_its_document_already_lost_focus() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        app.settings.files.auto_save = AutoSave::OnFocusChange;
+        app.push_tab(text_tab("t.rs", "x"));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(2));
+        }
+        app.focus = Focus::Sidebar;
+
+        app.schedule_auto_save(DocumentId(2), 1, Instant::now());
+
+        assert_eq!(saved_docs(&backend), [DocumentId(2)]);
+    }
+
+    #[test]
+    fn an_edit_during_an_auto_save_keeps_its_own_follow_up_deadline() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        app.settings.files.auto_save = AutoSave::AfterDelay;
+        app.settings.files.auto_save_delay = 10;
+        app.push_tab(text_tab("t.rs", "x"));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(2));
+        }
+        let start = Instant::now();
+        app.schedule_auto_save(DocumentId(2), 1, start);
+        app.fire_auto_save(start + Duration::from_millis(10));
+        let request = app.pending_saves.keys().next().copied();
+
+        app.schedule_auto_save(DocumentId(2), 2, start + Duration::from_millis(11));
+        app.fire_auto_save(start + Duration::from_millis(21));
+        assert_eq!(saved_docs(&backend).len(), 1, "only one save may be in flight");
+        if let Some(request) = request {
+            app.on_backend_event(
+                Some(request),
+                SessionEvent::Saved { doc: DocumentId(2) },
+            );
+        }
+        assert!(app.auto_save_pending.contains_key(&DocumentId(2)));
+        app.fire_auto_save(start + Duration::from_millis(21));
+        assert_eq!(saved_docs(&backend).len(), 2);
+    }
+
+    #[test]
+    fn an_auto_save_conflict_keeps_the_buffer_dirty_and_warns() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend);
+        app.settings.files.auto_save = AutoSave::AfterDelay;
+        app.settings.files.auto_save_delay = 1;
+        app.push_tab(text_tab("t.rs", "local"));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(2));
+        }
+        app.tabs[app.active].dirty = true;
+        let start = Instant::now();
+        app.schedule_auto_save(DocumentId(2), 1, start);
+        app.fire_auto_save(start + Duration::from_millis(1));
+        let request = app.pending_saves.keys().next().copied();
+
+        if let Some(request) = request {
+            app.on_backend_event(
+                Some(request),
+                SessionEvent::ExternalConflict { doc: DocumentId(2) },
+            );
+        }
+
+        assert!(app.tabs[app.active].dirty);
+        assert!(app.notifications.active().iter().any(|notification| {
+            notification.title.contains("file changed on disk")
+                && notification.severity == Severity::Warning
+        }));
+    }
+
+    #[test]
     fn save_active_marks_every_view_of_the_document_as_saving() {
         let backend = Arc::new(RecordingBackend::new());
         let mut app = app();
@@ -87,7 +227,12 @@
         }
         app.tabs[app.active].dirty = true;
         app.saving_close = Some(CloseRequest::Quit);
-        app.pending_saves.insert(RequestId(5), DocumentId(2));
+        app.pending_saves.insert(
+            RequestId(5),
+            backend_events::PendingSave {
+                doc: DocumentId(2),
+            },
+        );
 
         app.on_backend_event(
             Some(RequestId(5)),
@@ -332,4 +477,3 @@
             signature: None,
         }
     }
-
