@@ -35,6 +35,58 @@ use karet_vcs::RepositoryState;
 use karet_vcs::StashEntry;
 use karet_vcs::StashOptions;
 
+/// Per-document editing and serialization behavior after application settings and
+/// matching EditorConfig files have been resolved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DocumentSettings {
+    /// Whether indentation commands insert spaces (`true`) or hard tabs (`false`).
+    pub insert_spaces: bool,
+    /// Display columns in one indentation level.
+    pub indent_size: u16,
+    /// Display columns between hard-tab stops.
+    pub tab_width: u16,
+    /// Remove whitespace immediately before line endings on save.
+    pub trim_trailing_whitespace: bool,
+    /// Ensure non-empty files end in a newline on save when enabled.
+    pub insert_final_newline: bool,
+    /// Explicit line-ending override, or `None` to preserve the detected style.
+    pub line_ending: Option<DocumentLineEnding>,
+    /// Explicit text-encoding override, or `None` to preserve the detected encoding.
+    pub encoding: Option<DocumentEncoding>,
+}
+
+impl Default for DocumentSettings {
+    fn default() -> Self {
+        Self {
+            insert_spaces: true,
+            indent_size: 4,
+            tab_width: 4,
+            trim_trailing_whitespace: true,
+            insert_final_newline: true,
+            line_ending: None,
+            encoding: None,
+        }
+    }
+}
+
+/// A text line-ending style supported by editable karet documents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DocumentLineEnding {
+    /// Line feed (`\n`).
+    Lf,
+    /// Carriage return followed by line feed (`\r\n`).
+    Crlf,
+}
+
+/// A text encoding supported by editable karet documents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DocumentEncoding {
+    /// UTF-8 without a byte-order mark.
+    Utf8,
+    /// UTF-8 with a byte-order mark.
+    Utf8Bom,
+}
+
 /// A complete repository snapshot for Source Control controls and pickers.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RepositorySnapshot {
@@ -523,6 +575,13 @@ pub enum Event {
         /// Its initial version.
         version: u64,
     },
+    /// A live configuration or EditorConfig change altered one document's behavior.
+    DocumentSettingsChanged {
+        /// The affected document.
+        doc: DocumentId,
+        /// The newly resolved behavior.
+        settings: DocumentSettings,
+    },
     /// A change was applied, producing a new version.
     Applied {
         /// The document.
@@ -822,5 +881,17 @@ mod tests {
         };
         let _cfg = Command::LoadedConfig;
         assert_eq!(DecorationLayer::Vcs, DecorationLayer::Vcs);
+        assert_eq!(
+            DocumentSettings::default(),
+            DocumentSettings {
+                insert_spaces: true,
+                indent_size: 4,
+                tab_width: 4,
+                trim_trailing_whitespace: true,
+                insert_final_newline: true,
+                line_ending: None,
+                encoding: None,
+            }
+        );
     }
 }

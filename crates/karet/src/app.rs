@@ -85,6 +85,7 @@ use karet_session::Command as SessionCommand;
 use karet_session::ConfigDiagnostic;
 use karet_session::DocSnapshot;
 use karet_session::DocumentId;
+use karet_session::DocumentSettings;
 use karet_session::Event as SessionEvent;
 use karet_session::EventRx;
 use karet_session::GithubVerification;
@@ -865,6 +866,8 @@ pub struct App {
     /// In-flight save requests, mapping request id → document, so the tab's saving
     /// spinner clears when the answering event (saved or error) arrives.
     pending_saves: HashMap<RequestId, backend_events::PendingSave>,
+    /// Editing/save behavior resolved per open session document.
+    document_settings: HashMap<DocumentId, DocumentSettings>,
     /// Dirty document versions waiting for the configured automatic-save trigger.
     auto_save_pending: HashMap<DocumentId, backend_events::PendingAutoSave>,
     /// The in-flight completion request, if any (see [`crate::completion`]).

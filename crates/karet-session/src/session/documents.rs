@@ -20,6 +20,7 @@ impl Session {
             if let Some(doc) = self.store.docs.get_mut(&existing) {
                 doc.refs += 1;
                 let version = doc.buffer.version();
+                let settings = doc.settings;
                 self.emit(
                     Some(id),
                     Event::Opened {
@@ -27,11 +28,18 @@ impl Session {
                         version,
                     },
                 );
+                self.emit(
+                    None,
+                    Event::DocumentSettingsChanged {
+                        doc: existing,
+                        settings,
+                    },
+                );
                 self.publish(existing, None);
             }
             return;
         }
-        let (buffer, format) = match load_document(&path) {
+        let (mut buffer, format) = match load_document(&path) {
             Ok(loaded) => loaded,
             Err(LoadError::NotUtf8 { .. }) => {
                 // Full non-UTF-8 editing isn't supported; tell the client so it can
@@ -56,6 +64,19 @@ impl Session {
         let language = language
             .and_then(name_for_language)
             .or_else(|| language_name_from_path(&path));
+        let (document_settings, editorconfig_error) =
+            resolve_document_settings(&path, language, &self.config.settings);
+        apply_serialization_settings(&mut buffer, document_settings);
+        if let Some(message) = editorconfig_error {
+            self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Warning,
+                    kind: NotificationKind::Io,
+                    message,
+                },
+            );
+        }
         let doc_id = DocumentId(self.store.next);
         self.store.next += 1;
         let mut doc = Document {
@@ -64,6 +85,7 @@ impl Session {
             lang_id,
             buffer,
             format,
+            settings: document_settings,
             highlights: Arc::new(Highlights::default()),
             folds: Arc::new(FoldRegions::default()),
             semantic_blocks: Arc::new(SemanticBlocks::default()),
@@ -91,6 +113,13 @@ impl Session {
             Event::Opened {
                 doc: doc_id,
                 version,
+            },
+        );
+        self.emit(
+            None,
+            Event::DocumentSettingsChanged {
+                doc: doc_id,
+                settings: document_settings,
             },
         );
         self.publish(doc_id, None);
@@ -204,6 +233,9 @@ impl Session {
     }
 
     pub(super) fn save(&mut self, id: RequestId, doc_id: DocumentId) {
+        if self.apply_save_cleanup(doc_id) {
+            self.publish(doc_id, None);
+        }
         let result = self.store.docs.get_mut(&doc_id).map(save_document);
         match result {
             Some(Ok(_)) => {
@@ -245,6 +277,34 @@ impl Session {
         }
     }
 
+    fn apply_save_cleanup(&mut self, doc_id: DocumentId) -> bool {
+        let tick = self.elapsed_ms();
+        let highlight_tx = &self.highlight_tx;
+        let settings = &self.config.settings;
+        let lsp = &mut self.lsp;
+        let Some(doc) = self.store.docs.get_mut(&doc_id) else {
+            return false;
+        };
+        let current = doc.buffer.text();
+        let normalized = normalize_text_for_save(&current, doc.settings);
+        if normalized == current {
+            return false;
+        }
+        let Some(change) = whole_document_change(doc, normalized) else {
+            return false;
+        };
+        let ctx = edit_context(tick, EditCause::Replace, &change);
+        let Ok(applied) = doc.buffer.apply(&change, ctx) else {
+            return false;
+        };
+        update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
+        doc.sync_dirty_since(tick);
+        lsp.document_changed(doc.language, &doc.path, applied.version, || {
+            doc.buffer.text()
+        });
+        true
+    }
+
     pub(super) fn retarget(&mut self, id: RequestId, doc_id: DocumentId, path: PathBuf) {
         let Some(doc) = self.store.docs.get_mut(&doc_id) else {
             self.emit(Some(id), unknown_document(doc_id));
@@ -267,6 +327,7 @@ impl Session {
             });
         self.store.by_path.insert(path.clone(), doc_id);
         self.emit(Some(id), Event::Retargeted { doc: doc_id, path });
+        self.refresh_document_settings(&[doc_id]);
         self.publish(doc_id, None);
     }
 

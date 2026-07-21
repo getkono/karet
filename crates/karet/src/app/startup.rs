@@ -132,6 +132,7 @@ impl App {
             backend: None,
             pending_open: HashMap::new(),
             pending_saves: HashMap::new(),
+            document_settings: HashMap::new(),
             auto_save_pending: HashMap::new(),
             pending_completion: None,
             completion: None,

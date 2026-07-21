@@ -181,6 +181,11 @@ impl TextBuffer {
         self.encoding
     }
 
+    /// Override the UTF-8 serialization variant used when saving.
+    pub fn set_encoding(&mut self, encoding: Encoding) {
+        self.encoding = encoding;
+    }
+
     /// Whether the file mixed `\n` and `\r\n` on load (normalized to LF in memory).
     #[must_use]
     pub fn has_mixed_eol(&self) -> bool {

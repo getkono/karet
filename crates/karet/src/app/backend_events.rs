@@ -188,6 +188,12 @@ impl App {
                     }
                 }
             },
+            SessionEvent::DocumentSettingsChanged { doc, settings } => {
+                self.document_settings.insert(doc, settings);
+            },
+            SessionEvent::Closed { doc } => {
+                self.document_settings.remove(&doc);
+            },
             SessionEvent::Completions {
                 doc,
                 version,

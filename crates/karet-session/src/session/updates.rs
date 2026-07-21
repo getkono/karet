@@ -175,6 +175,15 @@ impl Session {
             self.apply_config_report(report);
         }
 
+        if event
+            .paths
+            .iter()
+            .any(|path| path.file_name().is_some_and(|name| name == ".editorconfig"))
+        {
+            let docs: Vec<DocumentId> = self.store.docs.keys().copied().collect();
+            self.refresh_document_settings(&docs);
+        }
+
         let workspace_paths: Vec<PathBuf> = event
             .paths
             .into_iter()
@@ -214,6 +223,8 @@ impl Session {
         let lsp_changed = self.lsp.reconfigure(report.settings.lsp.clone());
         self.config.settings = report.settings.clone();
         self.config.loaded_config = report.clone();
+        let docs: Vec<DocumentId> = self.store.docs.keys().copied().collect();
+        self.refresh_document_settings(&docs);
 
         // Semantic-comment settings can vary by language. Requeue every open
         // document from scratch so both global and selector changes take effect.
@@ -238,5 +249,50 @@ impl Session {
                 report: Box::new(report),
             },
         );
+    }
+
+    /// Re-resolve per-path behavior after an application or EditorConfig change.
+    pub(super) fn refresh_document_settings(&mut self, docs: &[DocumentId]) {
+        let settings = self.config.settings.clone();
+        let inputs: Vec<(DocumentId, PathBuf, Option<&'static str>)> = docs
+            .iter()
+            .filter_map(|doc_id| {
+                self.store
+                    .docs
+                    .get(doc_id)
+                    .map(|doc| (*doc_id, doc.path.clone(), doc.language))
+            })
+            .collect();
+        for (doc_id, path, language) in inputs {
+            let (resolved, error) = resolve_document_settings(&path, language, &settings);
+            let changed = self.store.docs.get_mut(&doc_id).is_some_and(|doc| {
+                if doc.settings == resolved {
+                    return false;
+                }
+                doc.settings = resolved;
+                apply_serialization_settings(&mut doc.buffer, resolved);
+                true
+            });
+            if let Some(message) = error {
+                self.emit(
+                    None,
+                    Event::Notification {
+                        severity: Severity::Warning,
+                        kind: NotificationKind::Io,
+                        message,
+                    },
+                );
+            }
+            if changed {
+                self.emit(
+                    None,
+                    Event::DocumentSettingsChanged {
+                        doc: doc_id,
+                        settings: resolved,
+                    },
+                );
+                self.publish(doc_id, None);
+            }
+        }
     }
 }
