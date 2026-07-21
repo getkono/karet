@@ -61,6 +61,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
                     .and_then(crate::app::LiveBlame::commit_hash)
                     .is_some(),
                 markdown_link_hover: app.markdown_link_hover,
+                pane_action_hover: app.pane_action_hover,
             };
             render_pane(f, &mut app.tabs, app.active, rect, &ctx)
         } else if let Some(stored) = app.stored.get_mut(&pane) {
@@ -88,6 +89,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
                 blame: None,
                 blame_clickable: false,
                 markdown_link_hover: None,
+                pane_action_hover: app.pane_action_hover,
             };
             render_pane(f, &mut stored.tabs, stored.active, rect, &ctx)
         } else {
@@ -105,6 +107,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
             pane,
             tabstrip_rect: rendered.tabstrip_rect,
             tab_hits: rendered.tab_hits,
+            action_hits: rendered.action_hits,
             breadcrumb_rect: rendered.breadcrumb_rect,
             breadcrumb_hits: rendered.breadcrumb_hits,
             content_rect: rendered.content_rect,
@@ -130,7 +133,7 @@ pub(super) fn render_pane(
         Constraint::Min(0),     // content
     ])
     .split(area);
-    let (tabstrip_rect, tab_hits) = draw_pane_tabs(f, tabs, active, ctx, parts[0]);
+    let (tabstrip_rect, tab_hits, action_hits) = draw_pane_tabs(f, tabs, active, ctx, parts[0]);
     let (breadcrumb_rect, breadcrumb_hits) = if bc == 1 {
         let hits = draw_pane_breadcrumb(
             f,
@@ -164,6 +167,7 @@ pub(super) fn render_pane(
     RenderedPane {
         tabstrip_rect,
         tab_hits,
+        action_hits,
         breadcrumb_rect,
         breadcrumb_hits,
         content_rect: content,

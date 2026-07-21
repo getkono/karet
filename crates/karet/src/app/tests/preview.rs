@@ -5,6 +5,7 @@
             pane: app.focus_pane(),
             tabstrip_rect: Rect::default(),
             tab_hits: Vec::new(),
+            action_hits: Vec::new(),
             breadcrumb_rect: Rect::default(),
             breadcrumb_hits: Vec::new(),
             content_rect: rect,

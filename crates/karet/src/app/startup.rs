@@ -84,6 +84,7 @@ impl App {
             tab_drag: None,
             sidebar_content_rect: Rect::default(),
             hover: None,
+            pane_action_hover: None,
             sidebar_header_hover: None,
             panel_hits: Vec::new(),
             outline_visible: false,

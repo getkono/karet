@@ -444,6 +444,7 @@
                     close: 22,
                 },
             ],
+            action_hits: Vec::new(),
             breadcrumb_rect: Rect::default(),
             breadcrumb_hits: Vec::new(),
             content_rect: Rect::default(),
@@ -458,6 +459,43 @@
         let titles: Vec<_> = app.tabs.iter().map(|t| t.title.clone()).collect();
         assert_eq!(titles, vec!["b.rs", "c.rs", "a.rs"]);
         assert_eq!(app.active, 2);
+    }
+
+    #[test]
+    fn pane_action_click_wins_over_the_underlying_tab_hit() {
+        let mut app = app();
+        app.push_tab(text_tab("README.md", "# Title\n"));
+        app.pane_frames = vec![PaneFrame {
+            pane: app.focus_pane(),
+            tabstrip_rect: Rect::new(0, 0, 30, 1),
+            tab_hits: vec![TabHit {
+                start: 0,
+                end: 30,
+                close: 28,
+            }],
+            action_hits: vec![(24, 27, Command::MarkdownPreviewSide)],
+            breadcrumb_rect: Rect::default(),
+            breadcrumb_hits: Vec::new(),
+            content_rect: Rect::default(),
+            commit_file_hits: Vec::new(),
+        }];
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 25,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.pane_action_hover, Some((25, 0)));
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 25,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert!(app.tabs[app.active].markdown_preview.is_some());
+        assert!(app.tab_drag.is_none());
     }
 
     #[test]

@@ -264,12 +264,15 @@ struct PaneCtx<'a> {
     blame_clickable: bool,
     /// Mouse position over a link in this pane, used for hover emphasis.
     markdown_link_hover: Option<(u16, u16)>,
+    /// Mouse position over a format-specific pane action.
+    pane_action_hover: Option<(u16, u16)>,
 }
 
 /// What a rendered pane reported back for hit-testing and image placement.
 struct RenderedPane {
     tabstrip_rect: Rect,
     tab_hits: Vec<TabHit>,
+    action_hits: Vec<(u16, u16, Command)>,
     breadcrumb_rect: Rect,
     breadcrumb_hits: Vec<crate::app::BreadcrumbHit>,
     content_rect: Rect,
@@ -331,7 +334,7 @@ fn draw_pane_tabs(
     active: usize,
     ctx: &PaneCtx<'_>,
     area: Rect,
-) -> (Rect, Vec<TabHit>) {
+) -> (Rect, Vec<TabHit>, Vec<(u16, u16, Command)>) {
     let mut hits = Vec::new();
     let mut spans = Vec::new();
     let mut x = area.x;
@@ -367,7 +370,51 @@ fn draw_pane_tabs(
     }
     let bar = Style::default().bg(ctx.theme.role(ThemeRole::Background).to_ratatui());
     f.render_widget(Paragraph::new(Line::from(spans)).style(bar), area);
-    (area, hits)
+    let actions = tabs.get(active).map_or_else(Vec::new, pane_actions);
+    let visible = usize::from(area.width / 3).min(actions.len());
+    let start = area
+        .right()
+        .saturating_sub(u16::try_from(visible.saturating_mul(3)).unwrap_or(u16::MAX));
+    let mut action_hits = Vec::with_capacity(visible);
+    for (index, (icon, command, active)) in actions.into_iter().take(visible).enumerate() {
+        let x = start.saturating_add(u16::try_from(index.saturating_mul(3)).unwrap_or(u16::MAX));
+        let hovered = ctx
+            .pane_action_hover
+            .is_some_and(|(col, row)| row == area.y && col >= x && col < x.saturating_add(3));
+        let state = match (active, hovered) {
+            (true, true) => ChromeButtonState::ActiveHovered,
+            (true, false) => ChromeButtonState::Active,
+            (false, true) => ChromeButtonState::Hovered,
+            (false, false) => ChromeButtonState::Normal,
+        };
+        f.buffer_mut().set_string(
+            x,
+            area.y,
+            format!(" {} ", icon.glyph(ctx.icon_style)),
+            chrome_button_style(ctx.theme, state)
+                .bg(ctx.theme.role(ThemeRole::Background).to_ratatui()),
+        );
+        action_hits.push((x, x.saturating_add(3), command));
+    }
+    (area, hits, action_hits)
+}
+
+fn pane_actions(tab: &Tab) -> Vec<(UiIcon, Command, bool)> {
+    match &tab.kind {
+        TabKind::Code { path, .. }
+            if karet_filetype::file_type_for_path(path).name() == "Markdown" =>
+        {
+            vec![
+                (
+                    UiIcon::Preview,
+                    Command::MarkdownPreviewSide,
+                    tab.markdown_preview.is_some(),
+                ),
+                (UiIcon::FormatTable, Command::FormatMarkdownTables, false),
+            ]
+        },
+        _ => Vec::new(),
+    }
 }
 
 fn tab_text_style(theme: &Theme, active: bool, pane_focused: bool, preview: bool) -> Style {
