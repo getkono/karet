@@ -81,6 +81,66 @@
     }
 
     #[test]
+    fn markdown_links_require_a_modifier_and_open_workspace_files() {
+        let root = test_dir("markdown-links");
+        write_file(&root, "README.md", b"[guide](docs/guide.md)");
+        write_file(&root, "docs/guide.md", b"guide");
+        let mut app = App::new(root.clone(), Vec::new(), Vec::new(), false);
+        app.open_path(&root.join("README.md"));
+        app.markdown_link_hits = vec![MarkdownLinkHit {
+            rect: Rect::new(4, 3, 5, 1),
+            target: "docs/guide.md".to_string(),
+        }];
+        let click = |modifiers| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 3,
+            modifiers,
+        };
+
+        assert!(!app.handle_markdown_link_mouse(click(KeyModifiers::NONE)));
+        assert_eq!(app.tabs[app.active].path(), Some(root.join("README.md").as_path()));
+        assert!(app.handle_markdown_link_mouse(click(KeyModifiers::CONTROL)));
+        assert_eq!(
+            app.tabs[app.active].path(),
+            Some(root.join("docs/guide.md").as_path())
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn markdown_file_links_outside_the_workspace_require_typed_confirmation() {
+        let parent = test_dir("markdown-link-boundary");
+        let root = parent.join("workspace");
+        write_file(&root, "README.md", b"[outside](../outside.md)");
+        write_file(&parent, "outside.md", b"outside");
+        let mut app = App::new(root.clone(), Vec::new(), Vec::new(), false);
+        app.open_path(&root.join("README.md"));
+        app.markdown_link_hits = vec![MarkdownLinkHit {
+            rect: Rect::new(1, 1, 7, 1),
+            target: "../outside.md".to_string(),
+        }];
+
+        assert!(app.handle_markdown_link_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 2,
+            row: 1,
+            modifiers: KeyModifiers::SUPER,
+        }));
+        assert!(app.overlay.is_some());
+        assert_eq!(app.tabs[app.active].path(), Some(root.join("README.md").as_path()));
+        if let Some(overlay) = app.overlay.as_mut() {
+            overlay.push_str("open");
+        }
+        app.overlay_accept();
+        assert_eq!(
+            app.tabs[app.active].path(),
+            Some(parent.join("outside.md").as_path())
+        );
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
     fn alt_click_adds_a_second_caret() {
         let mut app = app();
         app.push_tab(text_tab("t.rs", "foo bar baz"));

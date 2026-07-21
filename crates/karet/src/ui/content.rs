@@ -86,6 +86,7 @@ pub(super) fn draw_pane_content(
             }
         },
         TabKind::MarkdownPreview {
+            path,
             buffer,
             wrapped,
             rendered,
@@ -102,6 +103,8 @@ pub(super) fn draw_pane_content(
                     rendered,
                     scroll,
                     hover: ctx.markdown_link_hover,
+                    source: path,
+                    root: ctx.root,
                 },
             );
         },

@@ -330,6 +330,13 @@ impl App {
                         self.status = Some("remote branch deletion cancelled".to_string());
                     }
                 },
+                TextPurpose::ConfirmOutsideWorkspaceLink { path } => {
+                    if text == "open" {
+                        self.open_markdown_file_link(&path);
+                    } else {
+                        self.status = Some("opening outside-workspace link cancelled".to_string());
+                    }
+                },
             },
             OverlayEvent::AcceptDeleteLocalBranch(name) => {
                 self.run_vcs_action(VcsAction::DeleteBranch { name });

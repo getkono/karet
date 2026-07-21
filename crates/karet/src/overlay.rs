@@ -81,6 +81,8 @@ pub enum TextPurpose {
     RenameBranch { old: String },
     /// Confirm remote deletion by typing the exact branch name.
     ConfirmDeleteRemoteBranch { remote: String, branch: String },
+    /// Confirm opening a relative file link that escaped the workspace.
+    ConfirmOutsideWorkspaceLink { path: PathBuf },
 }
 
 pub(crate) struct BranchForm {

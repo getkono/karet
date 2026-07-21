@@ -166,6 +166,8 @@ pub(super) struct MarkdownPreviewRender<'a> {
     pub(super) rendered: &'a mut Option<(u64, u16)>,
     pub(super) scroll: &'a mut u16,
     pub(super) hover: Option<(u16, u16)>,
+    pub(super) source: &'a Path,
+    pub(super) root: &'a Path,
 }
 
 pub(super) fn draw_markdown_preview(
@@ -190,6 +192,7 @@ pub(super) fn draw_markdown_preview(
     // shrinking document doesn't leave the tab scrolled past the end.
     *preview.scroll = state.scroll;
     let hits = markdown_link_hits(preview.wrapped, area, state.scroll);
+    apply_markdown_osc8(f, &hits, preview.source, preview.root);
     if let Some(point) = preview.hover {
         for hit in hits.iter().filter(|hit| {
             point.0 >= hit.rect.x
@@ -207,6 +210,43 @@ pub(super) fn draw_markdown_preview(
         }
     }
     hits
+}
+
+fn apply_markdown_osc8(
+    f: &mut Frame,
+    hits: &[crate::app::MarkdownLinkHit],
+    source: &Path,
+    root: &Path,
+) {
+    use std::num::NonZeroU16;
+
+    use ratatui::buffer::CellDiffOption;
+
+    for hit in hits {
+        let Ok(target) = crate::links::resolve(&hit.target, source, root) else {
+            continue;
+        };
+        let Some(uri) = target.osc8_uri() else {
+            continue;
+        };
+        let mut x = hit.rect.x;
+        while x < hit.rect.right() {
+            let Some(cell) = f.buffer_mut().cell_mut((x, hit.rect.y)) else {
+                break;
+            };
+            let symbol = cell.symbol().to_string();
+            let width = u16::try_from(symbol.width()).unwrap_or(u16::MAX).max(1);
+            cell.set_symbol(&osc8_symbol(uri, &symbol));
+            if let Some(width) = NonZeroU16::new(width) {
+                cell.set_diff_option(CellDiffOption::ForcedWidth(width));
+            }
+            x = x.saturating_add(width);
+        }
+    }
+}
+
+pub(super) fn osc8_symbol(uri: &str, symbol: &str) -> String {
+    format!("\u{1b}]8;;{uri}\u{1b}\\{symbol}\u{1b}]8;;\u{1b}\\")
 }
 
 /// Map the link spans visible in `area` to screen-space hit regions.

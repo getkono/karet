@@ -23,6 +23,14 @@ fn markdown_link_hits_follow_wrapping_scrolling_and_wide_text() {
 }
 
 #[test]
+fn osc8_link_cells_are_self_contained() {
+    assert_eq!(
+        osc8_symbol("https://example.com", "x"),
+        "\u{1b}]8;;https://example.com\u{1b}\\x\u{1b}]8;;\u{1b}\\"
+    );
+}
+
+#[test]
 fn breadcrumb_spans_map_segments_and_leave_separator_gaps_unmapped() {
     let components = vec!["/".to_string(), "home".to_string(), "u".to_string()];
     let spans = breadcrumb_segment_spans(&components);

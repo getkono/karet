@@ -77,6 +77,7 @@ crossterm = "0.29.0"
 # `karet-image` once that system dependency is acceptable.
 unicode-width = "0.2.2"
 unicode-segmentation = "1.13.3"
+url = "2.5.8"
 # Text / rope
 ropey    = "1.6.1"
 memmap2  = "0.9.11"

@@ -2982,6 +2982,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-width",
+ "url",
  "zip",
 ]
 

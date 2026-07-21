@@ -133,6 +133,73 @@ impl App {
         true
     }
 
+    /// Activate a Markdown link only for the explicit Ctrl/Cmd-click gesture.
+    pub(super) fn handle_markdown_link_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            || !mouse
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER)
+        {
+            return false;
+        }
+        let point = (mouse.column, mouse.row);
+        let Some(target) = self
+            .markdown_link_hits
+            .iter()
+            .find(|hit| rect_contains(hit.rect, point))
+            .map(|hit| hit.target.clone())
+        else {
+            return false;
+        };
+        let Some(source) = self
+            .tabs
+            .get(self.active)
+            .and_then(Tab::path)
+            .map(Path::to_path_buf)
+        else {
+            return false;
+        };
+
+        match crate::links::resolve(&target, &source, &self.root) {
+            Ok(crate::links::LinkTarget::ExternalUrl(url)) => {
+                if let Err(error) = crate::links::open_external(&url) {
+                    self.notify(
+                        Severity::Error,
+                        NotificationKind::System,
+                        format!("could not open link: {error}"),
+                    );
+                }
+            },
+            Ok(crate::links::LinkTarget::WorkspaceFile { path, .. }) => {
+                self.open_markdown_file_link(&path);
+            },
+            Ok(crate::links::LinkTarget::OutsideWorkspaceFile(path)) => {
+                self.overlay = Some(Overlay::text(
+                    "Type open to open a file outside this workspace",
+                    TextPurpose::ConfirmOutsideWorkspaceLink { path },
+                ));
+            },
+            Err(error) => self.notify(
+                Severity::Warning,
+                NotificationKind::System,
+                format!("link blocked: {error}"),
+            ),
+        }
+        true
+    }
+
+    pub(super) fn open_markdown_file_link(&mut self, path: &Path) {
+        if path.is_file() {
+            self.open_path(path);
+        } else {
+            self.notify(
+                Severity::Warning,
+                NotificationKind::Io,
+                format!("linked file does not exist: {}", path.display()),
+            );
+        }
+    }
+
     /// Handle mouse interaction with an open context menu.
     pub(super) fn handle_context_menu_mouse(&mut self, mouse: MouseEvent) -> bool {
         let Some(menu) = self.context_menu.as_ref() else {
@@ -301,6 +368,9 @@ impl App {
             return;
         }
         if self.handle_blame_mouse(mouse) {
+            return;
+        }
+        if self.handle_markdown_link_mouse(mouse) {
             return;
         }
         let point = (mouse.column, mouse.row);
