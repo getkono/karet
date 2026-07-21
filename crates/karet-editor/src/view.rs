@@ -1,7 +1,8 @@
+use std::ops::RangeInclusive;
+
 use super::text::*;
 use super::visual::*;
 use super::*;
-use std::ops::RangeInclusive;
 
 /// The editor widget: a builder over the buffer and the (borrowed) data layers
 /// the application supplies. Render it as a ratatui [`StatefulWidget`] with an
@@ -257,6 +258,11 @@ impl Editor<'_> {
                 break;
             }
             let mut style = token_style(line_start + boff, hl, theme, default_fg);
+            if let Some(color) = self.diagnostic_underline(l, col, theme) {
+                style = style
+                    .underline_color(color.to_ratatui())
+                    .add_modifier(Modifier::UNDERLINED);
+            }
             let bg = if in_any(selections, l, col) {
                 Some(theme.role(ThemeRole::Selection))
             } else {
@@ -288,6 +294,25 @@ impl Editor<'_> {
         if let Some(prev) = run_style {
             spans.push(Span::styled(run, prev));
         }
+    }
+
+    /// Warning/error diagnostics use a colored underline while preserving syntax
+    /// foreground and selection backgrounds. Terminals supporting styled underline
+    /// rendering present this as their native diagnostic underline.
+    fn diagnostic_underline(&self, line: u32, col: u32, theme: &Theme) -> Option<Rgba> {
+        self.diagnostics
+            .iter()
+            .filter(|diagnostic| col_in_range(line, col, diagnostic.range))
+            .min_by_key(|diagnostic| diagnostic.severity)
+            .map(|diagnostic| {
+                theme.role(match diagnostic.severity {
+                    Severity::Error => ThemeRole::DiagnosticError,
+                    Severity::Warning => ThemeRole::DiagnosticWarning,
+                    Severity::Information => ThemeRole::DiagnosticInfo,
+                    Severity::Hint => ThemeRole::DiagnosticHint,
+                    _ => ThemeRole::DiagnosticInfo,
+                })
+            })
     }
 
     /// Draw the caret at buffer position `at` as a reversed cell, when it falls within
