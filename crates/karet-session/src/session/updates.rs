@@ -1,5 +1,6 @@
-use super::*;
 use karet_core::Symbol;
+
+use super::*;
 
 impl Session {
     /// The session's configuration (workspace roots, format-on-save, spell-check).
@@ -21,6 +22,11 @@ impl Session {
     /// Take the highlight worker's result stream, to be driven by the actor.
     pub(crate) fn take_highlights(&mut self) -> Option<mpsc::UnboundedReceiver<HighlightResult>> {
         self.highlight_rx.take()
+    }
+
+    /// Take the spell worker's result stream, to be driven by the actor.
+    pub(crate) fn take_spell_results(&mut self) -> Option<mpsc::UnboundedReceiver<SpellResult>> {
+        self.spell_rx.take()
     }
 
     /// Take the LSP tasks' result stream, to be driven by the actor.
@@ -177,6 +183,92 @@ impl Session {
         doc.semantic_blocks = result.semantic_blocks;
         doc.error_lines = result.error_lines;
         self.publish(result.doc, None);
+        self.schedule_spell(result.doc);
+    }
+
+    /// Queue the current token model after highlighting has settled. Disabled or
+    /// unsupported settings clear only spell diagnostics, leaving other producers intact.
+    pub(crate) fn schedule_spell(&mut self, doc_id: DocumentId) {
+        let Some(doc) = self.store.docs.get(&doc_id) else {
+            return;
+        };
+        let Some(spelling_language) = doc.settings.spelling_language else {
+            self.clear_spell_diagnostics(doc_id);
+            return;
+        };
+        let job = SpellJob {
+            doc: doc_id,
+            version: doc.buffer.version(),
+            language: doc.language,
+            spelling_language,
+            text: doc.buffer.text(),
+            highlights: doc.highlights.clone(),
+            syntax_error_lines: doc.error_lines.clone(),
+            settings: self.config.settings.spellcheck.clone(),
+        };
+        if self.spell_tx.send(job).is_err() {
+            self.clear_spell_diagnostics(doc_id);
+        }
+    }
+
+    /// Adopt one versioned spell result and publish the complete spell layer.
+    pub(crate) fn apply_spell_result(&mut self, result: SpellResult) {
+        let Some(doc) = self.store.docs.get_mut(&result.doc) else {
+            return;
+        };
+        if doc.buffer.version() != result.version {
+            return;
+        }
+        if let Some(error) = result.error {
+            if self.spell_errors.get(&result.doc) != Some(&error) {
+                self.spell_errors.insert(result.doc, error.clone());
+                self.emit(
+                    None,
+                    Event::Notification {
+                        severity: Severity::Warning,
+                        kind: NotificationKind::System,
+                        message: error,
+                    },
+                );
+            }
+        } else {
+            self.spell_errors.remove(&result.doc);
+        }
+        let Some(doc) = self.store.docs.get_mut(&result.doc) else {
+            return;
+        };
+        if doc.spell_diagnostics == result.diagnostics {
+            return;
+        }
+        doc.spell_diagnostics = result.diagnostics.clone();
+        self.emit(
+            None,
+            Event::DiagnosticsPublished {
+                doc: result.doc,
+                diagnostics: result.diagnostics,
+            },
+        );
+    }
+
+    fn clear_spell_diagnostics(&mut self, doc_id: DocumentId) {
+        self.spell_errors.remove(&doc_id);
+        let changed = self.store.docs.get_mut(&doc_id).is_some_and(|doc| {
+            if doc.spell_diagnostics.is_empty() {
+                false
+            } else {
+                doc.spell_diagnostics.clear();
+                true
+            }
+        });
+        if changed {
+            self.emit(
+                None,
+                Event::DiagnosticsPublished {
+                    doc: doc_id,
+                    diagnostics: Vec::new(),
+                },
+            );
+        }
     }
 
     /// React to a debounced filesystem event by reloading or flagging any open
@@ -268,8 +360,14 @@ impl Session {
         // document from scratch so both global and selector changes take effect.
         let settings = &self.config.settings;
         let highlight_tx = &self.highlight_tx;
+        let mut spell_without_syntax = Vec::new();
         for (&doc_id, doc) in &mut self.store.docs {
-            update_syntax(settings, highlight_tx, doc_id, doc, None);
+            if update_syntax(settings, highlight_tx, doc_id, doc, None) {
+                spell_without_syntax.push(doc_id);
+            }
+        }
+        for doc_id in spell_without_syntax {
+            self.schedule_spell(doc_id);
         }
 
         if lsp_changed {
@@ -330,6 +428,7 @@ impl Session {
                     },
                 );
                 self.publish(doc_id, None);
+                self.schedule_spell(doc_id);
             }
         }
     }

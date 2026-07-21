@@ -31,6 +31,7 @@ mod highlight;
 pub mod local;
 mod lsp;
 pub mod session;
+mod spell;
 mod vcs_worker;
 pub mod viz;
 
@@ -47,6 +48,7 @@ pub use api::PullRequestSummary;
 pub use api::RangeSpec;
 pub use api::RepositorySnapshot;
 pub use api::RequestId;
+pub use api::SpellingLanguage;
 pub use api::SwapInfo;
 pub use api::VcsAction;
 pub use api::VcsOutcome;

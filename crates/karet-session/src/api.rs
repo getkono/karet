@@ -54,6 +54,8 @@ pub struct DocumentSettings {
     pub line_ending: Option<DocumentLineEnding>,
     /// Explicit text-encoding override, or `None` to preserve the detected encoding.
     pub encoding: Option<DocumentEncoding>,
+    /// Active spell-check dictionary after settings and EditorConfig resolution.
+    pub spelling_language: Option<SpellingLanguage>,
 }
 
 impl Default for DocumentSettings {
@@ -66,6 +68,49 @@ impl Default for DocumentSettings {
             insert_final_newline: true,
             line_ending: None,
             encoding: None,
+            spelling_language: None,
+        }
+    }
+}
+
+/// A bundled spell-check behavior supported by karet.
+///
+/// The dictionary files themselves are discovered at runtime so the application
+/// package stays small; this enum deliberately keeps the supported locale set narrow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SpellingLanguage {
+    /// American English (`en_US`).
+    EnglishUnitedStates,
+    /// British English (`en_GB`).
+    EnglishUnitedKingdom,
+}
+
+impl SpellingLanguage {
+    /// Parse an EditorConfig/BCP-47 or Hunspell spelling locale.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().replace('_', "-").to_ascii_lowercase().as_str() {
+            "en" | "en-us" => Some(Self::EnglishUnitedStates),
+            "en-gb" => Some(Self::EnglishUnitedKingdom),
+            _ => None,
+        }
+    }
+
+    /// Hunspell dictionary basename.
+    #[must_use]
+    pub const fn locale(self) -> &'static str {
+        match self {
+            Self::EnglishUnitedStates => "en_US",
+            Self::EnglishUnitedKingdom => "en_GB",
+        }
+    }
+
+    /// Human-readable status-bar label.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::EnglishUnitedStates => "English (US)",
+            Self::EnglishUnitedKingdom => "English (UK)",
         }
     }
 }
@@ -904,7 +949,17 @@ mod tests {
                 insert_final_newline: true,
                 line_ending: None,
                 encoding: None,
+                spelling_language: None,
             }
         );
+        assert_eq!(
+            SpellingLanguage::parse("en-GB").map(SpellingLanguage::display_name),
+            Some("English (UK)")
+        );
+        assert_eq!(
+            SpellingLanguage::parse("en_US").map(SpellingLanguage::locale),
+            Some("en_US")
+        );
+        assert!(SpellingLanguage::parse("fr_FR").is_none());
     }
 }

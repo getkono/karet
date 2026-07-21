@@ -184,7 +184,7 @@ impl Session {
     /// Reload a clean document from disk (history reset, version bumped), then emit
     /// [`Event::Reloaded`] and publish the fresh snapshot.
     pub(super) fn reload(&mut self, doc_id: DocumentId) {
-        let version = {
+        let (version, spell_without_syntax) = {
             let highlight_tx = &self.highlight_tx;
             let settings = &self.config.settings;
             let lsp = &mut self.lsp;
@@ -198,12 +198,12 @@ impl Session {
             apply_serialization_settings(&mut doc.buffer, doc.settings);
             // The buffer was replaced wholesale, so the worker's retained tree is void:
             // `None` edits force it to start over.
-            update_syntax(settings, highlight_tx, doc_id, doc, None);
+            let spell_without_syntax = update_syntax(settings, highlight_tx, doc_id, doc, None);
             // The on-disk content is the new truth; keep the server in sync.
             lsp.document_changed(doc.language, &doc.path, doc.buffer.version(), || {
                 doc.buffer.text()
             });
-            doc.buffer.version()
+            (doc.buffer.version(), spell_without_syntax)
         };
         self.emit(
             None,
@@ -213,6 +213,9 @@ impl Session {
             },
         );
         self.publish(doc_id, None);
+        if spell_without_syntax {
+            self.schedule_spell(doc_id);
+        }
     }
 
     // --- helpers ----------------------------------------------------------

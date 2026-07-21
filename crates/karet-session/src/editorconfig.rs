@@ -7,12 +7,14 @@ use ec4rs::property::EndOfLine;
 use ec4rs::property::FinalNewline;
 use ec4rs::property::IndentSize;
 use ec4rs::property::IndentStyle;
+use ec4rs::property::SpellingLanguage as EditorConfigSpellingLanguage;
 use ec4rs::property::TabWidth;
 use ec4rs::property::TrimTrailingWs;
 
 use crate::api::DocumentEncoding;
 use crate::api::DocumentLineEnding;
 use crate::api::DocumentSettings;
+use crate::api::SpellingLanguage;
 use crate::config::Settings;
 use crate::config::schema::Eol;
 
@@ -28,6 +30,11 @@ pub(crate) fn resolve(
     properties.use_fallbacks();
 
     apply(&mut resolved, &properties);
+    // EditorConfig selects the dictionary for projects that opt in globally; it
+    // must not silently turn the feature on for an otherwise opted-out user.
+    if !settings.spellcheck.enabled {
+        resolved.spelling_language = None;
+    }
     Ok(resolved)
 }
 
@@ -46,6 +53,11 @@ pub(crate) fn defaults(language: Option<&str>, settings: &Settings) -> DocumentS
             Eol::Crlf => Some(DocumentLineEnding::Crlf),
         },
         encoding: None,
+        spelling_language: settings
+            .spellcheck
+            .enabled
+            .then(|| SpellingLanguage::parse(&settings.spellcheck.language))
+            .flatten(),
     }
 }
 
@@ -90,6 +102,11 @@ fn apply(resolved: &mut DocumentSettings, properties: &ec4rs::Properties) {
             // values and therefore do not override the detected encoding.
             Charset::Latin1 | Charset::Utf16Le | Charset::Utf16Be => resolved.encoding,
         };
+    }
+    if let Ok(EditorConfigSpellingLanguage::Value(language)) =
+        properties.get::<EditorConfigSpellingLanguage>()
+    {
+        resolved.spelling_language = SpellingLanguage::parse(&language.to_string());
     }
 }
 
@@ -152,6 +169,7 @@ mod tests {
                 insert_final_newline: false,
                 line_ending: Some(DocumentLineEnding::Crlf),
                 encoding: Some(DocumentEncoding::Utf8Bom),
+                spelling_language: None,
             }
         );
         Ok(())
@@ -172,6 +190,44 @@ mod tests {
             .unwrap_or_default();
 
         assert!(error.contains(".editorconfig:2"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn spelling_language_overrides_enabled_application_default()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("notes.md");
+        std::fs::write(&file, "text\n")?;
+        std::fs::write(
+            dir.path().join(".editorconfig"),
+            "root = true\n[*.md]\nspelling_language = en-GB\n",
+        )?;
+        let mut settings = Settings::default();
+        settings.spellcheck.enabled = true;
+
+        let resolved = resolve(&file, Some("Markdown"), &settings)?;
+
+        assert_eq!(
+            resolved.spelling_language,
+            Some(SpellingLanguage::EnglishUnitedKingdom)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn spelling_language_does_not_enable_spellcheck() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("notes.md");
+        std::fs::write(&file, "text\n")?;
+        std::fs::write(
+            dir.path().join(".editorconfig"),
+            "root = true\n[*.md]\nspelling_language = en-GB\n",
+        )?;
+
+        let resolved = resolve(&file, Some("Markdown"), &Settings::default())?;
+
+        assert_eq!(resolved.spelling_language, None);
         Ok(())
     }
 }

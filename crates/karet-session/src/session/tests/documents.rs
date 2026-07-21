@@ -86,6 +86,83 @@
     }
 
     #[test]
+    fn spell_results_publish_only_for_the_current_document_version() {
+        let Some((_dir, path)) = write_temp("notes.md", "hello wrld\n") else {
+            return;
+        };
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path,
+                language: None,
+            },
+        );
+        let Some(doc) = opened_doc(&mut events) else {
+            return;
+        };
+        let Some(version) = session.document(doc).map(|view| view.version()) else {
+            return;
+        };
+        let diagnostic = karet_core::Diagnostic {
+            range: Range {
+                start: LineCol::new(0, 6),
+                end: LineCol::new(0, 10),
+            },
+            severity: Severity::Warning,
+            message: "Unknown word “wrld”".to_owned(),
+            source: Some("karet-spell".to_owned()),
+            code: Some("en_US".to_owned()),
+            tags: Vec::new(),
+            related: Vec::new(),
+        };
+
+        session.apply_spell_result(SpellResult {
+            doc,
+            version: version.saturating_add(1),
+            diagnostics: vec![diagnostic.clone()],
+            error: None,
+        });
+        assert!(
+            events.try_recv().is_none(),
+            "a result for a different version is stale"
+        );
+
+        session.apply_spell_result(SpellResult {
+            doc,
+            version,
+            diagnostics: vec![diagnostic.clone()],
+            error: None,
+        });
+        let published = events.try_recv().map(|(_, event)| event);
+        assert!(matches!(
+            published,
+            Some(Event::DiagnosticsPublished {
+                doc: published_doc,
+                diagnostics,
+            }) if published_doc == doc && diagnostics == vec![diagnostic]
+        ));
+    }
+
+    #[test]
+    fn unsupported_spell_language_is_reported_instead_of_silently_disabling() {
+        let mut settings = crate::config::Settings::default();
+        settings.spellcheck.enabled = true;
+        settings.spellcheck.language = "fr_FR".to_owned();
+
+        let (resolved, error) = resolve_document_settings(
+            std::path::Path::new("notes.md"),
+            Some("Markdown"),
+            &settings,
+        );
+
+        assert_eq!(resolved.spelling_language, None);
+        assert!(error.is_some_and(|message| {
+            message.contains("en_US") && message.contains("en_GB")
+        }));
+    }
+
+    #[test]
     fn editorconfig_settings_are_reported_and_applied_on_save() {
         let Some((dir, path)) = write_temp("main.rs", "let x = 1;  \n") else {
             return;

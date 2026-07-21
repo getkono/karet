@@ -667,7 +667,7 @@ impl Default for Search {
     }
 }
 
-/// `spellcheck.*` — spell-checking of comments and strings.
+/// `spellcheck.*` — spell-checking of prose and selected source-code tokens.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Spellcheck {
@@ -677,6 +677,16 @@ pub struct Spellcheck {
     pub language: String,
     /// Extra words treated as correctly spelled.
     pub words: Vec<String>,
+    /// Check prose-oriented editable documents such as Markdown.
+    pub documents: bool,
+    /// Check comments in source code.
+    pub comments: bool,
+    /// Check string literals in source code.
+    pub strings: bool,
+    /// Check identifier-like syntax tokens when the file parses cleanly.
+    pub identifiers: bool,
+    /// Quiet period after the latest token update before checking.
+    pub debounce_ms: u64,
 }
 
 impl Default for Spellcheck {
@@ -685,6 +695,11 @@ impl Default for Spellcheck {
             enabled: false,
             language: "en_US".to_string(),
             words: Vec::new(),
+            documents: true,
+            comments: true,
+            strings: false,
+            identifiers: false,
+            debounce_ms: 500,
         }
     }
 }
@@ -809,6 +824,12 @@ mod tests {
         assert_eq!(s.workbench.color_theme, "dark");
         assert!(s.search.smart_case);
         assert!(!s.spellcheck.enabled);
+        assert_eq!(s.spellcheck.language, "en_US");
+        assert!(s.spellcheck.documents);
+        assert!(s.spellcheck.comments);
+        assert!(!s.spellcheck.strings);
+        assert!(!s.spellcheck.identifiers);
+        assert_eq!(s.spellcheck.debounce_ms, 500);
         assert!(s.git.decorations);
         assert!(s.editor.semantic_comments.enabled);
         assert!(s.lsp.enabled, "LSP is on by default (issue #57)");
