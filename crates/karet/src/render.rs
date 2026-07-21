@@ -199,6 +199,7 @@ pub fn unified_lines(file: &FileView, theme: &Theme) -> Vec<Line<'static>> {
             "  (binary file changed)",
             dim_style(theme),
         )));
+        lines.push(Line::default());
         return lines;
     }
     for hunk in &file.diff.hunks {
@@ -240,6 +241,7 @@ pub fn unified_lines(file: &FileView, theme: &Theme) -> Vec<Line<'static>> {
             }
         }
     }
+    lines.push(Line::default());
     lines
 }
 
@@ -255,6 +257,8 @@ pub fn side_by_side_lines(
             "  (binary file changed)",
             dim_style(theme),
         )));
+        right.push(Line::default());
+        left.push(Line::default());
         right.push(Line::default());
         return (left, right);
     }
@@ -287,6 +291,8 @@ pub fn side_by_side_lines(
             ));
         }
     }
+    left.push(Line::default());
+    right.push(Line::default());
     (left, right)
 }
 
@@ -655,6 +661,29 @@ mod tests {
         let (left, right) = side_by_side_lines(&fv, &Theme::dark());
         assert_eq!(left.len(), right.len());
         assert!(!left.is_empty());
+        assert!(left.last().is_some_and(|line| line.spans.is_empty()));
+        assert!(right.last().is_some_and(|line| line.spans.is_empty()));
+        assert!(
+            left.get(left.len().saturating_sub(2))
+                .is_some_and(|line| !line.spans.is_empty())
+        );
+    }
+
+    #[test]
+    fn unified_diff_ends_with_exactly_one_empty_line() {
+        let fv = FileView::new(
+            change("x.rs", "before\n", "after\n"),
+            Section::Working,
+            false,
+        );
+        let lines = unified_lines(&fv, &Theme::dark());
+
+        assert!(lines.last().is_some_and(|line| line.spans.is_empty()));
+        assert!(
+            lines
+                .get(lines.len().saturating_sub(2))
+                .is_some_and(|line| !line.spans.is_empty())
+        );
     }
 
     #[test]
