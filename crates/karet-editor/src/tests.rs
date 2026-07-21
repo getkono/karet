@@ -195,6 +195,24 @@ fn word_wrap_renders_continuations_and_maps_clicks() {
 }
 
 #[test]
+fn selected_lines_stay_on_one_row_when_soft_wrap_is_enabled() {
+    let buffer = TextBuffer::from_text("head\n| a very long table row |\ntail");
+    let mut state = EditorState::new();
+    let area = Rect::new(0, 0, 10, 3); // 3-cell gutter, 7 content cells.
+    let mut buf = Buffer::empty(area);
+    Editor::new(&buffer)
+        .word_wrap(true)
+        .unwrapped_lines(&[1..=1])
+        .render(area, &mut buf, &mut state);
+
+    let row: String = (0..area.width)
+        .map(|x| buf[(x, 2)].symbol().chars().next().unwrap_or(' '))
+        .collect();
+    assert!(row.contains("tail"));
+    assert_eq!(state.pos_at(area, &buffer, &[], 4, 2).line, 2);
+}
+
+#[test]
 fn configured_tab_width_controls_rendering_caret_and_click_geometry() {
     let buffer = TextBuffer::from_text("\tX");
     let mut state = EditorState::new();
@@ -453,6 +471,29 @@ fn set_carets_preserves_count_and_merges_coincident() {
     state.set_carets(&[LineCol::new(3, 3), LineCol::new(3, 3)]);
     assert!(!state.has_multiple_cursors());
     assert_eq!(state.cursor(), LineCol::new(3, 3));
+}
+
+#[test]
+fn set_cursor_state_preserves_selections_and_clamps_endpoints() {
+    let buffer = TextBuffer::from_text("abc\nx");
+    let mut state = EditorState::new();
+    state.set_cursor_state(
+        &buffer,
+        CursorState {
+            selections: vec![Selection {
+                anchor: LineCol::new(0, 1),
+                head: LineCol::new(9, 9),
+            }],
+            primary: 7,
+        },
+    );
+    assert_eq!(
+        state.cursors().primary(),
+        Selection {
+            anchor: LineCol::new(0, 1),
+            head: LineCol::new(1, 1),
+        }
+    );
 }
 
 #[test]
