@@ -107,6 +107,10 @@ fn unfocused_active_tab_prefix_stays_muted_without_fill() {
     let theme = Theme::dark();
     let base = tab_text_style(&theme, true, false, false);
 
+    assert_eq!(
+        base.fg,
+        Some(theme.role(ThemeRole::DiagnosticInfo).to_ratatui())
+    );
     let prefix = tab_prefix_style(&theme, base, true, false);
 
     assert_eq!(prefix.fg, Some(theme.role(ThemeRole::Muted).to_ratatui()));
