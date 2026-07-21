@@ -49,6 +49,7 @@ use karet_vcs::StatusKind;
 use karet_widgets::CompletionPopup;
 use karet_widgets::Corner;
 use karet_widgets::FileTree;
+use karet_widgets::SplitAxis;
 use karet_widgets::Toasts;
 use karet_widgets::UiIcon;
 use panes::*;

@@ -114,6 +114,44 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
             commit_file_hits: rendered.commit_file_hits,
         });
     }
+    app.pane_dividers = app.layout.dividers(area);
+    for divider in app.pane_dividers.iter().copied() {
+        let emphasized = app.pane_divider_hover == Some(divider)
+            || app.pane_resize.is_some_and(|resize| {
+                resize.divider.axis == divider.axis
+                    && resize.divider.before == divider.before
+                    && resize.divider.after == divider.after
+            });
+        let role = if emphasized {
+            ThemeRole::LineNumberActive
+        } else {
+            ThemeRole::IndentGuide
+        };
+        let style = Style::default().fg(theme.role(role).to_ratatui());
+        match divider.axis {
+            SplitAxis::Cols => {
+                for y in divider.start..divider.end {
+                    f.buffer_mut().set_string(divider.position, y, "│", style);
+                }
+            },
+            SplitAxis::Rows => {
+                let style = if emphasized {
+                    style.bg(theme.role(ThemeRole::HoverHighlight).to_ratatui())
+                } else {
+                    style.add_modifier(Modifier::UNDERLINED)
+                };
+                f.buffer_mut().set_style(
+                    Rect::new(
+                        divider.start,
+                        divider.position,
+                        divider.end.saturating_sub(divider.start),
+                        1,
+                    ),
+                    style,
+                );
+            },
+        }
+    }
 }
 
 /// Render one pane into `area`: its tab strip, optional breadcrumb, an optional find

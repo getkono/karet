@@ -1,6 +1,13 @@
 use super::*;
 
 impl App {
+    /// Grow the focused pane toward `dir` by the keyboard resize step.
+    pub(super) fn resize_focused_pane(&mut self, dir: SplitDir) {
+        const STEP: u16 = 2;
+        self.layout
+            .resize_pane(self.focus_pane(), dir, STEP, self.main_rect);
+    }
+
     /// While dragging, move the active tab under column `x` within the focused pane.
     pub(super) fn drag_tab_to(&mut self, x: u16) {
         let focused = self.focus_pane();
