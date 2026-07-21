@@ -80,6 +80,13 @@ installing an `en_US` or `en_GB` Hunspell dictionary; the
 [configuration guide](docs/configuration.md#spellcheck) documents dictionary lookup,
 EditorConfig selection, scopes, and package-size tradeoffs.
 
+LaTeX source has tree-sitter highlighting and an external-tool workflow: install
+`latexmk`, then run **LaTeX: Build and Open PDF Preview** from the command palette.
+The pending preview opens immediately and fills with the generated PDF. Root-file
+comments, custom recipes, build-on-save, timeouts, and optional `texlab` language
+features are covered in the [LaTeX settings](docs/configuration.md#latex); no TeX
+runtime is bundled with karet.
+
 ## Development
 
 | Command             | Description          |
