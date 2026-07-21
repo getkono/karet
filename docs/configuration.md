@@ -127,9 +127,32 @@ selector, the normal layer precedence still applies. Arrays such as `rulers` and
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `enabled` | bool | `false` | Spell-check comments and strings. |
-| `language` | string | `"en_US"` | Dictionary language. |
+| `enabled` | bool | `false` | Opt in to spell-checking for editable files. |
+| `language` | string | `"en_US"` | Dictionary language: `en_US` or `en_GB`. |
 | `words` | string[] | `[]` | Extra correctly-spelled words. |
+| `documents` | bool | `true` | Check prose in Markdown, plain text, reStructuredText, AsciiDoc, and TeX. |
+| `comments` | bool | `true` | Check comments and documentation prose in source files. |
+| `strings` | bool | `false` | Check source-code string literals. |
+| `identifiers` | bool | `false` | Check class/type, function, method, and property names while the file parses cleanly. |
+| `debounceMs` | number | `500` | Quiet period after the latest token update before checking (clamped to 50–5000 ms). |
+
+Spellcheck uses system Hunspell dictionaries at runtime rather than bundling them in
+the binary. This keeps the optional feature small. Install both the `.aff` and `.dic`
+files for the selected locale in your platform's Hunspell directory, set `DICPATH`, or
+copy them into karet's platform data directory under `dictionaries/`. The status bar
+shows `English (US)` or `English (UK)` beside the detected file language when active.
+
+A repository can choose between the supported dictionaries without opting users in:
+
+```ini
+# .editorconfig
+[*.md]
+spelling_language = en-GB
+```
+
+The `spelling_language` property is applied only when `spellcheck.enabled` is `true`.
+URLs, email-like text, numeric/qualified identifiers, code spans, links, and likely
+proper names are ignored. Warnings are token-ranged and preserve syntax colours.
 
 ### `git`
 
