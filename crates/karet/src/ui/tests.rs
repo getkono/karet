@@ -7,6 +7,22 @@ fn a_markdown_preview_is_inset_from_its_pane_on_every_side() {
 }
 
 #[test]
+fn markdown_link_hits_follow_wrapping_scrolling_and_wide_text() {
+    let wrapped = karet_markdown::parse("[日本語 link](docs/readme.md)\n\nplain\n").wrap(8);
+    let hits = markdown_link_hits(&wrapped, Rect::new(10, 5, 8, 2), 0);
+    assert!(!hits.is_empty());
+    assert!(hits.iter().all(|hit| hit.target == "docs/readme.md"));
+    assert!(
+        hits.iter()
+            .all(|hit| hit.rect.x >= 10 && hit.rect.right() <= 18)
+    );
+    assert!(hits.iter().any(|hit| hit.rect.width >= 6));
+
+    let scrolled = markdown_link_hits(&wrapped, Rect::new(10, 5, 8, 1), 2);
+    assert!(scrolled.is_empty());
+}
+
+#[test]
 fn breadcrumb_spans_map_segments_and_leave_separator_gaps_unmapped() {
     let components = vec!["/".to_string(), "home".to_string(), "u".to_string()];
     let spans = breadcrumb_segment_spans(&components);

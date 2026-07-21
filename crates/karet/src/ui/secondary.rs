@@ -160,28 +160,91 @@ pub(super) fn markdown_preview_rect(area: Rect) -> Rect {
 ///
 /// Caching here rather than on every snapshot is what keeps typing cheap: a burst of
 /// keystrokes lands many snapshots but only one draw, so it costs one re-parse.
+pub(super) struct MarkdownPreviewRender<'a> {
+    pub(super) buffer: &'a TextBuffer,
+    pub(super) wrapped: &'a mut WrappedDocument,
+    pub(super) rendered: &'a mut Option<(u64, u16)>,
+    pub(super) scroll: &'a mut u16,
+    pub(super) hover: Option<(u16, u16)>,
+}
+
 pub(super) fn draw_markdown_preview(
     f: &mut Frame,
     theme: &Theme,
     area: Rect,
-    buffer: &TextBuffer,
-    wrapped: &mut WrappedDocument,
-    rendered: &mut Option<(u64, u16)>,
-    scroll: &mut u16,
-) {
+    preview: MarkdownPreviewRender<'_>,
+) -> Vec<crate::app::MarkdownLinkHit> {
     // Wrap to the padded width, not the pane's: the cache key follows, so a resize that
     // only moves the padding away still re-wraps exactly once.
     let area = markdown_preview_rect(area);
-    let key = (buffer.version(), area.width);
-    if *rendered != Some(key) {
-        *wrapped = karet_markdown::parse(&buffer.text()).wrap(area.width);
-        *rendered = Some(key);
+    let key = (preview.buffer.version(), area.width);
+    if *preview.rendered != Some(key) {
+        *preview.wrapped = karet_markdown::parse(&preview.buffer.text()).wrap(area.width);
+        *preview.rendered = Some(key);
     }
-    let mut state = MarkdownViewState { scroll: *scroll };
-    f.render_stateful_widget(MarkdownView::new(wrapped, theme), area, &mut state);
+    let mut state = MarkdownViewState {
+        scroll: *preview.scroll,
+    };
+    f.render_stateful_widget(MarkdownView::new(preview.wrapped, theme), area, &mut state);
     // The widget clamps the scroll to the document; keep the clamped value so a
     // shrinking document doesn't leave the tab scrolled past the end.
-    *scroll = state.scroll;
+    *preview.scroll = state.scroll;
+    let hits = markdown_link_hits(preview.wrapped, area, state.scroll);
+    if let Some(point) = preview.hover {
+        for hit in hits.iter().filter(|hit| {
+            point.0 >= hit.rect.x
+                && point.0 < hit.rect.right()
+                && point.1 >= hit.rect.y
+                && point.1 < hit.rect.bottom()
+        }) {
+            for y in hit.rect.y..hit.rect.bottom() {
+                for x in hit.rect.x..hit.rect.right() {
+                    if let Some(cell) = f.buffer_mut().cell_mut((x, y)) {
+                        cell.modifier.insert(Modifier::UNDERLINED);
+                    }
+                }
+            }
+        }
+    }
+    hits
+}
+
+/// Map the link spans visible in `area` to screen-space hit regions.
+pub(super) fn markdown_link_hits(
+    wrapped: &WrappedDocument,
+    area: Rect,
+    scroll: u16,
+) -> Vec<crate::app::MarkdownLinkHit> {
+    let mut hits = Vec::new();
+    for (row, line) in wrapped
+        .lines
+        .iter()
+        .skip(usize::from(scroll))
+        .take(usize::from(area.height))
+        .enumerate()
+    {
+        let y = area
+            .y
+            .saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
+        let mut x = area.x;
+        for span in &line.spans {
+            let width = u16::try_from(span.text.width()).unwrap_or(u16::MAX);
+            let visible = width.min(area.right().saturating_sub(x));
+            if visible > 0
+                && let Some(target) = &span.link
+            {
+                hits.push(crate::app::MarkdownLinkHit {
+                    rect: Rect::new(x, y, visible, 1),
+                    target: target.clone(),
+                });
+            }
+            x = x.saturating_add(width);
+            if x >= area.right() {
+                break;
+            }
+        }
+    }
+    hits
 }
 
 /// The commands shown on the empty-editor welcome screen, with descriptions. As in

@@ -82,6 +82,7 @@ pub(crate) use scm::relative_time;
 use secondary::*;
 use sidebar::*;
 use status::*;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::app::MIN_SCM_REGION;
@@ -234,6 +235,8 @@ struct PaneCtx<'a> {
     blame: Option<Decoration>,
     /// Whether the blame decoration represents an attributed commit.
     blame_clickable: bool,
+    /// Mouse position over a link in this pane, used for hover emphasis.
+    markdown_link_hover: Option<(u16, u16)>,
 }
 
 /// What a rendered pane reported back for hit-testing and image placement.
@@ -247,6 +250,7 @@ struct RenderedPane {
     commit_badge_rect: Option<Rect>,
     commit_file_hits: Vec<crate::app::CommitFileHit>,
     blame_rect: Option<Rect>,
+    markdown_link_hits: Vec<crate::app::MarkdownLinkHit>,
 }
 
 /// Geometry a tab's content reported for post-draw use: a reserved Kitty image rect
@@ -257,6 +261,7 @@ struct PaneContent {
     badge_rect: Option<Rect>,
     file_hits: Vec<crate::app::CommitFileHit>,
     blame_rect: Option<Rect>,
+    markdown_link_hits: Vec<crate::app::MarkdownLinkHit>,
 }
 
 /// A `width`×`height` rect centered within `area`.

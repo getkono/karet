@@ -209,11 +209,15 @@ impl App {
         let over_blame = self
             .blame_rect
             .is_some_and(|rect| rect_contains(rect, (mouse.column, mouse.row)));
+        let over_markdown_link = self
+            .markdown_link_hits
+            .iter()
+            .any(|hit| rect_contains(hit.rect, (mouse.column, mouse.row)));
         let shape = if over_sidebar_divider {
             Some("col-resize")
         } else if over_scm_divider {
             Some("row-resize")
-        } else if over_blame {
+        } else if over_blame || over_markdown_link {
             Some("pointer")
         } else {
             None
@@ -366,6 +370,11 @@ impl App {
                 self.hover = rect_contains(self.sidebar_content_rect, point).then_some(point);
                 self.sidebar_header_hover =
                     (in_sidebar && mouse.row == self.sidebar_rect.y).then_some(point);
+                self.markdown_link_hover = self
+                    .markdown_link_hits
+                    .iter()
+                    .any(|hit| rect_contains(hit.rect, point))
+                    .then_some(point);
             },
             _ => {},
         }

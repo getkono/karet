@@ -23,6 +23,7 @@ pub(super) fn draw_pane_content(
     let mut badge_rect = None;
     let mut file_hits = Vec::new();
     let mut blame_rect = None;
+    let mut markdown_link_hits = Vec::new();
     match &mut tab.kind {
         TabKind::Welcome => draw_welcome(f, theme, area),
         TabKind::Code {
@@ -90,7 +91,20 @@ pub(super) fn draw_pane_content(
             rendered,
             scroll,
             ..
-        } => draw_markdown_preview(f, theme, area, buffer, wrapped, rendered, scroll),
+        } => {
+            markdown_link_hits = draw_markdown_preview(
+                f,
+                theme,
+                area,
+                MarkdownPreviewRender {
+                    buffer,
+                    wrapped,
+                    rendered,
+                    scroll,
+                    hover: ctx.markdown_link_hover,
+                },
+            );
+        },
         TabKind::Diff { file, view, scroll } => draw_diff(f, theme, area, file, *view, scroll),
         TabKind::StashPreview { patch, scroll, .. } => {
             let lines: Vec<Line> = patch
@@ -325,6 +339,7 @@ pub(super) fn draw_pane_content(
         badge_rect,
         file_hits,
         blame_rect,
+        markdown_link_hits,
     }
 }
 
