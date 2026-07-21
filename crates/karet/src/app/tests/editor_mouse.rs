@@ -419,3 +419,45 @@
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn closing_the_last_tab_collapses_its_tile_when_another_remains() {
+        let mut app = app();
+        app.push_tab(code_tab("a.rs"));
+        app.dispatch(Command::SplitRight);
+        assert_eq!(app.layout.pane_count(), 2);
+
+        app.close_tab_at(0);
+
+        assert_eq!(app.layout.pane_count(), 1);
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.tabs[0].title, "a.rs");
+        assert_eq!(app.focus, Focus::Editor);
+    }
+
+    #[test]
+    fn closing_a_welcome_tab_collapses_its_tile_when_another_remains() {
+        let mut app = app();
+        app.push_tab(code_tab("a.rs"));
+        app.dispatch(Command::SplitRight);
+        app.tabs = vec![Tab::welcome()];
+        app.active = 0;
+
+        app.close_tab_at(0);
+
+        assert_eq!(app.layout.pane_count(), 1);
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.tabs[0].title, "a.rs");
+    }
+
+    #[test]
+    fn closing_the_only_panes_last_tab_keeps_one_welcome_tab() {
+        let mut app = app();
+        app.push_tab(code_tab("a.rs"));
+
+        app.close_tab_at(0);
+
+        assert_eq!(app.layout.pane_count(), 1);
+        assert_eq!(app.tabs.len(), 1);
+        assert!(matches!(app.tabs[0].kind, TabKind::Welcome));
+    }
