@@ -382,6 +382,71 @@ pub(super) fn changed_files_lines(
     lines
 }
 
+/// Presentation-neutral input for the shared commit-list renderer.
+pub(super) struct CommitListEntry<'a> {
+    pub(super) hash: &'a str,
+    pub(super) short_hash: &'a str,
+    pub(super) summary: &'a str,
+    pub(super) time: i64,
+    pub(super) parents: &'a [String],
+    pub(super) head: bool,
+}
+
+/// Render the commit rows shared by Source Control, the graph browser, and GitHub
+/// pull-request `Commits`. Keeping the rail/hash/summary/time vocabulary here prevents
+/// those three screens from drifting apart.
+pub(super) fn commit_list_items(
+    theme: &Theme,
+    entries: &[CommitListEntry<'_>],
+    selected: Option<usize>,
+    include_header: bool,
+) -> Vec<ListItem<'static>> {
+    const LANE_COLORS: [Color; 6] = [
+        Color::Cyan,
+        Color::Green,
+        Color::Yellow,
+        Color::Magenta,
+        Color::Blue,
+        Color::Red,
+    ];
+    let lane_style = |lane: u8| Style::default().fg(LANE_COLORS[lane as usize % LANE_COLORS.len()]);
+    let header_style = Style::default()
+        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+        .add_modifier(Modifier::BOLD);
+    let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
+    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let sel_bg = theme.role(ThemeRole::Selection).to_ratatui();
+    let inputs: Vec<LaneInput> = entries
+        .iter()
+        .map(|entry| LaneInput {
+            id: entry.hash.to_string(),
+            parents: entry.parents.to_vec(),
+            head: entry.head,
+        })
+        .collect();
+    let rails = assign_lanes(&inputs);
+    let mut items = Vec::with_capacity(entries.len() + usize::from(include_header));
+    if include_header {
+        items.push(ListItem::new(Line::styled(" COMMITS", header_style)));
+    }
+    for (index, (entry, rail)) in entries.iter().zip(rails.iter()).enumerate() {
+        let mut spans = vec![Span::raw(" ")];
+        spans.extend(render_rail(rail, lane_style).spans);
+        spans.push(Span::styled(format!(" {} ", entry.short_hash), hash_style));
+        spans.push(Span::raw(entry.summary.to_string()));
+        spans.push(Span::styled(
+            format!("  {}", relative_time(entry.time)),
+            dim,
+        ));
+        let mut line = Line::from(spans);
+        if selected == Some(index) {
+            line = line.style(Style::default().bg(sel_bg));
+        }
+        items.push(ListItem::new(line));
+    }
+    items
+}
+
 /// Render one file's diff as a boxed "card": a top rule carrying the status glyph, the
 /// path (and the old path for renames), and the `+a −b` stats; each diff line prefixed
 /// with a left rail; then a bottom rule. `width` sizes the rules (a small floor keeps a
@@ -510,49 +575,20 @@ pub(super) fn draw_commit_graph(
     let (list_area, detail_area) = (cols[0], cols[2]);
     f.render_widget(Block::new().borders(Borders::LEFT), cols[1]);
 
-    // Left: the DAG commit list (same rail palette as the SCM sidebar log).
-    const LANE_COLORS: [Color; 6] = [
-        Color::Cyan,
-        Color::Green,
-        Color::Yellow,
-        Color::Magenta,
-        Color::Blue,
-        Color::Red,
-    ];
-    let lane_style = |lane: u8| Style::default().fg(LANE_COLORS[lane as usize % LANE_COLORS.len()]);
-    let header_style = Style::default()
-        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
-        .add_modifier(Modifier::BOLD);
-    let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
     let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
-    let sel_bg = theme.role(ThemeRole::Selection).to_ratatui();
-
-    let inputs: Vec<LaneInput> = commits
+    let entries: Vec<CommitListEntry<'_>> = commits
         .iter()
         .enumerate()
-        .map(|(i, c)| LaneInput {
-            id: c.hash.clone(),
-            parents: c.parents.clone(),
+        .map(|(i, commit)| CommitListEntry {
+            hash: &commit.hash,
+            short_hash: &commit.short_hash,
+            summary: &commit.summary,
+            time: commit.time,
+            parents: &commit.parents,
             head: i == 0,
         })
         .collect();
-    let rails = assign_lanes(&inputs);
-    let mut items: Vec<ListItem> = vec![ListItem::new(Line::styled(" COMMITS", header_style))];
-    for (i, (commit, rail)) in commits.iter().zip(rails.iter()).enumerate() {
-        let mut spans = vec![Span::raw(" ")];
-        spans.extend(render_rail(rail, lane_style).spans);
-        spans.push(Span::styled(format!(" {} ", commit.short_hash), hash_style));
-        spans.push(Span::raw(commit.summary.clone()));
-        spans.push(Span::styled(
-            format!("  {}", relative_time(commit.time)),
-            dim,
-        ));
-        let mut line = Line::from(spans);
-        if i == selected {
-            line = line.style(Style::default().bg(sel_bg));
-        }
-        items.push(ListItem::new(line));
-    }
+    let mut items = commit_list_items(theme, &entries, Some(selected), true);
     if loading && commits.is_empty() && loading_since.is_some_and(loading_visible) {
         items.push(ListItem::new(Line::styled(" loading\u{2026}", dim)));
     } else if has_more {
