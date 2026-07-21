@@ -279,6 +279,9 @@ impl App {
                 kind,
                 message,
             } => {
+                if id.is_some() && id == self.commit_input.pending {
+                    self.commit_input.pending = None;
+                }
                 if id.is_some() && id == self.scm.repository_request {
                     self.scm.repository_request = None;
                     self.scm.repository_loading_since = None;
@@ -455,7 +458,7 @@ impl App {
                 self.apply_vcs_commits_prepended(commits);
             },
             SessionEvent::Committed { oid } => {
-                self.commit_input = None;
+                self.commit_input = CommitInput::default();
                 let short: String = oid.chars().take(7).collect();
                 self.notify(
                     Severity::Information,
@@ -464,12 +467,10 @@ impl App {
                 );
             },
             SessionEvent::CommitMessageGenerated { message } => {
-                // Only adopt it if the commit input is still open (the user may have
-                // cancelled while the generator ran).
-                if self.commit_input.is_some() {
-                    self.commit_input = Some(message);
-                    self.status = Some("commit message generated".to_string());
-                }
+                self.commit_input.text = message;
+                self.commit_input.cursor = self.commit_input.text.len();
+                self.commit_input.scroll = 0;
+                self.status = Some("commit message generated".to_string());
             },
             SessionEvent::SwapsFound { swaps } => self.arm_swap_recovery(swaps),
             SessionEvent::CommitDetailReady { detail } => {

@@ -346,7 +346,7 @@ pub enum Command {
     FindToggleWord,
     /// Submit the commit message.
     CommitSubmit,
-    /// Cancel the commit input.
+    /// Blur the commit input while preserving its draft.
     CommitCancel,
     /// Generate a commit message from the staged diff (AI).
     CommitGenerate,
@@ -593,7 +593,7 @@ impl Command {
             Self::FindToggleCase => "Find: Toggle Case Sensitivity",
             Self::FindToggleWord => "Find: Toggle Whole Word",
             Self::CommitSubmit => "Commit: Submit",
-            Self::CommitCancel => "Commit: Cancel",
+            Self::CommitCancel => "Commit: Keep Draft and Close",
             Self::CommitGenerate => "Commit: Generate Message (AI)",
             Self::ExplorerEditSubmit => "Explorer: Confirm Name",
             Self::ExplorerEditCancel => "Explorer: Cancel Edit",
@@ -741,7 +741,7 @@ impl Command {
             Self::FindToggleCase => "case",
             Self::FindToggleWord => "word",
             Self::CommitSubmit => "submit",
-            Self::CommitCancel => "cancel",
+            Self::CommitCancel => "keep draft",
             Self::CommitGenerate => "generate",
             Self::ExplorerEditSubmit => "confirm",
             Self::ExplorerEditCancel => "cancel",

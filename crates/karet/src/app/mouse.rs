@@ -431,6 +431,7 @@ impl App {
                 } else if in_sidebar {
                     self.handle_sidebar_click(mouse.column, mouse.row, mouse.modifiers);
                 } else {
+                    self.commit_input.focused = false;
                     self.handle_editor_click(mouse);
                 }
             },
@@ -485,6 +486,18 @@ impl App {
     /// (neither activates).
     pub(super) fn handle_sidebar_click(&mut self, col: u16, row_y: u16, modifiers: KeyModifiers) {
         self.focus = Focus::Sidebar;
+        if self.sidebar_panel == SidebarPanel::SourceControl
+            && rect_contains(self.scm_commit_rect, (col, row_y))
+        {
+            self.commit_input.focused = true;
+            self.commit_input.place_cursor(
+                col.saturating_sub(self.scm_commit_rect.x),
+                row_y.saturating_sub(self.scm_commit_rect.y),
+                self.scm_commit_rect.width,
+            );
+            return;
+        }
+        self.commit_input.focused = false;
         // Explorer header toolbar buttons sit on the header row alongside the switcher.
         if row_y == self.sidebar_rect.y
             && let Some(cmd) = self

@@ -1,4 +1,5 @@
 use super::*;
+use unicode_width::UnicodeWidthChar;
 
 impl App {
     /// Refresh branch, remote, recovery, and stash facts without blocking the UI.
@@ -650,13 +651,12 @@ impl App {
         }
     }
 
-    /// Open the commit-message input, if there is something staged to commit.
+    /// Focus the permanent commit-message editor.
     pub(super) fn scm_open_commit_input(&mut self) {
-        if self.scm.staged_count == 0 {
-            self.status = Some("commit: stage changes first".to_string());
-            return;
-        }
-        self.commit_input = Some(String::new());
+        self.sidebar_visible = true;
+        self.sidebar_panel = SidebarPanel::SourceControl;
+        self.focus = Focus::Sidebar;
+        self.commit_input.focused = true;
     }
 
     /// Arm a discard confirmation for the current selection.
@@ -672,21 +672,30 @@ impl App {
         self.pending_discard = Some(paths);
     }
 
-    /// Cancel the commit input.
+    /// Blur the commit editor while preserving its draft.
     pub(super) fn commit_cancel(&mut self) {
-        self.commit_input = None;
-        self.status = Some("commit cancelled".to_string());
+        self.commit_input.focused = false;
+        self.status = Some("commit message kept as a draft".to_string());
     }
 
     /// Submit the commit message (or report that one is required).
     pub(super) fn commit_submit(&mut self) {
-        let message = self.commit_input.take().unwrap_or_default();
-        let message = message.trim().to_string();
+        if self.commit_input.pending.is_some() {
+            self.status = Some("commit already in progress".to_string());
+            return;
+        }
+        if self.scm.staged_count == 0 {
+            self.status = Some("commit: stage changes first".to_string());
+            return;
+        }
+        let message = self.commit_input.text.trim().to_string();
         if message.is_empty() {
-            self.commit_input = Some(String::new());
             self.status = Some("commit: message required".to_string());
-        } else {
-            self.send_vcs(SessionCommand::Commit { message });
+            return;
+        }
+        if let Some(id) = self.send_command_id(SessionCommand::Commit { message }) {
+            self.commit_input.pending = Some(id);
+            self.status = Some("committing…".to_string());
         }
     }
 
@@ -699,25 +708,37 @@ impl App {
         self.send_vcs(SessionCommand::GenerateCommitMessage);
     }
 
-    /// Edit the commit message with an unbound key (backspace / printable).
+    /// Edit the multiline commit message with an unbound text-field key.
     pub(super) fn commit_edit(&mut self, key: KeyEvent) {
+        if matches!(key.code, KeyCode::Enter) && key.modifiers.contains(KeyModifiers::SUPER) {
+            self.commit_submit();
+            return;
+        }
         match key.code {
-            KeyCode::Backspace => {
-                if let Some(message) = self.commit_input.as_mut() {
-                    message.pop();
-                }
-            },
+            KeyCode::Backspace => self.commit_input.backspace(),
+            KeyCode::Delete => self.commit_input.delete(),
+            KeyCode::Left => self.commit_input.move_left(),
+            KeyCode::Right => self.commit_input.move_right(),
+            KeyCode::Home => self.commit_input.move_home(),
+            KeyCode::End => self.commit_input.move_end(),
+            KeyCode::Up => self.commit_input.move_vertical(-1),
+            KeyCode::Down => self.commit_input.move_vertical(1),
+            KeyCode::Enter => self.commit_input.insert_char('\n'),
             KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                if !key.modifiers.intersects(
+                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                ) =>
             {
-                if let Some(message) = self.commit_input.as_mut() {
-                    message.push(c);
-                }
+                self.commit_input.insert_char(c);
             },
             _ => {},
         }
+    }
+
+    /// Insert pasted text at the commit editor's caret, normalizing line endings.
+    pub(super) fn commit_paste(&mut self, text: &str) {
+        self.commit_input
+            .insert_text(&text.replace("\r\n", "\n").replace('\r', "\n"));
     }
 
     /// Resolve a pending discard: `confirmed` discards the armed paths, otherwise
@@ -783,5 +804,126 @@ impl App {
         if self.scm_commits_offset > 0 {
             self.scm_commits_offset += inserted;
         }
+    }
+}
+
+impl CommitInput {
+    fn insert_char(&mut self, character: char) {
+        self.text.insert(self.cursor, character);
+        self.cursor += character.len_utf8();
+    }
+
+    fn insert_text(&mut self, text: &str) {
+        self.text.insert_str(self.cursor, text);
+        self.cursor += text.len();
+    }
+
+    fn backspace(&mut self) {
+        let Some(previous) = self.text[..self.cursor]
+            .char_indices()
+            .next_back()
+            .map(|(index, _)| index)
+        else {
+            return;
+        };
+        self.text.drain(previous..self.cursor);
+        self.cursor = previous;
+    }
+
+    fn delete(&mut self) {
+        let Some(width) = self.text[self.cursor..].chars().next().map(char::len_utf8) else {
+            return;
+        };
+        self.text.drain(self.cursor..self.cursor + width);
+    }
+
+    fn move_left(&mut self) {
+        if let Some(previous) = self.text[..self.cursor]
+            .char_indices()
+            .next_back()
+            .map(|(index, _)| index)
+        {
+            self.cursor = previous;
+        }
+    }
+
+    fn move_right(&mut self) {
+        if let Some(width) = self.text[self.cursor..].chars().next().map(char::len_utf8) {
+            self.cursor += width;
+        }
+    }
+
+    fn move_home(&mut self) {
+        self.cursor = self.text[..self.cursor]
+            .rfind('\n')
+            .map_or(0, |newline| newline + 1);
+    }
+
+    fn move_end(&mut self) {
+        self.cursor = self.text[self.cursor..]
+            .find('\n')
+            .map_or(self.text.len(), |newline| self.cursor + newline);
+    }
+
+    fn move_vertical(&mut self, delta: i8) {
+        let start = self.text[..self.cursor]
+            .rfind('\n')
+            .map_or(0, |newline| newline + 1);
+        let column = self.text[start..self.cursor].chars().count();
+        let target_start = if delta < 0 {
+            let Some(previous_end) = start.checked_sub(1) else {
+                return;
+            };
+            self.text[..previous_end]
+                .rfind('\n')
+                .map_or(0, |newline| newline + 1)
+        } else {
+            let Some(next) = self.text[self.cursor..].find('\n') else {
+                return;
+            };
+            self.cursor + next + 1
+        };
+        let target_end = self.text[target_start..]
+            .find('\n')
+            .map_or(self.text.len(), |newline| target_start + newline);
+        self.cursor = self.text[target_start..target_end]
+            .char_indices()
+            .nth(column)
+            .map_or(target_end, |(offset, _)| target_start + offset);
+    }
+
+    pub(super) fn place_cursor(&mut self, column: u16, row: u16, width: u16) {
+        let target_row = usize::from(row.saturating_add(self.scroll));
+        let target_col = usize::from(column);
+        let width = usize::from(width.max(1));
+        let mut display_row = 0usize;
+        let mut display_col = 0usize;
+        let mut candidate = 0usize;
+        for (index, character) in self.text.char_indices() {
+            if character == '\n' {
+                if display_row == target_row {
+                    self.cursor = candidate;
+                    return;
+                }
+                display_row += 1;
+                display_col = 0;
+                candidate = index + 1;
+                continue;
+            }
+            let char_width = character.width().unwrap_or(0).max(1);
+            if display_col + char_width > width {
+                display_row += 1;
+                display_col = 0;
+            }
+            if display_row > target_row
+                || display_row == target_row && target_col < display_col + char_width
+            {
+                self.cursor = index;
+                return;
+            }
+            display_col += char_width;
+            candidate = index + character.len_utf8();
+        }
+        self.cursor = candidate;
     }
 }

@@ -396,6 +396,21 @@ pub(crate) struct MarkdownLinkHit {
     pub(crate) target: String,
 }
 
+/// Persistent multiline commit-message editor shown in the Source Control panel.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CommitInput {
+    /// Draft message, retained while the field is blurred and while a commit runs.
+    pub(crate) text: String,
+    /// Byte offset of the insertion caret (always a UTF-8 boundary).
+    pub(crate) cursor: usize,
+    /// First wrapped display row visible inside the field.
+    pub(crate) scroll: u16,
+    /// Whether keyboard input is currently routed into the field.
+    pub(crate) focused: bool,
+    /// Commit request in flight; prevents accidental duplicate submissions.
+    pub(crate) pending: Option<RequestId>,
+}
+
 /// A rendered pane's clickable regions, recorded during the last frame for mouse
 /// hit-testing (which pane a click lands in, and its tab strip / content).
 #[derive(Clone)]
@@ -681,8 +696,8 @@ pub struct App {
     /// visibility — closing the bar (Esc) clears this without discarding that
     /// data, and it is reset whenever the active tab changes.
     pub(crate) find_open: bool,
-    /// The in-progress commit message while the Source-Control commit input is open.
-    pub(crate) commit_input: Option<String>,
+    /// The permanent multiline Source-Control commit-message editor.
+    pub(crate) commit_input: CommitInput,
     /// The in-progress revision text while the go-to-commit input is open.
     pub(crate) rev_input: Option<String>,
     /// Paths awaiting a discard confirmation (set after pressing discard; cleared
@@ -759,6 +774,8 @@ pub struct App {
     pub(crate) scm_offset: usize,
     /// The changes-region viewport rect from the last frame (hit-testing/hover).
     pub(crate) scm_changes_rect: Rect,
+    /// The editable inner rect of the permanent Source-Control commit field.
+    pub(crate) scm_commit_rect: Rect,
     /// The total number of changes display rows from the last frame.
     pub(crate) scm_total_rows: usize,
     /// The commit-log region scroll offset (bottom pinned region; wheel + autoload).
