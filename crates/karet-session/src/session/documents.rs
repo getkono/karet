@@ -262,6 +262,24 @@ impl Session {
                 }
                 self.publish(doc_id, None);
                 self.emit(Some(id), Event::Saved { doc: doc_id });
+                if self.config.settings.latex.build_on_save
+                    && self.store.docs.get(&doc_id).is_some_and(|doc| {
+                        doc.path
+                            .extension()
+                            .is_some_and(|extension| extension.eq_ignore_ascii_case("tex"))
+                    })
+                    && let Some(source) = self.store.docs.get(&doc_id).map(|doc| doc.path.clone())
+                    && self.enqueue_latex_build(None, id, doc_id, source).is_err()
+                {
+                    self.emit(
+                        None,
+                        Event::Notification {
+                            severity: Severity::Warning,
+                            kind: NotificationKind::System,
+                            message: "LaTeX build worker is unavailable".to_owned(),
+                        },
+                    );
+                }
             },
             Some(Err(TextError::Conflict)) => {
                 // The file changed on disk since it was last read — writing now would
@@ -286,6 +304,50 @@ impl Session {
                 );
             },
             None => self.emit(Some(id), unknown_document(doc_id)),
+        }
+    }
+
+    /// Persist one dirty TeX source before handing it to an external compiler.
+    pub(super) fn save_for_external_build(
+        &mut self,
+        doc_id: DocumentId,
+    ) -> Result<PathBuf, String> {
+        let Some(doc) = self.store.docs.get(&doc_id) else {
+            return Err("LaTeX build: unknown document".to_owned());
+        };
+        if !doc
+            .path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("tex"))
+        {
+            return Err("LaTeX build requires an editable .tex document".to_owned());
+        }
+        let path = doc.path.clone();
+        if !doc.buffer.is_dirty() {
+            return Ok(path);
+        }
+        if self.apply_save_cleanup(doc_id) {
+            self.publish(doc_id, None);
+        }
+        let result = self.store.docs.get_mut(&doc_id).map(save_document);
+        match result {
+            Some(Ok(())) => {
+                if let Some(doc) = self.store.docs.get_mut(&doc_id) {
+                    doc.dirty_since = None;
+                    doc.backed_up_version = None;
+                    if let Some(store) = self.swaps.as_ref() {
+                        store.remove(&doc.path);
+                    }
+                }
+                self.publish(doc_id, None);
+                Ok(path)
+            },
+            Some(Err(TextError::Conflict)) => Err(
+                "LaTeX build cancelled: the source changed on disk; resolve the save conflict first"
+                    .to_owned(),
+            ),
+            Some(Err(error)) => Err(format!("LaTeX build cancelled: save failed: {error}")),
+            None => Err("LaTeX build: unknown document".to_owned()),
         }
     }
 

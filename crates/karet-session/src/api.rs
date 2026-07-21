@@ -454,6 +454,11 @@ pub enum Command {
         /// The document to format.
         doc: DocumentId,
     },
+    /// Compile the LaTeX root containing an editable TeX document and produce a PDF.
+    BuildLatex {
+        /// The open TeX document that initiated the build.
+        doc: DocumentId,
+    },
     /// Run a workspace search.
     Search {
         /// The search query and options.
@@ -700,6 +705,19 @@ pub enum Event {
         /// The full diagnostic set for the document.
         diagnostics: Vec<Diagnostic>,
     },
+    /// An external LaTeX build finished, successfully or otherwise.
+    LatexBuildFinished {
+        /// The editable document that initiated the build.
+        doc: DocumentId,
+        /// The resolved root TeX file (after `% !TeX root = …` discovery).
+        root: PathBuf,
+        /// Generated PDF path when the compiler succeeded and produced it.
+        pdf: Option<PathBuf>,
+        /// Compiler diagnostics anchored to source lines.
+        diagnostics: Vec<Diagnostic>,
+        /// A concise failure explanation, absent on success.
+        error: Option<String>,
+    },
     /// A producer's decoration layer changed.
     DecorationsChanged {
         /// The document.
@@ -932,10 +950,18 @@ mod tests {
             doc: DocumentId(7),
             path: PathBuf::from("new.txt"),
         };
+        let _cmd = Command::BuildLatex { doc: DocumentId(7) };
         let _ev = Event::Saved { doc: DocumentId(7) };
         let _ev = Event::Retargeted {
             doc: DocumentId(7),
             path: PathBuf::from("new.txt"),
+        };
+        let _ev = Event::LatexBuildFinished {
+            doc: DocumentId(7),
+            root: PathBuf::from("main.tex"),
+            pdf: Some(PathBuf::from("main.pdf")),
+            diagnostics: Vec::new(),
+            error: None,
         };
         let _cfg = Command::LoadedConfig;
         assert_eq!(DecorationLayer::Vcs, DecorationLayer::Vcs);

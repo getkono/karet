@@ -161,6 +161,7 @@ fn builtin_spec(language: &str) -> Option<LspSpec> {
         "rust" => ("rust-analyzer", &[]),
         "typescript" | "javascript" => ("typescript-language-server", &["--stdio"]),
         "python" => ("pyright-langserver", &["--stdio"]),
+        "tex" => ("texlab", &[]),
         _ => return None,
     };
     Some(LspSpec {

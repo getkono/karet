@@ -28,6 +28,7 @@ mod cancellation;
 pub mod config;
 mod editorconfig;
 mod highlight;
+mod latex;
 pub mod local;
 mod lsp;
 pub mod session;

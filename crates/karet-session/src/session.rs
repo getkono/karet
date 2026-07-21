@@ -333,8 +333,10 @@ pub struct Session {
     vcs: Option<Repository>,
     /// Ordered background repository actions and network reads.
     vcs_worker: std::sync::mpsc::Sender<crate::vcs_worker::VcsJob>,
-    /// Cancellation registry for safely-droppable repository reads.
+    /// Cancellation registry for safely-droppable repository reads and builds.
     vcs_cancellations: crate::cancellation::CancellationHub,
+    /// Serialized external LaTeX builds.
+    latex_worker: std::sync::mpsc::Sender<crate::latex::LatexJob>,
     /// The last emitted `(staged, working)` status. Spontaneous recomputes (from
     /// filesystem events) emit only when this changes, which absorbs the feedback
     /// from the session's own index writes.
@@ -395,6 +397,7 @@ impl Session {
         let last_head = vcs.as_ref().and_then(|r| r.head_hash().ok().flatten());
         let vcs_cancellations = crate::cancellation::CancellationHub::default();
         let vcs_worker = crate::vcs_worker::spawn(config.roots.first().cloned(), events.clone());
+        let latex_worker = crate::latex::spawn(events.clone());
         // Open this session's swap store and scan for swaps a previous run left behind
         // (a crash, or a save that failed). They are offered to the UI for recovery.
         let session_id = u64::from(std::process::id());
@@ -438,6 +441,7 @@ impl Session {
             vcs,
             vcs_worker,
             vcs_cancellations,
+            latex_worker,
             last_vcs: None,
             last_head,
             swaps,
@@ -473,6 +477,7 @@ impl Session {
             Command::Redo { doc } => self.undo_redo(id, doc, false),
             Command::Save { doc } => self.save(id, doc),
             Command::RetargetDocument { doc, path } => self.retarget(id, doc, path),
+            Command::BuildLatex { doc } => self.request_latex_build(id, doc),
             // The caret is UI-local; `SetCursor` becomes meaningful when producers
             // (LSP at a position, multi-view sync) need it.
             Command::SetCursor { .. } => {},
@@ -606,6 +611,54 @@ impl Session {
             line,
             cancel: self.vcs_cancellations.register(id),
         });
+    }
+
+    fn request_latex_build(&mut self, id: RequestId, doc: DocumentId) {
+        match self.save_for_external_build(doc) {
+            Ok(source) => {
+                if self.enqueue_latex_build(Some(id), id, doc, source).is_err() {
+                    self.emit(
+                        Some(id),
+                        Event::LatexBuildFinished {
+                            doc,
+                            root: PathBuf::new(),
+                            pdf: None,
+                            diagnostics: Vec::new(),
+                            error: Some("LaTeX build worker is unavailable".to_owned()),
+                        },
+                    );
+                }
+            },
+            Err(error) => self.emit(
+                Some(id),
+                Event::LatexBuildFinished {
+                    doc,
+                    root: PathBuf::new(),
+                    pdf: None,
+                    diagnostics: Vec::new(),
+                    error: Some(error),
+                },
+            ),
+        }
+    }
+
+    fn enqueue_latex_build(
+        &self,
+        event_id: Option<RequestId>,
+        cancel_id: RequestId,
+        doc: DocumentId,
+        source: PathBuf,
+    ) -> Result<(), ()> {
+        self.latex_worker
+            .send(crate::latex::LatexJob {
+                id: event_id,
+                doc,
+                source,
+                workspace: self.config.roots.first().cloned(),
+                settings: self.config.settings.latex.clone(),
+                cancel: self.vcs_cancellations.register(cancel_id),
+            })
+            .map_err(|_| ())
     }
 }
 /// Re-(or incrementally) parse `doc` and recompute its highlights.

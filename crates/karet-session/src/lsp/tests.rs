@@ -623,6 +623,11 @@ fn builtin_specs_cover_the_documented_languages() {
         py.map(|s| (s.command, s.args)),
         Some(("pyright-langserver".to_owned(), vec!["--stdio".to_owned()]))
     );
+    let tex = builtin_spec("tex");
+    assert_eq!(
+        tex.map(|s| (s.command, s.args)),
+        Some(("texlab".to_owned(), Vec::new()))
+    );
     assert!(builtin_spec("cobol").is_none());
 }
 

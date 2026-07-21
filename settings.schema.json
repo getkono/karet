@@ -16,6 +16,10 @@
       "description": "Source-control integration.",
       "$ref": "#/$defs/Git"
     },
+    "latex": {
+      "description": "External LaTeX build and preview tooling.",
+      "$ref": "#/$defs/Latex"
+    },
     "lsp": {
       "description": "Language-server integration (completions and future language features).",
       "$ref": "#/$defs/Lsp"
@@ -25,7 +29,7 @@
       "$ref": "#/$defs/Search"
     },
     "spellcheck": {
-      "description": "Spell-checking of comments and strings.",
+      "description": "Spell-checking of prose and selected source-code tokens.",
       "$ref": "#/$defs/Spellcheck"
     },
     "workbench": {
@@ -39,6 +43,7 @@
     "workbench",
     "search",
     "spellcheck",
+    "latex",
     "git",
     "lsp"
   ],
@@ -550,6 +555,50 @@
           "const": "ascii"
         }
       ]
+    },
+    "Latex": {
+      "description": "`latex.*` — external LaTeX compilation and preview behavior.",
+      "type": "object",
+      "properties": {
+        "args": {
+          "description": "Arguments supporting `{file}`, `{fileDir}`, and `{outputDir}` placeholders.",
+          "type": "array",
+          "default": [
+            "-pdf",
+            "-interaction=nonstopmode",
+            "-synctex=1",
+            "-file-line-error",
+            "-outdir={outputDir}",
+            "{file}"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "buildOnSave": {
+          "description": "Compile the root document after each successful manual or automatic save.",
+          "type": "boolean",
+          "default": false
+        },
+        "command": {
+          "description": "External executable. It is launched directly, never through a shell.",
+          "type": "string",
+          "default": "latexmk"
+        },
+        "outputDirectory": {
+          "description": "Build output directory, absolute or relative to the workspace root. Empty\nuses karet's platform cache and keeps generated files out of the repository.",
+          "type": "string",
+          "default": ""
+        },
+        "timeoutMs": {
+          "description": "Maximum compiler runtime before the process is terminated.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 120000,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
     },
     "LineNumbers": {
       "description": "How the line-number gutter is numbered.",
