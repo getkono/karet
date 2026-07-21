@@ -85,6 +85,14 @@ impl App {
                 .is_none()
                 .then(|| loading_delay_remaining(*loading_since, now))
                 .flatten(),
+            TabKind::LatexPreview {
+                loading_since,
+                error,
+                ..
+            } => error
+                .is_none()
+                .then(|| loading_delay_remaining(*loading_since, now))
+                .flatten(),
             TabKind::Commit {
                 files_loading_since,
                 ..
@@ -150,6 +158,14 @@ impl App {
     }
 
     /// Handle a backend event: correlate opens to tabs, surface save/progress status.
+    fn replace_document_diagnostics(&mut self, doc: DocumentId, diagnostics: Vec<Diagnostic>) {
+        if diagnostics.is_empty() {
+            self.document_diagnostics.remove(&doc);
+        } else {
+            self.document_diagnostics.insert(doc, diagnostics);
+        }
+    }
+
     pub(super) fn on_backend_event(&mut self, id: Option<RequestId>, event: SessionEvent) {
         if id.is_some_and(|request| self.cancelled_requests.contains(&request)) {
             return;
@@ -209,10 +225,61 @@ impl App {
                 self.document_settings.insert(doc, settings);
             },
             SessionEvent::DiagnosticsPublished { doc, diagnostics } => {
-                if diagnostics.is_empty() {
-                    self.document_diagnostics.remove(&doc);
-                } else {
-                    self.document_diagnostics.insert(doc, diagnostics);
+                // This event currently carries the complete non-LaTeX layer
+                // (spell checking today, with room for other producers). Keep
+                // compiler feedback alive when that layer refreshes.
+                let mut combined = diagnostics;
+                if let Some(existing) = self.document_diagnostics.get(&doc) {
+                    combined.extend(
+                        existing
+                            .iter()
+                            .filter(|diagnostic| diagnostic.source.as_deref() == Some("latex"))
+                            .cloned(),
+                    );
+                }
+                self.replace_document_diagnostics(doc, combined);
+            },
+            SessionEvent::LatexBuildFinished {
+                doc,
+                pdf,
+                diagnostics,
+                error,
+                ..
+            } => {
+                let mut combined = self
+                    .document_diagnostics
+                    .get(&doc)
+                    .into_iter()
+                    .flatten()
+                    .filter(|diagnostic| diagnostic.source.as_deref() != Some("latex"))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                combined.extend(diagnostics);
+                self.replace_document_diagnostics(doc, combined);
+                let destination = id.and_then(|request| self.latex_previews.remove(&request));
+                if let Some(view) = destination
+                    && let Some(index) = self.tabs.iter().position(|tab| tab.view == view)
+                {
+                    if let Some(pdf) = pdf {
+                        let mut tab = workspace::open_file(&pdf);
+                        tab.view = view;
+                        self.tabs[index] = tab;
+                        self.active = index;
+                        self.status = Some("LaTeX preview built".to_owned());
+                    } else if let TabKind::LatexPreview {
+                        error: preview_error,
+                        ..
+                    } = &mut self.tabs[index].kind
+                    {
+                        *preview_error = Some(
+                            error
+                                .clone()
+                                .unwrap_or_else(|| "LaTeX build produced no PDF".to_owned()),
+                        );
+                    }
+                }
+                if let Some(error) = error {
+                    self.notify(Severity::Error, NotificationKind::System, error);
                 }
             },
             SessionEvent::Closed { doc } => {

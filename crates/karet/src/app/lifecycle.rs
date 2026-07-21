@@ -164,6 +164,15 @@ impl App {
         for request in &requests {
             self.pending_commit_detail.remove(request);
         }
+        let latex_requests: Vec<RequestId> = self
+            .latex_previews
+            .iter()
+            .filter_map(|(request, view)| views.contains(view).then_some(*request))
+            .collect();
+        for request in latex_requests {
+            self.latex_previews.remove(&request);
+            requests.push(request);
+        }
         if let Some((request, view)) = self.graph_log_req
             && views.contains(&view)
         {

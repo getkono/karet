@@ -167,6 +167,14 @@ fn markdown_tabs_expose_preview_and_table_actions() {
 }
 
 #[test]
+fn tex_tabs_expose_the_external_build_preview_action() {
+    assert_eq!(
+        pane_actions(&test_code_tab("/repo/main.tex")),
+        vec![(UiIcon::Preview, Command::LatexBuildPreview, false)]
+    );
+}
+
+#[test]
 fn active_tab_prefix_keeps_active_fill() {
     let theme = Theme::dark();
     let base = tab_text_style(&theme, true, true, false);

@@ -149,6 +149,7 @@ impl App {
             completion: None,
             completion_matcher: karet_fuzzy::Matcher::new(),
             pending_commit_detail: HashMap::new(),
+            latex_previews: HashMap::new(),
             graph_log_req: None,
             cancelled_requests: HashSet::new(),
             open_docs: HashSet::new(),
@@ -398,6 +399,7 @@ impl App {
                 | TabKind::Graph { .. }
                 | TabKind::LoadedConfig { .. }
                 | TabKind::MarkdownPreview { .. }
+                | TabKind::LatexPreview { .. }
                 | TabKind::Hex { .. },
             ) => EditorTab::Pager,
             Some(TabKind::CommitGraph { .. }) => EditorTab::CommitGraph,

@@ -1,6 +1,35 @@
 use super::*;
 
 impl App {
+    /// Reserve a preview immediately, then compile the active editable TeX document
+    /// through the backend's configured external recipe.
+    pub(super) fn build_latex_preview(&mut self) {
+        let (doc, source) = match self.tabs.get(self.active).map(|tab| &tab.kind) {
+            Some(TabKind::Code {
+                path,
+                doc: Some(doc),
+                ..
+            }) if path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("tex")) =>
+            {
+                (*doc, path.clone())
+            },
+            _ => {
+                self.status = Some("LaTeX preview requires an open editable .tex file".to_owned());
+                return;
+            },
+        };
+
+        self.push_tab(Tab::latex_preview(source));
+        let view = self.tabs[self.active].view;
+        if let Some(request) = self.send_command_id(SessionCommand::BuildLatex { doc }) {
+            self.latex_previews.insert(request, view);
+        } else if let TabKind::LatexPreview { error, .. } = &mut self.tabs[self.active].kind {
+            *error = Some("LaTeX backend is unavailable".to_owned());
+        }
+    }
+
     /// Format every GFM table in the active Markdown document as one undoable edit.
     pub(super) fn format_markdown_tables(&mut self) {
         let Some(tab) = self.tabs.get(self.active) else {

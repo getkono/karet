@@ -75,6 +75,8 @@ pub enum Command {
     MarkdownPreviewSide,
     /// Align every GFM table in the active Markdown document.
     FormatMarkdownTables,
+    /// Compile the active TeX document and open its generated PDF preview.
+    LatexBuildPreview,
     /// Split the focused pane into a new pane on the right.
     SplitRight,
     /// Split the focused pane into a new pane below.
@@ -472,6 +474,7 @@ impl Command {
             Self::DismissAllNotifications => "Notifications: Dismiss All",
             Self::MarkdownPreviewSide => "Markdown: Toggle Preview to the Side",
             Self::FormatMarkdownTables => "Markdown: Format Tables",
+            Self::LatexBuildPreview => "LaTeX: Build and Open PDF Preview",
             Self::SplitRight => "View: Split Editor Right",
             Self::SplitDown => "View: Split Editor Down",
             Self::FocusNextPane => "View: Focus Next Pane",
@@ -790,6 +793,7 @@ impl Command {
             Self::SearchToggleWord => "word",
             Self::MarkdownPreviewSide => "preview",
             Self::FormatMarkdownTables => "format tables",
+            Self::LatexBuildPreview => "build preview",
             Self::ResizePaneLeft
             | Self::ResizePaneRight
             | Self::ResizePaneUp
@@ -953,6 +957,7 @@ impl Command {
                 | Self::DismissAllNotifications
                 | Self::MarkdownPreviewSide
                 | Self::FormatMarkdownTables
+                | Self::LatexBuildPreview
                 | Self::SplitRight
                 | Self::SplitDown
                 | Self::FocusNextPane

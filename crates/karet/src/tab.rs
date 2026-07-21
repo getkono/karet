@@ -224,6 +224,15 @@ pub enum TabKind {
         /// The file length in bytes.
         len: u64,
     },
+    /// A LaTeX preview reserved immediately while its external compiler runs.
+    LatexPreview {
+        /// Editable TeX source that initiated the build.
+        source: PathBuf,
+        /// Start time used by the shared delayed-loading policy.
+        loading_since: Instant,
+        /// Compiler/startup failure, when the preview could not be produced.
+        error: Option<String>,
+    },
     /// A single-file diff (opened from the Source Control panel).
     Diff {
         /// The prepared file diff.
@@ -504,6 +513,23 @@ impl Tab {
         )
     }
 
+    /// A pending LaTeX PDF preview.
+    #[must_use]
+    pub fn latex_preview(source: PathBuf) -> Self {
+        let title = source.file_stem().map_or_else(
+            || "LaTeX Preview".to_owned(),
+            |stem| format!("{} (Preview)", stem.to_string_lossy()),
+        );
+        Self::new(
+            title,
+            TabKind::LatexPreview {
+                source,
+                loading_since: Instant::now(),
+                error: None,
+            },
+        )
+    }
+
     /// An empty commit graph browser, to be filled as its history pages arrive. Pass
     /// `history_path` to scope it to one file's history; `None` browses the whole log.
     #[must_use]
@@ -567,6 +593,7 @@ impl Tab {
             TabKind::Welcome
             | TabKind::Graph { .. }
             | TabKind::LoadedConfig { .. }
+            | TabKind::LatexPreview { .. }
             | TabKind::CommitLoading { .. }
             | TabKind::Commit { .. }
             | TabKind::Compare { .. }
@@ -593,6 +620,7 @@ impl Tab {
             TabKind::Document { .. } => "pdf",
             TabKind::Hex { .. } => "binary",
             TabKind::Placeholder { .. } => "preview",
+            TabKind::LatexPreview { .. } => "latex preview",
             TabKind::Diff { file, .. } => file.language,
             TabKind::StashPreview { .. } => "stash",
             TabKind::Graph { .. } => "graph",
@@ -637,6 +665,7 @@ fn tab_kind_path(kind: &TabKind) -> Option<&Path> {
         | TabKind::StashPreview { .. }
         | TabKind::Graph { .. }
         | TabKind::LoadedConfig { .. }
+        | TabKind::LatexPreview { .. }
         | TabKind::CommitLoading { .. }
         | TabKind::Commit { .. }
         | TabKind::Compare { .. }

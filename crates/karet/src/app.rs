@@ -915,6 +915,8 @@ pub struct App {
     /// In-flight commit-detail requests, mapping request id → where its result goes
     /// (a new standalone commit tab, or the graph browser's detail pane).
     pending_commit_detail: HashMap<RequestId, CommitDest>,
+    /// Explicit LaTeX build requests mapped to their reserved preview view.
+    latex_previews: HashMap<RequestId, ViewId>,
     /// The graph browser's in-flight history-page request, so its answering
     /// [`SessionEvent::VcsLog`] fills the browser rather than the sidebar log.
     graph_log_req: Option<(RequestId, ViewId)>,
