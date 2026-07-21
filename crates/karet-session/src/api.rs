@@ -256,6 +256,85 @@ pub enum Command {
         /// The full commit hash to look up.
         hash: String,
     },
+    /// Re-evaluate GitHub eligibility and authentication for the workspace root.
+    GithubRefresh,
+    /// Authenticate the GitHub manager for this session with a personal access token.
+    /// The backend consumes the token immediately and never includes it in an event.
+    GithubLogin {
+        /// Personal access token entered through the presentation's masked control.
+        token: GithubToken,
+    },
+    /// Search repository issues with GitHub query syntax.
+    GithubSearchIssues {
+        /// User query without the repository/object scope controlled by the backend.
+        query: String,
+        /// One-based result page.
+        page: u32,
+    },
+    /// Search repository pull requests with GitHub query syntax.
+    GithubSearchPullRequests {
+        /// User query without the repository/object scope controlled by the backend.
+        query: String,
+        /// One-based result page.
+        page: u32,
+    },
+    /// Load repository Actions workflows and recent runs.
+    GithubActions {
+        /// One-based result page.
+        page: u32,
+    },
+    /// Load one issue and its complete conversation comments.
+    GithubIssue {
+        /// Repository-local issue number.
+        number: u64,
+    },
+    /// Load one pull request's canonical primary resource.
+    GithubPullRequest {
+        /// Repository-local pull request number.
+        number: u64,
+    },
+    /// Replace a pull request's Markdown description.
+    GithubUpdatePullRequestBody {
+        /// Repository-local pull-request number.
+        number: u64,
+        /// New Markdown body.
+        body: String,
+    },
+    /// Add a Markdown comment to a pull request conversation.
+    GithubCommentPullRequest {
+        /// Repository-local pull-request number.
+        number: u64,
+        /// Comment Markdown.
+        body: String,
+    },
+    /// Merge a pull request at its currently displayed head SHA.
+    GithubMergePullRequest {
+        /// Repository-local pull-request number.
+        number: u64,
+        /// Expected head SHA, preventing an unseen update from being merged.
+        head_sha: String,
+    },
+    /// Convert a pull request to draft or mark it ready for review.
+    GithubSetPullRequestDraft {
+        /// GraphQL pull-request node identifier.
+        node_id: String,
+        /// Repository-local pull-request number, used to refresh after mutation.
+        number: u64,
+        /// Desired draft state.
+        draft: bool,
+    },
+    /// Load repository-aware options for the new-issue form.
+    GithubIssueMetadata,
+    /// Create a repository issue.
+    GithubCreateIssue {
+        /// The complete primary create payload.
+        issue: GithubNewIssue,
+    },
+    /// Create a repository pull request.
+    GithubCreatePullRequest {
+        /// The complete primary create payload.
+        pull_request: GithubNewPullRequest,
+    },
     /// Recover the crash-recovery swaps announced by [`Event::SwapsFound`]: restore
     /// each backed-up buffer as an unsaved (dirty) document.
     RecoverSwaps,
@@ -290,6 +369,308 @@ pub struct GithubVerification {
     pub reason: String,
     /// The signer the forge attributes the commit to, when present.
     pub signer: Option<String>,
+}
+
+/// A public GitHub repository selected for the session.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GithubRepository {
+    /// Owner or organization login.
+    pub owner: String,
+    /// Repository name.
+    pub repo: String,
+}
+
+/// Credential source, with no secret material.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum GithubAuthSource {
+    /// Anonymous public-read mode.
+    Anonymous,
+    /// `GITHUB_TOKEN`.
+    GithubToken,
+    /// `GH_TOKEN`.
+    GhToken,
+    /// GitHub CLI credential.
+    GithubCli,
+    /// Explicit embedding/test credential.
+    Explicit,
+}
+
+/// Safe authentication/capability state.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GithubAuth {
+    /// Credential source.
+    pub source: GithubAuthSource,
+    /// Whether mutation controls may be enabled.
+    pub can_write: bool,
+    /// Stable numeric identifier for the authenticated account, when known.
+    #[serde(default)]
+    pub viewer_id: Option<u64>,
+    /// Login name of the authenticated account, when known.
+    #[serde(default)]
+    pub viewer_login: Option<String>,
+}
+
+/// A transient GitHub token whose debug representation never exposes the secret.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GithubToken(String);
+
+impl GithubToken {
+    /// Wrap a token received from an interactive presentation.
+    #[must_use]
+    pub fn new(token: String) -> Self {
+        Self(token)
+    }
+
+    /// Consume the wrapper for immediate authentication.
+    #[must_use]
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for GithubToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("GithubToken(***)")
+    }
+}
+
+/// A GitHub label used in issue and pull-request tables.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GithubLabel {
+    /// Label name.
+    pub name: String,
+    /// Six-digit RGB colour without `#`.
+    pub color: String,
+}
+
+/// An issue table row and detail header.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GithubIssue {
+    /// Repository-local issue number.
+    pub number: u64,
+    /// Issue title.
+    pub title: String,
+    /// Raw Markdown body.
+    pub body: Option<String>,
+    /// Open/closed state.
+    pub state: String,
+    /// Creator login.
+    pub creator: Option<String>,
+    /// Stable numeric identifier of the creator account.
+    #[serde(default)]
+    pub creator_id: Option<u64>,
+    /// Creation timestamp in Unix seconds.
+    pub created_unix: i64,
+    /// Last-update timestamp in Unix seconds.
+    pub updated_unix: i64,
+    /// Applied labels.
+    pub labels: Vec<GithubLabel>,
+    /// Whether another issue blocks this issue.
+    pub blocked: bool,
+    /// GitHub web URL.
+    pub html_url: String,
+}
+
+/// One issue or pull-request timeline comment.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GithubComment {
+    /// Stable API identifier.
+    pub id: u64,
+    /// Author login.
+    pub creator: Option<String>,
+    /// Raw Markdown body.
+    pub body: String,
+    /// Creation timestamp in Unix seconds.
+    pub created_unix: i64,
+    /// Last-update timestamp in Unix seconds.
+    pub updated_unix: i64,
+    /// GitHub web URL.
+    pub html_url: String,
+}
+
+/// A pull-request table row.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GithubPullRequest {
+    /// Repository-local pull-request number.
+    pub number: u64,
+    /// Pull-request title.
+    pub title: String,
+    /// Raw Markdown body.
+    pub body: Option<String>,
+    /// Open/closed state.
+    pub state: String,
+    /// Creator login.
+    pub creator: Option<String>,
+    /// Stable numeric identifier of the creator account.
+    #[serde(default)]
+    pub creator_id: Option<u64>,
+    /// Creation timestamp in Unix seconds.
+    pub created_unix: i64,
+    /// Last-update timestamp in Unix seconds.
+    pub updated_unix: i64,
+    /// Applied labels.
+    pub labels: Vec<GithubLabel>,
+    /// Whether this is a draft.
+    pub draft: bool,
+    /// GraphQL node identifier used by draft/readiness mutations.
+    #[serde(default)]
+    pub node_id: String,
+    /// Head commit SHA.
+    #[serde(default)]
+    pub head_sha: String,
+    /// Base commit SHA.
+    #[serde(default)]
+    pub base_sha: String,
+    /// Whether GitHub currently considers the pull request mergeable.
+    #[serde(default)]
+    pub mergeable: Option<bool>,
+    /// Whether the pull request has already been merged.
+    #[serde(default)]
+    pub merged: bool,
+    /// GitHub web URL.
+    pub html_url: String,
+}
+
+/// One commit in a GitHub pull request.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GithubPullRequestCommit {
+    /// Full commit SHA.
+    pub sha: String,
+    /// First line of the commit message.
+    pub summary: String,
+    /// Author display name.
+    pub author: String,
+    /// Commit timestamp in Unix seconds.
+    pub committed_unix: i64,
+    /// Parent commit SHAs.
+    pub parents: Vec<String>,
+    /// GitHub web URL.
+    pub html_url: String,
+}
+
+/// One check run attached to a pull request head.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GithubCheckRun {
+    /// Stable check-run identifier.
+    pub id: u64,
+    /// Check name.
+    pub name: String,
+    /// Queued/in-progress/completed state.
+    pub status: String,
+    /// Final result when complete.
+    pub conclusion: Option<String>,
+    /// GitHub web URL for the check details.
+    pub html_url: String,
+}
+
+/// One non-comment event in a pull-request conversation timeline.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GithubPullRequestActivity {
+    /// Stable event identifier when GitHub supplies one.
+    pub id: Option<u64>,
+    /// GitHub event kind, such as `committed` or `head_ref_force_pushed`.
+    pub kind: String,
+    /// Actor login when present.
+    pub actor: Option<String>,
+    /// Commit involved in the event when present.
+    pub commit_id: Option<String>,
+    /// Previous head SHA for a force-push event.
+    pub before: Option<String>,
+    /// New head SHA for a force-push event.
+    pub after: Option<String>,
+    /// Event timestamp in Unix seconds when present.
+    pub created_unix: Option<i64>,
+}
+
+/// A GitHub Actions workflow.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GithubWorkflow {
+    /// Workflow identifier.
+    pub id: u64,
+    /// Display name.
+    pub name: String,
+    /// Repository-relative workflow path.
+    pub path: String,
+    /// GitHub workflow state.
+    pub state: String,
+    /// Last-update timestamp in Unix seconds.
+    pub updated_unix: i64,
+}
+
+/// A GitHub Actions workflow run.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GithubWorkflowRun {
+    /// Run identifier.
+    pub id: u64,
+    /// Workflow identifier.
+    pub workflow_id: u64,
+    /// Display title.
+    pub title: String,
+    /// Branch, when present.
+    pub branch: Option<String>,
+    /// Head SHA.
+    pub head_sha: String,
+    /// Trigger event.
+    pub event: String,
+    /// Queued/in-progress/completed state.
+    pub status: Option<String>,
+    /// Final conclusion.
+    pub conclusion: Option<String>,
+    /// Actor login.
+    pub actor: Option<String>,
+    /// Repository-local run number.
+    pub run_number: u64,
+    /// Creation timestamp in Unix seconds.
+    pub created_unix: i64,
+    /// GitHub web URL.
+    pub html_url: String,
+}
+
+/// A generic GitHub result page.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GithubPage<T> {
+    /// Rows in this page.
+    pub items: Vec<T>,
+    /// Current one-based page.
+    pub page: u32,
+    /// Next page, when supplied.
+    pub next_page: Option<u32>,
+    /// Total result count, when supplied.
+    pub total_count: Option<u64>,
+}
+
+/// Primary fields for issue creation.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GithubNewIssue {
+    /// Issue title.
+    pub title: String,
+    /// Markdown body.
+    pub body: String,
+    /// Assignee logins.
+    pub assignees: Vec<String>,
+    /// Label names.
+    pub labels: Vec<String>,
+    /// Milestone number.
+    pub milestone: Option<u64>,
+    /// Repository issue-type identifier.
+    pub issue_type: Option<String>,
+}
+
+/// Primary fields for pull-request creation.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GithubNewPullRequest {
+    /// Pull-request title.
+    pub title: String,
+    /// Source branch or owner-qualified source branch.
+    pub head: String,
+    /// Destination branch.
+    pub base: String,
+    /// Markdown body.
+    pub body: String,
+    /// Whether to create a draft.
+    pub draft: bool,
+    /// Whether maintainers may modify the source branch.
+    pub maintainer_can_modify: bool,
 }
 
 /// A crash-recovery swap offered to the UI on startup (see [`Event::SwapsFound`]).
@@ -533,6 +914,64 @@ pub enum Event {
         /// The forge's verification verdict.
         status: GithubVerification,
     },
+    /// Current GitHub eligibility and authentication state.
+    GithubAvailability {
+        /// Eligible repository, or `None` when the pinned view must be hidden.
+        repository: Option<GithubRepository>,
+        /// Authentication state; anonymous when ineligible.
+        auth: GithubAuth,
+    },
+    /// A page of issue search results.
+    GithubIssues {
+        /// Search result page.
+        page: GithubPage<GithubIssue>,
+    },
+    /// A page of pull-request search results.
+    GithubPullRequests {
+        /// Search result page.
+        page: GithubPage<GithubPullRequest>,
+    },
+    /// Actions workflows and runs loaded together for a layout-stable screen.
+    GithubActions {
+        /// Repository workflows.
+        workflows: GithubPage<GithubWorkflow>,
+        /// Recent workflow runs.
+        runs: GithubPage<GithubWorkflowRun>,
+    },
+    /// Repository-aware options for the new-issue form.
+    GithubIssueMetadataReady {
+        /// Logins which GitHub permits as issue assignees.
+        assignees: Vec<String>,
+    },
+    /// A created issue, also used as the primary issue-detail payload.
+    GithubIssueReady {
+        /// Issue data.
+        issue: GithubIssue,
+        /// Complete issue timeline comments.
+        comments: GithubPage<GithubComment>,
+    },
+    /// A pull request detail response, also used after creation.
+    GithubPullRequestReady {
+        /// Pull-request data.
+        pull_request: GithubPullRequest,
+        /// Complete issue-conversation comments attached to the pull request.
+        comments: GithubPage<GithubComment>,
+        /// Commits contained in the pull request, in GitHub's API order.
+        commits: Vec<GithubPullRequestCommit>,
+        /// Check runs attached to the current head.
+        checks: Vec<GithubCheckRun>,
+        /// Non-comment conversation activity returned by GitHub's timeline API.
+        activity: Vec<GithubPullRequestActivity>,
+        /// Timeline-only load failure. The rest of the pull request remains usable.
+        activity_error: Option<String>,
+    },
+    /// A GitHub operation failed without disrupting the session actor.
+    GithubError {
+        /// Short operation name.
+        operation: String,
+        /// Safe error message.
+        message: String,
+    },
     /// Crash-recovery swaps from a previous session were found on startup. The UI
     /// prompts the user to [`Command::RecoverSwaps`] or [`Command::DiscardSwaps`].
     SwapsFound {
@@ -575,5 +1014,74 @@ mod tests {
         };
         let _cfg = Command::LoadedConfig;
         assert_eq!(DecorationLayer::Vcs, DecorationLayer::Vcs);
+    }
+
+    #[test]
+    fn github_token_debug_never_exposes_the_secret() {
+        let token = GithubToken::new("github_pat_super_secret".to_string());
+        let debug = format!("{token:?}");
+        assert_eq!(debug, "GithubToken(***)");
+        assert!(!debug.contains("super_secret"));
+    }
+
+    #[test]
+    fn pull_request_conversation_models_remain_serde_ready() -> Result<(), serde_json::Error> {
+        let commit = GithubPullRequestCommit {
+            sha: "bbbbbbbb".to_string(),
+            summary: "Add feature".to_string(),
+            author: "Octo Cat".to_string(),
+            committed_unix: 2,
+            parents: vec!["aaaaaaaa".to_string()],
+            html_url: "https://github.com/o/r/commit/bbbbbbbb".to_string(),
+        };
+        let check = GithubCheckRun {
+            id: 9,
+            name: "CI".to_string(),
+            status: "completed".to_string(),
+            conclusion: Some("success".to_string()),
+            html_url: "https://github.com/o/r/runs/9".to_string(),
+        };
+        let activity = GithubPullRequestActivity {
+            id: Some(3),
+            kind: "committed".to_string(),
+            actor: Some("octocat".to_string()),
+            commit_id: Some(commit.sha.clone()),
+            before: None,
+            after: None,
+            created_unix: Some(2),
+        };
+        let commit_json = serde_json::to_string(&commit)?;
+        let check_json = serde_json::to_string(&check)?;
+        let activity_json = serde_json::to_string(&activity)?;
+        assert_eq!(
+            serde_json::from_str::<GithubPullRequestCommit>(&commit_json)?,
+            commit
+        );
+        assert_eq!(serde_json::from_str::<GithubCheckRun>(&check_json)?, check);
+        assert_eq!(
+            serde_json::from_str::<GithubPullRequestActivity>(&activity_json)?,
+            activity
+        );
+        let commands = [
+            Command::GithubUpdatePullRequestBody {
+                number: 12,
+                body: "body".to_string(),
+            },
+            Command::GithubCommentPullRequest {
+                number: 12,
+                body: "comment".to_string(),
+            },
+            Command::GithubMergePullRequest {
+                number: 12,
+                head_sha: "bbbbbbbb".to_string(),
+            },
+            Command::GithubSetPullRequestDraft {
+                node_id: "PR_node".to_string(),
+                number: 12,
+                draft: true,
+            },
+        ];
+        assert_eq!(commands.len(), 4);
+        Ok(())
     }
 }

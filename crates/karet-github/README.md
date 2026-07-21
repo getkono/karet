@@ -1,13 +1,13 @@
 # karet-github
 
-A minimal GitHub REST client for [karet](https://github.com/getkono/karet), and the
+A headless GitHub REST client for [karet](https://github.com/getkono/karet), and the
 single home for GitHub-specific networking in the workspace.
 
-Today it exposes one call — a commit's signature-verification status
-(`commit_verification`) — used by the editor's commit view to show GitHub's
-"Verified" badge. It is a standalone crate so its surface can grow (eventually via
-codegen of the GitHub API) without leaking `reqwest` or GitHub URL shapes into the rest
-of the workspace.
+It exposes stable repository-workflow models and asynchronous operations for issues,
+pull requests, Actions, and commit verification. GitHub wire types are generated with
+spargen from the vendored official OpenAPI description where the schema is provably
+representable; strictly typed adapters cover explicitly tracked generator blockers.
+Generation runs in `build.rs` and writes only to Cargo's `OUT_DIR`; generated Rust is
+never checked into or loaded from the source tree.
 
-Blocking transport (`reqwest::blocking`, no async runtime needed); pure-Rust rustls TLS
-(no OpenSSL/native-tls system dependency). `publish = false`.
+The transport uses `reqwest` with pure-Rust rustls TLS.
