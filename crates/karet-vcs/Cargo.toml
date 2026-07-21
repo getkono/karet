@@ -28,6 +28,7 @@ signature = ["dep:ssh-key"]
 [dependencies]
 karet-core.workspace = true
 gix.workspace = true
+imara-diff.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 karet-diff = { workspace = true, optional = true }

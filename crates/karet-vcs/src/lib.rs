@@ -21,6 +21,7 @@ mod remote;
 mod repo;
 mod selection;
 mod stash;
+mod summary;
 #[cfg(test)]
 mod test_support;
 mod write;
@@ -42,6 +43,7 @@ pub use remote::SyncOutcome;
 pub use selection::Selection;
 pub use stash::StashEntry;
 pub use stash::StashOptions;
+pub use summary::RepositorySummary;
 
 /// Errors produced by the VCS engine.
 #[derive(Debug, thiserror::Error)]
