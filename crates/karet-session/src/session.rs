@@ -462,6 +462,12 @@ impl Session {
                     .vcs_worker
                     .send(crate::vcs_worker::VcsJob::Snapshot { id, cancel });
             },
+            Command::NestedRepositoryStatus { path } => {
+                let cancel = self.vcs_cancellations.register(id);
+                let _ = self
+                    .vcs_worker
+                    .send(crate::vcs_worker::VcsJob::NestedRepositoryStatus { id, path, cancel });
+            },
             Command::VcsAction { action } => {
                 self.emit(
                     Some(id),

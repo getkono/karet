@@ -27,6 +27,12 @@ use crate::cancellation::Cancellation;
 pub(crate) enum VcsJob {
     /// Load the current repository snapshot.
     Snapshot { id: RequestId, cancel: Cancellation },
+    /// Compute compact status for one exact nested repository path.
+    NestedRepositoryStatus {
+        id: RequestId,
+        path: PathBuf,
+        cancel: Cancellation,
+    },
     /// Run one repository action.
     Action { id: RequestId, action: VcsAction },
     /// Query open GitHub pull requests.
@@ -125,6 +131,39 @@ fn run(
                     },
                 ),
                 Err(message) => notify_cancellable(events, id, &cancel, message),
+            }
+        },
+        VcsJob::NestedRepositoryStatus { id, path, cancel } => {
+            if cancel.is_cancelled() {
+                return;
+            }
+            let result = path
+                .join(".git")
+                .exists()
+                .then(|| Repository::discover(&path))
+                .transpose()
+                .map_err(|error| error.to_string())
+                .and_then(|repository| {
+                    repository
+                        .ok_or_else(|| "nested repository no longer exists".to_string())?
+                        .summary()
+                        .map_err(|error| error.to_string())
+                });
+            match result {
+                Ok(summary) => emit_cancellable(
+                    events,
+                    id,
+                    &cancel,
+                    Event::NestedRepositoryStatus { path, summary },
+                ),
+                Err(message) => {
+                    notify_cancellable(
+                        events,
+                        id,
+                        &cancel,
+                        format!("repository status: {message}"),
+                    );
+                },
             }
         },
         VcsJob::Action { id, action } => {
