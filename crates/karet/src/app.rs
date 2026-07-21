@@ -349,6 +349,8 @@ pub(crate) const COMMIT_REVEAL: Duration = Duration::from_secs(5);
 /// Delay before rendering non-blocking loading text. Fast operations can complete
 /// without visual churn; slower ones get an explicit, stable placeholder.
 pub(crate) const LOADING_REVEAL_DELAY: Duration = Duration::from_millis(200);
+/// Maximum graceful wait for a repository mutation during application shutdown.
+const OPERATION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Half-period for the app-drawn graphical editor caret.
 const GRAPHICS_CARET_BLINK_INTERVAL: Duration = Duration::from_millis(530);
@@ -451,13 +453,21 @@ pub(crate) struct ToastHit {
     pub(crate) id: NotificationId,
 }
 
+/// A quit request waiting for a repository mutation that must not be interrupted.
+pub(crate) struct OperationBlocker {
+    /// Human-readable operation label.
+    pub(crate) label: String,
+    /// Point after which shutdown stops waiting.
+    pub(crate) deadline: Instant,
+}
+
 /// Where a resolved commit detail should be shown.
 #[derive(Clone)]
 enum CommitDest {
     /// Fill the already-open standalone commit tab with this view id.
     Tab { view: ViewId },
     /// Fill the graph browser's detail pane if it still selects this hash.
-    Browser { hash: String },
+    Browser { view: ViewId, hash: String },
 }
 
 /// Which filesystem operation the explorer's internal file clipboard will perform.
@@ -709,6 +719,8 @@ pub struct App {
     /// The irreversible close awaiting the unsaved-changes confirmation prompt, if
     /// one is armed (unified across quit and tab/pane closes).
     pub(crate) pending_close: Option<CloseRequest>,
+    /// Destructive backend work currently delaying a requested quit.
+    pub(crate) operation_blocker: Option<OperationBlocker>,
     /// The close parked mid-save after choosing "save & close": run it once the
     /// issued saves drain (see [`App::on_backend_event`]).
     pub(crate) saving_close: Option<CloseRequest>,
@@ -861,7 +873,10 @@ pub struct App {
     pending_commit_detail: HashMap<RequestId, CommitDest>,
     /// The graph browser's in-flight history-page request, so its answering
     /// [`SessionEvent::VcsLog`] fills the browser rather than the sidebar log.
-    graph_log_req: Option<RequestId>,
+    graph_log_req: Option<(RequestId, ViewId)>,
+    /// Requests cancelled because their owning view closed. Late queued events
+    /// bearing these ids are ignored and cannot resurrect UI.
+    cancelled_requests: HashSet<RequestId>,
     /// Session documents the app has opened, so closing the last tab for a document
     /// can release it (the session ref-counts; the app must balance opens/closes).
     open_docs: HashSet<DocumentId>,

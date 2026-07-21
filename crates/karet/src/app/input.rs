@@ -6,6 +6,14 @@ impl App {
     /// active modal's text input when nothing is bound.
     pub(super) fn handle_key(&mut self, key: KeyEvent) {
         self.status = None;
+        if self.operation_blocker.is_some() {
+            if key.code == KeyCode::Esc && key.modifiers.is_empty() {
+                self.operation_blocker = None;
+                self.status =
+                    Some("quit cancelled; source control operation continues".to_string());
+            }
+            return;
+        }
         // Esc dismisses a showing notification first (VS Code-style), but only when no
         // modal already owns Esc — so overlay/find/commit cancels are untouched, and
         // base Esc behaves normally whenever no toast is visible.

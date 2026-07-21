@@ -11,6 +11,10 @@ impl App {
         let spinner = (!self.pending_saves.is_empty()).then(|| Duration::from_millis(100));
         let caret = self.graphics_caret_next_wake(now);
         let loading = self.loading_reveal_wake(now);
+        let operation = self
+            .operation_blocker
+            .as_ref()
+            .map(|blocker| blocker.deadline.saturating_duration_since(now));
         // Wake to repaint (hiding the tooltip) when the commit-badge reveal expires.
         let reveal = match self.tabs.get(self.active).map(|t| &t.kind) {
             Some(TabKind::Commit {
@@ -19,7 +23,7 @@ impl App {
             }) => COMMIT_REVEAL.checked_sub(since.elapsed()),
             _ => None,
         };
-        [notif, spinner, caret, loading, reveal]
+        [notif, spinner, caret, loading, operation, reveal]
             .into_iter()
             .flatten()
             .min()
@@ -111,6 +115,9 @@ impl App {
 
     /// Handle a backend event: correlate opens to tabs, surface save/progress status.
     pub(super) fn on_backend_event(&mut self, id: Option<RequestId>, event: SessionEvent) {
+        if id.is_some_and(|request| self.cancelled_requests.contains(&request)) {
+            return;
+        }
         // A save's answering event clears its tab spinner. During "save all & quit",
         // only successful Saved responses may let the quit continue; a refused or
         // failed save keeps the app open with the dirty buffer intact.
@@ -316,6 +323,7 @@ impl App {
                 error,
             } => {
                 self.scm.operation = None;
+                let resume_quit = self.operation_blocker.take().is_some();
                 if let Some(error) = error {
                     match action {
                         VcsAction::SwitchBranch(target)
@@ -366,6 +374,9 @@ impl App {
                         },
                         _ => {},
                     }
+                }
+                if resume_quit {
+                    self.guarded_close(CloseRequest::Quit);
                 }
             },
             SessionEvent::BlameResult {
@@ -431,7 +442,10 @@ impl App {
             } => {
                 // A page requested by the graph browser fills it; anything else is the
                 // sidebar log.
-                if id.is_some() && id == self.graph_log_req {
+                if id.is_some_and(|request| {
+                    self.graph_log_req
+                        .is_some_and(|(pending, _)| pending == request)
+                }) {
                     self.graph_log_req = None;
                     self.apply_graph_log(skip, commits, has_more);
                 } else {
@@ -445,7 +459,10 @@ impl App {
                 ..
             } => {
                 // File history only ever fills the graph browser it was opened for.
-                if id.is_some() && id == self.graph_log_req {
+                if id.is_some_and(|request| {
+                    self.graph_log_req
+                        .is_some_and(|(pending, _)| pending == request)
+                }) {
                     self.graph_log_req = None;
                     self.apply_graph_log(skip, commits, has_more);
                 }
@@ -472,22 +489,24 @@ impl App {
             SessionEvent::CommitDetailReady { detail } => {
                 let dest = id.and_then(|i| self.pending_commit_detail.get(&i).cloned());
                 match dest {
-                    Some(CommitDest::Browser { hash }) if detail.hash == hash => {
+                    Some(CommitDest::Browser { hash, .. }) if detail.hash == hash => {
                         self.fill_graph_metadata(detail);
                     },
                     Some(CommitDest::Browser { .. }) => {},
                     Some(CommitDest::Tab { view }) => self.fill_commit_metadata(view, detail),
-                    _ => self.open_commit_metadata_tab(detail),
+                    None if id.is_none() => self.open_commit_metadata_tab(detail),
+                    _ => {},
                 }
             },
             SessionEvent::CommitReady { detail, changes } => {
                 match id.and_then(|i| self.pending_commit_detail.remove(&i)) {
-                    Some(CommitDest::Browser { hash }) if detail.hash == hash => {
+                    Some(CommitDest::Browser { hash, .. }) if detail.hash == hash => {
                         self.fill_graph_detail(detail, changes);
                     },
                     Some(CommitDest::Browser { .. }) => {},
                     Some(CommitDest::Tab { view }) => self.fill_commit_tab(view, detail, changes),
-                    _ => self.open_commit_tab(detail, changes),
+                    None if id.is_none() => self.open_commit_tab(detail, changes),
+                    _ => {},
                 }
             },
             SessionEvent::RangeReady {

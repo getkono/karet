@@ -123,6 +123,46 @@
     }
 
     #[test]
+    fn closing_a_loading_commit_cancels_it_and_late_results_stay_closed() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        app.open_commit("aaaaaaa111".to_string());
+        let view = app.tabs[app.active].view;
+
+        app.request_close_active_tab();
+
+        assert!(!app.all_tabs().any(|tab| tab.view == view));
+        let cancelled = backend
+            .sent
+            .lock()
+            .map(|sent| {
+                sent.iter().any(|(_, command)| {
+                    matches!(command, SessionCommand::Cancel { request } if *request == RequestId(1))
+                })
+            })
+            .unwrap_or_default();
+        assert!(cancelled, "closing sends cooperative cancellation");
+
+        app.on_backend_event(
+            Some(RequestId(1)),
+            SessionEvent::CommitDetailReady {
+                detail: Box::new(commit_detail("aaaaaaa111", "first")),
+            },
+        );
+        app.on_backend_event(
+            Some(RequestId(1)),
+            SessionEvent::CommitReady {
+                detail: Box::new(commit_detail("aaaaaaa111", "first")),
+                changes: vec![change("a.rs", StatusKind::Modified)],
+            },
+        );
+        assert!(!app
+            .all_tabs()
+            .any(|tab| matches!(tab.kind, TabKind::Commit { .. } | TabKind::CommitLoading { .. })));
+    }
+
+    #[test]
     fn commit_detail_response_fills_the_pending_tab_in_place() {
         let backend = Arc::new(RecordingBackend::new());
         let mut app = app();

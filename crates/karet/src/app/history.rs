@@ -56,17 +56,31 @@ impl App {
                     limit: SCM_LOG_PAGE,
                 },
             };
-            self.graph_log_req = self.send_command_id(command);
+            let view = self.tabs[self.active].view;
+            self.graph_log_req = self.send_command_id(command).map(|id| (id, view));
         }
     }
 
     /// Request `hash`'s detail for the browser pane, unless it is already the shown
     /// detail (avoids re-fetching when re-selecting the same commit).
     pub(super) fn graph_request_detail(&mut self, hash: String) {
+        let view = self.tabs.get(self.active).map_or(ViewId(0), |tab| tab.view);
         if let Some(TabKind::CommitGraph { detail, .. }) = self.active_commit_graph()
             && detail.as_ref().is_some_and(|d| d.hash == hash)
         {
             return;
+        }
+        let stale: Vec<RequestId> = self
+            .pending_commit_detail
+            .iter()
+            .filter_map(|(request, destination)| {
+                matches!(destination, CommitDest::Browser { view: owner, .. } if *owner == view)
+                    .then_some(*request)
+            })
+            .collect();
+        for request in stale {
+            self.pending_commit_detail.remove(&request);
+            self.cancel_backend_request(request);
         }
         if let Some(TabKind::CommitGraph {
             detail,
@@ -87,7 +101,7 @@ impl App {
         }
         if let Some(id) = self.send_command_id(SessionCommand::CommitDetail { rev: hash.clone() }) {
             self.pending_commit_detail
-                .insert(id, CommitDest::Browser { hash });
+                .insert(id, CommitDest::Browser { view, hash });
         }
     }
 
@@ -426,7 +440,7 @@ impl App {
                     break;
                 }
             },
-            CommitDest::Browser { hash } => {
+            CommitDest::Browser { hash, .. } => {
                 for tab in self.all_tabs_mut() {
                     if let TabKind::CommitGraph {
                         commits,

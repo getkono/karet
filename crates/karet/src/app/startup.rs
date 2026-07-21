@@ -66,6 +66,7 @@ impl App {
             pending_discard: None,
             pending_explorer_delete: None,
             pending_close: None,
+            operation_blocker: None,
             saving_close: None,
             pending_swaps: None,
             pending: Vec::new(),
@@ -136,6 +137,7 @@ impl App {
             completion_matcher: karet_fuzzy::Matcher::new(),
             pending_commit_detail: HashMap::new(),
             graph_log_req: None,
+            cancelled_requests: HashSet::new(),
             open_docs: HashSet::new(),
             next_view: 1,
         }

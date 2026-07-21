@@ -138,6 +138,7 @@ async fn event_loop(
             } => {},
         }
         app.notifications.expire(Instant::now());
+        app.expire_operation_blocker(Instant::now());
 
         // Drain everything else that is ready so a burst collapses into one frame.
         while let Ok(event) = input_rx.try_recv() {
