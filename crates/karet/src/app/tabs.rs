@@ -139,10 +139,7 @@ impl App {
     /// The session document backing `tab`, if it is a registered code tab.
     pub(super) fn tab_doc(tab: &Tab) -> Option<DocumentId> {
         match &tab.kind {
-            // A preview counts as a view of its document: `reconcile_open_docs` ref-counts
-            // through here, so reporting the id keeps the document (and its snapshot
-            // stream) alive even after the source tab is closed.
-            TabKind::Code { doc, .. } | TabKind::MarkdownPreview { doc, .. } => *doc,
+            TabKind::Code { doc, .. } => *doc,
             _ => None,
         }
     }

@@ -104,11 +104,6 @@ impl App {
         self.reconcile_open_docs();
     }
 
-    /// Whether `tab` is the markdown preview of the source view `source_view`.
-    pub(super) fn previews_view(tab: &Tab, source_view: ViewId) -> bool {
-        matches!(&tab.kind, TabKind::MarkdownPreview { source_view: v, .. } if *v == source_view)
-    }
-
     /// The visible (pane-active) tab of some *non-focused* pane matching `pred`.
     pub(super) fn stored_active(&self, pred: impl Fn(&Tab) -> bool) -> Option<&Tab> {
         self.stored
@@ -125,147 +120,31 @@ impl App {
             .find(|tab| pred(tab))
     }
 
-    /// Scroll a markdown preview and its source together.
+    /// Toggle a rendered preview inside the active Markdown editor view.
     ///
-    /// The focused pane drives and the other follows. Because the driver's own scroll is
-    /// never written back, the pair cannot oscillate even though the projections are lossy
-    /// — a whole run of source lines can share one wrapped line.
-    ///
-    /// The preview only pushes once it has actually been scrolled *away* from where the
-    /// source projects it. Without that check, merely moving focus onto the preview would
-    /// nudge the source by the rounding error of a `source -> wrapped -> source` round trip.
-    ///
-    /// Runs once per frame just before drawing, so it reads the `wrapped` model the
-    /// previous draw cached; a resize therefore takes one extra frame to settle. A pair
-    /// whose halves are not both their pane's visible tab is skipped.
-    pub(crate) fn sync_markdown_preview(&mut self) {
-        let Some(focused) = self.tabs.get(self.active) else {
+    /// The preview is view-local state: it does not create another tab, pane, or
+    /// session-document reference. The source editor retains keyboard focus.
+    pub(super) fn open_markdown_preview_side(&mut self) {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
-        match &focused.kind {
-            TabKind::Code { .. } => {
-                let view = focused.view;
-                let line = focused.editor.scroll_line as usize;
-                let Some(preview) = self.stored_active_mut(|t| Self::previews_view(t, view)) else {
-                    return;
-                };
-                if let TabKind::MarkdownPreview {
-                    wrapped, scroll, ..
-                } = &mut preview.kind
-                {
-                    let row = wrapped.wrapped_line_for_source(line);
-                    *scroll = u16::try_from(row).unwrap_or(u16::MAX);
-                }
-            },
-            TabKind::MarkdownPreview {
-                source_view,
-                wrapped,
-                scroll,
-                ..
-            } => {
-                let view = *source_view;
-                let scroll = *scroll;
-                let Some(source) = self.stored_active(|t| t.view == view) else {
-                    return;
-                };
-                let source_line = source.editor.scroll_line as usize;
-                if wrapped.wrapped_line_for_source(source_line) == usize::from(scroll) {
-                    return; // already consistent: a bare focus change must not move it
-                }
-                let want = wrapped.source_line_for_wrapped(usize::from(scroll));
-                let Some(source) = self.stored_active_mut(|t| t.view == view) else {
-                    return;
-                };
-                if let TabKind::Code { buffer, .. } = &source.kind {
-                    let last = buffer.line_count().saturating_sub(1);
-                    source.editor.scroll_line = u32::try_from(want.min(last)).unwrap_or(u32::MAX);
-                }
-            },
-            _ => {},
-        }
-    }
-
-    /// Focus the existing preview of `source_view`, wherever it lives. `false` if there
-    /// is none.
-    pub(super) fn reveal_markdown_preview(&mut self, source_view: ViewId) -> bool {
-        if let Some(index) = self
-            .tabs
-            .iter()
-            .position(|t| Self::previews_view(t, source_view))
-        {
-            self.active = index;
-            self.focus = Focus::Editor;
-            return true;
-        }
-        let found = self.stored.iter().find_map(|(pane, stored)| {
-            stored
-                .tabs
-                .iter()
-                .position(|t| Self::previews_view(t, source_view))
-                .map(|index| (*pane, index))
-        });
-        let Some((pane, index)) = found else {
-            return false;
-        };
-        self.focus_pane_switch(pane);
-        self.active = index;
-        self.focus = Focus::Editor;
-        true
-    }
-
-    /// Open a rendered preview of the active Markdown file in a pane to the right.
-    ///
-    /// Focus deliberately stays in the source editor (unlike [`split_focused`]): the user
-    /// invoked this to keep typing and watch the preview follow, and it makes the editor
-    /// the scroll master (see [`sync_markdown_preview`](Self::sync_markdown_preview)).
-    pub(super) fn open_markdown_preview_side(&mut self) {
-        // Take everything the preview needs up front: the rest of this borrows `self`
-        // mutably. The rope clone is O(1), so the preview paints from it on its very
-        // first frame, before any snapshot has landed.
-        let source = self.tabs.get(self.active).and_then(|tab| match &tab.kind {
-            TabKind::Code {
-                path,
-                doc,
-                buffer,
-                text,
-                ..
-            } => {
+        let is_markdown = match &tab.kind {
+            TabKind::Code { path, text, .. } => {
                 let head = text.as_bytes();
                 let head = head.get(..crate::workspace::HEAD_BYTES).unwrap_or(head);
-                (karet_filetype::classify_ignoring_size(path, head) == FileKind::Markdown)
-                    .then(|| (path.clone(), *doc, tab.view, buffer.content_snapshot()))
+                karet_filetype::classify_ignoring_size(path, head) == FileKind::Markdown
             },
-            _ => None,
-        });
-        let Some((path, doc, source_view, buffer)) = source else {
+            _ => false,
+        };
+        if !is_markdown {
             self.status = Some("markdown preview: not a Markdown file".to_string());
             return;
-        };
-        if self.reveal_markdown_preview(source_view) {
-            return;
         }
-        let preview = Tab::markdown_preview(path, doc, source_view, buffer);
-
-        let from = self.focus_pane();
-        if !self.layout.can_split(from, SplitDir::Right, self.main_rect) {
-            // Too narrow to split: a tab in this pane still beats refusing to preview.
-            self.push_tab(preview);
-            return;
-        }
-        let mut preview = preview;
-        preview.view = self.alloc_view();
-        self.stash_focused();
-        let new_pane = self.layout.split(from, SplitDir::Right);
-        self.stored.insert(
-            new_pane,
-            StoredPane {
-                tabs: vec![preview],
-                active: 0,
-            },
-        );
-        // `split` focuses the pane it created; hand focus back to the source editor.
-        self.layout.set_focus(from);
-        self.load_focused();
+        tab.markdown_preview = tab
+            .markdown_preview
+            .take()
+            .is_none()
+            .then(MarkdownPreviewState::default);
         self.focus = Focus::Editor;
     }
 

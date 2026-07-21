@@ -143,13 +143,8 @@ impl App {
                     && let Some(path) = self.pending_open.remove(&req)
                 {
                     for tab in self.all_tabs_mut() {
-                        // A preview opened before its source registered a document binds
-                        // here too, by the path the two share.
                         let bound = match &mut tab.kind {
                             TabKind::Code {
-                                path: p, doc: d, ..
-                            }
-                            | TabKind::MarkdownPreview {
                                 path: p, doc: d, ..
                             } => Some((p, d)),
                             _ => None,
@@ -210,6 +205,7 @@ impl App {
                             bytes,
                             scroll: 0,
                         };
+                        tab.markdown_preview = None;
                     }
                 }
                 self.notify(
@@ -555,20 +551,6 @@ impl App {
     /// unsaved-changes flag).
     pub(super) fn on_snapshot(&mut self, doc: DocumentId, snap: &DocSnapshot) {
         for tab in self.all_tabs_mut() {
-            // A preview mirrors the same document: refresh its buffer and let the next
-            // draw notice the version moved and re-render. Nothing else on a preview tab
-            // (dirty, cursor, folds) is meaningful.
-            if let TabKind::MarkdownPreview {
-                doc: Some(d),
-                buffer,
-                ..
-            } = &mut tab.kind
-                && *d == doc
-                && snap.version >= buffer.version()
-            {
-                *buffer = snap.buffer.clone();
-                continue;
-            }
             let matches = matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc);
             if !matches {
                 continue;

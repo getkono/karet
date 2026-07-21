@@ -458,19 +458,9 @@ trailer<</Size 4/Root 1 0 R>>\n%%EOF";
         let _ = std::fs::write(&file, tiny_docx());
         let tab = open_file(&file);
         assert_eq!(tab.title, "report.docx");
-        let TabKind::MarkdownPreview {
-            doc,
-            source_view,
-            buffer,
-            ..
-        } = tab.kind
-        else {
+        let TabKind::MarkdownPreview { buffer, .. } = tab.kind else {
             panic!("expected a markdown preview tab for a .docx file");
         };
-        // Standalone: no session document will ever bind, and the source-view
-        // sentinel keeps the preview↔source machinery away from this tab.
-        assert_eq!(doc, None);
-        assert_eq!(source_view, crate::tab::DETACHED_SOURCE_VIEW);
         assert_eq!(buffer.text(), "# Report\n\n**bold**");
     }
 

@@ -460,7 +460,7 @@ impl Command {
             Self::OpenAnyway => "File: Open Anyway (Ignore Size Limit)",
             Self::DismissNotification => "Notifications: Dismiss",
             Self::DismissAllNotifications => "Notifications: Dismiss All",
-            Self::MarkdownPreviewSide => "Markdown: Open Preview to the Side",
+            Self::MarkdownPreviewSide => "Markdown: Toggle Preview to the Side",
             Self::SplitRight => "View: Split Editor Right",
             Self::SplitDown => "View: Split Editor Down",
             Self::FocusNextPane => "View: Focus Next Pane",

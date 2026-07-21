@@ -168,6 +168,8 @@ pub(super) struct MarkdownPreviewRender<'a> {
     pub(super) hover: Option<(u16, u16)>,
     pub(super) source: &'a Path,
     pub(super) root: &'a Path,
+    /// Source editor line to align with, for an in-editor preview.
+    pub(super) source_scroll: Option<usize>,
 }
 
 pub(super) fn draw_markdown_preview(
@@ -183,6 +185,10 @@ pub(super) fn draw_markdown_preview(
     if *preview.rendered != Some(key) {
         *preview.wrapped = karet_markdown::parse(&preview.buffer.text()).wrap(area.width);
         *preview.rendered = Some(key);
+    }
+    if let Some(source_line) = preview.source_scroll {
+        *preview.scroll =
+            u16::try_from(preview.wrapped.wrapped_line_for_source(source_line)).unwrap_or(u16::MAX);
     }
     let mut state = MarkdownViewState {
         scroll: *preview.scroll,

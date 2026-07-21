@@ -75,6 +75,28 @@ impl App {
         }
     }
 
+    /// Scroll the active code tab's in-editor Markdown preview and align the
+    /// source editor to the preview's nearest source anchor.
+    pub(super) fn scroll_markdown_preview(&mut self, delta: i32) {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let TabKind::Code { buffer, .. } = &tab.kind else {
+            return;
+        };
+        let Some(preview) = tab.markdown_preview.as_mut() else {
+            return;
+        };
+        let max = preview.wrapped.lines.len().saturating_sub(1) as i64;
+        let next = (i64::from(preview.scroll) + i64::from(delta)).clamp(0, max);
+        preview.scroll = next as u16;
+        let source = preview
+            .wrapped
+            .source_line_for_wrapped(usize::from(preview.scroll));
+        let last = buffer.line_count().saturating_sub(1);
+        tab.editor.scroll_line = u32::try_from(source.min(last)).unwrap_or(u32::MAX);
+    }
+
     /// Scroll the active overflow-mode code tab horizontally by `delta` columns.
     pub(super) fn scroll_columns(&mut self, delta: i32) {
         let word_wrap = self.tabs.get(self.active).is_some_and(|tab| {

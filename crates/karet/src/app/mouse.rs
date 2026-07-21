@@ -377,12 +377,19 @@ impl App {
         let in_sidebar = self.sidebar_visible && rect_contains(self.sidebar_rect, point);
         let in_outline = self.outline_visible && rect_contains(self.outline_rect, point);
         let in_editor = rect_contains(self.editor_rect, point);
+        let in_markdown_preview = rect_contains(self.markdown_preview_rect, point);
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         match mouse.kind {
             MouseEventKind::ScrollDown if in_outline => self.outline_step(1),
             MouseEventKind::ScrollUp if in_outline => self.outline_step(-1),
             MouseEventKind::ScrollDown if in_sidebar => self.sidebar_wheel(3, mouse.row),
             MouseEventKind::ScrollUp if in_sidebar => self.sidebar_wheel(-3, mouse.row),
+            MouseEventKind::ScrollDown if in_markdown_preview => {
+                self.scroll_markdown_preview(3);
+            },
+            MouseEventKind::ScrollUp if in_markdown_preview => {
+                self.scroll_markdown_preview(-3);
+            },
             MouseEventKind::ScrollRight if in_editor => self.scroll_columns(3),
             MouseEventKind::ScrollLeft if in_editor => self.scroll_columns(-3),
             MouseEventKind::ScrollDown if in_editor && shift => self.scroll_columns(3),

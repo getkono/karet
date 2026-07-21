@@ -147,6 +147,7 @@ use crate::render::FileView;
 use crate::render::Section;
 use crate::tab::CommitViewState;
 use crate::tab::FindState;
+use crate::tab::MarkdownPreviewState;
 use crate::tab::SearchField;
 use crate::tab::Tab;
 use crate::tab::TabKind;
@@ -809,6 +810,8 @@ pub struct App {
     pub(crate) status_hits: Vec<(u16, u16, Command)>,
     /// The active code tab's editor content area from the last frame.
     pub(crate) editor_rect: Rect,
+    /// The active code tab's in-editor Markdown preview area from the last frame.
+    pub(crate) markdown_preview_rect: Rect,
     /// Visible committed-attribution text from the last frame, for click routing.
     pub(crate) blame_rect: Option<Rect>,
     /// Visible Markdown link runs from the focused preview's last frame.

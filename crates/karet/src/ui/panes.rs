@@ -6,6 +6,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
     app.pane_frames.clear();
     app.image_area = None;
     app.editor_rect = Rect::default();
+    app.markdown_preview_rect = Rect::default();
     app.blame_rect = None;
     app.markdown_link_hits.clear();
     app.commit_badge_rect = None;
@@ -81,7 +82,8 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
             continue;
         };
         if is_focused {
-            app.editor_rect = rendered.content_rect;
+            app.editor_rect = rendered.editor_rect;
+            app.markdown_preview_rect = rendered.markdown_preview_rect;
             app.image_area = rendered.image_area;
             app.blame_rect = rendered.blame_rect;
             app.markdown_link_hits = rendered.markdown_link_hits;
@@ -153,6 +155,8 @@ pub(super) fn render_pane(
         breadcrumb_rect,
         breadcrumb_hits,
         content_rect: content,
+        editor_rect: painted.editor_rect,
+        markdown_preview_rect: painted.markdown_preview_rect,
         image_area: painted.image_area,
         commit_badge_rect: painted.badge_rect,
         commit_file_hits: painted.file_hits,

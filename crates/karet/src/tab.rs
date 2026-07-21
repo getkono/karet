@@ -28,13 +28,6 @@ use karet_text::TextBuffer;
 
 use crate::render::FileView;
 
-/// The `source_view` sentinel for a [`Tab::document_preview`]: a markdown preview
-/// with no source tab. Real view ids are allocated upward from 1 (`ViewId(0)` is
-/// the pre-assignment placeholder), so `u64::MAX` can never collide with one and
-/// every source-pairing lookup (`previews_view`, scroll sync, reveal) misses it.
-#[cfg(feature = "docx")]
-pub(crate) const DETACHED_SOURCE_VIEW: ViewId = ViewId(u64::MAX);
-
 /// The find-in-file bar state: the query, the match cursor, and the replace field
 /// (mirroring the workspace Search panel's model for a consistent UI). Lives on
 /// the [`Tab`] it was opened over, so closing the find bar (but not the tab)
@@ -82,6 +75,17 @@ pub(crate) enum SearchField {
     Find,
     /// The replacement text.
     Replace,
+}
+
+/// View-local state for a rendered Markdown preview beside a code editor.
+#[derive(Default)]
+pub(crate) struct MarkdownPreviewState {
+    /// The parsed and wrapped render model.
+    pub(crate) wrapped: WrappedDocument,
+    /// The `(document version, wrap width)` represented by [`Self::wrapped`].
+    pub(crate) rendered: Option<(u64, u16)>,
+    /// The first visible wrapped line.
+    pub(crate) scroll: u16,
 }
 
 /// How a diff tab is laid out.
@@ -157,21 +161,12 @@ pub enum TabKind {
         /// snapshot. Gates the completion auto-trigger (issue #57).
         syntax_errors: Vec<(u32, u32)>,
     },
-    /// A rendered, read-only preview of a Markdown document, shown beside the
-    /// [`Code`](TabKind::Code) tab it mirrors.
-    ///
-    /// The source of truth is the session document, not this tab: `buffer` is refreshed
-    /// from every snapshot, and the render model behind it is rebuilt lazily at draw
-    /// time (see `rendered`).
+    /// A standalone, read-only rendered Markdown document (for example converted DOCX).
+    /// Editable Markdown previews are view-local state on [`Tab`], not tabs of this kind.
     MarkdownPreview {
         /// The file path.
         path: PathBuf,
-        /// The session document previewed, once the source tab has registered one.
-        doc: Option<DocumentId>,
-        /// The [`Tab::view`] of the source tab this previews. Scrolling is synchronized
-        /// with it while both are their pane's active tab.
-        source_view: ViewId,
-        /// The latest snapshot's buffer (a cheap rope-sharing clone).
+        /// The converted Markdown buffer.
         buffer: TextBuffer,
         /// The parsed + wrapped render model, rebuilt only when `rendered` goes stale.
         wrapped: WrappedDocument,
@@ -382,6 +377,8 @@ pub struct Tab {
     pub(crate) is_symlink: bool,
     /// Cached merge-conflict decorations, keyed by the code buffer version.
     pub(crate) conflict_decorations: Option<(u64, Vec<Decoration>)>,
+    /// A rendered Markdown preview shown inside this editor view, when enabled.
+    pub(crate) markdown_preview: Option<MarkdownPreviewState>,
 }
 
 impl Tab {
@@ -402,6 +399,7 @@ impl Tab {
             is_preview: false,
             is_symlink,
             conflict_decorations: None,
+            markdown_preview: None,
         }
     }
 
@@ -411,13 +409,8 @@ impl Tab {
         Self::new("Welcome", TabKind::Welcome)
     }
 
-    /// A rendered, read-only markdown view of a converted document (e.g. a Word
-    /// `.docx`) with **no source tab behind it**: `doc` stays `None` forever (no
-    /// session document is ever registered for it) and `source_view` is the
-    /// [`DETACHED_SOURCE_VIEW`] sentinel no real view id can take, so every code
-    /// path that pairs a preview with its source — scroll sync in both directions,
-    /// preview reveal, document binding, the close guard — finds no partner and
-    /// leaves this tab alone.
+    /// A rendered, read-only Markdown view of a converted document (e.g. a Word
+    /// `.docx`) with no editable source tab or session document behind it.
     #[cfg(feature = "docx")]
     #[must_use]
     pub fn document_preview(path: PathBuf, markdown: &str) -> Self {
@@ -429,35 +422,7 @@ impl Tab {
             title,
             TabKind::MarkdownPreview {
                 path,
-                doc: None,
-                source_view: DETACHED_SOURCE_VIEW,
                 buffer: TextBuffer::from_text(markdown),
-                wrapped: WrappedDocument::default(),
-                rendered: None,
-                scroll: 0,
-            },
-        )
-    }
-
-    /// A rendered preview of the Markdown document `source_view` holds.
-    ///
-    /// `buffer` is seeded from the source tab so the preview paints on its very first
-    /// frame, before any snapshot has arrived.
-    #[must_use]
-    pub fn markdown_preview(
-        path: PathBuf,
-        doc: Option<DocumentId>,
-        source_view: ViewId,
-        buffer: TextBuffer,
-    ) -> Self {
-        let title = preview_title(&path);
-        Self::new(
-            title,
-            TabKind::MarkdownPreview {
-                path,
-                doc,
-                source_view,
-                buffer,
                 wrapped: WrappedDocument::default(),
                 rendered: None,
                 scroll: 0,
@@ -679,15 +644,6 @@ fn tab_kind_path(kind: &TabKind) -> Option<&Path> {
 #[must_use]
 pub(crate) fn commit_title(short: &str) -> String {
     format!("Commit {short}")
-}
-
-/// Human-readable title for a markdown preview tab.
-#[must_use]
-pub(crate) fn preview_title(path: &Path) -> String {
-    let name = path
-        .file_name()
-        .map_or_else(|| path.to_string_lossy(), std::ffi::OsStr::to_string_lossy);
-    format!("Preview {name}")
 }
 
 #[cfg(test)]
