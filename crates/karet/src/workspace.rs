@@ -293,6 +293,24 @@ mod tests {
         assert!(matches!(tab.kind, TabKind::Code { .. }));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn opening_a_symlink_keeps_its_filesystem_identity() -> std::io::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let dir = temp_dir();
+        let target = dir.path.join("target.rs");
+        let alias = dir.path.join("alias.rs");
+        std::fs::write(&target, "fn target() {}\n")?;
+        symlink("target.rs", &alias)?;
+
+        let tab = open_file(&alias);
+        assert!(tab.is_symlink);
+        assert_eq!(tab.path(), Some(alias.as_path()));
+        assert!(matches!(tab.kind, TabKind::Code { .. }));
+        Ok(())
+    }
+
     #[test]
     fn code_opens_with_text_and_defers_highlighting() {
         let dir = temp_dir();

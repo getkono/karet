@@ -113,7 +113,7 @@ fn tab_titles_disambiguate_duplicate_file_names() {
         test_code_tab("/repo/src/lib.rs"),
     ];
 
-    let titles = tab_display_titles(&tabs, root);
+    let titles = tab_display_titles(&tabs, root, karet_filetype::IconStyle::Unicode);
 
     assert_eq!(titles[0].prefix, "src/view/");
     assert_eq!(titles[0].name, "mod.rs");
@@ -121,6 +121,14 @@ fn tab_titles_disambiguate_duplicate_file_names() {
     assert_eq!(titles[1].name, "mod.rs");
     assert_eq!(titles[2].prefix, "");
     assert_eq!(titles[2].name, "lib.rs");
+}
+
+#[test]
+fn symbolic_link_tabs_carry_the_configured_link_marker() {
+    let mut tab = test_code_tab("/repo/alias.rs");
+    tab.is_symlink = true;
+    let titles = tab_display_titles(&[tab], Path::new("/repo"), karet_filetype::IconStyle::Ascii);
+    assert_eq!(titles[0].name, "alias.rs @");
 }
 
 #[test]

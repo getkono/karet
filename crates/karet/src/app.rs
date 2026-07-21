@@ -981,6 +981,8 @@ fn retarget_tab_path(tab: &mut Tab, path: &Path) {
     };
     if let Some(p) = target {
         *p = path.to_path_buf();
+        tab.is_symlink =
+            std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink());
         if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
             tab.title = name.to_string();
         }
