@@ -1,6 +1,53 @@
 use super::*;
 
 impl App {
+    /// Format every GFM table in the active Markdown document as one undoable edit.
+    pub(super) fn format_markdown_tables(&mut self) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        if !matches!(
+            &tab.kind,
+            TabKind::Code { path, .. }
+                if karet_filetype::file_type_for_path(path).name() == "Markdown"
+        ) {
+            self.status = Some("Table formatting is available for Markdown files".to_string());
+            return;
+        }
+        let TabKind::Code { buffer, .. } = &tab.kind else {
+            return;
+        };
+        let original = buffer.text();
+        let ranges = karet_markdown::table_line_ranges(&original);
+        if ranges.is_empty() {
+            self.status = Some("No Markdown tables found".to_string());
+            return;
+        }
+        let formatted = karet_markdown::format_tables(&original);
+        if formatted == original {
+            self.status = Some("Markdown tables are already formatted".to_string());
+            return;
+        }
+        let primary = tab.editor.cursor();
+        let cursors = tab.editor.cursors().clone();
+        self.submit_edit(move |caret, _selection, buffer, base| {
+            (caret == primary).then(|| editing::replace_document(buffer, formatted.clone(), base))
+        });
+        if let Some(Tab {
+            kind: TabKind::Code { buffer, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            editor.set_cursor_state(buffer, cursors);
+        }
+        self.status = Some(format!(
+            "Formatted {} Markdown table{}",
+            ranges.len(),
+            if ranges.len() == 1 { "" } else { "s" }
+        ));
+    }
+
     /// The display width of hard tabs in `tab`, after per-document EditorConfig and
     /// language settings have been resolved.
     pub(crate) fn tab_width_for(&self, tab: &Tab) -> u16 {

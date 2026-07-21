@@ -747,3 +747,16 @@ fn ctrl_k_then_v_opens_the_markdown_preview() {
     let ctrl_v = KeyChord::from_event(key(KeyCode::Char('v'), KeyModifiers::CONTROL));
     assert_eq!(resolve(ctx, &[ctrl_v]), Resolved::Command(Command::Paste));
 }
+
+#[test]
+fn ctrl_shift_i_formats_markdown_tables() {
+    let ctx = Context::focus(FocusTarget::Editor);
+    let chord = KeyChord::from_event(key(
+        KeyCode::Char('i'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ));
+    assert_eq!(
+        resolve(ctx, &[chord]),
+        Resolved::Command(Command::FormatMarkdownTables)
+    );
+}

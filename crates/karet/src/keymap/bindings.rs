@@ -55,6 +55,8 @@ pub(super) static BINDINGS: &[Binding] = &[
 
     // Markdown preview to the side (VS Code parity: `Ctrl+K V`). Inert on a non-Markdown tab.
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('v'))], Command::MarkdownPreviewSide),
+    // Markdown All in One parity on Linux: format GFM tables in the document.
+    b(Editor, true, true, false, Char('i'), Command::FormatMarkdownTables),
 
     // Source-Control panel (sidebar focus, SCM panel active). Listed before the
     // generic sidebar bindings so its keys win when both would match.

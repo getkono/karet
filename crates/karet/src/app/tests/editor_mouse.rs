@@ -34,6 +34,53 @@
     }
 
     #[test]
+    fn markdown_table_formatting_is_one_undoable_document_edit() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        app.push_tab(text_tab("table.md", "|a|long|\n|-|:-:|\n|x|y|\n"));
+        let active = app.active;
+        if let Tab {
+            kind: TabKind::Code { doc, buffer, .. },
+            editor,
+            ..
+        } = &mut app.tabs[active]
+        {
+            *doc = Some(DocumentId(9));
+            editor.set_selection(buffer, LineCol::new(0, 1), LineCol::new(2, 1));
+        }
+
+        app.dispatch(Command::FormatMarkdownTables);
+
+        let TabKind::Code { text, .. } = &app.tabs[active].kind else {
+            return;
+        };
+        assert_eq!(
+            text,
+            "| a   | long |\n| --- | :--: |\n| x   |  y   |\n"
+        );
+        assert_eq!(
+            app.tabs[active].editor.selection_range(),
+            Some(Range {
+                start: LineCol::new(0, 1),
+                end: LineCol::new(2, 1),
+            })
+        );
+        let apply_count = backend
+            .sent
+            .lock()
+            .map(|sent| {
+                sent.iter()
+                    .filter(|(_, command)| {
+                        matches!(command, SessionCommand::ApplyChange { .. })
+                    })
+                    .count()
+            })
+            .unwrap_or_default();
+        assert_eq!(apply_count, 1);
+    }
+
+    #[test]
     fn copy_reports_status() {
         let mut app = app();
         app.push_tab(text_tab("t.rs", "hello world"));

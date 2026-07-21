@@ -73,6 +73,8 @@ pub enum Command {
     DismissAllNotifications,
     /// Open a rendered preview of the active Markdown file in a pane to the right.
     MarkdownPreviewSide,
+    /// Align every GFM table in the active Markdown document.
+    FormatMarkdownTables,
     /// Split the focused pane into a new pane on the right.
     SplitRight,
     /// Split the focused pane into a new pane below.
@@ -461,6 +463,7 @@ impl Command {
             Self::DismissNotification => "Notifications: Dismiss",
             Self::DismissAllNotifications => "Notifications: Dismiss All",
             Self::MarkdownPreviewSide => "Markdown: Toggle Preview to the Side",
+            Self::FormatMarkdownTables => "Markdown: Format Tables",
             Self::SplitRight => "View: Split Editor Right",
             Self::SplitDown => "View: Split Editor Down",
             Self::FocusNextPane => "View: Focus Next Pane",
@@ -774,6 +777,7 @@ impl Command {
             Self::SearchToggleCase => "case",
             Self::SearchToggleWord => "word",
             Self::MarkdownPreviewSide => "preview",
+            Self::FormatMarkdownTables => "format tables",
             // Self-evident motion, selection, and editing — no hint.
             Self::MoveTabLeft
             | Self::MoveTabRight
@@ -932,6 +936,7 @@ impl Command {
                 | Self::DismissNotification
                 | Self::DismissAllNotifications
                 | Self::MarkdownPreviewSide
+                | Self::FormatMarkdownTables
                 | Self::SplitRight
                 | Self::SplitDown
                 | Self::FocusNextPane
