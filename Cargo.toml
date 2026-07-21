@@ -110,7 +110,11 @@ tree-sitter-md         = "0.5.3"
 # Diff / markdown / image
 imara-diff    = "0.2.0"
 pulldown-cmark = "0.13.4"
-image         = "0.25.10"
+# Gamut owns every decoder it currently ships (WebP + TIFF). The narrowly
+# feature-selected `image` fallback covers formats whose gamut decoders are not
+# published yet; keep the matrix in docs/file-formats.md synchronized.
+gamut         = { version = "0.3.0", default-features = false, features = ["webp", "tiff"] }
+image         = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "bmp", "ico"] }
 # PDF rasterization (karet-pdf). `hayro` is a pure-Rust PDF interpreter/renderer
 # (`#![forbid(unsafe_code)]`, CPU-only, no C-sys deps — verified via `cargo tree`).
 # It re-exports `hayro_syntax` (parsing) and `vello_cpu` (the pixmap), so a single

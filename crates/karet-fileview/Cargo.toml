@@ -17,14 +17,14 @@ default = []
 # Compile in every tree-sitter grammar so the text branch highlights. Off by
 # default so a consumer that only renders images/hex/plain text pulls no grammars.
 all-languages = ["karet-treesitter/all-languages"]
-# The shared terminal-image primitives (Kitty escape + halfblock rendering). These
-# pull the `image` raster crate, so they are gated on. Enabled automatically by
-# `images` and `pdf`; a consumer rarely selects it directly.
-raster = ["dep:image", "dep:base64"]
-# Decode & render raster image FILES: adds the image-codec entry points on top of
-# the shared `raster` primitives. Off by default so a consumer that never opens
-# images pulls no image codecs.
-images = ["raster"]
+# The shared terminal-image primitives (Kitty escape + dependency-free halfblock
+# resampling). Enabled automatically by `images` and `pdf`; a consumer rarely
+# selects it directly.
+raster = ["dep:base64"]
+# Decode & render raster image FILES. Gamut owns the formats for which it ships a
+# decoder; `image` temporarily covers the remaining formats (see the documented
+# capability matrix). Both stay absent from raster/PDF-only consumers.
+images = ["raster", "dep:gamut", "dep:image"]
 # Rasterize PDF pages (via karet-pdf/hayro) into the Kitty image path. Off by
 # default so a consumer that never opens PDFs pulls neither hayro nor its deps; it
 # reuses the shared `raster` primitives to display the rendered page.
@@ -45,7 +45,8 @@ karet-editor.workspace = true         # renders the highlighted text branch (rea
 karet-pdf = { workspace = true, optional = true }  # PDF page rasterization (behind `pdf`)
 karet-docx = { workspace = true, optional = true } # DOCX → markdown conversion (behind `docx`)
 ratatui.workspace = true
-image = { workspace = true, optional = true }   # image decode + halfblock rendering (behind `raster`)
+gamut = { workspace = true, optional = true }  # pure-Rust WebP/TIFF decoding (behind `images`)
+image = { workspace = true, optional = true }  # remaining published decoders (behind `images`)
 base64 = { workspace = true, optional = true }  # Kitty graphics protocol payload encoding (behind `raster`)
 thiserror.workspace = true
 
