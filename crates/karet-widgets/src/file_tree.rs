@@ -52,3 +52,4 @@ pub use state::PendingEdit;
 pub use view::FileTree;
 
 use crate::ListSelection;
+use crate::glyph::UiIcon;

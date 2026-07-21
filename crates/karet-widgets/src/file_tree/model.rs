@@ -5,6 +5,7 @@ use super::*;
 pub(super) struct Entry {
     pub(super) path: PathBuf,
     pub(super) is_dir: bool,
+    pub(super) is_symlink: bool,
     pub(super) ignored: bool,
 }
 
@@ -131,23 +132,25 @@ pub(super) fn read_dir_sorted(
         // The non-ignored subset; anything in `all` but not here is gitignored.
         let visible: BTreeSet<PathBuf> = walk_immediate(dir, show_hidden, true)
             .into_iter()
-            .map(|(p, _)| p)
+            .map(|(path, _, _)| path)
             .collect();
         all.into_iter()
-            .map(|(path, is_dir)| {
+            .map(|(path, is_dir, is_symlink)| {
                 let ignored = !visible.contains(&path);
                 Entry {
                     path,
                     is_dir,
+                    is_symlink,
                     ignored,
                 }
             })
             .collect()
     } else {
         all.into_iter()
-            .map(|(path, is_dir)| Entry {
+            .map(|(path, is_dir, is_symlink)| Entry {
                 path,
                 is_dir,
+                is_symlink,
                 ignored: false,
             })
             .collect()
@@ -166,7 +169,7 @@ pub(super) fn walk_immediate(
     dir: &Path,
     show_hidden: bool,
     git_ignore: bool,
-) -> Vec<(PathBuf, bool)> {
+) -> Vec<(PathBuf, bool, bool)> {
     let mut builder = ignore::WalkBuilder::new(dir);
     builder
         .max_depth(Some(1))
@@ -183,7 +186,8 @@ pub(super) fn walk_immediate(
         .filter(|e| e.file_name() != std::ffi::OsStr::new(".git"))
         .map(|e| {
             let is_dir = e.file_type().is_some_and(|t| t.is_dir());
-            (e.path().to_path_buf(), is_dir)
+            let is_symlink = e.file_type().is_some_and(|t| t.is_symlink());
+            (e.path().to_path_buf(), is_dir, is_symlink)
         })
         .collect()
 }

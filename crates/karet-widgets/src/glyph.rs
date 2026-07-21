@@ -32,6 +32,8 @@ pub enum UiIcon {
     Refresh,
     /// The explorer "collapse all folders" toolbar action.
     CollapseAll,
+    /// A filesystem symbolic-link marker.
+    Symlink,
 }
 
 impl UiIcon {
@@ -57,6 +59,7 @@ impl UiIcon {
             Self::NewFolder => '\u{f07b}',     // folder
             Self::Refresh => '\u{f021}',       // refresh
             Self::CollapseAll => '\u{f066}',   // compress
+            Self::Symlink => '\u{f0c1}',       // link
         }
     }
 
@@ -72,6 +75,7 @@ impl UiIcon {
             Self::NewFolder => '\u{25B0}',     // ▰ (folder-ish block)
             Self::Refresh => '\u{21BB}',       // ↻
             Self::CollapseAll => '\u{2212}',   // − (minus / collapse)
+            Self::Symlink => '\u{2197}',       // ↗ (redirect / link)
         }
     }
 
@@ -87,6 +91,7 @@ impl UiIcon {
             Self::NewFolder => 'D', // new directory
             Self::Refresh => 'R',
             Self::CollapseAll => '-',
+            Self::Symlink => '@',
         }
     }
 }
@@ -114,6 +119,7 @@ mod tests {
             UiIcon::NewFolder,
             UiIcon::Refresh,
             UiIcon::CollapseAll,
+            UiIcon::Symlink,
         ] {
             assert!(icon.glyph(IconStyle::Ascii).is_ascii_graphic());
         }

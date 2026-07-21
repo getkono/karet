@@ -212,7 +212,9 @@ impl StatefulWidget for FileTree<'_> {
             } else {
                 ' '
             };
-            let icon = if row.is_dir {
+            let icon = if row.is_symlink {
+                UiIcon::Symlink.glyph(self.icons)
+            } else if row.is_dir {
                 directory_icon(row.expanded, self.icons).unwrap_or(' ')
             } else {
                 icon_for_path(&row.path, self.icons)
@@ -243,7 +245,7 @@ impl StatefulWidget for FileTree<'_> {
             // recede to muted so the whole row dims together.
             let icon_color = if row.ignored || cut {
                 muted
-            } else if row.is_dir {
+            } else if row.is_dir || row.is_symlink {
                 row_fg
             } else {
                 theme.role(category_role(category_for_path(&row.path)))

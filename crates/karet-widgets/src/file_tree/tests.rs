@@ -53,6 +53,53 @@ fn rebuild_lists_top_level_dirs_first() {
     assert_eq!(names(&state), vec!["sub", "a.txt"]);
 }
 
+#[cfg(unix)]
+#[test]
+fn symlink_rows_keep_the_link_identity() -> std::io::Result<()> {
+    use std::os::unix::fs::symlink;
+
+    let dir = temp_dir();
+    write(&dir.path, "target.txt", b"target");
+    symlink("target.txt", dir.path.join("alias.txt"))?;
+    let mut state = FileTreeState::new();
+    state.ensure_built(&dir.path);
+
+    let alias = state
+        .rows()
+        .iter()
+        .find(|row| row.path == dir.path.join("alias.txt"));
+    assert!(alias.is_some_and(|row| row.is_symlink && !row.is_dir));
+    assert!(
+        state
+            .rows()
+            .iter()
+            .any(|row| { row.path == dir.path.join("target.txt") && !row.is_symlink })
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_rows_render_the_link_glyph() -> std::io::Result<()> {
+    use std::os::unix::fs::symlink;
+
+    let dir = temp_dir();
+    write(&dir.path, "target.txt", b"target");
+    symlink("target.txt", dir.path.join("alias.txt"))?;
+    let mut state = FileTreeState::new();
+    let area = Rect::new(0, 0, 30, 3);
+    let mut buffer = Buffer::empty(area);
+    FileTree::new(&dir.path)
+        .icons(IconStyle::Ascii)
+        .render(area, &mut buffer, &mut state);
+    let rendered = (0..area.height)
+        .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+        .map(|point| buffer[point].symbol())
+        .collect::<String>();
+    assert!(rendered.contains(" @ alias.txt"));
+    Ok(())
+}
+
 #[test]
 fn toggle_reveals_children() {
     let dir = temp_dir();
