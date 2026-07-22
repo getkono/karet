@@ -28,6 +28,7 @@ pub(super) fn draw_pane_content(
     let mut markdown_preview_rect = Rect::default();
     match &mut tab.kind {
         TabKind::Welcome => draw_welcome(f, theme, area),
+        TabKind::Github(view) => draw_github(f, theme, area, view),
         TabKind::Code {
             path,
             buffer,

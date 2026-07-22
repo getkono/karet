@@ -33,6 +33,20 @@ impl Session {
         }
     }
 
+    /// Lazily fetch a commit's GitHub "Verified" status through the shared async
+    /// GitHub manager. A no-op when the workspace is ineligible or the feature is
+    /// disabled.
+    #[cfg(feature = "github")]
+    pub(super) fn fetch_commit_verification(&mut self, id: RequestId, hash: String) {
+        if self.github_repository.is_none() {
+            return;
+        }
+        self.send_github(id, super::github::GithubJob::Verification { hash });
+    }
+
+    /// Without the `github` feature, commit verification is unavailable — a no-op.
+    #[cfg(not(feature = "github"))]
+    pub(super) fn fetch_commit_verification(&mut self, _id: RequestId, _hash: String) {}
     /// Reconcile the commit log after a filesystem event. Reads the (cheap) `HEAD`
     /// hash; if the tip moved, prepends only the new commits, falling back to a fresh
     /// first page when history was rewritten or too many commits arrived at once.

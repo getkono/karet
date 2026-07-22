@@ -7,6 +7,7 @@ mod commands;
 mod completion;
 mod editor;
 mod explorer;
+pub(crate) mod github;
 mod history;
 mod input;
 mod lifecycle;

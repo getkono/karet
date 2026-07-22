@@ -66,6 +66,26 @@ impl App {
             .into_iter()
             .flatten()
             .min(),
+            TabKind::Github(crate::app::github::GithubViewState::Dashboard(dashboard)) => dashboard
+                .loading_since
+                .and_then(|since| loading_delay_remaining(since, now)),
+            TabKind::Github(crate::app::github::GithubViewState::Issue {
+                pending: Some(_),
+                loading_since,
+                error,
+                ..
+            }) => error
+                .is_none()
+                .then(|| loading_delay_remaining(*loading_since, now))
+                .flatten(),
+            TabKind::Github(crate::app::github::GithubViewState::PullRequest(view))
+                if view.pending.is_some() =>
+            {
+                view.error
+                    .is_none()
+                    .then(|| loading_delay_remaining(view.loading_since, now))
+                    .flatten()
+            },
             _ => None,
         });
         [sidebar, repository]
@@ -225,9 +245,18 @@ impl App {
             // refreshes open-pane highlights) whenever something changes on
             // disk. No extra debouncing needed here — the watcher already
             // debounces at the source, and the result cap keeps a re-run cheap.
-            SessionEvent::FsChanged { .. } => {
+            SessionEvent::FsChanged { paths } => {
                 if !self.search.query.is_empty() {
                     self.run_global_search();
+                }
+                if paths.iter().any(|path| {
+                    path.file_name().is_some_and(|name| name == "config")
+                        && path
+                            .parent()
+                            .and_then(Path::file_name)
+                            .is_some_and(|name| name == ".git")
+                }) {
+                    self.send_command(SessionCommand::GithubRefresh);
                 }
             },
             SessionEvent::ConfigChanged { report } => {
@@ -517,6 +546,45 @@ impl App {
             } => self.open_compare_tab(base_label, head_label, merge_base, changes),
             SessionEvent::CommitVerification { hash, status } => {
                 self.apply_commit_verification(&hash, status);
+            },
+            SessionEvent::GithubAvailability { repository, auth } => {
+                self.apply_github_availability(repository, auth);
+            },
+            SessionEvent::GithubIssues { page } => self.apply_github_issues(id, page),
+            SessionEvent::GithubPullRequests { page } => {
+                self.apply_github_pull_requests(id, page);
+            },
+            SessionEvent::GithubActions { workflows, runs } => {
+                self.apply_github_actions(id, workflows, runs);
+            },
+            SessionEvent::GithubIssueMetadataReady { assignees } => {
+                self.apply_github_issue_metadata(id, assignees);
+            },
+            SessionEvent::GithubIssueReady { issue, comments } => {
+                self.apply_github_issue(id, issue, comments);
+            },
+            SessionEvent::GithubPullRequestReady {
+                pull_request,
+                comments,
+                commits,
+                checks,
+                activity,
+                activity_error,
+            } => {
+                self.apply_github_pull_request(
+                    id,
+                    pull_request,
+                    comments,
+                    crate::app::github::GithubPullRequestSupplement {
+                        commits,
+                        checks,
+                        activity,
+                        activity_error,
+                    },
+                );
+            },
+            SessionEvent::GithubError { operation, message } => {
+                self.apply_github_error(id, operation, message);
             },
             SessionEvent::GraphReady { title, view, .. } => {
                 let count = view.nodes.len();

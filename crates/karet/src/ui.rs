@@ -4,6 +4,7 @@
 
 mod commit;
 mod content;
+mod github;
 mod panes;
 mod scm;
 mod secondary;
@@ -21,6 +22,7 @@ use std::time::UNIX_EPOCH;
 
 use commit::*;
 use content::*;
+use github::*;
 use karet_core::Decoration;
 use karet_core::Severity;
 use karet_core::ThemeRole;
@@ -353,14 +355,15 @@ fn draw_pane_tabs(
         }
         spans.push(Span::styled(title.name.clone(), style));
         spans.push(Span::styled(" ", style));
-        spans.push(Span::styled("\u{00d7}", style)); // × close glyph
+        let pinned = tab.is_github_dashboard();
+        spans.push(Span::styled(if pinned { " " } else { "\u{00d7}" }, style));
         spans.push(Span::styled(" ", style));
         let close = start + label_w;
         x = close + 2;
         hits.push(TabHit {
             start,
             end: x,
-            close,
+            close: if pinned { u16::MAX } else { close },
         });
     }
     let bar = Style::default().bg(ctx.theme.role(ThemeRole::Background).to_ratatui());
@@ -374,9 +377,10 @@ fn tab_text_style(theme: &Theme, active: bool, pane_focused: bool, preview: bool
             .fg(theme.role(ThemeRole::Foreground).to_ratatui())
             .add_modifier(Modifier::BOLD | Modifier::REVERSED)
     } else if active {
-        // Active tab of an unfocused pane: emphasized but not reversed.
+        // Active tab of an unfocused pane: a distinct accent keeps pane ownership
+        // visible without competing with the reversed tab in the focused pane.
         Style::default()
-            .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+            .fg(theme.role(ThemeRole::DiagnosticInfo).to_ratatui())
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())
