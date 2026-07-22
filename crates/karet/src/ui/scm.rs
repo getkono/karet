@@ -1,17 +1,16 @@
 use super::*;
+use crate::app::CommitInput;
 
 pub(super) fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let header_rows = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(area);
     draw_repository_header(f, app, theme, header_rows[0]);
     let area = header_rows[1];
-    // Reserve a top row for the commit-message input while it is open.
-    let list_area = if app.commit_input.is_some() {
-        let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
-        draw_commit_input(f, app, theme, rows[0]);
-        rows[1]
-    } else {
-        area
-    };
+    // The commit editor is a permanent part of Source Control. Keep it layout-stable
+    // while focus moves between the draft and the file lists.
+    let input_height = area.height.min(5);
+    let rows = Layout::vertical([Constraint::Length(input_height), Constraint::Min(0)]).split(area);
+    draw_commit_input(f, app, theme, rows[0]);
+    let list_area = rows[1];
 
     // A scrollable changes region on top; when there is commit history and room for
     // it, a resizable commit-log region pinned to the bottom with a drag divider.
@@ -312,18 +311,68 @@ pub(super) fn relative_time_at(secs: i64, now: i64) -> String {
     format!("{n}{unit} ago")
 }
 
-/// Draw the one-line commit-message input shown above the change list.
-pub(super) fn draw_commit_input(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
-    let message = app.commit_input.as_deref().unwrap_or("");
-    let line = Line::from(vec![
-        Span::styled(
-            " commit ",
-            Style::default()
-                .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(message.to_string()),
-        Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
-    ]);
-    f.render_widget(Paragraph::new(line), area);
+/// Draw the permanent multiline commit-message editor above the change list.
+pub(super) fn draw_commit_input(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        app.scm_commit_rect = Rect::default();
+        return;
+    }
+    let accent = theme.role(ThemeRole::LineNumberActive).to_ratatui();
+    let muted = theme.role(ThemeRole::LineNumber).to_ratatui();
+    let title = if app.commit_input.pending.is_some() {
+        " Commit message · committing… "
+    } else {
+        " Commit message · Ctrl+Enter commit "
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(if app.commit_input.focused {
+            accent
+        } else {
+            muted
+        }));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    app.scm_commit_rect = inner;
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let caret_row = commit_cursor_row(&app.commit_input.text, app.commit_input.cursor, inner.width);
+    let visible = inner.height;
+    if caret_row < app.commit_input.scroll {
+        app.commit_input.scroll = caret_row;
+    } else if caret_row >= app.commit_input.scroll.saturating_add(visible) {
+        app.commit_input.scroll = caret_row.saturating_sub(visible.saturating_sub(1));
+    }
+    let display = commit_input_display(&app.commit_input);
+    let paragraph = if display.is_empty() {
+        Paragraph::new("Type a commit message")
+            .style(Style::default().fg(muted))
+            .wrap(Wrap { trim: false })
+    } else {
+        Paragraph::new(display)
+            .style(Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui()))
+            .wrap(Wrap { trim: false })
+    };
+    f.render_widget(paragraph.scroll((app.commit_input.scroll, 0)), inner);
+}
+
+pub(super) fn commit_cursor_row(text: &str, cursor: usize, width: u16) -> u16 {
+    let width = usize::from(width.max(1));
+    let mut row = 0usize;
+    for line in text[..cursor.min(text.len())].split('\n') {
+        row = row.saturating_add(line.width() / width);
+    }
+    row = row.saturating_add(text[..cursor.min(text.len())].matches('\n').count());
+    u16::try_from(row).unwrap_or(u16::MAX)
+}
+
+pub(super) fn commit_input_display(input: &CommitInput) -> String {
+    let mut display = input.text.clone();
+    if input.focused {
+        display.insert(input.cursor.min(display.len()), '\u{258f}');
+    }
+    display
 }

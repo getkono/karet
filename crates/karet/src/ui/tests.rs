@@ -1,4 +1,7 @@
+use super::scm::commit_cursor_row;
+use super::scm::commit_input_display;
 use super::*;
+use crate::app::CommitInput;
 
 #[test]
 fn a_markdown_preview_is_inset_from_its_pane_on_every_side() {
@@ -69,6 +72,19 @@ fn osc8_link_bytes_reach_the_crossterm_backend() -> Result<(), Box<dyn std::erro
             .any(|window| window == sequence.as_bytes())
     );
     Ok(())
+}
+
+#[test]
+fn commit_input_display_preserves_lines_and_marks_the_caret() {
+    let input = CommitInput {
+        text: "subject\nbody".to_string(),
+        cursor: 8,
+        focused: true,
+        ..CommitInput::default()
+    };
+    assert_eq!(commit_input_display(&input), "subject\n▏body");
+    assert_eq!(commit_cursor_row(&input.text, input.cursor, 40), 1);
+    assert_eq!(commit_cursor_row("abcdefghij", 10, 5), 2);
 }
 
 #[test]

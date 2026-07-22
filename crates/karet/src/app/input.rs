@@ -53,7 +53,7 @@ impl App {
             Some(Modal::CloseConfirm)
         } else if self.overlay.is_some() {
             Some(Modal::Overlay)
-        } else if self.commit_input.is_some() {
+        } else if self.commit_input.focused {
             Some(Modal::CommitInput)
         } else if self.rev_input.is_some() {
             Some(Modal::RevInput)
@@ -169,9 +169,7 @@ impl App {
                 }
             },
             Modal::CommitInput => {
-                if let Some(message) = self.commit_input.as_mut() {
-                    message.push_str(text);
-                }
+                self.commit_paste(text);
             },
             Modal::RevInput => {
                 if let Some(rev) = self.rev_input.as_mut() {

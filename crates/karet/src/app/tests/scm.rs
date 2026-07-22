@@ -360,18 +360,83 @@
     }
 
     #[test]
-    fn commit_input_requires_staged_changes() {
+    fn permanent_commit_input_focuses_even_before_changes_are_staged() {
         let mut app = app();
-        // a.rs is staged, so the input opens.
         app.dispatch(Command::ScmCommit);
-        assert!(app.commit_input.is_some());
+        assert!(app.commit_input.focused);
 
-        // With nothing staged, it refuses and reports why.
+        // Drafting is always available; only submission requires staged changes.
         app.apply_vcs_status(Vec::new(), vec![change("b.rs", StatusKind::Modified)]);
-        app.commit_input = None;
+        app.commit_cancel();
         app.dispatch(Command::ScmCommit);
-        assert!(app.commit_input.is_none());
+        assert!(app.commit_input.focused);
+        app.commit_input.text = "draft".to_string();
+        app.commit_input.cursor = app.commit_input.text.len();
+        app.commit_submit();
         assert!(app.status.is_some());
+        assert_eq!(app.commit_input.text, "draft");
+    }
+
+    #[test]
+    fn commit_editor_supports_multiline_navigation_paste_and_submit() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        app.dispatch(Command::ScmCommit);
+        for key in [
+            KeyCode::Char('s'),
+            KeyCode::Char('u'),
+            KeyCode::Char('b'),
+            KeyCode::Char('j'),
+            KeyCode::Char('e'),
+            KeyCode::Char('c'),
+            KeyCode::Char('t'),
+            KeyCode::Enter,
+        ] {
+            app.commit_edit(KeyEvent::new(key, KeyModifiers::NONE));
+        }
+        app.commit_paste("body\r\nmore");
+        assert_eq!(app.commit_input.text, "subject\nbody\nmore");
+        app.commit_edit(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        app.commit_edit(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        app.commit_edit(KeyEvent::new(KeyCode::Char('>'), KeyModifiers::NONE));
+        assert_eq!(app.commit_input.text, "subject\n>body\nmore");
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
+        assert!(app.commit_input.pending.is_some());
+        assert_eq!(app.commit_input.text, "subject\n>body\nmore");
+        let sent = backend
+            .sent
+            .lock()
+            .map(|sent| sent.clone())
+            .unwrap_or_default();
+        assert!(sent.iter().any(|(_, command)| matches!(
+            command,
+            SessionCommand::Commit { message } if message == "subject\n>body\nmore"
+        )));
+
+        let pending = app.commit_input.pending;
+        app.on_backend_event(
+            pending,
+            SessionEvent::Notification {
+                severity: Severity::Error,
+                kind: NotificationKind::Vcs,
+                message: "identity missing".to_string(),
+            },
+        );
+        assert_eq!(app.commit_input.pending, None);
+        assert_eq!(app.commit_input.text, "subject\n>body\nmore");
+
+        app.commit_submit();
+        let pending = app.commit_input.pending;
+        app.on_backend_event(
+            pending,
+            SessionEvent::Committed {
+                oid: "1234567890abcdef".to_string(),
+            },
+        );
+        assert!(app.commit_input.text.is_empty());
+        assert_eq!(app.commit_input.pending, None);
     }
 
     #[test]
@@ -660,4 +725,3 @@
             }
         ));
     }
-
