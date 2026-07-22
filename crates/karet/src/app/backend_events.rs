@@ -165,23 +165,30 @@ impl App {
         }
         match event {
             SessionEvent::Opened { doc, .. } => {
-                self.open_docs.insert(doc);
-                if let Some(req) = id
-                    && let Some(path) = self.pending_open.remove(&req)
-                {
+                if id.is_some_and(|request| self.abandoned_open.remove(&request)) {
+                    self.send_command(SessionCommand::CloseDocument { doc });
+                    return;
+                }
+                let pending = id.and_then(|request| self.pending_open.remove(&request));
+                if let Some(pending) = pending {
+                    let mut bound = false;
                     for tab in self.all_tabs_mut() {
-                        let bound = match &mut tab.kind {
-                            TabKind::Code {
-                                path: p, doc: d, ..
-                            } => Some((p, d)),
-                            _ => None,
-                        };
-                        if let Some((p, d)) = bound
-                            && d.is_none()
-                            && *p == path
+                        if tab.view == pending.view
+                            && let TabKind::Code {
+                                path, doc: slot, ..
+                            } = &mut tab.kind
+                            && slot.is_none()
+                            && *path == pending.path
                         {
-                            *d = Some(doc);
+                            *slot = Some(doc);
+                            bound = true;
+                            break;
                         }
+                    }
+                    if bound {
+                        self.open_docs.insert(doc);
+                    } else {
+                        self.send_command(SessionCommand::CloseDocument { doc });
                     }
                 }
             },
@@ -222,6 +229,7 @@ impl App {
             SessionEvent::NotUtf8 { path } => {
                 if let Some(req) = id {
                     self.pending_open.remove(&req);
+                    self.abandoned_open.remove(&req);
                 }
                 for tab in self.all_tabs_mut() {
                     let is_pending_for_path =
@@ -518,8 +526,8 @@ impl App {
             SessionEvent::CommitDetailReady { detail } => {
                 let dest = id.and_then(|i| self.pending_commit_detail.get(&i).cloned());
                 match dest {
-                    Some(CommitDest::Browser { hash, .. }) if detail.hash == hash => {
-                        self.fill_graph_metadata(detail);
+                    Some(CommitDest::Browser { view, hash }) if detail.hash == hash => {
+                        self.fill_graph_metadata(view, detail);
                     },
                     Some(CommitDest::Browser { .. }) => {},
                     Some(CommitDest::Tab { view }) => self.fill_commit_metadata(view, detail),
@@ -528,12 +536,14 @@ impl App {
                 }
             },
             SessionEvent::CommitReady { detail, changes } => {
-                match id.and_then(|i| self.pending_commit_detail.remove(&i)) {
-                    Some(CommitDest::Browser { hash, .. }) if detail.hash == hash => {
-                        self.fill_graph_detail(detail, changes);
+                match id.and_then(|request| {
+                    self.pending_commit_detail
+                        .remove(&request)
+                        .map(|destination| (request, destination))
+                }) {
+                    Some((request, destination)) => {
+                        self.prepare_commit_result(request, destination, detail, changes);
                     },
-                    Some(CommitDest::Browser { .. }) => {},
-                    Some(CommitDest::Tab { view }) => self.fill_commit_tab(view, detail, changes),
                     None if id.is_none() => self.open_commit_tab(detail, changes),
                     _ => {},
                 }
@@ -545,7 +555,13 @@ impl App {
                 changes,
             } => self.open_compare_tab(base_label, head_label, merge_base, changes),
             SessionEvent::CommitVerification { hash, status } => {
-                self.apply_commit_verification(&hash, status);
+                let owner =
+                    id.and_then(|request| self.pending_commit_verification.remove(&request));
+                if owner.is_some_and(|(view, expected)| {
+                    expected == hash && self.all_tabs().any(|tab| tab.view == view)
+                }) {
+                    self.apply_commit_verification(&hash, status);
+                }
             },
             SessionEvent::GithubAvailability { repository, auth } => {
                 self.apply_github_availability(repository, auth);

@@ -279,7 +279,13 @@ pub struct Session {
     github_repository: Option<karet_github::RepositoryIdentity>,
     /// Commands for the asynchronous GitHub manager, installed in [`Self::start`].
     #[cfg(feature = "github")]
-    github_tx: Option<mpsc::UnboundedSender<(RequestId, GithubJob)>>,
+    github_tx: Option<
+        mpsc::UnboundedSender<(
+            RequestId,
+            GithubJob,
+            Option<crate::cancellation::Cancellation>,
+        )>,
+    >,
 }
 
 /// The most new commits [`Session::reconcile_vcs_log`] will prepend at once. Beyond

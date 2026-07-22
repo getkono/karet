@@ -82,7 +82,10 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
                 "graphical cursor is not compatible with this terminal",
             );
         }
-        event_loop(&mut terminal, &mut app, events, snaps).await
+        let Some(prepared) = app.prepare_rx.take() else {
+            return Err(eyre!("diff preparation result stream is unavailable"));
+        };
+        event_loop(&mut terminal, &mut app, events, snaps, prepared).await
     });
 
     let _ = write!(io::stdout(), "{}", image::kitty_delete_all());
@@ -99,6 +102,7 @@ async fn event_loop(
     app: &mut App,
     mut events: EventRx,
     mut snaps: SnapshotRx,
+    mut prepared: tokio::sync::mpsc::UnboundedReceiver<prepare::PrepareResult>,
 ) -> color_eyre::Result<()> {
     // A dedicated thread turns the blocking `event::read` into an async stream.
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Event>();
@@ -130,6 +134,9 @@ async fn event_loop(
             snap = snaps.recv() => if let Some((doc, snap)) = snap {
                 app.on_snapshot(doc, &snap);
             },
+            result = prepared.recv() => if let Some(result) = result {
+                app.on_prepare_result(result);
+            },
             () = async move {
                 match deadline {
                     Some(d) => tokio::time::sleep(d).await,
@@ -152,6 +159,9 @@ async fn event_loop(
         }
         while let Some((doc, snap)) = snaps.try_recv() {
             app.on_snapshot(doc, &snap);
+        }
+        while let Ok(result) = prepared.try_recv() {
+            app.on_prepare_result(result);
         }
 
         if app.should_quit {

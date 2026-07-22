@@ -41,7 +41,7 @@ impl Session {
         if self.github_repository.is_none() {
             return;
         }
-        self.send_github(id, super::github::GithubJob::Verification { hash });
+        self.send_cancellable_github(id, super::github::GithubJob::Verification { hash });
     }
 
     /// Without the `github` feature, commit verification is unavailable — a no-op.
