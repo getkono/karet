@@ -39,8 +39,10 @@ use std::time::Instant;
 
 use color_eyre::eyre::eyre;
 use crossterm::event::DisableBracketedPaste;
+use crossterm::event::DisableFocusChange;
 use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableBracketedPaste;
+use crossterm::event::EnableFocusChange;
 use crossterm::event::EnableMouseCapture;
 use crossterm::event::Event;
 use crossterm::event::KeyCode;
@@ -102,6 +104,7 @@ use karet_session::SwapInfo;
 use karet_session::VcsAction;
 use karet_session::VcsOutcome;
 use karet_session::ViewId;
+use karet_session::config::schema::AutoSave;
 use karet_session::local;
 use karet_syntax::FoldRegions;
 use karet_text::EditCause;
@@ -879,7 +882,9 @@ pub struct App {
     abandoned_open: HashSet<RequestId>,
     /// In-flight save requests, mapping request id → document, so the tab's saving
     /// spinner clears when the answering event (saved or error) arrives.
-    pending_saves: HashMap<RequestId, DocumentId>,
+    pending_saves: HashMap<RequestId, backend_events::PendingSave>,
+    /// Dirty document versions waiting for the configured automatic-save trigger.
+    auto_save_pending: HashMap<DocumentId, backend_events::PendingAutoSave>,
     /// The in-flight completion request, if any (see [`crate::completion`]).
     pub(crate) pending_completion: Option<crate::completion::PendingCompletion>,
     /// The open completion popup, if any.

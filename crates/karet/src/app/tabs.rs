@@ -274,6 +274,7 @@ impl App {
         let stale: Vec<DocumentId> = self.open_docs.difference(&live).copied().collect();
         for doc in stale {
             self.open_docs.remove(&doc);
+            self.auto_save_pending.remove(&doc);
             if let Some(backend) = &self.backend {
                 let id = backend.next_id();
                 let _ = backend.send(id, SessionCommand::CloseDocument { doc });

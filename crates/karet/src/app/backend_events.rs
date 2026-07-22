@@ -1,5 +1,20 @@
 use super::*;
 
+/// An edit waiting for the configured automatic-save trigger.
+#[derive(Clone, Copy)]
+pub(super) struct PendingAutoSave {
+    /// Newest document version covered by this trigger.
+    pub(super) version: u64,
+    /// Debounce deadline, or `None` when waiting for an editor-focus change.
+    pub(super) deadline: Option<Instant>,
+}
+
+/// One save request in flight.
+#[derive(Clone, Copy)]
+pub(super) struct PendingSave {
+    pub(super) doc: DocumentId,
+}
+
 impl App {
     /// The soonest the event loop should wake for time-based UI: notification expiry,
     /// save-spinner animation, graphical-caret blink, delayed loading states, or an
@@ -9,6 +24,13 @@ impl App {
         let now = Instant::now();
         let notif = self.notifications.next_deadline(now);
         let spinner = (!self.pending_saves.is_empty()).then(|| Duration::from_millis(100));
+        let auto_save = self
+            .auto_save_pending
+            .iter()
+            .filter(|(doc, _)| !self.pending_saves.values().any(|save| save.doc == **doc))
+            .filter_map(|(_, pending)| pending.deadline)
+            .map(|deadline| deadline.saturating_duration_since(now))
+            .min();
         let caret = self.graphics_caret_next_wake(now);
         let loading = self.loading_reveal_wake(now);
         let operation = self
@@ -23,7 +45,7 @@ impl App {
             }) => COMMIT_REVEAL.checked_sub(since.elapsed()),
             _ => None,
         };
-        [notif, spinner, caret, loading, operation, reveal]
+        [notif, spinner, auto_save, caret, loading, operation, reveal]
             .into_iter()
             .flatten()
             .min()
@@ -143,8 +165,9 @@ impl App {
         // failed save keeps the app open with the dirty buffer intact.
         let mut save_failed = false;
         if let Some(req) = id
-            && let Some(doc) = self.pending_saves.remove(&req)
+            && let Some(pending) = self.pending_saves.remove(&req)
         {
+            let doc = pending.doc;
             save_failed = !matches!(event, SessionEvent::Saved { doc: saved } if saved == doc);
             for tab in self.all_tabs_mut() {
                 if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
@@ -704,6 +727,15 @@ impl App {
                     tab.editor.scroll_to(cursor.primary().head);
                 }
             }
+        }
+        if snap.dirty {
+            self.schedule_auto_save(doc, snap.version, Instant::now());
+        } else if self
+            .auto_save_pending
+            .get(&doc)
+            .is_some_and(|pending| pending.version <= snap.version)
+        {
+            self.auto_save_pending.remove(&doc);
         }
         // If the find bar is open, an edit (e.g. a replace) just changed the buffer,
         // so recompute the match highlights against the fresh text.

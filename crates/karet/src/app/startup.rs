@@ -134,6 +134,7 @@ impl App {
             pending_open: HashMap::new(),
             abandoned_open: HashSet::new(),
             pending_saves: HashMap::new(),
+            auto_save_pending: HashMap::new(),
             pending_completion: None,
             completion: None,
             completion_matcher: karet_fuzzy::Matcher::new(),
@@ -223,6 +224,7 @@ impl App {
         }
 
         self.settings = settings;
+        self.reconcile_auto_save_settings(Instant::now());
     }
 
     /// Open `path` as the initial tab at startup (used when `karet <file>` is run).
