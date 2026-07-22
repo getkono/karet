@@ -16,6 +16,8 @@ pub struct FileTreeRow {
     pub is_dir: bool,
     /// Whether the entry is an expanded directory.
     pub expanded: bool,
+    /// Whether the filesystem entry itself is a symbolic link.
+    pub is_symlink: bool,
     /// Whether the entry is gitignored (shown dimmed, VS Code style).
     pub ignored: bool,
     /// Whether this row is the in-progress inline name editor (a new file/folder
@@ -527,6 +529,7 @@ impl FileTreeState {
                         depth,
                         is_dir,
                         expanded: false,
+                        is_symlink: false,
                         ignored: false,
                         editing: true,
                     },
@@ -618,6 +621,7 @@ impl FileTreeState {
                     depth,
                     is_dir: false,
                     expanded: false,
+                    is_symlink: entry.is_symlink,
                     ignored: parent_ignored || entry.ignored,
                     editing: false,
                 });
@@ -658,6 +662,7 @@ impl FileTreeState {
             depth,
             is_dir: true,
             expanded,
+            is_symlink: first.is_symlink,
             ignored,
             editing: false,
         });

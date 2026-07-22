@@ -381,12 +381,17 @@ pub struct Tab {
     /// tab. Cleared permanently on the first edit (clean→dirty transition) or by
     /// double-clicking the file in the tree.
     pub(crate) is_preview: bool,
+    /// Whether the path opened for this view was itself a filesystem symbolic link.
+    pub(crate) is_symlink: bool,
 }
 
 impl Tab {
     /// Build a tab from a title and content.
     #[must_use]
     pub fn new(title: impl Into<String>, kind: TabKind) -> Self {
+        let is_symlink = tab_kind_path(&kind)
+            .and_then(|path| std::fs::symlink_metadata(path).ok())
+            .is_some_and(|metadata| metadata.file_type().is_symlink());
         Self {
             title: title.into(),
             kind,
@@ -396,6 +401,7 @@ impl Tab {
             saving_since: None,
             find: None,
             is_preview: false,
+            is_symlink,
         }
     }
 
@@ -787,6 +793,28 @@ impl Tab {
             label.push_str(" · mixed EOL");
         }
         Some(label)
+    }
+}
+
+fn tab_kind_path(kind: &TabKind) -> Option<&Path> {
+    match kind {
+        TabKind::Code { path, .. }
+        | TabKind::MarkdownPreview { path, .. }
+        | TabKind::Hex { path, .. }
+        | TabKind::Placeholder { path, .. } => Some(path),
+        #[cfg(feature = "images")]
+        TabKind::Image { path, .. } => Some(path),
+        #[cfg(feature = "pdf")]
+        TabKind::Document { path, .. } => Some(path),
+        TabKind::Diff { file, .. } => Some(&file.change.path),
+        TabKind::Welcome
+        | TabKind::StashPreview { .. }
+        | TabKind::Graph { .. }
+        | TabKind::LoadedConfig { .. }
+        | TabKind::CommitLoading { .. }
+        | TabKind::Commit { .. }
+        | TabKind::Compare { .. }
+        | TabKind::CommitGraph { .. } => None,
     }
 }
 

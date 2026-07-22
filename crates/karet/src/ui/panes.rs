@@ -31,6 +31,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
             let ctx = PaneCtx {
                 theme,
                 root: &app.root,
+                icon_style: app.icon_style,
                 graphics,
                 pane_focused: true,
                 editor_focused,
@@ -63,6 +64,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
             let ctx = PaneCtx {
                 theme,
                 root: &app.root,
+                icon_style: app.icon_style,
                 graphics,
                 pane_focused: false,
                 editor_focused: false,
@@ -114,17 +116,16 @@ pub(super) fn render_pane(
         Constraint::Min(0),     // content
     ])
     .split(area);
-    let (tabstrip_rect, tab_hits) = draw_pane_tabs(
-        f,
-        tabs,
-        active,
-        ctx.pane_focused,
-        ctx.theme,
-        ctx.root,
-        parts[0],
-    );
+    let (tabstrip_rect, tab_hits) = draw_pane_tabs(f, tabs, active, ctx, parts[0]);
     let (breadcrumb_rect, breadcrumb_hits) = if bc == 1 {
-        let hits = draw_pane_breadcrumb(f, tabs.get(active), ctx.theme, ctx.root, parts[1]);
+        let hits = draw_pane_breadcrumb(
+            f,
+            tabs.get(active),
+            ctx.theme,
+            ctx.root,
+            ctx.icon_style,
+            parts[1],
+        );
         (parts[1], hits)
     } else {
         (Rect::default(), Vec::new())

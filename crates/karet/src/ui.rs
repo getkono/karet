@@ -218,6 +218,7 @@ fn draw_rev_input(f: &mut Frame, rev: &str, theme: &Theme, area: Rect) {
 struct PaneCtx<'a> {
     theme: &'a Theme,
     root: &'a Path,
+    icon_style: karet_filetype::IconStyle,
     graphics: GraphicsProtocol,
     /// Whether this pane holds the window focus (affects tab-strip styling).
     pane_focused: bool,
@@ -300,28 +301,28 @@ fn draw_pane_tabs(
     f: &mut Frame,
     tabs: &[Tab],
     active: usize,
-    pane_focused: bool,
-    theme: &Theme,
-    root: &Path,
+    ctx: &PaneCtx<'_>,
     area: Rect,
 ) -> (Rect, Vec<TabHit>) {
     let mut hits = Vec::new();
     let mut spans = Vec::new();
     let mut x = area.x;
-    let titles = tab_display_titles(tabs, root);
+    let titles = tab_display_titles(tabs, ctx.root, ctx.icon_style);
     for (i, tab) in tabs.iter().enumerate() {
-        let style = tab_text_style(theme, i == active, pane_focused, tab.is_preview);
+        let style = tab_text_style(ctx.theme, i == active, ctx.pane_focused, tab.is_preview);
         // A pre-allocated 1-cell status slot keeps the layout stable: `●` for
         // unsaved changes (a spinner frame while a slow save writes), else blank.
         let mark = save_mark(tab);
         let title = &titles[i];
-        let label_w = (4 + title.prefix.chars().count() + title.name.chars().count()) as u16;
+        let label_w = 4u16
+            .saturating_add(cell_width(&title.prefix))
+            .saturating_add(cell_width(&title.name));
         let start = x;
         spans.push(Span::styled(format!(" {mark} "), style));
         if !title.prefix.is_empty() {
             spans.push(Span::styled(
                 title.prefix.clone(),
-                tab_prefix_style(theme, style, i == active, pane_focused),
+                tab_prefix_style(ctx.theme, style, i == active, ctx.pane_focused),
             ));
         }
         spans.push(Span::styled(title.name.clone(), style));
@@ -337,7 +338,7 @@ fn draw_pane_tabs(
             close: if pinned { u16::MAX } else { close },
         });
     }
-    let bar = Style::default().bg(theme.role(ThemeRole::Background).to_ratatui());
+    let bar = Style::default().bg(ctx.theme.role(ThemeRole::Background).to_ratatui());
     f.render_widget(Paragraph::new(Line::from(spans)).style(bar), area);
     (area, hits)
 }
@@ -380,17 +381,30 @@ struct TabDisplayTitle {
     name: String,
 }
 
-fn tab_display_titles(tabs: &[Tab], root: &Path) -> Vec<TabDisplayTitle> {
+fn tab_display_titles(
+    tabs: &[Tab],
+    root: &Path,
+    icon_style: karet_filetype::IconStyle,
+) -> Vec<TabDisplayTitle> {
     tabs.iter()
         .map(|tab| {
-            let name = tab_name(tab);
-            let duplicate = tabs.iter().filter(|other| tab_name(other) == name).count() > 1;
+            let raw_name = tab_name(tab);
+            let duplicate = tabs
+                .iter()
+                .filter(|other| tab_name(other) == raw_name)
+                .count()
+                > 1;
             let prefix = if duplicate {
                 tab.path().and_then(|path| tab_parent_prefix(path, root))
             } else {
                 None
             }
             .unwrap_or_default();
+            let name = if tab.is_symlink {
+                format!("{raw_name} {}", UiIcon::Symlink.glyph(icon_style))
+            } else {
+                raw_name
+            };
             TabDisplayTitle { prefix, name }
         })
         .collect()
@@ -470,15 +484,22 @@ fn draw_pane_breadcrumb(
     tab: Option<&Tab>,
     theme: &Theme,
     root: &Path,
+    icon_style: karet_filetype::IconStyle,
     area: Rect,
 ) -> Vec<crate::app::BreadcrumbHit> {
     let Some(path) = tab.and_then(Tab::path) else {
         return Vec::new();
     };
-    let components: Vec<String> = path
+    let mut components: Vec<String> = path
         .components()
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
         .collect();
+    if tab.is_some_and(|tab| tab.is_symlink)
+        && let Some(last) = components.last_mut()
+    {
+        last.push(' ');
+        last.push(UiIcon::Symlink.glyph(icon_style));
+    }
     let crumbs = components.join(BREADCRUMB_SEP);
     let style = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
     f.render_widget(Paragraph::new(Line::styled(crumbs, style)), area);
