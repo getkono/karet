@@ -431,6 +431,8 @@ pub(crate) struct PaneFrame {
     pub(crate) tabstrip_rect: Rect,
     /// Per-tab clickable regions within the strip.
     pub(crate) tab_hits: Vec<TabHit>,
+    /// Format-specific actions right-aligned in the pane's tab strip.
+    pub(crate) action_hits: Vec<(u16, u16, Command)>,
     /// The pane's breadcrumb row (zero-sized when the active tab has no path).
     pub(crate) breadcrumb_rect: Rect,
     /// Per-segment clickable regions within the breadcrumb row.
@@ -779,6 +781,8 @@ pub struct App {
     /// The current mouse position while hovering the sidebar content, for a
     /// secondary-accent row highlight (explorer / source-control lists).
     pub(crate) hover: Option<(u16, u16)>,
+    /// Current pointer position over a pane's format-specific action strip.
+    pub(crate) pane_action_hover: Option<(u16, u16)>,
     /// The current mouse position while hovering the sidebar header controls.
     pub(crate) sidebar_header_hover: Option<(u16, u16)>,
     /// The header panel-switcher cells (`1 2 3`) from the last frame.

@@ -5,9 +5,13 @@ impl App {
     /// to cycle). Returns `true` when the event was consumed.
     pub(super) fn handle_tabstrip_mouse(&mut self, mouse: MouseEvent) -> bool {
         let point = (mouse.column, mouse.row);
-        let Some((pane, hit)) = self.pane_frames.iter().find_map(|f| {
-            rect_contains(f.tabstrip_rect, point)
-                .then(|| (f.pane, tab_at(&f.tab_hits, mouse.column)))
+        let Some((pane, hit, action)) = self.pane_frames.iter().find_map(|f| {
+            rect_contains(f.tabstrip_rect, point).then(|| {
+                let action = f.action_hits.iter().find_map(|&(start, end, command)| {
+                    (mouse.column >= start && mouse.column < end).then_some(command)
+                });
+                (f.pane, tab_at(&f.tab_hits, mouse.column), action)
+            })
         }) else {
             return false;
         };
@@ -23,7 +27,9 @@ impl App {
             },
             MouseEventKind::Down(MouseButton::Left) => {
                 self.focus_pane_switch(pane);
-                if let Some((i, on_close)) = hit {
+                if let Some(command) = action {
+                    self.dispatch(command);
+                } else if let Some((i, on_close)) = hit {
                     if on_close {
                         self.request_close_tab_at(i);
                     } else {
@@ -39,7 +45,9 @@ impl App {
             },
             MouseEventKind::Down(MouseButton::Middle) => {
                 self.focus_pane_switch(pane);
-                if let Some((i, _)) = hit {
+                if action.is_none()
+                    && let Some((i, _)) = hit
+                {
                     self.request_close_tab_at(i);
                 }
             },
@@ -47,10 +55,15 @@ impl App {
                 // Right-click on a tab selects it and opens the pane context menu
                 // for it; the strip's empty tail opens nothing.
                 self.focus_pane_switch(pane);
-                if let Some((i, _)) = hit {
+                if action.is_none()
+                    && let Some((i, _)) = hit
+                {
                     self.select_tab(i);
                     self.open_pane_context_menu(mouse.column, mouse.row);
                 }
+            },
+            MouseEventKind::Moved => {
+                self.pane_action_hover = action.map(|_| point);
             },
             _ => {},
         }
@@ -451,6 +464,7 @@ impl App {
             // explorer / source-control lists (cleared when off the content area).
             MouseEventKind::Moved => {
                 self.hover = rect_contains(self.sidebar_content_rect, point).then_some(point);
+                self.pane_action_hover = None;
                 self.sidebar_header_hover =
                     (in_sidebar && mouse.row == self.sidebar_rect.y).then_some(point);
                 self.markdown_link_hover = self

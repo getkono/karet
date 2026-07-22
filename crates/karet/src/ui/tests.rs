@@ -189,6 +189,25 @@ fn symbolic_link_tabs_carry_the_configured_link_marker() {
 }
 
 #[test]
+fn markdown_tabs_expose_preview_and_table_actions() {
+    let mut tab = test_code_tab("/repo/README.md");
+    let actions = pane_actions(&tab);
+    assert_eq!(actions.len(), 2);
+    assert_eq!(
+        actions[0],
+        (UiIcon::Preview, Command::MarkdownPreviewSide, false)
+    );
+    assert_eq!(
+        actions[1],
+        (UiIcon::FormatTable, Command::FormatMarkdownTables, false)
+    );
+
+    tab.markdown_preview = Some(crate::tab::MarkdownPreviewState::default());
+    assert!(pane_actions(&tab)[0].2);
+    assert!(pane_actions(&test_code_tab("/repo/main.rs")).is_empty());
+}
+
+#[test]
 fn active_tab_prefix_keeps_active_fill() {
     let theme = Theme::dark();
     let base = tab_text_style(&theme, true, true, false);
