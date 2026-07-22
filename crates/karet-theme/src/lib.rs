@@ -142,7 +142,7 @@ impl Emphasis {
 }
 
 /// A resolved color theme: maps token classes and UI roles to colors.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Theme {
     tokens: [Rgba; TOKEN_COUNT],
     emphasis: [Emphasis; TOKEN_COUNT],

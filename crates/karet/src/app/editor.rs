@@ -555,13 +555,14 @@ impl App {
     /// Register the code tab at `idx` with the session so it can be edited, if it is
     /// an as-yet-unregistered code tab and a backend is attached.
     pub(super) fn register_doc(&mut self, idx: usize) {
-        let path = match self.tabs.get(idx) {
+        let (path, view) = match self.tabs.get(idx) {
             Some(Tab {
                 kind: TabKind::Code {
                     path, doc: None, ..
                 },
+                view,
                 ..
-            }) => path.clone(),
+            }) => (path.clone(), *view),
             _ => return,
         };
         let Some(backend) = &self.backend else {
@@ -575,7 +576,7 @@ impl App {
                 language: None,
             },
         );
-        self.pending_open.insert(id, path);
+        self.pending_open.insert(id, PendingOpen { path, view });
     }
 
     /// Build an edit from the active code tab's caret/selection via `build` and

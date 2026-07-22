@@ -1,5 +1,6 @@
-use super::*;
 use unicode_width::UnicodeWidthChar;
+
+use super::*;
 
 impl App {
     /// Refresh branch, remote, recovery, and stash facts without blocking the UI.
@@ -13,7 +14,14 @@ impl App {
 
     /// Submit one ordered repository action.
     pub(super) fn run_vcs_action(&mut self, action: VcsAction) {
-        self.send_vcs(SessionCommand::VcsAction { action });
+        if self
+            .send_command_id(SessionCommand::VcsAction {
+                action: action.clone(),
+            })
+            .is_some()
+        {
+            self.scm.operation = Some(action);
+        }
     }
 
     /// Refuse to change the worktree while any editor has unsaved content, offering
@@ -466,10 +474,13 @@ impl App {
     /// Open the full-screen commit graph browser and request its first history page.
     pub(super) fn open_commit_graph(&mut self) {
         self.push_tab(Tab::commit_graph(None, "Commits"));
-        self.graph_log_req = self.send_command_id(SessionCommand::VcsLog {
-            skip: 0,
-            limit: SCM_LOG_PAGE,
-        });
+        let view = self.tabs[self.active].view;
+        self.graph_log_req = self
+            .send_command_id(SessionCommand::VcsLog {
+                skip: 0,
+                limit: SCM_LOG_PAGE,
+            })
+            .map(|id| (id, view));
     }
 
     /// Open the graph browser scoped to the active file's history (`git log -- file`).
@@ -489,11 +500,14 @@ impl App {
             .unwrap_or("history")
             .to_string();
         self.push_tab(Tab::commit_graph(Some(path.clone()), format!("⌥ {name}")));
-        self.graph_log_req = self.send_command_id(SessionCommand::FileHistory {
-            path,
-            skip: 0,
-            limit: SCM_LOG_PAGE,
-        });
+        let view = self.tabs[self.active].view;
+        self.graph_log_req = self
+            .send_command_id(SessionCommand::FileHistory {
+                path,
+                skip: 0,
+                limit: SCM_LOG_PAGE,
+            })
+            .map(|id| (id, view));
     }
 
     /// Open the go-to-commit input; the typed revision resolves via [`open_commit`].

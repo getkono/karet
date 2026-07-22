@@ -56,17 +56,55 @@ impl App {
                     limit: SCM_LOG_PAGE,
                 },
             };
-            self.graph_log_req = self.send_command_id(command);
+            let view = self.tabs[self.active].view;
+            self.graph_log_req = self.send_command_id(command).map(|id| (id, view));
         }
     }
 
     /// Request `hash`'s detail for the browser pane, unless it is already the shown
     /// detail (avoids re-fetching when re-selecting the same commit).
     pub(super) fn graph_request_detail(&mut self, hash: String) {
+        let view = self.tabs.get(self.active).map_or(ViewId(0), |tab| tab.view);
         if let Some(TabKind::CommitGraph { detail, .. }) = self.active_commit_graph()
             && detail.as_ref().is_some_and(|d| d.hash == hash)
         {
             return;
+        }
+        let stale: Vec<RequestId> = self
+            .pending_commit_detail
+            .iter()
+            .filter_map(|(request, destination)| {
+                matches!(destination, CommitDest::Browser { view: owner, .. } if *owner == view)
+                    .then_some(*request)
+            })
+            .collect();
+        for request in stale {
+            self.pending_commit_detail.remove(&request);
+            self.cancel_backend_request(request);
+        }
+        let stale_preparation: Vec<RequestId> = self
+            .pending_commit_preparation
+            .iter()
+            .filter_map(|(request, pending)| {
+                matches!(pending.destination, CommitDest::Browser { view: owner, .. } if owner == view)
+                    .then_some(*request)
+            })
+            .collect();
+        for request in stale_preparation {
+            if let Some(pending) = self.pending_commit_preparation.remove(&request) {
+                pending
+                    .cancelled
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let stale_verification: Vec<RequestId> = self
+            .pending_commit_verification
+            .iter()
+            .filter_map(|(request, (owner, _))| (*owner == view).then_some(*request))
+            .collect();
+        for request in stale_verification {
+            self.pending_commit_verification.remove(&request);
+            self.cancel_backend_request(request);
         }
         if let Some(TabKind::CommitGraph {
             detail,
@@ -87,7 +125,7 @@ impl App {
         }
         if let Some(id) = self.send_command_id(SessionCommand::CommitDetail { rev: hash.clone() }) {
             self.pending_commit_detail
-                .insert(id, CommitDest::Browser { hash });
+                .insert(id, CommitDest::Browser { view, hash });
         }
     }
 
@@ -159,10 +197,13 @@ impl App {
 
     /// Fill the graph browser's metadata pane from a resolved commit, and fire the lazy
     /// GitHub verification fetch. A no-op if no browser is open.
-    pub(super) fn fill_graph_metadata(&mut self, detail: Box<CommitDetail>) {
+    pub(super) fn fill_graph_metadata(&mut self, view: ViewId, detail: Box<CommitDetail>) {
         let hash = detail.hash.clone();
         let mut filled = false;
         for tab in self.all_tabs_mut() {
+            if tab.view != view {
+                continue;
+            }
             if let TabKind::CommitGraph {
                 commits,
                 selected,
@@ -189,7 +230,7 @@ impl App {
             }
         }
         if filled {
-            self.send_vcs(SessionCommand::FetchCommitVerification { hash });
+            self.request_commit_verification(view, hash);
         }
     }
 
@@ -197,13 +238,17 @@ impl App {
     /// GitHub verification fetch. A no-op if no browser is open.
     pub(super) fn fill_graph_detail(
         &mut self,
+        view: ViewId,
         detail: Box<CommitDetail>,
-        changes: Vec<FileChange>,
+        prepared: Vec<FileView>,
     ) {
-        let syntax = self.syntax;
         let hash = detail.hash.clone();
+        let mut prepared = Some(prepared);
         let mut filled = false;
         for tab in self.all_tabs_mut() {
+            if tab.view != view {
+                continue;
+            }
             if let TabKind::CommitGraph {
                 commits,
                 selected,
@@ -222,11 +267,7 @@ impl App {
                 }
                 let keep_verification = slot.as_ref().is_some_and(|d| d.hash == hash)
                     && verification.as_ref().is_some();
-                *files = changes
-                    .iter()
-                    .cloned()
-                    .map(|c| FileView::new(c, Section::Staged, syntax))
-                    .collect();
+                *files = prepared.take().unwrap_or_default();
                 *slot = Some(detail.clone());
                 *files_loading_since = None;
                 *files_error = None;
@@ -238,7 +279,7 @@ impl App {
             }
         }
         if filled {
-            self.send_vcs(SessionCommand::FetchCommitVerification { hash });
+            self.request_commit_verification(view, hash);
         }
     }
 
@@ -282,7 +323,8 @@ impl App {
             .collect();
         let hash = detail.hash.clone();
         self.push_tab(Tab::commit(detail, files));
-        self.send_vcs(SessionCommand::FetchCommitVerification { hash });
+        let view = self.tabs[self.active].view;
+        self.request_commit_verification(view, hash);
     }
 
     /// Open a standalone commit tab with metadata visible while changed files are still
@@ -297,7 +339,8 @@ impl App {
         {
             *files_loading_since = Some(Instant::now());
         }
-        self.send_vcs(SessionCommand::FetchCommitVerification { hash });
+        let view = self.tabs[self.active].view;
+        self.request_commit_verification(view, hash);
     }
 
     /// Fill an already-open pending commit tab with metadata, leaving its changed-file
@@ -335,7 +378,7 @@ impl App {
             break;
         }
         if filled {
-            self.send_vcs(SessionCommand::FetchCommitVerification { hash });
+            self.request_commit_verification(view, hash);
         }
     }
 
@@ -346,14 +389,9 @@ impl App {
         &mut self,
         view: ViewId,
         detail: Box<CommitDetail>,
-        changes: Vec<FileChange>,
+        prepared: Vec<FileView>,
     ) {
-        let mut files = Some(
-            changes
-                .into_iter()
-                .map(|c| FileView::new(c, Section::Staged, self.syntax))
-                .collect::<Vec<_>>(),
-        );
+        let mut files = Some(prepared);
         let hash = detail.hash.clone();
         let title = commit_title(&detail.short_hash);
         let mut detail = Some(detail);
@@ -393,7 +431,77 @@ impl App {
             }
         }
         if filled {
-            self.send_vcs(SessionCommand::FetchCommitVerification { hash });
+            self.request_commit_verification(view, hash);
+        }
+    }
+
+    /// Fetch a forge verdict once per `(view, commit)`, retaining ownership so close
+    /// can cancel the network future and a late response cannot affect another view.
+    pub(super) fn request_commit_verification(&mut self, view: ViewId, hash: String) {
+        if self
+            .pending_commit_verification
+            .values()
+            .any(|pending| pending.0 == view && pending.1 == hash)
+        {
+            return;
+        }
+        if let Some(request) =
+            self.send_command_id(SessionCommand::FetchCommitVerification { hash: hash.clone() })
+        {
+            self.pending_commit_verification
+                .insert(request, (view, hash));
+        }
+    }
+
+    /// Hand neutral commit changes to the app-local preparation worker. The originating
+    /// request remains view-owned until the prepared result is adopted or cancelled.
+    pub(super) fn prepare_commit_result(
+        &mut self,
+        request: RequestId,
+        destination: CommitDest,
+        detail: Box<CommitDetail>,
+        changes: Vec<FileChange>,
+    ) {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let job = prepare::PrepareJob {
+            request,
+            changes,
+            syntax: self.syntax,
+            theme: self.theme.clone(),
+            cancelled: cancelled.clone(),
+        };
+        self.pending_commit_preparation.insert(
+            request,
+            PendingCommitPreparation {
+                destination,
+                detail,
+                cancelled,
+            },
+        );
+        if self.prepare_tx.send(job).is_err() {
+            self.pending_commit_preparation.remove(&request);
+            self.status = Some("commit diff preparation worker is unavailable".to_owned());
+        }
+    }
+
+    /// Adopt one completed preparation only while its exact request and view remain live.
+    pub(super) fn on_prepare_result(&mut self, result: prepare::PrepareResult) {
+        let Some(pending) = self.pending_commit_preparation.remove(&result.request) else {
+            return;
+        };
+        if pending.cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        match pending.destination {
+            CommitDest::Browser { view, hash }
+                if pending.detail.hash == hash && self.all_tabs().any(|tab| tab.view == view) =>
+            {
+                self.fill_graph_detail(view, pending.detail, result.files);
+            },
+            CommitDest::Browser { .. } => {},
+            CommitDest::Tab { view } => {
+                self.fill_commit_tab(view, pending.detail, result.files);
+            },
         }
     }
 
@@ -426,7 +534,7 @@ impl App {
                     break;
                 }
             },
-            CommitDest::Browser { hash } => {
+            CommitDest::Browser { hash, .. } => {
                 for tab in self.all_tabs_mut() {
                     if let TabKind::CommitGraph {
                         commits,

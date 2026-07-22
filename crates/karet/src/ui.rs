@@ -88,6 +88,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::app::MIN_SCM_REGION;
+use crate::app::OperationBlocker;
 use crate::app::SIDEBAR_MIN_WIDTH;
 use crate::app::TabDrag;
 use crate::app::TabHit;
@@ -179,9 +180,35 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_rev_input(f, rev, &theme, area);
     }
     draw_context_menu(f, app, &theme, area);
+    if let Some(blocker) = &app.operation_blocker {
+        draw_operation_blocker(f, blocker, &theme, area);
+    }
 
     // Toasts float above everything, including the modal overlay.
     draw_toasts(f, app, &theme, area);
+}
+
+/// Draw the modal explaining why a destructive operation is delaying shutdown.
+fn draw_operation_blocker(f: &mut Frame, blocker: &OperationBlocker, theme: &Theme, area: Rect) {
+    let rect = centered(area, 62, 7);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Finishing source control operation")
+        .border_style(Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui()))
+        .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui()));
+    let inner = block.inner(rect);
+    f.render_widget(Clear, rect);
+    f.render_widget(block, rect);
+    let remaining = blocker
+        .deadline
+        .saturating_duration_since(Instant::now())
+        .as_secs();
+    let text = vec![
+        Line::raw(format!("{} must finish before karet exits.", blocker.label)),
+        Line::raw(""),
+        Line::raw(format!("Waiting up to {remaining}s · Esc cancels quit")),
+    ];
+    f.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), inner);
 }
 
 /// Draw the centered go-to-commit (revision) input prompt.

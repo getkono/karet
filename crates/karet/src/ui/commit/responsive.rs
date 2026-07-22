@@ -84,9 +84,10 @@ fn draw_responsive(
 
 #[derive(Default)]
 struct FileDocument {
-    lines: Vec<Line<'static>>,
+    prefix: Vec<Line<'static>>,
     anchors: Vec<u16>,
     toc_rows: Vec<u16>,
+    rows: u16,
 }
 
 fn build_files(
@@ -102,45 +103,103 @@ fn build_files(
     match file_status {
         CommitFileStatus::Loading(since) => {
             if loading_visible(since) {
-                doc.lines
+                doc.prefix
                     .push(Line::styled(" loading changed files\u{2026}", muted));
             }
+            doc.rows = u16::try_from(doc.prefix.len()).unwrap_or(u16::MAX);
             return doc;
         },
         CommitFileStatus::Failed(error) => {
-            doc.lines.push(Line::from(vec![
+            doc.prefix.push(Line::from(vec![
                 Span::styled(" changed files unavailable", label),
                 Span::raw("   "),
                 Span::styled(error.to_string(), muted),
             ]));
+            doc.rows = u16::try_from(doc.prefix.len()).unwrap_or(u16::MAX);
             return doc;
         },
         CommitFileStatus::Ready => {},
     }
 
     if stacked {
-        doc.lines.push(Line::raw(""));
-        doc.lines.push(file_summary_line(theme, files));
+        doc.prefix.push(Line::raw(""));
+        doc.prefix.push(file_summary_line(theme, files));
         for file in files {
             doc.toc_rows
-                .push(u16::try_from(doc.lines.len()).unwrap_or(u16::MAX));
-            doc.lines.push(file_index_line(theme, file, width, false));
+                .push(u16::try_from(doc.prefix.len()).unwrap_or(u16::MAX));
+            doc.prefix.push(file_index_line(theme, file, width, false));
         }
     }
 
     if files.is_empty() {
         if !stacked {
-            doc.lines.push(Line::styled(" No file changes", muted));
+            doc.prefix.push(Line::styled(" No file changes", muted));
         }
+        doc.rows = u16::try_from(doc.prefix.len()).unwrap_or(u16::MAX);
         return doc;
     }
+    let mut rows = doc.prefix.len();
     for file in files {
-        doc.lines.push(Line::raw(""));
-        doc.anchors
-            .push(u16::try_from(doc.lines.len()).unwrap_or(u16::MAX));
-        doc.lines.extend(file_card(theme, file, width));
+        rows = rows.saturating_add(1);
+        doc.anchors.push(u16::try_from(rows).unwrap_or(u16::MAX));
+        let card_rows = if width < 11 {
+            1
+        } else {
+            render::unified_line_count(file, theme).saturating_add(2)
+        };
+        rows = rows.saturating_add(card_rows);
     }
+    doc.rows = u16::try_from(rows).unwrap_or(u16::MAX);
     doc
+}
+
+fn visible_file_lines(
+    theme: &Theme,
+    files: &[render::FileView],
+    width: u16,
+    doc: &FileDocument,
+    start: u16,
+    height: u16,
+) -> Vec<Line<'static>> {
+    let start = usize::from(start);
+    let end = start.saturating_add(usize::from(height));
+    let mut lines = Vec::with_capacity(usize::from(height));
+    let prefix_end = doc.prefix.len().min(end);
+    if start < prefix_end {
+        lines.extend(doc.prefix[start..prefix_end].iter().cloned());
+    }
+    let mut row = doc.prefix.len();
+    for file in files.iter().take(doc.anchors.len()) {
+        if row >= end {
+            break;
+        }
+        if row >= start {
+            lines.push(Line::raw(""));
+        }
+        row = row.saturating_add(1);
+        let body_rows = if width < 11 {
+            0
+        } else {
+            render::unified_line_count(file, theme)
+        };
+        let card_rows = body_rows.saturating_add(if width < 11 { 1 } else { 2 });
+        let card_end = row.saturating_add(card_rows);
+        if row < end && card_end > start {
+            let local_start = start.saturating_sub(row);
+            let local_end = end.min(card_end).saturating_sub(row);
+            for local in local_start..local_end {
+                if local == 0 {
+                    lines.push(file_card_header(theme, file, width));
+                } else if local <= body_rows {
+                    lines.extend(file_card_body(theme, file, local - 1, 1));
+                } else {
+                    lines.push(file_card_footer(theme, width));
+                }
+            }
+        }
+        row = card_end;
+    }
+    lines
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -148,7 +207,7 @@ fn draw_stacked(
     f: &mut Frame,
     theme: &Theme,
     area: Rect,
-    mut header: Vec<Line<'static>>,
+    header: Vec<Line<'static>>,
     badge: Option<BadgeHit>,
     files: &[render::FileView],
     file_status: CommitFileStatus<'_>,
@@ -159,15 +218,11 @@ fn draw_stacked(
     let file_start = header_len;
     let anchors = offset_rows(&file_doc.anchors, file_start);
     remap_layout(view, CommitLayoutMode::Stacked, &anchors, header_len);
-    header.extend(file_doc.lines);
+    let total = header_len.saturating_add(file_doc.rows);
 
     let normal_height = area.height.max(1);
-    let normal_max = u16::try_from(header.len())
-        .unwrap_or(u16::MAX)
-        .saturating_sub(normal_height);
-    let sticky_max = u16::try_from(header.len())
-        .unwrap_or(u16::MAX)
-        .saturating_sub(area.height.saturating_sub(1).max(1));
+    let normal_max = total.saturating_sub(normal_height);
+    let sticky_max = total.saturating_sub(area.height.saturating_sub(1).max(1));
     view.scroll = view.scroll.min(sticky_max);
     let mut active = active_file(&anchors, view.scroll);
     let mut sticky = active.filter(|i| view.scroll > anchors[*i]);
@@ -181,12 +236,10 @@ fn draw_stacked(
 
     let body = if let Some(file) = sticky {
         let top = Rect { height: 1, ..area };
-        if let Some(line) = file_card(theme, &files[file], area.width)
-            .into_iter()
-            .next()
-        {
-            f.render_widget(Paragraph::new(line), top);
-        }
+        f.render_widget(
+            Paragraph::new(file_card_header(theme, &files[file], area.width)),
+            top,
+        );
         Rect {
             y: area.y.saturating_add(1),
             height: area.height.saturating_sub(1),
@@ -195,7 +248,27 @@ fn draw_stacked(
     } else {
         area
     };
-    f.render_widget(Paragraph::new(header).scroll((view.scroll, 0)), body);
+    let mut visible = header
+        .iter()
+        .skip(usize::from(view.scroll))
+        .take(usize::from(body.height))
+        .cloned()
+        .collect::<Vec<_>>();
+    let remaining = body
+        .height
+        .saturating_sub(u16::try_from(visible.len()).unwrap_or(u16::MAX));
+    if remaining > 0 {
+        let files_scroll = view.scroll.saturating_sub(header_len);
+        visible.extend(visible_file_lines(
+            theme,
+            files,
+            area.width,
+            &file_doc,
+            files_scroll,
+            remaining,
+        ));
+    }
+    f.render_widget(Paragraph::new(visible), body);
 
     let row_shift = u16::from(sticky.is_some());
     let toc_rows = offset_rows(&file_doc.toc_rows, file_start);
@@ -241,7 +314,7 @@ fn draw_wide(
     let file_doc = build_files(theme, files, diff_width, false, file_status);
     let anchors = offset_rows(&file_doc.anchors, header_len);
     remap_layout(view, CommitLayoutMode::Wide, &anchors, header_len);
-    let total = header_len.saturating_add(u16::try_from(file_doc.lines.len()).unwrap_or(u16::MAX));
+    let total = header_len.saturating_add(file_doc.rows);
     view.scroll = view.scroll.min(total.saturating_sub(area.height));
 
     let header_visible = header_len.saturating_sub(view.scroll).min(area.height);
@@ -266,7 +339,14 @@ fn draw_wide(
     if lower.height > 0 {
         let local_scroll = view.scroll.saturating_sub(header_len);
         f.render_widget(
-            Paragraph::new(file_doc.lines).scroll((local_scroll, 0)),
+            Paragraph::new(visible_file_lines(
+                theme,
+                files,
+                diff_width,
+                &file_doc,
+                local_scroll,
+                lower.height,
+            )),
             cols[2],
         );
         f.render_widget(Block::new().borders(Borders::LEFT), cols[1]);
@@ -478,4 +558,63 @@ fn compare_header_lines(
             label,
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use karet_vcs::FileChange;
+    use karet_vcs::StatusKind;
+
+    use super::*;
+
+    fn file(path: &str, old: &str, new: &str) -> render::FileView {
+        render::FileView::new(
+            FileChange {
+                path: PathBuf::from(path),
+                old_path: None,
+                status: StatusKind::Modified,
+                is_binary: false,
+                old: old.to_owned(),
+                new: new.to_owned(),
+            },
+            render::Section::Staged,
+            false,
+        )
+    }
+
+    #[test]
+    fn file_document_windows_match_the_complete_document() {
+        let theme = Theme::dark();
+        let files = vec![
+            file("src/a.rs", "one\ntwo\n", "one\nchanged\n"),
+            file("src/b.rs", "old\n", "new\nmore\n"),
+        ];
+        let width = 72;
+        let doc = build_files(&theme, &files, width, true, CommitFileStatus::Ready);
+        let mut complete = doc.prefix.clone();
+        for file in &files {
+            complete.push(Line::raw(""));
+            complete.extend(file_card(&theme, file, width));
+        }
+        assert_eq!(usize::from(doc.rows), complete.len());
+        for start in 0..complete.len() {
+            let actual = visible_file_lines(
+                &theme,
+                &files,
+                width,
+                &doc,
+                u16::try_from(start).unwrap_or(u16::MAX),
+                4,
+            );
+            let expected = complete
+                .iter()
+                .skip(start)
+                .take(4)
+                .cloned()
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "window starting at row {start}");
+        }
+    }
 }

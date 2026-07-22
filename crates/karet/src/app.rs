@@ -13,6 +13,7 @@ mod input;
 mod lifecycle;
 mod mouse;
 mod panes;
+mod prepare;
 mod remote_actions;
 mod runtime;
 mod scm;
@@ -32,6 +33,7 @@ use std::io::{self};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -350,6 +352,8 @@ pub(crate) const COMMIT_REVEAL: Duration = Duration::from_secs(5);
 /// Delay before rendering non-blocking loading text. Fast operations can complete
 /// without visual churn; slower ones get an explicit, stable placeholder.
 pub(crate) const LOADING_REVEAL_DELAY: Duration = Duration::from_millis(200);
+/// Maximum graceful wait for a repository mutation during application shutdown.
+const OPERATION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Half-period for the app-drawn graphical editor caret.
 const GRAPHICS_CARET_BLINK_INTERVAL: Duration = Duration::from_millis(530);
@@ -452,13 +456,34 @@ pub(crate) struct ToastHit {
     pub(crate) id: NotificationId,
 }
 
+/// A quit request waiting for a repository mutation that must not be interrupted.
+pub(crate) struct OperationBlocker {
+    /// Human-readable operation label.
+    pub(crate) label: String,
+    /// Point after which shutdown stops waiting.
+    pub(crate) deadline: Instant,
+}
+
 /// Where a resolved commit detail should be shown.
 #[derive(Clone)]
 enum CommitDest {
     /// Fill the already-open standalone commit tab with this view id.
     Tab { view: ViewId },
     /// Fill the graph browser's detail pane if it still selects this hash.
-    Browser { hash: String },
+    Browser { view: ViewId, hash: String },
+}
+
+/// A commit result whose render model is being prepared away from the UI thread.
+struct PendingCommitPreparation {
+    destination: CommitDest,
+    detail: Box<CommitDetail>,
+    cancelled: Arc<AtomicBool>,
+}
+
+/// A document open owned by one concrete editor view.
+struct PendingOpen {
+    path: PathBuf,
+    view: ViewId,
 }
 
 /// Which filesystem operation the explorer's internal file clipboard will perform.
@@ -710,6 +735,8 @@ pub struct App {
     /// The irreversible close awaiting the unsaved-changes confirmation prompt, if
     /// one is armed (unified across quit and tab/pane closes).
     pub(crate) pending_close: Option<CloseRequest>,
+    /// Destructive backend work currently delaying a requested quit.
+    pub(crate) operation_blocker: Option<OperationBlocker>,
     /// The close parked mid-save after choosing "save & close": run it once the
     /// issued saves drain (see [`App::on_backend_event`]).
     pub(crate) saving_close: Option<CloseRequest>,
@@ -847,7 +874,9 @@ pub struct App {
     /// where editing commands are inert.
     backend: Option<Arc<dyn Backend>>,
     /// Open requests awaiting their `Opened` event, mapping request id → file path.
-    pending_open: HashMap<RequestId, PathBuf>,
+    pending_open: HashMap<RequestId, PendingOpen>,
+    /// Opens whose view closed before the backend answered; a late document is released.
+    abandoned_open: HashSet<RequestId>,
     /// In-flight save requests, mapping request id → document, so the tab's saving
     /// spinner clears when the answering event (saved or error) arrives.
     pending_saves: HashMap<RequestId, DocumentId>,
@@ -860,9 +889,20 @@ pub struct App {
     /// In-flight commit-detail requests, mapping request id → where its result goes
     /// (a new standalone commit tab, or the graph browser's detail pane).
     pending_commit_detail: HashMap<RequestId, CommitDest>,
+    /// Backend commit results currently being diffed and highlighted off-thread.
+    pending_commit_preparation: HashMap<RequestId, PendingCommitPreparation>,
+    /// Lazy forge-verification reads, owned by their exact commit view.
+    pending_commit_verification: HashMap<RequestId, (ViewId, String)>,
+    /// Submission side of the app-local diff preparation worker.
+    prepare_tx: std::sync::mpsc::Sender<prepare::PrepareJob>,
+    /// Result side, taken by the runtime event loop while the TUI is running.
+    prepare_rx: Option<tokio::sync::mpsc::UnboundedReceiver<prepare::PrepareResult>>,
     /// The graph browser's in-flight history-page request, so its answering
     /// [`SessionEvent::VcsLog`] fills the browser rather than the sidebar log.
-    graph_log_req: Option<RequestId>,
+    graph_log_req: Option<(RequestId, ViewId)>,
+    /// Requests cancelled because their owning view closed. Late queued events
+    /// bearing these ids are ignored and cannot resurrect UI.
+    cancelled_requests: HashSet<RequestId>,
     /// Session documents the app has opened, so closing the last tab for a document
     /// can release it (the session ref-counts; the app must balance opens/closes).
     open_docs: HashSet<DocumentId>,

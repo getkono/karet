@@ -29,6 +29,48 @@
     }
 
     #[test]
+    fn destructive_operation_blocks_quit_with_popup_until_finished() {
+        let mut app = app();
+        app.scm.operation = Some(VcsAction::Sync);
+
+        app.dispatch(Command::Quit);
+
+        assert!(!app.should_quit);
+        assert!(app.operation_blocker.is_some());
+        let painted = screen(&mut app, 80, 16).join("\n");
+        assert!(painted.contains("Finishing source control operation"));
+        assert!(painted.contains("Sync must finish"));
+
+        app.on_backend_event(
+            Some(RequestId(7)),
+            SessionEvent::VcsOperationFinished {
+                action: VcsAction::Sync,
+                outcome: Some(VcsOutcome::Completed),
+                error: None,
+            },
+        );
+        assert!(app.operation_blocker.is_none());
+        assert!(app.should_quit, "quit resumes after the mutation finishes");
+    }
+
+    #[test]
+    fn destructive_operation_quit_can_cancel_or_reach_the_global_timeout() {
+        let mut app = app();
+        app.scm.operation = Some(VcsAction::Sync);
+        app.dispatch(Command::Quit);
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.operation_blocker.is_none());
+        assert!(!app.should_quit);
+
+        app.dispatch(Command::Quit);
+        if let Some(blocker) = app.operation_blocker.as_mut() {
+            blocker.deadline = Instant::now() - Duration::from_millis(1);
+        }
+        app.expire_operation_blocker(Instant::now());
+        assert!(app.should_quit);
+    }
+
+    #[test]
     fn quit_prompt_disabled_by_confirm_on_exit_setting() {
         let mut app = app();
         app.settings.files.confirm_on_exit = false;
@@ -208,6 +250,42 @@
         app.dispatch(Command::CloseTab);
         assert!(app.pending_close.is_none());
         assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
+    }
+
+    #[test]
+    fn closing_a_document_before_open_finishes_releases_the_late_document() {
+        let root = test_dir("late-open-close");
+        let path = root.join("slow.rs");
+        write_file(&root, "slow.rs", b"fn main() {}\n");
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = App::new(root, Vec::new(), Vec::new(), false);
+        app.backend = Some(backend.clone());
+        app.open_path(&path);
+        let view = app.tabs[app.active].view;
+
+        app.request_close_active_tab();
+        app.on_backend_event(
+            Some(RequestId(1)),
+            SessionEvent::Opened {
+                doc: DocumentId(9),
+                version: 0,
+            },
+        );
+
+        assert!(!app.all_tabs().any(|tab| tab.view == view));
+        let released = backend
+            .sent
+            .lock()
+            .map(|sent| {
+                sent.iter().any(|(_, command)| {
+                    matches!(
+                        command,
+                        SessionCommand::CloseDocument { doc } if *doc == DocumentId(9)
+                    )
+                })
+            })
+            .unwrap_or_default();
+        assert!(released, "late opens must balance the session reference");
     }
 
     #[test]

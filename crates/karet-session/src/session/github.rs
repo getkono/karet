@@ -169,7 +169,7 @@ impl Session {
                     auth: map_auth(client.auth_state()),
                 },
             ));
-            while let Some((id, job)) = rx.recv().await {
+            while let Some((id, job, cancel)) = rx.recv().await {
                 if let GithubJob::Login { token } = job {
                     match GitHubClient::authenticate(token).await {
                         Ok(authenticated) => {
@@ -194,14 +194,21 @@ impl Session {
                     }
                     continue;
                 }
-                run_job(&client, &repository, id, job, &events).await;
+                if let Some(cancel) = cancel {
+                    tokio::select! {
+                        () = cancel.cancelled() => {},
+                        () = run_job(&client, &repository, id, job, &events) => {},
+                    }
+                } else {
+                    run_job(&client, &repository, id, job, &events).await;
+                }
             }
         });
     }
 
     pub(super) fn send_github(&self, id: RequestId, job: GithubJob) {
         if let Some(tx) = self.github_tx.as_ref() {
-            let _ = tx.send((id, job));
+            let _ = tx.send((id, job, None));
         } else {
             self.emit(
                 Some(id),
@@ -211,6 +218,14 @@ impl Session {
                         .to_string(),
                 },
             );
+        }
+    }
+
+    /// Submit a safely-droppable GitHub read whose future may be abandoned on cancel.
+    pub(super) fn send_cancellable_github(&self, id: RequestId, job: GithubJob) {
+        if let Some(tx) = self.github_tx.as_ref() {
+            let cancel = self.vcs_cancellations.register(id);
+            let _ = tx.send((id, job, Some(cancel)));
         }
     }
 }

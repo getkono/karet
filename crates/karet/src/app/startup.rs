@@ -14,6 +14,7 @@ impl App {
         let mut changes = staged;
         changes.extend(working);
         let graphics = image::detect_protocol();
+        let (prepare_tx, prepare_rx) = prepare::spawn();
         Self {
             root,
             settings: Settings::default(),
@@ -66,6 +67,7 @@ impl App {
             pending_discard: None,
             pending_explorer_delete: None,
             pending_close: None,
+            operation_blocker: None,
             saving_close: None,
             pending_swaps: None,
             pending: Vec::new(),
@@ -130,12 +132,18 @@ impl App {
             should_quit: false,
             backend: None,
             pending_open: HashMap::new(),
+            abandoned_open: HashSet::new(),
             pending_saves: HashMap::new(),
             pending_completion: None,
             completion: None,
             completion_matcher: karet_fuzzy::Matcher::new(),
             pending_commit_detail: HashMap::new(),
+            pending_commit_preparation: HashMap::new(),
+            pending_commit_verification: HashMap::new(),
+            prepare_tx,
+            prepare_rx: Some(prepare_rx),
             graph_log_req: None,
+            cancelled_requests: HashSet::new(),
             open_docs: HashSet::new(),
             next_view: 1,
         }

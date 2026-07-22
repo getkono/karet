@@ -104,6 +104,19 @@ impl App {
     /// Quit additionally honors `files.confirmOnExit`; tab/pane closes are always
     /// guarded — silently discarding unsaved changes is the data-loss bug this fixes.
     pub(super) fn guarded_close(&mut self, request: CloseRequest) {
+        if matches!(request, CloseRequest::Quit)
+            && let Some(operation) = self.scm.operation.as_ref()
+        {
+            let label = format!("{operation:?}");
+            self.operation_blocker = Some(OperationBlocker {
+                label: label.clone(),
+                deadline: Instant::now() + OPERATION_SHUTDOWN_TIMEOUT,
+            });
+            self.status = Some(format!(
+                "quit waiting for source control operation {label} (maximum 60s)"
+            ));
+            return;
+        }
         let at_risk = self.docs_at_risk(request);
         let honor_setting =
             !matches!(request, CloseRequest::Quit) || self.settings.files.confirm_on_exit;
@@ -119,6 +132,8 @@ impl App {
     /// view id so a save-then-close that shifted the tab list still closes the right
     /// tab (and harmlessly no-ops if it has since vanished).
     pub(super) fn execute_close(&mut self, request: CloseRequest) {
+        let removed: HashSet<ViewId> = self.removed_tab_views(request).into_iter().collect();
+        self.cancel_loading_for_views(&removed);
         match request {
             CloseRequest::Quit => self.should_quit = true,
             CloseRequest::Tab { view } => {
@@ -130,6 +145,80 @@ impl App {
             CloseRequest::TabsToRight => self.close_tabs_to_right(),
             CloseRequest::AllTabs => self.close_all_tabs(),
         }
+    }
+
+    /// Cancel safely-droppable backend reads owned exclusively by closing views.
+    /// The views close immediately; cancelled ids remain tombstoned so already
+    /// queued progressive responses cannot recreate a tab.
+    pub(super) fn cancel_loading_for_views(&mut self, views: &HashSet<ViewId>) {
+        let abandoned: Vec<RequestId> = self
+            .pending_open
+            .iter()
+            .filter_map(|(request, pending)| views.contains(&pending.view).then_some(*request))
+            .collect();
+        for request in abandoned {
+            self.pending_open.remove(&request);
+            self.abandoned_open.insert(request);
+        }
+        let mut requests: Vec<RequestId> = self
+            .pending_commit_detail
+            .iter()
+            .filter_map(|(request, destination)| {
+                let view = match destination {
+                    CommitDest::Tab { view } | CommitDest::Browser { view, .. } => view,
+                };
+                views.contains(view).then_some(*request)
+            })
+            .collect();
+        for request in &requests {
+            self.pending_commit_detail.remove(request);
+        }
+        let preparing: Vec<RequestId> = self
+            .pending_commit_preparation
+            .iter()
+            .filter_map(|(request, pending)| {
+                let view = match &pending.destination {
+                    CommitDest::Tab { view } | CommitDest::Browser { view, .. } => view,
+                };
+                views.contains(view).then_some(*request)
+            })
+            .collect();
+        for request in preparing {
+            if let Some(pending) = self.pending_commit_preparation.remove(&request) {
+                pending
+                    .cancelled
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+            requests.push(request);
+        }
+        let verifications: Vec<RequestId> = self
+            .pending_commit_verification
+            .iter()
+            .filter_map(|(request, (view, _))| views.contains(view).then_some(*request))
+            .collect();
+        for request in verifications {
+            self.pending_commit_verification.remove(&request);
+            requests.push(request);
+        }
+        if let Some((request, view)) = self.graph_log_req
+            && views.contains(&view)
+        {
+            self.graph_log_req = None;
+            requests.push(request);
+        }
+        for request in requests {
+            self.cancel_backend_request(request);
+        }
+    }
+
+    /// Tombstone and cooperatively cancel one safely-droppable backend request.
+    pub(super) fn cancel_backend_request(&mut self, request: RequestId) {
+        self.cancelled_requests.insert(request);
+        // IDs are monotonic. Bound stale-response tombstones while retaining a wide
+        // window for progressive events that were already queued at cancellation.
+        let floor = request.0.saturating_sub(1024);
+        self.cancelled_requests.retain(|id| id.0 >= floor);
+        self.send_command(SessionCommand::Cancel { request });
     }
 
     /// At the close prompt: save exactly the at-risk documents, then run the parked
@@ -170,6 +259,19 @@ impl App {
         } else {
             "close cancelled".to_string()
         });
+    }
+
+    /// Finish a timed graceful-shutdown wait. Once the global ceiling is reached,
+    /// terminate rather than leaving the terminal trapped indefinitely.
+    pub(super) fn expire_operation_blocker(&mut self, now: Instant) {
+        if self
+            .operation_blocker
+            .as_ref()
+            .is_some_and(|blocker| now >= blocker.deadline)
+        {
+            self.operation_blocker = None;
+            self.should_quit = true;
+        }
     }
 
     /// Issue a save for each of `docs` (skipping any already in flight), tracking it

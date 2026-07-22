@@ -24,6 +24,7 @@ mod aicommit;
 pub mod api;
 pub mod backend;
 pub mod backup;
+mod cancellation;
 pub mod config;
 mod highlight;
 pub mod local;
