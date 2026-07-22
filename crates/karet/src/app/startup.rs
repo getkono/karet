@@ -134,6 +134,7 @@ impl App {
             pending_open: HashMap::new(),
             abandoned_open: HashSet::new(),
             pending_saves: HashMap::new(),
+            document_settings: HashMap::new(),
             auto_save_pending: HashMap::new(),
             pending_completion: None,
             completion: None,

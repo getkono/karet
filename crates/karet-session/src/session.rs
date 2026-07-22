@@ -48,6 +48,8 @@ use karet_syntax::SemanticBlocks;
 use karet_text::AppliedEdit;
 use karet_text::EditCause;
 use karet_text::EditContext;
+use karet_text::Encoding;
+use karet_text::Eol as TextEol;
 use karet_text::LoadError;
 use karet_text::TextBuffer;
 use karet_text::TextError;
@@ -63,7 +65,10 @@ use karet_watch::Watcher;
 use tokio::sync::mpsc;
 
 use crate::api::Command;
+use crate::api::DocumentEncoding;
 use crate::api::DocumentId;
+use crate::api::DocumentLineEnding;
+use crate::api::DocumentSettings;
 use crate::api::Event;
 #[cfg(test)]
 use crate::api::RangeSpec;
@@ -161,6 +166,55 @@ fn load_document(path: &Path) -> Result<(TextBuffer, DocFormat), LoadError> {
     }
 }
 
+fn resolve_document_settings(
+    path: &Path,
+    language: Option<&str>,
+    settings: &crate::config::Settings,
+) -> (DocumentSettings, Option<String>) {
+    match crate::editorconfig::resolve(path, language, settings) {
+        Ok(resolved) => (resolved, None),
+        Err(error) => (
+            crate::editorconfig::defaults(language, settings),
+            Some(format!("EditorConfig: {error}")),
+        ),
+    }
+}
+
+fn apply_serialization_settings(buffer: &mut TextBuffer, settings: DocumentSettings) {
+    match settings.line_ending {
+        Some(DocumentLineEnding::Lf) => buffer.set_eol(TextEol::Lf),
+        Some(DocumentLineEnding::Crlf) => buffer.set_eol(TextEol::Crlf),
+        None => {},
+    }
+    match settings.encoding {
+        Some(DocumentEncoding::Utf8) => buffer.set_encoding(Encoding::Utf8),
+        Some(DocumentEncoding::Utf8Bom) => buffer.set_encoding(Encoding::Utf8Bom),
+        None => {},
+    }
+}
+
+fn normalize_text_for_save(text: &str, settings: DocumentSettings) -> String {
+    let mut normalized = String::with_capacity(text.len().saturating_add(1));
+    for segment in text.split_inclusive('\n') {
+        if let Some(line) = segment.strip_suffix('\n') {
+            if settings.trim_trailing_whitespace {
+                normalized.push_str(line.trim_end_matches([' ', '\t']));
+            } else {
+                normalized.push_str(line);
+            }
+            normalized.push('\n');
+        } else {
+            // The specification trims whitespace preceding a newline. Whitespace
+            // at EOF has no following newline and is therefore preserved.
+            normalized.push_str(segment);
+        }
+    }
+    if settings.insert_final_newline && !normalized.is_empty() && !normalized.ends_with('\n') {
+        normalized.push('\n');
+    }
+    normalized
+}
+
 /// Save `doc` to disk, re-encoding a decoded binary format (CBOR) from its edit
 /// text. A CBOR encode error (e.g. malformed diagnostic notation after editing)
 /// leaves the file untouched and surfaces as a save failure. Returns
@@ -186,6 +240,8 @@ struct Document {
     buffer: TextBuffer,
     /// How the buffer is (de)serialized on disk.
     format: DocFormat,
+    /// Per-path behavior after application settings and EditorConfig resolution.
+    settings: DocumentSettings,
     /// The last highlights the worker produced, translated across any edits applied
     /// since. The parsed trees themselves live on the worker, not here.
     highlights: Arc<Highlights>,

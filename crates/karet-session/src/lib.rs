@@ -26,6 +26,7 @@ pub mod backend;
 pub mod backup;
 mod cancellation;
 pub mod config;
+mod editorconfig;
 mod highlight;
 pub mod local;
 mod lsp;
@@ -35,7 +36,10 @@ pub mod viz;
 
 pub use api::Command;
 pub use api::DecorationLayer;
+pub use api::DocumentEncoding;
 pub use api::DocumentId;
+pub use api::DocumentLineEnding;
+pub use api::DocumentSettings;
 pub use api::Event;
 pub use api::GithubAuth;
 pub use api::GithubAuthSource;

@@ -14,6 +14,26 @@
     }
 
     #[test]
+    fn active_indentation_uses_the_backend_resolved_document_settings() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", ""));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(9));
+        }
+        app.document_settings.insert(
+            DocumentId(9),
+            DocumentSettings {
+                insert_spaces: false,
+                indent_size: 6,
+                tab_width: 4,
+                ..DocumentSettings::default()
+            },
+        );
+
+        assert_eq!(app.active_indentation(), "\t  ");
+    }
+
+    #[test]
     fn copy_reports_status() {
         let mut app = app();
         app.push_tab(text_tab("t.rs", "hello world"));

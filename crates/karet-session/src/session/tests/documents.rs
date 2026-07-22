@@ -86,6 +86,150 @@
     }
 
     #[test]
+    fn editorconfig_settings_are_reported_and_applied_on_save() {
+        let Some((dir, path)) = write_temp("main.rs", "let x = 1;  \n") else {
+            return;
+        };
+        if std::fs::write(
+            dir.path().join(".editorconfig"),
+            "root = true\n[*.rs]\nindent_style = tab\nindent_size = 6\n\
+             tab_width = 4\nend_of_line = crlf\ncharset = utf-8-bom\n\
+             trim_trailing_whitespace = true\ninsert_final_newline = true\n",
+        )
+        .is_err()
+        {
+            return;
+        }
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let opened = events.try_recv().and_then(|(_, event)| match event {
+            Event::Opened { doc, .. } => Some(doc),
+            _ => None,
+        });
+        let settings = events.try_recv().and_then(|(_, event)| match event {
+            Event::DocumentSettingsChanged { settings, .. } => Some(settings),
+            _ => None,
+        });
+        let (Some(doc), Some(settings)) = (opened, settings) else {
+            return;
+        };
+        assert_eq!(settings.indent_size, 6);
+        assert_eq!(settings.tab_width, 4);
+        assert!(!settings.insert_spaces);
+
+        session.handle(RequestId(2), Command::Save { doc });
+
+        let bytes = std::fs::read(&path).unwrap_or_default();
+        assert_eq!(bytes, b"\xef\xbb\xbflet x = 1;\r\n");
+        assert!(session.document(doc).is_some_and(|view| {
+            view.buffer().text() == "let x = 1;\n" && !view.buffer().is_dirty()
+        }));
+    }
+
+    #[test]
+    fn editorconfig_re_resolves_for_open_documents() {
+        let Some((dir, path)) = write_temp("main.rs", "fn main() {}\n") else {
+            return;
+        };
+        let config = dir.path().join(".editorconfig");
+        if std::fs::write(&config, "root=true\n[*.rs]\nindent_size=2\n").is_err() {
+            return;
+        }
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path,
+                language: None,
+            },
+        );
+        let doc = opened_doc(&mut events);
+        let Some(doc) = doc else { return };
+        if std::fs::write(&config, "root=true\n[*.rs]\nindent_size=8\n").is_err() {
+            return;
+        }
+
+        session.refresh_document_settings(&[doc]);
+
+        let mut changed = None;
+        while let Some((_, event)) = events.try_recv() {
+            if let Event::DocumentSettingsChanged { doc: changed_doc, settings } = event
+                && changed_doc == doc
+            {
+                changed = Some(settings);
+            }
+        }
+        assert_eq!(changed.map(|settings| settings.indent_size), Some(8));
+    }
+
+    #[test]
+    fn final_newline_does_not_make_an_empty_file_nonempty() {
+        let Some((dir, path)) = write_temp("empty.txt", "") else {
+            return;
+        };
+        if std::fs::write(
+            dir.path().join(".editorconfig"),
+            "root=true\n[*]\ninsert_final_newline=true\n",
+        )
+        .is_err()
+        {
+            return;
+        }
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let Some(doc) = opened_doc(&mut events) else {
+            return;
+        };
+
+        session.handle(RequestId(2), Command::Save { doc });
+
+        assert_eq!(std::fs::read(&path).unwrap_or_default(), b"");
+    }
+
+    #[test]
+    fn disabled_final_newline_does_not_remove_an_existing_newline() {
+        let Some((dir, path)) = write_temp("note.txt", "kept\n") else {
+            return;
+        };
+        if std::fs::write(
+            dir.path().join(".editorconfig"),
+            "root=true\n[*]\ninsert_final_newline=false\n",
+        )
+        .is_err()
+        {
+            return;
+        }
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let Some(doc) = opened_doc(&mut events) else {
+            return;
+        };
+
+        session.handle(RequestId(2), Command::Save { doc });
+
+        assert_eq!(std::fs::read(&path).unwrap_or_default(), b"kept\n");
+    }
+
+    #[test]
     fn open_apply_save_undo_flow() {
         let Some((_dir, path)) = write_temp("main.rs", "fn main() {}\n") else {
             return;

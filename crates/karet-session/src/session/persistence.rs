@@ -195,6 +195,7 @@ impl Session {
                 return; // file vanished or became unreadable; leave the buffer as-is
             };
             doc.buffer.adopt_content(fresh);
+            apply_serialization_settings(&mut doc.buffer, doc.settings);
             // The buffer was replaced wholesale, so the worker's retained tree is void:
             // `None` edits force it to start over.
             update_syntax(settings, highlight_tx, doc_id, doc, None);

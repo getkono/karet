@@ -45,6 +45,8 @@ pub struct EditorState {
     pub(super) last_content_width: u16,
     /// Whether the last render used soft wrapping.
     pub(super) last_word_wrap: bool,
+    /// Hard-tab width captured at the last render.
+    pub(super) last_tab_width: u16,
     /// Whether the next wrapped render should reveal a cursor moved by an editor
     /// command rather than preserve a manually-scrolled viewport.
     pub(super) follow_cursor: bool,
@@ -64,6 +66,7 @@ impl Default for EditorState {
             scroll_subrow: 0,
             last_content_width: 0,
             last_word_wrap: false,
+            last_tab_width: 4,
             follow_cursor: false,
             sticky_rows: Vec::new(),
             sticky_height: 0,
@@ -152,9 +155,9 @@ impl EditorState {
         let steps = delta.unsigned_abs();
         for _ in 0..steps {
             anchor = if delta.is_negative() {
-                previous_visual_anchor(buffer, folds, width, anchor)
+                previous_visual_anchor(buffer, folds, width, self.last_tab_width, anchor)
             } else {
-                next_visual_anchor(buffer, folds, width, anchor)
+                next_visual_anchor(buffer, folds, width, self.last_tab_width, anchor)
             };
         }
         self.scroll_line = anchor.line;
@@ -218,13 +221,6 @@ impl EditorState {
         folds: &[Fold],
         position: LineCol,
     ) -> Option<(u16, u16)> {
-        if !self.last_word_wrap
-            && (position.col < self.scroll_col
-                || position.col.saturating_sub(self.scroll_col)
-                    >= u32::from(self.last_content_width))
-        {
-            return None;
-        }
         caret_cell(area, buffer, folds, self, position)
     }
 
@@ -575,20 +571,32 @@ impl EditorState {
                 buffer,
                 folds,
                 width,
+                self.last_tab_width,
                 VisualAnchor {
                     line: self.scroll_line,
                     subrow: self.scroll_subrow,
                 },
                 rel_row,
             );
-            let ranges = visual_ranges(buffer, anchor.line, width);
+            let ranges = visual_ranges(buffer, anchor.line, width, self.last_tab_width);
             let range = ranges
                 .get(anchor.subrow as usize)
                 .copied()
                 .unwrap_or_else(|| VisualRange::empty(line_len(buffer, anchor.line)));
+            let chars: Vec<char> = buffer
+                .line(anchor.line as usize)
+                .unwrap_or_default()
+                .chars()
+                .collect();
             return LineCol::new(
                 anchor.line,
-                range.start.saturating_add(rel_col).min(range.end),
+                source_col_at_display_offset(
+                    &chars,
+                    range.start,
+                    range.end,
+                    rel_col,
+                    self.last_tab_width,
+                ),
             );
         }
         // Walk visible lines from the (clamped) viewport top to the clicked row.
@@ -607,7 +615,20 @@ impl EditorState {
             line = next;
         }
         let line = line.min(line_count - 1);
-        let want = self.scroll_col + rel_col;
-        LineCol::new(line, want.min(line_len(buffer, line)))
+        let chars: Vec<char> = buffer
+            .line(line as usize)
+            .unwrap_or_default()
+            .chars()
+            .collect();
+        LineCol::new(
+            line,
+            source_col_at_display_offset(
+                &chars,
+                self.scroll_col,
+                chars.len() as u32,
+                rel_col,
+                self.last_tab_width,
+            ),
+        )
     }
 }

@@ -254,6 +254,8 @@ struct PaneCtx<'a> {
     word_wrap: Option<bool>,
     /// Language-resolved semantic sticky-scroll setting.
     sticky_scroll: bool,
+    /// Per-document hard-tab display width.
+    tab_width: u16,
     /// The find bar to draw atop this pane's content, if any (focused pane only).
     /// Owned (not borrowed): it now lives on the active `Tab` itself, and
     /// `render_pane` needs a mutable borrow of the tabs slice at the same time.

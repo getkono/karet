@@ -16,6 +16,11 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
     let graphical_cursor = app.graphical_cursor_enabled();
     for (pane, rect) in app.layout.layout(area) {
         let is_focused = pane == focused;
+        let stored_tab_width = (!is_focused)
+            .then(|| app.stored.get(&pane))
+            .flatten()
+            .and_then(|stored| stored.tabs.get(stored.active))
+            .map(|tab| app.tab_width_for(tab));
         let rendered = if is_focused {
             let resolved = app.tabs.get(app.active).map(|tab| {
                 app.settings
@@ -25,6 +30,10 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
             let word_wrap = resolved.map_or(app.settings.editor.word_wrap, |r| r.word_wrap());
             let sticky_scroll =
                 resolved.map_or(app.settings.editor.sticky_scroll, |r| r.sticky_scroll());
+            let tab_width = app
+                .tabs
+                .get(app.active)
+                .map_or(4, |tab| app.tab_width_for(tab));
             let blame = app
                 .live_blame
                 .as_ref()
@@ -39,6 +48,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
                 graphical_cursor,
                 word_wrap,
                 sticky_scroll,
+                tab_width,
                 find: app
                     .find_open
                     .then(|| app.tabs.get(app.active))
@@ -62,6 +72,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
             let word_wrap = resolved.map_or(app.settings.editor.word_wrap, |r| r.word_wrap());
             let sticky_scroll =
                 resolved.map_or(app.settings.editor.sticky_scroll, |r| r.sticky_scroll());
+            let tab_width = stored_tab_width.unwrap_or(4);
             let ctx = PaneCtx {
                 theme,
                 root: &app.root,
@@ -72,6 +83,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
                 graphical_cursor: false,
                 word_wrap,
                 sticky_scroll,
+                tab_width,
                 find: None,
                 blame: None,
                 blame_clickable: false,

@@ -19,6 +19,7 @@ pub struct Editor<'a> {
     cell_caret: bool,
     read_only: bool,
     word_wrap: bool,
+    tab_width: u16,
     semantic_blocks: Option<&'a SemanticBlocks>,
     sticky_scroll: bool,
 }
@@ -39,6 +40,7 @@ impl<'a> Editor<'a> {
             cell_caret: true,
             read_only: false,
             word_wrap: false,
+            tab_width: 4,
             semantic_blocks: None,
             sticky_scroll: false,
         }
@@ -75,6 +77,13 @@ impl<'a> Editor<'a> {
     #[must_use]
     pub fn word_wrap(mut self, word_wrap: bool) -> Self {
         self.word_wrap = word_wrap;
+        self
+    }
+
+    /// Set the display width between hard-tab stops (clamped to at least one).
+    #[must_use]
+    pub fn tab_width(mut self, width: u16) -> Self {
+        self.tab_width = width.max(1);
         self
     }
 
@@ -223,8 +232,11 @@ impl Editor<'_> {
         let mut run = String::new();
         let mut run_style: Option<Style> = None;
         let mut col: u32 = 0;
+        let mut display_col = 0_u32;
         for (boff, ch) in content.char_indices() {
+            let width = character_width(ch, display_col, self.tab_width);
             if col < range.start {
+                display_col = display_col.saturating_add(width);
                 col += 1;
                 continue;
             }
@@ -241,14 +253,23 @@ impl Editor<'_> {
                 style = style.bg(bg.to_ratatui());
             }
             if run_style == Some(style) {
-                run.push(ch);
+                if ch == '\t' {
+                    run.push_str(&" ".repeat(width as usize));
+                } else {
+                    run.push(ch);
+                }
             } else {
                 if let Some(prev) = run_style {
                     spans.push(Span::styled(std::mem::take(&mut run), prev));
                 }
-                run.push(ch);
+                if ch == '\t' {
+                    run.push_str(&" ".repeat(width as usize));
+                } else {
+                    run.push(ch);
+                }
                 run_style = Some(style);
             }
+            display_col = display_col.saturating_add(width);
             col += 1;
         }
         if let Some(prev) = run_style {
@@ -406,6 +427,7 @@ impl StatefulWidget for Editor<'_> {
         // content height is resolved after semantic sticky rows are selected.
         state.last_content_width = content_width;
         state.last_word_wrap = self.word_wrap;
+        state.last_tab_width = self.tab_width;
         state.scroll_line = state.scroll_line.min(line_count.saturating_sub(1));
         if self.word_wrap {
             state.scroll_col = 0;
@@ -418,6 +440,7 @@ impl StatefulWidget for Editor<'_> {
             self.buffer,
             self.folds,
             width,
+            self.tab_width,
             VisualAnchor {
                 line: state.scroll_line,
                 subrow: state.scroll_subrow,
@@ -432,6 +455,7 @@ impl StatefulWidget for Editor<'_> {
                 self.buffer,
                 self.folds,
                 width,
+                self.tab_width,
                 initial_content_height,
                 anchor,
                 state.cursor(),
@@ -536,7 +560,7 @@ impl StatefulWidget for Editor<'_> {
                 ),
             ];
             let ranges = if self.word_wrap {
-                visual_ranges(self.buffer, l, width)
+                visual_ranges(self.buffer, l, width, self.tab_width)
             } else {
                 vec![VisualRange {
                     start: state.scroll_col,
@@ -569,7 +593,7 @@ impl StatefulWidget for Editor<'_> {
             buf.set_line(area.x, y, &Line::from(spans), area.width);
 
             let next = if self.word_wrap {
-                next_visual_anchor(self.buffer, self.folds, width, anchor)
+                next_visual_anchor(self.buffer, self.folds, width, self.tab_width, anchor)
             } else {
                 next_line_anchor(self.folds, line_count, anchor)
             };
