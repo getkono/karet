@@ -118,9 +118,11 @@ use karet_vcs::StatusKind;
 use karet_widgets::DropZone;
 use karet_widgets::FileTreeState;
 use karet_widgets::ListSelection;
+use karet_widgets::PaneDivider;
 use karet_widgets::PaneId;
 use karet_widgets::PaneLayout;
 use karet_widgets::PendingEdit;
+use karet_widgets::SplitAxis;
 use karet_widgets::SplitDir;
 use karet_widgets::drop_zone;
 use ratatui::layout::Rect;
@@ -453,6 +455,13 @@ pub(crate) struct TabDrag {
     pub(crate) hover: Option<(PaneId, DropZone)>,
 }
 
+/// An in-progress drag of a pane split boundary.
+#[derive(Clone, Copy)]
+pub(crate) struct PaneResize {
+    /// Stable identity and geometry of the boundary when dragging began.
+    pub(crate) divider: PaneDivider,
+}
+
 /// A clickable toast card, recorded during the last render for click hit-testing.
 #[derive(Clone, Copy)]
 pub(crate) struct ToastHit {
@@ -774,6 +783,12 @@ pub struct App {
     pub(crate) diff_layout: ViewMode,
     /// Per-pane clickable regions from the last frame (mouse hit-testing).
     pub(crate) pane_frames: Vec<PaneFrame>,
+    /// Draggable split boundaries from the last rendered frame.
+    pub(crate) pane_dividers: Vec<PaneDivider>,
+    /// Current pointer-hovered split boundary.
+    pub(crate) pane_divider_hover: Option<PaneDivider>,
+    /// Active pane-boundary drag.
+    pub(crate) pane_resize: Option<PaneResize>,
     /// The in-progress tab drag, if the pointer is dragging a tab.
     pub(crate) tab_drag: Option<TabDrag>,
     /// The sidebar's content area (below the header) from the last frame.

@@ -52,6 +52,12 @@ pub(super) static BINDINGS: &[Binding] = &[
     seq(Global, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('\\'))], Command::SplitDown),
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Right)], Command::FocusNextPane),
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Left)],  Command::FocusPrevPane),
+    // Tiling-WM-style pane growth. Shift keeps these distinct from multi-cursor
+    // Ctrl+Alt+Up/Down in the editor layer.
+    b(Global, true, true, true, Left,  Command::ResizePaneLeft),
+    b(Global, true, true, true, Right, Command::ResizePaneRight),
+    b(Global, true, true, true, Up,    Command::ResizePaneUp),
+    b(Global, true, true, true, Down,  Command::ResizePaneDown),
 
     // Markdown preview to the side (VS Code parity: `Ctrl+K V`). Inert on a non-Markdown tab.
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('v'))], Command::MarkdownPreviewSide),

@@ -288,6 +288,15 @@ impl App {
                 && self.scm_divider_y != 0
                 && mouse.row == self.scm_divider_y
                 && rect_contains(self.sidebar_rect, (mouse.column, mouse.row)));
+        let pane_axis = self
+            .pane_resize
+            .map(|resize| resize.divider.axis)
+            .or_else(|| {
+                self.pane_dividers
+                    .iter()
+                    .find(|divider| divider.contains(mouse.column, mouse.row))
+                    .map(|divider| divider.axis)
+            });
         let over_blame = self
             .blame_rect
             .is_some_and(|rect| rect_contains(rect, (mouse.column, mouse.row)));
@@ -295,9 +304,9 @@ impl App {
             .markdown_link_hits
             .iter()
             .any(|hit| rect_contains(hit.rect, (mouse.column, mouse.row)));
-        let shape = if over_sidebar_divider {
+        let shape = if over_sidebar_divider || pane_axis == Some(SplitAxis::Cols) {
             Some("col-resize")
-        } else if over_scm_divider {
+        } else if over_scm_divider || pane_axis == Some(SplitAxis::Rows) {
             Some("row-resize")
         } else if over_blame || over_markdown_link {
             Some("pointer")
@@ -362,6 +371,41 @@ impl App {
             }
             return;
         }
+        if let Some(resize) = self.pane_resize {
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    let coordinate = match resize.divider.axis {
+                        SplitAxis::Cols => mouse.column,
+                        SplitAxis::Rows => mouse.row,
+                    };
+                    let current = self
+                        .layout
+                        .dividers(self.main_rect)
+                        .into_iter()
+                        .find(|divider| {
+                            divider.axis == resize.divider.axis
+                                && divider.before == resize.divider.before
+                                && divider.after == resize.divider.after
+                        })
+                        .map_or(resize.divider.position, |divider| divider.position);
+                    let delta = i32::from(coordinate) - i32::from(current);
+                    let delta = i16::try_from(delta).unwrap_or_else(|_| {
+                        if delta.is_negative() {
+                            i16::MIN
+                        } else {
+                            i16::MAX
+                        }
+                    });
+                    if delta != 0 {
+                        self.layout
+                            .resize_divider(resize.divider, delta, self.main_rect);
+                    }
+                },
+                MouseEventKind::Up(MouseButton::Left) => self.pane_resize = None,
+                _ => {},
+            }
+            return;
+        }
         // An in-progress text selection captures motion until the button is released.
         if self.editor_selecting {
             match mouse.kind {
@@ -371,6 +415,17 @@ impl App {
                 MouseEventKind::Up(MouseButton::Left) => self.editor_selecting = false,
                 _ => {},
             }
+            return;
+        }
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            && let Some(divider) = self
+                .pane_dividers
+                .iter()
+                .copied()
+                .find(|divider| divider.contains(mouse.column, mouse.row))
+        {
+            self.pane_resize = Some(PaneResize { divider });
+            self.pane_divider_hover = Some(divider);
             return;
         }
         if self.handle_tabstrip_mouse(mouse) {
@@ -465,6 +520,11 @@ impl App {
             MouseEventKind::Moved => {
                 self.hover = rect_contains(self.sidebar_content_rect, point).then_some(point);
                 self.pane_action_hover = None;
+                self.pane_divider_hover = self
+                    .pane_dividers
+                    .iter()
+                    .copied()
+                    .find(|divider| divider.contains(mouse.column, mouse.row));
                 self.sidebar_header_hover =
                     (in_sidebar && mouse.row == self.sidebar_rect.y).then_some(point);
                 self.markdown_link_hover = self

@@ -545,6 +545,92 @@
     }
 
     #[test]
+    fn keyboard_resize_grows_the_focused_pane_toward_the_requested_edge() {
+        let mut app = app();
+        app.main_rect = Rect::new(0, 0, 80, 24);
+        let left = app.layout.root_pane();
+        let right = app.layout.split(left, SplitDir::Right);
+        app.layout.set_focus(right);
+
+        app.dispatch(Command::ResizePaneLeft);
+
+        assert_eq!(
+            app.layout.pane_rect(left, app.main_rect).map(|rect| rect.width),
+            Some(38)
+        );
+        assert_eq!(
+            app.layout.pane_rect(right, app.main_rect).map(|rect| rect.width),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn mouse_drag_resizes_a_pane_divider_and_releases_cleanly() {
+        let mut app = app();
+        app.main_rect = Rect::new(0, 0, 80, 24);
+        let left = app.layout.root_pane();
+        let right = app.layout.split(left, SplitDir::Right);
+        app.pane_dividers = app.layout.dividers(app.main_rect);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 39,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(app.pane_resize.is_some());
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 48,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 100,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(
+            app.layout.pane_rect(left, app.main_rect).map(|rect| rect.width),
+            Some(70)
+        );
+        // Remaining outside the minimum-size boundary must not make it jump back.
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 90,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(
+            app.layout.pane_rect(left, app.main_rect).map(|rect| rect.width),
+            Some(70)
+        );
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 60,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 60,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(
+            app.layout.pane_rect(left, app.main_rect).map(|rect| rect.width),
+            Some(61)
+        );
+        assert_eq!(
+            app.layout.pane_rect(right, app.main_rect).map(|rect| rect.width),
+            Some(19)
+        );
+        assert!(app.pane_resize.is_none());
+    }
+
+    #[test]
     fn drop_tab_center_on_self_is_a_noop() {
         let mut app = app();
         app.push_tab(code_tab("a.rs"));

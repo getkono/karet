@@ -760,3 +760,20 @@ fn ctrl_shift_i_formats_markdown_tables() {
         Resolved::Command(Command::FormatMarkdownTables)
     );
 }
+
+#[test]
+fn ctrl_alt_shift_arrows_resize_panes() {
+    let ctx = Context::focus(FocusTarget::Editor);
+    for (key_code, command) in [
+        (KeyCode::Left, Command::ResizePaneLeft),
+        (KeyCode::Right, Command::ResizePaneRight),
+        (KeyCode::Up, Command::ResizePaneUp),
+        (KeyCode::Down, Command::ResizePaneDown),
+    ] {
+        let chord = KeyChord::from_event(key(
+            key_code,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        ));
+        assert_eq!(resolve(ctx, &[chord]), Resolved::Command(command));
+    }
+}

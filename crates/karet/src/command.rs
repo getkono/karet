@@ -83,6 +83,14 @@ pub enum Command {
     FocusNextPane,
     /// Move focus to the previous pane.
     FocusPrevPane,
+    /// Grow the focused pane toward its left boundary.
+    ResizePaneLeft,
+    /// Grow the focused pane toward its right boundary.
+    ResizePaneRight,
+    /// Grow the focused pane toward its upper boundary.
+    ResizePaneUp,
+    /// Grow the focused pane toward its lower boundary.
+    ResizePaneDown,
     /// Copy the selection (or the cursor line) to the clipboard.
     Copy,
     /// Copy the active file's absolute path to the clipboard.
@@ -468,6 +476,10 @@ impl Command {
             Self::SplitDown => "View: Split Editor Down",
             Self::FocusNextPane => "View: Focus Next Pane",
             Self::FocusPrevPane => "View: Focus Previous Pane",
+            Self::ResizePaneLeft => "View: Resize Pane Left",
+            Self::ResizePaneRight => "View: Resize Pane Right",
+            Self::ResizePaneUp => "View: Resize Pane Up",
+            Self::ResizePaneDown => "View: Resize Pane Down",
             Self::Copy => "Copy",
             Self::CopyPath => "Copy Path of Active File",
             Self::CopyRelativePath => "Copy Relative Path of Active File",
@@ -778,6 +790,10 @@ impl Command {
             Self::SearchToggleWord => "word",
             Self::MarkdownPreviewSide => "preview",
             Self::FormatMarkdownTables => "format tables",
+            Self::ResizePaneLeft
+            | Self::ResizePaneRight
+            | Self::ResizePaneUp
+            | Self::ResizePaneDown => "resize pane",
             // Self-evident motion, selection, and editing — no hint.
             Self::MoveTabLeft
             | Self::MoveTabRight
@@ -941,6 +957,10 @@ impl Command {
                 | Self::SplitDown
                 | Self::FocusNextPane
                 | Self::FocusPrevPane
+                | Self::ResizePaneLeft
+                | Self::ResizePaneRight
+                | Self::ResizePaneUp
+                | Self::ResizePaneDown
                 | Self::ShowDependencyGraph
                 | Self::ShowCommitGraph
                 | Self::OpenCommitByHash
