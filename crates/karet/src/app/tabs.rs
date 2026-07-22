@@ -284,66 +284,6 @@ impl App {
         }
     }
 
-    /// Open a semantic-blame view (`blameline`) for the active code tab.
-    ///
-    /// With `function_scope`, blame is narrowed to the function enclosing the caret;
-    /// otherwise the whole file is blamed. Computed synchronously on demand (like
-    /// find), so the original file tab stays open alongside the new Blame tab.
-    pub(super) fn open_blame(&mut self, function_scope: bool) {
-        // Snapshot the inputs and release the borrow before mutating `self`.
-        let input = self.tabs.get(self.active).and_then(|t| match &t.kind {
-            TabKind::Code { path, text, .. } => {
-                Some((path.clone(), text.clone(), t.editor.cursor().line))
-            },
-            _ => None,
-        });
-        let Some((path, text, line)) = input else {
-            self.status = Some("blame: open a text file first".to_string());
-            return;
-        };
-
-        // Absolutize first so blameline resolves the path against the worktree root
-        // rather than doubling a relative path onto its own parent directory.
-        let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
-        let repo_root = abs.parent().unwrap_or(abs.as_path());
-        let result = if function_scope {
-            blameline::blame_function(repo_root, &abs, &text, line)
-        } else {
-            blameline::blame_file(repo_root, &abs)
-        };
-        let groups = match result {
-            Ok(groups) if !groups.is_empty() => groups,
-            Ok(_) => {
-                self.status = Some("blame: no commits touch this file".to_string());
-                return;
-            },
-            Err(e) => {
-                self.notify(
-                    Severity::Error,
-                    NotificationKind::Vcs,
-                    format!("blame: {e}"),
-                );
-                return;
-            },
-        };
-
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-        let title = if function_scope {
-            format!("Blame ❯ {name}")
-        } else {
-            format!("Blame: {name}")
-        };
-        let tab = Tab::new(
-            title,
-            TabKind::Blame {
-                path,
-                groups,
-                scroll: 0,
-            },
-        );
-        self.push_tab(tab);
-    }
-
     /// Switch to the tab at `index`, focusing the editor.
     pub(super) fn select_tab(&mut self, index: usize) {
         if index < self.tabs.len() {
@@ -427,13 +367,22 @@ impl App {
         }
     }
 
-    /// Close the tab at `index`, falling back to a Welcome tab when the last closes.
+    /// Close the tab at `index`. When it is the pane's final tab, collapse the pane
+    /// if another pane remains; the sole pane falls back to a Welcome tab.
     pub(super) fn close_tab_at(&mut self, index: usize) {
         if index >= self.tabs.len() || self.tabs[index].is_github_dashboard() {
             return;
         }
         self.remember_closed(index);
-        if self.tabs.len() == 1 {
+        if self.tabs.len() == 1 && self.layout.pane_count() > 1 {
+            let closing = self.focus_pane();
+            self.stash_focused();
+            self.stored.remove(&closing);
+            if self.layout.close(closing).is_some() {
+                self.load_focused();
+                self.focus = Focus::Editor;
+            }
+        } else if self.tabs.len() == 1 {
             self.tabs = vec![Tab::welcome()];
             self.active = 0;
             self.focus = Focus::Sidebar;

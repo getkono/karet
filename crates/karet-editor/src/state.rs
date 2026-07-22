@@ -205,6 +205,29 @@ impl EditorState {
         caret_cell(area, buffer, folds, self, self.cursor())
     }
 
+    /// The screen cell of an arbitrary buffer position within `area`, if visible.
+    ///
+    /// This uses the same gutter, scrolling, wrapping, sticky-row, and fold geometry
+    /// as the editor widget. It is useful for positioning application-owned inline
+    /// affordances without changing document coordinates.
+    #[must_use]
+    pub fn screen_cell(
+        &self,
+        area: Rect,
+        buffer: &TextBuffer,
+        folds: &[Fold],
+        position: LineCol,
+    ) -> Option<(u16, u16)> {
+        if !self.last_word_wrap
+            && (position.col < self.scroll_col
+                || position.col.saturating_sub(self.scroll_col)
+                    >= u32::from(self.last_content_width))
+        {
+            return None;
+        }
+        caret_cell(area, buffer, folds, self, position)
+    }
+
     /// Scroll so `line` sits at the vertical center of the viewport. Handy for a
     /// read-only viewer centering a search match. The scroll is clamped to the
     /// buffer at render time.

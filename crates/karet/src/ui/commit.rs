@@ -660,8 +660,6 @@ pub(super) fn loading_visible(since: Instant) -> bool {
     since.elapsed() >= crate::app::LOADING_REVEAL_DELAY
 }
 
-/// Render the semantic-blame view: each commit group as a header (line range, short
-/// hash, author, date) followed by its full commit message — the "why".
 /// Draw a code-visualization graph as a scrollable indented tree: a DFS from the
 /// graph's roots along dependency edges, with box-drawing depth guides. Cycles and
 /// already-expanded nodes are shown once and marked `⟲` rather than re-expanded.

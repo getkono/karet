@@ -232,6 +232,10 @@ struct PaneCtx<'a> {
     /// Owned (not borrowed): it now lives on the active `Tab` itself, and
     /// `render_pane` needs a mutable borrow of the tabs slice at the same time.
     find: Option<FindState>,
+    /// Stale-checked virtual text for the focused editor.
+    blame: Option<Decoration>,
+    /// Whether the blame decoration represents an attributed commit.
+    blame_clickable: bool,
 }
 
 /// What a rendered pane reported back for hit-testing and image placement.
@@ -244,6 +248,7 @@ struct RenderedPane {
     image_area: Option<Rect>,
     commit_badge_rect: Option<Rect>,
     commit_file_hits: Vec<crate::app::CommitFileHit>,
+    blame_rect: Option<Rect>,
 }
 
 /// Geometry a tab's content reported for post-draw use: a reserved Kitty image rect
@@ -253,6 +258,7 @@ struct PaneContent {
     image_area: Option<Rect>,
     badge_rect: Option<Rect>,
     file_hits: Vec<crate::app::CommitFileHit>,
+    blame_rect: Option<Rect>,
 }
 
 /// A `width`×`height` rect centered within `area`.

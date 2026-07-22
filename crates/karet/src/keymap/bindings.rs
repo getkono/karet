@@ -173,9 +173,9 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Editor, true,  false, false, Char('x'), Command::Cut),
     b(Editor, true,  false, false, Char('v'), Command::Paste),
 
-    // Semantic blame (blameline): whole file, or the function under the caret.
-    b(Editor, true,  true,  false, Char('b'), Command::ShowBlame),
-    b(Editor, false, false, true,  Char('b'), Command::BlameFunction),
+    // Live blame: toggle inline attribution, or open the attributed commit.
+    b(Editor, true,  true,  false, Char('b'), Command::ToggleInlineBlame),
+    b(Editor, false, false, true,  Char('b'), Command::OpenBlameDetail),
 
     // Code folding (VS Code parity): `Ctrl+K Ctrl+L` toggles the fold at the cursor.
     seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('l'))], Command::ToggleFold),

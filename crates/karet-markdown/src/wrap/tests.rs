@@ -218,6 +218,7 @@ fn a_table_renders_as_a_box_drawn_grid() {
             "│ Left        │ Center │ Right │",
             "├─────────────┼────────┼───────┤",
             "│ a           │   bb   │   ccc │",
+            "├─────────────┼────────┼───────┤",
             "│ longer cell │   x    │     y │",
             "└─────────────┴────────┴───────┘",
         ]
@@ -280,8 +281,27 @@ fn a_narrow_table_shrinks_its_widest_column_first() {
         Some("│ Left      │ Center │ Right │")
     );
     assert_eq!(
-        out.get(4).map(String::as_str),
+        out.get(5).map(String::as_str),
         Some("│ longer    │   x    │     y │")
+    );
+}
+
+#[test]
+fn every_body_row_is_separated_by_a_horizontal_rule() {
+    let out = lines("| h |\n| - |\n| one |\n| two |\n| three |\n", 30);
+    assert_eq!(
+        out,
+        vec![
+            "┌───────┐",
+            "│ h     │",
+            "├───────┤",
+            "│ one   │",
+            "├───────┤",
+            "│ two   │",
+            "├───────┤",
+            "│ three │",
+            "└───────┘",
+        ]
     );
 }
 

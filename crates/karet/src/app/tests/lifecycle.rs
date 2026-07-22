@@ -105,6 +105,27 @@
     }
 
     #[test]
+    fn discarding_the_last_dirty_tab_collapses_only_its_tile() {
+        let mut app = app();
+        dirty_doc_tab(&mut app, "t.rs", 1);
+        app.dispatch(Command::SplitRight);
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(2));
+        }
+        app.tabs[app.active].dirty = true;
+        assert_eq!(app.layout.pane_count(), 2);
+
+        app.dispatch(Command::CloseTab);
+        assert!(matches!(app.pending_close, Some(CloseRequest::Tab { .. })));
+        assert_eq!(app.layout.pane_count(), 2);
+
+        app.dispatch(Command::CloseConfirmDiscard);
+        assert!(app.pending_close.is_none());
+        assert_eq!(app.layout.pane_count(), 1);
+        assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
+    }
+
+    #[test]
     fn close_tab_unbound_key_cancels_and_keeps_the_tab() {
         let mut app = app();
         dirty_doc_tab(&mut app, "t.rs", 1);
@@ -320,4 +341,3 @@
             Some(crate::keymap::Modal::SwapRecover)
         );
     }
-

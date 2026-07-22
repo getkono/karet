@@ -22,6 +22,7 @@ pub(super) fn draw_pane_content(
     let image_area: Option<Rect> = None;
     let mut badge_rect = None;
     let mut file_hits = Vec::new();
+    let mut blame_rect = None;
     match &mut tab.kind {
         TabKind::Welcome => draw_welcome(f, theme, area),
         TabKind::Github(view) => draw_github(f, theme, area, view),
@@ -39,8 +40,12 @@ pub(super) fn draw_pane_content(
             // Local find and global search highlights are kept in separate
             // fields (so closing/rerunning one can't wipe the other) and
             // combined only here, at render time.
-            let combined: Vec<Decoration> =
-                decos.iter().chain(search_decos.iter()).cloned().collect();
+            let combined: Vec<Decoration> = decos
+                .iter()
+                .chain(search_decos.iter())
+                .chain(ctx.blame.iter())
+                .cloned()
+                .collect();
             let editor = Editor::new(buffer)
                 .highlights(highlights)
                 .semantic_blocks(semantic_blocks)
@@ -52,6 +57,33 @@ pub(super) fn draw_pane_content(
                 .word_wrap(word_wrap);
             let editor = editor.sticky_scroll(ctx.sticky_scroll);
             f.render_stateful_widget(editor, area, &mut tab.editor);
+            if ctx.blame_clickable
+                && let Some(Decoration {
+                    range,
+                    kind:
+                        karet_core::DecorationKind::InlineText {
+                            text,
+                            before: false,
+                        },
+                    ..
+                }) = ctx.blame.as_ref()
+            {
+                let end = buffer
+                    .line(range.start.line as usize)
+                    .map_or(0, |line| line.chars().count() as u32);
+                if let Some((x, y)) = tab.editor.screen_cell(
+                    area,
+                    buffer,
+                    &fold_lines,
+                    karet_core::LineCol::new(range.start.line, end),
+                ) {
+                    let width = u16::try_from(Span::raw(text).width()).unwrap_or(u16::MAX);
+                    let visible = width.min(area.right().saturating_sub(x));
+                    if visible > 0 {
+                        blame_rect = Some(Rect::new(x, y, visible, 1));
+                    }
+                }
+            }
         },
         TabKind::MarkdownPreview {
             buffer,
@@ -61,7 +93,15 @@ pub(super) fn draw_pane_content(
             ..
         } => draw_markdown_preview(f, theme, area, buffer, wrapped, rendered, scroll),
         TabKind::Diff { file, view, scroll } => draw_diff(f, theme, area, file, *view, scroll),
-        TabKind::Blame { groups, scroll, .. } => draw_blame(f, theme, area, groups, scroll),
+        TabKind::StashPreview { patch, scroll, .. } => {
+            let lines: Vec<Line> = patch
+                .lines()
+                .map(|line| Line::raw(line.to_string()))
+                .collect();
+            let max = lines.len().saturating_sub(area.height as usize);
+            *scroll = (*scroll).min(u16::try_from(max).unwrap_or(u16::MAX));
+            f.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), area);
+        },
         TabKind::Graph {
             title,
             view,
@@ -285,6 +325,7 @@ pub(super) fn draw_pane_content(
         image_area,
         badge_rect,
         file_hits,
+        blame_rect,
     }
 }
 

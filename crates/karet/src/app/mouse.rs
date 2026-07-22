@@ -122,6 +122,19 @@ impl App {
         true
     }
 
+    /// Open the attributed commit when the visible inline blame label is clicked.
+    pub(super) fn handle_blame_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            || !self
+                .blame_rect
+                .is_some_and(|rect| rect_contains(rect, (mouse.column, mouse.row)))
+        {
+            return false;
+        }
+        self.open_live_blame_detail();
+        true
+    }
+
     /// Handle mouse interaction with an open context menu.
     pub(super) fn handle_context_menu_mouse(&mut self, mouse: MouseEvent) -> bool {
         let Some(menu) = self.context_menu.as_ref() else {
@@ -195,10 +208,15 @@ impl App {
                 && self.scm_divider_y != 0
                 && mouse.row == self.scm_divider_y
                 && rect_contains(self.sidebar_rect, (mouse.column, mouse.row)));
+        let over_blame = self
+            .blame_rect
+            .is_some_and(|rect| rect_contains(rect, (mouse.column, mouse.row)));
         let shape = if over_sidebar_divider {
             Some("col-resize")
         } else if over_scm_divider {
             Some("row-resize")
+        } else if over_blame {
+            Some("pointer")
         } else {
             None
         };
@@ -211,6 +229,14 @@ impl App {
     }
 
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent) {
+        self.handle_mouse_event(mouse);
+        // Mouse clicks, drag-selection, tab switches, and pane focus changes can all
+        // move the active caret without passing through the keyboard input hook.
+        self.reconcile_completion();
+        self.request_live_blame();
+    }
+
+    fn handle_mouse_event(&mut self, mouse: MouseEvent) {
         self.update_pointer_shape_hint(&mouse);
         // Toasts float above everything (including the overlay), so hit-test them
         // first: a left click on a card dismisses it.
@@ -273,6 +299,9 @@ impl App {
             return;
         }
         if self.github_mouse(mouse) {
+            return;
+        }
+        if self.handle_blame_mouse(mouse) {
             return;
         }
         let point = (mouse.column, mouse.row);
@@ -394,6 +423,17 @@ impl App {
         }
         if let Some(panel) = self.panel_at(col, row_y) {
             self.dispatch(Command::SelectPanel(panel));
+            return;
+        }
+        if self.sidebar_panel == SidebarPanel::SourceControl
+            && let Some(command) =
+                self.scm_header_hits
+                    .iter()
+                    .find_map(|&(start, end, row, command)| {
+                        (row_y == row && col >= start && col < end).then_some(command)
+                    })
+        {
+            self.dispatch(command);
             return;
         }
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);

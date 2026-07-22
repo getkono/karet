@@ -740,7 +740,7 @@ impl Default for Git {
     fn default() -> Self {
         Self {
             decorations: true,
-            blame: false,
+            blame: true,
             ai_commit: AiCommit::default(),
         }
     }

@@ -485,7 +485,7 @@ fn git_root(start: &Path) -> Option<PathBuf> {
 }
 
 /// `$XDG_CONFIG_HOME/karet/setting.jsonc` (platform config dir on macOS/Windows).
-fn user_config_path() -> Option<PathBuf> {
+pub(crate) fn user_config_path() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "getkono", "karet")
         .map(|dirs| dirs.config_dir().join("setting.jsonc"))
 }

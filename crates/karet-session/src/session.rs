@@ -254,6 +254,8 @@ pub struct Session {
     fs_rx: Option<mpsc::UnboundedReceiver<FsEvent>>,
     /// The source-control repository for the first workspace root, if any.
     vcs: Option<Repository>,
+    /// Ordered background repository actions and network reads.
+    vcs_worker: std::sync::mpsc::Sender<crate::vcs_worker::VcsJob>,
     /// The last emitted `(staged, working)` status. Spontaneous recomputes (from
     /// filesystem events) emit only when this changes, which absorbs the feedback
     /// from the session's own index writes.
@@ -320,6 +322,7 @@ impl Session {
         let last_head = vcs.as_ref().and_then(|r| r.head_hash().ok().flatten());
         #[cfg(feature = "github")]
         let github_repository = github::eligible_repository(&config.roots, vcs.as_ref());
+        let vcs_worker = crate::vcs_worker::spawn(config.roots.first().cloned(), events.clone());
         // Open this session's swap store and scan for swaps a previous run left behind
         // (a crash, or a save that failed). They are offered to the UI for recovery.
         let session_id = u64::from(std::process::id());
@@ -357,6 +360,7 @@ impl Session {
             watcher,
             fs_rx,
             vcs,
+            vcs_worker,
             last_vcs: None,
             last_head,
             swaps,
@@ -421,6 +425,37 @@ impl Session {
             Command::Commit { message } => self.commit(id, &message),
             Command::GenerateCommitMessage => self.generate_commit_message(id),
             Command::RefreshVcs => self.emit_vcs_status(Some(id)),
+            Command::RepositorySnapshot => {
+                let _ = self
+                    .vcs_worker
+                    .send(crate::vcs_worker::VcsJob::Snapshot { id });
+            },
+            Command::VcsAction { action } => {
+                self.emit(
+                    Some(id),
+                    Event::VcsOperationStarted {
+                        action: action.clone(),
+                    },
+                );
+                let _ = self
+                    .vcs_worker
+                    .send(crate::vcs_worker::VcsJob::Action { id, action });
+            },
+            Command::PullRequests {
+                remote,
+                page,
+                per_page,
+            } => {
+                let _ = self
+                    .vcs_worker
+                    .send(crate::vcs_worker::VcsJob::PullRequests {
+                        id,
+                        remote,
+                        page,
+                        per_page,
+                    });
+            },
+            Command::Blame { doc, version, line } => self.request_blame(id, doc, version, line),
             Command::VcsLog { skip, limit } => self.emit_vcs_log(Some(id), skip, limit),
             Command::CommitDetail { rev } => self.emit_commit_detail(id, &rev),
             Command::RangeChanges { spec } => self.emit_range_changes(id, spec),
@@ -526,6 +561,31 @@ impl Session {
     }
 
     // --- source control ---------------------------------------------------
+
+    fn request_blame(&self, id: RequestId, doc: DocumentId, version: u64, line: u32) {
+        let Some(document) = self.store.docs.get(&doc) else {
+            self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::Vcs,
+                    message: "blame: unknown document".to_string(),
+                },
+            );
+            return;
+        };
+        if document.buffer.version() != version {
+            return;
+        }
+        let _ = self.vcs_worker.send(crate::vcs_worker::VcsJob::Blame {
+            id,
+            doc,
+            version,
+            path: document.path.clone(),
+            text: document.buffer.text(),
+            line,
+        });
+    }
 }
 /// Re-(or incrementally) parse `doc` and recompute its highlights.
 ///

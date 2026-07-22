@@ -184,56 +184,6 @@ pub(super) fn draw_markdown_preview(
     *scroll = state.scroll;
 }
 
-pub(super) fn draw_blame(
-    f: &mut Frame,
-    theme: &Theme,
-    area: Rect,
-    groups: &[blameline::BlameGroup],
-    scroll: &mut u16,
-) {
-    let accent = Style::default().fg(theme.role(ThemeRole::DiffModified).to_ratatui());
-    let range_style = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
-    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
-    let body = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
-    let subject = body.add_modifier(Modifier::BOLD);
-
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    for group in groups {
-        let range = if group.lines.start == group.lines.end {
-            format!("line {}", group.lines.start)
-        } else {
-            format!("lines {}\u{2013}{}", group.lines.start, group.lines.end)
-        };
-        let date = group
-            .date
-            .split('T')
-            .next()
-            .unwrap_or(&group.date)
-            .to_string();
-        lines.push(Line::from(vec![
-            Span::styled("\u{258c} ", accent),
-            Span::styled(format!("{range:<13}"), range_style),
-            Span::styled(format!("{}  ", group.short_hash()), accent),
-            Span::styled(format!("{}  ", group.author), body),
-            Span::styled(date, dim),
-        ]));
-        for (i, message_line) in group.message.lines().enumerate() {
-            let style = if i == 0 { subject } else { dim };
-            lines.push(Line::from(vec![
-                Span::styled("\u{258c}   ", accent),
-                Span::styled(message_line.to_string(), style),
-            ]));
-        }
-        lines.push(Line::from(""));
-    }
-
-    let max = u16::try_from(lines.len())
-        .unwrap_or(u16::MAX)
-        .saturating_sub(area.height);
-    *scroll = (*scroll).min(max);
-    f.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), area);
-}
-
 /// The commands shown on the empty-editor welcome screen, with descriptions. As in
 /// the footer, only this selection and the prose are presentation — each chord is
 /// derived from the keymap so the cheat-sheet can't drift from a rebinding.

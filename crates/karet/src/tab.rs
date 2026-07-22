@@ -240,14 +240,13 @@ pub enum TabKind {
         /// Vertical scroll offset (display rows).
         scroll: u16,
     },
-    /// A read-only semantic-blame view (`blameline`): consecutive lines grouped by
-    /// the commit that introduced them, with full commit messages.
-    Blame {
-        /// The file the blame is for.
-        path: PathBuf,
-        /// The grouped blame entries, in line order.
-        groups: Vec<blameline::BlameGroup>,
-        /// Vertical scroll offset (display rows).
+    /// A read-only stash patch preview.
+    StashPreview {
+        /// Stable stash selector.
+        reference: String,
+        /// Unified patch and stat output.
+        patch: String,
+        /// Vertical scroll offset.
         scroll: u16,
     },
     /// A read-only code-visualization graph (dependency or usage), rendered as an
@@ -618,6 +617,19 @@ impl Tab {
         )
     }
 
+    /// A read-only stash patch preview.
+    #[must_use]
+    pub fn stash_preview(reference: String, patch: String) -> Self {
+        Self::new(
+            format!("Stash {reference}"),
+            TabKind::StashPreview {
+                reference,
+                patch,
+                scroll: 0,
+            },
+        )
+    }
+
     /// A read-only commit view for `detail` and its changed `files`.
     #[must_use]
     pub fn commit(detail: Box<karet_vcs::CommitDetail>, files: Vec<FileView>) -> Self {
@@ -706,8 +718,7 @@ impl Tab {
             TabKind::Code { path, .. }
             | TabKind::MarkdownPreview { path, .. }
             | TabKind::Hex { path, .. }
-            | TabKind::Placeholder { path, .. }
-            | TabKind::Blame { path, .. } => Some(path),
+            | TabKind::Placeholder { path, .. } => Some(path),
             #[cfg(feature = "images")]
             TabKind::Image { path, .. } => Some(path),
             #[cfg(feature = "pdf")]
@@ -721,6 +732,7 @@ impl Tab {
             | TabKind::Commit { .. }
             | TabKind::Compare { .. }
             | TabKind::CommitGraph { .. } => None,
+            TabKind::StashPreview { .. } => None,
         }
     }
 
@@ -749,7 +761,7 @@ impl Tab {
             TabKind::Hex { .. } => "binary",
             TabKind::Placeholder { .. } => "preview",
             TabKind::Diff { file, .. } => file.language,
-            TabKind::Blame { .. } => "blame",
+            TabKind::StashPreview { .. } => "stash",
             TabKind::Graph { .. } => "graph",
             TabKind::LoadedConfig { .. } => "settings",
             TabKind::CommitLoading { .. } => "commit",

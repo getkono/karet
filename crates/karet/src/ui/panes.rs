@@ -6,6 +6,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
     app.pane_frames.clear();
     app.image_area = None;
     app.editor_rect = Rect::default();
+    app.blame_rect = None;
     app.commit_badge_rect = None;
     let focused = app.focus_pane();
     let editor_focused = app.focus == Focus::Editor;
@@ -22,6 +23,10 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
             let word_wrap = resolved.map_or(app.settings.editor.word_wrap, |r| r.word_wrap());
             let sticky_scroll =
                 resolved.map_or(app.settings.editor.sticky_scroll, |r| r.sticky_scroll());
+            let blame = app
+                .live_blame
+                .as_ref()
+                .and_then(crate::app::LiveBlame::decoration);
             let ctx = PaneCtx {
                 theme,
                 root: &app.root,
@@ -36,6 +41,12 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
                     .then(|| app.tabs.get(app.active))
                     .flatten()
                     .and_then(|t| t.find.clone()),
+                blame,
+                blame_clickable: app
+                    .live_blame
+                    .as_ref()
+                    .and_then(crate::app::LiveBlame::commit_hash)
+                    .is_some(),
             };
             render_pane(f, &mut app.tabs, app.active, rect, &ctx)
         } else if let Some(stored) = app.stored.get_mut(&pane) {
@@ -57,6 +68,8 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
                 word_wrap,
                 sticky_scroll,
                 find: None,
+                blame: None,
+                blame_clickable: false,
             };
             render_pane(f, &mut stored.tabs, stored.active, rect, &ctx)
         } else {
@@ -65,6 +78,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
         if is_focused {
             app.editor_rect = rendered.content_rect;
             app.image_area = rendered.image_area;
+            app.blame_rect = rendered.blame_rect;
             app.commit_badge_rect = rendered.commit_badge_rect;
         }
         app.pane_frames.push(crate::app::PaneFrame {
@@ -137,6 +151,7 @@ pub(super) fn render_pane(
         image_area: painted.image_area,
         commit_badge_rect: painted.badge_rect,
         commit_file_hits: painted.file_hits,
+        blame_rect: painted.blame_rect,
     }
 }
 

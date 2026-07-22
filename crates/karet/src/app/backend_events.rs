@@ -30,6 +30,12 @@ impl App {
             .then_some(self.scm.log_loading_since)
             .flatten()
             .and_then(|since| loading_delay_remaining(since, now));
+        let repository = (self.sidebar_visible
+            && self.sidebar_panel == SidebarPanel::SourceControl
+            && self.scm.repository.is_none())
+        .then_some(self.scm.repository_loading_since)
+        .flatten()
+        .and_then(|since| loading_delay_remaining(since, now));
         let tabs = self.all_tabs().filter_map(|tab| match &tab.kind {
             TabKind::CommitLoading {
                 loading_since,
@@ -78,7 +84,11 @@ impl App {
             },
             _ => None,
         });
-        std::iter::once(sidebar).flatten().chain(tabs).min()
+        [sidebar, repository]
+            .into_iter()
+            .flatten()
+            .chain(tabs)
+            .min()
     }
 
     /// Push a notification onto the center. Errors and warnings persist until
@@ -142,6 +152,9 @@ impl App {
                 "close"
             };
             self.status = Some(format!("{verb} cancelled: save failed"));
+        }
+        if save_failed && self.vcs_after_save.take().is_some() {
+            self.status = Some("branch switch cancelled: save failed".to_string());
         }
         match event {
             SessionEvent::Opened { doc, .. } => {
@@ -295,12 +308,152 @@ impl App {
                 kind,
                 message,
             } => {
+                if id.is_some() && id == self.scm.repository_request {
+                    self.scm.repository_request = None;
+                    self.scm.repository_loading_since = None;
+                }
+                if id.is_some() && id == self.pending_pull_requests {
+                    self.pending_pull_requests = None;
+                    self.pull_request_items.clear();
+                    self.pull_request_remote = None;
+                }
+                if let Some(pending) = self.pending_blame.filter(|pending| Some(pending.0) == id) {
+                    self.pending_blame = None;
+                    self.failed_blame = Some((pending.1, pending.2, pending.3));
+                }
                 if let Some(req) = id {
                     self.fail_pending_commit_detail(req, &message);
                 }
                 self.notify(severity, kind, message);
             },
-            SessionEvent::VcsStatus { staged, working } => self.apply_vcs_status(staged, working),
+            SessionEvent::VcsStatus { staged, working } => {
+                self.live_blame = None;
+                self.pending_blame = None;
+                self.failed_blame = None;
+                self.apply_vcs_status(staged, working);
+            },
+            SessionEvent::RepositorySnapshot { snapshot } => {
+                self.scm.repository = Some(*snapshot);
+                self.scm.repository_loading_since = None;
+                self.scm.repository_request = None;
+            },
+            SessionEvent::VcsOperationStarted { action } => {
+                self.scm.operation = Some(action);
+            },
+            SessionEvent::VcsOperationFinished {
+                action,
+                outcome,
+                error,
+            } => {
+                self.scm.operation = None;
+                if let Some(error) = error {
+                    match action {
+                        VcsAction::SwitchBranch(target)
+                            if error.contains("local changes")
+                                || error.contains("would be overwritten") =>
+                        {
+                            self.overlay = Some(Overlay::text(
+                                "Switch blocked · type stash to stash changes and retry",
+                                TextPurpose::StashAndSwitch { target },
+                            ));
+                        },
+                        VcsAction::UndoCommit {
+                            allow_upstream: false,
+                        } if error.contains("already present upstream") => {
+                            self.overlay = Some(Overlay::text(
+                                "Commit is upstream · type undo to confirm soft reset",
+                                TextPurpose::ConfirmPublishedUndo,
+                            ));
+                        },
+                        _ => self.notify(Severity::Error, NotificationKind::Vcs, error),
+                    }
+                } else if let Some(outcome) = outcome {
+                    match outcome {
+                        VcsOutcome::NeedsPublish => {
+                            self.publish_current_branch();
+                        },
+                        VcsOutcome::PullRequestUpdated => {
+                            self.status = Some("pull request branch updated".to_string());
+                        },
+                        VcsOutcome::PullRequestCheckedOut { branch } => {
+                            self.status = Some(format!("switched to {branch}"));
+                        },
+                        VcsOutcome::CommitUndone { commit, .. } => {
+                            let short: String = commit.chars().take(7).collect();
+                            self.status = Some(format!("undid commit {short}"));
+                        },
+                        VcsOutcome::StashCreated(true) => {
+                            self.status = Some("stashed local changes".to_string());
+                        },
+                        VcsOutcome::StashCreated(false) => {
+                            self.status = Some("stash: no local changes".to_string());
+                        },
+                        VcsOutcome::StashPreview { reference, patch } => {
+                            self.push_tab(Tab::stash_preview(reference, patch));
+                        },
+                        VcsOutcome::Completed => {
+                            self.status = Some("source control operation completed".to_string());
+                        },
+                        _ => {},
+                    }
+                }
+            },
+            SessionEvent::BlameResult {
+                doc,
+                version,
+                line,
+                attribution,
+            } => {
+                let matches = self.pending_blame.as_ref().is_some_and(|pending| {
+                    Some(pending.0) == id
+                        && pending.1 == doc
+                        && pending.2 == version
+                        && pending.3 == line
+                });
+                if matches {
+                    self.pending_blame = None;
+                    self.failed_blame = None;
+                    let current = self.tabs.get(self.active).is_some_and(|tab| {
+                        matches!(&tab.kind, TabKind::Code { doc: Some(active), buffer, .. }
+                            if *active == doc
+                                && buffer.version() == version
+                                && tab.editor.cursor().line == line)
+                    });
+                    if current {
+                        self.live_blame = Some(LiveBlame {
+                            doc,
+                            version,
+                            line,
+                            attribution,
+                        });
+                    }
+                }
+            },
+            SessionEvent::PullRequests {
+                remote,
+                items,
+                next_page,
+            } => {
+                if id.is_some() && id == self.pending_pull_requests {
+                    self.pending_pull_requests = None;
+                    self.pull_request_items.extend(items);
+                    if let Some(page) = next_page {
+                        self.pending_pull_requests =
+                            self.send_command_id(SessionCommand::PullRequests {
+                                remote,
+                                page,
+                                per_page: 100,
+                            });
+                    } else if self.pull_request_items.is_empty() {
+                        self.pull_request_remote = None;
+                        self.status = Some(format!("{remote}: no open pull requests"));
+                    } else {
+                        let items = std::mem::take(&mut self.pull_request_items);
+                        let remote = self.pull_request_remote.take().unwrap_or(remote);
+                        self.overlay = Some(Overlay::pull_requests(remote, items));
+                    }
+                }
+            },
             SessionEvent::VcsLog {
                 skip,
                 commits,
@@ -432,6 +585,12 @@ impl App {
         {
             self.execute_close(request);
         }
+        if self.pending_saves.is_empty()
+            && let Some(action) = self.vcs_after_save.take()
+        {
+            self.run_vcs_action(action);
+        }
+        self.request_live_blame();
     }
 
     pub(super) fn open_loaded_config(&mut self, report: LoadedConfig) {
@@ -542,5 +701,6 @@ impl App {
         // An undo/redo snapshot may have moved the caret away from the popup's
         // anchor; re-validate it.
         self.reconcile_completion();
+        self.request_live_blame();
     }
 }

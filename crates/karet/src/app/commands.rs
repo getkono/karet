@@ -15,6 +15,9 @@ impl App {
                 if panel == SidebarPanel::SourceControl && self.scm.log.is_empty() {
                     self.request_scm_log(0);
                 }
+                if panel == SidebarPanel::SourceControl {
+                    self.request_repository_snapshot();
+                }
             },
             Command::OpenQuickOpen => self.open_quick_open(),
             Command::OpenCommandPalette => self.overlay = Some(Overlay::command_palette()),
@@ -141,9 +144,31 @@ impl App {
             Command::ScmUnstageAll => self.send_vcs(SessionCommand::UnstageAll),
             Command::ScmDiscard => self.scm_arm_discard(),
             Command::ScmCommit => self.scm_open_commit_input(),
-            Command::ScmRefresh => self.send_vcs(SessionCommand::RefreshVcs),
-            Command::ShowBlame => self.open_blame(false),
-            Command::BlameFunction => self.open_blame(true),
+            Command::ScmRefresh => {
+                self.send_vcs(SessionCommand::RefreshVcs);
+                self.request_repository_snapshot();
+            },
+            Command::ScmSync => self.run_vcs_action(VcsAction::Sync),
+            Command::ScmMenu => self.open_scm_menu(),
+            Command::ScmSwitchBranch => self.open_branch_picker(),
+            Command::ScmCreateBranch => self.open_create_branch_form(),
+            Command::ScmPickPullRequest => self.open_pull_request_picker(),
+            Command::ScmUndoCommit => {
+                self.run_vcs_action(VcsAction::UndoCommit {
+                    allow_upstream: false,
+                });
+            },
+            Command::ScmStash => self.open_stash_form(),
+            Command::ScmManageStashes => self.open_stash_manager(),
+            Command::ScmPublish => self.publish_current_branch(),
+            Command::ScmRenameBranch => self.prompt_rename_current_branch(),
+            Command::ScmDeleteBranch => self.open_delete_branch_picker(),
+            Command::ScmDeleteRemoteBranch => self.open_delete_remote_branch_picker(),
+            Command::ScmContinue => self.run_vcs_action(VcsAction::Continue),
+            Command::ScmAbort => self.run_vcs_action(VcsAction::Abort),
+            Command::ScmSkip => self.run_vcs_action(VcsAction::Skip),
+            Command::ToggleInlineBlame => self.toggle_live_blame(),
+            Command::OpenBlameDetail => self.open_live_blame_detail(),
             Command::ShowLoadedConfig => {
                 if self.backend.is_some() {
                     self.send_command(SessionCommand::LoadedConfig);

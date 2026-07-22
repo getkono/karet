@@ -32,6 +32,19 @@ fn breadcrumb_spans_of_no_components_are_empty() {
 }
 
 #[test]
+fn relative_time_uses_compact_git_style_units() {
+    let now = 40_000_000;
+    assert_eq!(scm::relative_time_at(now + 1, now), "just now");
+    assert_eq!(scm::relative_time_at(now - 42, now), "42s ago");
+    assert_eq!(scm::relative_time_at(now - 120, now), "2m ago");
+    assert_eq!(scm::relative_time_at(now - 10_800, now), "3h ago");
+    assert_eq!(scm::relative_time_at(now - 172_800, now), "2d ago");
+    assert_eq!(scm::relative_time_at(now - 1_209_600, now), "2w ago");
+    assert_eq!(scm::relative_time_at(now - 5_184_000, now), "2mo ago");
+    assert_eq!(scm::relative_time_at(now - 63_072_000, now), "2y ago");
+}
+
+#[test]
 fn a_pane_too_small_to_pad_paints_nothing_rather_than_to_the_edge() {
     // The padding needs 4 columns and 2 rows; below that there is no content rect.
     assert_eq!(markdown_preview_rect(Rect::new(0, 0, 4, 1)).height, 0);
