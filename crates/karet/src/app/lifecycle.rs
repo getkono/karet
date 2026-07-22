@@ -68,8 +68,7 @@ impl App {
 
     /// The documents `request` would irreversibly lose: the dirty documents whose
     /// **last** referencing view is being dropped. A dirty document still shown in a
-    /// surviving tab or another pane (previews count as references, like
-    /// [`reconcile_open_docs`](Self::reconcile_open_docs)) is not at risk, so closing
+    /// surviving tab or another pane is not at risk, so closing
     /// one of its several views must not prompt.
     pub(super) fn docs_at_risk(&self, request: CloseRequest) -> Vec<DocumentId> {
         let removed: HashSet<ViewId> = self.removed_tab_views(request).into_iter().collect();

@@ -24,10 +24,13 @@ pub(super) fn draw_pane_content(
     let mut file_hits = Vec::new();
     let mut blame_rect = None;
     let mut markdown_link_hits = Vec::new();
+    let mut editor_rect = area;
+    let mut markdown_preview_rect = Rect::default();
     match &mut tab.kind {
         TabKind::Welcome => draw_welcome(f, theme, area),
         TabKind::Github(view) => draw_github(f, theme, area, view),
         TabKind::Code {
+            path,
             buffer,
             highlights,
             semantic_blocks,
@@ -37,6 +40,22 @@ pub(super) fn draw_pane_content(
             search_decos,
             ..
         } => {
+            if tab.markdown_preview.is_some() && area.width >= 3 {
+                let columns = Layout::horizontal([
+                    Constraint::Percentage(50),
+                    Constraint::Length(1),
+                    Constraint::Min(0),
+                ])
+                .split(area);
+                editor_rect = columns[0];
+                markdown_preview_rect = columns[2];
+                f.render_widget(
+                    Block::default().borders(Borders::LEFT).border_style(
+                        Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui()),
+                    ),
+                    columns[1],
+                );
+            }
             let fold_lines = crate::app::resolve_folds(folds, folded);
             let version = buffer.version();
             if tab
@@ -71,7 +90,7 @@ pub(super) fn draw_pane_content(
                 .cell_caret(!ctx.graphical_cursor)
                 .word_wrap(word_wrap);
             let editor = editor.sticky_scroll(ctx.sticky_scroll);
-            f.render_stateful_widget(editor, area, &mut tab.editor);
+            f.render_stateful_widget(editor, editor_rect, &mut tab.editor);
             if ctx.blame_clickable
                 && let Some(Decoration {
                     range,
@@ -87,17 +106,36 @@ pub(super) fn draw_pane_content(
                     .line(range.start.line as usize)
                     .map_or(0, |line| line.chars().count() as u32);
                 if let Some((x, y)) = tab.editor.screen_cell(
-                    area,
+                    editor_rect,
                     buffer,
                     &fold_lines,
                     karet_core::LineCol::new(range.start.line, end),
                 ) {
                     let width = u16::try_from(Span::raw(text).width()).unwrap_or(u16::MAX);
-                    let visible = width.min(area.right().saturating_sub(x));
+                    let visible = width.min(editor_rect.right().saturating_sub(x));
                     if visible > 0 {
                         blame_rect = Some(Rect::new(x, y, visible, 1));
                     }
                 }
+            }
+            if let Some(preview) = tab.markdown_preview.as_mut()
+                && markdown_preview_rect.width > 0
+            {
+                markdown_link_hits = draw_markdown_preview(
+                    f,
+                    theme,
+                    markdown_preview_rect,
+                    MarkdownPreviewRender {
+                        buffer,
+                        wrapped: &mut preview.wrapped,
+                        rendered: &mut preview.rendered,
+                        scroll: &mut preview.scroll,
+                        hover: ctx.markdown_link_hover,
+                        source: path,
+                        root: ctx.root,
+                        source_scroll: Some(tab.editor.scroll_line as usize),
+                    },
+                );
             }
         },
         TabKind::MarkdownPreview {
@@ -120,6 +158,7 @@ pub(super) fn draw_pane_content(
                     hover: ctx.markdown_link_hover,
                     source: path,
                     root: ctx.root,
+                    source_scroll: None,
                 },
             );
         },
@@ -353,6 +392,8 @@ pub(super) fn draw_pane_content(
         },
     }
     PaneContent {
+        editor_rect,
+        markdown_preview_rect,
         image_area,
         badge_rect,
         file_hits,

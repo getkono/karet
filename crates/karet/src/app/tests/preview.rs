@@ -173,28 +173,19 @@
         app
     }
 
-    /// The preview tab of the only stored (non-focused) pane, if any.
-    fn stored_preview(app: &App) -> Option<&Tab> {
-        app.stored
-            .values()
-            .flat_map(|pane| pane.tabs.iter())
-            .find(|t| matches!(t.kind, TabKind::MarkdownPreview { .. }))
-    }
-
     #[test]
-    fn markdown_preview_opens_a_pane_to_the_side_and_keeps_focus_on_the_source() {
+    fn markdown_preview_is_view_local_editor_state() {
         let mut app = markdown_app("# Title\n\nbody\n");
         let source_view = app.tabs[app.active].view;
-        let source_pane = app.focus_pane();
 
         app.dispatch(Command::MarkdownPreviewSide);
 
-        assert_eq!(app.layout.pane_count(), 2);
-        assert_eq!(app.focus_pane(), source_pane, "focus stays in the editor");
+        assert_eq!(app.layout.pane_count(), 1, "no tile was created");
+        assert_eq!(app.tabs.len(), 1, "no preview tab was created");
+        assert_eq!(app.tabs[app.active].view, source_view);
+        assert!(app.tabs[app.active].markdown_preview.is_some());
+        assert_eq!(app.focus, Focus::Editor);
         assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
-        let preview = stored_preview(&app).expect("a preview tab in the new pane");
-        assert!(App::previews_view(preview, source_view));
-        assert_eq!(preview.title, "Preview notes.md");
     }
 
     #[test]
@@ -205,258 +196,104 @@
 
         app.dispatch(Command::MarkdownPreviewSide);
 
-        assert_eq!(app.layout.pane_count(), 1, "no pane was opened");
-        assert!(stored_preview(&app).is_none());
+        assert!(app.tabs[app.active].markdown_preview.is_none());
         assert!(app.status.is_some(), "the refusal is surfaced, not silent");
     }
 
     #[test]
-    fn re_invoking_markdown_preview_reveals_the_existing_one() {
+    fn re_invoking_markdown_preview_closes_the_view_local_preview() {
         let mut app = markdown_app("# Title\n");
         app.dispatch(Command::MarkdownPreviewSide);
-        assert_eq!(app.layout.pane_count(), 2);
+        assert!(app.tabs[app.active].markdown_preview.is_some());
 
         app.dispatch(Command::MarkdownPreviewSide);
 
-        assert_eq!(app.layout.pane_count(), 2, "no second preview pane");
-        // Revealing focuses the preview itself.
-        assert!(matches!(
-            app.tabs[app.active].kind,
-            TabKind::MarkdownPreview { .. }
-        ));
-    }
-
-    #[test]
-    fn a_pane_too_narrow_to_split_gets_the_preview_as_a_tab() {
-        let mut app = markdown_app("# Title\n");
-        app.main_rect = Rect::new(0, 0, 4, 2);
-
-        app.dispatch(Command::MarkdownPreviewSide);
-
+        assert!(app.tabs[app.active].markdown_preview.is_none());
         assert_eq!(app.layout.pane_count(), 1);
-        assert!(matches!(
-            app.tabs[app.active].kind,
-            TabKind::MarkdownPreview { .. }
-        ));
     }
 
     #[test]
-    fn a_markdown_preview_keeps_its_document_open() {
-        // `reconcile_open_docs` ref-counts through `tab_doc`, so a preview must report the
-        // document it mirrors or closing the source tab would close the document under it.
+    fn markdown_preview_does_not_add_a_document_reference() {
         let mut app = markdown_app("# Title\n");
         if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
             *doc = Some(DocumentId(7));
         }
         app.dispatch(Command::MarkdownPreviewSide);
 
-        let preview = stored_preview(&app).expect("a preview tab");
-        assert_eq!(App::tab_doc(preview), Some(DocumentId(7)));
+        assert_eq!(app.all_tabs().count(), 1);
+        assert_eq!(App::tab_doc(&app.tabs[app.active]), Some(DocumentId(7)));
     }
 
     #[test]
-    fn a_markdown_preview_is_a_pager_for_the_keymap() {
+    fn markdown_preview_keeps_the_editor_keymap_active() {
         let mut app = markdown_app("# Title\n");
         app.dispatch(Command::MarkdownPreviewSide);
-        app.dispatch(Command::MarkdownPreviewSide); // reveal: focuses the preview
-        assert_eq!(app.active_editor_tab(), EditorTab::Pager);
-    }
-
-    #[test]
-    fn scrolling_a_markdown_preview_moves_it_within_the_wrapped_document() {
-        let mut app = markdown_app("# Title\n");
-        app.dispatch(Command::MarkdownPreviewSide);
-        app.dispatch(Command::MarkdownPreviewSide); // focus the preview
-
-        // Nothing is wrapped until the first draw, so the scroll is pinned at the top.
-        app.dispatch(Command::ScrollDown);
-        let TabKind::MarkdownPreview {
-            wrapped, scroll, ..
-        } = &mut app.tabs[app.active].kind
-        else {
-            panic!("expected a preview tab");
-        };
-        assert_eq!(*scroll, 0, "an unwrapped preview cannot scroll");
-
-        // Stand in for a draw by wrapping the document, then scroll for real.
-        *wrapped = karet_markdown::parse("a\n\nb\n\nc\n").wrap(20);
-        app.dispatch(Command::ScrollDown);
-        app.dispatch(Command::ScrollDown);
-        let TabKind::MarkdownPreview { scroll, .. } = &app.tabs[app.active].kind else {
-            panic!("expected a preview tab");
-        };
-        assert_eq!(*scroll, 2);
-
-        app.dispatch(Command::ScrollUp);
-        let TabKind::MarkdownPreview { scroll, .. } = &app.tabs[app.active].kind else {
-            panic!("expected a preview tab");
-        };
-        assert_eq!(*scroll, 1);
-    }
-
-    #[test]
-    fn a_snapshot_refreshes_the_markdown_preview_buffer() {
-        use karet_syntax::Highlights;
-        use karet_text::TextBuffer;
-        let mut app = markdown_app("# Title\n");
-        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
-            *doc = Some(DocumentId(3));
-        }
-        app.dispatch(Command::MarkdownPreviewSide);
-
-        let buffer = TextBuffer::from_text("# Changed\n");
-        let version = buffer.version();
-        app.on_snapshot(
-            DocumentId(3),
-            &DocSnapshot {
-                version,
-                buffer,
-                highlights: Arc::new(Highlights::default()),
-                semantic_blocks: Arc::new(karet_syntax::SemanticBlocks::default()),
-                folds: Arc::new(FoldRegions::default()),
-                decorations: Arc::new(Vec::new()),
-                syntax_error_lines: Arc::new(Vec::new()),
-                language: Some("Markdown"),
-                dirty: true,
-                cursor: None,
-            },
-        );
-
-        let preview = stored_preview(&app).expect("a preview tab");
-        let TabKind::MarkdownPreview { buffer, .. } = &preview.kind else {
-            panic!("expected a preview tab");
-        };
-        assert_eq!(buffer.text(), "# Changed\n");
+        assert_eq!(app.active_editor_tab(), EditorTab::Plain);
     }
 
     /// A source doc whose blocks sit on known lines: headings on 0, 2, 4, 6.
     const SYNC_DOC: &str = "# a\n\n# b\n\n# c\n\n# d\n";
 
-    /// Open a preview for `SYNC_DOC` and give it a wrapped model, standing in for the
-    /// first draw (which is what normally populates it).
-    fn synced_app() -> App {
+    fn rendered_preview_app() -> App {
         let mut app = markdown_app(SYNC_DOC);
         app.dispatch(Command::MarkdownPreviewSide);
-        let preview = app
-            .stored_active_mut(|t| matches!(t.kind, TabKind::MarkdownPreview { .. }))
-            .expect("a preview tab");
-        if let TabKind::MarkdownPreview { wrapped, .. } = &mut preview.kind {
-            *wrapped = karet_markdown::parse(SYNC_DOC).wrap(40);
-        }
+        let _ = screen(&mut app, 100, 12);
         app
     }
 
-    /// The preview's scroll, wherever the preview currently lives.
     fn preview_scroll(app: &App) -> u16 {
-        let find = |t: &Tab| match &t.kind {
-            TabKind::MarkdownPreview { scroll, .. } => Some(*scroll),
-            _ => None,
-        };
-        app.tabs
-            .iter()
-            .chain(app.stored.values().flat_map(|p| p.tabs.iter()))
-            .find_map(find)
-            .expect("a preview tab")
-    }
-
-    /// The source tab's scroll, wherever it lives.
-    fn source_scroll(app: &App) -> u32 {
-        app.tabs
-            .iter()
-            .chain(app.stored.values().flat_map(|p| p.tabs.iter()))
-            .find(|t| matches!(t.kind, TabKind::Code { .. }))
-            .expect("a source tab")
-            .editor
-            .scroll_line
+        app.tabs[app.active]
+            .markdown_preview
+            .as_ref()
+            .map_or(0, |preview| preview.scroll)
     }
 
     #[test]
-    fn scrolling_the_source_scrolls_the_preview_to_the_matching_block() {
-        let mut app = synced_app();
-        // Source line 4 is the third heading; it renders on wrapped line 4 ("# a", "",
-        // "# b", "", "# c").
+    fn source_scroll_aligns_the_in_editor_preview_on_draw() {
+        let mut app = rendered_preview_app();
         app.tabs[app.active].editor.scroll_line = 4;
-        app.sync_markdown_preview();
+        let _ = screen(&mut app, 100, 12);
         assert_eq!(preview_scroll(&app), 4);
-        assert_eq!(source_scroll(&app), 4, "the driver never moves itself");
+        assert_eq!(app.tabs[app.active].editor.scroll_line, 4);
     }
 
     #[test]
-    fn scrolling_the_preview_scrolls_the_source_back() {
-        let mut app = synced_app();
-        app.dispatch(Command::MarkdownPreviewSide); // focus the preview
-        assert!(matches!(
-            app.tabs[app.active].kind,
-            TabKind::MarkdownPreview { .. }
-        ));
-
-        for _ in 0..4 {
-            app.dispatch(Command::ScrollDown);
-        }
-        app.sync_markdown_preview();
-        assert_eq!(preview_scroll(&app), 4, "the driver never moves itself");
-        assert_eq!(source_scroll(&app), 4);
+    fn scrolling_the_in_editor_preview_moves_the_source_to_its_anchor() {
+        let mut app = rendered_preview_app();
+        app.scroll_markdown_preview(4);
+        assert_eq!(preview_scroll(&app), 4);
+        assert_eq!(app.tabs[app.active].editor.scroll_line, 4);
     }
 
     #[test]
-    fn merely_focusing_the_preview_does_not_nudge_the_source() {
-        let mut app = synced_app();
-        app.tabs[app.active].editor.scroll_line = 3; // a blank line, mid-round-trip
-        app.sync_markdown_preview();
-        let settled = preview_scroll(&app);
+    fn preview_geometry_and_wheel_are_routed_inside_the_editor_view() {
+        let mut app = rendered_preview_app();
+        assert!(app.editor_rect.width > 0);
+        assert!(app.markdown_preview_rect.width > 0);
+        assert!(app.editor_rect.right() < app.markdown_preview_rect.x);
 
-        app.dispatch(Command::MarkdownPreviewSide); // focus the preview
-        app.sync_markdown_preview();
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: app.markdown_preview_rect.x,
+            row: app.markdown_preview_rect.y,
+            modifiers: KeyModifiers::NONE,
+        });
 
-        assert_eq!(
-            source_scroll(&app),
-            3,
-            "a bare focus change must not move it"
-        );
-        assert_eq!(preview_scroll(&app), settled);
+        assert_eq!(preview_scroll(&app), 3);
+        assert_eq!(app.tabs[app.active].editor.scroll_line, 3);
     }
 
     #[test]
-    fn syncing_is_idempotent_and_cannot_oscillate() {
-        let mut app = synced_app();
-        app.tabs[app.active].editor.scroll_line = 3;
-        for _ in 0..10 {
-            app.sync_markdown_preview();
-        }
-        let (source, preview) = (source_scroll(&app), preview_scroll(&app));
-
-        app.dispatch(Command::MarkdownPreviewSide); // hand the wheel to the preview
-        for _ in 0..10 {
-            app.sync_markdown_preview();
-        }
-        assert_eq!(source_scroll(&app), source, "the pair settled, not drifted");
-        assert_eq!(preview_scroll(&app), preview);
-    }
-
-    #[test]
-    fn syncing_a_source_with_no_preview_is_a_no_op() {
-        let mut app = markdown_app(SYNC_DOC);
-        app.tabs[app.active].editor.scroll_line = 2;
-        app.sync_markdown_preview();
-        assert_eq!(source_scroll(&app), 2);
-    }
-
-    #[test]
-    fn a_preview_scrolled_past_the_source_clamps_to_the_last_source_line() {
-        let mut app = synced_app();
-        app.dispatch(Command::MarkdownPreviewSide); // focus the preview
-        if let TabKind::MarkdownPreview { scroll, .. } = &mut app.tabs[app.active].kind {
-            *scroll = u16::MAX;
-        }
-        app.sync_markdown_preview();
-        let last = app
-            .stored_active(|t| matches!(t.kind, TabKind::Code { .. }))
-            .and_then(|t| match &t.kind {
-                TabKind::Code { buffer, .. } => Some(buffer.line_count().saturating_sub(1) as u32),
-                _ => None,
-            })
-            .expect("a source tab");
-        assert_eq!(source_scroll(&app), last, "clamped to the last buffer line");
+    fn preview_state_is_not_copied_to_a_split_view() {
+        let mut app = rendered_preview_app();
+        app.split_focused(SplitDir::Right);
+        assert_eq!(app.layout.pane_count(), 2);
+        assert!(app.tabs[app.active].markdown_preview.is_none());
+        assert!(app
+            .stored
+            .values()
+            .flat_map(|pane| pane.tabs.iter())
+            .any(|tab| tab.markdown_preview.is_some()));
     }
 
     /// A standalone DOCX-style preview tab over `md`, with a wrapped model (standing
@@ -474,83 +311,8 @@
         tab
     }
 
-    /// A source scrolled to line 4 drives a *real* preview to wrapped line 4 (see
-    /// `scrolling_the_source_scrolls_the_preview_to_the_matching_block`); a detached
-    /// document preview must never be adopted as that source's preview.
-    #[cfg(feature = "docx")]
-    #[test]
-    fn a_docx_preview_is_never_adopted_by_a_markdown_source() {
-        let mut app = synced_app();
-        // Swap the stored real preview for a detached docx preview at scroll 0.
-        let preview = app
-            .stored_active_mut(|t| matches!(t.kind, TabKind::MarkdownPreview { .. }))
-            .expect("a preview tab");
-        preview.kind = docx_preview_tab(SYNC_DOC, 0).kind;
-
-        app.tabs[app.active].editor.scroll_line = 4;
-        app.sync_markdown_preview();
-
-        assert_eq!(
-            preview_scroll(&app),
-            0,
-            "the sentinel source_view must not pair with a real source"
-        );
-        assert_eq!(source_scroll(&app), 4, "the source itself is unaffected");
-    }
-
-    /// A *real* focused preview at scroll 4 writes the source back to line 4 (see
-    /// `scrolling_the_preview_scrolls_the_source_back`); a focused detached preview
-    /// must drive nothing.
-    #[cfg(feature = "docx")]
-    #[test]
-    fn a_focused_docx_preview_never_drives_a_stored_source() {
-        let mut app = synced_app();
-        app.dispatch(Command::MarkdownPreviewSide); // focus the preview pane
-        // Turn the focused preview into a detached docx preview, scrolled well away
-        // from where the stored source (line 0) projects.
-        app.tabs[app.active].kind = docx_preview_tab(SYNC_DOC, 4).kind;
-
-        app.sync_markdown_preview();
-
-        assert_eq!(
-            source_scroll(&app),
-            0,
-            "a detached preview must not scroll any source tab"
-        );
-        // And its own scroll is left alone (nothing wrote it back).
-        if let TabKind::MarkdownPreview { scroll, .. } = &app.tabs[app.active].kind {
-            assert_eq!(*scroll, 4);
-        }
-    }
-
-    /// Invoking the preview command over a markdown source must open a fresh real
-    /// preview, not reveal/hijack an open docx preview (whose sentinel `source_view`
-    /// can never match the source's view).
-    #[cfg(feature = "docx")]
-    #[test]
-    fn preview_side_opens_a_real_preview_instead_of_hijacking_a_docx_tab() {
-        let mut app = markdown_app(SYNC_DOC);
-        app.push_tab(docx_preview_tab("# doc", 0));
-        app.select_tab(0); // back to the markdown source
-        let source_view = app.tabs[app.active].view;
-
-        app.dispatch(Command::MarkdownPreviewSide);
-
-        assert_eq!(app.layout.pane_count(), 2, "a new preview pane opened");
-        let preview = stored_preview(&app).expect("a preview tab in the new pane");
-        assert!(
-            App::previews_view(preview, source_view),
-            "the new preview pairs with the source"
-        );
-        // The docx tab is still in the source pane, untouched.
-        assert!(app.tabs.iter().any(
-            |t| matches!(&t.kind, TabKind::MarkdownPreview { source_view, .. }
-                if *source_view == crate::tab::DETACHED_SOURCE_VIEW)
-        ));
-    }
-
-    /// The preview command refuses politely on a focused docx preview — there is no
-    /// markdown source file behind it to preview.
+    /// The preview command refuses politely on a focused DOCX preview — only code
+    /// editor views can own the in-editor preview state.
     #[cfg(feature = "docx")]
     #[test]
     fn preview_side_is_a_no_op_on_a_focused_docx_preview() {
@@ -688,12 +450,12 @@
             .collect()
     }
 
-    /// End-to-end: the shell splits, wraps and paints the preview through `ui::draw`.
+    /// End-to-end: the editor view splits, wraps and paints the preview through `ui::draw`.
     ///
     /// A list is the giveaway — the source pane shows `- one`, the rendered preview shows
     /// a `•` bullet — so this proves the preview is rendered, not echoed source.
     #[test]
-    fn the_preview_pane_paints_rendered_markdown_beside_the_source() {
+    fn the_in_editor_preview_paints_rendered_markdown_beside_the_source() {
         let mut app = markdown_app("- one\n- two\n");
         app.dispatch(Command::MarkdownPreviewSide);
 
@@ -737,15 +499,9 @@
         edited.apply_simple(&change).expect("apply the edit");
         assert!(edited.version() > 0, "the edit must move the version");
 
-        for tab in app.all_tabs_mut() {
-            match &mut tab.kind {
-                TabKind::Code { buffer, text, .. } => {
-                    *buffer = edited.content_snapshot();
-                    *text = edited.text();
-                },
-                TabKind::MarkdownPreview { buffer, .. } => *buffer = edited.content_snapshot(),
-                _ => {},
-            }
+        if let TabKind::Code { buffer, text, .. } = &mut app.tabs[app.active].kind {
+            *buffer = edited.content_snapshot();
+            *text = edited.text();
         }
 
         let after = screen(&mut app, 100, 12).join("\n");

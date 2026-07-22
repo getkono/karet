@@ -113,6 +113,7 @@ impl App {
             status_rect: Rect::default(),
             status_hits: Vec::new(),
             editor_rect: Rect::default(),
+            markdown_preview_rect: Rect::default(),
             blame_rect: None,
             markdown_link_hits: Vec::new(),
             markdown_link_hover: None,

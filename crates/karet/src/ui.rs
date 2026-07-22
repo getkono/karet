@@ -164,9 +164,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.outline_content_rect = Rect::default();
     }
 
-    // Align a markdown preview with its source before either is painted, using the wrap
-    // the last frame cached.
-    app.sync_markdown_preview();
     draw_panes(f, app, &theme, app.main_rect);
     draw_drop_preview(f, app, &theme);
     draw_status(f, app, &theme, rows[1]);
@@ -249,6 +246,8 @@ struct RenderedPane {
     breadcrumb_rect: Rect,
     breadcrumb_hits: Vec<crate::app::BreadcrumbHit>,
     content_rect: Rect,
+    editor_rect: Rect,
+    markdown_preview_rect: Rect,
     image_area: Option<Rect>,
     commit_badge_rect: Option<Rect>,
     commit_file_hits: Vec<crate::app::CommitFileHit>,
@@ -260,6 +259,8 @@ struct RenderedPane {
 /// and the commit view's signature-badge rect (for double-click hit-testing).
 #[derive(Default)]
 struct PaneContent {
+    editor_rect: Rect,
+    markdown_preview_rect: Rect,
     image_area: Option<Rect>,
     badge_rect: Option<Rect>,
     file_hits: Vec<crate::app::CommitFileHit>,
