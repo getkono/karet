@@ -135,6 +135,73 @@ impl App {
         true
     }
 
+    /// Activate a Markdown link only for the explicit Ctrl/Cmd-click gesture.
+    pub(super) fn handle_markdown_link_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            || !mouse
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER)
+        {
+            return false;
+        }
+        let point = (mouse.column, mouse.row);
+        let Some(target) = self
+            .markdown_link_hits
+            .iter()
+            .find(|hit| rect_contains(hit.rect, point))
+            .map(|hit| hit.target.clone())
+        else {
+            return false;
+        };
+        let Some(source) = self
+            .tabs
+            .get(self.active)
+            .and_then(Tab::path)
+            .map(Path::to_path_buf)
+        else {
+            return false;
+        };
+
+        match crate::links::resolve(&target, &source, &self.root) {
+            Ok(crate::links::LinkTarget::ExternalUrl(url)) => {
+                if let Err(error) = crate::links::open_external(&url) {
+                    self.notify(
+                        Severity::Error,
+                        NotificationKind::System,
+                        format!("could not open link: {error}"),
+                    );
+                }
+            },
+            Ok(crate::links::LinkTarget::WorkspaceFile { path, .. }) => {
+                self.open_markdown_file_link(&path);
+            },
+            Ok(crate::links::LinkTarget::OutsideWorkspaceFile(path)) => {
+                self.overlay = Some(Overlay::text(
+                    "Type open to open a file outside this workspace",
+                    TextPurpose::ConfirmOutsideWorkspaceLink { path },
+                ));
+            },
+            Err(error) => self.notify(
+                Severity::Warning,
+                NotificationKind::System,
+                format!("link blocked: {error}"),
+            ),
+        }
+        true
+    }
+
+    pub(super) fn open_markdown_file_link(&mut self, path: &Path) {
+        if path.is_file() {
+            self.open_path(path);
+        } else {
+            self.notify(
+                Severity::Warning,
+                NotificationKind::Io,
+                format!("linked file does not exist: {}", path.display()),
+            );
+        }
+    }
+
     /// Handle mouse interaction with an open context menu.
     pub(super) fn handle_context_menu_mouse(&mut self, mouse: MouseEvent) -> bool {
         let Some(menu) = self.context_menu.as_ref() else {
@@ -211,11 +278,15 @@ impl App {
         let over_blame = self
             .blame_rect
             .is_some_and(|rect| rect_contains(rect, (mouse.column, mouse.row)));
+        let over_markdown_link = self
+            .markdown_link_hits
+            .iter()
+            .any(|hit| rect_contains(hit.rect, (mouse.column, mouse.row)));
         let shape = if over_sidebar_divider {
             Some("col-resize")
         } else if over_scm_divider {
             Some("row-resize")
-        } else if over_blame {
+        } else if over_blame || over_markdown_link {
             Some("pointer")
         } else {
             None
@@ -304,6 +375,9 @@ impl App {
         if self.handle_blame_mouse(mouse) {
             return;
         }
+        if self.handle_markdown_link_mouse(mouse) {
+            return;
+        }
         let point = (mouse.column, mouse.row);
         let in_sidebar = self.sidebar_visible && rect_contains(self.sidebar_rect, point);
         let in_outline = self.outline_visible && rect_contains(self.outline_rect, point);
@@ -371,6 +445,11 @@ impl App {
                 self.hover = rect_contains(self.sidebar_content_rect, point).then_some(point);
                 self.sidebar_header_hover =
                     (in_sidebar && mouse.row == self.sidebar_rect.y).then_some(point);
+                self.markdown_link_hover = self
+                    .markdown_link_hits
+                    .iter()
+                    .any(|hit| rect_contains(hit.rect, point))
+                    .then_some(point);
             },
             _ => {},
         }

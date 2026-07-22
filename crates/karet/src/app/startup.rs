@@ -113,6 +113,8 @@ impl App {
             status_hits: Vec::new(),
             editor_rect: Rect::default(),
             blame_rect: None,
+            markdown_link_hits: Vec::new(),
+            markdown_link_hover: None,
             commit_badge_rect: None,
             editor_selecting: false,
             last_click: None,

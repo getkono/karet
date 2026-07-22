@@ -24,6 +24,7 @@ mod desktop;
 mod doctor;
 mod editing;
 mod keymap;
+mod links;
 mod notify;
 mod outline;
 mod overlay;

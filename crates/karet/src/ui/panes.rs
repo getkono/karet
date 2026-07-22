@@ -7,6 +7,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
     app.image_area = None;
     app.editor_rect = Rect::default();
     app.blame_rect = None;
+    app.markdown_link_hits.clear();
     app.commit_badge_rect = None;
     let focused = app.focus_pane();
     let editor_focused = app.focus == Focus::Editor;
@@ -47,6 +48,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
                     .as_ref()
                     .and_then(crate::app::LiveBlame::commit_hash)
                     .is_some(),
+                markdown_link_hover: app.markdown_link_hover,
             };
             render_pane(f, &mut app.tabs, app.active, rect, &ctx)
         } else if let Some(stored) = app.stored.get_mut(&pane) {
@@ -70,6 +72,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
                 find: None,
                 blame: None,
                 blame_clickable: false,
+                markdown_link_hover: None,
             };
             render_pane(f, &mut stored.tabs, stored.active, rect, &ctx)
         } else {
@@ -79,6 +82,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
             app.editor_rect = rendered.content_rect;
             app.image_area = rendered.image_area;
             app.blame_rect = rendered.blame_rect;
+            app.markdown_link_hits = rendered.markdown_link_hits;
             app.commit_badge_rect = rendered.commit_badge_rect;
         }
         app.pane_frames.push(crate::app::PaneFrame {
@@ -152,6 +156,7 @@ pub(super) fn render_pane(
         commit_badge_rect: painted.badge_rect,
         commit_file_hits: painted.file_hits,
         blame_rect: painted.blame_rect,
+        markdown_link_hits: painted.markdown_link_hits,
     }
 }
 

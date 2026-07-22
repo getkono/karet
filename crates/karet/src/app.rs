@@ -388,6 +388,15 @@ pub(crate) struct CommitFileHit {
     pub(crate) scroll: u16,
 }
 
+/// A visible link run in the focused Markdown preview's last rendered frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MarkdownLinkHit {
+    /// The rendered cells occupied by this run.
+    pub(crate) rect: Rect,
+    /// The renderer-neutral target from the Markdown source.
+    pub(crate) target: String,
+}
+
 /// A rendered pane's clickable regions, recorded during the last frame for mouse
 /// hit-testing (which pane a click lands in, and its tab strip / content).
 #[derive(Clone)]
@@ -786,6 +795,10 @@ pub struct App {
     pub(crate) editor_rect: Rect,
     /// Visible committed-attribution text from the last frame, for click routing.
     pub(crate) blame_rect: Option<Rect>,
+    /// Visible Markdown link runs from the focused preview's last frame.
+    pub(crate) markdown_link_hits: Vec<MarkdownLinkHit>,
+    /// Current mouse position when it rests over a visible Markdown link.
+    pub(crate) markdown_link_hover: Option<(u16, u16)>,
     /// The focused commit view's signature-badge rect (screen coords) from the last
     /// frame, for double-click hit-testing. `None` when no badge is on screen.
     pub(crate) commit_badge_rect: Option<Rect>,

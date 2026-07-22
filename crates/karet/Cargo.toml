@@ -61,6 +61,7 @@ karet-docx = { workspace = true, optional = true } # DOCX → markdown conversio
 ratatui.workspace = true
 crossterm.workspace = true
 unicode-width.workspace = true            # cell-accurate responsive commit paths
+url.workspace = true                      # validate links and resolve workspace-relative targets
 tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
