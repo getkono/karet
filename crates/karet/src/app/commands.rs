@@ -37,6 +37,7 @@ impl App {
             Command::DismissNotification => self.notifications.dismiss_latest(),
             Command::DismissAllNotifications => self.notifications.dismiss_all(),
             Command::MarkdownPreviewSide => self.open_markdown_preview_side(),
+            Command::FormatMarkdownTables => self.format_markdown_tables(),
             Command::SplitRight => self.split_focused(SplitDir::Right),
             Command::SplitDown => self.split_focused(SplitDir::Down),
             Command::FocusNextPane => self.focus_pane_cycle(true),

@@ -1,3 +1,5 @@
+use std::ops::RangeInclusive;
+
 use super::text::*;
 use super::visual::*;
 use super::*;
@@ -47,6 +49,8 @@ pub struct EditorState {
     pub(super) last_word_wrap: bool,
     /// Hard-tab width captured at the last render.
     pub(super) last_tab_width: u16,
+    /// Logical-line ranges exempted from soft wrapping at the last render.
+    pub(super) last_unwrapped_lines: Vec<RangeInclusive<u32>>,
     /// Whether the next wrapped render should reveal a cursor moved by an editor
     /// command rather than preserve a manually-scrolled viewport.
     pub(super) follow_cursor: bool,
@@ -67,6 +71,7 @@ impl Default for EditorState {
             last_content_width: 0,
             last_word_wrap: false,
             last_tab_width: 4,
+            last_unwrapped_lines: Vec::new(),
             follow_cursor: false,
             sticky_rows: Vec::new(),
             sticky_height: 0,
@@ -155,9 +160,23 @@ impl EditorState {
         let steps = delta.unsigned_abs();
         for _ in 0..steps {
             anchor = if delta.is_negative() {
-                previous_visual_anchor(buffer, folds, width, self.last_tab_width, anchor)
+                previous_visual_anchor(
+                    buffer,
+                    folds,
+                    width,
+                    self.last_tab_width,
+                    &self.last_unwrapped_lines,
+                    anchor,
+                )
             } else {
-                next_visual_anchor(buffer, folds, width, self.last_tab_width, anchor)
+                next_visual_anchor(
+                    buffer,
+                    folds,
+                    width,
+                    self.last_tab_width,
+                    &self.last_unwrapped_lines,
+                    anchor,
+                )
             };
         }
         self.scroll_line = anchor.line;
@@ -431,6 +450,25 @@ impl EditorState {
         self.cursors.normalize();
     }
 
+    /// Restore a complete cursor/selection set, clamping every endpoint to `buffer`.
+    /// An empty set becomes one caret at the origin.
+    pub fn set_cursor_state(&mut self, buffer: &TextBuffer, mut cursors: CursorState) {
+        if cursors.selections.is_empty() {
+            cursors = CursorState::single(Selection::caret(LineCol::new(0, 0)));
+        }
+        for selection in &mut cursors.selections {
+            selection.anchor = clamp_to_buffer(buffer, selection.anchor);
+            selection.head = clamp_to_buffer(buffer, selection.head);
+        }
+        cursors.primary = cursors
+            .primary
+            .min(cursors.selections.len().saturating_sub(1));
+        cursors.normalize();
+        let head = cursors.primary().head;
+        self.cursors = cursors;
+        self.scroll_to(head);
+    }
+
     /// Extend the primary selection so its moving end is `pos` (clamped), keeping the
     /// primary anchor fixed and leaving any secondary carets in place.
     pub fn extend_to(&mut self, buffer: &TextBuffer, pos: LineCol) {
@@ -572,13 +610,20 @@ impl EditorState {
                 folds,
                 width,
                 self.last_tab_width,
+                &self.last_unwrapped_lines,
                 VisualAnchor {
                     line: self.scroll_line,
                     subrow: self.scroll_subrow,
                 },
                 rel_row,
             );
-            let ranges = visual_ranges(buffer, anchor.line, width, self.last_tab_width);
+            let ranges = visual_ranges(
+                buffer,
+                anchor.line,
+                width,
+                self.last_tab_width,
+                &self.last_unwrapped_lines,
+            );
             let range = ranges
                 .get(anchor.subrow as usize)
                 .copied()

@@ -1,6 +1,7 @@
 use super::text::*;
 use super::visual::*;
 use super::*;
+use std::ops::RangeInclusive;
 
 /// The editor widget: a builder over the buffer and the (borrowed) data layers
 /// the application supplies. Render it as a ratatui [`StatefulWidget`] with an
@@ -20,6 +21,7 @@ pub struct Editor<'a> {
     read_only: bool,
     word_wrap: bool,
     tab_width: u16,
+    unwrapped_lines: &'a [RangeInclusive<u32>],
     semantic_blocks: Option<&'a SemanticBlocks>,
     sticky_scroll: bool,
 }
@@ -41,6 +43,7 @@ impl<'a> Editor<'a> {
             read_only: false,
             word_wrap: false,
             tab_width: 4,
+            unwrapped_lines: &[],
             semantic_blocks: None,
             sticky_scroll: false,
         }
@@ -84,6 +87,16 @@ impl<'a> Editor<'a> {
     #[must_use]
     pub fn tab_width(mut self, width: u16) -> Self {
         self.tab_width = width.max(1);
+        self
+    }
+
+    /// Keep selected logical lines on one visual row even when soft wrapping is on.
+    ///
+    /// This is useful for source constructs such as Markdown tables whose columns
+    /// lose their relationship when individual rows wrap independently.
+    #[must_use]
+    pub fn unwrapped_lines(mut self, lines: &'a [RangeInclusive<u32>]) -> Self {
+        self.unwrapped_lines = lines;
         self
     }
 
@@ -428,6 +441,7 @@ impl StatefulWidget for Editor<'_> {
         state.last_content_width = content_width;
         state.last_word_wrap = self.word_wrap;
         state.last_tab_width = self.tab_width;
+        state.last_unwrapped_lines = self.unwrapped_lines.to_vec();
         state.scroll_line = state.scroll_line.min(line_count.saturating_sub(1));
         if self.word_wrap {
             state.scroll_col = 0;
@@ -441,6 +455,7 @@ impl StatefulWidget for Editor<'_> {
             self.folds,
             width,
             self.tab_width,
+            self.unwrapped_lines,
             VisualAnchor {
                 line: state.scroll_line,
                 subrow: state.scroll_subrow,
@@ -456,6 +471,7 @@ impl StatefulWidget for Editor<'_> {
                 self.folds,
                 width,
                 self.tab_width,
+                self.unwrapped_lines,
                 initial_content_height,
                 anchor,
                 state.cursor(),
@@ -560,7 +576,7 @@ impl StatefulWidget for Editor<'_> {
                 ),
             ];
             let ranges = if self.word_wrap {
-                visual_ranges(self.buffer, l, width, self.tab_width)
+                visual_ranges(self.buffer, l, width, self.tab_width, self.unwrapped_lines)
             } else {
                 vec![VisualRange {
                     start: state.scroll_col,
@@ -593,7 +609,14 @@ impl StatefulWidget for Editor<'_> {
             buf.set_line(area.x, y, &Line::from(spans), area.width);
 
             let next = if self.word_wrap {
-                next_visual_anchor(self.buffer, self.folds, width, self.tab_width, anchor)
+                next_visual_anchor(
+                    self.buffer,
+                    self.folds,
+                    width,
+                    self.tab_width,
+                    self.unwrapped_lines,
+                    anchor,
+                )
             } else {
                 next_line_anchor(self.folds, line_count, anchor)
             };

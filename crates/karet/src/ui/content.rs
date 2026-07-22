@@ -70,6 +70,21 @@ pub(super) fn draw_pane_content(
                 .conflict_decorations
                 .as_ref()
                 .map_or(&[][..], |(_, decorations)| decorations.as_slice());
+            let table_lines = if karet_filetype::file_type_for_path(path).name() == "Markdown" {
+                if tab
+                    .markdown_table_lines
+                    .as_ref()
+                    .is_none_or(|(cached, _)| *cached != version)
+                {
+                    tab.markdown_table_lines =
+                        Some((version, karet_markdown::table_line_ranges(&buffer.text())));
+                }
+                tab.markdown_table_lines
+                    .as_ref()
+                    .map_or(&[][..], |(_, ranges)| ranges.as_slice())
+            } else {
+                &[]
+            };
             // Local find and global search highlights are kept in separate
             // fields (so closing/rerunning one can't wipe the other) and
             // combined only here, at render time.
@@ -89,7 +104,8 @@ pub(super) fn draw_pane_content(
                 .focused(ctx.editor_focused)
                 .cell_caret(!ctx.graphical_cursor)
                 .word_wrap(word_wrap)
-                .tab_width(ctx.tab_width);
+                .tab_width(ctx.tab_width)
+                .unwrapped_lines(table_lines);
             let editor = editor.sticky_scroll(ctx.sticky_scroll);
             f.render_stateful_widget(editor, editor_rect, &mut tab.editor);
             if ctx.blame_clickable

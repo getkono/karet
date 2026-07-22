@@ -84,6 +84,19 @@ fn replace(range: Range, text: String, base: u64) -> Edit {
     }
 }
 
+/// Replace the complete buffer contents in one undoable edit.
+pub(crate) fn replace_document(buffer: &TextBuffer, text: String, base: u64) -> Edit {
+    let last = buffer.line_count().saturating_sub(1) as u32;
+    replace(
+        Range {
+            start: LineCol::new(0, 0),
+            end: LineCol::new(last, line_chars(buffer, last)),
+        },
+        text,
+        base,
+    )
+}
+
 /// The selection if it is non-empty, else `None`.
 fn non_empty(selection: Option<Range>) -> Option<Range> {
     selection.filter(|r| !r.is_empty())
