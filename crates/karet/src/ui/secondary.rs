@@ -246,7 +246,27 @@ fn apply_markdown_osc8(
 }
 
 pub(super) fn osc8_symbol(uri: &str, symbol: &str) -> String {
-    format!("\u{1b}]8;;{uri}\u{1b}\\{symbol}\u{1b}]8;;\u{1b}\\")
+    let id = osc8_id(uri);
+    format!("\u{1b}]8;id={id};{uri}\u{1b}\\{symbol}\u{1b}]8;;\u{1b}\\")
+}
+
+/// Return a stable, terminal-safe identity for every cell carrying `uri`.
+///
+/// The renderer emits one self-contained OSC 8 sequence per cell so Ratatui can
+/// diff and repaint cells independently. An explicit shared ID lets the terminal
+/// treat those cells (and later redraws) as one hyperlink instead of allocating a
+/// fresh implicit hyperlink for every opening sequence.
+pub(super) fn osc8_id(uri: &str) -> String {
+    // FNV-1a is sufficient here: this is a compact rendering identity, not a
+    // security boundary. The URI remains part of OSC 8 and of terminal-side link
+    // identity, so a hash collision cannot substitute one validated target for
+    // another.
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let hash = uri.as_bytes().iter().fold(OFFSET_BASIS, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(PRIME)
+    });
+    format!("karet-{hash:016x}")
 }
 
 /// Map the link spans visible in `area` to screen-space hit regions.
