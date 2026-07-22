@@ -25,6 +25,7 @@ pub(super) fn draw_pane_content(
     let mut blame_rect = None;
     match &mut tab.kind {
         TabKind::Welcome => draw_welcome(f, theme, area),
+        TabKind::Github(view) => draw_github(f, theme, area, view),
         TabKind::Code {
             buffer,
             highlights,
