@@ -6,6 +6,9 @@ impl App {
     /// active modal's text input when nothing is bound.
     pub(super) fn handle_key(&mut self, key: KeyEvent) {
         self.status = None;
+        if self.input_context().modal.is_none() && self.github_key(key) {
+            return;
+        }
         // Esc dismisses a showing notification first (VS Code-style), but only when no
         // modal already owns Esc — so overlay/find/commit cancels are untouched, and
         // base Esc behaves normally whenever no toast is visible.

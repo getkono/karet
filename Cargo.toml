@@ -67,8 +67,15 @@ tokio     = { version = "1.52.3", default-features = false }  # crates opt into 
 tracing   = "0.1.44"
 serde     = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+sha2       = "0.10.9"
+bytes      = { version = "1.12.0", features = ["serde"] }
+secrecy    = "0.10.3"
+time       = { version = "0.3.47", features = ["serde-human-readable", "formatting", "parsing"] }
 toml      = "1.1.2"
 smallvec  = "1.15.2"
+# Host-only OpenAPI generator for karet-github. Generated Rust is written to
+# OUT_DIR, so spargen never enters a karet runtime dependency graph.
+spargen   = { version = "=0.2.1", default-features = false }
 # Terminal UI
 ratatui   = "0.30.2"
 crossterm = "0.29.0"

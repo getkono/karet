@@ -186,32 +186,15 @@ impl Session {
         }
     }
 
-    /// Lazily fetch a commit's GitHub "Verified" status on a worker thread, emitting an
-    /// [`Event::CommitVerification`] on success. Silent on any failure (offline, no
-    /// GitHub remote, rate-limited): the client simply keeps the offline "Signed" badge.
-    /// A no-op when the `github` feature is disabled.
+    /// Lazily fetch a commit's GitHub "Verified" status through the shared async
+    /// GitHub manager. A no-op when the workspace is ineligible or the feature is
+    /// disabled.
     #[cfg(feature = "github")]
     pub(super) fn fetch_commit_verification(&mut self, id: RequestId, hash: String) {
-        let Some(url) = self.vcs.as_ref().and_then(Repository::origin_url) else {
+        if self.github_repository.is_none() {
             return;
-        };
-        let Some((owner, repo)) = karet_github::parse_remote(&url) else {
-            return;
-        };
-        let events = self.events.clone();
-        // Blocking HTTP off the actor thread; drop the handle (fire-and-forget).
-        std::thread::spawn(move || {
-            if let Ok(v) = karet_github::commit_verification(&owner, &repo, &hash) {
-                let status = GithubVerification {
-                    verified: v.verified,
-                    reason: v.reason,
-                    signer: v.signer,
-                };
-                events
-                    .send((Some(id), Event::CommitVerification { hash, status }))
-                    .ok();
-            }
-        });
+        }
+        self.send_github(id, super::github::GithubJob::Verification { hash });
     }
 
     /// Without the `github` feature, commit verification is unavailable — a no-op.
