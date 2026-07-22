@@ -65,8 +65,9 @@ fn run(jobs: &std::sync::mpsc::Receiver<PrepareJob>, results: &UnboundedSender<P
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use karet_vcs::StatusKind;
+
+    use super::*;
 
     fn change(path: &str) -> FileChange {
         FileChange {

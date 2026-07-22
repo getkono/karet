@@ -562,10 +562,12 @@ fn compare_header_lines(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::path::PathBuf;
+
     use karet_vcs::FileChange;
     use karet_vcs::StatusKind;
-    use std::path::PathBuf;
+
+    use super::*;
 
     fn file(path: &str, old: &str, new: &str) -> render::FileView {
         render::FileView::new(
