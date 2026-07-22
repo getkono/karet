@@ -10,6 +10,7 @@
 //! and [`EditorState`] are defined; the painting/input logic is filled in
 //! separately.
 
+mod conflict;
 mod state;
 mod text;
 mod view;
@@ -18,6 +19,7 @@ mod visual;
 #[cfg(test)]
 mod tests;
 
+pub use conflict::conflict_decorations;
 use karet_core::BytePos;
 use karet_core::CursorState;
 use karet_core::Decoration;

@@ -31,6 +31,35 @@ fn inline_text_decoration_renders_after_the_line() {
 }
 
 #[test]
+fn merge_conflict_decorations_render_section_backgrounds() {
+    let buffer = TextBuffer::from_text("<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> topic\n");
+    let decorations = crate::conflict_decorations(&buffer.text());
+    let theme = Theme::dark();
+    let area = Rect::new(0, 0, 32, 5);
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .decorations(&decorations)
+        .theme(&theme)
+        .focused(false)
+        .render(area, &mut target, &mut EditorState::new());
+
+    let ours = (0..area.width)
+        .find(|x| target[(*x, 1)].symbol() == "o")
+        .unwrap_or_default();
+    let theirs = (0..area.width)
+        .find(|x| target[(*x, 3)].symbol() == "t")
+        .unwrap_or_default();
+    assert_eq!(
+        target[(ours, 1)].bg,
+        theme.role(ThemeRole::DiffModified).to_ratatui()
+    );
+    assert_eq!(
+        target[(theirs, 3)].bg,
+        theme.role(ThemeRole::DiffAdded).to_ratatui()
+    );
+}
+
+#[test]
 fn editor_builder_collects_layers() {
     let buffer = TextBuffer::from_text("fn main() {}");
     let _editor = Editor::new(&buffer).diagnostics(&[]).decorations(&[]);

@@ -383,6 +383,8 @@ pub struct Tab {
     pub(crate) is_preview: bool,
     /// Whether the path opened for this view was itself a filesystem symbolic link.
     pub(crate) is_symlink: bool,
+    /// Cached merge-conflict decorations, keyed by the code buffer version.
+    pub(crate) conflict_decorations: Option<(u64, Vec<Decoration>)>,
 }
 
 impl Tab {
@@ -402,6 +404,7 @@ impl Tab {
             find: None,
             is_preview: false,
             is_symlink,
+            conflict_decorations: None,
         }
     }
 
