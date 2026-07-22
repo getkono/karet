@@ -423,7 +423,7 @@ fn space(count: usize) -> TextSpan {
     }
 }
 
-/// Paint a table as a box-drawn grid: a header row, a rule under it, then the body.
+/// Paint a table as a box-drawn grid, including a horizontal rule between each row.
 fn wrap_table(
     header: &Row,
     alignments: &[Alignment],
@@ -452,8 +452,11 @@ fn wrap_table(
     out.push(prefixed_line(prefix, table_border(&widths, '┌', '┬', '┐')));
     table_row(&header_cells, &widths, alignments, prefix, out);
     out.push(prefixed_line(prefix, table_border(&widths, '├', '┼', '┤')));
-    for row in &body_cells {
+    for (index, row) in body_cells.iter().enumerate() {
         table_row(row, &widths, alignments, prefix, out);
+        if index + 1 < body_cells.len() {
+            out.push(prefixed_line(prefix, table_border(&widths, '├', '┼', '┤')));
+        }
     }
     out.push(prefixed_line(prefix, table_border(&widths, '└', '┴', '┘')));
 }
