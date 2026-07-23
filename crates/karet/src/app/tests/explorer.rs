@@ -571,3 +571,139 @@
         assert_eq!(selected(&app), Some(1));
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn nested_repository_status_is_requested_once_and_rendered_when_non_clean() {
+        let dir = test_dir("nested-repository-status");
+        write_file(&dir, ".git/config", b"[core]\n");
+        write_file(&dir, "nested/.git/config", b"[core]\n");
+        write_file(&dir, "nested/src/lib.rs", b"pub fn example() {}\n");
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend.clone());
+        app.sidebar_panel = SidebarPanel::Explorer;
+
+        app.request_nested_repository_statuses();
+        app.request_nested_repository_statuses();
+
+        let requests: Vec<_> = backend
+            .sent
+            .lock()
+            .map(|sent| {
+                sent.iter()
+                    .filter_map(|(id, command)| match command {
+                        SessionCommand::NestedRepositoryStatus { path } => {
+                            Some((*id, path.clone()))
+                        },
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(requests, vec![(RequestId(1), dir.join("nested"))]);
+        assert!(app.nested_repository_badges(Instant::now()).is_empty());
+
+        app.on_backend_event(
+            Some(requests[0].0),
+            SessionEvent::NestedRepositoryStatus {
+                path: requests[0].1.clone(),
+                summary: RepositorySummary {
+                    ahead: 1,
+                    behind: 2,
+                    added: 3,
+                    removed: 4,
+                },
+            },
+        );
+        let badges = app.nested_repository_badges(Instant::now());
+        assert_eq!(badges.len(), 1);
+        assert_eq!(badges[0].0, dir.join("nested"));
+        assert!(badges[0].1.contains("1"));
+        assert!(badges[0].1.contains("2"));
+        assert!(badges[0].1.contains("+3"));
+        assert!(badges[0].1.contains("-4"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nested_repository_loading_badge_respects_the_shared_reveal_delay() {
+        let dir = test_dir("nested-repository-loading");
+        let nested = dir.join("nested");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Explorer;
+        let now = Instant::now();
+        app.nested_repository_pending.insert(
+            RequestId(7),
+            (
+                nested.clone(),
+                now - crate::app::LOADING_REVEAL_DELAY
+                    + Duration::from_millis(1),
+            ),
+        );
+
+        assert!(app.nested_repository_badges(now).is_empty());
+        assert_eq!(
+            app.nested_repository_next_wake(now),
+            Some(Duration::from_millis(1))
+        );
+
+        app.nested_repository_pending.insert(
+            RequestId(7),
+            (
+                nested.clone(),
+                now - crate::app::LOADING_REVEAL_DELAY
+                    - Duration::from_millis(50),
+            ),
+        );
+        assert_eq!(app.nested_repository_badges(now).len(), 1);
+        assert_eq!(
+            app.nested_repository_next_wake(now),
+            Some(Duration::from_millis(100))
+        );
+
+        app.nested_repository_pending.clear();
+        app.nested_repository_status
+            .insert(nested, RepositorySummary::default());
+        assert!(app.nested_repository_badges(now).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn invalidation_tombstones_an_already_queued_repository_status() {
+        let dir = test_dir("nested-repository-stale-status");
+        write_file(&dir, "nested/.git/config", b"[core]\n");
+        write_file(&dir, "nested/file.txt", b"before\n");
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend.clone());
+        app.sidebar_panel = SidebarPanel::Explorer;
+        app.request_nested_repository_statuses();
+
+        app.invalidate_nested_repository_statuses(&[dir.join("nested/file.txt")]);
+        app.on_backend_event(
+            Some(RequestId(1)),
+            SessionEvent::NestedRepositoryStatus {
+                path: dir.join("nested"),
+                summary: RepositorySummary {
+                    ahead: 1,
+                    ..RepositorySummary::default()
+                },
+            },
+        );
+
+        assert!(app.nested_repository_status.is_empty());
+        let sent = backend
+            .sent
+            .lock()
+            .map(|sent| sent.clone())
+            .unwrap_or_default();
+        assert!(sent.iter().any(|(_, command)| {
+            matches!(
+                command,
+                SessionCommand::Cancel {
+                    request: RequestId(1)
+                }
+            )
+        }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }

@@ -1,3 +1,5 @@
+use unicode_width::UnicodeWidthStr;
+
 use super::model::*;
 use super::*;
 
@@ -5,6 +7,7 @@ use super::*;
 pub struct FileTree<'a> {
     root: &'a Path,
     status: &'a [(PathBuf, Decoration)],
+    badges: &'a [(PathBuf, String)],
     visible: &'a [PathBuf],
     active: Option<&'a Path>,
     cut_paths: &'a [PathBuf],
@@ -21,6 +24,7 @@ impl<'a> FileTree<'a> {
         Self {
             root,
             status: &[],
+            badges: &[],
             visible: &[],
             active: None,
             cut_paths: &[],
@@ -81,6 +85,13 @@ impl<'a> FileTree<'a> {
     #[must_use]
     pub fn status(mut self, status: &'a [(PathBuf, Decoration)]) -> Self {
         self.status = status;
+        self
+    }
+
+    /// Supply muted, right-aligned badges keyed by directory path.
+    #[must_use]
+    pub fn badges(mut self, badges: &'a [(PathBuf, String)]) -> Self {
+        self.badges = badges;
         self
     }
 
@@ -290,6 +301,26 @@ impl StatefulWidget for FileTree<'_> {
             }
 
             buf.set_line(area.x, y, &Line::from(spans), area.width);
+            if let Some((_, badge)) = self.badges.iter().find(|(path, _)| path == &row.path) {
+                let badge_width = u16::try_from(badge.width()).unwrap_or(u16::MAX);
+                if badge_width > 0 && badge_width.saturating_add(1) < area.width {
+                    let x = area.right().saturating_sub(badge_width);
+                    buf.set_stringn(
+                        x.saturating_sub(1),
+                        y,
+                        " ",
+                        1,
+                        Style::default().fg(muted.to_ratatui()),
+                    );
+                    buf.set_stringn(
+                        x,
+                        y,
+                        badge,
+                        badge.width(),
+                        Style::default().fg(muted.to_ratatui()),
+                    );
+                }
+            }
         }
     }
 }

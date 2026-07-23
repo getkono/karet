@@ -214,6 +214,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn local_backend_reports_an_exact_nested_repository_status() {
+        use crate::api::Event;
+        use crate::session::Session;
+        use crate::session::SessionConfig;
+
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let nested = dir.path().join("nested");
+        if std::fs::create_dir_all(&nested).is_err() {
+            return;
+        }
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&nested)
+                .status()
+                .ok()
+                .is_some_and(|status| status.success())
+        };
+        if !git(&["init", "-q"])
+            || !git(&["config", "user.email", "test@example.com"])
+            || !git(&["config", "user.name", "karet test"])
+            || std::fs::write(nested.join("file.txt"), "one\n").is_err()
+            || !git(&["add", "file.txt"])
+            || !git(&["commit", "-q", "-m", "initial"])
+            || std::fs::write(nested.join("file.txt"), "one\ntwo\n").is_err()
+        {
+            return;
+        }
+
+        let (session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![dir.path().to_path_buf()],
+            ..SessionConfig::default()
+        });
+        let backend = local(session);
+        let id = backend.next_id();
+        assert!(
+            backend
+                .send(
+                    id,
+                    Command::NestedRepositoryStatus {
+                        path: nested.clone(),
+                    },
+                )
+                .is_ok()
+        );
+
+        let received = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some((event_id, event)) = events.recv().await {
+                if event_id == Some(id)
+                    && let Event::NestedRepositoryStatus { path, summary } = event
+                {
+                    return Some((path, summary));
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some((path, summary)) = received else {
+            return;
+        };
+        assert_eq!(path, nested);
+        assert_eq!((summary.added, summary.removed), (1, 0));
+    }
+
+    #[tokio::test]
     async fn repository_actions_and_blame_run_off_actor() {
         use karet_core::BlameAttribution;
         use karet_vcs::CreateBranchOptions;

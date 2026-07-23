@@ -32,6 +32,7 @@ use karet_vcs::FileChange;
 use karet_vcs::Remote;
 use karet_vcs::RemoteBranch;
 use karet_vcs::RepositoryState;
+use karet_vcs::RepositorySummary;
 use karet_vcs::StashEntry;
 use karet_vcs::StashOptions;
 
@@ -455,6 +456,11 @@ pub enum Command {
     RefreshVcs,
     /// Load branch, remote, operation, and stash state for Source Control.
     RepositorySnapshot,
+    /// Compute compact status for a nested repository shown in the explorer.
+    NestedRepositoryStatus {
+        /// Exact nested repository worktree directory.
+        path: PathBuf,
+    },
     /// Run one repository mutation on the serialized background worker.
     VcsAction {
         /// Action to run.
@@ -1110,6 +1116,13 @@ pub enum Event {
     RepositorySnapshot {
         /// Complete snapshot captured after a read or successful action.
         snapshot: Box<RepositorySnapshot>,
+    },
+    /// Compact synchronization and line-change status for a nested repository.
+    NestedRepositoryStatus {
+        /// Exact nested repository worktree directory.
+        path: PathBuf,
+        /// Current divergence and uncommitted line counts.
+        summary: RepositorySummary,
     },
     /// A repository action was accepted by the serialized worker.
     VcsOperationStarted {

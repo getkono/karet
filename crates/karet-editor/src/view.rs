@@ -1,7 +1,8 @@
+use std::ops::RangeInclusive;
+
 use super::text::*;
 use super::visual::*;
 use super::*;
-use std::ops::RangeInclusive;
 
 /// The editor widget: a builder over the buffer and the (borrowed) data layers
 /// the application supplies. Render it as a ratatui [`StatefulWidget`] with an

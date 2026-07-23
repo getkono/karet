@@ -115,6 +115,7 @@ use karet_theme::Theme;
 use karet_vcs::Commit;
 use karet_vcs::CommitDetail;
 use karet_vcs::FileChange;
+use karet_vcs::RepositorySummary;
 use karet_vcs::StatusKind;
 use karet_widgets::DropZone;
 use karet_widgets::FileTreeState;
@@ -825,6 +826,10 @@ pub struct App {
     pub(crate) scm_row_map: Vec<Option<usize>>,
     /// Source-Control header controls `(start, end, row, command)`.
     pub(crate) scm_header_hits: Vec<(u16, u16, u16, Command)>,
+    /// Last completed compact status for nested repositories in the explorer.
+    nested_repository_status: HashMap<PathBuf, RepositorySummary>,
+    /// In-flight nested-repository requests keyed by request id.
+    nested_repository_pending: HashMap<RequestId, (PathBuf, Instant)>,
     /// The changes-region scroll offset (top region; wheel + selection-follow).
     pub(crate) scm_offset: usize,
     /// The changes-region viewport rect from the last frame (hit-testing/hover).

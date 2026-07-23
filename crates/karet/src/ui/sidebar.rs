@@ -98,6 +98,8 @@ pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
                 app.focus == Focus::Sidebar && app.sidebar_panel == SidebarPanel::Explorer;
             let hover = app.hovered_explorer_row();
             let cut_paths = app.explorer_cut_paths().to_vec();
+            app.request_nested_repository_statuses();
+            let repository_badges = app.nested_repository_badges(Instant::now());
             f.render_stateful_widget(
                 FileTree::new(&root)
                     .theme(theme)
@@ -106,7 +108,8 @@ pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
                     .active(active.as_deref())
                     .cut_paths(&cut_paths)
                     .explorer_focused(explorer_focused)
-                    .hover(hover),
+                    .hover(hover)
+                    .badges(&repository_badges),
                 rows[1],
                 &mut app.explorer,
             );

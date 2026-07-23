@@ -1,6 +1,95 @@
 use super::*;
 
 impl App {
+    /// Start background status reads for nested repository rows not already cached.
+    pub(crate) fn request_nested_repository_statuses(&mut self) {
+        self.explorer.ensure_built(&self.root);
+        let paths: Vec<PathBuf> = self
+            .explorer
+            .rows()
+            .iter()
+            .filter(|row| row.is_repository)
+            .map(|row| row.path.clone())
+            .collect();
+        for path in paths {
+            if self.nested_repository_status.contains_key(&path)
+                || self
+                    .nested_repository_pending
+                    .values()
+                    .any(|(pending, _)| pending == &path)
+            {
+                continue;
+            }
+            if let Some(request) =
+                self.send_command_id(SessionCommand::NestedRepositoryStatus { path: path.clone() })
+            {
+                self.nested_repository_pending
+                    .insert(request, (path, Instant::now()));
+            }
+        }
+    }
+
+    /// Right-aligned status badges for nested repository rows. Fast pending reads
+    /// stay blank; slower reads animate after the shared reveal delay.
+    pub(crate) fn nested_repository_badges(&self, now: Instant) -> Vec<(PathBuf, String)> {
+        let mut badges: Vec<(PathBuf, String)> = self
+            .nested_repository_status
+            .iter()
+            .filter(|(_, summary)| !summary.is_clean())
+            .map(|(path, summary)| {
+                (
+                    path.clone(),
+                    repository_summary_label(*summary, self.icon_style),
+                )
+            })
+            .collect();
+        badges.extend(
+            self.nested_repository_pending
+                .values()
+                .filter(|(_, since)| now.saturating_duration_since(*since) >= LOADING_REVEAL_DELAY)
+                .map(|(path, since)| {
+                    (
+                        path.clone(),
+                        repository_spinner(now.saturating_duration_since(*since), self.icon_style),
+                    )
+                }),
+        );
+        badges.sort_by(|a, b| a.0.cmp(&b.0));
+        badges
+    }
+
+    /// Next repaint needed to reveal or animate a nested-repository loading badge.
+    pub(crate) fn nested_repository_next_wake(&self, now: Instant) -> Option<Duration> {
+        if !self.sidebar_visible || self.sidebar_panel != SidebarPanel::Explorer {
+            return None;
+        }
+        self.nested_repository_pending
+            .values()
+            .map(|(_, since)| {
+                LOADING_REVEAL_DELAY
+                    .checked_sub(now.saturating_duration_since(*since))
+                    .unwrap_or(Duration::from_millis(100))
+            })
+            .min()
+    }
+
+    /// Drop cached summaries affected by changed worktree paths and cancel any
+    /// matching in-flight reads. The next Explorer frame requests fresh values.
+    pub(crate) fn invalidate_nested_repository_statuses(&mut self, changed: &[PathBuf]) {
+        self.nested_repository_status
+            .retain(|repository, _| !changed.iter().any(|path| path.starts_with(repository)));
+        let cancelled: Vec<RequestId> = self
+            .nested_repository_pending
+            .iter()
+            .filter(|(_, (repository, _))| changed.iter().any(|path| path.starts_with(repository)))
+            .map(|(request, _)| *request)
+            .collect();
+        for request in cancelled {
+            self.nested_repository_pending.remove(&request);
+            self.cancel_backend_request(request);
+        }
+    }
+
     /// Begin creating a new file (or folder) in the explorer, ensuring the panel is
     /// visible and focused so its inline name editor is shown.
     pub(super) fn explorer_begin_new(&mut self, folder: bool) {
@@ -25,6 +114,12 @@ impl App {
     /// refresh that drops every cached row and re-reads the filesystem.
     pub(super) fn explorer_refresh(&mut self) {
         self.explorer.rebuild(&self.root);
+        self.nested_repository_status.clear();
+        let pending: Vec<RequestId> = self.nested_repository_pending.keys().copied().collect();
+        self.nested_repository_pending.clear();
+        for request in pending {
+            self.cancel_backend_request(request);
+        }
         self.send_vcs(SessionCommand::RefreshVcs);
     }
 
@@ -509,4 +604,36 @@ impl App {
     pub(super) fn close_context_menu(&mut self) {
         self.context_menu_clear();
     }
+}
+
+fn repository_summary_label(summary: RepositorySummary, icons: IconStyle) -> String {
+    let (up, down) = if icons == IconStyle::Ascii {
+        ("^", "v")
+    } else {
+        ("↑", "↓")
+    };
+    let mut parts = Vec::new();
+    if summary.ahead > 0 {
+        parts.push(format!("{up}{}", summary.ahead));
+    }
+    if summary.behind > 0 {
+        parts.push(format!("{down}{}", summary.behind));
+    }
+    if summary.added > 0 {
+        parts.push(format!("+{}", summary.added));
+    }
+    if summary.removed > 0 {
+        parts.push(format!("-{}", summary.removed));
+    }
+    parts.join(" ")
+}
+
+fn repository_spinner(elapsed: Duration, icons: IconStyle) -> String {
+    let frame = usize::try_from(elapsed.as_millis() / 100).unwrap_or(usize::MAX);
+    let frames: &[&str] = if icons == IconStyle::Ascii {
+        &["-", "\\", "|", "/"]
+    } else {
+        &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    };
+    frames[frame % frames.len()].to_string()
 }

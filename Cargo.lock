@@ -3298,6 +3298,7 @@ name = "karet-vcs"
 version = "0.3.0"
 dependencies = [
  "gix",
+ "imara-diff",
  "karet-core",
  "karet-diff",
  "ratatui",

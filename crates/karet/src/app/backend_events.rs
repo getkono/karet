@@ -36,6 +36,7 @@ impl App {
         let outline = self
             .active_outline_loading_since()
             .and_then(|since| loading_delay_remaining(since, now));
+        let nested_repositories = self.nested_repository_next_wake(now);
         let operation = self
             .operation_blocker
             .as_ref()
@@ -49,7 +50,15 @@ impl App {
             _ => None,
         };
         [
-            notif, spinner, auto_save, caret, loading, outline, operation, reveal,
+            notif,
+            spinner,
+            auto_save,
+            caret,
+            loading,
+            outline,
+            nested_repositories,
+            operation,
+            reveal,
         ]
         .into_iter()
         .flatten()
@@ -164,6 +173,9 @@ impl App {
     pub(super) fn on_backend_event(&mut self, id: Option<RequestId>, event: SessionEvent) {
         if id.is_some_and(|request| self.cancelled_requests.contains(&request)) {
             return;
+        }
+        if let Some(request) = id {
+            self.nested_repository_pending.remove(&request);
         }
         // A save's answering event clears its tab spinner. During "save all & quit",
         // only successful Saved responses may let the quit continue; a refused or
@@ -312,6 +324,7 @@ impl App {
             // disk. No extra debouncing needed here — the watcher already
             // debounces at the source, and the result cap keeps a re-run cheap.
             SessionEvent::FsChanged { paths } => {
+                self.invalidate_nested_repository_statuses(&paths);
                 if !self.search.query.is_empty() {
                     self.run_global_search();
                 }
@@ -408,6 +421,9 @@ impl App {
                 self.scm.repository = Some(*snapshot);
                 self.scm.repository_loading_since = None;
                 self.scm.repository_request = None;
+            },
+            SessionEvent::NestedRepositoryStatus { path, summary } => {
+                self.nested_repository_status.insert(path, summary);
             },
             SessionEvent::VcsOperationStarted { action } => {
                 self.scm.operation = Some(action);

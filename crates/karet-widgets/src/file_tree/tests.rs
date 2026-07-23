@@ -416,6 +416,18 @@ fn git_directory_is_always_excluded() {
 }
 
 #[test]
+fn nested_repository_marks_its_directory_and_stops_compaction_there() {
+    let dir = temp_dir();
+    write(&dir.path, "group/project/.git/config", b"[core]\n");
+    write(&dir.path, "group/project/src/main.rs", b"fn main() {}\n");
+    let mut state = FileTreeState::new();
+    state.ensure_built(&dir.path);
+    let row = state.rows().first();
+    assert_eq!(row.map(|row| row.label.as_str()), Some("group/project"));
+    assert!(row.is_some_and(|row| row.is_repository));
+}
+
+#[test]
 fn selection_moves_and_clamps() {
     let dir = temp_dir();
     write(&dir.path, "a.txt", b"a");
@@ -741,6 +753,24 @@ fn render_draws_status_glyph() {
         .collect();
     assert!(rendered.contains("a.txt"));
     assert!(rendered.contains('M'));
+}
+
+#[test]
+fn repository_badge_is_right_aligned_and_survives_a_long_label() {
+    let dir = temp_dir();
+    write(&dir.path, "long-project-name/.git/config", b"[core]\n");
+    write(&dir.path, "long-project-name/a.txt", b"a\n");
+    let badges = vec![(dir.path.join("long-project-name"), "↑2 +3 -1".to_string())];
+    let mut state = FileTreeState::new();
+    let theme = Theme::dark();
+    let area = Rect::new(0, 0, 18, 1);
+    let mut buf = Buffer::empty(area);
+    FileTree::new(&dir.path)
+        .theme(&theme)
+        .badges(&badges)
+        .render(area, &mut buf, &mut state);
+    let rendered: String = buf.content().iter().map(|cell| cell.symbol()).collect();
+    assert!(rendered.ends_with("↑2 +3 -1"), "{rendered:?}");
 }
 
 #[test]

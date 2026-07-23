@@ -27,6 +27,12 @@ use crate::cancellation::Cancellation;
 pub(crate) enum VcsJob {
     /// Load the current repository snapshot.
     Snapshot { id: RequestId, cancel: Cancellation },
+    /// Compute compact status for one exact nested repository path.
+    NestedRepositoryStatus {
+        id: RequestId,
+        path: PathBuf,
+        cancel: Cancellation,
+    },
     /// Run one repository action.
     Action { id: RequestId, action: VcsAction },
     /// Query open GitHub pull requests.
@@ -119,6 +125,29 @@ fn run(
                     },
                 ),
                 Err(message) => notify_cancellable(events, id, &cancel, message),
+            }
+        },
+        VcsJob::NestedRepositoryStatus { id, path, cancel } => {
+            if cancel.is_cancelled() {
+                return;
+            }
+            let result = nested_repository(root, &path)
+                .and_then(|repository| repository.summary().map_err(|error| error.to_string()));
+            match result {
+                Ok(summary) => emit_cancellable(
+                    events,
+                    id,
+                    &cancel,
+                    Event::NestedRepositoryStatus { path, summary },
+                ),
+                Err(message) => {
+                    notify_cancellable(
+                        events,
+                        id,
+                        &cancel,
+                        format!("repository status: {message}"),
+                    );
+                },
             }
         },
         VcsJob::Action { id, action } => {
@@ -420,6 +449,27 @@ fn run_file_history(
     }
 }
 
+fn nested_repository(root: &Option<PathBuf>, path: &Path) -> Result<Repository, String> {
+    let root = root
+        .as_deref()
+        .ok_or_else(|| "workspace has no root".to_string())?;
+    let root = std::fs::canonicalize(root)
+        .map_err(|error| format!("workspace root cannot be resolved: {error}"))?;
+    let path = std::fs::canonicalize(path)
+        .map_err(|error| format!("nested repository cannot be resolved: {error}"))?;
+    if path == root || !path.starts_with(&root) {
+        return Err("repository is not nested inside the workspace root".to_string());
+    }
+    if !path.join(".git").exists() {
+        return Err("nested repository no longer exists".to_string());
+    }
+    let repository = Repository::discover(&path).map_err(|error| error.to_string())?;
+    if repository.worktree_root().as_deref() != Some(path.as_path()) {
+        return Err("path is not the exact root of a nested repository".to_string());
+    }
+    Ok(repository)
+}
+
 fn repository(root: &Option<PathBuf>) -> Result<Repository, String> {
     let root = root
         .as_ref()
@@ -699,6 +749,18 @@ fn notify_cancellable(
 mod tests {
     use super::*;
 
+    fn init_repository(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        std::fs::create_dir_all(path)?;
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(path)
+            .status()?;
+        if !status.success() {
+            return Err(std::io::Error::other("git init failed").into());
+        }
+        Ok(())
+    }
+
     fn commit(hash: &str) -> BlameAttribution {
         BlameAttribution::Commit(BlameCommit {
             hash: hash.to_string(),
@@ -743,5 +805,30 @@ mod tests {
         hub.cancel(RequestId(41));
         let next = hub.register(RequestId(42));
         assert!(!next.is_cancelled());
+    }
+
+    #[test]
+    fn nested_repository_must_be_an_exact_child_worktree() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let workspace = tempfile::tempdir()?;
+        init_repository(workspace.path())?;
+        let nested = workspace.path().join("nested");
+        init_repository(&nested)?;
+        let ordinary_child = workspace.path().join("ordinary");
+        std::fs::create_dir_all(&ordinary_child)?;
+        let outside = tempfile::tempdir()?;
+        init_repository(outside.path())?;
+        let root = Some(workspace.path().to_path_buf());
+
+        assert_eq!(
+            nested_repository(&root, &nested)?
+                .worktree_root()
+                .as_deref(),
+            std::fs::canonicalize(&nested).ok().as_deref()
+        );
+        assert!(nested_repository(&root, workspace.path()).is_err());
+        assert!(nested_repository(&root, &ordinary_child).is_err());
+        assert!(nested_repository(&root, outside.path()).is_err());
+        Ok(())
     }
 }

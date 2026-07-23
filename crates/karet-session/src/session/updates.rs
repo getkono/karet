@@ -1,5 +1,6 @@
-use super::*;
 use karet_core::Symbol;
+
+use super::*;
 
 impl Session {
     /// The session's configuration (workspace roots, format-on-save, spell-check).
