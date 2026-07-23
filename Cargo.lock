@@ -503,12 +503,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "color_quant"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
-
-[[package]]
 name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1214,67 +1208,100 @@ dependencies = [
 
 [[package]]
 name = "gamut"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a4d9f18ee566e37ef86f945aca9fd35899905badc6c4a707ff552219e649c53"
+checksum = "90aa035fb6bfeaeecbccf9fb21f8d8aaf6abf911905a6028a488da64bb0a6453"
 dependencies = [
  "gamut-core",
+ "gamut-jpeg",
+ "gamut-png",
  "gamut-tiff",
  "gamut-webp",
 ]
 
 [[package]]
 name = "gamut-bitstream"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1f40b3df55368d29e42710b24f5c8da2ac6237c6196504408b0cc8e8484bffd"
+checksum = "706ef7c7342d2cf3d2737690a6127b1c91f908add9d18c72e5d17c3931f2fe6a"
 dependencies = [
  "gamut-core",
 ]
 
 [[package]]
-name = "gamut-color"
-version = "0.3.0"
+name = "gamut-codec-abi"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c77892e8682d86e83d0318240d05fac0d4177b35649128956e334dac1f1f095b"
+checksum = "38704051ac2980276478f6eb9c55a26fb608151f8e42c355f5a699a2f3afde03"
+
+[[package]]
+name = "gamut-color"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fde55ae76aee646990fd4f353574fbcfaf9f37a5f3e54ba0907c7d384936e56a"
 dependencies = [
- "bitflags 2.13.0",
  "gamut-core",
 ]
 
 [[package]]
 name = "gamut-core"
-version = "0.2.0"
+version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ede5b1ba8659692df079389a31466e7dcf9e2e831e0ab0ef566b823c44c8d25d"
+checksum = "b17c79c8672b675d538dceffda1dd5d00ba279cbcca4f75c7b4fa847741d5d31"
 dependencies = [
  "thiserror 2.0.18",
- "tracing",
 ]
+
+[[package]]
+name = "gamut-deflate"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b128070e10042ed241459f2a6542c9bd3639e3115b8a445732bf099f929ceec1"
 
 [[package]]
 name = "gamut-dsp"
-version = "0.2.1"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3014d2c1d79ddbec650ba93dd88c77a8f4d9baffc01e67937703dfdb85a28943"
+checksum = "ed494150ad7376cd7e5f8775d175c5a22e497604f31ebc0ce47d94554d7861fb"
+
+[[package]]
+name = "gamut-ifd"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d3bd47b53d4007db880394ed226de033d992646cfa394768237fed0e429806e"
 dependencies = [
  "gamut-core",
 ]
 
 [[package]]
-name = "gamut-ifd"
-version = "0.1.1"
+name = "gamut-jpeg"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46f41f65b14872affde7f070a087c6482ac7ea969230ba4c82000812e21453ce"
+checksum = "15f8fc170fc64c37d8a17c2c5c2ab7e23de375f01c99cf816e1f3eae7362b3c7"
 dependencies = [
+ "gamut-codec-abi",
+ "gamut-color",
  "gamut-core",
+ "gamut-dsp",
+]
+
+[[package]]
+name = "gamut-png"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a3d427c3d8d1850296d31e41812fefbd352ba65bd70794e8a849aca7fa76dbf"
+dependencies = [
+ "gamut-codec-abi",
+ "gamut-core",
+ "gamut-deflate",
+ "miniz_oxide",
 ]
 
 [[package]]
 name = "gamut-riff"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69c9caca2f57107bfec9388fd78171ee0121d70952a23dda70e18bfbc38fff13"
+checksum = "dce5eb8bcf247664a2eb9071497e58cacbd2ad1f8172ac020c50acbbe7574a77"
 dependencies = [
  "gamut-bitstream",
  "gamut-core",
@@ -1282,24 +1309,22 @@ dependencies = [
 
 [[package]]
 name = "gamut-tiff"
-version = "0.2.0"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60357d805051767e0b7a35e90ea3db4cf616e303ea862bf9a48fbc907b8abb7c"
+checksum = "5bffd9a2da795463952f05ee902c145cd6c057544d4a8c648820f6c195fe24a9"
 dependencies = [
  "gamut-bitstream",
- "gamut-color",
  "gamut-core",
- "gamut-dsp",
  "gamut-ifd",
 ]
 
 [[package]]
 name = "gamut-webp"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "126d668030db0950ea80b9f623700218de570de7020bb7ef824aec595cb2248d"
+checksum = "2feafa7af56fe446887f04d13556561cd449c4ee57fd071cad4c34e46ee87d1c"
 dependencies = [
- "gamut-bitstream",
+ "gamut-codec-abi",
  "gamut-color",
  "gamut-core",
  "gamut-dsp",
@@ -1363,16 +1388,6 @@ dependencies = [
  "r-efi 6.0.0",
  "rand_core 0.10.1",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "gif"
-version = "0.14.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee8cfcc411d9adbbaba82fb72661cc1bcca13e8bba98b364e62b2dba8f960159"
-dependencies = [
- "color_quant",
- "weezl",
 ]
 
 [[package]]
@@ -2670,13 +2685,9 @@ checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
 dependencies = [
  "bytemuck",
  "byteorder-lite",
- "color_quant",
- "gif",
  "moxcms",
  "num-traits",
  "png",
- "zune-core",
- "zune-jpeg",
 ]
 
 [[package]]
@@ -2965,7 +2976,6 @@ dependencies = [
  "base64",
  "crossterm",
  "gamut",
- "image",
  "karet-core",
  "karet-docx",
  "karet-editor",
@@ -6090,12 +6100,6 @@ checksum = "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf"
 dependencies = [
  "rustls-pki-types",
 ]
-
-[[package]]
-name = "weezl"
-version = "0.1.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
 name = "wezterm-bidi"

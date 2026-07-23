@@ -21,10 +21,9 @@ all-languages = ["karet-treesitter/all-languages"]
 # resampling). Enabled automatically by `images` and `pdf`; a consumer rarely
 # selects it directly.
 raster = ["dep:base64"]
-# Decode & render raster image FILES. Gamut owns the formats for which it ships a
-# decoder; `image` temporarily covers the remaining formats (see the documented
-# capability matrix). Both stay absent from raster/PDF-only consumers.
-images = ["raster", "dep:gamut", "dep:image"]
+# Decode & render raster image FILES through Gamut. The codec stays absent from
+# raster/PDF-only consumers.
+images = ["raster", "dep:gamut"]
 # Rasterize PDF pages (via karet-pdf/hayro) into the Kitty image path. Off by
 # default so a consumer that never opens PDFs pulls neither hayro nor its deps; it
 # reuses the shared `raster` primitives to display the rendered page.
@@ -45,8 +44,7 @@ karet-editor.workspace = true         # renders the highlighted text branch (rea
 karet-pdf = { workspace = true, optional = true }  # PDF page rasterization (behind `pdf`)
 karet-docx = { workspace = true, optional = true } # DOCX → markdown conversion (behind `docx`)
 ratatui.workspace = true
-gamut = { workspace = true, optional = true }  # pure-Rust WebP/TIFF decoding (behind `images`)
-image = { workspace = true, optional = true }  # remaining published decoders (behind `images`)
+gamut = { workspace = true, optional = true }  # pure-Rust PNG/JPEG/WebP/TIFF decoding (behind `images`)
 base64 = { workspace = true, optional = true }  # Kitty graphics protocol payload encoding (behind `raster`)
 thiserror.workspace = true
 
