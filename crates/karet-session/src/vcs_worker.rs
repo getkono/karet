@@ -80,12 +80,6 @@ pub(crate) enum VcsJob {
         limit: usize,
         cancel: Cancellation,
     },
-    /// Fetch a commit's forge verification.
-    CommitVerification {
-        id: RequestId,
-        hash: String,
-        cancel: Cancellation,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -271,9 +265,6 @@ fn run(
             limit,
             cancel,
         } => run_file_history(root, events, id, path, skip, limit, &cancel),
-        VcsJob::CommitVerification { id, hash, cancel } => {
-            run_commit_verification(root, events, id, hash, &cancel);
-        },
     }
 }
 
@@ -466,52 +457,6 @@ fn run_file_history(
         ),
         Err(message) => notify_cancellable(events, id, cancel, message),
     }
-}
-
-#[cfg(feature = "github")]
-fn run_commit_verification(
-    root: &Option<PathBuf>,
-    events: &UnboundedSender<(Option<RequestId>, Event)>,
-    id: RequestId,
-    hash: String,
-    cancel: &Cancellation,
-) {
-    if cancel.is_cancelled() {
-        return;
-    }
-    let result = repository(root).and_then(|repo| {
-        let url = repo
-            .origin_url()
-            .ok_or_else(|| "no origin remote".to_string())?;
-        let (owner, name) = karet_github::parse_remote(&url)
-            .ok_or_else(|| "origin is not hosted on GitHub".to_string())?;
-        karet_github::commit_verification(&owner, &name, &hash).map_err(|error| error.to_string())
-    });
-    if let Ok(verification) = result {
-        emit_cancellable(
-            events,
-            id,
-            cancel,
-            Event::CommitVerification {
-                hash,
-                status: crate::api::GithubVerification {
-                    verified: verification.verified,
-                    reason: verification.reason,
-                    signer: verification.signer,
-                },
-            },
-        );
-    }
-}
-
-#[cfg(not(feature = "github"))]
-fn run_commit_verification(
-    _root: &Option<PathBuf>,
-    _events: &UnboundedSender<(Option<RequestId>, Event)>,
-    _id: RequestId,
-    _hash: String,
-    _cancel: &Cancellation,
-) {
 }
 
 fn repository(root: &Option<PathBuf>) -> Result<Repository, String> {

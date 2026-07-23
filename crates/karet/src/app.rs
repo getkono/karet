@@ -7,11 +7,13 @@ mod commands;
 mod completion;
 mod editor;
 mod explorer;
+pub(crate) mod github;
 mod history;
 mod input;
 mod lifecycle;
 mod mouse;
 mod panes;
+mod prepare;
 mod remote_actions;
 mod runtime;
 mod scm;
@@ -31,6 +33,7 @@ use std::io::{self};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -487,6 +490,19 @@ enum CommitDest {
     Browser { view: ViewId, hash: String },
 }
 
+/// A commit result whose render model is being prepared away from the UI thread.
+struct PendingCommitPreparation {
+    destination: CommitDest,
+    detail: Box<CommitDetail>,
+    cancelled: Arc<AtomicBool>,
+}
+
+/// A document open owned by one concrete editor view.
+struct PendingOpen {
+    path: PathBuf,
+    view: ViewId,
+}
+
 /// Which filesystem operation the explorer's internal file clipboard will perform.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ExplorerFileOp {
@@ -889,7 +905,9 @@ pub struct App {
     /// where editing commands are inert.
     backend: Option<Arc<dyn Backend>>,
     /// Open requests awaiting their `Opened` event, mapping request id → file path.
-    pending_open: HashMap<RequestId, PathBuf>,
+    pending_open: HashMap<RequestId, PendingOpen>,
+    /// Opens whose view closed before the backend answered; a late document is released.
+    abandoned_open: HashSet<RequestId>,
     /// In-flight save requests, mapping request id → document, so the tab's saving
     /// spinner clears when the answering event (saved or error) arrives.
     pending_saves: HashMap<RequestId, backend_events::PendingSave>,
@@ -912,6 +930,14 @@ pub struct App {
     /// In-flight commit-detail requests, mapping request id → where its result goes
     /// (a new standalone commit tab, or the graph browser's detail pane).
     pending_commit_detail: HashMap<RequestId, CommitDest>,
+    /// Backend commit results currently being diffed and highlighted off-thread.
+    pending_commit_preparation: HashMap<RequestId, PendingCommitPreparation>,
+    /// Lazy forge-verification reads, owned by their exact commit view.
+    pending_commit_verification: HashMap<RequestId, (ViewId, String)>,
+    /// Submission side of the app-local diff preparation worker.
+    prepare_tx: std::sync::mpsc::Sender<prepare::PrepareJob>,
+    /// Result side, taken by the runtime event loop while the TUI is running.
+    prepare_rx: Option<tokio::sync::mpsc::UnboundedReceiver<prepare::PrepareResult>>,
     /// The graph browser's in-flight history-page request, so its answering
     /// [`SessionEvent::VcsLog`] fills the browser rather than the sidebar log.
     graph_log_req: Option<(RequestId, ViewId)>,

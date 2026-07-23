@@ -163,6 +163,39 @@
     }
 
     #[test]
+    fn closing_while_commit_diffs_prepare_off_thread_stays_closed() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend);
+        app.open_commit("aaaaaaa111".to_string());
+        let view = app.tabs[app.active].view;
+
+        app.on_backend_event(
+            Some(RequestId(1)),
+            SessionEvent::CommitReady {
+                detail: Box::new(commit_detail("aaaaaaa111", "first")),
+                changes: (0..64)
+                    .map(|index| {
+                        change(&format!("src/file-{index}.rs"), StatusKind::Modified)
+                    })
+                    .collect(),
+            },
+        );
+        assert!(app.pending_commit_preparation.contains_key(&RequestId(1)));
+
+        app.request_close_active_tab();
+
+        assert!(!app.all_tabs().any(|tab| tab.view == view));
+        assert!(app.pending_commit_preparation.is_empty());
+        if let Some(rx) = app.prepare_rx.as_mut()
+            && let Ok(result) = rx.try_recv()
+        {
+            app.on_prepare_result(result);
+        }
+        assert!(!app.all_tabs().any(|tab| tab.view == view));
+    }
+
+    #[test]
     fn commit_detail_response_fills_the_pending_tab_in_place() {
         let backend = Arc::new(RecordingBackend::new());
         let mut app = app();
@@ -182,6 +215,7 @@
                 changes: vec![change("a.rs", StatusKind::Modified)],
             },
         );
+        finish_preparation(&mut app);
 
         assert_eq!(app.tabs[app.active].view, view);
         assert_eq!(app.tabs[app.active].title, "Commit aaaaaaa");
@@ -244,6 +278,7 @@
                 changes: vec![change("a.rs", StatusKind::Modified)],
             },
         );
+        finish_preparation(&mut app);
 
         match &app.tabs[app.active].kind {
             TabKind::Commit {

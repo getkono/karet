@@ -1,6 +1,6 @@
 [package]
 name        = "karet-github"
-description = "Minimal GitHub REST client for karet (commit signature verification, and the single home for GitHub-specific networking)."
+description = "Headless public GitHub REST client for karet repository workflows."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -15,8 +15,22 @@ publish = false
 
 [dependencies]
 reqwest.workspace = true
+bytes.workspace = true
+secrecy.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+time.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["process", "time"] }
+
+[build-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+spargen.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
 workspace = true

@@ -1,0 +1,222 @@
+[
+  {
+    "operationId": "actions/create-workflow-dispatch",
+    "diagnostic": "GeneratedRustDoesNotCompile",
+    "upstream": "https://github.com/getkono/spargen/issues/45"
+  },
+  {
+    "operationId": "actions/disable-workflow",
+    "diagnostic": "GeneratedRustDoesNotCompile",
+    "upstream": "https://github.com/getkono/spargen/issues/45"
+  },
+  {
+    "operationId": "actions/enable-workflow",
+    "diagnostic": "GeneratedRustDoesNotCompile",
+    "upstream": "https://github.com/getkono/spargen/issues/45"
+  },
+  {
+    "operationId": "actions/get-pending-deployments-for-run",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "actions/get-workflow",
+    "diagnostic": "GeneratedRustDoesNotCompile",
+    "upstream": "https://github.com/getkono/spargen/issues/45"
+  },
+  {
+    "operationId": "actions/list-workflow-runs",
+    "diagnostic": "GeneratedRustDoesNotCompile",
+    "upstream": "https://github.com/getkono/spargen/issues/45"
+  },
+  {
+    "operationId": "actions/review-pending-deployments-for-run",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "checks/list-for-ref",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/add-assignees",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/add-blocked-by-dependency",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/add-issue-field-values",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/add-labels",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/add-sub-issue",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/create",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/create-comment",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/get",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/get-comment",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/get-parent",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/list-comments",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/list-dependencies-blocked-by",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/list-dependencies-blocking",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/list-events-for-timeline",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/list-for-repo",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/list-issue-field-values-for-issue",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/list-sub-issues",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/pin-comment",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/remove-assignees",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/remove-dependency-blocked-by",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/remove-sub-issue",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/reprioritize-sub-issue",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/set-issue-field-values",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/set-labels",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/update",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "issues/update-comment",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "projects/add-item-for-org",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "projects/add-item-for-user",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "projects/list-items-for-org",
+    "diagnostic": "GeneratedRustDoesNotCompile",
+    "upstream": "https://github.com/getkono/spargen/issues/45"
+  },
+  {
+    "operationId": "projects/list-items-for-user",
+    "diagnostic": "GeneratedRustDoesNotCompile",
+    "upstream": "https://github.com/getkono/spargen/issues/45"
+  },
+  {
+    "operationId": "pulls/list-commits",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "pulls/request-reviewers",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "repos/get-branch",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "repos/get-commit",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "repos/list-branches",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  },
+  {
+    "operationId": "search/issues-and-pull-requests",
+    "diagnostic": "E007",
+    "upstream": "https://github.com/getkono/spargen/issues/46"
+  }
+]
