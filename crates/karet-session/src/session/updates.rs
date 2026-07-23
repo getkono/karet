@@ -1,4 +1,5 @@
 use super::*;
+use karet_core::Symbol;
 
 impl Session {
     /// The session's configuration (workspace roots, format-on-save, spell-check).
@@ -71,6 +72,22 @@ impl Session {
                     },
                 );
             },
+            LspUpdate::Symbols {
+                request,
+                doc,
+                version,
+                mut symbols,
+                ..
+            } => {
+                let Some(document) = self.store.docs.get(&doc) else {
+                    return;
+                };
+                if document.buffer.version() != version {
+                    return;
+                }
+                convert_symbol_columns(&document.buffer, &mut symbols);
+                self.emit(Some(request), Event::Symbols { doc, symbols });
+            },
             LspUpdate::SpawnFailed {
                 language, command, ..
             } => self.emit(
@@ -80,7 +97,7 @@ impl Session {
                     kind: NotificationKind::Lsp,
                     message: format!(
                         "no language server for {language}: '{command}' could not be started \
-                         (completions disabled for {language})"
+                         (language features disabled for {language})"
                     ),
                 },
             ),
@@ -117,6 +134,27 @@ impl Session {
                     doc: doc_id,
                     version,
                     items: Vec::new(),
+                },
+            );
+        }
+    }
+
+    /// Serve [`Command::DocumentSymbols`] from the document's language server.
+    pub(super) fn document_symbols(&mut self, id: RequestId, doc_id: DocumentId) {
+        let Some(doc) = self.store.docs.get(&doc_id) else {
+            self.emit(Some(id), unknown_document(doc_id));
+            return;
+        };
+        let version = doc.buffer.version();
+        let forwarded = self
+            .lsp
+            .document_symbols(doc.language, id, doc_id, version, &doc.path);
+        if !forwarded {
+            self.emit(
+                Some(id),
+                Event::Symbols {
+                    doc: doc_id,
+                    symbols: Vec::new(),
                 },
             );
         }
@@ -294,5 +332,21 @@ impl Session {
                 self.publish(doc_id, None);
             }
         }
+    }
+}
+
+fn convert_symbol_columns(buffer: &TextBuffer, symbols: &mut [Symbol]) {
+    for symbol in symbols {
+        let range = symbol.range;
+        symbol.range = Range {
+            start: buffer.utf16_to_line_col(range.start.line, range.start.col),
+            end: buffer.utf16_to_line_col(range.end.line, range.end.col),
+        };
+        let selection = symbol.selection_range;
+        symbol.selection_range = Range {
+            start: buffer.utf16_to_line_col(selection.start.line, selection.start.col),
+            end: buffer.utf16_to_line_col(selection.end.line, selection.end.col),
+        };
+        convert_symbol_columns(buffer, &mut symbol.children);
     }
 }

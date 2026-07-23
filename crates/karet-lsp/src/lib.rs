@@ -322,8 +322,16 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Server`] or [`LspError::Timeout`].
     pub async fn document_symbols(&self, doc: &Path) -> Result<Vec<Symbol>, LspError> {
-        let _ = doc;
-        todo!()
+        let params = lsp_types::DocumentSymbolParams {
+            text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
+            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+            partial_result_params: lsp_types::PartialResultParams::default(),
+        };
+        let response: Option<lsp_types::DocumentSymbolResponse> = self
+            .conn
+            .request("textDocument/documentSymbol", params)
+            .await?;
+        Ok(convert::document_symbols_from_lsp(response))
     }
 
     /// Search workspace symbols matching `query`.
@@ -918,6 +926,50 @@ mod tests {
         let items = client.completion(doc, LineCol::new(0, 0)).await?;
         assert!(items.is_empty());
 
+        server_task.await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn document_symbols_end_to_end() -> TestResult {
+        let ((read, write), mut server) = wire();
+        let server_task = tokio::spawn(async move {
+            server.handshake().await;
+            let request = server.recv().await;
+            assert_eq!(request["method"], "textDocument/documentSymbol");
+            assert_eq!(
+                request["params"]["textDocument"]["uri"],
+                json!("file:///tmp/ws/lib.rs")
+            );
+            server
+                .respond(
+                    &request["id"],
+                    json!([{
+                        "name": "Runner",
+                        "kind": 23,
+                        "range": {"start": {"line": 0, "character": 0},
+                                  "end": {"line": 4, "character": 1}},
+                        "selectionRange": {"start": {"line": 0, "character": 7},
+                                           "end": {"line": 0, "character": 13}},
+                        "children": [{
+                            "name": "run",
+                            "detail": "(&self)",
+                            "kind": 6,
+                            "range": {"start": {"line": 2, "character": 2},
+                                      "end": {"line": 3, "character": 3}},
+                            "selectionRange": {"start": {"line": 2, "character": 5},
+                                               "end": {"line": 2, "character": 8}}
+                        }]
+                    }]),
+                )
+                .await;
+        });
+        let client = LspClient::connect(read, write, Path::new("/tmp/ws")).await?;
+        let symbols = client.document_symbols(Path::new("/tmp/ws/lib.rs")).await?;
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].kind, karet_core::SymbolKind::Struct);
+        assert_eq!(symbols[0].children[0].name, "run");
+        assert_eq!(symbols[0].children[0].detail.as_deref(), Some("(&self)"));
         server_task.await?;
         Ok(())
     }

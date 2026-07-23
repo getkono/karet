@@ -14,6 +14,19 @@ impl App {
     /// The flattened outline rows for the active tab, or empty when it has none.
     pub(crate) fn active_outline_rows(&self) -> Vec<OutlineRow> {
         match self.tabs.get(self.active).map(|t| &t.kind) {
+            Some(TabKind::Code { language, text, .. })
+                if language.eq_ignore_ascii_case("markdown") =>
+            {
+                crate::outline::flatten(&crate::outline::from_markdown(text))
+            },
+            Some(TabKind::Code { doc: Some(doc), .. }) => self
+                .document_symbols
+                .get(doc)
+                .map(|symbols| crate::outline::flatten(&crate::outline::from_symbols(symbols)))
+                .unwrap_or_default(),
+            Some(TabKind::MarkdownPreview { buffer, .. }) => {
+                crate::outline::flatten(&crate::outline::from_markdown(&buffer.text()))
+            },
             #[cfg(feature = "pdf")]
             Some(TabKind::Document { outline, .. }) => {
                 crate::outline::flatten(&crate::outline::from_pdf(outline))
@@ -33,14 +46,68 @@ impl App {
     pub(super) fn toggle_outline(&mut self) {
         self.outline_visible = !self.outline_visible;
         if self.outline_visible {
+            self.request_active_outline();
             self.sync_outline_selection();
             // Focus the panel for immediate navigation, but only when it has content —
             // an empty "No outline" panel should not steal focus from the editor.
             if !self.active_outline_rows().is_empty() {
                 self.focus = Focus::Outline;
             }
-        } else if self.focus == Focus::Outline {
-            self.focus = Focus::Editor;
+        } else {
+            self.outline_overlay = false;
+            if self.focus == Focus::Outline {
+                self.focus = Focus::Editor;
+            }
+        }
+    }
+
+    /// Request a fresh symbol tree for the active code document when its version
+    /// is not already cached or in flight. Markdown headings are extracted locally.
+    pub(crate) fn request_active_outline(&mut self) {
+        if !self.outline_visible {
+            return;
+        }
+        let Some((doc, version)) = self.tabs.get(self.active).and_then(|tab| match &tab.kind {
+            TabKind::Code {
+                language,
+                doc: Some(doc),
+                buffer,
+                ..
+            } if !language.eq_ignore_ascii_case("markdown") => Some((*doc, buffer.version())),
+            _ => None,
+        }) else {
+            return;
+        };
+        if self.outline_versions.get(&doc) == Some(&version)
+            || self
+                .outline_loading
+                .get(&doc)
+                .is_some_and(|(pending, _)| *pending == version)
+        {
+            return;
+        }
+        if self
+            .send_command_id(SessionCommand::DocumentSymbols { doc })
+            .is_some()
+        {
+            self.outline_loading.insert(doc, (version, Instant::now()));
+        }
+    }
+
+    /// Start time of the active document's pending outline request.
+    pub(crate) fn active_outline_loading_since(&self) -> Option<Instant> {
+        let doc = self.tabs.get(self.active).and_then(Self::tab_doc)?;
+        self.outline_loading.get(&doc).map(|(_, since)| *since)
+    }
+
+    /// Dismiss a transient narrow-screen outline once the editor is used.
+    pub(crate) fn dismiss_outline_overlay(&mut self) {
+        if self.outline_overlay {
+            self.outline_visible = false;
+            self.outline_overlay = false;
+            if self.focus == Focus::Outline {
+                self.focus = Focus::Editor;
+            }
         }
     }
 
@@ -73,6 +140,16 @@ impl App {
                 };
                 if let (Some(buffer), Some(tab)) = (buffer, self.tabs.get_mut(self.active)) {
                     tab.editor.goto(&buffer, pos);
+                } else if let Some(Tab {
+                    kind:
+                        TabKind::MarkdownPreview {
+                            wrapped, scroll, ..
+                        },
+                    ..
+                }) = self.tabs.get_mut(self.active)
+                {
+                    *scroll = u16::try_from(wrapped.wrapped_line_for_source(pos.line as usize))
+                        .unwrap_or(u16::MAX);
                 }
             },
         }

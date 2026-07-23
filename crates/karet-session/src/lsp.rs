@@ -27,6 +27,7 @@ use std::time::Duration;
 
 use karet_core::CompletionItem;
 use karet_core::LineCol;
+use karet_core::Symbol;
 use karet_lsp::LspClient;
 use karet_lsp::LspError;
 use karet_lsp::LspSpec;
@@ -79,6 +80,17 @@ pub(crate) enum ServerCmd {
         /// The position, already converted to UTF-16 columns.
         position: LineCol,
     },
+    /// Request the document's structural symbols.
+    DocumentSymbols {
+        /// The originating request, echoed on the answer.
+        request: RequestId,
+        /// The target document, echoed on the answer.
+        doc: DocumentId,
+        /// The buffer version at request time, echoed on the answer.
+        version: u64,
+        /// The document path.
+        path: PathBuf,
+    },
 }
 
 /// A result flowing from a server task back to the session actor.
@@ -96,6 +108,20 @@ pub(crate) enum LspUpdate {
         version: u64,
         /// The mapped items.
         items: Vec<CompletionItem>,
+    },
+    /// Document symbols answering a [`ServerCmd::DocumentSymbols`] request. Ranges
+    /// remain in UTF-16 until the session adopts the update.
+    Symbols {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// The originating request.
+        request: RequestId,
+        /// The target document.
+        doc: DocumentId,
+        /// The buffer version the request was made against.
+        version: u64,
+        /// The mapped symbol tree.
+        symbols: Vec<Symbol>,
     },
     /// The server binary could not be started (reported once per language).
     SpawnFailed {
@@ -208,6 +234,7 @@ impl LspManager {
     pub(crate) fn accepts(&self, update: &LspUpdate) -> bool {
         let generation = match update {
             LspUpdate::Completions { generation, .. }
+            | LspUpdate::Symbols { generation, .. }
             | LspUpdate::SpawnFailed { generation, .. }
             | LspUpdate::ServerDied { generation, .. } => *generation,
         };
@@ -337,25 +364,62 @@ impl LspManager {
         })
         .is_ok()
     }
-}
 
-/// Answer a completion command with an empty set (used whenever no live server
-/// can answer, so the client is never left waiting).
-fn answer_empty(updates: &mpsc::UnboundedSender<LspUpdate>, cmd: ServerCmd, generation: u64) {
-    if let ServerCmd::Completion {
-        request,
-        doc,
-        version,
-        ..
-    } = cmd
-    {
-        let _ = updates.send(LspUpdate::Completions {
-            generation,
+    /// Forward a document-symbol request. Returns whether a live server accepted it.
+    pub(crate) fn document_symbols(
+        &mut self,
+        language: Option<&str>,
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        path: &Path,
+    ) -> bool {
+        let Some(tx) = self.existing_server(language) else {
+            return false;
+        };
+        tx.send(ServerCmd::DocumentSymbols {
             request,
             doc,
             version,
-            items: Vec::new(),
-        });
+            path: path.to_path_buf(),
+        })
+        .is_ok()
+    }
+}
+
+/// Answer a request command with an empty set (used whenever no live server can
+/// answer, so the client is never left waiting).
+fn answer_empty(updates: &mpsc::UnboundedSender<LspUpdate>, cmd: ServerCmd, generation: u64) {
+    match cmd {
+        ServerCmd::Completion {
+            request,
+            doc,
+            version,
+            ..
+        } => {
+            let _ = updates.send(LspUpdate::Completions {
+                generation,
+                request,
+                doc,
+                version,
+                items: Vec::new(),
+            });
+        },
+        ServerCmd::DocumentSymbols {
+            request,
+            doc,
+            version,
+            ..
+        } => {
+            let _ = updates.send(LspUpdate::Symbols {
+                generation,
+                request,
+                doc,
+                version,
+                symbols: Vec::new(),
+            });
+        },
+        ServerCmd::DidOpen { .. } | ServerCmd::DidChange { .. } | ServerCmd::DidClose { .. } => {},
     }
 }
 
@@ -510,6 +574,47 @@ async fn server_task(
                     doc,
                     version,
                     items,
+                });
+            },
+            ServerCmd::DocumentSymbols {
+                request,
+                doc,
+                version,
+                path,
+            } => {
+                // Symbol ranges must describe the same text revision as the request.
+                flush_pending(
+                    &client,
+                    &mut pending,
+                    &mut dead,
+                    &updates,
+                    &language,
+                    generation,
+                )
+                .await;
+                let symbols = if dead {
+                    Vec::new()
+                } else {
+                    match client.document_symbols(&path).await {
+                        Ok(symbols) => symbols,
+                        Err(error) => {
+                            note_failure::<()>(
+                                Err(error),
+                                &mut dead,
+                                &updates,
+                                &language,
+                                generation,
+                            );
+                            Vec::new()
+                        },
+                    }
+                };
+                let _ = updates.send(LspUpdate::Symbols {
+                    generation,
+                    request,
+                    doc,
+                    version,
+                    symbols,
                 });
             },
         }

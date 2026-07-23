@@ -4,6 +4,7 @@ use super::*;
 /// outline (a depth-indented, selectable list). Records the content rect and syncs
 /// the selection length for keyboard navigation and mouse hit-testing.
 pub(super) fn draw_outline(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+    app.request_active_outline();
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
     let header = rows[0];
     let content = rows[1];
@@ -25,8 +26,17 @@ pub(super) fn draw_outline(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
     let entries = app.active_outline_rows();
     app.outline_sel.set_len(entries.len());
     if entries.is_empty() {
+        let pending = app.active_outline_loading_since();
+        let label =
+            if pending.is_some_and(|since| since.elapsed() >= crate::app::LOADING_REVEAL_DELAY) {
+                " Loading…"
+            } else if pending.is_some() {
+                ""
+            } else {
+                " No outline"
+            };
         f.render_widget(
-            Paragraph::new(" No outline")
+            Paragraph::new(label)
                 .style(Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui())),
             content,
         );

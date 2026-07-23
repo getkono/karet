@@ -147,6 +147,24 @@ fn test_connector(
                             )
                             .await;
                         },
+                        Some("textDocument/documentSymbol") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [{
+                                    "name": "emoji_name",
+                                    "kind": 12,
+                                    "range": {
+                                        "start": {"line": 0, "character": 0},
+                                        "end": {"line": 0, "character": 4}
+                                    },
+                                    "selectionRange": {
+                                        "start": {"line": 0, "character": 2},
+                                        "end": {"line": 0, "character": 4}
+                                    }
+                                }]}),
+                            )
+                            .await;
+                        },
                         Some("shutdown") => {
                             write_msg(
                                 &mut server_write,
@@ -208,6 +226,17 @@ async fn await_completions(
         } = event
         {
             return Some((rid, doc, version, items));
+        }
+    }
+    None
+}
+
+async fn await_symbols(
+    events: &mut EventRx,
+) -> Option<(Option<RequestId>, DocumentId, Vec<Symbol>)> {
+    while let Some((request, event)) = next_event(events).await {
+        if let Event::Symbols { doc, symbols } = event {
+            return Some((request, doc, symbols));
         }
     }
     None
@@ -278,6 +307,33 @@ async fn completion_round_trips_with_utf16_conversion() -> TestResult {
         }
     }
     assert!(saw_utf16, "the completion request should reach the server");
+    Ok(())
+}
+
+#[tokio::test]
+async fn document_symbols_round_trip_with_utf16_conversion() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "😀ab\n").ok_or("write failed")?;
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events) =
+        session_with_connector(test_connector(Behavior::Normal, None, spawns));
+    let backend = local(session);
+    backend.send(
+        backend.next_id(),
+        Command::OpenDocument {
+            path,
+            language: None,
+        },
+    )?;
+    let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
+    let request = backend.next_id();
+    backend.send(request, Command::DocumentSymbols { doc })?;
+    let (answer, answer_doc, symbols) =
+        await_symbols(&mut events).await.ok_or("no Symbols event")?;
+    assert_eq!(answer, Some(request));
+    assert_eq!(answer_doc, doc);
+    assert_eq!(symbols[0].selection_range.start, LineCol::new(0, 1));
+    assert_eq!(symbols[0].selection_range.end, LineCol::new(0, 3));
     Ok(())
 }
 

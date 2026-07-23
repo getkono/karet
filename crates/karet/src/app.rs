@@ -68,6 +68,7 @@ use karet_core::NotificationId;
 use karet_core::NotificationKind;
 use karet_core::Range;
 use karet_core::Severity;
+use karet_core::Symbol;
 use karet_core::TextEdit;
 use karet_core::ThemeRole;
 use karet_editor::EditorState;
@@ -804,6 +805,8 @@ pub struct App {
     pub(crate) panel_hits: Vec<(u16, u16, SidebarPanel)>,
     /// Whether the right-side outline panel is shown.
     pub(crate) outline_visible: bool,
+    /// Whether the outline currently overlays (rather than reserves) editor space.
+    pub(crate) outline_overlay: bool,
     /// The outline panel's row selection, driving keyboard navigation.
     pub(crate) outline_sel: ListSelection,
     /// The outline panel rect from the last frame (mouse hit-testing).
@@ -905,6 +908,12 @@ pub struct App {
     pending_saves: HashMap<RequestId, backend_events::PendingSave>,
     /// Editing/save behavior resolved per open session document.
     document_settings: HashMap<DocumentId, DocumentSettings>,
+    /// Latest language-server symbol tree for each open document.
+    document_symbols: HashMap<DocumentId, Vec<Symbol>>,
+    /// Buffer version represented by each cached symbol tree.
+    outline_versions: HashMap<DocumentId, u64>,
+    /// In-flight symbol request version and start time per document.
+    outline_loading: HashMap<DocumentId, (u64, Instant)>,
     /// Dirty document versions waiting for the configured automatic-save trigger.
     auto_save_pending: HashMap<DocumentId, backend_events::PendingAutoSave>,
     /// The in-flight completion request, if any (see [`crate::completion`]).

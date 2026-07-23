@@ -6,6 +6,9 @@ impl App {
     /// active modal's text input when nothing is bound.
     pub(super) fn handle_key(&mut self, key: KeyEvent) {
         self.status = None;
+        let dismiss_outline_after = self.outline_overlay
+            && self.focus == Focus::Editor
+            && self.input_context().modal.is_none();
         if self.operation_blocker.is_some() {
             if key.code == KeyCode::Esc && key.modifiers.is_empty() {
                 self.operation_blocker = None;
@@ -48,6 +51,9 @@ impl App {
         // request whose anchor no longer holds is dismissed.
         self.reconcile_completion();
         self.request_live_blame();
+        if dismiss_outline_after {
+            self.dismiss_outline_overlay();
+        }
     }
 
     /// The current input context: the active modal (if any) over the focused pane.

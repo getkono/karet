@@ -147,8 +147,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_sidebar_divider(f, &theme, divider, app.sidebar_resizing);
     }
 
-    // Reserve a right-side column for the outline panel, carved from the main region.
-    // Skipped on a terminal too narrow to keep the editor usable.
+    // On wide terminals the fixed-width outline reserves space. On narrow ones it
+    // temporarily overlays the right edge and dismisses as soon as the editor is used.
+    let mut outline_area = None;
+    let mut outline_divider = None;
+    app.outline_overlay = false;
     if app.outline_visible && app.main_rect.width > app.outline_width + 8 {
         let region = app.main_rect;
         let cols = Layout::horizontal([
@@ -159,14 +162,31 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .split(region);
         app.main_rect = cols[0];
         app.outline_rect = cols[2];
-        draw_sidebar_divider(f, &theme, cols[1], false);
-        draw_outline(f, app, &theme, cols[2]);
+        outline_area = Some(cols[2]);
+        outline_divider = Some(cols[1]);
+    } else if app.outline_visible && app.main_rect.width > 0 {
+        let width = app.outline_width.min(app.main_rect.width);
+        let rect = Rect::new(
+            app.main_rect.right().saturating_sub(width),
+            app.main_rect.y,
+            width,
+            app.main_rect.height,
+        );
+        app.outline_rect = rect;
+        app.outline_overlay = true;
+        outline_area = Some(rect);
     } else {
         app.outline_rect = Rect::default();
         app.outline_content_rect = Rect::default();
     }
 
     draw_panes(f, app, &theme, app.main_rect);
+    if let Some(divider) = outline_divider {
+        draw_sidebar_divider(f, &theme, divider, false);
+    }
+    if let Some(area) = outline_area {
+        draw_outline(f, app, &theme, area);
+    }
     draw_drop_preview(f, app, &theme);
     draw_status(f, app, &theme, rows[1]);
 

@@ -652,6 +652,7 @@ impl Session {
                 },
             ),
             Command::Completion { doc, position } => self.completion(id, doc, position),
+            Command::DocumentSymbols { doc } => self.document_symbols(id, doc),
             // The remaining language-intelligence and search commands are wired in
             // later milestones.
             _ => {},
