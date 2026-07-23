@@ -224,4 +224,27 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn repository_summary_tolerates_a_gone_upstream() -> Result<(), VcsError> {
+        let repo = test_support::init("summary-gone-upstream")?;
+        let remote = test_support::bare_remote("summary-gone-upstream")?;
+        test_support::commit(&repo, "initial\n", "initial")?;
+        test_support::git(
+            &repo.0,
+            &["remote", "add", "origin", &remote.0.to_string_lossy()],
+        )?;
+        test_support::git(&repo.0, &["push", "-q", "-u", "origin", "main"])?;
+        test_support::git(&repo.0, &["update-ref", "-d", "refs/remotes/origin/main"])?;
+        test_support::write(&repo.0, "file.txt", b"initial\nlocal\n")?;
+
+        assert_eq!(
+            Repository::discover(&repo.0)?.summary()?,
+            RepositorySummary {
+                added: 1,
+                ..RepositorySummary::default()
+            }
+        );
+        Ok(())
+    }
 }
