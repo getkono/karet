@@ -31,12 +31,37 @@ impl App {
                 diagnostic.source.as_deref() == Some(SPELLCHECK_SOURCE)
                     && range_contains(diagnostic.range, position)
             })?;
-        Some(SpellWarning {
-            doc: *doc,
-            range: diagnostic.range,
-            word: selection_text(buffer, text, diagnostic.range)?,
-            suggestions: suggestions_from_message(&diagnostic.message),
-        })
+        spell_warning(*doc, buffer, text, diagnostic)
+    }
+
+    /// Resolve a spell warning whose replacement span ends at `position`.
+    pub(super) fn spell_warning_ending_at(
+        &self,
+        doc: DocumentId,
+        position: LineCol,
+    ) -> Option<SpellWarning> {
+        let tab = self.tabs.get(self.active)?;
+        let TabKind::Code {
+            doc: Some(active_doc),
+            buffer,
+            text,
+            ..
+        } = &tab.kind
+        else {
+            return None;
+        };
+        if *active_doc != doc {
+            return None;
+        }
+        let diagnostic = self
+            .document_diagnostics
+            .get(&doc)?
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.source.as_deref() == Some(SPELLCHECK_SOURCE)
+                    && diagnostic.range.end == position
+            })?;
+        spell_warning(doc, buffer, text, diagnostic)
     }
 
     /// Open the correction menu for a spell warning under `position`.
@@ -114,6 +139,64 @@ impl App {
         );
     }
 
+    /// Open the ordinary completion popup over spelling replacements.
+    pub(super) fn open_spelling_completion(&mut self, warning: SpellWarning) {
+        let items = warning
+            .suggestions
+            .iter()
+            .enumerate()
+            .map(|(index, suggestion)| karet_core::CompletionItem {
+                label: suggestion.clone(),
+                kind: karet_core::CompletionKind::Text,
+                detail: Some("Spelling".to_string()),
+                documentation: None,
+                insert_text: suggestion.clone(),
+                edit: None,
+                sort_text: Some(format!("{index:03}")),
+                deprecated: false,
+            })
+            .collect();
+        self.pending_completion = None;
+        self.completion = Some(crate::completion::CompletionUi {
+            items,
+            list: karet_widgets::CompletionState::default(),
+            doc: warning.doc,
+            anchor: warning.range.start,
+            last_filter: String::new(),
+            mode: crate::completion::CompletionMode::Spelling {
+                caret: warning.range.end,
+            },
+        });
+    }
+
+    /// Reveal spelling completions when the debounced warning arrives under a
+    /// stationary caret and automatic completion is enabled for this editor.
+    pub(super) fn maybe_auto_complete_spelling(&mut self, doc: DocumentId) {
+        let enabled = self.tabs.get(self.active).is_some_and(|tab| {
+            let completion = self
+                .settings
+                .editor
+                .for_language(tab_language(tab))
+                .completion();
+            completion.enabled() && completion.auto_trigger()
+        });
+        if !enabled {
+            return;
+        }
+        let Some((active_doc, caret)) = self.completion_target() else {
+            return;
+        };
+        if active_doc != doc {
+            return;
+        }
+        let Some(warning) = self.spell_warning_ending_at(doc, caret) else {
+            return;
+        };
+        if !warning.suggestions.is_empty() {
+            self.open_spelling_completion(warning);
+        }
+    }
+
     /// Add a spelling word directly to an existing project file, or require typed
     /// confirmation before creating the missing `.karet/setting.jsonc` tree.
     pub(super) fn add_spelling_to_dictionary(&mut self, word: String) {
@@ -177,6 +260,20 @@ impl App {
         self.loaded_config.settings.spellcheck.words = self.settings.spellcheck.words.clone();
         self.status = Some(format!("Added “{word}” to {}", path.display()));
     }
+}
+
+fn spell_warning(
+    doc: DocumentId,
+    buffer: &karet_text::TextBuffer,
+    text: &str,
+    diagnostic: &Diagnostic,
+) -> Option<SpellWarning> {
+    Some(SpellWarning {
+        doc,
+        range: diagnostic.range,
+        word: selection_text(buffer, text, diagnostic.range)?,
+        suggestions: suggestions_from_message(&diagnostic.message),
+    })
 }
 
 fn range_contains(range: Range, position: LineCol) -> bool {

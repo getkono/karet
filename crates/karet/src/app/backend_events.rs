@@ -214,6 +214,7 @@ impl App {
                 } else {
                     self.document_diagnostics.insert(doc, diagnostics);
                 }
+                self.maybe_auto_complete_spelling(doc);
             },
             SessionEvent::Closed { doc } => {
                 self.document_settings.remove(&doc);

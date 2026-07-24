@@ -520,6 +520,7 @@
             doc: DocumentId(9),
             anchor,
             last_filter: String::new(),
+            mode: crate::completion::CompletionMode::Filtered,
         });
     }
 

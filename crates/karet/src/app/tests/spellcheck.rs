@@ -176,3 +176,76 @@
         assert!(std::fs::read_to_string(path)?.contains("\"wrod\""));
         Ok(())
     }
+
+    #[test]
+    fn debounced_spell_warning_replaces_pending_lsp_with_spelling_completions() {
+        let (backend, mut app) = completion_app("wrod\n", LineCol::new(0, 4));
+        app.trigger_completion(false);
+        assert_eq!(completion_requests(&backend).len(), 1);
+        assert!(app.pending_completion.is_some());
+
+        app.on_backend_event(
+            None,
+            SessionEvent::DiagnosticsPublished {
+                doc: DocumentId(9),
+                diagnostics: vec![spell_diagnostic(
+                    "Unknown word “wrod”; try word, wood",
+                )],
+            },
+        );
+
+        assert!(app.pending_completion.is_none());
+        assert!(matches!(
+            app.completion.as_ref().map(|ui| ui.mode),
+            Some(crate::completion::CompletionMode::Spelling {
+                caret: LineCol { line: 0, col: 4 }
+            })
+        ));
+        assert_eq!(app.completion_filter().as_deref(), Some(""));
+        assert_eq!(app.completion_ranked(), Some(vec![0, 1]));
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(code_tab_text(&app), "word\n");
+    }
+
+    #[test]
+    fn manual_completion_still_offers_spelling_when_auto_trigger_is_disabled() {
+        let (backend, mut app) = completion_app("wrod\n", LineCol::new(0, 4));
+        app.settings.editor.completion.auto_trigger = false;
+        app.on_backend_event(
+            None,
+            SessionEvent::DiagnosticsPublished {
+                doc: DocumentId(9),
+                diagnostics: vec![spell_diagnostic("Unknown word “wrod”; try word")],
+            },
+        );
+        assert!(app.completion.is_none());
+
+        app.trigger_completion(true);
+
+        assert!(matches!(
+            app.completion.as_ref().map(|ui| ui.mode),
+            Some(crate::completion::CompletionMode::Spelling { .. })
+        ));
+        assert!(
+            completion_requests(&backend).is_empty(),
+            "local spelling candidates avoid an unnecessary backend request"
+        );
+    }
+
+    #[test]
+    fn spelling_completion_dismisses_as_soon_as_the_word_changes() {
+        let (_backend, mut app) = completion_app("wrod\n", LineCol::new(0, 4));
+        app.on_backend_event(
+            None,
+            SessionEvent::DiagnosticsPublished {
+                doc: DocumentId(9),
+                diagnostics: vec![spell_diagnostic("Unknown word “wrod”; try word")],
+            },
+        );
+        assert!(app.completion.is_some());
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+
+        assert!(app.completion.is_none());
+    }
