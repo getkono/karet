@@ -505,12 +505,19 @@ struct ExplorerFileClipboard {
     paths: Vec<PathBuf>,
 }
 
-/// One row of a positioned context menu: the command it dispatches, whether it can
-/// run right now, and an optional note explaining why not.
+/// The action dispatched by a positioned context-menu row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ContextMenuAction {
+    /// Dispatch an ordinary named application command.
+    Command(Command),
+}
+
+/// One row of a positioned context menu: its action, whether it can run right now,
+/// and an optional note explaining why not.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ContextMenuEntry {
-    /// The command this row dispatches when accepted.
-    pub(crate) command: Command,
+    /// The action this row dispatches when accepted.
+    pub(crate) action: ContextMenuAction,
     /// Whether the row can be activated. A disabled row renders dimmed, is skipped
     /// by keyboard navigation, and refuses Accept.
     pub(crate) enabled: bool,
@@ -523,7 +530,7 @@ impl ContextMenuEntry {
     /// An enabled entry dispatching `command`.
     fn enabled(command: Command) -> Self {
         Self {
-            command,
+            action: ContextMenuAction::Command(command),
             enabled: true,
             note: None,
         }
@@ -532,9 +539,16 @@ impl ContextMenuEntry {
     /// A disabled entry for `command`, greyed out with an explanatory `note`.
     fn disabled(command: Command, note: impl Into<String>) -> Self {
         Self {
-            command,
+            action: ContextMenuAction::Command(command),
             enabled: false,
             note: Some(note.into()),
+        }
+    }
+
+    /// The named command behind this row, when it is a regular command action.
+    pub(crate) fn command(&self) -> Option<Command> {
+        match &self.action {
+            ContextMenuAction::Command(command) => Some(*command),
         }
     }
 }

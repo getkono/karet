@@ -596,7 +596,10 @@ impl App {
             }
             return;
         }
-        let command = entry.command;
+        let Some(command) = entry.command() else {
+            self.context_menu = None;
+            return;
+        };
         self.context_menu = None;
         self.dispatch(command);
     }

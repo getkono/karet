@@ -451,7 +451,7 @@
         let Some(duplicate) = menu
             .entries
             .iter()
-            .position(|entry| entry.command == Command::ExplorerDuplicate)
+            .position(|entry| entry.command() == Some(Command::ExplorerDuplicate))
         else {
             return;
         };
@@ -507,7 +507,11 @@
         let Some(menu) = app.context_menu.as_ref() else {
             return;
         };
-        let has = |command| menu.entries.iter().any(|entry| entry.command == command);
+        let has = |command| {
+            menu.entries
+                .iter()
+                .any(|entry| entry.command() == Some(command))
+        };
         assert!(has(Command::ExplorerCopyPath));
         assert!(has(Command::ExplorerCopyRelativePath));
         let _ = std::fs::remove_dir_all(&dir);
@@ -530,7 +534,11 @@
         let Some(menu) = app.context_menu.as_ref() else {
             return;
         };
-        let has = |cmd: Command| menu.entries.iter().any(|entry| entry.command == cmd);
+        let has = |cmd: Command| {
+            menu.entries
+                .iter()
+                .any(|entry| entry.command() == Some(cmd))
+        };
         assert!(has(Command::ExplorerNewFile));
         assert!(has(Command::ExplorerNewFolder));
         assert!(!has(Command::SidebarActivate));
