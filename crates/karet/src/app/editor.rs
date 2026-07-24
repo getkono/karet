@@ -30,6 +30,53 @@ impl App {
         }
     }
 
+    /// Merge compiler diagnostics into the document and fill the reserved preview.
+    pub(super) fn finish_latex_build(
+        &mut self,
+        id: Option<RequestId>,
+        doc: DocumentId,
+        pdf: Option<PathBuf>,
+        diagnostics: Vec<Diagnostic>,
+        error: Option<String>,
+    ) {
+        let mut combined = self
+            .document_diagnostics
+            .get(&doc)
+            .into_iter()
+            .flatten()
+            .filter(|diagnostic| diagnostic.source.as_deref() != Some("latex"))
+            .cloned()
+            .collect::<Vec<_>>();
+        combined.extend(diagnostics);
+        self.replace_document_diagnostics(doc, combined);
+        let destination = id.and_then(|request| self.latex_previews.remove(&request));
+        if let Some(view) = destination
+            && let Some(index) = self.tabs.iter().position(|tab| tab.view == view)
+        {
+            if let Some(pdf) = pdf {
+                let mut tab = workspace::open_file(&pdf);
+                tab.view = view;
+                self.tabs[index] = tab;
+                self.active = index;
+                self.status = Some("LaTeX preview built".to_owned());
+            } else if let TabKind::LatexPreview {
+                error: preview_error,
+                ..
+            } = &mut self.tabs[index].kind
+            {
+                *preview_error = Some(
+                    error
+                        .clone()
+                        .unwrap_or_else(|| "LaTeX build produced no PDF".to_owned()),
+                );
+            }
+        }
+        if let Some(error) = error {
+            self.notify(Severity::Error, NotificationKind::System, error);
+        }
+        self.maybe_auto_complete_spelling(doc);
+    }
+
     /// Format every GFM table in the active Markdown document as one undoable edit.
     pub(super) fn format_markdown_tables(&mut self) {
         let Some(tab) = self.tabs.get(self.active) else {
@@ -176,6 +223,18 @@ impl App {
                 let next = (*scroll as i64 + i64::from(delta)).clamp(0, max);
                 *scroll = next as usize;
             },
+            TabKind::Github(crate::app::github::GithubViewState::Issue { scroll, .. })
+            | TabKind::Github(crate::app::github::GithubViewState::WorkflowRun {
+                scroll, ..
+            }) => {
+                let next = (i64::from(*scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
+                *scroll = next as u16;
+            },
+            TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) => {
+                let next =
+                    (i64::from(view.scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
+                view.scroll = next as u16;
+            },
             // Scrolling a document turns pages (one page per scroll gesture).
             #[cfg(feature = "pdf")]
             TabKind::Document {
@@ -268,6 +327,13 @@ impl App {
                 } else {
                     bytes.len().div_ceil(16).saturating_sub(1)
                 };
+            },
+            TabKind::Github(crate::app::github::GithubViewState::Issue { scroll, .. })
+            | TabKind::Github(crate::app::github::GithubViewState::WorkflowRun {
+                scroll, ..
+            }) => *scroll = if top { 0 } else { u16::MAX },
+            TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) => {
+                view.scroll = if top { 0 } else { u16::MAX };
             },
             #[cfg(feature = "pdf")]
             TabKind::Document {
@@ -576,6 +642,29 @@ impl App {
             self.editor_selecting = false;
             return;
         }
+        let code_pos = self.tabs.get(self.active).and_then(|tab| {
+            let TabKind::Code {
+                buffer,
+                folds,
+                folded,
+                ..
+            } = &tab.kind
+            else {
+                return None;
+            };
+            let fold_lines = resolve_folds(folds, folded);
+            Some(
+                tab.editor
+                    .pos_at(area, buffer, &fold_lines, mouse.column, mouse.row),
+            )
+        });
+        if streak == 2
+            && let Some(pos) = code_pos
+            && self.open_spelling_menu(mouse.column, mouse.row, pos)
+        {
+            self.editor_selecting = false;
+            return;
+        }
         if let Some(Tab {
             kind:
                 TabKind::Code {
@@ -650,13 +739,14 @@ impl App {
     /// Register the code tab at `idx` with the session so it can be edited, if it is
     /// an as-yet-unregistered code tab and a backend is attached.
     pub(super) fn register_doc(&mut self, idx: usize) {
-        let path = match self.tabs.get(idx) {
+        let (path, view) = match self.tabs.get(idx) {
             Some(Tab {
                 kind: TabKind::Code {
                     path, doc: None, ..
                 },
+                view,
                 ..
-            }) => path.clone(),
+            }) => (path.clone(), *view),
             _ => return,
         };
         let Some(backend) = &self.backend else {
@@ -670,7 +760,7 @@ impl App {
                 language: None,
             },
         );
-        self.pending_open.insert(id, path);
+        self.pending_open.insert(id, PendingOpen { path, view });
     }
 
     /// Build an edit from the active code tab's caret/selection via `build` and

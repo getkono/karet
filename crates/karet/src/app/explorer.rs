@@ -86,7 +86,7 @@ impl App {
             .collect();
         for request in cancelled {
             self.nested_repository_pending.remove(&request);
-            self.send_command(SessionCommand::Cancel { request });
+            self.cancel_backend_request(request);
         }
     }
 
@@ -118,7 +118,7 @@ impl App {
         let pending: Vec<RequestId> = self.nested_repository_pending.keys().copied().collect();
         self.nested_repository_pending.clear();
         for request in pending {
-            self.send_command(SessionCommand::Cancel { request });
+            self.cancel_backend_request(request);
         }
         self.send_vcs(SessionCommand::RefreshVcs);
     }
@@ -596,9 +596,19 @@ impl App {
             }
             return;
         }
-        let command = entry.command;
+        let action = entry.action.clone();
         self.context_menu = None;
-        self.dispatch(command);
+        match action {
+            ContextMenuAction::Command(command) => self.dispatch(command),
+            ContextMenuAction::ReplaceSpelling {
+                doc,
+                range,
+                replacement,
+            } => self.replace_spelling(doc, range, replacement),
+            ContextMenuAction::AddSpellingToDictionary { word } => {
+                self.add_spelling_to_dictionary(word);
+            },
+        }
     }
 
     pub(super) fn close_context_menu(&mut self) {

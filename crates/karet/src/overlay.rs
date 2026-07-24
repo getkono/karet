@@ -83,6 +83,8 @@ pub enum TextPurpose {
     ConfirmDeleteRemoteBranch { remote: String, branch: String },
     /// Confirm opening a relative file link that escaped the workspace.
     ConfirmOutsideWorkspaceLink { path: PathBuf },
+    /// Confirm creating the missing project settings file before adding a word.
+    ConfirmCreateProjectSettings { word: String, path: PathBuf },
 }
 
 pub(crate) struct BranchForm {

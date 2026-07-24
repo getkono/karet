@@ -17,6 +17,9 @@ impl App {
             }
             return;
         }
+        if self.input_context().modal.is_none() && self.github_key(key) {
+            return;
+        }
         // Esc dismisses a showing notification first (VS Code-style), but only when no
         // modal already owns Esc — so overlay/find/commit cancels are untouched, and
         // base Esc behaves normally whenever no toast is visible.
@@ -347,6 +350,13 @@ impl App {
                         self.open_markdown_file_link(&path);
                     } else {
                         self.status = Some("opening outside-workspace link cancelled".to_string());
+                    }
+                },
+                TextPurpose::ConfirmCreateProjectSettings { word, path } => {
+                    if text == "create" {
+                        self.create_project_dictionary(&word, &path);
+                    } else {
+                        self.status = Some("project settings creation cancelled".to_string());
                     }
                 },
             },

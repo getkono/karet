@@ -467,7 +467,7 @@ fn to_object<T: serde::Serialize>(value: &T) -> Map<String, Value> {
 /// `$GIT_ROOT/.karet/setting.jsonc` for the first root that sits inside a git
 /// worktree. Ascends parents looking for a `.git` entry (file or directory), mirroring
 /// git's own discovery, so this stays unit-testable without a live repository.
-fn project_config_path(roots: &[PathBuf]) -> Option<PathBuf> {
+pub(crate) fn project_config_path(roots: &[PathBuf]) -> Option<PathBuf> {
     roots
         .iter()
         .find_map(|root| git_root(root))

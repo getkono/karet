@@ -251,19 +251,6 @@ fn highlight(path: &Path, text: &str) -> Highlights {
 mod tests {
     use super::*;
 
-    /// A 2×2 PNG built in-memory (no fixtures on disk).
-    #[cfg(feature = "images")]
-    fn tiny_png() -> Vec<u8> {
-        let mut img = ::image::RgbaImage::new(2, 2);
-        img.put_pixel(0, 0, ::image::Rgba([255, 0, 0, 255]));
-        let mut bytes = Vec::new();
-        let _ = ::image::DynamicImage::ImageRgba8(img).write_to(
-            &mut std::io::Cursor::new(&mut bytes),
-            ::image::ImageFormat::Png,
-        );
-        bytes
-    }
-
     #[test]
     fn prepares_text_with_highlights() {
         let doc = FileDoc::prepare(Path::new("a.rs"), b"fn main() {}\n", 13, &Limits::default());
@@ -310,7 +297,7 @@ mod tests {
     #[cfg(feature = "images")]
     #[test]
     fn image_decodes() {
-        let png = tiny_png();
+        let png = image::test_png();
         let doc = FileDoc::prepare(
             Path::new("x.png"),
             &png,

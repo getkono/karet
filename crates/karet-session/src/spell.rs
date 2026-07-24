@@ -132,16 +132,43 @@ fn check_job(
 }
 
 fn load_dictionary(language: SpellingLanguage) -> Result<Dictionary, String> {
+    load_dictionary_from_roots(language, dictionary_roots())
+}
+
+fn load_dictionary_from_roots(
+    language: SpellingLanguage,
+    roots: impl IntoIterator<Item = PathBuf>,
+) -> Result<Dictionary, String> {
     let locale = language.locale();
-    for root in dictionary_roots() {
+    for root in roots {
         let aff_path = root.join(format!("{locale}.aff"));
         let dic_path = root.join(format!("{locale}.dic"));
-        let (Ok(aff), Ok(dic)) = (
-            std::fs::read_to_string(&aff_path),
-            std::fs::read_to_string(&dic_path),
-        ) else {
-            continue;
+        let aff = match std::fs::read(&aff_path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "could not read spell-check dictionary {}: {error}",
+                    aff_path.display()
+                ));
+            },
         };
+        let dic = match std::fs::read(&dic_path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "could not read spell-check dictionary {}: {error}",
+                    dic_path.display()
+                ));
+            },
+        };
+        let (aff, dic) = decode_dictionary_files(&aff, &dic).map_err(|error| {
+            format!(
+                "spell-check dictionary {locale} is invalid at {}: {error}",
+                root.display()
+            )
+        })?;
         return Dictionary::new(&aff, &dic).map_err(|error| {
             format!(
                 "spell-check dictionary {locale} is invalid at {}: {error}",
@@ -155,6 +182,41 @@ fn load_dictionary(language: SpellingLanguage) -> Result<Dictionary, String> {
             || "the karet data dictionary directory".to_owned(),
             |path| path.display().to_string()
         )
+    ))
+}
+
+fn decode_dictionary_files(aff: &[u8], dic: &[u8]) -> Result<(String, String), String> {
+    let encoding = aff
+        .split(|byte| *byte == b'\n')
+        .find_map(|line| {
+            let mut words = line
+                .split(u8::is_ascii_whitespace)
+                .filter(|word| !word.is_empty());
+            let key = words.next()?;
+            key.eq_ignore_ascii_case(b"SET")
+                .then(|| words.next())
+                .flatten()
+        })
+        .unwrap_or(b"UTF-8");
+
+    if encoding.eq_ignore_ascii_case(b"UTF-8") || encoding.eq_ignore_ascii_case(b"UTF8") {
+        let aff = String::from_utf8(aff.to_vec())
+            .map_err(|error| format!("affix file is not valid UTF-8: {error}"))?;
+        let dic = String::from_utf8(dic.to_vec())
+            .map_err(|error| format!("word list is not valid UTF-8: {error}"))?;
+        return Ok((aff, dic));
+    }
+    if encoding.eq_ignore_ascii_case(b"ISO8859-1")
+        || encoding.eq_ignore_ascii_case(b"ISO-8859-1")
+        || encoding.eq_ignore_ascii_case(b"LATIN1")
+    {
+        let decode_latin1 = |bytes: &[u8]| bytes.iter().copied().map(char::from).collect();
+        return Ok((decode_latin1(aff), decode_latin1(dic)));
+    }
+
+    Err(format!(
+        "unsupported character encoding {}",
+        String::from_utf8_lossy(encoding)
     ))
 }
 
@@ -198,39 +260,68 @@ fn check_text(job: &SpellJob, dictionary: &Dictionary) -> Vec<Diagnostic> {
     let line_index = LineIndex::new(&job.text);
     let mut diagnostics = Vec::new();
     for (start, end, word) in words(&job.text) {
-        if !scope_allows(job, start, end, document)
-            || should_skip_context(&job.text, start, end)
-            || custom.contains(&word.to_lowercase())
-            || dictionary.check(word)
-            || should_skip_proper_name(word)
-        {
+        let Some(scope) = spell_scope(job, start, document) else {
             continue;
-        }
-        let mut suggestions = Vec::new();
-        dictionary
-            .suggester()
-            .with_ngram_suggestions(false)
-            .suggest(word, &mut suggestions);
-        suggestions.truncate(3);
-        let message = if suggestions.is_empty() {
-            format!("Unknown word “{word}”")
-        } else {
-            format!("Unknown word “{word}”; try {}", suggestions.join(", "))
         };
-        diagnostics.push(Diagnostic {
-            range: Range {
-                start: line_index.position(start),
-                end: line_index.position(end),
-            },
-            severity: Severity::Warning,
-            message,
-            source: Some("karet-spell".to_owned()),
-            code: Some(job.spelling_language.locale().to_owned()),
-            tags: Vec::new(),
-            related: Vec::new(),
-        });
+        let candidates = if scope == SpellScope::Identifier {
+            identifier_words(start, word)
+        } else {
+            vec![(start, end, word)]
+        };
+        for (start, end, word) in candidates {
+            if (scope != SpellScope::Identifier && should_skip_context(&job.text, start, end))
+                || custom.contains(&word.to_lowercase())
+                || dictionary.check(word)
+                || (scope != SpellScope::Identifier && should_skip_proper_name(word))
+            {
+                continue;
+            }
+            push_diagnostic(
+                &mut diagnostics,
+                &line_index,
+                start,
+                end,
+                word,
+                job.spelling_language,
+                dictionary,
+            );
+        }
     }
     diagnostics
+}
+
+fn push_diagnostic(
+    diagnostics: &mut Vec<Diagnostic>,
+    line_index: &LineIndex<'_>,
+    start: usize,
+    end: usize,
+    word: &str,
+    language: SpellingLanguage,
+    dictionary: &Dictionary,
+) {
+    let mut suggestions = Vec::new();
+    dictionary
+        .suggester()
+        .with_ngram_suggestions(false)
+        .suggest(word, &mut suggestions);
+    suggestions.truncate(3);
+    let message = if suggestions.is_empty() {
+        format!("Unknown word “{word}”")
+    } else {
+        format!("Unknown word “{word}”; try {}", suggestions.join(", "))
+    };
+    diagnostics.push(Diagnostic {
+        range: Range {
+            start: line_index.position(start),
+            end: line_index.position(end),
+        },
+        severity: Severity::Warning,
+        message,
+        source: Some("karet-spell".to_owned()),
+        code: Some(language.locale().to_owned()),
+        tags: Vec::new(),
+        related: Vec::new(),
+    });
 }
 
 fn is_prose_document(language: Option<&str>) -> bool {
@@ -242,29 +333,36 @@ fn is_prose_document(language: Option<&str>) -> bool {
     })
 }
 
-fn scope_allows(job: &SpellJob, start: usize, end: usize, document: bool) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpellScope {
+    Prose,
+    Identifier,
+}
+
+fn spell_scope(job: &SpellJob, start: usize, document: bool) -> Option<SpellScope> {
     let token = token_at(job.highlights.as_ref(), start);
     if document {
-        return !matches!(
+        return (!matches!(
             token,
             Some(token)
                 if token == StandardToken::MarkupRaw.id()
                     || token == StandardToken::MarkupLink.id()
                     || is_code_token(token)
-        );
+        ))
+        .then_some(SpellScope::Prose);
     }
     if job.settings.comments
         && token.is_some_and(|token| is_comment_token(token) || is_markup_prose_token(token))
     {
-        return true;
+        return Some(SpellScope::Prose);
     }
     if job.settings.strings && token == Some(TokenId::STRING) {
-        return true;
+        return Some(SpellScope::Prose);
     }
-    job.settings.identifiers
+    (job.settings.identifiers
         && job.syntax_error_lines.is_empty()
-        && token.is_some_and(is_identifier_token)
-        && end > start
+        && token.is_some_and(is_identifier_token))
+    .then_some(SpellScope::Identifier)
 }
 
 fn token_at(highlights: &Highlights, byte: usize) -> Option<TokenId> {
@@ -350,6 +448,29 @@ fn should_skip_proper_name(word: &str) -> bool {
     title_case || internal_uppercase || (word.len() > 1 && word.chars().all(char::is_uppercase))
 }
 
+fn identifier_words(start: usize, word: &str) -> Vec<(usize, usize, &str)> {
+    let chars: Vec<(usize, char)> = word.char_indices().collect();
+    let mut boundaries = vec![0];
+    for index in 1..chars.len() {
+        let (_, previous) = chars[index - 1];
+        let (offset, current) = chars[index];
+        let next = chars.get(index + 1).map(|(_, character)| *character);
+        if current.is_uppercase()
+            && (previous.is_lowercase() || next.is_some_and(char::is_lowercase))
+        {
+            boundaries.push(offset);
+        }
+    }
+    boundaries.push(word.len());
+    boundaries
+        .windows(2)
+        .filter_map(|bounds| {
+            let part = word.get(bounds[0]..bounds[1])?;
+            (!part.is_empty()).then_some((start + bounds[0], start + bounds[1], part))
+        })
+        .collect()
+}
+
 fn words(text: &str) -> Vec<(usize, usize, &str)> {
     let mut words = Vec::new();
     let mut start = None;
@@ -411,7 +532,7 @@ mod tests {
     use super::*;
 
     const AFF: &str = "SET UTF-8\nSFX S Y 1\nSFX S 0 s .\n";
-    const DIC: &str = "8\nhello\nworld/S\nthis\nis\na\ncomment\nreceive\ntext\n";
+    const DIC: &str = "10\nhello\nworld/S\nthis\nis\na\ncomment\nreceive\ntext\ntype\nname\n";
 
     fn dictionary() -> Option<Dictionary> {
         Dictionary::new(AFF, DIC).ok()
@@ -497,6 +618,36 @@ mod tests {
     }
 
     #[test]
+    fn identifier_scope_checks_snake_and_camel_case_components() {
+        let Some(dictionary) = dictionary() else {
+            return;
+        };
+        let text = "struct MisspeledType;\nfn misspeled_name() {}\n";
+        let mut request = job(text, "Rust");
+        request.settings.identifiers = true;
+
+        let diagnostics = check_text(&request, &dictionary);
+
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
+        assert_eq!(
+            diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.range)
+                .collect::<Vec<_>>(),
+            vec![
+                Range {
+                    start: LineCol::new(0, 7),
+                    end: LineCol::new(0, 16),
+                },
+                Range {
+                    start: LineCol::new(1, 3),
+                    end: LineCol::new(1, 12),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn prose_scope_can_be_disabled_without_affecting_the_feature_toggle() {
         let Some(dictionary) = dictionary() else {
             return;
@@ -537,5 +688,42 @@ mod tests {
         }
         assert!(!is_prose_document(Some("Rust")));
         assert!(!is_prose_document(None));
+    }
+
+    #[test]
+    fn dictionary_loader_decodes_latin1_hunspell_files() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(
+            dir.path().join("en_GB.aff"),
+            b"SET ISO8859-1\nTRY abcdefghijklmnopqrstuvwxyz\xe9\n",
+        )?;
+        std::fs::write(dir.path().join("en_GB.dic"), b"2\nhello\ncaf\xe9\n")?;
+
+        let dictionary = load_dictionary_from_roots(
+            SpellingLanguage::EnglishUnitedKingdom,
+            [dir.path().to_path_buf()],
+        )
+        .map_err(std::io::Error::other)?;
+
+        assert!(dictionary.check("hello"));
+        assert!(dictionary.check("café"));
+        Ok(())
+    }
+
+    #[test]
+    fn dictionary_loader_reports_unsupported_encoding() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("en_GB.aff"), b"SET KOI8-R\n")?;
+        std::fs::write(dir.path().join("en_GB.dic"), b"1\nhello\n")?;
+
+        let error = load_dictionary_from_roots(
+            SpellingLanguage::EnglishUnitedKingdom,
+            [dir.path().to_path_buf()],
+        )
+        .err()
+        .unwrap_or_default();
+
+        assert!(error.contains("unsupported character encoding KOI8-R"));
+        Ok(())
     }
 }

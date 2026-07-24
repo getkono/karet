@@ -209,11 +209,21 @@ mod tests {
                 .is_ok()
         );
 
-        // The actor processes the command and emits Opened on the event stream.
-        let received = events.recv().await;
+        // Startup producers may announce capability state first. Correlate the answer
+        // instead of assuming this command owns the stream's first event.
+        let opened = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some((event_id, event)) = events.recv().await {
+                if event_id == Some(id) && matches!(event, Event::Opened { .. }) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .unwrap_or(false);
         assert!(
-            matches!(received, Some((_, Event::Opened { .. }))),
-            "local backend should drive the session to open the file, got {received:?}"
+            opened,
+            "local backend should drive the session to open the file"
         );
     }
 

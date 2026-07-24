@@ -14,6 +14,7 @@ impl App {
         let mut changes = staged;
         changes.extend(working);
         let graphics = image::detect_protocol();
+        let (prepare_tx, prepare_rx) = prepare::spawn();
         Self {
             root,
             settings: Settings::default(),
@@ -138,6 +139,7 @@ impl App {
             should_quit: false,
             backend: None,
             pending_open: HashMap::new(),
+            abandoned_open: HashSet::new(),
             pending_saves: HashMap::new(),
             document_settings: HashMap::new(),
             document_diagnostics: HashMap::new(),
@@ -150,6 +152,10 @@ impl App {
             completion_matcher: karet_fuzzy::Matcher::new(),
             pending_commit_detail: HashMap::new(),
             latex_previews: HashMap::new(),
+            pending_commit_preparation: HashMap::new(),
+            pending_commit_verification: HashMap::new(),
+            prepare_tx,
+            prepare_rx: Some(prepare_rx),
             graph_log_req: None,
             cancelled_requests: HashSet::new(),
             open_docs: HashSet::new(),
@@ -402,6 +408,7 @@ impl App {
                 | TabKind::LatexPreview { .. }
                 | TabKind::Hex { .. },
             ) => EditorTab::Pager,
+            Some(TabKind::Github(_)) => EditorTab::Github,
             Some(TabKind::CommitGraph { .. }) => EditorTab::CommitGraph,
             Some(TabKind::Placeholder {
                 kind: FileKind::TooLarge { .. },

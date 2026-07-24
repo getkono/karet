@@ -151,6 +151,15 @@ impl App {
     /// The views close immediately; cancelled ids remain tombstoned so already
     /// queued progressive responses cannot recreate a tab.
     pub(super) fn cancel_loading_for_views(&mut self, views: &HashSet<ViewId>) {
+        let abandoned: Vec<RequestId> = self
+            .pending_open
+            .iter()
+            .filter_map(|(request, pending)| views.contains(&pending.view).then_some(*request))
+            .collect();
+        for request in abandoned {
+            self.pending_open.remove(&request);
+            self.abandoned_open.insert(request);
+        }
         let mut requests: Vec<RequestId> = self
             .pending_commit_detail
             .iter()
@@ -173,6 +182,33 @@ impl App {
             self.latex_previews.remove(&request);
             requests.push(request);
         }
+        let preparing: Vec<RequestId> = self
+            .pending_commit_preparation
+            .iter()
+            .filter_map(|(request, pending)| {
+                let view = match &pending.destination {
+                    CommitDest::Tab { view } | CommitDest::Browser { view, .. } => view,
+                };
+                views.contains(view).then_some(*request)
+            })
+            .collect();
+        for request in preparing {
+            if let Some(pending) = self.pending_commit_preparation.remove(&request) {
+                pending
+                    .cancelled
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+            requests.push(request);
+        }
+        let verifications: Vec<RequestId> = self
+            .pending_commit_verification
+            .iter()
+            .filter_map(|(request, (view, _))| views.contains(view).then_some(*request))
+            .collect();
+        for request in verifications {
+            self.pending_commit_verification.remove(&request);
+            requests.push(request);
+        }
         if let Some((request, view)) = self.graph_log_req
             && views.contains(&view)
         {
@@ -187,6 +223,10 @@ impl App {
     /// Tombstone and cooperatively cancel one safely-droppable backend request.
     pub(super) fn cancel_backend_request(&mut self, request: RequestId) {
         self.cancelled_requests.insert(request);
+        // IDs are monotonic. Bound stale-response tombstones while retaining a wide
+        // window for progressive events that were already queued at cancellation.
+        let floor = request.0.saturating_sub(1024);
+        self.cancelled_requests.retain(|id| id.0 >= floor);
         self.send_command(SessionCommand::Cancel { request });
     }
 

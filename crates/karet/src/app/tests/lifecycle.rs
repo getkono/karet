@@ -253,6 +253,42 @@
     }
 
     #[test]
+    fn closing_a_document_before_open_finishes_releases_the_late_document() {
+        let root = test_dir("late-open-close");
+        let path = root.join("slow.rs");
+        write_file(&root, "slow.rs", b"fn main() {}\n");
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = App::new(root, Vec::new(), Vec::new(), false);
+        app.backend = Some(backend.clone());
+        app.open_path(&path);
+        let view = app.tabs[app.active].view;
+
+        app.request_close_active_tab();
+        app.on_backend_event(
+            Some(RequestId(1)),
+            SessionEvent::Opened {
+                doc: DocumentId(9),
+                version: 0,
+            },
+        );
+
+        assert!(!app.all_tabs().any(|tab| tab.view == view));
+        let released = backend
+            .sent
+            .lock()
+            .map(|sent| {
+                sent.iter().any(|(_, command)| {
+                    matches!(
+                        command,
+                        SessionCommand::CloseDocument { doc } if *doc == DocumentId(9)
+                    )
+                })
+            })
+            .unwrap_or_default();
+        assert!(released, "late opens must balance the session reference");
+    }
+
+    #[test]
     fn close_tab_does_not_prompt_when_doc_open_in_another_tab() {
         let mut app = app();
         // Two tabs of the same dirty document; closing one leaves the other.

@@ -110,6 +110,26 @@ impl App {
             .into_iter()
             .flatten()
             .min(),
+            TabKind::Github(crate::app::github::GithubViewState::Dashboard(dashboard)) => dashboard
+                .loading_since
+                .and_then(|since| loading_delay_remaining(since, now)),
+            TabKind::Github(crate::app::github::GithubViewState::Issue {
+                pending: Some(_),
+                loading_since,
+                error,
+                ..
+            }) => error
+                .is_none()
+                .then(|| loading_delay_remaining(*loading_since, now))
+                .flatten(),
+            TabKind::Github(crate::app::github::GithubViewState::PullRequest(view))
+                if view.pending.is_some() =>
+            {
+                view.error
+                    .is_none()
+                    .then(|| loading_delay_remaining(view.loading_since, now))
+                    .flatten()
+            },
             _ => None,
         });
         [sidebar, repository]
@@ -157,8 +177,12 @@ impl App {
         );
     }
 
-    /// Handle a backend event: correlate opens to tabs, surface save/progress status.
-    fn replace_document_diagnostics(&mut self, doc: DocumentId, diagnostics: Vec<Diagnostic>) {
+    /// Replace the complete merged diagnostic set for one document.
+    pub(super) fn replace_document_diagnostics(
+        &mut self,
+        doc: DocumentId,
+        diagnostics: Vec<Diagnostic>,
+    ) {
         if diagnostics.is_empty() {
             self.document_diagnostics.remove(&doc);
         } else {
@@ -166,6 +190,7 @@ impl App {
         }
     }
 
+    /// Handle a backend event: correlate opens to tabs, surface save/progress status.
     pub(super) fn on_backend_event(&mut self, id: Option<RequestId>, event: SessionEvent) {
         if id.is_some_and(|request| self.cancelled_requests.contains(&request)) {
             return;
@@ -201,23 +226,30 @@ impl App {
         }
         match event {
             SessionEvent::Opened { doc, .. } => {
-                self.open_docs.insert(doc);
-                if let Some(req) = id
-                    && let Some(path) = self.pending_open.remove(&req)
-                {
+                if id.is_some_and(|request| self.abandoned_open.remove(&request)) {
+                    self.send_command(SessionCommand::CloseDocument { doc });
+                    return;
+                }
+                let pending = id.and_then(|request| self.pending_open.remove(&request));
+                if let Some(pending) = pending {
+                    let mut bound = false;
                     for tab in self.all_tabs_mut() {
-                        let bound = match &mut tab.kind {
-                            TabKind::Code {
-                                path: p, doc: d, ..
-                            } => Some((p, d)),
-                            _ => None,
-                        };
-                        if let Some((p, d)) = bound
-                            && d.is_none()
-                            && *p == path
+                        if tab.view == pending.view
+                            && let TabKind::Code {
+                                path, doc: slot, ..
+                            } = &mut tab.kind
+                            && slot.is_none()
+                            && *path == pending.path
                         {
-                            *d = Some(doc);
+                            *slot = Some(doc);
+                            bound = true;
+                            break;
                         }
+                    }
+                    if bound {
+                        self.open_docs.insert(doc);
+                    } else {
+                        self.send_command(SessionCommand::CloseDocument { doc });
                     }
                 }
             },
@@ -238,6 +270,7 @@ impl App {
                     );
                 }
                 self.replace_document_diagnostics(doc, combined);
+                self.maybe_auto_complete_spelling(doc);
             },
             SessionEvent::LatexBuildFinished {
                 doc,
@@ -245,43 +278,7 @@ impl App {
                 diagnostics,
                 error,
                 ..
-            } => {
-                let mut combined = self
-                    .document_diagnostics
-                    .get(&doc)
-                    .into_iter()
-                    .flatten()
-                    .filter(|diagnostic| diagnostic.source.as_deref() != Some("latex"))
-                    .cloned()
-                    .collect::<Vec<_>>();
-                combined.extend(diagnostics);
-                self.replace_document_diagnostics(doc, combined);
-                let destination = id.and_then(|request| self.latex_previews.remove(&request));
-                if let Some(view) = destination
-                    && let Some(index) = self.tabs.iter().position(|tab| tab.view == view)
-                {
-                    if let Some(pdf) = pdf {
-                        let mut tab = workspace::open_file(&pdf);
-                        tab.view = view;
-                        self.tabs[index] = tab;
-                        self.active = index;
-                        self.status = Some("LaTeX preview built".to_owned());
-                    } else if let TabKind::LatexPreview {
-                        error: preview_error,
-                        ..
-                    } = &mut self.tabs[index].kind
-                    {
-                        *preview_error = Some(
-                            error
-                                .clone()
-                                .unwrap_or_else(|| "LaTeX build produced no PDF".to_owned()),
-                        );
-                    }
-                }
-                if let Some(error) = error {
-                    self.notify(Severity::Error, NotificationKind::System, error);
-                }
-            },
+            } => self.finish_latex_build(id, doc, pdf, diagnostics, error),
             SessionEvent::Closed { doc } => {
                 self.document_settings.remove(&doc);
                 self.document_diagnostics.remove(&doc);
@@ -347,6 +344,7 @@ impl App {
             SessionEvent::NotUtf8 { path } => {
                 if let Some(req) = id {
                     self.pending_open.remove(&req);
+                    self.abandoned_open.remove(&req);
                 }
                 for tab in self.all_tabs_mut() {
                     let is_pending_for_path =
@@ -374,6 +372,15 @@ impl App {
                 self.invalidate_nested_repository_statuses(&paths);
                 if !self.search.query.is_empty() {
                     self.run_global_search();
+                }
+                if paths.iter().any(|path| {
+                    path.file_name().is_some_and(|name| name == "config")
+                        && path
+                            .parent()
+                            .and_then(Path::file_name)
+                            .is_some_and(|name| name == ".git")
+                }) {
+                    self.send_command(SessionCommand::GithubRefresh);
                 }
             },
             SessionEvent::ConfigChanged { report } => {
@@ -638,8 +645,8 @@ impl App {
             SessionEvent::CommitDetailReady { detail } => {
                 let dest = id.and_then(|i| self.pending_commit_detail.get(&i).cloned());
                 match dest {
-                    Some(CommitDest::Browser { hash, .. }) if detail.hash == hash => {
-                        self.fill_graph_metadata(detail);
+                    Some(CommitDest::Browser { view, hash }) if detail.hash == hash => {
+                        self.fill_graph_metadata(view, detail);
                     },
                     Some(CommitDest::Browser { .. }) => {},
                     Some(CommitDest::Tab { view }) => self.fill_commit_metadata(view, detail),
@@ -648,12 +655,14 @@ impl App {
                 }
             },
             SessionEvent::CommitReady { detail, changes } => {
-                match id.and_then(|i| self.pending_commit_detail.remove(&i)) {
-                    Some(CommitDest::Browser { hash, .. }) if detail.hash == hash => {
-                        self.fill_graph_detail(detail, changes);
+                match id.and_then(|request| {
+                    self.pending_commit_detail
+                        .remove(&request)
+                        .map(|destination| (request, destination))
+                }) {
+                    Some((request, destination)) => {
+                        self.prepare_commit_result(request, destination, detail, changes);
                     },
-                    Some(CommitDest::Browser { .. }) => {},
-                    Some(CommitDest::Tab { view }) => self.fill_commit_tab(view, detail, changes),
                     None if id.is_none() => self.open_commit_tab(detail, changes),
                     _ => {},
                 }
@@ -665,7 +674,52 @@ impl App {
                 changes,
             } => self.open_compare_tab(base_label, head_label, merge_base, changes),
             SessionEvent::CommitVerification { hash, status } => {
-                self.apply_commit_verification(&hash, status);
+                let owner =
+                    id.and_then(|request| self.pending_commit_verification.remove(&request));
+                if owner.is_some_and(|(view, expected)| {
+                    expected == hash && self.all_tabs().any(|tab| tab.view == view)
+                }) {
+                    self.apply_commit_verification(&hash, status);
+                }
+            },
+            SessionEvent::GithubAvailability { repository, auth } => {
+                self.apply_github_availability(repository, auth);
+            },
+            SessionEvent::GithubIssues { page } => self.apply_github_issues(id, page),
+            SessionEvent::GithubPullRequests { page } => {
+                self.apply_github_pull_requests(id, page);
+            },
+            SessionEvent::GithubActions { workflows, runs } => {
+                self.apply_github_actions(id, workflows, runs);
+            },
+            SessionEvent::GithubIssueMetadataReady { assignees } => {
+                self.apply_github_issue_metadata(id, assignees);
+            },
+            SessionEvent::GithubIssueReady { issue, comments } => {
+                self.apply_github_issue(id, issue, comments);
+            },
+            SessionEvent::GithubPullRequestReady {
+                pull_request,
+                comments,
+                commits,
+                checks,
+                activity,
+                activity_error,
+            } => {
+                self.apply_github_pull_request(
+                    id,
+                    pull_request,
+                    comments,
+                    crate::app::github::GithubPullRequestSupplement {
+                        commits,
+                        checks,
+                        activity,
+                        activity_error,
+                    },
+                );
+            },
+            SessionEvent::GithubError { operation, message } => {
+                self.apply_github_error(id, operation, message);
             },
             SessionEvent::GraphReady { title, view, .. } => {
                 let count = view.nodes.len();

@@ -33,8 +33,16 @@ pub enum ConfigWriteError {
     #[error("user configuration directory is unavailable")]
     NoUserDirectory,
     /// Existing JSONC could not be parsed safely.
-    #[error("invalid user configuration: {0}")]
+    #[error("invalid configuration: {0}")]
     Parse(String),
+    /// None of the workspace roots belongs to a Git worktree, so there is no
+    /// project settings location.
+    #[error("workspace is not inside a Git worktree")]
+    NoProjectDirectory,
+    /// A project settings file is absent and the caller did not explicitly confirm
+    /// creating it.
+    #[error("creating project configuration at {} requires confirmation", .0.display())]
+    ProjectCreationRequiresConfirmation(PathBuf),
     /// Reading, writing, or atomically replacing the file failed.
     #[error("configuration I/O failed: {0}")]
     Io(String),
@@ -58,6 +66,36 @@ pub fn set_user_blame(enabled: bool) -> Result<PathBuf, ConfigWriteError> {
     Ok(path)
 }
 
+/// Add `word` to the project-layer spell-check dictionary while preserving JSONC
+/// comments and unrelated settings.
+///
+/// The project file is updated directly when it already exists. When it is missing,
+/// this function refuses to create it unless `allow_create` is `true`, making the
+/// caller's confirmation step explicit and fail-safe.
+///
+/// # Errors
+/// Returns [`ConfigWriteError`] when no project layer can be resolved, creation was
+/// not confirmed, the existing file has an incompatible JSON shape, or the atomic
+/// write fails.
+pub fn add_project_dictionary_word(
+    roots: &[PathBuf],
+    word: &str,
+    allow_create: bool,
+) -> Result<PathBuf, ConfigWriteError> {
+    let path = load::project_config_path(roots).ok_or(ConfigWriteError::NoProjectDirectory)?;
+    let current = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && !allow_create => {
+            return Err(ConfigWriteError::ProjectCreationRequiresConfirmation(path));
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "{}\n".to_string(),
+        Err(error) => return Err(ConfigWriteError::Io(error.to_string())),
+    };
+    let updated = update_dictionary_jsonc(&current, word)?;
+    atomic_write(&path, updated.as_bytes())?;
+    Ok(path)
+}
+
 fn update_blame_jsonc(text: &str, enabled: bool) -> Result<String, ConfigWriteError> {
     let root = CstRootNode::parse(text, &Default::default())
         .map_err(|error| ConfigWriteError::Parse(error.to_string()))?;
@@ -70,6 +108,35 @@ fn update_blame_jsonc(text: &str, enabled: bool) -> Result<String, ConfigWriteEr
     }
     if let Some(property) = git.get("blameMode") {
         property.remove();
+    }
+    Ok(root.to_string())
+}
+
+fn update_dictionary_jsonc(text: &str, word: &str) -> Result<String, ConfigWriteError> {
+    if word.trim().is_empty() {
+        return Err(ConfigWriteError::Parse(
+            "dictionary word cannot be empty".to_string(),
+        ));
+    }
+    let root = CstRootNode::parse(text, &Default::default())
+        .map_err(|error| ConfigWriteError::Parse(error.to_string()))?;
+    let object = root.object_value_or_create().ok_or_else(|| {
+        ConfigWriteError::Parse("expected a JSON object at the top level".to_string())
+    })?;
+    let spellcheck = object
+        .object_value_or_create("spellcheck")
+        .ok_or_else(|| ConfigWriteError::Parse("`spellcheck` must be a JSON object".to_string()))?;
+    let words = spellcheck.array_value_or_create("words").ok_or_else(|| {
+        ConfigWriteError::Parse("`spellcheck.words` must be a JSON array".to_string())
+    })?;
+    let already_present = words.elements().iter().any(|element| {
+        element
+            .as_string_lit()
+            .and_then(|value| value.decoded_value().ok())
+            .is_some_and(|existing| existing.eq_ignore_ascii_case(word))
+    });
+    if !already_present {
+        words.append(json!(word));
     }
     Ok(root.to_string())
 }
@@ -123,6 +190,60 @@ mod tests {
         assert!(updated.contains("\"decorations\": false"));
         assert!(updated.contains("\"blame\": true"));
         assert!(!updated.contains("blameMode"));
+        Ok(())
+    }
+
+    #[test]
+    fn project_dictionary_requires_confirmation_before_creating_settings()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir(dir.path().join(".git"))?;
+        let path = dir.path().join(".karet/setting.jsonc");
+
+        let error = add_project_dictionary_word(&[dir.path().to_path_buf()], "Karet", false).err();
+
+        assert!(matches!(
+            error,
+            Some(ConfigWriteError::ProjectCreationRequiresConfirmation(candidate))
+                if candidate == path
+        ));
+        assert!(!path.exists(), "refusal must not create the settings tree");
+        Ok(())
+    }
+
+    #[test]
+    fn confirmed_project_dictionary_creation_writes_a_valid_layer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir(dir.path().join(".git"))?;
+
+        let path = add_project_dictionary_word(&[dir.path().to_path_buf()], "Karet", true)?;
+        let text = std::fs::read_to_string(&path)?;
+        let parsed: Option<serde_json::Value> =
+            jsonc_parser::parse_to_serde_value(&text, &Default::default())?;
+
+        assert_eq!(
+            parsed.and_then(|value| value.pointer("/spellcheck/words/0").cloned()),
+            Some(serde_json::Value::String("Karet".to_string()))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn project_dictionary_update_preserves_jsonc_and_avoids_case_duplicates()
+    -> Result<(), ConfigWriteError> {
+        let source = r#"{
+  // project convention
+  "editor": { "tabSize": 2 },
+  "spellcheck": { "enabled": true, "words": ["Karet"] }
+}"#;
+
+        let updated = update_dictionary_jsonc(source, "karet")?;
+
+        assert!(updated.contains("// project convention"));
+        assert!(updated.contains("\"tabSize\": 2"));
+        assert_eq!(updated.matches("\"Karet\"").count(), 1);
+        assert!(!updated.contains("\"karet\""));
         Ok(())
     }
 

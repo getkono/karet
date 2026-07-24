@@ -48,6 +48,18 @@ pub(crate) struct CompletionUi {
     pub anchor: LineCol,
     /// The filter at the last render, to reset the selection when it changes.
     pub last_filter: String,
+    /// How candidates remain attached to the editor while it changes.
+    pub mode: CompletionMode,
+}
+
+/// How an open completion popup filters and tracks the caret.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CompletionMode {
+    /// Ordinary language-server completion: fuzzy-filter the anchor-to-caret prefix.
+    Filtered,
+    /// Spelling corrections: show every suggestion while the caret stays fixed at
+    /// the end of the diagnosed word.
+    Spelling { caret: LineCol },
 }
 
 /// Whether `c` is an identifier character for auto-trigger purposes (matches

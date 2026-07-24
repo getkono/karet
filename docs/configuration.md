@@ -136,6 +136,17 @@ selector, the normal layer precedence still applies. Arrays such as `rulers` and
 | `identifiers` | bool | `false` | Check class/type, function, method, and property names while the file parses cleanly. |
 | `debounceMs` | number | `500` | Quiet period after the latest token update before checking (clamped to 50–5000 ms). |
 
+Enable the feature in any system, user, or project `setting.jsonc` layer:
+
+```jsonc
+{
+  "spellcheck": {
+    "enabled": true,
+    "language": "en_US"
+  }
+}
+```
+
 Spellcheck uses system Hunspell dictionaries at runtime rather than bundling them in
 the binary. This keeps the optional feature small. Install both the `.aff` and `.dic`
 files for the selected locale in your platform's Hunspell directory, set `DICPATH`, or
@@ -150,9 +161,23 @@ A repository can choose between the supported dictionaries without opting users 
 spelling_language = en-GB
 ```
 
-The `spelling_language` property is applied only when `spellcheck.enabled` is `true`.
+The `spelling_language` property selects between `en_US` and `en_GB`; it does **not**
+enable spellcheck. It is applied only when `spellcheck.enabled` is `true` in a
+`setting.jsonc` layer.
 URLs, email-like text, numeric/qualified identifiers, code spans, links, and likely
 proper names are ignored. Warnings are token-ranged and preserve syntax colours.
+
+When a misspelling has close dictionary matches, they appear in the completion popup
+after the debounced warning reaches a stationary caret; `Ctrl+Space` also opens them
+when automatic completion is disabled. Double-clicking a spelling squiggle opens the
+same replacements in a correction menu. A warning without close matches instead shows
+a muted `No similar words found` row, while still offering the dictionary action.
+
+`Add “…” to Project Dictionary` appends the word to `spellcheck.words` in the project
+layer. An existing `$GIT_ROOT/.karet/setting.jsonc` is updated in place while retaining
+its comments and unrelated settings. If that file does not exist, karet requires the
+user to type `create` before it creates the `.karet` settings tree; it never silently
+falls back to a user or system dictionary.
 
 ### `latex`
 

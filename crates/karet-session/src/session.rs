@@ -13,6 +13,8 @@
 //! in the frames before the worker answers.
 
 mod documents;
+#[cfg(feature = "github")]
+mod github;
 mod persistence;
 mod updates;
 mod vcs;
@@ -26,6 +28,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+#[cfg(feature = "github")]
+use github::GithubJob;
 use karet_core::BytePos;
 use karet_core::Change;
 use karet_core::CursorState;
@@ -352,6 +356,18 @@ pub struct Session {
     lsp: LspManager,
     /// The LSP tasks' results, taken by [`crate::backend::local`] for the actor.
     lsp_rx: Option<mpsc::UnboundedReceiver<LspUpdate>>,
+    /// Exact-root public-GitHub identity, when this workspace is eligible.
+    #[cfg(feature = "github")]
+    github_repository: Option<karet_github::RepositoryIdentity>,
+    /// Commands for the asynchronous GitHub manager, installed in [`Self::start`].
+    #[cfg(feature = "github")]
+    github_tx: Option<
+        mpsc::UnboundedSender<(
+            RequestId,
+            GithubJob,
+            Option<crate::cancellation::Cancellation>,
+        )>,
+    >,
 }
 
 /// The most new commits [`Session::reconcile_vcs_log`] will prepend at once. Beyond
@@ -396,6 +412,8 @@ impl Session {
         // Seed the tip so the first ref change reconciles against a known baseline.
         let last_head = vcs.as_ref().and_then(|r| r.head_hash().ok().flatten());
         let vcs_cancellations = crate::cancellation::CancellationHub::default();
+        #[cfg(feature = "github")]
+        let github_repository = github::eligible_repository(&config.roots, vcs.as_ref());
         let vcs_worker = crate::vcs_worker::spawn(config.roots.first().cloned(), events.clone());
         let latex_worker = crate::latex::spawn(events.clone());
         // Open this session's swap store and scan for swaps a previous run left behind
@@ -448,6 +466,10 @@ impl Session {
             pending_swaps,
             lsp,
             lsp_rx: Some(lsp_rx),
+            #[cfg(feature = "github")]
+            github_repository,
+            #[cfg(feature = "github")]
+            github_tx: None,
         };
         // Announce any recoverable swaps so the UI can prompt on the first frame.
         session.announce_pending_swaps();
@@ -463,6 +485,21 @@ impl Session {
     pub(crate) fn start(&mut self) {
         // Seed the client with the initial status; it buffers until the UI reads it.
         self.emit_vcs_status(None);
+        #[cfg(feature = "github")]
+        self.start_github();
+        #[cfg(not(feature = "github"))]
+        self.emit(
+            None,
+            Event::GithubAvailability {
+                repository: None,
+                auth: crate::api::GithubAuth {
+                    source: crate::api::GithubAuthSource::Anonymous,
+                    can_write: false,
+                    viewer_id: None,
+                    viewer_login: None,
+                },
+            },
+        );
     }
 
     /// Handle one request. The editing fast paths resolve inline; the answering
@@ -562,12 +599,88 @@ impl Session {
                         cancel,
                     });
             },
-            Command::FetchCommitVerification { hash } => {
-                let cancel = self.vcs_cancellations.register(id);
-                let _ = self
-                    .vcs_worker
-                    .send(crate::vcs_worker::VcsJob::CommitVerification { id, hash, cancel });
+            Command::FetchCommitVerification { hash } => self.fetch_commit_verification(id, hash),
+            #[cfg(feature = "github")]
+            Command::GithubRefresh => self.refresh_github(id),
+            #[cfg(feature = "github")]
+            Command::GithubLogin { token } => self.send_github(
+                id,
+                GithubJob::Login {
+                    token: token.into_inner(),
+                },
+            ),
+            #[cfg(feature = "github")]
+            Command::GithubSearchIssues { query, page } => {
+                self.send_github(id, GithubJob::Issues { query, page })
             },
+            #[cfg(feature = "github")]
+            Command::GithubSearchPullRequests { query, page } => {
+                self.send_github(id, GithubJob::PullRequests { query, page })
+            },
+            #[cfg(feature = "github")]
+            Command::GithubActions { page } => self.send_github(id, GithubJob::Actions { page }),
+            #[cfg(feature = "github")]
+            Command::GithubIssue { number } => self.send_github(id, GithubJob::Issue { number }),
+            #[cfg(feature = "github")]
+            Command::GithubPullRequest { number } => {
+                self.send_github(id, GithubJob::PullRequest { number })
+            },
+            #[cfg(feature = "github")]
+            Command::GithubUpdatePullRequestBody { number, body } => {
+                self.send_github(id, GithubJob::UpdatePullRequestBody { number, body })
+            },
+            #[cfg(feature = "github")]
+            Command::GithubCommentPullRequest { number, body } => {
+                self.send_github(id, GithubJob::CommentPullRequest { number, body })
+            },
+            #[cfg(feature = "github")]
+            Command::GithubMergePullRequest { number, head_sha } => {
+                self.send_github(id, GithubJob::MergePullRequest { number, head_sha })
+            },
+            #[cfg(feature = "github")]
+            Command::GithubSetPullRequestDraft {
+                node_id,
+                number,
+                draft,
+            } => self.send_github(
+                id,
+                GithubJob::SetPullRequestDraft {
+                    node_id,
+                    number,
+                    draft,
+                },
+            ),
+            #[cfg(feature = "github")]
+            Command::GithubIssueMetadata => self.send_github(id, GithubJob::IssueMetadata),
+            #[cfg(feature = "github")]
+            Command::GithubCreateIssue { issue } => {
+                self.send_github(id, GithubJob::CreateIssue { issue })
+            },
+            #[cfg(feature = "github")]
+            Command::GithubCreatePullRequest { pull_request } => {
+                self.send_github(id, GithubJob::CreatePullRequest { pull_request })
+            },
+            #[cfg(not(feature = "github"))]
+            Command::GithubRefresh
+            | Command::GithubLogin { .. }
+            | Command::GithubSearchIssues { .. }
+            | Command::GithubSearchPullRequests { .. }
+            | Command::GithubActions { .. }
+            | Command::GithubIssue { .. }
+            | Command::GithubPullRequest { .. }
+            | Command::GithubUpdatePullRequestBody { .. }
+            | Command::GithubCommentPullRequest { .. }
+            | Command::GithubMergePullRequest { .. }
+            | Command::GithubSetPullRequestDraft { .. }
+            | Command::GithubIssueMetadata
+            | Command::GithubCreateIssue { .. }
+            | Command::GithubCreatePullRequest { .. } => self.emit(
+                Some(id),
+                Event::GithubError {
+                    operation: "github".to_string(),
+                    message: "the backend was built without the github feature".to_string(),
+                },
+            ),
             Command::RecoverSwaps => self.recover_swaps(id),
             Command::DiscardSwaps => self.discard_swaps(),
             Command::DependencyGraph => self.emit_dependency_graph(id),

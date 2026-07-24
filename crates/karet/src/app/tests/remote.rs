@@ -23,7 +23,11 @@
         let Some(menu) = app.context_menu.as_ref() else {
             panic!("a file-backed tab opens a pane menu");
         };
-        let commands: Vec<Command> = menu.entries.iter().map(|e| e.command).collect();
+        let commands: Vec<Command> = menu
+            .entries
+            .iter()
+            .filter_map(ContextMenuEntry::command)
+            .collect();
         assert_eq!(
             commands,
             vec![
@@ -43,7 +47,7 @@
             assert!(
                 !entry.enabled,
                 "{:?} is disabled outside a repo",
-                entry.command
+                entry.command()
             );
             assert_eq!(entry.note.as_deref(), Some("not in a git repository"));
         }
@@ -119,7 +123,7 @@
         };
         let app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
         let entries = app.pane_context_entries(&repo.path.join("new.rs"));
-        let by_cmd = |cmd: Command| entries.iter().find(|e| e.command == cmd);
+        let by_cmd = |cmd: Command| entries.iter().find(|e| e.command() == Some(cmd));
         // The generic remote URL still works on GitLab…
         assert!(by_cmd(Command::CopyRemoteFileUrl).is_some_and(|e| e.enabled));
         // …while both GitHub links are disabled and name the detected forge.
@@ -152,7 +156,7 @@
             Command::OpenChangesWithRevision,
             Command::OpenChangesWithBranch,
         ] {
-            let Some(entry) = entries.iter().find(|e| e.command == cmd) else {
+            let Some(entry) = entries.iter().find(|e| e.command() == Some(cmd)) else {
                 panic!("{cmd:?} is listed");
             };
             assert!(!entry.enabled, "{cmd:?} is disabled for an untracked file");
@@ -451,6 +455,7 @@
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+
     #[test]
     fn explorer_rename_retargets_open_code_tabs() {
         let dir = test_dir("rename-retarget");
@@ -500,4 +505,3 @@
         assert_eq!(refresh_count(&backend), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
-
