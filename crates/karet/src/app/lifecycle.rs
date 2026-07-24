@@ -313,8 +313,7 @@ impl App {
         let id = backend.next_id();
         match backend.send(id, SessionCommand::Save { doc }) {
             Ok(()) => {
-                self.pending_saves
-                    .insert(id, backend_events::PendingSave { doc });
+                self.pending_saves.insert(id, PendingSave { doc });
                 if self
                     .auto_save_pending
                     .get(&doc)
@@ -392,7 +391,7 @@ impl App {
             return;
         }
         self.auto_save_pending
-            .insert(doc, backend_events::PendingAutoSave { version, deadline });
+            .insert(doc, PendingAutoSave { version, deadline });
         let focused = (self.focus == Focus::Editor)
             .then(|| self.active_code_doc())
             .flatten();

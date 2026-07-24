@@ -207,8 +207,11 @@ file with a TeX magic comment in its first 40 lines; chained directives are supp
 
 The generated PDF opens in karet's existing PDF viewer when the `pdf` application
 feature is enabled (it is enabled in default builds). `texlab` is the built-in TeX
-language-server default; installing it adds completion and document symbols without
-additional configuration. Both the compiler and language server remain external.
+language-server default. When a TeX file first needs it, karet offers to install it
+into the shared machine-local registry; the editor does not use a system `texlab`.
+See [Managed language servers](language-servers.md) for install approval,
+explicit-only updates, and crash-safe process ownership. The TeX compiler remains
+an external prerequisite.
 
 ### `git`
 

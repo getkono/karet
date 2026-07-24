@@ -33,6 +33,8 @@ pub(crate) struct LatexJob {
     pub workspace: Option<PathBuf>,
     pub settings: Latex,
     pub cancel: Cancellation,
+    /// Hidden executable that owns the compiler process tree.
+    pub supervisor: Option<PathBuf>,
 }
 
 /// Start the session's serialized external-build worker.
@@ -60,7 +62,13 @@ fn run(job: LatexJob, events: &UnboundedSender<(Option<RequestId>, Event)>) {
         },
     };
     let output_dir = output_directory(job.workspace.as_deref(), &root, &job.settings);
-    let outcome = compile(&root, &output_dir, &job.settings, &job.cancel);
+    let outcome = compile(
+        &root,
+        &output_dir,
+        &job.settings,
+        &job.cancel,
+        job.supervisor.as_deref(),
+    );
     if job.cancel.is_cancelled() {
         return;
     }
@@ -191,6 +199,7 @@ fn compile(
     output_dir: &Path,
     settings: &Latex,
     cancel: &Cancellation,
+    supervisor: Option<&Path>,
 ) -> Result<CompilerOutput, String> {
     std::fs::create_dir_all(output_dir).map_err(|error| {
         format!(
@@ -215,10 +224,30 @@ fn compile(
     let stderr_child = stderr
         .try_clone()
         .map_err(|error| format!("could not capture LaTeX errors: {error}"))?;
-    let mut child = std::process::Command::new(&settings.command)
-        .args(settings.args.iter().map(|argument| replace(argument)))
-        .current_dir(file_dir)
-        .stdin(Stdio::null())
+    let args = settings
+        .args
+        .iter()
+        .map(|argument| replace(argument))
+        .collect::<Vec<_>>();
+    let mut command = if let Some(supervisor) = supervisor {
+        crate::process_supervisor::blocking_command(
+            supervisor,
+            settings.command.clone(),
+            args,
+            file_dir,
+        )
+        .map_err(|error| format!("could not prepare LaTeX compiler: {error}"))?
+    } else {
+        #[cfg(not(test))]
+        return Err("LaTeX process supervisor is unavailable".to_owned());
+        #[cfg(test)]
+        {
+            let mut direct = std::process::Command::new(&settings.command);
+            direct.args(args).current_dir(file_dir).stdin(Stdio::null());
+            direct
+        }
+    };
+    let mut child = command
         .stdout(Stdio::from(stdout_child))
         .stderr(Stdio::from(stderr_child))
         .spawn()
@@ -228,17 +257,22 @@ fn compile(
                 settings.command
             )
         })?;
+    // In supervised mode this open pipe is the lifetime lease. On cancellation,
+    // dropping/killing the supervisor tears down the compiler's entire group.
+    let lease = child.stdin.take();
     let deadline =
         Instant::now() + Duration::from_millis(settings.timeout_ms.clamp(1_000, 600_000));
     let status = loop {
         if cancel.is_cancelled() {
             let _ = child.kill();
             let _ = child.wait();
+            drop(lease);
             return Err("LaTeX build cancelled".to_owned());
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
+            drop(lease);
             return Err(format!(
                 "LaTeX compiler exceeded its {} ms timeout",
                 settings.timeout_ms.clamp(1_000, 600_000)
@@ -249,10 +283,12 @@ fn compile(
             Ok(None) => std::thread::sleep(Duration::from_millis(20)),
             Err(error) => {
                 let _ = child.kill();
+                drop(lease);
                 return Err(format!("could not wait for LaTeX compiler: {error}"));
             },
         }
     };
+    drop(lease);
     let mut text = read_limited(&mut stdout, "output")?;
     let errors = read_limited(&mut stderr, "errors")?;
     if !text.is_empty() && !text.ends_with('\n') && !errors.is_empty() {
@@ -424,7 +460,13 @@ mod tests {
             ..Latex::default()
         };
         let hub = crate::cancellation::CancellationHub::default();
-        let output = compile(&root, &output_dir, &settings, &hub.register(RequestId(1)))?;
+        let output = compile(
+            &root,
+            &output_dir,
+            &settings,
+            &hub.register(RequestId(1)),
+            None,
+        )?;
 
         assert!(output.success);
         let lines: Vec<&str> = output.text.lines().collect();
@@ -455,7 +497,7 @@ mod tests {
         let token = hub.register(RequestId(9));
         let started = Instant::now();
         let error = std::thread::scope(|scope| {
-            let build = scope.spawn(|| compile(&root, &output_dir, &settings, &token));
+            let build = scope.spawn(|| compile(&root, &output_dir, &settings, &token, None));
             std::thread::sleep(Duration::from_millis(50));
             hub.cancel(RequestId(9));
             build.join().ok().and_then(Result::err)
@@ -496,6 +538,7 @@ mod tests {
                 workspace: Some(dir.path().to_path_buf()),
                 settings,
                 cancel: hub.register(RequestId(3)),
+                supervisor: None,
             },
             &events,
         );

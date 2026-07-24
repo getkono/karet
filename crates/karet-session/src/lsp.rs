@@ -18,6 +18,7 @@
 mod tests;
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
@@ -34,6 +35,7 @@ use karet_lsp::LspSpec;
 use tokio::sync::mpsc;
 
 use crate::api::DocumentId;
+use crate::api::LanguageServerId;
 use crate::api::RequestId;
 use crate::config::schema::Lsp as LspSettings;
 
@@ -48,6 +50,8 @@ pub(crate) enum ServerCmd {
     DidOpen {
         /// The document path.
         path: PathBuf,
+        /// LSP `languageId` for this document.
+        language: String,
         /// The document version.
         version: i32,
         /// The full text.
@@ -139,6 +143,13 @@ pub(crate) enum LspUpdate {
         /// The language whose server died.
         language: String,
     },
+    /// A built-in provider is locally absent. No network operation was attempted.
+    InstallRequired {
+        /// The manager generation that observed the missing installation.
+        generation: u64,
+        /// Missing managed provider.
+        server: LanguageServerId,
+    },
 }
 
 /// How the manager establishes a client for a spec — [`LspClient::spawn`] in
@@ -149,26 +160,35 @@ pub(crate) type Connector = Arc<
         + Sync,
 >;
 
-/// The production connector: spawn the server process on `PATH`.
-fn spawn_connector() -> Connector {
-    Arc::new(|spec, root| Box::pin(async move { LspClient::spawn(spec, &root).await }))
+/// The production connector: run the server through karet's crash-safe process
+/// supervisor. A headless host that supplied no supervisor fails closed.
+fn spawn_connector(supervisor: Option<PathBuf>) -> Connector {
+    Arc::new(move |spec, root| {
+        let supervisor = supervisor.clone();
+        Box::pin(async move {
+            let supervisor = supervisor.ok_or(LspError::Spawn)?;
+            let command = crate::process_supervisor::command(
+                &supervisor,
+                spec.command.clone(),
+                spec.args.clone(),
+                &root,
+            )
+            .map_err(|_| LspError::Spawn)?;
+            LspClient::spawn_command(command, &spec.command, &root).await
+        })
+    })
 }
 
 /// The built-in default servers, used when `lsp.servers` has no entry for a
 /// language. Keys are lowercase language names (the same keys user config uses).
-fn builtin_spec(language: &str) -> Option<LspSpec> {
-    let (command, args): (&str, &[&str]) = match language {
-        "rust" => ("rust-analyzer", &[]),
-        "typescript" | "javascript" => ("typescript-language-server", &["--stdio"]),
-        "python" => ("pyright-langserver", &["--stdio"]),
-        "tex" => ("texlab", &[]),
-        _ => return None,
-    };
-    Some(LspSpec {
-        command: command.to_owned(),
-        args: args.iter().map(|&a| a.to_owned()).collect(),
-        languages: vec![language.to_owned()],
-    })
+pub(crate) fn builtin_server(language: &str) -> Option<LanguageServerId> {
+    match language {
+        "rust" => Some(LanguageServerId::RustAnalyzer),
+        "typescript" | "javascript" => Some(LanguageServerId::TypeScript),
+        "python" => Some(LanguageServerId::Pyright),
+        "tex" => Some(LanguageServerId::Texlab),
+        _ => None,
+    }
 }
 
 /// The lookup/settings key for a document's display language (`"Rust"` →
@@ -188,9 +208,17 @@ pub(crate) struct LspManager {
     settings: LspSettings,
     generation: u64,
     root: Option<PathBuf>,
-    servers: HashMap<String, mpsc::UnboundedSender<ServerCmd>>,
+    registry_root: Option<PathBuf>,
+    servers: HashMap<String, ServerSlot>,
+    missing_reported: HashSet<LanguageServerId>,
     updates: mpsc::UnboundedSender<LspUpdate>,
     connector: Connector,
+}
+
+struct ServerSlot {
+    tx: mpsc::UnboundedSender<ServerCmd>,
+    documents: HashSet<PathBuf>,
+    provider: Option<LanguageServerId>,
 }
 
 impl LspManager {
@@ -198,6 +226,8 @@ impl LspManager {
     pub(crate) fn new(
         settings: LspSettings,
         root: Option<PathBuf>,
+        supervisor: Option<PathBuf>,
+        registry_root: Option<PathBuf>,
     ) -> (Self, mpsc::UnboundedReceiver<LspUpdate>) {
         let (updates, rx) = mpsc::unbounded_channel();
         (
@@ -205,9 +235,11 @@ impl LspManager {
                 settings,
                 generation: 0,
                 root,
+                registry_root,
                 servers: HashMap::new(),
+                missing_reported: HashSet::new(),
                 updates,
-                connector: spawn_connector(),
+                connector: spawn_connector(supervisor),
             },
             rx,
         )
@@ -237,21 +269,44 @@ impl LspManager {
             LspUpdate::Completions { generation, .. }
             | LspUpdate::Symbols { generation, .. }
             | LspUpdate::SpawnFailed { generation, .. }
-            | LspUpdate::ServerDied { generation, .. } => *generation,
+            | LspUpdate::ServerDied { generation, .. }
+            | LspUpdate::InstallRequired { generation, .. } => *generation,
         };
         generation == self.generation
     }
 
     /// The launch spec for `language`: user config first, then the built-ins.
-    fn spec_for(&self, language: &str) -> Option<LspSpec> {
+    fn spec_for(&self, language: &str) -> Option<(LspSpec, Option<LanguageServerId>)> {
         if let Some(server) = self.settings.servers.get(language) {
-            return Some(LspSpec {
-                command: server.command.clone(),
-                args: server.args.clone(),
-                languages: vec![language.to_owned()],
-            });
+            return Some((
+                LspSpec {
+                    command: server.command.clone(),
+                    args: server.args.clone(),
+                    languages: vec![language.to_owned()],
+                },
+                None,
+            ));
         }
-        builtin_spec(language)
+        let provider = builtin_server(language)?;
+        #[cfg(test)]
+        let spec =
+            crate::lsp_registry::installed_spec(self.registry_root.as_deref(), provider, language)
+                .or_else(|| {
+                    Some(LspSpec {
+                        command: provider.key().to_owned(),
+                        args: match provider {
+                            LanguageServerId::TypeScript | LanguageServerId::Pyright => {
+                                vec!["--stdio".into()]
+                            },
+                            LanguageServerId::RustAnalyzer | LanguageServerId::Texlab => Vec::new(),
+                        },
+                        languages: vec![language.to_owned()],
+                    })
+                });
+        #[cfg(not(test))]
+        let spec =
+            crate::lsp_registry::installed_spec(self.registry_root.as_deref(), provider, language);
+        spec.map(|spec| (spec, Some(provider)))
     }
 
     /// The task inbox for `language`, spawning the server task on first use.
@@ -263,9 +318,26 @@ impl LspManager {
         if !self.settings.enabled {
             return None;
         }
-        let key = language_key(language)?;
+        let language = language_key(language)?;
+        let (spec, provider) = match self.spec_for(&language) {
+            Some(spec) => spec,
+            None => {
+                if let Some(provider) = builtin_server(&language)
+                    && self.missing_reported.insert(provider)
+                {
+                    let _ = self.updates.send(LspUpdate::InstallRequired {
+                        generation: self.generation,
+                        server: provider,
+                    });
+                }
+                return None;
+            },
+        };
+        // Built-in JavaScript and TypeScript share one provider process. Custom
+        // entries remain language-keyed because independent config entries may
+        // intentionally name different executables.
+        let key = provider.map_or_else(|| language.clone(), |server| server.key().to_owned());
         if !self.servers.contains_key(&key) {
-            let spec = self.spec_for(&key)?;
             // Server tasks need an async runtime; a session driven synchronously
             // (unit tests, bare library use) simply runs without LSP.
             let handle = tokio::runtime::Handle::try_current().ok()?;
@@ -280,9 +352,16 @@ impl LspManager {
                 Arc::clone(&self.connector),
                 self.generation,
             ));
-            self.servers.insert(key.clone(), tx);
+            self.servers.insert(
+                key.clone(),
+                ServerSlot {
+                    tx,
+                    documents: HashSet::new(),
+                    provider,
+                },
+            );
         }
-        self.servers.get(&key).map(|tx| (tx, key))
+        self.servers.get(&key).map(|slot| (&slot.tx, key))
     }
 
     /// The running task inbox for `language`, when one was already spawned.
@@ -290,7 +369,18 @@ impl LspManager {
         if !self.settings.enabled {
             return None;
         }
-        self.servers.get(&language_key(language)?)
+        let language = language_key(language)?;
+        self.servers
+            .get(&self.server_key(&language))
+            .map(|slot| &slot.tx)
+    }
+
+    fn server_key(&self, language: &str) -> String {
+        if self.settings.servers.contains_key(language) {
+            return language.to_owned();
+        }
+        builtin_server(language)
+            .map_or_else(|| language.to_owned(), |server| server.key().to_owned())
     }
 
     /// Forward a document open, lazily starting the language's server. `text`
@@ -302,11 +392,17 @@ impl LspManager {
         version: u64,
         text: impl FnOnce() -> String,
     ) {
-        let Some((tx, _key)) = self.ensure_server(language) else {
+        let language = language_key(language);
+        let Some((tx, key)) = self.ensure_server(language.as_deref()) else {
             return;
         };
+        let tx = tx.clone();
+        if let Some(slot) = self.servers.get_mut(&key) {
+            slot.documents.insert(path.to_path_buf());
+        }
         let _ = tx.send(ServerCmd::DidOpen {
             path: path.to_path_buf(),
+            language: language.unwrap_or_default(),
             version: version_i32(version),
             text: text(),
         });
@@ -333,12 +429,48 @@ impl LspManager {
 
     /// Forward a document close. A no-op for languages without a running server.
     pub(crate) fn document_closed(&mut self, language: Option<&str>, path: &Path) {
-        let Some(tx) = self.existing_server(language) else {
+        let Some(language) = language_key(language) else {
             return;
         };
-        let _ = tx.send(ServerCmd::DidClose {
+        let key = self.server_key(&language);
+        let Some(slot) = self.servers.get_mut(&key) else {
+            return;
+        };
+        let _ = slot.tx.send(ServerCmd::DidClose {
             path: path.to_path_buf(),
         });
+        slot.documents.remove(path);
+        if slot.documents.is_empty() {
+            // Dropping the final sender makes the task perform the normal LSP
+            // shutdown handshake. Its supervised process then has no idle owner.
+            self.servers.remove(&key);
+        }
+    }
+
+    /// Whether this session currently owns a process for `provider`.
+    pub(crate) fn is_running(&self, provider: LanguageServerId) -> bool {
+        self.servers
+            .values()
+            .any(|slot| slot.provider == Some(provider))
+    }
+
+    /// Retire live tasks after an explicit install or restart request.
+    ///
+    /// All tasks are retired together so late task updates are rejected by one
+    /// generation boundary. The session immediately reopens its documents.
+    pub(crate) fn restart(&mut self, provider: LanguageServerId) -> bool {
+        self.missing_reported.remove(&provider);
+        let running = self.is_running(provider);
+        if running {
+            self.generation = self.generation.wrapping_add(1);
+            self.servers.clear();
+        }
+        running
+    }
+
+    /// Forget a missing-provider suppression after its installation activates.
+    pub(crate) fn installed(&mut self, provider: LanguageServerId) {
+        self.missing_reported.remove(&provider);
     }
 
     /// Forward a completion request (`position` already in UTF-16 columns).
@@ -509,6 +641,7 @@ async fn server_task(
             },
             ServerCmd::DidOpen {
                 path,
+                language: document_language,
                 version,
                 text,
             } => {
@@ -522,7 +655,9 @@ async fn server_task(
                 )
                 .await;
                 if !dead {
-                    let result = client.did_open(&path, &language, version, &text).await;
+                    let result = client
+                        .did_open(&path, &document_language, version, &text)
+                        .await;
                     note_failure(result, &mut dead, &updates, &language, generation);
                 }
             },

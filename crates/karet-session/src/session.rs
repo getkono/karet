@@ -115,6 +115,17 @@ pub struct SessionConfig {
     /// user data directory ([`crate::backup::default_swap_dir`]); left `None` (as in
     /// tests) the session keeps no backups and never touches the user's data dir.
     pub swap_dir: Option<PathBuf>,
+    /// Executable that can enter [`crate::process_supervisor`] mode.
+    ///
+    /// The karet application supplies its own current executable. `None` is the
+    /// safe headless/test default: external language servers are not spawned
+    /// unless the host explicitly provides crash-safe process ownership.
+    pub process_supervisor: Option<PathBuf>,
+    /// Per-user, machine-local root for managed language-server installations.
+    ///
+    /// A headless embedding may leave this unset to disable built-in providers;
+    /// configured custom servers remain available through the process supervisor.
+    pub lsp_registry_dir: Option<PathBuf>,
 }
 
 impl SessionConfig {
@@ -356,6 +367,10 @@ pub struct Session {
     lsp: LspManager,
     /// The LSP tasks' results, taken by [`crate::backend::local`] for the actor.
     lsp_rx: Option<mpsc::UnboundedReceiver<LspUpdate>>,
+    /// Explicit install/update work for the shared managed-server registry.
+    lsp_registry: std::sync::mpsc::Sender<crate::lsp_registry::RegistryJob>,
+    /// Registry results, taken by the local backend actor.
+    lsp_registry_rx: Option<mpsc::UnboundedReceiver<crate::lsp_registry::RegistryUpdate>>,
     /// Exact-root public-GitHub identity, when this workspace is eligible.
     #[cfg(feature = "github")]
     github_repository: Option<karet_github::RepositoryIdentity>,
@@ -437,8 +452,16 @@ impl Session {
         let (highlight_tx, highlight_rx) = crate::highlight::spawn();
         let (spell_tx, spell_rx) = crate::spell::spawn();
         // Language servers spawn lazily, per language, on the first matching open.
-        let (lsp, lsp_rx) =
-            LspManager::new(config.settings.lsp.clone(), config.roots.first().cloned());
+        let (lsp, lsp_rx) = LspManager::new(
+            config.settings.lsp.clone(),
+            config.roots.first().cloned(),
+            config.process_supervisor.clone(),
+            config.lsp_registry_dir.clone(),
+        );
+        let (lsp_registry, lsp_registry_rx) = crate::lsp_registry::spawn(
+            config.lsp_registry_dir.clone(),
+            config.process_supervisor.clone(),
+        );
         let mut session = Self {
             config,
             config_manager,
@@ -466,6 +489,8 @@ impl Session {
             pending_swaps,
             lsp,
             lsp_rx: Some(lsp_rx),
+            lsp_registry,
+            lsp_registry_rx: Some(lsp_registry_rx),
             #[cfg(feature = "github")]
             github_repository,
             #[cfg(feature = "github")]
@@ -692,6 +717,37 @@ impl Session {
             ),
             Command::Completion { doc, position } => self.completion(id, doc, position),
             Command::DocumentSymbols { doc } => self.document_symbols(id, doc),
+            Command::LanguageServerStatus => {
+                let servers = crate::lsp_registry::statuses(
+                    self.config.lsp_registry_dir.as_deref(),
+                    |server| self.lsp.is_running(server),
+                );
+                self.emit(Some(id), Event::LanguageServerStatus { servers });
+            },
+            Command::InstallLanguageServer { server } => {
+                self.queue_lsp_registry(
+                    id,
+                    crate::lsp_registry::RegistryJob::Install {
+                        request: id,
+                        server,
+                    },
+                );
+            },
+            Command::CheckLanguageServerUpdates => {
+                self.queue_lsp_registry(
+                    id,
+                    crate::lsp_registry::RegistryJob::Check { request: id },
+                );
+            },
+            Command::ApplyLanguageServerPlan { plan } => {
+                self.queue_lsp_registry(
+                    id,
+                    crate::lsp_registry::RegistryJob::Apply { request: id, plan },
+                );
+            },
+            Command::RestartLanguageServer { server } => {
+                self.restart_lsp(server);
+            },
             // The remaining language-intelligence and search commands are wired in
             // later milestones.
             _ => {},
@@ -770,6 +826,7 @@ impl Session {
                 workspace: self.config.roots.first().cloned(),
                 settings: self.config.settings.latex.clone(),
                 cancel: self.vcs_cancellations.register(cancel_id),
+                supervisor: self.config.process_supervisor.clone(),
             })
             .map_err(|_| ())
     }

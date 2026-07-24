@@ -188,6 +188,10 @@ impl App {
                     self.open_loaded_config(self.loaded_config.clone());
                 }
             },
+            Command::CheckLanguageServerUpdates => {
+                self.send_command(SessionCommand::CheckLanguageServerUpdates);
+                self.status = Some("checking language-server updates…".to_string());
+            },
             Command::ExplorerNewFile => self.explorer_begin_new(false),
             Command::ExplorerNewFolder => self.explorer_begin_new(true),
             Command::ExplorerRename => self.explorer_begin_rename(),

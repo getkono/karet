@@ -298,6 +298,8 @@ pub enum Command {
     OpenBlameDetail,
     /// Open a read-only view of the loaded settings and their provenance.
     ShowLoadedConfig,
+    /// Explicitly check installed managed language servers for updates.
+    CheckLanguageServerUpdates,
     /// Begin creating a new file in the explorer (inline name editor).
     ExplorerNewFile,
     /// Begin creating a new folder in the explorer (inline name editor).
@@ -583,6 +585,7 @@ impl Command {
             Self::ToggleInlineBlame => "Source Control: Toggle Inline Blame",
             Self::OpenBlameDetail => "Source Control: Open Blame Details",
             Self::ShowLoadedConfig => "Settings: Show Loaded Configuration",
+            Self::CheckLanguageServerUpdates => "Language Servers: Check for Updates…",
             Self::ExplorerNewFile => "Explorer: New File…",
             Self::ExplorerNewFolder => "Explorer: New Folder…",
             Self::ExplorerRename => "Explorer: Rename…",
@@ -700,6 +703,7 @@ impl Command {
             Self::ToggleInlineBlame => "blame",
             Self::OpenBlameDetail => "blame detail",
             Self::ShowLoadedConfig => "settings",
+            Self::CheckLanguageServerUpdates => "lsp updates",
             Self::ToggleFold => "fold",
             Self::AddCursorNextOccurrence => "add cursor",
             // Diff.
@@ -941,6 +945,7 @@ impl Command {
                 | Self::ToggleInlineBlame
                 | Self::OpenBlameDetail
                 | Self::ShowLoadedConfig
+                | Self::CheckLanguageServerUpdates
                 | Self::ExplorerNewFile
                 | Self::ExplorerNewFolder
                 | Self::ExplorerRename

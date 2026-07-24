@@ -30,7 +30,7 @@ type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 #[test]
 fn reconfigure_retires_updates_from_old_server_tasks() {
-    let (mut manager, _updates) = LspManager::new(LspSettings::default(), None);
+    let (mut manager, _updates) = LspManager::new(LspSettings::default(), None, None, None);
     let old = LspUpdate::Completions {
         generation: 0,
         request: RequestId(1),
@@ -50,6 +50,38 @@ fn reconfigure_retires_updates_from_old_server_tasks() {
         !manager.reconfigure(settings),
         "an identical snapshot is a no-op"
     );
+}
+
+#[tokio::test]
+async fn last_document_close_retires_the_server_slot() {
+    let (mut manager, _updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(test_connector(
+        Behavior::Normal,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let path = PathBuf::from("/tmp/owned.rs");
+    manager.document_opened(Some("rust"), &path, 1, || "fn main() {}".into());
+    assert!(manager.is_running(LanguageServerId::RustAnalyzer));
+    manager.document_closed(Some("rust"), &path);
+    assert!(!manager.is_running(LanguageServerId::RustAnalyzer));
+}
+
+#[tokio::test]
+async fn javascript_and_typescript_share_one_builtin_process() {
+    let (mut manager, _updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(test_connector(
+        Behavior::Normal,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    manager.document_opened(Some("javascript"), Path::new("/tmp/a.js"), 1, String::new);
+    manager.document_opened(Some("typescript"), Path::new("/tmp/b.ts"), 1, String::new);
+    assert_eq!(manager.servers.len(), 1);
+    manager.document_closed(Some("javascript"), Path::new("/tmp/a.js"));
+    assert!(manager.is_running(LanguageServerId::TypeScript));
+    manager.document_closed(Some("typescript"), Path::new("/tmp/b.ts"));
+    assert!(!manager.is_running(LanguageServerId::TypeScript));
 }
 
 // --- a minimal LSP wire for the fake server (framing + JSON) -----------
@@ -607,28 +639,14 @@ async fn server_death_is_reported_and_completions_stay_answered() -> TestResult 
 // --- unit tests for the pure pieces --------------------------------------
 
 #[test]
-fn builtin_specs_cover_the_documented_languages() {
-    let rust = builtin_spec("rust");
-    assert_eq!(rust.map(|s| s.command), Some("rust-analyzer".to_owned()));
+fn builtin_registry_covers_the_documented_languages() {
+    assert_eq!(builtin_server("rust"), Some(LanguageServerId::RustAnalyzer));
     for lang in ["typescript", "javascript"] {
-        let spec = builtin_spec(lang);
-        assert_eq!(
-            spec.as_ref().map(|s| s.command.as_str()),
-            Some("typescript-language-server")
-        );
-        assert_eq!(spec.map(|s| s.args), Some(vec!["--stdio".to_owned()]));
+        assert_eq!(builtin_server(lang), Some(LanguageServerId::TypeScript));
     }
-    let py = builtin_spec("python");
-    assert_eq!(
-        py.map(|s| (s.command, s.args)),
-        Some(("pyright-langserver".to_owned(), vec!["--stdio".to_owned()]))
-    );
-    let tex = builtin_spec("tex");
-    assert_eq!(
-        tex.map(|s| (s.command, s.args)),
-        Some(("texlab".to_owned(), Vec::new()))
-    );
-    assert!(builtin_spec("cobol").is_none());
+    assert_eq!(builtin_server("python"), Some(LanguageServerId::Pyright));
+    assert_eq!(builtin_server("tex"), Some(LanguageServerId::Texlab));
+    assert!(builtin_server("cobol").is_none());
 }
 
 #[test]
@@ -649,20 +667,20 @@ fn user_config_overrides_builtins() {
             args: Vec::new(),
         },
     );
-    let (manager, _rx) = LspManager::new(settings, None);
+    let (manager, _rx) = LspManager::new(settings, None, None, None);
     let rust = manager.spec_for("rust");
     assert_eq!(
-        rust.map(|s| (s.command, s.args)),
+        rust.map(|(s, _)| (s.command, s.args)),
         Some(("my-ra".to_owned(), vec!["--custom".to_owned()]))
     );
     assert_eq!(
-        manager.spec_for("zig").map(|s| s.command),
+        manager.spec_for("zig").map(|(s, _)| s.command),
         Some("zls".to_owned())
     );
     // Untouched languages keep their builtin.
     assert_eq!(
-        manager.spec_for("python").map(|s| s.command),
-        Some("pyright-langserver".to_owned())
+        manager.spec_for("python").map(|(s, _)| s.command),
+        Some("pyright".to_owned())
     );
 }
 

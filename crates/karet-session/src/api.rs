@@ -318,6 +318,71 @@ pub struct ViewId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RequestId(pub u64);
 
+/// A language server managed by karet's per-user installation registry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum LanguageServerId {
+    /// Rust language intelligence from rust-analyzer.
+    RustAnalyzer,
+    /// JavaScript and TypeScript intelligence from TypeScript Language Server.
+    TypeScript,
+    /// Python language intelligence from Pyright.
+    Pyright,
+    /// TeX and LaTeX language intelligence from texlab.
+    Texlab,
+}
+
+impl LanguageServerId {
+    /// Stable registry key used in on-disk paths and manifests.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::RustAnalyzer => "rust-analyzer",
+            Self::TypeScript => "typescript-language-server",
+            Self::Pyright => "pyright",
+            Self::Texlab => "texlab",
+        }
+    }
+
+    /// Human-readable provider name for prompts and status.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::RustAnalyzer => "rust-analyzer",
+            Self::TypeScript => "TypeScript Language Server",
+            Self::Pyright => "Pyright",
+            Self::Texlab => "texlab",
+        }
+    }
+}
+
+/// Opaque identifier for an exact, explicitly checked language-server update.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LanguageServerPlanId(pub u64);
+
+/// One exact language-server change returned by an explicit update check.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LanguageServerChange {
+    /// Managed provider.
+    pub server: LanguageServerId,
+    /// Currently active version, absent for a first installation.
+    pub current: Option<String>,
+    /// Exact version whose download metadata is held by the plan.
+    pub target: String,
+    /// Expected compressed download bytes, when upstream supplied a size.
+    pub download_bytes: Option<u64>,
+}
+
+/// Local-only status for one managed language server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LanguageServerStatus {
+    /// Managed provider.
+    pub server: LanguageServerId,
+    /// Active installed version, if any.
+    pub installed: Option<String>,
+    /// Whether this session currently owns a running process for the provider.
+    pub running: bool,
+}
+
 /// Which producer a [`Event::DecorationsChanged`] batch belongs to, so the client
 /// can replace one producer's decoration layer atomically.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -440,6 +505,25 @@ pub enum Command {
     DocumentSymbols {
         /// The target document.
         doc: DocumentId,
+    },
+    /// Query the managed language-server registry without performing network I/O.
+    LanguageServerStatus,
+    /// Explicitly approve discovery and installation of one missing server.
+    InstallLanguageServer {
+        /// Provider to install at its latest stable version.
+        server: LanguageServerId,
+    },
+    /// Explicitly perform network metadata checks for installed servers.
+    CheckLanguageServerUpdates,
+    /// Apply the exact update plan previously returned by the backend.
+    ApplyLanguageServerPlan {
+        /// Opaque plan identifier.
+        plan: LanguageServerPlanId,
+    },
+    /// Restart this session's processes for an already-approved active version.
+    RestartLanguageServer {
+        /// Provider whose running slots should restart.
+        server: LanguageServerId,
     },
     /// Search workspace symbols.
     WorkspaceSymbols {
@@ -717,6 +801,35 @@ mod tests {
             error: None,
         };
         let _cfg = Command::LoadedConfig;
+        let server = LanguageServerId::Texlab;
+        assert_eq!(server.key(), "texlab");
+        assert_eq!(server.display_name(), "texlab");
+        let plan = LanguageServerPlanId(9);
+        let change = LanguageServerChange {
+            server,
+            current: Some("1.0.0".into()),
+            target: "2.0.0".into(),
+            download_bytes: Some(42),
+        };
+        let status = LanguageServerStatus {
+            server,
+            installed: Some("1.0.0".into()),
+            running: true,
+        };
+        let _commands = [
+            Command::InstallLanguageServer { server },
+            Command::ApplyLanguageServerPlan { plan },
+            Command::RestartLanguageServer { server },
+        ];
+        let _events = [
+            Event::LanguageServerUpdatePlan {
+                plan,
+                changes: vec![change],
+            },
+            Event::LanguageServerStatus {
+                servers: vec![status],
+            },
+        ];
         assert_eq!(DecorationLayer::Vcs, DecorationLayer::Vcs);
         assert_eq!(
             DocumentSettings::default(),

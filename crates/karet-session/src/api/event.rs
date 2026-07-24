@@ -134,6 +134,45 @@ pub enum Event {
         /// The completion items, with edit ranges in buffer (UTF-32) columns.
         items: Vec<CompletionItem>,
     },
+    /// An open document needs a managed server that is not installed.
+    ///
+    /// This event is local-only: emitting it performs no metadata request or
+    /// other network traffic.
+    LanguageServerInstallRequired {
+        /// Missing provider.
+        server: LanguageServerId,
+    },
+    /// Local managed-language-server status, answering
+    /// [`Command::LanguageServerStatus`].
+    LanguageServerStatus {
+        /// One row per built-in provider.
+        servers: Vec<LanguageServerStatus>,
+    },
+    /// Exact changes discovered by an explicitly requested update check.
+    LanguageServerUpdatePlan {
+        /// Opaque plan required to approve these exact versions.
+        plan: LanguageServerPlanId,
+        /// Proposed provider changes.
+        changes: Vec<LanguageServerChange>,
+    },
+    /// Progress for an explicitly approved managed-server operation.
+    LanguageServerProgress {
+        /// Provider being installed or updated.
+        server: LanguageServerId,
+        /// Bytes received so far.
+        downloaded: u64,
+        /// Expected bytes, when upstream supplied a size.
+        total: Option<u64>,
+    },
+    /// A managed provider was atomically installed or updated.
+    LanguageServerChanged {
+        /// Changed provider.
+        server: LanguageServerId,
+        /// Newly active version.
+        version: String,
+        /// Whether processes using an older version still need a user-approved restart.
+        restart_required: bool,
+    },
     /// Hover result answering a [`Command::Hover`].
     HoverResult {
         /// The hover, if any.

@@ -1,20 +1,5 @@
 use super::*;
 
-/// An edit waiting for the configured automatic-save trigger.
-#[derive(Clone, Copy)]
-pub(super) struct PendingAutoSave {
-    /// Newest document version covered by this trigger.
-    pub(super) version: u64,
-    /// Debounce deadline, or `None` when waiting for an editor-focus change.
-    pub(super) deadline: Option<Instant>,
-}
-
-/// One save request in flight.
-#[derive(Clone, Copy)]
-pub(super) struct PendingSave {
-    pub(super) doc: DocumentId,
-}
-
 impl App {
     /// The soonest the event loop should wake for time-based UI: notification expiry,
     /// save-spinner animation, graphical-caret blink, delayed loading states, or an
@@ -312,6 +297,29 @@ impl App {
                 version,
                 items,
             } => self.on_completions(id, doc, version, items),
+            SessionEvent::LanguageServerInstallRequired { server } => {
+                self.prompt_language_server_install(server);
+            },
+            SessionEvent::LanguageServerStatus { servers } => {
+                self.show_language_server_status(servers);
+            },
+            SessionEvent::LanguageServerUpdatePlan { plan, changes } => {
+                self.prompt_language_server_updates(plan, changes);
+            },
+            SessionEvent::LanguageServerProgress {
+                server,
+                downloaded,
+                total,
+            } => {
+                self.show_language_server_progress(server, downloaded, total);
+            },
+            SessionEvent::LanguageServerChanged {
+                server,
+                version,
+                restart_required,
+            } => {
+                self.finish_language_server_change(server, version, restart_required);
+            },
             SessionEvent::Saved { doc } => {
                 for tab in self.all_tabs_mut() {
                     if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
