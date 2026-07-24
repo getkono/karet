@@ -349,6 +349,13 @@ impl App {
                         self.status = Some("opening outside-workspace link cancelled".to_string());
                     }
                 },
+                TextPurpose::ConfirmCreateProjectSettings { word, path } => {
+                    if text == "create" {
+                        self.create_project_dictionary(&word, &path);
+                    } else {
+                        self.status = Some("project settings creation cancelled".to_string());
+                    }
+                },
             },
             OverlayEvent::AcceptDeleteLocalBranch(name) => {
                 self.run_vcs_action(VcsAction::DeleteBranch { name });

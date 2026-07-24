@@ -17,6 +17,7 @@ mod runtime;
 mod scm;
 mod search;
 mod sidebar;
+mod spellcheck;
 mod startup;
 mod tabs;
 
@@ -510,6 +511,20 @@ struct ExplorerFileClipboard {
 pub(crate) enum ContextMenuAction {
     /// Dispatch an ordinary named application command.
     Command(Command),
+    /// Replace one misspelled range with a dictionary suggestion.
+    ReplaceSpelling {
+        /// The document containing the warning.
+        doc: DocumentId,
+        /// The exact warning range to replace.
+        range: Range,
+        /// The suggested replacement.
+        replacement: String,
+    },
+    /// Add a word to the project spell-check dictionary.
+    AddSpellingToDictionary {
+        /// The word accepted by the user.
+        word: String,
+    },
 }
 
 /// One row of a positioned context menu: its action, whether it can run right now,
@@ -518,6 +533,8 @@ pub(crate) enum ContextMenuAction {
 pub(crate) struct ContextMenuEntry {
     /// The action this row dispatches when accepted.
     pub(crate) action: ContextMenuAction,
+    /// An action-specific label. Ordinary commands use their standard menu label.
+    pub(crate) label: Option<String>,
     /// Whether the row can be activated. A disabled row renders dimmed, is skipped
     /// by keyboard navigation, and refuses Accept.
     pub(crate) enabled: bool,
@@ -531,6 +548,7 @@ impl ContextMenuEntry {
     fn enabled(command: Command) -> Self {
         Self {
             action: ContextMenuAction::Command(command),
+            label: None,
             enabled: true,
             note: None,
         }
@@ -540,6 +558,31 @@ impl ContextMenuEntry {
     fn disabled(command: Command, note: impl Into<String>) -> Self {
         Self {
             action: ContextMenuAction::Command(command),
+            label: None,
+            enabled: false,
+            note: Some(note.into()),
+        }
+    }
+
+    /// An enabled contextual action with a label supplied by its producer.
+    fn custom(label: impl Into<String>, action: ContextMenuAction) -> Self {
+        Self {
+            action,
+            label: Some(label.into()),
+            enabled: true,
+            note: None,
+        }
+    }
+
+    /// A disabled contextual row carrying an explanatory note.
+    fn disabled_custom(
+        label: impl Into<String>,
+        action: ContextMenuAction,
+        note: impl Into<String>,
+    ) -> Self {
+        Self {
+            action,
+            label: Some(label.into()),
             enabled: false,
             note: Some(note.into()),
         }
@@ -549,6 +592,8 @@ impl ContextMenuEntry {
     pub(crate) fn command(&self) -> Option<Command> {
         match &self.action {
             ContextMenuAction::Command(command) => Some(*command),
+            ContextMenuAction::ReplaceSpelling { .. }
+            | ContextMenuAction::AddSpellingToDictionary { .. } => None,
         }
     }
 }

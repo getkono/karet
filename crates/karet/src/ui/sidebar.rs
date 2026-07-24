@@ -139,8 +139,15 @@ pub(super) fn draw_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, are
     let labels: Vec<String> = menu
         .entries
         .iter()
-        .filter_map(|entry| entry.command())
-        .map(|command| context_menu_label(command).to_string())
+        .map(|entry| {
+            entry.label.clone().unwrap_or_else(|| {
+                entry
+                    .command()
+                    .map(context_menu_label)
+                    .unwrap_or_default()
+                    .to_string()
+            })
+        })
         .collect();
     let label_w = labels
         .iter()
