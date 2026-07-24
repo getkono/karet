@@ -596,9 +596,19 @@ impl App {
             }
             return;
         }
-        let command = entry.command;
+        let action = entry.action.clone();
         self.context_menu = None;
-        self.dispatch(command);
+        match action {
+            ContextMenuAction::Command(command) => self.dispatch(command),
+            ContextMenuAction::ReplaceSpelling {
+                doc,
+                range,
+                replacement,
+            } => self.replace_spelling(doc, range, replacement),
+            ContextMenuAction::AddSpellingToDictionary { word } => {
+                self.add_spelling_to_dictionary(word);
+            },
+        }
     }
 
     pub(super) fn close_context_menu(&mut self) {

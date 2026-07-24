@@ -14,6 +14,7 @@ mod status;
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -24,6 +25,7 @@ use commit::*;
 use content::*;
 use github::*;
 use karet_core::Decoration;
+use karet_core::Diagnostic;
 use karet_core::Severity;
 use karet_core::ThemeRole;
 use karet_editor::Editor;
@@ -44,6 +46,7 @@ use karet_markdown::WrappedDocument;
 use karet_markdown::view::MarkdownView;
 use karet_markdown::view::MarkdownViewState;
 use karet_session::ConfigLayerStatus;
+use karet_session::DocumentId;
 use karet_session::LoadedConfig;
 use karet_text::TextBuffer;
 use karet_theme::Theme;
@@ -277,6 +280,8 @@ struct PaneCtx<'a> {
     sticky_scroll: bool,
     /// Per-document hard-tab display width.
     tab_width: u16,
+    /// Complete diagnostic sets keyed by backend document.
+    diagnostics: &'a HashMap<DocumentId, Vec<Diagnostic>>,
     /// The find bar to draw atop this pane's content, if any (focused pane only).
     /// Owned (not borrowed): it now lives on the active `Tab` itself, and
     /// `render_pane` needs a mutable borrow of the tabs slice at the same time.

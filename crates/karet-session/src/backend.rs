@@ -17,6 +17,7 @@ use crate::api::RequestId;
 use crate::highlight::HighlightResult;
 use crate::lsp::LspUpdate;
 use crate::session::Session;
+use crate::spell::SpellResult;
 
 /// Errors produced when submitting to a [`Backend`].
 #[derive(Debug, thiserror::Error)]
@@ -85,6 +86,7 @@ pub fn local(mut session: Session) -> LocalBackend {
     let (commands, mut rx) = mpsc::unbounded_channel::<(RequestId, Command)>();
     let (watcher, mut fs_rx) = session.take_watch();
     let mut highlights = session.take_highlights();
+    let mut spell_results = session.take_spell_results();
     let mut lsp_updates = session.take_lsp_updates();
     tokio::spawn(async move {
         // Hold the watcher alive for exactly as long as the actor consumes events.
@@ -111,6 +113,10 @@ pub fn local(mut session: Session) -> LocalBackend {
                 result = recv_highlights(&mut highlights) => match result {
                     Some(result) => session.apply_highlights(result),
                     None => highlights = None, // the worker stopped; stop selecting it
+                },
+                result = recv_spell(&mut spell_results) => match result {
+                    Some(result) => session.apply_spell_result(result),
+                    None => spell_results = None,
                 },
                 // LSP answers computed on the server tasks; converted and emitted here.
                 update = recv_lsp(&mut lsp_updates) => match update {
@@ -140,6 +146,14 @@ async fn recv_fs(rx: &mut Option<mpsc::UnboundedReceiver<FsEvent>>) -> Option<Fs
 async fn recv_highlights(
     rx: &mut Option<mpsc::UnboundedReceiver<HighlightResult>>,
 ) -> Option<HighlightResult> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Await a completed spell pass, or never resolve after its worker stops.
+async fn recv_spell(rx: &mut Option<mpsc::UnboundedReceiver<SpellResult>>) -> Option<SpellResult> {
     match rx {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,

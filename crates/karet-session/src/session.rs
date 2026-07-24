@@ -86,6 +86,8 @@ use crate::local::DocSnapshot;
 use crate::local::SnapshotRx;
 use crate::lsp::LspManager;
 use crate::lsp::LspUpdate;
+use crate::spell::SpellJob;
+use crate::spell::SpellResult;
 
 /// Errors produced by the backend session.
 #[derive(Debug, thiserror::Error)]
@@ -171,13 +173,27 @@ fn resolve_document_settings(
     language: Option<&str>,
     settings: &crate::config::Settings,
 ) -> (DocumentSettings, Option<String>) {
-    match crate::editorconfig::resolve(path, language, settings) {
-        Ok(resolved) => (resolved, None),
-        Err(error) => (
-            crate::editorconfig::defaults(language, settings),
-            Some(format!("EditorConfig: {error}")),
-        ),
-    }
+    let (resolved, editorconfig_error) =
+        match crate::editorconfig::resolve(path, language, settings) {
+            Ok(resolved) => (resolved, None),
+            Err(error) => (
+                crate::editorconfig::defaults(language, settings),
+                Some(format!("EditorConfig: {error}")),
+            ),
+        };
+    let language_error = (settings.spellcheck.enabled && resolved.spelling_language.is_none())
+        .then(|| {
+            format!(
+                "spell-checking is enabled for {}, but no supported language resolved; use en_US or en_GB",
+                path.display()
+            )
+        });
+    let error = match (editorconfig_error, language_error) {
+        (Some(editorconfig), Some(language)) => Some(format!("{editorconfig}; {language}")),
+        (Some(error), None) | (None, Some(error)) => Some(error),
+        (None, None) => None,
+    };
+    (resolved, error)
 }
 
 fn apply_serialization_settings(buffer: &mut TextBuffer, settings: DocumentSettings) {
@@ -251,6 +267,8 @@ struct Document {
     /// Syntax-error line ranges from the worker's last parse (see
     /// [`DocSnapshot::syntax_error_lines`]).
     error_lines: Arc<Vec<(u32, u32)>>,
+    /// Last spell-check diagnostics emitted for this exact document state.
+    spell_diagnostics: Vec<karet_core::Diagnostic>,
     decorations: Vec<Decoration>,
     /// Open reference count (a path opened in N views shares one document).
     refs: u32,
@@ -304,6 +322,12 @@ pub struct Session {
     highlight_tx: std::sync::mpsc::Sender<HighlightJob>,
     /// The worker's results, taken by [`crate::backend::local`] for the actor loop.
     highlight_rx: Option<mpsc::UnboundedReceiver<HighlightResult>>,
+    /// Jobs for the debounced token-aware spell worker.
+    spell_tx: std::sync::mpsc::Sender<SpellJob>,
+    /// Spell results, taken by the local backend actor.
+    spell_rx: Option<mpsc::UnboundedReceiver<SpellResult>>,
+    /// Last dictionary/load error per document, used to suppress edit-time spam.
+    spell_errors: HashMap<DocumentId, String>,
     clock: Instant,
     /// The workspace file-watcher, kept alive for the session's lifetime.
     watcher: Option<Watcher>,
@@ -408,6 +432,7 @@ impl Session {
         // applies the spans it sends back. Each request carries the document's resolved
         // semantic-comment settings, so language overrides can update live.
         let (highlight_tx, highlight_rx) = crate::highlight::spawn();
+        let (spell_tx, spell_rx) = crate::spell::spawn();
         // Language servers spawn lazily, per language, on the first matching open.
         let (lsp, lsp_rx) =
             LspManager::new(config.settings.lsp.clone(), config.roots.first().cloned());
@@ -422,6 +447,9 @@ impl Session {
             },
             highlight_tx,
             highlight_rx: Some(highlight_rx),
+            spell_tx,
+            spell_rx: Some(spell_rx),
+            spell_errors: HashMap::new(),
             clock: Instant::now(),
             watcher,
             fs_rx,
@@ -699,20 +727,21 @@ impl Session {
 /// and reparsed incrementally (streaming the rope, no whole-file `String`);
 /// otherwise a full parse runs. Highlights are recomputed against the resulting
 /// tree (the query still materializes the text — the rope-native query is a
-/// follow-up).
+/// follow-up). Returns `true` for plaintext formats that need their spell job
+/// scheduled immediately because no syntax-worker answer will arrive.
 fn update_syntax(
     settings: &crate::config::Settings,
     highlight_tx: &std::sync::mpsc::Sender<HighlightJob>,
     doc_id: DocumentId,
     doc: &mut Document,
     edits: Option<&[AppliedEdit]>,
-) {
+) -> bool {
     let Some(lang) = doc.lang_id else {
         // Plaintext: nothing to parse, and no worker round-trip to wait for.
         doc.highlights = Arc::new(Highlights::default());
         doc.folds = Arc::new(FoldRegions::default());
         doc.semantic_blocks = Arc::new(SemanticBlocks::default());
-        return;
+        return true;
     };
 
     // Keep the spans we already have usable until the worker answers. Rendering them
@@ -750,6 +779,7 @@ fn update_syntax(
     };
     // A dead worker only means no highlights; editing carries on.
     highlight_tx.send(HighlightJob::Update(request)).ok();
+    false
 }
 
 /// Derive an [`EditContext`] from a change's geometry: a single-`char` insertion is

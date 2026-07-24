@@ -29,6 +29,7 @@ use karet_core::InlayHint;
 use karet_core::LineCol;
 use karet_core::Range;
 use karet_core::Selection;
+use karet_core::Severity;
 use karet_core::ThemeRole;
 use karet_core::TokenId;
 use karet_syntax::HighlightSpan;

@@ -355,6 +355,47 @@ fn render_draws_gutter_and_cursor_line() {
 }
 
 #[test]
+fn diagnostics_render_as_severity_colored_underlines() {
+    let buffer = TextBuffer::from_text("alpha beta\n");
+    let theme = Theme::dark();
+    let diagnostic = Diagnostic {
+        range: Range {
+            start: LineCol::new(0, 1),
+            end: LineCol::new(0, 4),
+        },
+        severity: Severity::Warning,
+        message: "Unknown word".to_owned(),
+        source: Some("karet-spell".to_owned()),
+        code: None,
+        tags: Vec::new(),
+        related: Vec::new(),
+    };
+    let area = Rect::new(0, 0, 20, 1);
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .diagnostics(&[diagnostic])
+        .theme(&theme)
+        .focused(false)
+        .render(area, &mut target, &mut EditorState::new());
+
+    // One marker, one line-number digit, and one separating space precede text.
+    let first_diagnostic_cell = &target[(4, 0)];
+    assert!(
+        first_diagnostic_cell
+            .modifier
+            .contains(Modifier::UNDERLINED)
+    );
+    assert_eq!(
+        first_diagnostic_cell.underline_color,
+        theme.role(ThemeRole::DiagnosticWarning).to_ratatui()
+    );
+    assert!(
+        !target[(3, 0)].modifier.contains(Modifier::UNDERLINED),
+        "the diagnostic must not leak outside its source range"
+    );
+}
+
+#[test]
 fn line_word_and_doc_motions() {
     let buffer = TextBuffer::from_text("foo bar\nbaz");
     let mut state = EditorState::new();

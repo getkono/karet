@@ -691,11 +691,33 @@
       "additionalProperties": false
     },
     "Spellcheck": {
-      "description": "`spellcheck.*` — spell-checking of comments and strings.",
+      "description": "`spellcheck.*` — spell-checking of prose and selected source-code tokens.",
       "type": "object",
       "properties": {
+        "comments": {
+          "description": "Check comments in source code.",
+          "type": "boolean",
+          "default": true
+        },
+        "debounceMs": {
+          "description": "Quiet period after the latest token update before checking.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 500,
+          "minimum": 0
+        },
+        "documents": {
+          "description": "Check prose-oriented editable documents such as Markdown.",
+          "type": "boolean",
+          "default": true
+        },
         "enabled": {
           "description": "Enable spell-checking.",
+          "type": "boolean",
+          "default": false
+        },
+        "identifiers": {
+          "description": "Check identifier-like syntax tokens when the file parses cleanly.",
           "type": "boolean",
           "default": false
         },
@@ -703,6 +725,11 @@
           "description": "Dictionary language (e.g. `\"en_US\"`).",
           "type": "string",
           "default": "en_US"
+        },
+        "strings": {
+          "description": "Check string literals in source code.",
+          "type": "boolean",
+          "default": false
         },
         "words": {
           "description": "Extra words treated as correctly spelled.",

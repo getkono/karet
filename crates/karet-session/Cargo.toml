@@ -45,7 +45,7 @@ karet-watch.workspace = true          # centralized filesystem watching
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "macros", "process", "time"] }
 tracing.workspace = true
 thiserror.workspace = true
-ec4rs.workspace = true                # settings / editorconfig precedence (migrated from the app)
+ec4rs = { workspace = true, features = ["language-tags"] } # settings / EditorConfig + spelling_language
 spellbook.workspace = true            # spell-check → diagnostics (migrated from the app)
 directories.workspace = true          # server-side config / session paths
 serde = { workspace = true }          # derive Deserialize/Serialize for the Settings schema

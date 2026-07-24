@@ -24,9 +24,6 @@ impl App {
         if !completion_enabled {
             return;
         }
-        let Some(backend) = self.backend.clone() else {
-            return;
-        };
         let Some((doc, caret)) = self.completion_target() else {
             return;
         };
@@ -44,6 +41,15 @@ impl App {
         if !manual && crate::completion::line_has_syntax_error(syntax_errors, caret.line) {
             return; // the line doesn't parse yet: suggesting now is noise
         }
+        if let Some(warning) = self.spell_warning_ending_at(doc, caret)
+            && !warning.suggestions.is_empty()
+        {
+            self.open_spelling_completion(warning);
+            return;
+        }
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
         let (anchor, _) = karet_editor::word_bounds(buffer, caret);
         let id = backend.next_id();
         if backend
@@ -121,6 +127,9 @@ impl App {
             return None;
         }
         let caret = tab.editor.cursor();
+        if let crate::completion::CompletionMode::Spelling { caret: expected } = ui.mode {
+            return (caret == expected).then(String::new);
+        }
         if !crate::completion::caret_still_anchored(ui.anchor, caret) {
             return None;
         }
@@ -237,17 +246,27 @@ impl App {
     /// the document changed, or the active tab is no longer a code tab.
     pub(crate) fn reconcile_completion(&mut self) {
         let target = self.completion_target();
-        let anchored = |doc: DocumentId, anchor: LineCol| {
-            matches!(target, Some((d, caret))
-                if d == doc && crate::completion::caret_still_anchored(anchor, caret))
-        };
+        let anchored =
+            |doc: DocumentId, anchor: LineCol, mode: crate::completion::CompletionMode| {
+                matches!(target, Some((d, caret))
+                if d == doc && match mode {
+                    crate::completion::CompletionMode::Filtered =>
+                        crate::completion::caret_still_anchored(anchor, caret),
+                    crate::completion::CompletionMode::Spelling { caret: expected } =>
+                        caret == expected,
+                })
+            };
         if let Some(pending) = &self.pending_completion
-            && !anchored(pending.doc, pending.anchor)
+            && !anchored(
+                pending.doc,
+                pending.anchor,
+                crate::completion::CompletionMode::Filtered,
+            )
         {
             self.pending_completion = None;
         }
         if let Some(ui) = &self.completion
-            && !anchored(ui.doc, ui.anchor)
+            && !anchored(ui.doc, ui.anchor, ui.mode)
         {
             self.completion = None;
         }
@@ -290,6 +309,7 @@ impl App {
             doc,
             anchor: pending.anchor,
             last_filter: String::new(),
+            mode: crate::completion::CompletionMode::Filtered,
         });
         // Seed the filter so the first render doesn't spuriously reset it.
         if let Some(filter) = self.completion_filter()

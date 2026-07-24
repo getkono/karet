@@ -49,6 +49,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
                 word_wrap,
                 sticky_scroll,
                 tab_width,
+                diagnostics: &app.document_diagnostics,
                 find: app
                     .find_open
                     .then(|| app.tabs.get(app.active))
@@ -85,6 +86,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
                 word_wrap,
                 sticky_scroll,
                 tab_width,
+                diagnostics: &app.document_diagnostics,
                 find: None,
                 blame: None,
                 blame_clickable: false,

@@ -130,12 +130,24 @@ pub(super) fn draw_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, are
     let hints: Vec<Option<String>> = menu
         .entries
         .iter()
-        .map(|entry| keymap::hint_for(entry.command, ChordStyle::Verbose))
+        .map(|entry| {
+            entry
+                .command()
+                .and_then(|command| keymap::hint_for(command, ChordStyle::Verbose))
+        })
         .collect();
-    let labels: Vec<&str> = menu
+    let labels: Vec<String> = menu
         .entries
         .iter()
-        .map(|entry| context_menu_label(entry.command))
+        .map(|entry| {
+            entry.label.clone().unwrap_or_else(|| {
+                entry
+                    .command()
+                    .map(context_menu_label)
+                    .unwrap_or_default()
+                    .to_string()
+            })
+        })
         .collect();
     let label_w = labels
         .iter()
@@ -182,12 +194,12 @@ pub(super) fn draw_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, are
                     let used = cell_width(label) + cell_width(hint);
                     let pad = inner.width.saturating_sub(used).max(1);
                     ListItem::new(Line::from(vec![
-                        Span::styled((*label).to_string(), label_style),
+                        Span::styled(label.clone(), label_style),
                         Span::raw(" ".repeat(pad as usize)),
                         Span::styled(hint.clone(), dim),
                     ]))
                 },
-                None => ListItem::new(Line::from(Span::styled((*label).to_string(), label_style))),
+                None => ListItem::new(Line::from(Span::styled(label.clone(), label_style))),
             }
         })
         .collect();

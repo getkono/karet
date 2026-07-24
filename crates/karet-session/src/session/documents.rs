@@ -90,12 +90,13 @@ impl Session {
             folds: Arc::new(FoldRegions::default()),
             semantic_blocks: Arc::new(SemanticBlocks::default()),
             error_lines: Arc::default(),
+            spell_diagnostics: Vec::new(),
             decorations: Vec::new(),
             refs: 1,
             dirty_since: None,
             backed_up_version: None,
         };
-        update_syntax(
+        let spell_without_syntax = update_syntax(
             &self.config.settings,
             &self.highlight_tx,
             doc_id,
@@ -123,6 +124,9 @@ impl Session {
             },
         );
         self.publish(doc_id, None);
+        if spell_without_syntax {
+            self.schedule_spell(doc_id);
+        }
     }
 
     pub(super) fn apply(
@@ -138,7 +142,7 @@ impl Session {
         // speculative state has diverged from ours); either way we still publish
         // below so the authoritative buffer flows back down to the client instead
         // of leaving it stuck rejecting every future edit forever.
-        let version = {
+        let (version, spell_without_syntax) = {
             let highlight_tx = &self.highlight_tx;
             let settings = &self.config.settings;
             let lsp = &mut self.lsp;
@@ -146,9 +150,10 @@ impl Session {
                 self.events.send((Some(id), unknown_document(doc_id))).ok();
                 return;
             };
-            match doc.buffer.apply(change, ctx) {
+            let version = match doc.buffer.apply(change, ctx) {
                 Ok(applied) => {
-                    update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
+                    let _ =
+                        update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
                     // Arm the backup clock on the clean→dirty transition (see
                     // `backup_tick`).
                     doc.sync_dirty_since(tick);
@@ -161,7 +166,8 @@ impl Session {
                     Some(applied.version)
                 },
                 Err(_) => None,
-            }
+            };
+            (version, doc.lang_id.is_none())
         };
         match version {
             Some(version) => self.emit(
@@ -181,11 +187,14 @@ impl Session {
             ),
         }
         self.publish(doc_id, None);
+        if version.is_some() && spell_without_syntax {
+            self.schedule_spell(doc_id);
+        }
     }
 
     pub(super) fn undo_redo(&mut self, id: RequestId, doc_id: DocumentId, undo: bool) {
         let tick = self.elapsed_ms();
-        let (version, cursor) = {
+        let (version, cursor, spell_without_syntax) = {
             let highlight_tx = &self.highlight_tx;
             let settings = &self.config.settings;
             let lsp = &mut self.lsp;
@@ -200,7 +209,7 @@ impl Session {
             let Some(applied) = applied else {
                 return; // nothing to undo/redo
             };
-            update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
+            let _ = update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
             // Undoing back to the save point clears dirtiness (and any pending backup).
             doc.sync_dirty_since(tick);
             // The buffer changed like any other edit: keep the server in sync.
@@ -220,7 +229,7 @@ impl Session {
                         CursorState::single(Selection::caret(pos))
                     })
             });
-            (applied.version, cursor)
+            (applied.version, cursor, doc.lang_id.is_none())
         };
         self.emit(
             Some(id),
@@ -230,6 +239,9 @@ impl Session {
             },
         );
         self.publish(doc_id, cursor);
+        if spell_without_syntax {
+            self.schedule_spell(doc_id);
+        }
     }
 
     pub(super) fn save(&mut self, id: RequestId, doc_id: DocumentId) {
@@ -297,11 +309,15 @@ impl Session {
         let Ok(applied) = doc.buffer.apply(&change, ctx) else {
             return false;
         };
-        update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
+        let spell_without_syntax =
+            update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
         doc.sync_dirty_since(tick);
         lsp.document_changed(doc.language, &doc.path, applied.version, || {
             doc.buffer.text()
         });
+        if spell_without_syntax {
+            self.schedule_spell(doc_id);
+        }
         true
     }
 
@@ -317,7 +333,8 @@ impl Session {
         doc.lang_id = language_id_from_path(&path);
         doc.language = language_name_from_path(&path);
         // The language may have changed with the extension; re-highlight from scratch.
-        update_syntax(&self.config.settings, &self.highlight_tx, doc_id, doc, None);
+        let spell_without_syntax =
+            update_syntax(&self.config.settings, &self.highlight_tx, doc_id, doc, None);
         // The old URI is gone; the (possibly different) new language's server
         // adopts the new one.
         self.lsp.document_closed(old_language, &old);
@@ -329,6 +346,9 @@ impl Session {
         self.emit(Some(id), Event::Retargeted { doc: doc_id, path });
         self.refresh_document_settings(&[doc_id]);
         self.publish(doc_id, None);
+        if spell_without_syntax {
+            self.schedule_spell(doc_id);
+        }
     }
 
     pub(super) fn close(&mut self, id: RequestId, doc_id: DocumentId) {
@@ -345,6 +365,7 @@ impl Session {
                 self.lsp.document_closed(doc.language, &doc.path);
                 // Release the worker's retained trees for this document.
                 self.highlight_tx.send(HighlightJob::Drop(doc_id)).ok();
+                self.spell_errors.remove(&doc_id);
                 // The document is gone from the editor: skipping a save is an explicit
                 // decision, so clean up its swap.
                 if let Some(store) = self.swaps.as_ref() {

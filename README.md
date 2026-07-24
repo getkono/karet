@@ -62,7 +62,7 @@ you type, and the two panes scroll together — whichever one has focus leads.
 - [pkl](https://pkl-lang.org) — config language for `hk.pkl` (installed by `mise install`)
 - [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) — code coverage (installed by `mise install`)
 
-## Quick Start
+## Getting Started
 
 ```bash
 mise install        # provision hk, pkl, and cargo-llvm-cov
@@ -74,6 +74,11 @@ Run the editor with `cargo run -- <path>`. Icons default to Nerd Font glyphs;
 pass `--icons unicode` or `--icons ascii` (or set `KARET_ICONS`) if your terminal
 font lacks them. See [docs/file-formats.md](docs/file-formats.md) for the catalogue
 of recognized file types, icons, and syntax-highlighting support.
+
+Optional spellcheck is disabled by default. Enable it in `setting.jsonc` after
+installing an `en_US` or `en_GB` Hunspell dictionary; the
+[configuration guide](docs/configuration.md#spellcheck) documents dictionary lookup,
+EditorConfig selection, scopes, and package-size tradeoffs.
 
 ## Development
 

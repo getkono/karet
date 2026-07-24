@@ -17,6 +17,16 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     // The right column is a fixed-width strip: cursor position (code tabs only),
     // encoding/EOL, then the language/kind label — the hints get everything else.
     let language = app.tabs.get(app.active).map_or("", Tab::language);
+    let language = match app.tabs.get(app.active).and_then(|tab| match &tab.kind {
+        TabKind::Code { doc: Some(doc), .. } => app
+            .document_settings
+            .get(doc)
+            .and_then(|settings| settings.spelling_language),
+        _ => None,
+    }) {
+        Some(spelling) => format!("{language} · {}", spelling.display_name()),
+        None => language.to_owned(),
+    };
     let right = match app.tabs.get(app.active) {
         Some(
             tab @ Tab {

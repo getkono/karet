@@ -31,6 +31,7 @@ pub(super) fn draw_pane_content(
         TabKind::Github(view) => draw_github(f, theme, area, view),
         TabKind::Code {
             path,
+            doc,
             buffer,
             highlights,
             semantic_blocks,
@@ -95,11 +96,15 @@ pub(super) fn draw_pane_content(
                 .chain(ctx.blame.iter())
                 .cloned()
                 .collect();
+            let diagnostics = doc
+                .and_then(|doc| ctx.diagnostics.get(&doc))
+                .map_or(&[][..], Vec::as_slice);
             let editor = Editor::new(buffer)
                 .highlights(highlights)
                 .semantic_blocks(semantic_blocks)
                 .theme(theme)
                 .decorations(&combined)
+                .diagnostics(diagnostics)
                 .folds(&fold_lines)
                 .focused(ctx.editor_focused)
                 .cell_caret(!ctx.graphical_cursor)

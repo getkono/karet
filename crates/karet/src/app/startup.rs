@@ -142,6 +142,7 @@ impl App {
             abandoned_open: HashSet::new(),
             pending_saves: HashMap::new(),
             document_settings: HashMap::new(),
+            document_diagnostics: HashMap::new(),
             document_symbols: HashMap::new(),
             outline_versions: HashMap::new(),
             outline_loading: HashMap::new(),

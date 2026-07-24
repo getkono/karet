@@ -19,6 +19,7 @@ mod runtime;
 mod scm;
 mod search;
 mod sidebar;
+mod spellcheck;
 mod startup;
 mod tabs;
 mod util;
@@ -63,6 +64,7 @@ use karet_core::BytePos;
 use karet_core::Change;
 use karet_core::Decoration;
 use karet_core::DecorationKind;
+use karet_core::Diagnostic;
 use karet_core::LineCol;
 use karet_core::Notification;
 use karet_core::NotificationId;
@@ -544,12 +546,35 @@ struct ExplorerFileClipboard {
     paths: Vec<PathBuf>,
 }
 
-/// One row of a positioned context menu: the command it dispatches, whether it can
-/// run right now, and an optional note explaining why not.
+/// The action dispatched by a positioned context-menu row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ContextMenuAction {
+    /// Dispatch an ordinary named application command.
+    Command(Command),
+    /// Replace one misspelled range with a dictionary suggestion.
+    ReplaceSpelling {
+        /// The document containing the warning.
+        doc: DocumentId,
+        /// The exact warning range to replace.
+        range: Range,
+        /// The suggested replacement.
+        replacement: String,
+    },
+    /// Add a word to the project spell-check dictionary.
+    AddSpellingToDictionary {
+        /// The word accepted by the user.
+        word: String,
+    },
+}
+
+/// One row of a positioned context menu: its action, whether it can run right now,
+/// and an optional note explaining why not.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ContextMenuEntry {
-    /// The command this row dispatches when accepted.
-    pub(crate) command: Command,
+    /// The action this row dispatches when accepted.
+    pub(crate) action: ContextMenuAction,
+    /// An action-specific label. Ordinary commands use their standard menu label.
+    pub(crate) label: Option<String>,
     /// Whether the row can be activated. A disabled row renders dimmed, is skipped
     /// by keyboard navigation, and refuses Accept.
     pub(crate) enabled: bool,
@@ -562,7 +587,8 @@ impl ContextMenuEntry {
     /// An enabled entry dispatching `command`.
     fn enabled(command: Command) -> Self {
         Self {
-            command,
+            action: ContextMenuAction::Command(command),
+            label: None,
             enabled: true,
             note: None,
         }
@@ -571,9 +597,43 @@ impl ContextMenuEntry {
     /// A disabled entry for `command`, greyed out with an explanatory `note`.
     fn disabled(command: Command, note: impl Into<String>) -> Self {
         Self {
-            command,
+            action: ContextMenuAction::Command(command),
+            label: None,
             enabled: false,
             note: Some(note.into()),
+        }
+    }
+
+    /// An enabled contextual action with a label supplied by its producer.
+    fn custom(label: impl Into<String>, action: ContextMenuAction) -> Self {
+        Self {
+            action,
+            label: Some(label.into()),
+            enabled: true,
+            note: None,
+        }
+    }
+
+    /// A disabled contextual row carrying an explanatory note.
+    fn disabled_custom(
+        label: impl Into<String>,
+        action: ContextMenuAction,
+        note: impl Into<String>,
+    ) -> Self {
+        Self {
+            action,
+            label: Some(label.into()),
+            enabled: false,
+            note: Some(note.into()),
+        }
+    }
+
+    /// The named command behind this row, when it is a regular command action.
+    pub(crate) fn command(&self) -> Option<Command> {
+        match &self.action {
+            ContextMenuAction::Command(command) => Some(*command),
+            ContextMenuAction::ReplaceSpelling { .. }
+            | ContextMenuAction::AddSpellingToDictionary { .. } => None,
         }
     }
 }
@@ -936,7 +996,9 @@ pub struct App {
     /// spinner clears when the answering event (saved or error) arrives.
     pending_saves: HashMap<RequestId, backend_events::PendingSave>,
     /// Editing/save behavior resolved per open session document.
-    document_settings: HashMap<DocumentId, DocumentSettings>,
+    pub(crate) document_settings: HashMap<DocumentId, DocumentSettings>,
+    /// Latest complete diagnostic set per editable backend document.
+    pub(crate) document_diagnostics: HashMap<DocumentId, Vec<Diagnostic>>,
     /// Latest language-server symbol tree for each open document.
     document_symbols: HashMap<DocumentId, Vec<Symbol>>,
     /// Buffer version represented by each cached symbol tree.

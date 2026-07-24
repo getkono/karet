@@ -566,6 +566,29 @@ impl App {
             self.editor_selecting = false;
             return;
         }
+        let code_pos = self.tabs.get(self.active).and_then(|tab| {
+            let TabKind::Code {
+                buffer,
+                folds,
+                folded,
+                ..
+            } = &tab.kind
+            else {
+                return None;
+            };
+            let fold_lines = resolve_folds(folds, folded);
+            Some(
+                tab.editor
+                    .pos_at(area, buffer, &fold_lines, mouse.column, mouse.row),
+            )
+        });
+        if streak == 2
+            && let Some(pos) = code_pos
+            && self.open_spelling_menu(mouse.column, mouse.row, pos)
+        {
+            self.editor_selecting = false;
+            return;
+        }
         if let Some(Tab {
             kind:
                 TabKind::Code {
