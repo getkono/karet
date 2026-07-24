@@ -167,6 +167,18 @@ enable spellcheck. It is applied only when `spellcheck.enabled` is `true` in a
 URLs, email-like text, numeric/qualified identifiers, code spans, links, and likely
 proper names are ignored. Warnings are token-ranged and preserve syntax colours.
 
+When a misspelling has close dictionary matches, they appear in the completion popup
+after the debounced warning reaches a stationary caret; `Ctrl+Space` also opens them
+when automatic completion is disabled. Double-clicking a spelling squiggle opens the
+same replacements in a correction menu. A warning without close matches instead shows
+a muted `No similar words found` row, while still offering the dictionary action.
+
+`Add “…” to Project Dictionary` appends the word to `spellcheck.words` in the project
+layer. An existing `$GIT_ROOT/.karet/setting.jsonc` is updated in place while retaining
+its comments and unrelated settings. If that file does not exist, karet requires the
+user to type `create` before it creates the `.karet` settings tree; it never silently
+falls back to a user or system dictionary.
+
 ### `git`
 
 | Key | Type | Default | Meaning |
