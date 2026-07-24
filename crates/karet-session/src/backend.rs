@@ -88,6 +88,7 @@ pub fn local(mut session: Session) -> LocalBackend {
     let mut highlights = session.take_highlights();
     let mut spell_results = session.take_spell_results();
     let mut lsp_updates = session.take_lsp_updates();
+    let mut registry_updates = session.take_lsp_registry_updates();
     tokio::spawn(async move {
         // Hold the watcher alive for exactly as long as the actor consumes events.
         let _watcher = watcher;
@@ -123,6 +124,10 @@ pub fn local(mut session: Session) -> LocalBackend {
                     Some(update) => session.apply_lsp_update(update),
                     None => lsp_updates = None, // no LSP; stop selecting it
                 },
+                update = recv_registry(&mut registry_updates) => match update {
+                    Some(update) => session.apply_lsp_registry_update(update),
+                    None => registry_updates = None,
+                },
                 _ = backup.tick() => session.backup_tick(),
             }
         }
@@ -130,6 +135,15 @@ pub fn local(mut session: Session) -> LocalBackend {
     LocalBackend {
         commands,
         next: AtomicU64::new(1),
+    }
+}
+
+async fn recv_registry(
+    rx: &mut Option<mpsc::UnboundedReceiver<crate::lsp_registry::RegistryUpdate>>,
+) -> Option<crate::lsp_registry::RegistryUpdate> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
     }
 }
 

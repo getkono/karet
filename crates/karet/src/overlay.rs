@@ -7,6 +7,8 @@
 
 use std::path::PathBuf;
 
+use karet_session::LanguageServerId;
+use karet_session::LanguageServerPlanId;
 use karet_session::PullRequestSummary;
 use karet_vcs::BranchTarget;
 use karet_vcs::CreateBranchOptions;
@@ -85,6 +87,12 @@ pub enum TextPurpose {
     ConfirmOutsideWorkspaceLink { path: PathBuf },
     /// Confirm creating the missing project settings file before adding a word.
     ConfirmCreateProjectSettings { word: String, path: PathBuf },
+    /// Confirm the first network-backed installation by typing `install`.
+    InstallLanguageServer { server: LanguageServerId },
+    /// Approve the exact update plan displayed by the backend.
+    ApplyLanguageServerPlan { plan: LanguageServerPlanId },
+    /// Restart a session-local process after an installed update.
+    RestartLanguageServer { server: LanguageServerId },
 }
 
 pub(crate) struct BranchForm {

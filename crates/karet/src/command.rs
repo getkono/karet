@@ -75,6 +75,8 @@ pub enum Command {
     MarkdownPreviewSide,
     /// Align every GFM table in the active Markdown document.
     FormatMarkdownTables,
+    /// Compile the active TeX document and open its generated PDF preview.
+    LatexBuildPreview,
     /// Split the focused pane into a new pane on the right.
     SplitRight,
     /// Split the focused pane into a new pane below.
@@ -296,6 +298,8 @@ pub enum Command {
     OpenBlameDetail,
     /// Open a read-only view of the loaded settings and their provenance.
     ShowLoadedConfig,
+    /// Explicitly check installed managed language servers for updates.
+    CheckLanguageServerUpdates,
     /// Begin creating a new file in the explorer (inline name editor).
     ExplorerNewFile,
     /// Begin creating a new folder in the explorer (inline name editor).
@@ -472,6 +476,7 @@ impl Command {
             Self::DismissAllNotifications => "Notifications: Dismiss All",
             Self::MarkdownPreviewSide => "Markdown: Toggle Preview to the Side",
             Self::FormatMarkdownTables => "Markdown: Format Tables",
+            Self::LatexBuildPreview => "LaTeX: Build and Open PDF Preview",
             Self::SplitRight => "View: Split Editor Right",
             Self::SplitDown => "View: Split Editor Down",
             Self::FocusNextPane => "View: Focus Next Pane",
@@ -580,6 +585,7 @@ impl Command {
             Self::ToggleInlineBlame => "Source Control: Toggle Inline Blame",
             Self::OpenBlameDetail => "Source Control: Open Blame Details",
             Self::ShowLoadedConfig => "Settings: Show Loaded Configuration",
+            Self::CheckLanguageServerUpdates => "Language Servers: Check for Updates…",
             Self::ExplorerNewFile => "Explorer: New File…",
             Self::ExplorerNewFolder => "Explorer: New Folder…",
             Self::ExplorerRename => "Explorer: Rename…",
@@ -697,6 +703,7 @@ impl Command {
             Self::ToggleInlineBlame => "blame",
             Self::OpenBlameDetail => "blame detail",
             Self::ShowLoadedConfig => "settings",
+            Self::CheckLanguageServerUpdates => "lsp updates",
             Self::ToggleFold => "fold",
             Self::AddCursorNextOccurrence => "add cursor",
             // Diff.
@@ -790,6 +797,7 @@ impl Command {
             Self::SearchToggleWord => "word",
             Self::MarkdownPreviewSide => "preview",
             Self::FormatMarkdownTables => "format tables",
+            Self::LatexBuildPreview => "build preview",
             Self::ResizePaneLeft
             | Self::ResizePaneRight
             | Self::ResizePaneUp
@@ -937,6 +945,7 @@ impl Command {
                 | Self::ToggleInlineBlame
                 | Self::OpenBlameDetail
                 | Self::ShowLoadedConfig
+                | Self::CheckLanguageServerUpdates
                 | Self::ExplorerNewFile
                 | Self::ExplorerNewFolder
                 | Self::ExplorerRename
@@ -953,6 +962,7 @@ impl Command {
                 | Self::DismissAllNotifications
                 | Self::MarkdownPreviewSide
                 | Self::FormatMarkdownTables
+                | Self::LatexBuildPreview
                 | Self::SplitRight
                 | Self::SplitDown
                 | Self::FocusNextPane

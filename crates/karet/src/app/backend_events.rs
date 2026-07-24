@@ -1,20 +1,5 @@
 use super::*;
 
-/// An edit waiting for the configured automatic-save trigger.
-#[derive(Clone, Copy)]
-pub(super) struct PendingAutoSave {
-    /// Newest document version covered by this trigger.
-    pub(super) version: u64,
-    /// Debounce deadline, or `None` when waiting for an editor-focus change.
-    pub(super) deadline: Option<Instant>,
-}
-
-/// One save request in flight.
-#[derive(Clone, Copy)]
-pub(super) struct PendingSave {
-    pub(super) doc: DocumentId,
-}
-
 impl App {
     /// The soonest the event loop should wake for time-based UI: notification expiry,
     /// save-spinner animation, graphical-caret blink, delayed loading states, or an
@@ -78,6 +63,14 @@ impl App {
         .and_then(|since| loading_delay_remaining(since, now));
         let tabs = self.all_tabs().filter_map(|tab| match &tab.kind {
             TabKind::CommitLoading {
+                loading_since,
+                error,
+                ..
+            } => error
+                .is_none()
+                .then(|| loading_delay_remaining(*loading_since, now))
+                .flatten(),
+            TabKind::LatexPreview {
                 loading_since,
                 error,
                 ..
@@ -169,6 +162,19 @@ impl App {
         );
     }
 
+    /// Replace the complete merged diagnostic set for one document.
+    pub(super) fn replace_document_diagnostics(
+        &mut self,
+        doc: DocumentId,
+        diagnostics: Vec<Diagnostic>,
+    ) {
+        if diagnostics.is_empty() {
+            self.document_diagnostics.remove(&doc);
+        } else {
+            self.document_diagnostics.insert(doc, diagnostics);
+        }
+    }
+
     /// Handle a backend event: correlate opens to tabs, surface save/progress status.
     pub(super) fn on_backend_event(&mut self, id: Option<RequestId>, event: SessionEvent) {
         if id.is_some_and(|request| self.cancelled_requests.contains(&request)) {
@@ -236,13 +242,28 @@ impl App {
                 self.document_settings.insert(doc, settings);
             },
             SessionEvent::DiagnosticsPublished { doc, diagnostics } => {
-                if diagnostics.is_empty() {
-                    self.document_diagnostics.remove(&doc);
-                } else {
-                    self.document_diagnostics.insert(doc, diagnostics);
+                // This event currently carries the complete non-LaTeX layer
+                // (spell checking today, with room for other producers). Keep
+                // compiler feedback alive when that layer refreshes.
+                let mut combined = diagnostics;
+                if let Some(existing) = self.document_diagnostics.get(&doc) {
+                    combined.extend(
+                        existing
+                            .iter()
+                            .filter(|diagnostic| diagnostic.source.as_deref() == Some("latex"))
+                            .cloned(),
+                    );
                 }
+                self.replace_document_diagnostics(doc, combined);
                 self.maybe_auto_complete_spelling(doc);
             },
+            SessionEvent::LatexBuildFinished {
+                doc,
+                pdf,
+                diagnostics,
+                error,
+                ..
+            } => self.finish_latex_build(id, doc, pdf, diagnostics, error),
             SessionEvent::Closed { doc } => {
                 self.document_settings.remove(&doc);
                 self.document_diagnostics.remove(&doc);
@@ -276,6 +297,29 @@ impl App {
                 version,
                 items,
             } => self.on_completions(id, doc, version, items),
+            SessionEvent::LanguageServerInstallRequired { server } => {
+                self.prompt_language_server_install(server);
+            },
+            SessionEvent::LanguageServerStatus { servers } => {
+                self.show_language_server_status(servers);
+            },
+            SessionEvent::LanguageServerUpdatePlan { plan, changes } => {
+                self.prompt_language_server_updates(plan, changes);
+            },
+            SessionEvent::LanguageServerProgress {
+                server,
+                downloaded,
+                total,
+            } => {
+                self.show_language_server_progress(server, downloaded, total);
+            },
+            SessionEvent::LanguageServerChanged {
+                server,
+                version,
+                restart_required,
+            } => {
+                self.finish_language_server_change(server, version, restart_required);
+            },
             SessionEvent::Saved { doc } => {
                 for tab in self.all_tabs_mut() {
                     if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {

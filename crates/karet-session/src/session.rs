@@ -115,6 +115,17 @@ pub struct SessionConfig {
     /// user data directory ([`crate::backup::default_swap_dir`]); left `None` (as in
     /// tests) the session keeps no backups and never touches the user's data dir.
     pub swap_dir: Option<PathBuf>,
+    /// Executable that can enter [`crate::process_supervisor`] mode.
+    ///
+    /// The karet application supplies its own current executable. `None` is the
+    /// safe headless/test default: external language servers are not spawned
+    /// unless the host explicitly provides crash-safe process ownership.
+    pub process_supervisor: Option<PathBuf>,
+    /// Per-user, machine-local root for managed language-server installations.
+    ///
+    /// A headless embedding may leave this unset to disable built-in providers;
+    /// configured custom servers remain available through the process supervisor.
+    pub lsp_registry_dir: Option<PathBuf>,
 }
 
 impl SessionConfig {
@@ -337,8 +348,10 @@ pub struct Session {
     vcs: Option<Repository>,
     /// Ordered background repository actions and network reads.
     vcs_worker: std::sync::mpsc::Sender<crate::vcs_worker::VcsJob>,
-    /// Cancellation registry for safely-droppable repository reads.
+    /// Cancellation registry for safely-droppable repository reads and builds.
     vcs_cancellations: crate::cancellation::CancellationHub,
+    /// Serialized external LaTeX builds.
+    latex_worker: std::sync::mpsc::Sender<crate::latex::LatexJob>,
     /// The last emitted `(staged, working)` status. Spontaneous recomputes (from
     /// filesystem events) emit only when this changes, which absorbs the feedback
     /// from the session's own index writes.
@@ -354,6 +367,10 @@ pub struct Session {
     lsp: LspManager,
     /// The LSP tasks' results, taken by [`crate::backend::local`] for the actor.
     lsp_rx: Option<mpsc::UnboundedReceiver<LspUpdate>>,
+    /// Explicit install/update work for the shared managed-server registry.
+    lsp_registry: std::sync::mpsc::Sender<crate::lsp_registry::RegistryJob>,
+    /// Registry results, taken by the local backend actor.
+    lsp_registry_rx: Option<mpsc::UnboundedReceiver<crate::lsp_registry::RegistryUpdate>>,
     /// Exact-root public-GitHub identity, when this workspace is eligible.
     #[cfg(feature = "github")]
     github_repository: Option<karet_github::RepositoryIdentity>,
@@ -413,6 +430,7 @@ impl Session {
         #[cfg(feature = "github")]
         let github_repository = github::eligible_repository(&config.roots, vcs.as_ref());
         let vcs_worker = crate::vcs_worker::spawn(config.roots.first().cloned(), events.clone());
+        let latex_worker = crate::latex::spawn(events.clone());
         // Open this session's swap store and scan for swaps a previous run left behind
         // (a crash, or a save that failed). They are offered to the UI for recovery.
         let session_id = u64::from(std::process::id());
@@ -434,8 +452,16 @@ impl Session {
         let (highlight_tx, highlight_rx) = crate::highlight::spawn();
         let (spell_tx, spell_rx) = crate::spell::spawn();
         // Language servers spawn lazily, per language, on the first matching open.
-        let (lsp, lsp_rx) =
-            LspManager::new(config.settings.lsp.clone(), config.roots.first().cloned());
+        let (lsp, lsp_rx) = LspManager::new(
+            config.settings.lsp.clone(),
+            config.roots.first().cloned(),
+            config.process_supervisor.clone(),
+            config.lsp_registry_dir.clone(),
+        );
+        let (lsp_registry, lsp_registry_rx) = crate::lsp_registry::spawn(
+            config.lsp_registry_dir.clone(),
+            config.process_supervisor.clone(),
+        );
         let mut session = Self {
             config,
             config_manager,
@@ -456,12 +482,15 @@ impl Session {
             vcs,
             vcs_worker,
             vcs_cancellations,
+            latex_worker,
             last_vcs: None,
             last_head,
             swaps,
             pending_swaps,
             lsp,
             lsp_rx: Some(lsp_rx),
+            lsp_registry,
+            lsp_registry_rx: Some(lsp_registry_rx),
             #[cfg(feature = "github")]
             github_repository,
             #[cfg(feature = "github")]
@@ -510,6 +539,7 @@ impl Session {
             Command::Redo { doc } => self.undo_redo(id, doc, false),
             Command::Save { doc } => self.save(id, doc),
             Command::RetargetDocument { doc, path } => self.retarget(id, doc, path),
+            Command::BuildLatex { doc } => self.request_latex_build(id, doc),
             // The caret is UI-local; `SetCursor` becomes meaningful when producers
             // (LSP at a position, multi-view sync) need it.
             Command::SetCursor { .. } => {},
@@ -687,6 +717,37 @@ impl Session {
             ),
             Command::Completion { doc, position } => self.completion(id, doc, position),
             Command::DocumentSymbols { doc } => self.document_symbols(id, doc),
+            Command::LanguageServerStatus => {
+                let servers = crate::lsp_registry::statuses(
+                    self.config.lsp_registry_dir.as_deref(),
+                    |server| self.lsp.is_running(server),
+                );
+                self.emit(Some(id), Event::LanguageServerStatus { servers });
+            },
+            Command::InstallLanguageServer { server } => {
+                self.queue_lsp_registry(
+                    id,
+                    crate::lsp_registry::RegistryJob::Install {
+                        request: id,
+                        server,
+                    },
+                );
+            },
+            Command::CheckLanguageServerUpdates => {
+                self.queue_lsp_registry(
+                    id,
+                    crate::lsp_registry::RegistryJob::Check { request: id },
+                );
+            },
+            Command::ApplyLanguageServerPlan { plan } => {
+                self.queue_lsp_registry(
+                    id,
+                    crate::lsp_registry::RegistryJob::Apply { request: id, plan },
+                );
+            },
+            Command::RestartLanguageServer { server } => {
+                self.restart_lsp(server);
+            },
             // The remaining language-intelligence and search commands are wired in
             // later milestones.
             _ => {},
@@ -719,6 +780,55 @@ impl Session {
             line,
             cancel: self.vcs_cancellations.register(id),
         });
+    }
+
+    fn request_latex_build(&mut self, id: RequestId, doc: DocumentId) {
+        match self.save_for_external_build(doc) {
+            Ok(source) => {
+                if self.enqueue_latex_build(Some(id), id, doc, source).is_err() {
+                    self.emit(
+                        Some(id),
+                        Event::LatexBuildFinished {
+                            doc,
+                            root: PathBuf::new(),
+                            pdf: None,
+                            diagnostics: Vec::new(),
+                            error: Some("LaTeX build worker is unavailable".to_owned()),
+                        },
+                    );
+                }
+            },
+            Err(error) => self.emit(
+                Some(id),
+                Event::LatexBuildFinished {
+                    doc,
+                    root: PathBuf::new(),
+                    pdf: None,
+                    diagnostics: Vec::new(),
+                    error: Some(error),
+                },
+            ),
+        }
+    }
+
+    fn enqueue_latex_build(
+        &self,
+        event_id: Option<RequestId>,
+        cancel_id: RequestId,
+        doc: DocumentId,
+        source: PathBuf,
+    ) -> Result<(), ()> {
+        self.latex_worker
+            .send(crate::latex::LatexJob {
+                id: event_id,
+                doc,
+                source,
+                workspace: self.config.roots.first().cloned(),
+                settings: self.config.settings.latex.clone(),
+                cancel: self.vcs_cancellations.register(cancel_id),
+                supervisor: self.config.process_supervisor.clone(),
+            })
+            .map_err(|_| ())
     }
 }
 /// Re-(or incrementally) parse `doc` and recompute its highlights.

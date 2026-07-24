@@ -173,6 +173,15 @@ impl App {
         for request in &requests {
             self.pending_commit_detail.remove(request);
         }
+        let latex_requests: Vec<RequestId> = self
+            .latex_previews
+            .iter()
+            .filter_map(|(request, view)| views.contains(view).then_some(*request))
+            .collect();
+        for request in latex_requests {
+            self.latex_previews.remove(&request);
+            requests.push(request);
+        }
         let preparing: Vec<RequestId> = self
             .pending_commit_preparation
             .iter()
@@ -304,8 +313,7 @@ impl App {
         let id = backend.next_id();
         match backend.send(id, SessionCommand::Save { doc }) {
             Ok(()) => {
-                self.pending_saves
-                    .insert(id, backend_events::PendingSave { doc });
+                self.pending_saves.insert(id, PendingSave { doc });
                 if self
                     .auto_save_pending
                     .get(&doc)
@@ -383,7 +391,7 @@ impl App {
             return;
         }
         self.auto_save_pending
-            .insert(doc, backend_events::PendingAutoSave { version, deadline });
+            .insert(doc, PendingAutoSave { version, deadline });
         let focused = (self.focus == Focus::Editor)
             .then(|| self.active_code_doc())
             .flatten();

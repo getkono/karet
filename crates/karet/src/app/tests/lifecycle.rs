@@ -475,3 +475,93 @@
         let rendered = screen(&mut app, 100, 12).join("\n");
         assert!(rendered.contains("Rust · English (UK)"), "{rendered}");
     }
+
+    #[test]
+    fn latex_build_reserves_a_preview_and_closing_it_cancels_the_request() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        dirty_doc_tab(&mut app, "main.tex", 12);
+
+        app.dispatch(Command::LatexBuildPreview);
+
+        assert!(matches!(app.tabs[app.active].kind, TabKind::LatexPreview { .. }));
+        let immediate = screen(&mut app, 90, 10).join("\n");
+        assert!(!immediate.contains("Building LaTeX preview"));
+        if let TabKind::LatexPreview { loading_since, .. } = &mut app.tabs[app.active].kind {
+            *loading_since = Instant::now() - LOADING_REVEAL_DELAY;
+        }
+        let delayed = screen(&mut app, 90, 10).join("\n");
+        assert!(delayed.contains("Building LaTeX preview"));
+        let request = backend
+            .sent
+            .lock()
+            .ok()
+            .and_then(|sent| {
+                sent.iter().find_map(|(id, command)| {
+                    matches!(command, SessionCommand::BuildLatex { doc } if *doc == DocumentId(12))
+                        .then_some(*id)
+                })
+            });
+        assert!(request.is_some());
+
+        app.dispatch(Command::CloseTab);
+        let cancelled = backend.sent.lock().is_ok_and(|sent| {
+            sent.iter().any(|(_, command)| {
+                matches!(command, SessionCommand::Cancel { request: cancelled } if Some(*cancelled) == request)
+            })
+        });
+        assert!(cancelled);
+    }
+
+    #[test]
+    fn successful_latex_build_replaces_the_reserved_view_and_publishes_diagnostics() {
+        let backend = Arc::new(RecordingBackend::new());
+        let dir = test_dir("latex-preview");
+        let pdf = dir.join("main.pdf");
+        write_file(&dir, "main.pdf", b"not a valid pdf");
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        dirty_doc_tab(&mut app, "main.tex", 14);
+        app.dispatch(Command::LatexBuildPreview);
+        let view = app.tabs[app.active].view;
+        let request = app.latex_previews.keys().next().copied();
+        let diagnostic = Diagnostic {
+            range: Range {
+                start: LineCol::new(2, 0),
+                end: LineCol::new(2, 1),
+            },
+            severity: Severity::Warning,
+            message: "Overfull hbox".to_owned(),
+            source: Some("latex".to_owned()),
+            code: None,
+            tags: Vec::new(),
+            related: Vec::new(),
+        };
+        let spelling = Diagnostic {
+            message: "Unknown word".to_owned(),
+            source: Some("karet-spell".to_owned()),
+            ..diagnostic.clone()
+        };
+        app.document_diagnostics
+            .insert(DocumentId(14), vec![spelling.clone()]);
+
+        app.on_backend_event(
+            request,
+            SessionEvent::LatexBuildFinished {
+                doc: DocumentId(14),
+                root: PathBuf::from("main.tex"),
+                pdf: Some(pdf.clone()),
+                diagnostics: vec![diagnostic.clone()],
+                error: None,
+            },
+        );
+
+        let replaced = app.tabs.iter().find(|tab| tab.view == view);
+        assert!(replaced.is_some_and(|tab| tab.path() == Some(pdf.as_path())));
+        assert_eq!(
+            app.document_diagnostics.get(&DocumentId(14)),
+            Some(&vec![spelling, diagnostic])
+        );
+        assert!(request.is_some_and(|request| !app.latex_previews.contains_key(&request)));
+    }

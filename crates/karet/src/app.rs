@@ -10,6 +10,7 @@ mod explorer;
 pub(crate) mod github;
 mod history;
 mod input;
+mod language_servers;
 mod lifecycle;
 mod mouse;
 mod panes;
@@ -96,6 +97,10 @@ use karet_session::DocumentSettings;
 use karet_session::Event as SessionEvent;
 use karet_session::EventRx;
 use karet_session::GithubVerification;
+use karet_session::LanguageServerChange;
+use karet_session::LanguageServerId;
+use karet_session::LanguageServerPlanId;
+use karet_session::LanguageServerStatus;
 use karet_session::LoadedConfig;
 use karet_session::PullRequestSummary;
 use karet_session::RangeSpec;
@@ -747,6 +752,21 @@ pub(crate) enum CloseRequest {
     AllTabs,
 }
 
+/// An edit waiting for the configured automatic-save trigger.
+#[derive(Clone, Copy)]
+struct PendingAutoSave {
+    /// Newest document version covered by this trigger.
+    version: u64,
+    /// Debounce deadline, or `None` when waiting for an editor-focus change.
+    deadline: Option<Instant>,
+}
+
+/// One save request in flight.
+#[derive(Clone, Copy)]
+struct PendingSave {
+    doc: DocumentId,
+}
+
 /// The IDE shell state.
 pub struct App {
     /// The workspace root.
@@ -994,7 +1014,7 @@ pub struct App {
     abandoned_open: HashSet<RequestId>,
     /// In-flight save requests, mapping request id → document, so the tab's saving
     /// spinner clears when the answering event (saved or error) arrives.
-    pending_saves: HashMap<RequestId, backend_events::PendingSave>,
+    pending_saves: HashMap<RequestId, PendingSave>,
     /// Editing/save behavior resolved per open session document.
     pub(crate) document_settings: HashMap<DocumentId, DocumentSettings>,
     /// Latest complete diagnostic set per editable backend document.
@@ -1006,7 +1026,7 @@ pub struct App {
     /// In-flight symbol request version and start time per document.
     outline_loading: HashMap<DocumentId, (u64, Instant)>,
     /// Dirty document versions waiting for the configured automatic-save trigger.
-    auto_save_pending: HashMap<DocumentId, backend_events::PendingAutoSave>,
+    auto_save_pending: HashMap<DocumentId, PendingAutoSave>,
     /// The in-flight completion request, if any (see [`crate::completion`]).
     pub(crate) pending_completion: Option<crate::completion::PendingCompletion>,
     /// The open completion popup, if any.
@@ -1016,6 +1036,8 @@ pub struct App {
     /// In-flight commit-detail requests, mapping request id → where its result goes
     /// (a new standalone commit tab, or the graph browser's detail pane).
     pending_commit_detail: HashMap<RequestId, CommitDest>,
+    /// Explicit LaTeX build requests mapped to their reserved preview view.
+    latex_previews: HashMap<RequestId, ViewId>,
     /// Backend commit results currently being diffed and highlighted off-thread.
     pending_commit_preparation: HashMap<RequestId, PendingCommitPreparation>,
     /// Lazy forge-verification reads, owned by their exact commit view.

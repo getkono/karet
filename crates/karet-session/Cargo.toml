@@ -48,8 +48,14 @@ thiserror.workspace = true
 ec4rs = { workspace = true, features = ["language-tags"] } # settings / EditorConfig + spelling_language
 spellbook.workspace = true            # spell-check → diagnostics (migrated from the app)
 directories.workspace = true          # server-side config / session paths
+command-group.workspace = true        # crash-safe process groups / Windows Job Objects
 serde = { workspace = true }          # derive Deserialize/Serialize for the Settings schema
 serde_json.workspace = true           # the merge/deserialize target for JSONC config
+reqwest.workspace = true              # explicitly approved managed-LSP downloads
+sha2.workspace = true                 # release-asset integrity
+flate2.workspace = true               # .gz / .tar.gz managed tool archives
+tar.workspace = true                  # traversal-safe managed tool extraction
+zip.workspace = true                  # Windows managed tool archives
 jsonc-parser.workspace = true         # parse JSONC config files (byte-span diagnostics)
 schemars.workspace = true             # generate the external JSON Schema from `Settings`
 dependable-core.workspace = true      # Cargo.lock → package dependency graph (offline)

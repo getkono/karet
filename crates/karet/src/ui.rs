@@ -442,6 +442,13 @@ fn pane_actions(tab: &Tab) -> Vec<(UiIcon, Command, bool)> {
                 (UiIcon::FormatTable, Command::FormatMarkdownTables, false),
             ]
         },
+        TabKind::Code { path, .. }
+            if path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("tex")) =>
+        {
+            vec![(UiIcon::Preview, Command::LatexBuildPreview, false)]
+        },
         _ => Vec::new(),
     }
 }

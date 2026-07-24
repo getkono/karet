@@ -38,6 +38,7 @@ impl App {
             Command::DismissAllNotifications => self.notifications.dismiss_all(),
             Command::MarkdownPreviewSide => self.open_markdown_preview_side(),
             Command::FormatMarkdownTables => self.format_markdown_tables(),
+            Command::LatexBuildPreview => self.build_latex_preview(),
             Command::SplitRight => self.split_focused(SplitDir::Right),
             Command::SplitDown => self.split_focused(SplitDir::Down),
             Command::FocusNextPane => self.focus_pane_cycle(true),
@@ -186,6 +187,10 @@ impl App {
                 } else {
                     self.open_loaded_config(self.loaded_config.clone());
                 }
+            },
+            Command::CheckLanguageServerUpdates => {
+                self.send_command(SessionCommand::CheckLanguageServerUpdates);
+                self.status = Some("checking language-server updates…".to_string());
             },
             Command::ExplorerNewFile => self.explorer_begin_new(false),
             Command::ExplorerNewFolder => self.explorer_begin_new(true),

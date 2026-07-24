@@ -151,6 +151,7 @@ impl App {
             completion: None,
             completion_matcher: karet_fuzzy::Matcher::new(),
             pending_commit_detail: HashMap::new(),
+            latex_previews: HashMap::new(),
             pending_commit_preparation: HashMap::new(),
             pending_commit_verification: HashMap::new(),
             prepare_tx,
@@ -404,6 +405,7 @@ impl App {
                 | TabKind::Graph { .. }
                 | TabKind::LoadedConfig { .. }
                 | TabKind::MarkdownPreview { .. }
+                | TabKind::LatexPreview { .. }
                 | TabKind::Hex { .. },
             ) => EditorTab::Pager,
             Some(TabKind::Github(_)) => EditorTab::Github,
