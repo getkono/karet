@@ -20,11 +20,11 @@ path = "src/main.rs"
 
 # Optional media/document renderers so a lean build drops their dependency trees
 # (issue #23). All are ON by default, so the shipped binary is unchanged; a
-# `--no-default-features` build compiles without the `image` codec tree, `hayro`,
+# `--no-default-features` build compiles without the Gamut codec tree, `hayro`,
 # or the DOCX reader.
 [features]
 default = ["images", "pdf", "docx"]
-# Decode & render raster image files (pulls the `image` codec stack via
+# Decode & render raster image files (pulls the Gamut codec stack via
 # karet-fileview's `images` feature, which implies its shared `raster` primitives).
 images = ["karet-fileview/images"]
 # View PDF documents: rasterize pages (pulls `hayro` via karet-pdf) and display

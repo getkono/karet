@@ -3,8 +3,11 @@
 The `karet` app gates its optional media/document renderers behind default-on
 Cargo features so a build can drop their dependency trees (issue #23):
 
-- **`images`** pulls the [`image`](https://crates.io/crates/image) raster codec
-  stack (PNG/JPEG/GIF/WebP/AVIF/EXR/TIFF/QOI…).
+- **`images`** pulls the pure-Rust [`gamut`](https://crates.io/crates/gamut)
+  PNG/JPEG/WebP/TIFF codecs. The shared halfblock resampler is internal, so the
+  standalone `raster` feature pulls no codec library. Gamut fully replaces the
+  app's direct `image` dependency; `hayro` currently brings its own transitive
+  `image` dependency when `pdf` is enabled.
 - **`pdf`** pulls [`karet-pdf`] → [`hayro`], a pure-Rust PDF interpreter/renderer
   (`hayro_interpret`, `hayro_syntax`, `vello_cpu`, and the `skrifa`/`read-fonts`
   font stack).
@@ -61,9 +64,9 @@ media crates: `image` (~506 KiB), `hayro_interpret` (~514 KiB), `hayro_syntax`
 
 **87 crates** drop out — the whole `hayro`/`vello_cpu`/font tree (`hayro-*`,
 `vello_common`, `vello_cpu`, `skrifa`, `read-fonts`, `font-types`, `kurbo`,
-`peniko`, `moxcms`, `pxfm`…) and the `image` codec closure (`png`, `gif`,
-`tiff`, `exr`, `qoi`, `image-webp`, `zune-jpeg`, `ravif`/`rav1e`/`av1-grain`,
-`avif-serialize`, `brotli`, `flate2`, `weezl`…). `karet-pdf` itself is gone.
+`peniko`, `moxcms`, `pxfm`…) and the image codec closure. These historical
+measurements predate the Gamut migration; reproduce the commands above for the
+current exact dependency delta. `karet-pdf` itself is gone.
 
 ### Runtime load
 

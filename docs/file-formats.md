@@ -85,10 +85,26 @@ bytes so a mislabeled file still routes sensibly):
 | Binary | hex view | NUL byte / invalid UTF-8 in the sampled head |
 | Too large | placeholder, with an "open anyway" override | larger than 10 MiB |
 
+Image decoding uses Gamut exclusively:
+
+| Formats | Decoder | Current scope |
+|---|---|---|
+| PNG (`png`) | [`gamut`](https://github.com/justin13888/gamut) | still images; every PNG colour type and bit depth, including Adam7 interlacing |
+| JPEG (`jpg`, `jpeg`) | [`gamut`](https://github.com/justin13888/gamut) | baseline and progressive 8-bit JPEG, converted to the shared RGBA model |
+| WebP (`webp`) | [`gamut`](https://github.com/justin13888/gamut) | VP8/VP8L still images, including alpha |
+| TIFF (`tiff`, `tif`) | [`gamut`](https://github.com/justin13888/gamut) | baseline 8-bit grayscale/RGB/RGBA and palette; supported strip/tile compression modes |
+
+The shared Kitty/halfblock raster path no longer depends on a codec library; PDF
+pixels use the same built-in RGBA resampler. GIF, BMP, and ICO are still
+classified as images by extension or magic bytes, but fall back to the image
+placeholder because Gamut does not publish those codecs. AVIF/JPEG XL/HEIC are
+not advertised yet because the published Gamut versions do not currently provide
+the pure-Rust decode path karet needs (and no C `*-sys` dependency is permitted).
+
 The **Image** and **PDF** renderers are optional, default-on Cargo features
 (`images` and `pdf` on the `karet` app; `raster`/`images`/`pdf` on
 `karet-fileview`). Building the app with `--no-default-features` drops their heavy
-dependency trees (`image` codecs, `hayro`) and routes those kinds to the
+dependency trees (Gamut, `hayro`) and routes those kinds to the
 placeholder branch instead — see [binary-size.md](binary-size.md). Classification
 (`FileKind`) is unaffected; only rendering degrades.
 
