@@ -23,6 +23,18 @@
         )
     }
 
+    fn finish_preparation(app: &mut App) {
+        let Some(mut rx) = app.prepare_rx.take() else {
+            panic!("preparation receiver missing");
+        };
+        let result = rx.blocking_recv();
+        app.prepare_rx = Some(rx);
+        let Some(result) = result else {
+            panic!("preparation worker stopped");
+        };
+        app.on_prepare_result(result);
+    }
+
     fn test_dir(name: &str) -> PathBuf {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

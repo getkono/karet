@@ -4,10 +4,10 @@ The `karet` app gates its optional media/document renderers behind default-on
 Cargo features so a build can drop their dependency trees (issue #23):
 
 - **`images`** pulls the pure-Rust [`gamut`](https://crates.io/crates/gamut)
-  WebP/TIFF codecs plus a narrowly selected [`image`](https://crates.io/crates/image)
-  compatibility stack for PNG/JPEG/GIF/BMP/ICO. The shared halfblock resampler is
-  internal, so the standalone `raster` feature pulls neither codec library
-  (`hayro` currently brings its own `image` dependency when `pdf` is enabled).
+  PNG/JPEG/WebP/TIFF codecs. The shared halfblock resampler is internal, so the
+  standalone `raster` feature pulls no codec library. Gamut fully replaces the
+  app's direct `image` dependency; `hayro` currently brings its own transitive
+  `image` dependency when `pdf` is enabled.
 - **`pdf`** pulls [`karet-pdf`] → [`hayro`], a pure-Rust PDF interpreter/renderer
   (`hayro_interpret`, `hayro_syntax`, `vello_cpu`, and the `skrifa`/`read-fonts`
   font stack).

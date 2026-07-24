@@ -168,4 +168,83 @@ mod tests {
         assert_eq!((summary.added, summary.removed), (1, 0));
         Ok(())
     }
+
+    #[test]
+    fn repository_summary_reports_both_divergence_directions_and_all_worktree_layers()
+    -> Result<(), VcsError> {
+        let repo = test_support::init("summary-diverged")?;
+        let remote = test_support::bare_remote("summary-diverged")?;
+        test_support::commit(&repo, "initial\n", "initial")?;
+        test_support::git(
+            &repo.0,
+            &["remote", "add", "origin", &remote.0.to_string_lossy()],
+        )?;
+        test_support::git(&remote.0, &["symbolic-ref", "HEAD", "refs/heads/main"])?;
+        test_support::git(&repo.0, &["push", "-q", "-u", "origin", "main"])?;
+
+        test_support::commit(&repo, "local\n", "local")?;
+        let peer = test_support::init("summary-diverged-peer")?;
+        std::fs::remove_dir_all(&peer.0).map_err(|error| VcsError::Git(error.to_string()))?;
+        let parent = peer
+            .0
+            .parent()
+            .ok_or_else(|| VcsError::Git("test repository has no parent".to_string()))?;
+        test_support::git(
+            parent,
+            &[
+                "clone",
+                "-q",
+                &remote.0.to_string_lossy(),
+                &peer.0.to_string_lossy(),
+            ],
+        )?;
+        test_support::git(&peer.0, &["config", "user.email", "test@example.com"])?;
+        test_support::git(&peer.0, &["config", "user.name", "karet test"])?;
+        test_support::write(&peer.0, "remote.txt", b"remote\n")?;
+        test_support::git(&peer.0, &["add", "remote.txt"])?;
+        test_support::git(&peer.0, &["commit", "-q", "-m", "remote"])?;
+        test_support::git(&peer.0, &["push", "-q", "origin", "main"])?;
+        test_support::git(&repo.0, &["fetch", "-q", "origin"])?;
+
+        test_support::write(&repo.0, "staged.txt", b"one\n")?;
+        test_support::git(&repo.0, &["add", "staged.txt"])?;
+        test_support::write(&repo.0, "staged.txt", b"one\ntwo\n")?;
+        test_support::write(&repo.0, "untracked.txt", b"three\nfour\n")?;
+        std::fs::remove_file(repo.0.join("file.txt"))
+            .map_err(|error| VcsError::Git(error.to_string()))?;
+
+        assert_eq!(
+            Repository::discover(&repo.0)?.summary()?,
+            RepositorySummary {
+                ahead: 1,
+                behind: 1,
+                added: 4,
+                removed: 1,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repository_summary_tolerates_a_gone_upstream() -> Result<(), VcsError> {
+        let repo = test_support::init("summary-gone-upstream")?;
+        let remote = test_support::bare_remote("summary-gone-upstream")?;
+        test_support::commit(&repo, "initial\n", "initial")?;
+        test_support::git(
+            &repo.0,
+            &["remote", "add", "origin", &remote.0.to_string_lossy()],
+        )?;
+        test_support::git(&repo.0, &["push", "-q", "-u", "origin", "main"])?;
+        test_support::git(&repo.0, &["update-ref", "-d", "refs/remotes/origin/main"])?;
+        test_support::write(&repo.0, "file.txt", b"initial\nlocal\n")?;
+
+        assert_eq!(
+            Repository::discover(&repo.0)?.summary()?,
+            RepositorySummary {
+                added: 1,
+                ..RepositorySummary::default()
+            }
+        );
+        Ok(())
+    }
 }

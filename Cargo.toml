@@ -12,8 +12,8 @@ members  = ["crates/*"]
 [workspace.package]
 version      = "0.3.0"
 edition      = "2024"
-rust-version = "1.90"                  # edition 2024 needs 1.85; pinned deps (ratatui 0.30,
-                                       # image, ratatui-image→quantette) raise the real floor
+rust-version = "1.92"                  # edition 2024 needs 1.85; pinned deps (gamut 0.3.1,
+                                       # ratatui 0.30, ratatui-image→quantette) raise the real floor
 
 authors      = ["Justin Chung"]
 license      = "MIT OR Apache-2.0"
@@ -67,8 +67,15 @@ tokio     = { version = "1.52.3", default-features = false }  # crates opt into 
 tracing   = "0.1.44"
 serde     = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+sha2       = "0.10.9"
+bytes      = { version = "1.12.0", features = ["serde"] }
+secrecy    = "0.10.3"
+time       = { version = "0.3.47", features = ["serde-human-readable", "formatting", "parsing"] }
 toml      = "1.1.2"
 smallvec  = "1.15.2"
+# Host-only OpenAPI generator for karet-github. Generated Rust is written to
+# OUT_DIR, so spargen never enters a karet runtime dependency graph.
+spargen   = { version = "=0.2.1", default-features = false }
 # Terminal UI
 ratatui   = "0.30.2"
 crossterm = "0.29.0"
@@ -110,11 +117,8 @@ tree-sitter-md         = "0.5.3"
 # Diff / markdown / image
 imara-diff    = "0.2.0"
 pulldown-cmark = "0.13.4"
-# Gamut owns every decoder it currently ships (WebP + TIFF). The narrowly
-# feature-selected `image` fallback covers formats whose gamut decoders are not
-# published yet; keep the matrix in docs/file-formats.md synchronized.
-gamut         = { version = "0.3.0", default-features = false, features = ["webp", "tiff"] }
-image         = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "bmp", "ico"] }
+# Keep the codec matrix in docs/file-formats.md synchronized with these features.
+gamut         = { version = "0.3.1", default-features = false, features = ["png", "jpeg", "webp", "tiff"] }
 # PDF rasterization (karet-pdf). `hayro` is a pure-Rust PDF interpreter/renderer
 # (`#![forbid(unsafe_code)]`, CPU-only, no C-sys deps — verified via `cargo tree`).
 # It re-exports `hayro_syntax` (parsing) and `vello_cpu` (the pixmap), so a single

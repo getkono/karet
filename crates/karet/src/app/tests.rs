@@ -13,3 +13,4 @@ include!("tests/explorer.rs");
 include!("tests/remote.rs");
 include!("tests/search_completion.rs");
 include!("tests/spellcheck.rs");
+include!("tests/github.rs");
