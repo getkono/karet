@@ -146,15 +146,15 @@
 
     #[test]
     fn unsupported_spell_language_is_reported_instead_of_silently_disabling() {
+        let Some((_dir, path)) = write_temp("notes.md", "") else {
+            return;
+        };
         let mut settings = crate::config::Settings::default();
         settings.spellcheck.enabled = true;
         settings.spellcheck.language = "fr_FR".to_owned();
 
-        let (resolved, error) = resolve_document_settings(
-            std::path::Path::new("notes.md"),
-            Some("Markdown"),
-            &settings,
-        );
+        let (resolved, error) =
+            resolve_document_settings(&path, Some("Markdown"), &settings);
 
         assert_eq!(resolved.spelling_language, None);
         assert!(error.is_some_and(|message| {
