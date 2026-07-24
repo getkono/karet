@@ -42,7 +42,7 @@ pub enum RepositoryOperation {
 pub struct RepositoryState {
     /// Current local branch, or `None` for detached `HEAD`.
     pub branch: Option<String>,
-    /// Configured upstream short name.
+    /// Live configured upstream short name.
     pub upstream: Option<String>,
     /// Commits in local `HEAD` but not upstream.
     pub ahead: usize,

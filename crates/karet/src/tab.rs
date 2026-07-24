@@ -26,6 +26,7 @@ use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
 use karet_syntax::SemanticBlocks;
 use karet_text::TextBuffer;
+use ratatui::layout::Rect;
 
 use crate::render::FileView;
 
@@ -128,6 +129,8 @@ pub(crate) struct CommitViewState {
 pub enum TabKind {
     /// The landing page shown when nothing is open.
     Welcome,
+    /// A GitHub repository dashboard, detail, or creation form.
+    Github(crate::app::github::GithubViewState),
     /// An editable code/text view.
     Code {
         /// The file path.
@@ -413,6 +416,141 @@ impl Tab {
         Self::new("Welcome", TabKind::Welcome)
     }
 
+    /// The singleton, permanently pinned GitHub repository dashboard.
+    #[must_use]
+    pub(crate) fn github_dashboard(
+        repository: karet_session::GithubRepository,
+        auth: karet_session::GithubAuth,
+    ) -> Self {
+        Self::new(
+            "GitHub",
+            TabKind::Github(crate::app::github::GithubViewState::dashboard(
+                repository, auth,
+            )),
+        )
+    }
+
+    /// A lazily loaded issue detail tab.
+    #[must_use]
+    pub(crate) fn github_issue(
+        repository: karet_session::GithubRepository,
+        number: u64,
+        pending: Option<karet_session::RequestId>,
+    ) -> Self {
+        Self::new(
+            format!("Issue #{number}"),
+            TabKind::Github(crate::app::github::GithubViewState::Issue {
+                repository,
+                number,
+                issue: None,
+                comments: karet_session::GithubPage {
+                    items: Vec::new(),
+                    page: 1,
+                    next_page: None,
+                    total_count: None,
+                },
+                pending,
+                loading_since: Instant::now(),
+                error: None,
+                scroll: 0,
+            }),
+        )
+    }
+
+    /// A pull-request detail tab seeded from its search result.
+    #[must_use]
+    pub(crate) fn github_pull_request(
+        repository: karet_session::GithubRepository,
+        pull_request: karet_session::GithubPullRequest,
+        can_write: bool,
+        pending: Option<karet_session::RequestId>,
+    ) -> Self {
+        Self::new(
+            format!("Pull Request #{}", pull_request.number),
+            TabKind::Github(crate::app::github::GithubViewState::PullRequest(
+                crate::app::github::GithubPullRequestView {
+                    repository,
+                    pull_request,
+                    comments: karet_session::GithubPage {
+                        items: Vec::new(),
+                        page: 1,
+                        next_page: None,
+                        total_count: None,
+                    },
+                    commits: Vec::new(),
+                    checks: Vec::new(),
+                    activity: Vec::new(),
+                    activity_error: None,
+                    can_write,
+                    section: crate::app::github::GithubPullRequestSection::Conversation,
+                    pending,
+                    loading_since: Instant::now(),
+                    error: None,
+                    scroll: 0,
+                    commit_cursor: 0,
+                    commit_offset: 0,
+                    body_edit: None,
+                    comment_edit: String::new(),
+                    editor: None,
+                    preview: false,
+                    section_hits: Vec::new(),
+                    body_rect: Rect::default(),
+                    comment_rect: Rect::default(),
+                    merge_rect: Rect::default(),
+                    draft_rect: Rect::default(),
+                    check_hits: Vec::new(),
+                    commits_rect: Rect::default(),
+                },
+            )),
+        )
+    }
+
+    /// A read-only GitHub Actions workflow-run detail tab.
+    #[must_use]
+    pub(crate) fn github_workflow_run(
+        repository: karet_session::GithubRepository,
+        workflow: Option<karet_session::GithubWorkflow>,
+        run: karet_session::GithubWorkflowRun,
+    ) -> Self {
+        Self::new(
+            format!("Actions #{}", run.run_number),
+            TabKind::Github(crate::app::github::GithubViewState::WorkflowRun {
+                repository,
+                workflow,
+                run,
+                scroll: 0,
+            }),
+        )
+    }
+
+    /// A new-issue form tab.
+    #[must_use]
+    pub(crate) fn github_new_issue(
+        repository: karet_session::GithubRepository,
+        metadata_pending: Option<karet_session::RequestId>,
+    ) -> Self {
+        let form = crate::app::github::GithubIssueForm {
+            metadata_pending,
+            ..crate::app::github::GithubIssueForm::default()
+        };
+        Self::new(
+            "New GitHub Issue",
+            TabKind::Github(crate::app::github::GithubViewState::NewIssue { repository, form }),
+        )
+    }
+
+    /// A new-pull-request form tab.
+    #[must_use]
+    pub(crate) fn github_new_pull_request(repository: karet_session::GithubRepository) -> Self {
+        Self::new(
+            "New Pull Request",
+            TabKind::Github(crate::app::github::GithubViewState::NewPullRequest {
+                repository,
+                form: crate::app::github::GithubPullRequestForm::default(),
+            }),
+        )
+    }
+
     /// A rendered, read-only Markdown view of a converted document (e.g. a Word
     /// `.docx`) with no editable source tab or session document behind it.
     #[cfg(feature = "docx")]
@@ -565,6 +703,7 @@ impl Tab {
             TabKind::Document { path, .. } => Some(path),
             TabKind::Diff { file, .. } => Some(&file.change.path),
             TabKind::Welcome
+            | TabKind::Github(_)
             | TabKind::Graph { .. }
             | TabKind::LoadedConfig { .. }
             | TabKind::CommitLoading { .. }
@@ -579,6 +718,12 @@ impl Tab {
     #[must_use]
     pub fn is_diff(&self) -> bool {
         matches!(self.kind, TabKind::Diff { .. })
+    }
+
+    /// Whether this is the uncloseable pinned GitHub dashboard.
+    #[must_use]
+    pub(crate) fn is_github_dashboard(&self) -> bool {
+        matches!(&self.kind, TabKind::Github(view) if view.is_pinned())
     }
 
     /// A short language/kind label for the status bar.
@@ -602,6 +747,7 @@ impl Tab {
             TabKind::Compare { .. } => "compare",
             TabKind::CommitGraph { .. } => "commits",
             TabKind::Welcome => "",
+            TabKind::Github(_) => "github",
         }
     }
 
@@ -634,6 +780,7 @@ fn tab_kind_path(kind: &TabKind) -> Option<&Path> {
         TabKind::Document { path, .. } => Some(path),
         TabKind::Diff { file, .. } => Some(&file.change.path),
         TabKind::Welcome
+        | TabKind::Github(_)
         | TabKind::StashPreview { .. }
         | TabKind::Graph { .. }
         | TabKind::LoadedConfig { .. }

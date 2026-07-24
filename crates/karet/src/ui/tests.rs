@@ -26,11 +26,52 @@ fn markdown_link_hits_follow_wrapping_scrolling_and_wide_text() {
 }
 
 #[test]
-fn osc8_link_cells_are_self_contained() {
+fn osc8_link_cells_are_self_contained_and_share_an_explicit_id() {
+    let uri = "https://example.com";
+    let id = osc8_id(uri);
+    let first = osc8_symbol(uri, "x");
+    let second = osc8_symbol(uri, "y");
+
     assert_eq!(
-        osc8_symbol("https://example.com", "x"),
-        "\u{1b}]8;;https://example.com\u{1b}\\x\u{1b}]8;;\u{1b}\\"
+        first,
+        format!("\u{1b}]8;id={id};{uri}\u{1b}\\x\u{1b}]8;;\u{1b}\\")
     );
+    assert!(second.starts_with(&format!("\u{1b}]8;id={id};{uri}\u{1b}\\")));
+    assert_ne!(id, osc8_id("https://example.org"));
+    assert!(
+        id.bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    );
+}
+
+#[test]
+fn osc8_link_bytes_reach_the_crossterm_backend() -> Result<(), Box<dyn std::error::Error>> {
+    use std::num::NonZeroU16;
+
+    use ratatui::backend::Backend;
+    use ratatui::backend::CrosstermBackend;
+    use ratatui::buffer::Cell;
+    use ratatui::buffer::CellDiffOption;
+
+    let sequence = osc8_symbol("https://example.com", "x");
+    let mut cell = Cell::default();
+    cell.set_symbol(&sequence);
+    if let Some(width) = NonZeroU16::new(1) {
+        cell.set_diff_option(CellDiffOption::ForcedWidth(width));
+    }
+    let mut output = Vec::new();
+    {
+        let mut backend = CrosstermBackend::new(&mut output);
+        backend.draw(std::iter::once((0, 0, &cell)))?;
+        Backend::flush(&mut backend)?;
+    }
+
+    assert!(
+        output
+            .windows(sequence.len())
+            .any(|window| window == sequence.as_bytes())
+    );
+    Ok(())
 }
 
 #[test]
@@ -187,6 +228,10 @@ fn unfocused_active_tab_prefix_stays_muted_without_fill() {
     let theme = Theme::dark();
     let base = tab_text_style(&theme, true, false, false);
 
+    assert_eq!(
+        base.fg,
+        Some(theme.role(ThemeRole::DiagnosticInfo).to_ratatui())
+    );
     let prefix = tab_prefix_style(&theme, base, true, false);
 
     assert_eq!(prefix.fg, Some(theme.role(ThemeRole::Muted).to_ratatui()));

@@ -6,6 +6,8 @@
 //! When no grammar is available the file renders as plaintext — no token colors, but
 //! add/remove and intra-line emphasis still apply.
 
+use std::cell::RefCell;
+
 use karet_core::BytePos;
 use karet_core::Span as ByteSpan;
 use karet_core::TokenId;
@@ -59,6 +61,12 @@ pub struct FileView {
     diff: FileDiff,
     old_tokens: Vec<Vec<LineToken>>,
     new_tokens: Vec<Vec<LineToken>>,
+    /// Intra-line pairs indexed by hunk and diff-line row. Computing these uses an
+    /// LCS and must not recur on every terminal frame.
+    intraline: RefCell<Option<Vec<Vec<Option<HighlightedPair>>>>>,
+    /// Unified rows prewarmed by the preparation worker. The theme snapshot is part
+    /// of the key so live theme reloads rebuild correctly.
+    unified_cache: RefCell<Option<(Theme, Vec<Line<'static>>)>>,
 }
 
 impl FileView {
@@ -87,6 +95,8 @@ impl FileView {
             diff,
             old_tokens,
             new_tokens,
+            intraline: RefCell::new(None),
+            unified_cache: RefCell::new(None),
         }
     }
 
@@ -132,6 +142,25 @@ impl FileView {
         (added, removed)
     }
 
+    /// Prebuild unified rows away from the UI thread.
+    pub fn prime_unified(&self, theme: &Theme) {
+        self.ensure_intraline();
+        let lines = build_unified_lines(self, theme);
+        *self.unified_cache.borrow_mut() = Some((theme.clone(), lines));
+    }
+
+    fn ensure_intraline(&self) {
+        if self.intraline.borrow().is_none() {
+            let prepared = self
+                .diff
+                .hunks
+                .iter()
+                .map(|hunk| prepare_intraline(&hunk.lines))
+                .collect();
+            *self.intraline.borrow_mut() = Some(prepared);
+        }
+    }
+
     fn tokens_for(
         &self,
         kind: LineKind,
@@ -147,6 +176,35 @@ impl FileView {
             .and_then(|i| table.get(i))
             .map_or(&[][..], Vec::as_slice)
     }
+}
+
+fn prepare_intraline(lines: &[DiffLine]) -> Vec<Option<HighlightedPair>> {
+    let mut prepared = vec![None; lines.len()];
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index].kind == LineKind::Context {
+            index += 1;
+            continue;
+        }
+        let removed = index;
+        while index < lines.len() && lines[index].kind == LineKind::Remove {
+            index += 1;
+        }
+        let added = index;
+        while index < lines.len() && lines[index].kind == LineKind::Add {
+            index += 1;
+        }
+        let paired = (added - removed).min(index - added);
+        for offset in 0..paired {
+            let pair = compute_highlights(
+                &lines[removed + offset].content,
+                &lines[added + offset].content,
+            );
+            prepared[removed + offset] = Some(pair.clone());
+            prepared[added + offset] = Some(pair);
+        }
+    }
+    prepared
 }
 
 /// Parse and highlight `content`, returning the syntax token runs for each line.
@@ -193,6 +251,55 @@ fn line_tokens(content: &str, lang: Option<LanguageId>) -> Vec<Vec<LineToken>> {
 
 /// Build the unified-view lines for `file`.
 pub fn unified_lines(file: &FileView, theme: &Theme) -> Vec<Line<'static>> {
+    ensure_unified(file, theme);
+    file.unified_cache
+        .borrow()
+        .as_ref()
+        .map_or_else(Vec::new, |(_, lines)| lines.clone())
+}
+
+/// Return the number of rows in the unified rendering without cloning those rows.
+pub fn unified_line_count(file: &FileView, theme: &Theme) -> usize {
+    ensure_unified(file, theme);
+    file.unified_cache
+        .borrow()
+        .as_ref()
+        .map_or(0, |(_, lines)| lines.len())
+}
+
+/// Clone only a requested window of the unified rendering.
+pub fn unified_lines_window(
+    file: &FileView,
+    theme: &Theme,
+    start: usize,
+    count: usize,
+) -> Vec<Line<'static>> {
+    ensure_unified(file, theme);
+    file.unified_cache
+        .borrow()
+        .as_ref()
+        .map_or_else(Vec::new, |(_, lines)| {
+            lines.iter().skip(start).take(count).cloned().collect()
+        })
+}
+
+fn ensure_unified(file: &FileView, theme: &Theme) {
+    if file
+        .unified_cache
+        .borrow()
+        .as_ref()
+        .is_some_and(|(cached_theme, _)| cached_theme == theme)
+    {
+        return;
+    }
+    let lines = build_unified_lines(file, theme);
+    *file.unified_cache.borrow_mut() = Some((theme.clone(), lines));
+}
+
+fn build_unified_lines(file: &FileView, theme: &Theme) -> Vec<Line<'static>> {
+    file.ensure_intraline();
+    let intraline = file.intraline.borrow();
+    let intraline = intraline.as_deref().unwrap_or(&[]);
     let mut lines = Vec::new();
     if file.change.is_binary {
         lines.push(Line::from(Span::styled(
@@ -202,7 +309,7 @@ pub fn unified_lines(file: &FileView, theme: &Theme) -> Vec<Line<'static>> {
         lines.push(Line::default());
         return lines;
     }
-    for hunk in &file.diff.hunks {
+    for (hunk_index, hunk) in file.diff.hunks.iter().enumerate() {
         if let Some(scope) = &hunk.scope {
             lines.push(scope_line(scope, theme));
         }
@@ -227,16 +334,16 @@ pub fn unified_lines(file: &FileView, theme: &Theme) -> Vec<Line<'static>> {
             }
             let removes = &hl[r_start..r_end];
             let adds = &hl[r_end..i];
-            let paired = removes.len().min(adds.len());
-            let pairs: Vec<HighlightedPair> = (0..paired)
-                .map(|k| compute_highlights(&removes[k].content, &adds[k].content))
-                .collect();
             for (k, dl) in removes.iter().enumerate() {
-                let seg = pairs.get(k).map(|p| p.old_segments.as_slice());
+                let seg = intraline[hunk_index][r_start + k]
+                    .as_ref()
+                    .map(|pair| pair.old_segments.as_slice());
                 lines.push(diff_line(file, theme, dl, seg));
             }
             for (k, dl) in adds.iter().enumerate() {
-                let seg = pairs.get(k).map(|p| p.new_segments.as_slice());
+                let seg = intraline[hunk_index][r_end + k]
+                    .as_ref()
+                    .map(|pair| pair.new_segments.as_slice());
                 lines.push(diff_line(file, theme, dl, seg));
             }
         }
