@@ -1,0 +1,12 @@
+{
+  "spellcheck": {
+    "enabled": true,
+    "language": "en_US",
+    "documents": true,
+    "comments": true,
+    "strings": true,
+    "identifiers": true,
+    "words": ["rustfmt", "plaintext", "karet"],
+    "debounceMs": 500
+  }
+}
