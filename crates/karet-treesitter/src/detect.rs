@@ -111,6 +111,33 @@ mod tests {
         );
     }
 
+    #[cfg(all(
+        feature = "lang-zig",
+        feature = "lang-xml",
+        feature = "lang-yaml",
+        feature = "lang-astro",
+        feature = "lang-svelte",
+        feature = "lang-vue"
+    ))]
+    #[test]
+    fn modern_language_paths_resolve_to_their_grammars() {
+        for (path, expected) in [
+            ("main.zig", "Zig"),
+            ("document.xml", "XML"),
+            ("vector.svg", "XML"),
+            ("workflow.yaml", "YAML"),
+            ("page.astro", "Astro"),
+            ("component.svelte", "Svelte"),
+            ("component.vue", "Vue"),
+        ] {
+            assert_eq!(
+                language_name_from_path(std::path::Path::new(path)),
+                Some(expected),
+                "{path}"
+            );
+        }
+    }
+
     #[test]
     fn extension_is_case_insensitive() {
         assert_eq!(extension(Path::new("X.MD")).as_deref(), Some("md"));
