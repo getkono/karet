@@ -8,27 +8,34 @@
 //! session converts positions (LSP UTF-16 ↔ buffer UTF-32) there, where the
 //! buffer lives, and emits the answering [`Event`](crate::api::Event).
 //!
-//! Failure policy: a server that cannot spawn (missing binary) is reported
-//! **once** and its task thereafter answers completion requests with an empty
-//! set — the manager keeps the entry, so re-opening documents never causes a
-//! respawn storm. A server that dies mid-session is likewise reported once and
-//! its language goes quiet until the session restarts.
+//! Failure policy: launch failures and closed connections are reported once per
+//! outage. The task retains authoritative open-document text, reconnects with
+//! exponential backoff, replays every `didOpen`, and opens a cooldown circuit
+//! after repeated failures instead of creating a respawn storm.
 
 #[cfg(test)]
 mod tests;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
+use std::ffi::OsStr;
 use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use karet_core::CompletionItem;
+use karet_core::Diagnostic;
+use karet_core::Hover;
 use karet_core::LineCol;
+use karet_core::Location;
 use karet_core::Symbol;
+use karet_core::TextEdit;
+use karet_core::WorkspaceEdit;
 use karet_lsp::LspClient;
 use karet_lsp::LspError;
 use karet_lsp::LspSpec;
@@ -43,6 +50,12 @@ use crate::config::schema::Lsp as LspSettings;
 /// `didChange`. A pending forward is also flushed immediately ahead of any
 /// request, so completions never see stale text.
 const CHANGE_DEBOUNCE: Duration = Duration::from_millis(150);
+const SERVER_COMMAND_CAPACITY: usize = 256;
+const RESTART_MIN_DELAY: Duration = Duration::from_millis(250);
+const RESTART_MAX_DELAY: Duration = Duration::from_secs(30);
+const RESTART_WINDOW: Duration = Duration::from_secs(60);
+const RESTART_LIMIT: usize = 5;
+const CIRCUIT_COOLDOWN: Duration = Duration::from_secs(300);
 
 /// A command for one per-language server task.
 pub(crate) enum ServerCmd {
@@ -71,6 +84,13 @@ pub(crate) enum ServerCmd {
         /// The document path.
         path: PathBuf,
     },
+    /// Forward `textDocument/didSave`.
+    DidSave {
+        /// Saved document path.
+        path: PathBuf,
+        /// Current full text, supplied for servers that request it.
+        text: String,
+    },
     /// Request completions; always answered with an [`LspUpdate::Completions`].
     Completion {
         /// The originating request, echoed on the answer.
@@ -93,6 +113,38 @@ pub(crate) enum ServerCmd {
         /// The buffer version at request time, echoed on the answer.
         version: u64,
         /// The document path.
+        path: PathBuf,
+    },
+    /// Request hover information.
+    Hover {
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        path: PathBuf,
+        position: LineCol,
+    },
+    /// Request definition locations.
+    Definition {
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        path: PathBuf,
+        position: LineCol,
+    },
+    WorkspaceSymbols {
+        request: RequestId,
+        query: String,
+    },
+    Rename {
+        request: RequestId,
+        path: PathBuf,
+        position: LineCol,
+        new_name: String,
+    },
+    Formatting {
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
         path: PathBuf,
     },
 }
@@ -126,6 +178,52 @@ pub(crate) enum LspUpdate {
         version: u64,
         /// The mapped symbol tree.
         symbols: Vec<Symbol>,
+    },
+    /// Hover response in UTF-16 coordinates.
+    Hover {
+        generation: u64,
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        hover: Option<Hover>,
+    },
+    /// Definition response in UTF-16 coordinates.
+    Definitions {
+        generation: u64,
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        locations: Vec<Location>,
+    },
+    WorkspaceSymbols {
+        generation: u64,
+        request: RequestId,
+        symbols: Vec<Symbol>,
+    },
+    WorkspaceEdit {
+        generation: u64,
+        request: RequestId,
+        edit: WorkspaceEdit,
+    },
+    Formatting {
+        generation: u64,
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        edits: Vec<TextEdit>,
+    },
+    /// A complete server diagnostic layer for one file.
+    Diagnostics {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// Provider/root identity whose diagnostic layer is replaced.
+        server: String,
+        /// File whose LSP diagnostic layer is replaced.
+        path: PathBuf,
+        /// LSP document version, when the server supplied it.
+        version: Option<i32>,
+        /// Diagnostics in UTF-16 coordinates.
+        diagnostics: Vec<Diagnostic>,
     },
     /// The server binary could not be started (reported once per language).
     SpawnFailed {
@@ -162,11 +260,22 @@ pub(crate) type Connector = Arc<
 
 /// The production connector: run the server through karet's crash-safe process
 /// supervisor. A headless host that supplied no supervisor fails closed.
-fn spawn_connector(supervisor: Option<PathBuf>) -> Connector {
+fn spawn_connector(supervisor: Option<PathBuf>, registry_root: Option<PathBuf>) -> Connector {
     Arc::new(move |spec, root| {
         let supervisor = supervisor.clone();
+        let registry_root = registry_root.clone();
         Box::pin(async move {
             let supervisor = supervisor.ok_or(LspError::Spawn)?;
+            if let Some(registry_root) = registry_root {
+                let stream = crate::lsp_broker::connect(&supervisor, &registry_root, &spec, &root)
+                    .await
+                    .map_err(|error| {
+                        tracing::warn!(error = %error, "shared LSP broker connection failed");
+                        LspError::Spawn
+                    })?;
+                let (read, write) = tokio::io::split(stream);
+                return LspClient::connect(read, write, &root).await;
+            }
             let command = crate::process_supervisor::command(
                 &supervisor,
                 spec.command.clone(),
@@ -184,11 +293,166 @@ fn spawn_connector(supervisor: Option<PathBuf>) -> Connector {
 pub(crate) fn builtin_server(language: &str) -> Option<LanguageServerId> {
     match language {
         "rust" => Some(LanguageServerId::RustAnalyzer),
-        "typescript" | "javascript" => Some(LanguageServerId::TypeScript),
+        "typescript" | "javascript" | "jsx" | "tsx" => Some(LanguageServerId::TypeScript),
         "python" => Some(LanguageServerId::Pyright),
         "tex" => Some(LanguageServerId::Texlab),
+        "c" | "c++" => Some(LanguageServerId::Clangd),
+        "c#" => Some(LanguageServerId::CSharp),
+        "go" => Some(LanguageServerId::Gopls),
+        "java" => Some(LanguageServerId::Jdtls),
+        "zig" => Some(LanguageServerId::Zls),
+        "astro" => Some(LanguageServerId::Astro),
+        "svelte" => Some(LanguageServerId::Svelte),
+        "vue" => Some(LanguageServerId::Vue),
+        "yaml" => Some(LanguageServerId::Yaml),
+        "xml" | "svg" => Some(LanguageServerId::Xml),
+        "ruby" => Some(LanguageServerId::new("ruby-lsp")),
+        "php" => Some(LanguageServerId::new("phpactor")),
+        "swift" => Some(LanguageServerId::new("sourcekit-lsp")),
+        "scala" => Some(LanguageServerId::new("metals")),
+        "lua" => Some(LanguageServerId::new("lua-language-server")),
+        "haskell" => Some(LanguageServerId::new("haskell-language-server")),
+        "ocaml" => Some(LanguageServerId::new("ocamllsp")),
+        "erlang" => Some(LanguageServerId::new("elp")),
+        "dart" => Some(LanguageServerId::new("dart-language-server")),
+        "r" => Some(LanguageServerId::new("r-languageserver")),
+        "clojure" => Some(LanguageServerId::new("clojure-lsp")),
+        "html" => Some(LanguageServerId::new("vscode-html-language-server")),
+        "css" | "sass" | "less" => Some(LanguageServerId::new("vscode-css-language-server")),
+        "json" => Some(LanguageServerId::new("vscode-json-language-server")),
+        "toml" => Some(LanguageServerId::new("taplo")),
+        "pkl" => Some(LanguageServerId::new("pkl-lsp")),
+        "protobuf" => Some(LanguageServerId::new("buf")),
+        "graphql" => Some(LanguageServerId::new("graphql-lsp")),
+        "shell" | "bash" => Some(LanguageServerId::new("bash-language-server")),
+        "powershell" => Some(LanguageServerId::new("powershell-editor-services")),
+        "markdown" => Some(LanguageServerId::new("marksman")),
+        "restructuredtext" => Some(LanguageServerId::new("esbonio")),
+        "dockerfile" => Some(LanguageServerId::new("docker-langserver")),
+        "cmake" => Some(LanguageServerId::new("neocmakelsp")),
         _ => None,
     }
+}
+
+fn builtin_spec(provider: &LanguageServerId, language: &str) -> LspSpec {
+    let (command, args): (&str, &[&str]) = match provider.key() {
+        "typescript-language-server" => ("typescript-language-server", &["--stdio"]),
+        "pyright" => ("pyright-langserver", &["--stdio"]),
+        "ruff" => ("ruff", &["server"]),
+        "csharp" => ("Microsoft.CodeAnalysis.LanguageServer", &["--stdio"]),
+        "astro-language-server" => ("astro-ls", &["--stdio"]),
+        "svelte-language-server" => ("svelteserver", &["--stdio"]),
+        "vue-language-server" => ("vue-language-server", &["--stdio"]),
+        "yaml-language-server" => ("yaml-language-server", &["--stdio"]),
+        "vscode-html-language-server" => ("vscode-html-language-server", &["--stdio"]),
+        "vscode-css-language-server" => ("vscode-css-language-server", &["--stdio"]),
+        "vscode-json-language-server" => ("vscode-json-language-server", &["--stdio"]),
+        "bash-language-server" => ("bash-language-server", &["start"]),
+        "docker-langserver" => ("docker-langserver", &["--stdio"]),
+        "biome" => ("biome", &["lsp-proxy"]),
+        "buf" => ("buf", &["beta", "lsp"]),
+        "dart-language-server" => ("dart", &["language-server"]),
+        "r-languageserver" => ("R", &["--no-echo", "-e", "languageserver::run()"]),
+        key => (key, &[]),
+    };
+    LspSpec {
+        command: command.to_owned(),
+        args: args.iter().map(|argument| (*argument).to_owned()).collect(),
+        languages: vec![language.to_owned()],
+    }
+}
+
+fn executable_exists(command: &OsStr) -> bool {
+    let path = Path::new(command);
+    if path.components().count() > 1 {
+        return path.is_file();
+    }
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|directory| {
+        let candidate = directory.join(path);
+        if candidate.is_file() {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            ["exe", "cmd", "bat"]
+                .iter()
+                .any(|extension| candidate.with_extension(extension).is_file())
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    })
+}
+
+fn project_local_spec(root: &Path, spec: &LspSpec) -> Option<LspSpec> {
+    let command = Path::new(&spec.command);
+    if command.components().count() > 1 {
+        return command.is_file().then(|| spec.clone());
+    }
+    let candidates = [
+        root.join("node_modules").join(".bin").join(command),
+        root.join(".venv")
+            .join(if cfg!(windows) { "Scripts" } else { "bin" })
+            .join(command),
+        root.join("venv")
+            .join(if cfg!(windows) { "Scripts" } else { "bin" })
+            .join(command),
+    ];
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .map(|command| {
+            let mut resolved = spec.clone();
+            resolved.command = command.to_string_lossy().into_owned();
+            resolved
+        })
+}
+
+fn nearest_repository_root(path: &Path, fallback: Option<&Path>) -> PathBuf {
+    let mut directory = path.parent().unwrap_or(path);
+    loop {
+        if directory.join(".git").exists() {
+            return directory.to_path_buf();
+        }
+        let Some(parent) = directory.parent() else {
+            break;
+        };
+        directory = parent;
+    }
+    fallback
+        .map(Path::to_path_buf)
+        .or_else(|| path.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn file_contains(path: &Path, needle: &str) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .is_some_and(|contents| contents.contains(needle))
+}
+
+fn python_diagnostic_provider(root: &Path) -> LanguageServerId {
+    let ruff = root.join("ruff.toml").is_file()
+        || root.join(".ruff.toml").is_file()
+        || file_contains(&root.join("pyproject.toml"), "[tool.ruff");
+    let flake8 = root.join(".flake8").is_file()
+        || file_contains(&root.join("setup.cfg"), "[flake8]")
+        || file_contains(&root.join("tox.ini"), "[flake8]");
+    if flake8 && !ruff {
+        LanguageServerId::new("pylsp")
+    } else {
+        LanguageServerId::Ruff
+    }
+}
+
+fn uses_biome(root: &Path) -> bool {
+    ["biome.json", "biome.jsonc", "rome.json"]
+        .iter()
+        .any(|marker| root.join(marker).is_file())
 }
 
 /// The lookup/settings key for a document's display language (`"Rust"` →
@@ -199,7 +463,7 @@ fn language_key(language: Option<&str>) -> Option<String> {
 
 /// Clamp a buffer version into LSP's `i32` version space (monotonic for any
 /// realistic session; documents do not see 2³¹ edits).
-fn version_i32(version: u64) -> i32 {
+pub(crate) fn version_i32(version: u64) -> i32 {
     i32::try_from(version % 2_147_483_647).unwrap_or(0)
 }
 
@@ -216,9 +480,10 @@ pub(crate) struct LspManager {
 }
 
 struct ServerSlot {
-    tx: mpsc::UnboundedSender<ServerCmd>,
+    tx: mpsc::Sender<ServerCmd>,
     documents: HashSet<PathBuf>,
     provider: Option<LanguageServerId>,
+    primary: bool,
 }
 
 impl LspManager {
@@ -235,11 +500,11 @@ impl LspManager {
                 settings,
                 generation: 0,
                 root,
-                registry_root,
+                registry_root: registry_root.clone(),
                 servers: HashMap::new(),
                 missing_reported: HashSet::new(),
                 updates,
-                connector: spawn_connector(supervisor),
+                connector: spawn_connector(supervisor, registry_root),
             },
             rx,
         )
@@ -268,6 +533,12 @@ impl LspManager {
         let generation = match update {
             LspUpdate::Completions { generation, .. }
             | LspUpdate::Symbols { generation, .. }
+            | LspUpdate::Hover { generation, .. }
+            | LspUpdate::Definitions { generation, .. }
+            | LspUpdate::WorkspaceSymbols { generation, .. }
+            | LspUpdate::WorkspaceEdit { generation, .. }
+            | LspUpdate::Formatting { generation, .. }
+            | LspUpdate::Diagnostics { generation, .. }
             | LspUpdate::SpawnFailed { generation, .. }
             | LspUpdate::ServerDied { generation, .. }
             | LspUpdate::InstallRequired { generation, .. } => *generation,
@@ -276,8 +547,26 @@ impl LspManager {
     }
 
     /// The launch spec for `language`: user config first, then the built-ins.
-    fn spec_for(&self, language: &str) -> Option<(LspSpec, Option<LanguageServerId>)> {
+    fn spec_for(&self, language: &str, root: &Path) -> Option<(LspSpec, Option<LanguageServerId>)> {
+        if let Some(selection) = self.settings.languages.get(language)
+            && let Some(server_id) = selection.servers.first()
+            && let Some(server) = self.settings.servers.get(server_id)
+        {
+            return (server.enabled && !server.command.is_empty()).then(|| {
+                (
+                    LspSpec {
+                        command: server.command.clone(),
+                        args: server.args.clone(),
+                        languages: vec![language.to_owned()],
+                    },
+                    Some(LanguageServerId::new(server_id.clone())),
+                )
+            });
+        }
         if let Some(server) = self.settings.servers.get(language) {
+            if !server.enabled || server.command.is_empty() {
+                return None;
+            }
             return Some((
                 LspSpec {
                     command: server.command.clone(),
@@ -288,25 +577,28 @@ impl LspManager {
             ));
         }
         let provider = builtin_server(language)?;
+        let spec = self.resolve_provider(&provider, language, root);
         #[cfg(test)]
-        let spec =
-            crate::lsp_registry::installed_spec(self.registry_root.as_deref(), provider, language)
-                .or_else(|| {
-                    Some(LspSpec {
-                        command: provider.key().to_owned(),
-                        args: match provider {
-                            LanguageServerId::TypeScript | LanguageServerId::Pyright => {
-                                vec!["--stdio".into()]
-                            },
-                            LanguageServerId::RustAnalyzer | LanguageServerId::Texlab => Vec::new(),
-                        },
-                        languages: vec![language.to_owned()],
-                    })
-                });
-        #[cfg(not(test))]
-        let spec =
-            crate::lsp_registry::installed_spec(self.registry_root.as_deref(), provider, language);
+        let spec = spec.or_else(|| Some(builtin_spec(&provider, language)));
         spec.map(|spec| (spec, Some(provider)))
+    }
+
+    fn resolve_provider(
+        &self,
+        provider: &LanguageServerId,
+        language: &str,
+        root: &Path,
+    ) -> Option<LspSpec> {
+        let fallback = builtin_spec(provider, language);
+        project_local_spec(root, &fallback)
+            .or_else(|| executable_exists(OsStr::new(&fallback.command)).then_some(fallback))
+            .or_else(|| {
+                crate::lsp_registry::installed_spec(
+                    self.registry_root.as_deref(),
+                    provider,
+                    language,
+                )
+            })
     }
 
     /// The task inbox for `language`, spawning the server task on first use.
@@ -314,16 +606,18 @@ impl LspManager {
     fn ensure_server(
         &mut self,
         language: Option<&str>,
-    ) -> Option<(&mpsc::UnboundedSender<ServerCmd>, String)> {
+        path: &Path,
+    ) -> Option<(&mpsc::Sender<ServerCmd>, String)> {
         if !self.settings.enabled {
             return None;
         }
         let language = language_key(language)?;
-        let (spec, provider) = match self.spec_for(&language) {
+        let root = nearest_repository_root(path, self.root.as_deref());
+        let (spec, provider) = match self.spec_for(&language, &root) {
             Some(spec) => spec,
             None => {
                 if let Some(provider) = builtin_server(&language)
-                    && self.missing_reported.insert(provider)
+                    && self.missing_reported.insert(provider.clone())
                 {
                     let _ = self.updates.send(LspUpdate::InstallRequired {
                         generation: self.generation,
@@ -336,13 +630,15 @@ impl LspManager {
         // Built-in JavaScript and TypeScript share one provider process. Custom
         // entries remain language-keyed because independent config entries may
         // intentionally name different executables.
-        let key = provider.map_or_else(|| language.clone(), |server| server.key().to_owned());
+        let provider_key = provider
+            .as_ref()
+            .map_or_else(|| language.clone(), |server| server.key().to_owned());
+        let key = format!("{provider_key}@{}", root.to_string_lossy());
         if !self.servers.contains_key(&key) {
             // Server tasks need an async runtime; a session driven synchronously
             // (unit tests, bare library use) simply runs without LSP.
             let handle = tokio::runtime::Handle::try_current().ok()?;
-            let (tx, rx) = mpsc::unbounded_channel();
-            let root = self.root.clone().or_else(|| std::env::current_dir().ok())?;
+            let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
             handle.spawn(server_task(
                 spec,
                 root,
@@ -358,29 +654,72 @@ impl LspManager {
                     tx,
                     documents: HashSet::new(),
                     provider,
+                    primary: true,
                 },
             );
         }
         self.servers.get(&key).map(|slot| (&slot.tx, key))
     }
 
+    fn ensure_additional_provider(
+        &mut self,
+        provider: LanguageServerId,
+        language: &str,
+        path: &Path,
+    ) -> Option<(mpsc::Sender<ServerCmd>, String)> {
+        let root = nearest_repository_root(path, self.root.as_deref());
+        let spec = self.resolve_provider(&provider, language, &root);
+        #[cfg(test)]
+        let spec = spec.or_else(|| Some(builtin_spec(&provider, language)));
+        let Some(spec) = spec else {
+            if self.missing_reported.insert(provider.clone()) {
+                let _ = self.updates.send(LspUpdate::InstallRequired {
+                    generation: self.generation,
+                    server: provider,
+                });
+            }
+            return None;
+        };
+        let key = format!("{}@{}", provider.key(), root.to_string_lossy());
+        if !self.servers.contains_key(&key) {
+            let handle = tokio::runtime::Handle::try_current().ok()?;
+            let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
+            handle.spawn(server_task(
+                spec,
+                root,
+                key.clone(),
+                rx,
+                self.updates.clone(),
+                Arc::clone(&self.connector),
+                self.generation,
+            ));
+            self.servers.insert(
+                key.clone(),
+                ServerSlot {
+                    tx,
+                    documents: HashSet::new(),
+                    provider: Some(provider),
+                    primary: false,
+                },
+            );
+        }
+        self.servers.get(&key).map(|slot| (slot.tx.clone(), key))
+    }
+
     /// The running task inbox for `language`, when one was already spawned.
-    fn existing_server(&self, language: Option<&str>) -> Option<&mpsc::UnboundedSender<ServerCmd>> {
+    fn existing_server(
+        &self,
+        language: Option<&str>,
+        path: &Path,
+    ) -> Option<&mpsc::Sender<ServerCmd>> {
         if !self.settings.enabled {
             return None;
         }
-        let language = language_key(language)?;
+        let _language = language_key(language)?;
         self.servers
-            .get(&self.server_key(&language))
+            .values()
+            .find(|slot| slot.primary && slot.documents.contains(path))
             .map(|slot| &slot.tx)
-    }
-
-    fn server_key(&self, language: &str) -> String {
-        if self.settings.servers.contains_key(language) {
-            return language.to_owned();
-        }
-        builtin_server(language)
-            .map_or_else(|| language.to_owned(), |server| server.key().to_owned())
     }
 
     /// Forward a document open, lazily starting the language's server. `text`
@@ -393,19 +732,62 @@ impl LspManager {
         text: impl FnOnce() -> String,
     ) {
         let language = language_key(language);
-        let Some((tx, key)) = self.ensure_server(language.as_deref()) else {
+        let Some((tx, key)) = self.ensure_server(language.as_deref(), path) else {
             return;
         };
-        let tx = tx.clone();
-        if let Some(slot) = self.servers.get_mut(&key) {
-            slot.documents.insert(path.to_path_buf());
+        let mut targets = vec![(tx.clone(), key)];
+        let root = nearest_repository_root(path, self.root.as_deref());
+        if let Some(language_key) = language.as_deref() {
+            let configured_diagnostics = self
+                .settings
+                .languages
+                .get(language_key)
+                .map(|selection| selection.diagnostics.clone())
+                .unwrap_or_default();
+            for provider in configured_diagnostics {
+                if let Some(target) = self.ensure_additional_provider(
+                    LanguageServerId::new(provider),
+                    language_key,
+                    path,
+                ) {
+                    targets.push(target);
+                }
+            }
+            if !self.settings.languages.contains_key(language_key) {
+                let default_diagnostic = if language_key == "python" {
+                    Some(python_diagnostic_provider(&root))
+                } else if matches!(language_key, "javascript" | "typescript" | "jsx" | "tsx")
+                    && uses_biome(&root)
+                {
+                    Some(LanguageServerId::Biome)
+                } else {
+                    None
+                };
+                if let Some(provider) = default_diagnostic
+                    && let Some(target) =
+                        self.ensure_additional_provider(provider, language_key, path)
+                {
+                    targets.push(target);
+                }
+            }
         }
-        let _ = tx.send(ServerCmd::DidOpen {
-            path: path.to_path_buf(),
-            language: language.unwrap_or_default(),
-            version: version_i32(version),
-            text: text(),
-        });
+        let document_language = language.unwrap_or_default();
+        let document_text = text();
+        let mut seen_targets = HashSet::new();
+        for (tx, key) in targets {
+            if !seen_targets.insert(key.clone()) {
+                continue;
+            }
+            if let Some(slot) = self.servers.get_mut(&key) {
+                slot.documents.insert(path.to_path_buf());
+            }
+            let _ = tx.try_send(ServerCmd::DidOpen {
+                path: path.to_path_buf(),
+                language: document_language.clone(),
+                version: version_i32(version),
+                text: document_text.clone(),
+            });
+        }
     }
 
     /// Forward an edit (full text, debounced by the server task). A no-op for
@@ -417,41 +799,86 @@ impl LspManager {
         version: u64,
         text: impl FnOnce() -> String,
     ) {
-        let Some(tx) = self.existing_server(language) else {
+        if language_key(language).is_none() {
             return;
-        };
-        let _ = tx.send(ServerCmd::DidChange {
-            path: path.to_path_buf(),
-            version: version_i32(version),
-            text: text(),
-        });
+        }
+        let senders: Vec<_> = self
+            .servers
+            .values()
+            .filter(|slot| slot.documents.contains(path))
+            .map(|slot| slot.tx.clone())
+            .collect();
+        if senders.is_empty() {
+            return;
+        }
+        let text = text();
+        for tx in senders {
+            let _ = tx.try_send(ServerCmd::DidChange {
+                path: path.to_path_buf(),
+                version: version_i32(version),
+                text: text.clone(),
+            });
+        }
     }
 
     /// Forward a document close. A no-op for languages without a running server.
     pub(crate) fn document_closed(&mut self, language: Option<&str>, path: &Path) {
-        let Some(language) = language_key(language) else {
+        let Some(_language) = language_key(language) else {
             return;
         };
-        let key = self.server_key(&language);
-        let Some(slot) = self.servers.get_mut(&key) else {
+        let keys: Vec<_> = self
+            .servers
+            .iter()
+            .filter(|(_, slot)| slot.documents.contains(path))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in keys {
+            let remove = self.servers.get_mut(&key).is_some_and(|slot| {
+                let _ = slot.tx.try_send(ServerCmd::DidClose {
+                    path: path.to_path_buf(),
+                });
+                slot.documents.remove(path);
+                slot.documents.is_empty()
+            });
+            if remove {
+                self.servers.remove(&key);
+            }
+        }
+    }
+
+    /// Forward a successful save to every server attached to the document.
+    pub(crate) fn document_saved(
+        &self,
+        language: Option<&str>,
+        path: &Path,
+        text: impl FnOnce() -> String,
+    ) {
+        if language_key(language).is_none() {
             return;
-        };
-        let _ = slot.tx.send(ServerCmd::DidClose {
-            path: path.to_path_buf(),
-        });
-        slot.documents.remove(path);
-        if slot.documents.is_empty() {
-            // Dropping the final sender makes the task perform the normal LSP
-            // shutdown handshake. Its supervised process then has no idle owner.
-            self.servers.remove(&key);
+        }
+        let senders: Vec<_> = self
+            .servers
+            .values()
+            .filter(|slot| slot.documents.contains(path))
+            .map(|slot| slot.tx.clone())
+            .collect();
+        if senders.is_empty() {
+            return;
+        }
+        let text = text();
+        for tx in senders {
+            let _ = tx.try_send(ServerCmd::DidSave {
+                path: path.to_path_buf(),
+                text: text.clone(),
+            });
         }
     }
 
     /// Whether this session currently owns a process for `provider`.
-    pub(crate) fn is_running(&self, provider: LanguageServerId) -> bool {
+    pub(crate) fn is_running(&self, provider: &LanguageServerId) -> bool {
         self.servers
             .values()
-            .any(|slot| slot.provider == Some(provider))
+            .any(|slot| slot.provider.as_ref() == Some(provider))
     }
 
     /// Retire live tasks after an explicit install or restart request.
@@ -460,7 +887,7 @@ impl LspManager {
     /// generation boundary. The session immediately reopens its documents.
     pub(crate) fn restart(&mut self, provider: LanguageServerId) -> bool {
         self.missing_reported.remove(&provider);
-        let running = self.is_running(provider);
+        let running = self.is_running(&provider);
         if running {
             self.generation = self.generation.wrapping_add(1);
             self.servers.clear();
@@ -485,10 +912,10 @@ impl LspManager {
         path: &Path,
         position: LineCol,
     ) -> bool {
-        let Some(tx) = self.existing_server(language) else {
+        let Some(tx) = self.existing_server(language, path) else {
             return false;
         };
-        tx.send(ServerCmd::Completion {
+        tx.try_send(ServerCmd::Completion {
             request,
             doc,
             version,
@@ -507,10 +934,151 @@ impl LspManager {
         version: u64,
         path: &Path,
     ) -> bool {
-        let Some(tx) = self.existing_server(language) else {
+        let Some(tx) = self.existing_server(language, path) else {
             return false;
         };
-        tx.send(ServerCmd::DocumentSymbols {
+        tx.try_send(ServerCmd::DocumentSymbols {
+            request,
+            doc,
+            version,
+            path: path.to_path_buf(),
+        })
+        .is_ok()
+    }
+
+    pub(crate) fn hover(
+        &self,
+        language: Option<&str>,
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        path: &Path,
+        position: LineCol,
+    ) -> bool {
+        let Some(tx) = self.existing_server(language, path) else {
+            return false;
+        };
+        tx.try_send(ServerCmd::Hover {
+            request,
+            doc,
+            version,
+            path: path.to_path_buf(),
+            position,
+        })
+        .is_ok()
+    }
+
+    pub(crate) fn definition(
+        &self,
+        language: Option<&str>,
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        path: &Path,
+        position: LineCol,
+    ) -> bool {
+        let Some(tx) = self.existing_server(language, path) else {
+            return false;
+        };
+        tx.try_send(ServerCmd::Definition {
+            request,
+            doc,
+            version,
+            path: path.to_path_buf(),
+            position,
+        })
+        .is_ok()
+    }
+
+    pub(crate) fn workspace_symbols(&self, request: RequestId, query: String) -> bool {
+        let Some(tx) = self
+            .servers
+            .values()
+            .find(|slot| slot.primary)
+            .map(|slot| &slot.tx)
+        else {
+            return false;
+        };
+        tx.try_send(ServerCmd::WorkspaceSymbols { request, query })
+            .is_ok()
+    }
+
+    pub(crate) fn rename(
+        &self,
+        language: Option<&str>,
+        request: RequestId,
+        path: &Path,
+        position: LineCol,
+        new_name: String,
+    ) -> bool {
+        let Some(tx) = self.existing_server(language, path) else {
+            return false;
+        };
+        tx.try_send(ServerCmd::Rename {
+            request,
+            path: path.to_path_buf(),
+            position,
+            new_name,
+        })
+        .is_ok()
+    }
+
+    pub(crate) fn formatting(
+        &self,
+        language: Option<&str>,
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        path: &Path,
+    ) -> bool {
+        let Some(language_key) = language_key(language) else {
+            return false;
+        };
+        let preferred = self
+            .settings
+            .languages
+            .get(&language_key)
+            .and_then(|selection| selection.formatter.as_deref());
+        let repository_default = if preferred.is_none() && language_key == "python" {
+            Some(python_diagnostic_provider(&nearest_repository_root(
+                path,
+                self.root.as_deref(),
+            )))
+        } else if preferred.is_none()
+            && matches!(
+                language_key.as_str(),
+                "javascript" | "typescript" | "jsx" | "tsx"
+            )
+            && uses_biome(&nearest_repository_root(path, self.root.as_deref()))
+        {
+            Some(LanguageServerId::Biome)
+        } else {
+            None
+        };
+        let selected = preferred
+            .map(str::to_owned)
+            .or_else(|| repository_default.map(|provider| provider.key().to_owned()));
+        let tx = selected
+            .as_deref()
+            .and_then(|provider| {
+                self.servers.values().find(|slot| {
+                    slot.documents.contains(path)
+                        && slot
+                            .provider
+                            .as_ref()
+                            .is_some_and(|id| id.key() == provider)
+                })
+            })
+            .or_else(|| {
+                self.servers
+                    .values()
+                    .find(|slot| slot.primary && slot.documents.contains(path))
+            })
+            .map(|slot| &slot.tx);
+        let Some(tx) = tx else {
+            return false;
+        };
+        tx.try_send(ServerCmd::Formatting {
             request,
             doc,
             version,
@@ -552,50 +1120,260 @@ fn answer_empty(updates: &mpsc::UnboundedSender<LspUpdate>, cmd: ServerCmd, gene
                 symbols: Vec::new(),
             });
         },
-        ServerCmd::DidOpen { .. } | ServerCmd::DidChange { .. } | ServerCmd::DidClose { .. } => {},
+        ServerCmd::Hover {
+            request,
+            doc,
+            version,
+            ..
+        } => {
+            let _ = updates.send(LspUpdate::Hover {
+                generation,
+                request,
+                doc,
+                version,
+                hover: None,
+            });
+        },
+        ServerCmd::Definition {
+            request,
+            doc,
+            version,
+            ..
+        } => {
+            let _ = updates.send(LspUpdate::Definitions {
+                generation,
+                request,
+                doc,
+                version,
+                locations: Vec::new(),
+            });
+        },
+        ServerCmd::WorkspaceSymbols { request, .. } => {
+            let _ = updates.send(LspUpdate::WorkspaceSymbols {
+                generation,
+                request,
+                symbols: Vec::new(),
+            });
+        },
+        ServerCmd::Rename { request, .. } => {
+            let _ = updates.send(LspUpdate::WorkspaceEdit {
+                generation,
+                request,
+                edit: WorkspaceEdit::default(),
+            });
+        },
+        ServerCmd::Formatting {
+            request,
+            doc,
+            version,
+            ..
+        } => {
+            let _ = updates.send(LspUpdate::Formatting {
+                generation,
+                request,
+                doc,
+                version,
+                edits: Vec::new(),
+            });
+        },
+        ServerCmd::DidOpen { .. }
+        | ServerCmd::DidChange { .. }
+        | ServerCmd::DidClose { .. }
+        | ServerCmd::DidSave { .. } => {},
     }
 }
 
-/// The per-language server task: connect, then serialize document sync and
-/// requests against the client (see the module docs for the failure policy).
+#[derive(Clone)]
+struct OpenDocument {
+    language: String,
+    version: i32,
+    text: String,
+}
+
+fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, cmd: &ServerCmd) {
+    match cmd {
+        ServerCmd::DidOpen {
+            path,
+            language,
+            version,
+            text,
+        } => {
+            documents.insert(
+                path.clone(),
+                OpenDocument {
+                    language: language.clone(),
+                    version: *version,
+                    text: text.clone(),
+                },
+            );
+        },
+        ServerCmd::DidChange {
+            path,
+            version,
+            text,
+        } => {
+            if let Some(document) = documents.get_mut(path) {
+                document.version = *version;
+                document.text.clone_from(text);
+            }
+        },
+        ServerCmd::DidSave { path, text } => {
+            if let Some(document) = documents.get_mut(path) {
+                document.text.clone_from(text);
+            }
+        },
+        ServerCmd::DidClose { path } => {
+            documents.remove(path);
+        },
+        ServerCmd::Completion { .. }
+        | ServerCmd::DocumentSymbols { .. }
+        | ServerCmd::Hover { .. }
+        | ServerCmd::Definition { .. }
+        | ServerCmd::WorkspaceSymbols { .. }
+        | ServerCmd::Rename { .. }
+        | ServerCmd::Formatting { .. } => {},
+    }
+}
+
+fn forward_diagnostics(
+    client: &LspClient,
+    updates: mpsc::UnboundedSender<LspUpdate>,
+    language: String,
+    generation: u64,
+) -> tokio::task::JoinHandle<()> {
+    let mut diagnostic_rx = client.diagnostics();
+    tokio::spawn(async move {
+        loop {
+            match diagnostic_rx.recv().await {
+                Ok(publication) => {
+                    let _ = updates.send(LspUpdate::Diagnostics {
+                        generation,
+                        server: language.clone(),
+                        path: publication.path,
+                        version: publication.version,
+                        diagnostics: publication.diagnostics,
+                    });
+                },
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(skipped, "language-server diagnostic subscriber lagged");
+                },
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    })
+}
+
+/// The per-language server task: serialize document sync and requests, restart
+/// closed processes with backoff, and replay the authoritative open-document set.
 async fn server_task(
     spec: LspSpec,
     root: PathBuf,
     language: String,
-    mut rx: mpsc::UnboundedReceiver<ServerCmd>,
+    mut rx: mpsc::Receiver<ServerCmd>,
     updates: mpsc::UnboundedSender<LspUpdate>,
     connector: Connector,
     generation: u64,
 ) {
-    let client = match connector(spec.clone(), root).await {
-        Ok(client) => client,
-        Err(e) => {
-            tracing::warn!(language, command = %spec.command, error = %e, "language server failed to start");
-            let _ = updates.send(LspUpdate::SpawnFailed {
-                generation,
-                language,
-                command: spec.command,
-            });
-            // Stay alive answering requests empty; the manager keeps this entry,
-            // so the failure is remembered and nothing respawns.
-            while let Some(cmd) = rx.recv().await {
-                answer_empty(&updates, cmd, generation);
-            }
-            return;
-        },
-    };
-
-    // The one pending (coalesced) didChange, flushed on a quiet period or
-    // immediately ahead of any other traffic.
+    let mut client: Option<LspClient> = None;
+    let mut diagnostic_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut documents = HashMap::<PathBuf, OpenDocument>::new();
     let mut pending: Option<(PathBuf, i32, String)> = None;
-    let mut dead = false;
+    let mut restart_delay = RESTART_MIN_DELAY;
+    let mut next_restart = Instant::now();
+    let mut failures = VecDeque::<Instant>::new();
+    let mut spawn_failure_reported = false;
+
     loop {
-        let cmd = if pending.is_some() && !dead {
+        if client.is_none() {
+            if Instant::now() < next_restart {
+                let sleep = tokio::time::sleep_until(tokio::time::Instant::from_std(next_restart));
+                tokio::pin!(sleep);
+                tokio::select! {
+                    cmd = rx.recv() => {
+                        let Some(cmd) = cmd else {
+                            break;
+                        };
+                        remember_document(&mut documents, &cmd);
+                        answer_empty(&updates, cmd, generation);
+                        continue;
+                    },
+                    () = &mut sleep => {},
+                }
+            }
+
+            let now = Instant::now();
+            while failures
+                .front()
+                .is_some_and(|failure| now.duration_since(*failure) > RESTART_WINDOW)
+            {
+                failures.pop_front();
+            }
+            match connector(spec.clone(), root.clone()).await {
+                Ok(candidate) => {
+                    let mut replay_failed = false;
+                    for (path, document) in &documents {
+                        if candidate
+                            .did_open(path, &document.language, document.version, &document.text)
+                            .await
+                            .is_err()
+                        {
+                            replay_failed = true;
+                            break;
+                        }
+                    }
+                    if replay_failed {
+                        failures.push_back(now);
+                        next_restart = now + restart_delay;
+                        restart_delay = (restart_delay * 2).min(RESTART_MAX_DELAY);
+                        continue;
+                    }
+                    diagnostic_task = Some(forward_diagnostics(
+                        &candidate,
+                        updates.clone(),
+                        language.clone(),
+                        generation,
+                    ));
+                    client = Some(candidate);
+                    failures.clear();
+                    restart_delay = RESTART_MIN_DELAY;
+                    spawn_failure_reported = false;
+                    tracing::info!(language, "language server connected");
+                    continue;
+                },
+                Err(error) => {
+                    tracing::warn!(language, command = %spec.command, error = %error, "language server failed to start");
+                    if !spawn_failure_reported {
+                        let _ = updates.send(LspUpdate::SpawnFailed {
+                            generation,
+                            language: language.clone(),
+                            command: spec.command.clone(),
+                        });
+                        spawn_failure_reported = true;
+                    }
+                    failures.push_back(now);
+                    next_restart = if failures.len() >= RESTART_LIMIT {
+                        tracing::warn!(language, "language server restart circuit opened");
+                        now + CIRCUIT_COOLDOWN
+                    } else {
+                        let next = now + restart_delay;
+                        restart_delay = (restart_delay * 2).min(RESTART_MAX_DELAY);
+                        next
+                    };
+                    continue;
+                },
+            }
+        }
+
+        let cmd = if pending.is_some() {
             match tokio::time::timeout(CHANGE_DEBOUNCE, rx.recv()).await {
                 Ok(cmd) => cmd,
                 Err(_quiet) => {
+                    let Some(active) = client.as_ref() else {
+                        continue;
+                    };
+                    let mut dead = false;
                     flush_pending(
-                        &client,
+                        active,
                         &mut pending,
                         &mut dead,
                         &updates,
@@ -603,6 +1381,13 @@ async fn server_task(
                         generation,
                     )
                     .await;
+                    if dead {
+                        let _ = client.take();
+                        if let Some(task) = diagnostic_task.take() {
+                            task.abort();
+                        }
+                        next_restart = Instant::now() + restart_delay;
+                    }
                     continue;
                 },
             }
@@ -612,10 +1397,12 @@ async fn server_task(
         let Some(cmd) = cmd else {
             break; // the session dropped the manager
         };
-        if dead {
+        remember_document(&mut documents, &cmd);
+        let Some(active) = client.as_ref() else {
             answer_empty(&updates, cmd, generation);
             continue;
-        }
+        };
+        let mut dead = false;
         match cmd {
             ServerCmd::DidChange {
                 path,
@@ -626,7 +1413,7 @@ async fn server_task(
                 // different document flushes the previous one first (order).
                 if pending.as_ref().is_some_and(|(p, ..)| *p != path) {
                     flush_pending(
-                        &client,
+                        active,
                         &mut pending,
                         &mut dead,
                         &updates,
@@ -646,7 +1433,7 @@ async fn server_task(
                 text,
             } => {
                 flush_pending(
-                    &client,
+                    active,
                     &mut pending,
                     &mut dead,
                     &updates,
@@ -655,7 +1442,7 @@ async fn server_task(
                 )
                 .await;
                 if !dead {
-                    let result = client
+                    let result = active
                         .did_open(&path, &document_language, version, &text)
                         .await;
                     note_failure(result, &mut dead, &updates, &language, generation);
@@ -663,7 +1450,7 @@ async fn server_task(
             },
             ServerCmd::DidClose { path } => {
                 flush_pending(
-                    &client,
+                    active,
                     &mut pending,
                     &mut dead,
                     &updates,
@@ -672,7 +1459,22 @@ async fn server_task(
                 )
                 .await;
                 if !dead {
-                    let result = client.did_close(&path).await;
+                    let result = active.did_close(&path).await;
+                    note_failure(result, &mut dead, &updates, &language, generation);
+                }
+            },
+            ServerCmd::DidSave { path, text } => {
+                flush_pending(
+                    active,
+                    &mut pending,
+                    &mut dead,
+                    &updates,
+                    &language,
+                    generation,
+                )
+                .await;
+                if !dead {
+                    let result = active.did_save(&path, Some(&text)).await;
                     note_failure(result, &mut dead, &updates, &language, generation);
                 }
             },
@@ -685,7 +1487,7 @@ async fn server_task(
             } => {
                 // The server must see the latest text before completing in it.
                 flush_pending(
-                    &client,
+                    active,
                     &mut pending,
                     &mut dead,
                     &updates,
@@ -696,7 +1498,7 @@ async fn server_task(
                 let items = if dead {
                     Vec::new()
                 } else {
-                    match client.completion(&path, position).await {
+                    match active.completion(&path, position).await {
                         Ok(items) => items,
                         Err(e) => {
                             note_failure::<()>(Err(e), &mut dead, &updates, &language, generation);
@@ -720,7 +1522,7 @@ async fn server_task(
             } => {
                 // Symbol ranges must describe the same text revision as the request.
                 flush_pending(
-                    &client,
+                    active,
                     &mut pending,
                     &mut dead,
                     &updates,
@@ -731,7 +1533,7 @@ async fn server_task(
                 let symbols = if dead {
                     Vec::new()
                 } else {
-                    match client.document_symbols(&path).await {
+                    match active.document_symbols(&path).await {
                         Ok(symbols) => symbols,
                         Err(error) => {
                             note_failure::<()>(
@@ -753,10 +1555,198 @@ async fn server_task(
                     symbols,
                 });
             },
+            ServerCmd::Hover {
+                request,
+                doc,
+                version,
+                path,
+                position,
+            } => {
+                flush_pending(
+                    active,
+                    &mut pending,
+                    &mut dead,
+                    &updates,
+                    &language,
+                    generation,
+                )
+                .await;
+                let hover = if dead {
+                    None
+                } else {
+                    active.hover(&path, position).await.unwrap_or_else(|error| {
+                        note_failure::<()>(Err(error), &mut dead, &updates, &language, generation);
+                        None
+                    })
+                };
+                let _ = updates.send(LspUpdate::Hover {
+                    generation,
+                    request,
+                    doc,
+                    version,
+                    hover,
+                });
+            },
+            ServerCmd::Definition {
+                request,
+                doc,
+                version,
+                path,
+                position,
+            } => {
+                flush_pending(
+                    active,
+                    &mut pending,
+                    &mut dead,
+                    &updates,
+                    &language,
+                    generation,
+                )
+                .await;
+                let locations = if dead {
+                    Vec::new()
+                } else {
+                    active
+                        .definition(&path, position)
+                        .await
+                        .unwrap_or_else(|error| {
+                            note_failure::<()>(
+                                Err(error),
+                                &mut dead,
+                                &updates,
+                                &language,
+                                generation,
+                            );
+                            Vec::new()
+                        })
+                };
+                let _ = updates.send(LspUpdate::Definitions {
+                    generation,
+                    request,
+                    doc,
+                    version,
+                    locations,
+                });
+            },
+            ServerCmd::WorkspaceSymbols { request, query } => {
+                flush_pending(
+                    active,
+                    &mut pending,
+                    &mut dead,
+                    &updates,
+                    &language,
+                    generation,
+                )
+                .await;
+                let symbols = if dead {
+                    Vec::new()
+                } else {
+                    active
+                        .workspace_symbols(&query)
+                        .await
+                        .unwrap_or_else(|error| {
+                            note_failure::<()>(
+                                Err(error),
+                                &mut dead,
+                                &updates,
+                                &language,
+                                generation,
+                            );
+                            Vec::new()
+                        })
+                };
+                let _ = updates.send(LspUpdate::WorkspaceSymbols {
+                    generation,
+                    request,
+                    symbols,
+                });
+            },
+            ServerCmd::Rename {
+                request,
+                path,
+                position,
+                new_name,
+                ..
+            } => {
+                flush_pending(
+                    active,
+                    &mut pending,
+                    &mut dead,
+                    &updates,
+                    &language,
+                    generation,
+                )
+                .await;
+                let edit = if dead {
+                    WorkspaceEdit::default()
+                } else {
+                    active
+                        .rename(&path, position, &new_name)
+                        .await
+                        .unwrap_or_else(|error| {
+                            note_failure::<()>(
+                                Err(error),
+                                &mut dead,
+                                &updates,
+                                &language,
+                                generation,
+                            );
+                            WorkspaceEdit::default()
+                        })
+                };
+                let _ = updates.send(LspUpdate::WorkspaceEdit {
+                    generation,
+                    request,
+                    edit,
+                });
+            },
+            ServerCmd::Formatting {
+                request,
+                doc,
+                version,
+                path,
+            } => {
+                flush_pending(
+                    active,
+                    &mut pending,
+                    &mut dead,
+                    &updates,
+                    &language,
+                    generation,
+                )
+                .await;
+                let edits = if dead {
+                    Vec::new()
+                } else {
+                    active.formatting(&path).await.unwrap_or_else(|error| {
+                        note_failure::<()>(Err(error), &mut dead, &updates, &language, generation);
+                        Vec::new()
+                    })
+                };
+                let _ = updates.send(LspUpdate::Formatting {
+                    generation,
+                    request,
+                    doc,
+                    version,
+                    edits,
+                });
+            },
+        }
+        if dead {
+            let _ = client.take();
+            if let Some(task) = diagnostic_task.take() {
+                task.abort();
+            }
+            pending = None;
+            next_restart = Instant::now() + restart_delay;
         }
     }
-    // Session shutdown: hang up politely.
-    let _ = client.shutdown().await;
+    if let Some(client) = client {
+        let _ = client.shutdown().await;
+    }
+    if let Some(task) = diagnostic_task {
+        task.abort();
+    }
 }
 
 /// Send the pending `didChange`, if any.

@@ -5,6 +5,7 @@
 //! is the designated extraction point for a future dependency-light
 //! `karet-protocol` crate when the client-server split is undertaken.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 
 use karet_core::BlameAttribution;
@@ -19,6 +20,8 @@ use karet_core::Location;
 use karet_core::NotificationKind;
 use karet_core::Severity;
 use karet_core::Symbol;
+use karet_core::TextEdit;
+use karet_core::WorkspaceEdit;
 use karet_search::FileHit;
 use karet_search::SearchQuery;
 use karet_syntax::HighlightSpan;
@@ -318,39 +321,98 @@ pub struct ViewId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RequestId(pub u64);
 
-/// A language server managed by karet's per-user installation registry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum LanguageServerId {
-    /// Rust language intelligence from rust-analyzer.
-    RustAnalyzer,
-    /// JavaScript and TypeScript intelligence from TypeScript Language Server.
-    TypeScript,
-    /// Python language intelligence from Pyright.
-    Pyright,
-    /// TeX and LaTeX language intelligence from texlab.
-    Texlab,
-}
+/// Stable, opaque identity for a language-server provider.
+///
+/// The value is string-backed rather than a closed enum so adding a provider
+/// does not break exhaustive downstream matches. Built-in constants cover
+/// Karet's catalog; embedders may define their own static identifiers with
+/// [`Self::new`].
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct LanguageServerId(Cow<'static, str>);
 
 impl LanguageServerId {
+    /// Construct a stable provider ID.
+    #[must_use]
+    pub fn new(key: impl Into<String>) -> Self {
+        Self(Cow::Owned(key.into()))
+    }
+
+    const fn builtin(key: &'static str) -> Self {
+        Self(Cow::Borrowed(key))
+    }
+
+    /// Rust language intelligence from rust-analyzer.
+    #[allow(non_upper_case_globals)]
+    pub const RustAnalyzer: Self = Self::builtin("rust-analyzer");
+    /// JavaScript and TypeScript intelligence from TypeScript Language Server.
+    #[allow(non_upper_case_globals)]
+    pub const TypeScript: Self = Self::builtin("typescript-language-server");
+    /// Python language intelligence from Pyright.
+    #[allow(non_upper_case_globals)]
+    pub const Pyright: Self = Self::builtin("pyright");
+    /// Python linting and formatting from Ruff.
+    #[allow(non_upper_case_globals)]
+    pub const Ruff: Self = Self::builtin("ruff");
+    /// TeX and LaTeX language intelligence from texlab.
+    #[allow(non_upper_case_globals)]
+    pub const Texlab: Self = Self::builtin("texlab");
+    /// C and C++ intelligence from clangd.
+    #[allow(non_upper_case_globals)]
+    pub const Clangd: Self = Self::builtin("clangd");
+    /// C# intelligence from Roslyn.
+    #[allow(non_upper_case_globals)]
+    pub const CSharp: Self = Self::builtin("csharp");
+    /// Go intelligence from gopls.
+    #[allow(non_upper_case_globals)]
+    pub const Gopls: Self = Self::builtin("gopls");
+    /// Java intelligence from Eclipse JDT LS.
+    #[allow(non_upper_case_globals)]
+    pub const Jdtls: Self = Self::builtin("jdtls");
+    /// Zig intelligence from ZLS.
+    #[allow(non_upper_case_globals)]
+    pub const Zls: Self = Self::builtin("zls");
+    /// Astro framework intelligence.
+    #[allow(non_upper_case_globals)]
+    pub const Astro: Self = Self::builtin("astro-language-server");
+    /// Svelte framework intelligence.
+    #[allow(non_upper_case_globals)]
+    pub const Svelte: Self = Self::builtin("svelte-language-server");
+    /// Vue framework intelligence.
+    #[allow(non_upper_case_globals)]
+    pub const Vue: Self = Self::builtin("vue-language-server");
+    /// Biome linting and formatting.
+    #[allow(non_upper_case_globals)]
+    pub const Biome: Self = Self::builtin("biome");
+    /// YAML intelligence.
+    #[allow(non_upper_case_globals)]
+    pub const Yaml: Self = Self::builtin("yaml-language-server");
+    /// XML intelligence from LemMinX.
+    #[allow(non_upper_case_globals)]
+    pub const Xml: Self = Self::builtin("lemminx");
+
     /// Stable registry key used in on-disk paths and manifests.
     #[must_use]
-    pub const fn key(self) -> &'static str {
-        match self {
-            Self::RustAnalyzer => "rust-analyzer",
-            Self::TypeScript => "typescript-language-server",
-            Self::Pyright => "pyright",
-            Self::Texlab => "texlab",
-        }
+    pub fn key(&self) -> &str {
+        &self.0
     }
 
     /// Human-readable provider name for prompts and status.
     #[must_use]
-    pub const fn display_name(self) -> &'static str {
-        match self {
-            Self::RustAnalyzer => "rust-analyzer",
-            Self::TypeScript => "TypeScript Language Server",
-            Self::Pyright => "Pyright",
-            Self::Texlab => "texlab",
+    pub fn display_name(&self) -> &str {
+        match self.0.as_ref() {
+            "typescript-language-server" => "TypeScript Language Server",
+            "pyright" => "Pyright",
+            "ruff" => "Ruff",
+            "csharp" => "C# Language Server",
+            "astro-language-server" => "Astro Language Server",
+            "svelte-language-server" => "Svelte Language Server",
+            "vue-language-server" => "Vue Language Server",
+            "yaml-language-server" => "YAML Language Server",
+            "lemminx" => "Eclipse LemMinX",
+            other => other,
         }
     }
 }
@@ -806,18 +868,20 @@ mod tests {
         assert_eq!(server.display_name(), "texlab");
         let plan = LanguageServerPlanId(9);
         let change = LanguageServerChange {
-            server,
+            server: server.clone(),
             current: Some("1.0.0".into()),
             target: "2.0.0".into(),
             download_bytes: Some(42),
         };
         let status = LanguageServerStatus {
-            server,
+            server: server.clone(),
             installed: Some("1.0.0".into()),
             running: true,
         };
         let _commands = [
-            Command::InstallLanguageServer { server },
+            Command::InstallLanguageServer {
+                server: server.clone(),
+            },
             Command::ApplyLanguageServerPlan { plan },
             Command::RestartLanguageServer { server },
         ];

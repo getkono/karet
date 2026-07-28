@@ -31,6 +31,7 @@ mod highlight;
 mod latex;
 pub mod local;
 mod lsp;
+pub mod lsp_broker;
 mod lsp_registry;
 pub mod process_supervisor;
 pub mod session;

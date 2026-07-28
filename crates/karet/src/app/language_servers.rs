@@ -49,11 +49,16 @@ impl App {
         let summary = changes
             .iter()
             .map(|change| {
+                let size = change
+                    .download_bytes
+                    .map(|bytes| format!(" ({bytes} bytes)"))
+                    .unwrap_or_default();
                 format!(
-                    "{} {} → {}",
+                    "{} {} → {}{}",
                     change.server.display_name(),
                     change.current.as_deref().unwrap_or("missing"),
-                    change.target
+                    change.target,
+                    size
                 )
             })
             .collect::<Vec<_>>()

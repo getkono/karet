@@ -69,13 +69,16 @@ impl Release {
 }
 
 pub(super) fn discover(client: &Client, server: LanguageServerId) -> Result<Release, String> {
-    match server {
-        LanguageServerId::RustAnalyzer => {
-            discover_github(client, server, "rust-lang/rust-analyzer")
-        },
-        LanguageServerId::Texlab => discover_github(client, server, "latex-lsp/texlab"),
-        LanguageServerId::TypeScript => discover_npm(client, server, "typescript-language-server"),
-        LanguageServerId::Pyright => discover_npm(client, server, "pyright"),
+    match server.key() {
+        "rust-analyzer" => discover_github(client, server, "rust-lang/rust-analyzer"),
+        "texlab" => discover_github(client, server, "latex-lsp/texlab"),
+        "ruff" => discover_github(client, server, "astral-sh/ruff"),
+        "typescript-language-server" => discover_npm(client, server, "typescript-language-server"),
+        "pyright" => discover_npm(client, server, "pyright"),
+        _ => Err(format!(
+            "{} is available from the project or PATH but has no managed installer",
+            server.display_name()
+        )),
     }
 }
 
@@ -107,7 +110,7 @@ fn discover_github(
         .map_err(|error| error.to_string())?
         .json()
         .map_err(|error| error.to_string())?;
-    let (name, archive, executable_name) = github_asset(server)?;
+    let (name, archive, executable_name) = github_asset(&server)?;
     let asset = release
         .assets
         .into_iter()
@@ -131,48 +134,69 @@ fn discover_github(
     })
 }
 
-fn github_asset(server: LanguageServerId) -> Result<(&'static str, Archive, &'static str), String> {
+fn github_asset(
+    server: &LanguageServerId,
+) -> Result<(&'static str, Archive, &'static str), String> {
     let platform = (std::env::consts::OS, std::env::consts::ARCH);
-    match (server, platform) {
-        (LanguageServerId::RustAnalyzer, ("linux", "x86_64")) => Ok((
+    match (server.key(), platform) {
+        ("rust-analyzer", ("linux", "x86_64")) => Ok((
             "rust-analyzer-x86_64-unknown-linux-musl.gz",
             Archive::Gzip,
             "rust-analyzer",
         )),
-        (LanguageServerId::RustAnalyzer, ("linux", "aarch64")) => Ok((
+        ("rust-analyzer", ("linux", "aarch64")) => Ok((
             "rust-analyzer-aarch64-unknown-linux-gnu.gz",
             Archive::Gzip,
             "rust-analyzer",
         )),
-        (LanguageServerId::RustAnalyzer, ("macos", "x86_64")) => Ok((
+        ("rust-analyzer", ("macos", "x86_64")) => Ok((
             "rust-analyzer-x86_64-apple-darwin.gz",
             Archive::Gzip,
             "rust-analyzer",
         )),
-        (LanguageServerId::RustAnalyzer, ("macos", "aarch64")) => Ok((
+        ("rust-analyzer", ("macos", "aarch64")) => Ok((
             "rust-analyzer-aarch64-apple-darwin.gz",
             Archive::Gzip,
             "rust-analyzer",
         )),
-        (LanguageServerId::RustAnalyzer, ("windows", "x86_64")) => Ok((
+        ("rust-analyzer", ("windows", "x86_64")) => Ok((
             "rust-analyzer-x86_64-pc-windows-msvc.zip",
             Archive::Zip,
             "rust-analyzer.exe",
         )),
-        (LanguageServerId::Texlab, ("linux", "x86_64")) => {
+        ("texlab", ("linux", "x86_64")) => {
             Ok(("texlab-x86_64-linux.tar.gz", Archive::TarGzip, "texlab"))
         },
-        (LanguageServerId::Texlab, ("linux", "aarch64")) => {
+        ("texlab", ("linux", "aarch64")) => {
             Ok(("texlab-aarch64-linux.tar.gz", Archive::TarGzip, "texlab"))
         },
-        (LanguageServerId::Texlab, ("macos", "x86_64")) => {
+        ("texlab", ("macos", "x86_64")) => {
             Ok(("texlab-x86_64-macos.tar.gz", Archive::TarGzip, "texlab"))
         },
-        (LanguageServerId::Texlab, ("macos", "aarch64")) => {
+        ("texlab", ("macos", "aarch64")) => {
             Ok(("texlab-aarch64-macos.tar.gz", Archive::TarGzip, "texlab"))
         },
-        (LanguageServerId::Texlab, ("windows", "x86_64")) => {
+        ("texlab", ("windows", "x86_64")) => {
             Ok(("texlab-x86_64-windows.zip", Archive::Zip, "texlab.exe"))
+        },
+        ("ruff", ("linux", "x86_64")) => Ok((
+            "ruff-x86_64-unknown-linux-gnu.tar.gz",
+            Archive::TarGzip,
+            "ruff",
+        )),
+        ("ruff", ("linux", "aarch64")) => Ok((
+            "ruff-aarch64-unknown-linux-gnu.tar.gz",
+            Archive::TarGzip,
+            "ruff",
+        )),
+        ("ruff", ("macos", "x86_64")) => {
+            Ok(("ruff-x86_64-apple-darwin.tar.gz", Archive::TarGzip, "ruff"))
+        },
+        ("ruff", ("macos", "aarch64")) => {
+            Ok(("ruff-aarch64-apple-darwin.tar.gz", Archive::TarGzip, "ruff"))
+        },
+        ("ruff", ("windows", "x86_64")) => {
+            Ok(("ruff-x86_64-pc-windows-msvc.zip", Archive::Zip, "ruff.exe"))
         },
         _ => Err(format!(
             "{} has no managed release for {}-{}",

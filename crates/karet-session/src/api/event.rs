@@ -183,6 +183,25 @@ pub enum Event {
         /// The resolved locations.
         locations: Vec<Location>,
     },
+    /// Workspace symbols answering a [`Command::WorkspaceSymbols`] query.
+    WorkspaceSymbols {
+        /// Matching symbols from the active repository servers.
+        symbols: Vec<Symbol>,
+    },
+    /// A refactoring edit for preview and explicit application by the client.
+    WorkspaceEdit {
+        /// Version-independent, path-grouped edits in buffer coordinates.
+        edit: WorkspaceEdit,
+    },
+    /// Formatting edits answering [`Command::FormatOnSave`].
+    FormattingEdits {
+        /// Document the edits target.
+        doc: DocumentId,
+        /// Buffer version the edits were computed against.
+        version: u64,
+        /// Non-overlapping edits in buffer coordinates.
+        edits: Vec<TextEdit>,
+    },
     /// Search results answering a [`Command::Search`].
     SearchResults {
         /// The per-file hits.

@@ -1,10 +1,8 @@
 //! Machine-local language-server installations.
 //!
-//! The registry is shared by every karet process for the current OS user, while
-//! server processes remain session-local.  The split is important: immutable
-//! installations may safely be reused, but an LSP connection carries workspace
-//! roots and unsaved buffer state and therefore must never be shared between
-//! editor sessions.
+//! The registry is shared by every karet process for the current OS user. Live
+//! processes are shared separately by the authenticated [`crate::lsp_broker`],
+//! keyed by provider launch and exact repository root.
 //!
 //! This module performs network I/O only while handling an explicit
 //! [`RegistryJob::Install`] or [`RegistryJob::Check`] / [`RegistryJob::Apply`]
@@ -45,10 +43,11 @@ use crate::api::RequestId;
 
 const PLAN_LIFETIME: Duration = Duration::from_secs(15 * 60);
 const USER_AGENT: &str = concat!("karet/", env!("CARGO_PKG_VERSION"));
-const SERVERS: [LanguageServerId; 4] = [
+const SERVERS: [LanguageServerId; 5] = [
     LanguageServerId::RustAnalyzer,
     LanguageServerId::TypeScript,
     LanguageServerId::Pyright,
+    LanguageServerId::Ruff,
     LanguageServerId::Texlab,
 ];
 
@@ -127,7 +126,7 @@ pub(crate) fn spawn(
 /// Resolve a built-in provider from local registry state without network I/O.
 pub(crate) fn installed_spec(
     root: Option<&Path>,
-    server: LanguageServerId,
+    server: &LanguageServerId,
     language: &str,
 ) -> Option<LspSpec> {
     let active = read_active(root?, server)?;
@@ -141,13 +140,12 @@ pub(crate) fn installed_spec(
 /// Read all local provider states without performing network I/O.
 pub(crate) fn statuses(
     root: Option<&Path>,
-    running: impl Fn(LanguageServerId) -> bool,
+    running: impl Fn(&LanguageServerId) -> bool,
 ) -> Vec<LanguageServerStatus> {
     SERVERS
         .iter()
-        .copied()
         .map(|server| LanguageServerStatus {
-            server,
+            server: server.clone(),
             installed: root
                 .and_then(|root| read_active(root, server))
                 .map(|active| active.version),
@@ -183,7 +181,7 @@ fn run(
         plans.retain(|_, plan| plan.created.elapsed() <= PLAN_LIFETIME);
         let result = match job {
             RegistryJob::Install { request, server } => {
-                if read_active(&root, server).is_some() {
+                if read_active(&root, &server).is_some() {
                     Err(format!(
                         "{} is already installed; check for updates first",
                         server.display_name()
@@ -192,21 +190,28 @@ fn run(
                     client
                         .as_ref()
                         .map_err(ToString::to_string)
-                        .and_then(|client| discover(client, server))
-                        .and_then(|release| {
-                            install(
-                                &root,
-                                supervisor.as_deref(),
-                                client.as_ref().map_err(ToString::to_string)?,
-                                &release,
-                                updates,
-                            )
-                            .map(|active| RegistryUpdate::Changed {
+                        .and_then(|client| discover(client, server.clone()))
+                        .map(|release| {
+                            let plan = LanguageServerPlanId(next_plan);
+                            next_plan = next_plan.wrapping_add(1).max(1);
+                            let changes = vec![LanguageServerChange {
+                                server: release.server.clone(),
+                                current: None,
+                                target: release.active_version(),
+                                download_bytes: release.download_bytes,
+                            }];
+                            plans.insert(
+                                plan,
+                                StoredPlan {
+                                    created: Instant::now(),
+                                    releases: vec![release],
+                                },
+                            );
+                            RegistryUpdate::Plan {
                                 request,
-                                server,
-                                version: active.version,
-                                was_installed: false,
-                            })
+                                plan,
+                                changes,
+                            }
                         })
                 }
             },
@@ -217,10 +222,10 @@ fn run(
                     .and_then(|client| {
                         let mut releases = Vec::new();
                         for server in SERVERS {
-                            let Some(active) = read_active(&root, server) else {
+                            let Some(active) = read_active(&root, &server) else {
                                 continue;
                             };
-                            let mut release = discover(client, server)?;
+                            let mut release = discover(client, server.clone())?;
                             if release.active_version() != active.version {
                                 release.from_version = Some(active.version);
                                 releases.push(release);
@@ -234,8 +239,8 @@ fn run(
                     let changes = releases
                         .iter()
                         .map(|release| LanguageServerChange {
-                            server: release.server,
-                            current: read_active(&root, release.server)
+                            server: release.server.clone(),
+                            current: read_active(&root, &release.server)
                                 .map(|active| active.version),
                             target: release.active_version(),
                             download_bytes: release.download_bytes,
@@ -272,10 +277,12 @@ fn run(
                             // Exact-plan protection: another instance changing the active
                             // version invalidates this approval instead of silently
                             // applying a different transition.
-                            let active = read_active(&root, release.server).ok_or_else(|| {
-                                format!("{} is no longer installed", release.server.display_name())
-                            })?;
-                            if release.from_version.as_deref() != Some(active.version.as_str()) {
+                            let active = read_active(&root, &release.server);
+                            if release.from_version.as_deref()
+                                != active
+                                    .as_ref()
+                                    .map(|installation| installation.version.as_str())
+                            {
                                 return Err(format!(
                                     "{} changed after this plan was checked; check again",
                                     release.server.display_name()
@@ -284,9 +291,9 @@ fn run(
                             install(&root, supervisor.as_deref(), client, release, updates)?;
                             let _ = updates.send(RegistryUpdate::Changed {
                                 request,
-                                server: release.server,
+                                server: release.server.clone(),
                                 version: release.active_version(),
-                                was_installed: !active.version.is_empty(),
+                                was_installed: active.is_some(),
                             });
                         }
                         Ok(RegistryUpdate::Complete { request })
@@ -314,7 +321,7 @@ fn send_result(
     let _ = updates.send(update);
 }
 
-fn read_active(root: &Path, server: LanguageServerId) -> Option<ActiveInstallation> {
+fn read_active(root: &Path, server: &LanguageServerId) -> Option<ActiveInstallation> {
     let journal = std::fs::read_to_string(provider_root(root, server).join("active.jsonl")).ok()?;
     journal
         .lines()
@@ -323,7 +330,7 @@ fn read_active(root: &Path, server: LanguageServerId) -> Option<ActiveInstallati
         .filter(|active: &ActiveInstallation| active.command.is_file())
 }
 
-fn provider_root(root: &Path, server: LanguageServerId) -> PathBuf {
+fn provider_root(root: &Path, server: &LanguageServerId) -> PathBuf {
     root.join(server.key())
 }
 
@@ -334,7 +341,7 @@ fn install(
     release: &Release,
     updates: &tokio_mpsc::UnboundedSender<RegistryUpdate>,
 ) -> Result<ActiveInstallation, String> {
-    let provider = provider_root(root, release.server);
+    let provider = provider_root(root, &release.server);
     std::fs::create_dir_all(&provider).map_err(|error| error.to_string())?;
     let lock_path = provider.join("install.lock");
     let lock = File::options()
@@ -345,7 +352,7 @@ fn install(
         .open(lock_path)
         .map_err(|error| error.to_string())?;
     lock.lock().map_err(|error| error.to_string())?;
-    if let Some(active) = read_active(root, release.server) {
+    if let Some(active) = read_active(root, &release.server) {
         if active.version == release.active_version() || release.from_version.is_none() {
             // Another karet instance won the same first-install race. Adopt its
             // complete activation rather than replacing it with stale discovery.
@@ -397,7 +404,7 @@ fn install_release(
         } => {
             let bytes = download_verified(client, url, sha256, |downloaded, total| {
                 let _ = updates.send(RegistryUpdate::Progress {
-                    server: release.server,
+                    server: release.server.clone(),
                     downloaded,
                     total,
                 });
@@ -416,7 +423,7 @@ fn install_release(
                 supervisor.ok_or_else(|| "process supervisor is unavailable".to_owned())?;
             let bytes = download_verified(client, node_url, node_sha256, |downloaded, total| {
                 let _ = updates.send(RegistryUpdate::Progress {
-                    server: release.server,
+                    server: release.server.clone(),
                     downloaded,
                     total,
                 });
@@ -481,12 +488,14 @@ fn install_release(
 }
 
 fn activation(release: &Release, destination: &Path) -> Result<ActiveInstallation, String> {
-    let (command, args) = match release.server {
-        LanguageServerId::RustAnalyzer => {
-            (destination.join(executable("rust-analyzer")), Vec::new())
-        },
-        LanguageServerId::Texlab => (destination.join(executable("texlab")), Vec::new()),
-        LanguageServerId::TypeScript => {
+    let (command, args) = match release.server.key() {
+        "rust-analyzer" => (destination.join(executable("rust-analyzer")), Vec::new()),
+        "texlab" => (destination.join(executable("texlab")), Vec::new()),
+        "ruff" => (
+            destination.join(executable("ruff")),
+            vec!["server".to_owned()],
+        ),
+        "typescript-language-server" => {
             let node = find_named(&destination.join("node"), node_executable())
                 .ok_or_else(|| "installed Node executable is missing".to_owned())?;
             let cli = find_named(&destination.join("package"), "cli.mjs")
@@ -502,7 +511,7 @@ fn activation(release: &Release, destination: &Path) -> Result<ActiveInstallatio
                 vec![cli.to_string_lossy().into_owned(), "--stdio".into()],
             )
         },
-        LanguageServerId::Pyright => {
+        "pyright" => {
             let node = find_named(&destination.join("node"), node_executable())
                 .ok_or_else(|| "installed Node executable is missing".to_owned())?;
             let cli = find_named(&destination.join("package"), "langserver.index.js")
@@ -511,6 +520,12 @@ fn activation(release: &Release, destination: &Path) -> Result<ActiveInstallatio
                 node,
                 vec![cli.to_string_lossy().into_owned(), "--stdio".into()],
             )
+        },
+        _ => {
+            return Err(format!(
+                "{} has no managed activation recipe",
+                release.server.display_name()
+            ));
         },
     };
     if !command.is_file() {
@@ -711,7 +726,7 @@ mod tests {
     #[test]
     fn activation_journal_ignores_a_torn_tail() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
-        let provider = provider_root(dir.path(), LanguageServerId::Texlab);
+        let provider = provider_root(dir.path(), &LanguageServerId::Texlab);
         std::fs::create_dir_all(&provider)?;
         let command = provider.join("texlab");
         std::fs::write(&command, b"test")?;
@@ -722,7 +737,7 @@ mod tests {
         };
         let encoded = serde_json::to_string(&active)?;
         std::fs::write(provider.join("active.jsonl"), format!("{encoded}\n{{"))?;
-        let resolved = read_active(dir.path(), LanguageServerId::Texlab);
+        let resolved = read_active(dir.path(), &LanguageServerId::Texlab);
         assert_eq!(resolved.map(|item| item.version), Some("1.2.3".into()));
         Ok(())
     }

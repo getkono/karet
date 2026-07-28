@@ -361,8 +361,8 @@ impl App {
                 },
                 TextPurpose::InstallLanguageServer { server } => {
                     if text == "install" {
-                        self.send_command(SessionCommand::InstallLanguageServer { server });
                         self.status = Some(format!("installing {}…", server.display_name()));
+                        self.send_command(SessionCommand::InstallLanguageServer { server });
                     } else {
                         self.status = Some("language-server installation cancelled".to_string());
                     }
@@ -377,8 +377,8 @@ impl App {
                 },
                 TextPurpose::RestartLanguageServer { server } => {
                     if text == "restart" {
-                        self.send_command(SessionCommand::RestartLanguageServer { server });
                         self.status = Some(format!("restarted {}", server.display_name()));
+                        self.send_command(SessionCommand::RestartLanguageServer { server });
                     } else {
                         self.status = Some("language-server restart deferred".to_string());
                     }

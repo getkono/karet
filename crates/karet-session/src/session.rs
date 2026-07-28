@@ -280,6 +280,8 @@ struct Document {
     error_lines: Arc<Vec<(u32, u32)>>,
     /// Last spell-check diagnostics emitted for this exact document state.
     spell_diagnostics: Vec<karet_core::Diagnostic>,
+    /// Last language-server diagnostics accepted for this document version.
+    lsp_diagnostics: HashMap<String, Vec<karet_core::Diagnostic>>,
     decorations: Vec<Decoration>,
     /// Open reference count (a path opened in N views shares one document).
     refs: u32,
@@ -716,7 +718,16 @@ impl Session {
                 },
             ),
             Command::Completion { doc, position } => self.completion(id, doc, position),
+            Command::Hover { doc, position } => self.hover(id, doc, position),
+            Command::Definition { doc, position } => self.definition(id, doc, position),
             Command::DocumentSymbols { doc } => self.document_symbols(id, doc),
+            Command::WorkspaceSymbols { query } => self.workspace_symbols(id, query),
+            Command::Rename {
+                doc,
+                position,
+                new_name,
+            } => self.rename(id, doc, position, new_name),
+            Command::FormatOnSave { doc } => self.format_document(id, doc),
             Command::LanguageServerStatus => {
                 let servers = crate::lsp_registry::statuses(
                     self.config.lsp_registry_dir.as_deref(),
@@ -937,6 +948,17 @@ fn name_for_language(_id: &str) -> Option<&'static str> {
     // The display name is derived from the path today; an explicit override table
     // lands with the LSP language registry.
     None
+}
+
+/// Resolve an editor language even when Karet has no Tree-sitter grammar for
+/// it yet. LSP routing follows the broader file-type registry; syntax parsing
+/// remains independently optional.
+fn language_name_for_path(path: &Path) -> Option<&'static str> {
+    language_name_from_path(path).or_else(|| {
+        let file_type = karet_filetype::file_type_for_path(path);
+        let name = file_type.name();
+        (!matches!(name, "Plain Text" | "Unknown" | "Binary")).then_some(name)
+    })
 }
 
 fn unknown_document(doc: DocumentId) -> Event {
