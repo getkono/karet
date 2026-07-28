@@ -179,6 +179,40 @@ its comments and unrelated settings. If that file does not exist, karet requires
 user to type `create` before it creates the `.karet` settings tree; it never silently
 falls back to a user or system dictionary.
 
+### `latex`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `buildOnSave` | bool | `false` | Rebuild a TeX root after successfully saving an editable `.tex` file (manual or automatic). |
+| `command` | string | `"latexmk"` | External compiler executable, launched directly without a shell. |
+| `args` | string[] | latexmk PDF recipe | Compiler arguments; `{file}`, `{fileDir}`, and `{outputDir}` are substituted inside each argument. |
+| `outputDirectory` | string | `""` | Absolute output path, or a path relative to the workspace; empty uses karet's per-workspace platform cache. |
+| `timeoutMs` | number | `120000` | Compiler timeout in milliseconds (clamped to 1000–600000). |
+
+The default recipe runs `latexmk -pdf` in nonstop, SyncTeX, and file-line-error
+modes. karet never bundles a TeX distribution: install `latexmk` plus the TeX
+packages used by the document, or replace `command` and `args` with another engine.
+Arguments are passed as an argv array, so paths containing spaces remain one argument
+and configuration values are not evaluated by a shell.
+
+Run **LaTeX: Build and Open PDF Preview** from the command palette while an editable
+`.tex` file is active. The preview tab appears immediately, the compiler runs off the
+editor thread, and closing the pending tab terminates the build. Compiler messages in
+`file.tex:line: message` form become editor diagnostics. A source can select a root
+file with a TeX magic comment in its first 40 lines; chained directives are supported:
+
+```tex
+% !TeX root = ../main.tex
+```
+
+The generated PDF opens in karet's existing PDF viewer when the `pdf` application
+feature is enabled (it is enabled in default builds). `texlab` is the built-in TeX
+language-server default. When a TeX file first needs it, karet offers to install it
+into the shared machine-local registry; the editor does not use a system `texlab`.
+See [Managed language servers](language-servers.md) for install approval,
+explicit-only updates, and crash-safe process ownership. The TeX compiler remains
+an external prerequisite.
+
 ### `git`
 
 | Key | Type | Default | Meaning |

@@ -20,6 +20,11 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
         // The real app persists crash-recovery swaps to the user data directory;
         // headless/test sessions leave this unset and keep no backups.
         swap_dir: karet_session::backup::default_swap_dir(),
+        // Every external process is owned by a hidden copy of this executable.
+        process_supervisor: std::env::current_exe().ok(),
+        // Immutable installations are shared by every local karet instance.
+        lsp_registry_dir: directories::ProjectDirs::from("", "getkono", "karet")
+            .map(|dirs| dirs.data_local_dir().join("language-servers")),
     });
 
     let mut terminal = ratatui::init();

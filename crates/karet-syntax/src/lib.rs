@@ -490,6 +490,32 @@ mod tests {
     }
 
     #[test]
+    fn latex_sections_math_and_commands_are_highlighted() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use karet_treesitter::LayeredParser;
+        use karet_treesitter::language_id_from_injection_name;
+
+        let Some(latex) = language_id_from_injection_name("latex") else {
+            return Ok(());
+        };
+        let src = "\\section{Methods}\nThe value is $x + 1$. % note\n";
+        let mut parser = LayeredParser::new();
+        let tree = parser.parse(latex, src)?;
+        let highlights = LayeredHighlighter::new().highlight(&tree, src);
+
+        assert_eq!(
+            token_of(&highlights, src, "Methods"),
+            Some(StandardToken::MarkupHeading.id())
+        );
+        assert_eq!(
+            token_of(&highlights, src, "x + 1"),
+            Some(StandardToken::MarkupRaw.id())
+        );
+        assert_eq!(token_of(&highlights, src, "note"), Some(TokenId::COMMENT));
+        Ok(())
+    }
+
+    #[test]
     fn rust_doctest_in_a_doc_comment_is_highlighted_as_rust()
     -> Result<(), Box<dyn std::error::Error>> {
         use karet_treesitter::LayeredParser;

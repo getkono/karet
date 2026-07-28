@@ -359,6 +359,30 @@ impl App {
                         self.status = Some("project settings creation cancelled".to_string());
                     }
                 },
+                TextPurpose::InstallLanguageServer { server } => {
+                    if text == "install" {
+                        self.send_command(SessionCommand::InstallLanguageServer { server });
+                        self.status = Some(format!("installing {}…", server.display_name()));
+                    } else {
+                        self.status = Some("language-server installation cancelled".to_string());
+                    }
+                },
+                TextPurpose::ApplyLanguageServerPlan { plan } => {
+                    if text == "update" {
+                        self.send_command(SessionCommand::ApplyLanguageServerPlan { plan });
+                        self.status = Some("updating language servers…".to_string());
+                    } else {
+                        self.status = Some("language-server update cancelled".to_string());
+                    }
+                },
+                TextPurpose::RestartLanguageServer { server } => {
+                    if text == "restart" {
+                        self.send_command(SessionCommand::RestartLanguageServer { server });
+                        self.status = Some(format!("restarted {}", server.display_name()));
+                    } else {
+                        self.status = Some("language-server restart deferred".to_string());
+                    }
+                },
             },
             OverlayEvent::AcceptDeleteLocalBranch(name) => {
                 self.run_vcs_action(VcsAction::DeleteBranch { name });

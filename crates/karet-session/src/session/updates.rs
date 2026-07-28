@@ -34,6 +34,13 @@ impl Session {
         self.lsp_rx.take()
     }
 
+    /// Take shared-registry results, to be driven by the actor.
+    pub(crate) fn take_lsp_registry_updates(
+        &mut self,
+    ) -> Option<mpsc::UnboundedReceiver<crate::lsp_registry::RegistryUpdate>> {
+        self.lsp_registry_rx.take()
+    }
+
     /// Replace how language servers are connected (tests inject an in-memory
     /// server instead of spawning a process).
     #[cfg(test)]
@@ -117,6 +124,126 @@ impl Session {
                     ),
                 },
             ),
+            LspUpdate::InstallRequired { server, .. } => {
+                self.emit(None, Event::LanguageServerInstallRequired { server });
+            },
+        }
+    }
+
+    /// Adopt a completed registry operation.
+    pub(crate) fn apply_lsp_registry_update(
+        &mut self,
+        update: crate::lsp_registry::RegistryUpdate,
+    ) {
+        use crate::lsp_registry::RegistryUpdate;
+        match update {
+            RegistryUpdate::Plan {
+                request,
+                plan,
+                changes,
+            } => self.emit(
+                Some(request),
+                Event::LanguageServerUpdatePlan { plan, changes },
+            ),
+            RegistryUpdate::Changed {
+                request,
+                server,
+                version,
+                was_installed,
+            } => {
+                self.lsp.installed(server);
+                let restart_required = was_installed && self.lsp.is_running(server);
+                if !was_installed {
+                    self.reopen_lsp_documents(Some(server));
+                }
+                self.emit(
+                    Some(request),
+                    Event::LanguageServerChanged {
+                        server,
+                        version,
+                        restart_required,
+                    },
+                );
+            },
+            RegistryUpdate::Progress {
+                server,
+                downloaded,
+                total,
+            } => self.emit(
+                None,
+                Event::LanguageServerProgress {
+                    server,
+                    downloaded,
+                    total,
+                },
+            ),
+            RegistryUpdate::Complete { request } => {
+                self.emit(
+                    Some(request),
+                    Event::Notification {
+                        severity: Severity::Information,
+                        kind: NotificationKind::Lsp,
+                        message: "language-server update plan applied".into(),
+                    },
+                );
+            },
+            RegistryUpdate::Failed { request, message } => self.emit(
+                Some(request),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::Lsp,
+                    message: format!("language-server registry: {message}"),
+                },
+            ),
+        }
+    }
+
+    pub(super) fn reopen_lsp_documents(&mut self, only: Option<crate::api::LanguageServerId>) {
+        let documents: Vec<_> = self
+            .store
+            .docs
+            .values()
+            .filter(|document| {
+                only.is_none_or(|server| {
+                    document.language.and_then(crate::lsp::builtin_server) == Some(server)
+                })
+            })
+            .map(|document| {
+                (
+                    document.language,
+                    document.path.clone(),
+                    document.buffer.version(),
+                    document.buffer.text(),
+                )
+            })
+            .collect();
+        for (language, path, version, text) in documents {
+            self.lsp.document_opened(language, &path, version, || text);
+        }
+    }
+
+    pub(super) fn restart_lsp(&mut self, server: crate::api::LanguageServerId) {
+        if self.lsp.restart(server) {
+            // Restart advances a global generation and retires every slot so no
+            // late answer from the old provider can be adopted.
+            self.reopen_lsp_documents(None);
+        }
+    }
+
+    pub(super) fn queue_lsp_registry(
+        &self,
+        request: RequestId,
+        job: crate::lsp_registry::RegistryJob,
+    ) {
+        if self.lsp_registry.send(job).is_err() {
+            self.emit(
+                Some(request),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::Lsp,
+                    message: "language-server registry worker stopped".into(),
+                },
+            );
         }
     }
 

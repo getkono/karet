@@ -4,7 +4,7 @@
         assert!(app.next_wake().is_none());
         app.pending_saves.insert(
             RequestId(1),
-            backend_events::PendingSave {
+            PendingSave {
                 doc: DocumentId(1),
             },
         );
@@ -21,7 +21,7 @@
         app.tabs[app.active].saving_since = Some(Instant::now());
         app.pending_saves.insert(
             RequestId(5),
-            backend_events::PendingSave {
+            PendingSave {
                 doc: DocumentId(2),
             },
         );
@@ -229,7 +229,7 @@
         app.saving_close = Some(CloseRequest::Quit);
         app.pending_saves.insert(
             RequestId(5),
-            backend_events::PendingSave {
+            PendingSave {
                 doc: DocumentId(2),
             },
         );

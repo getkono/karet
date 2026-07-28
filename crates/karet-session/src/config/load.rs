@@ -222,6 +222,7 @@ const SECTIONS: &[&str] = &[
     "workbench",
     "search",
     "spellcheck",
+    "latex",
     "git",
     "lsp",
 ];
@@ -387,6 +388,7 @@ fn deserialize_sections(
             "workbench" => section(value, |v| settings.workbench = v),
             "search" => section(value, |v| settings.search = v),
             "spellcheck" => section(value, |v| settings.spellcheck = v),
+            "latex" => section(value, |v| settings.latex = v),
             "git" => section(value, |v| settings.git = v),
             "lsp" => section(value, |v| settings.lsp = v),
             _ => Ok(()),

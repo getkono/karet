@@ -23,6 +23,7 @@ pub fn palette() -> Vec<Command> {
         Command::OpenBlameDetail,
         Command::ShowDependencyGraph,
         Command::ShowLoadedConfig,
+        Command::CheckLanguageServerUpdates,
         Command::ExplorerNewFile,
         Command::ExplorerNewFolder,
         Command::ExplorerRename,

@@ -30,8 +30,10 @@ pub struct Settings {
     pub workbench: Workbench,
     /// Workspace search behaviour.
     pub search: Search,
-    /// Spell-checking of comments and strings.
+    /// Spell-checking of prose and selected source-code tokens.
     pub spellcheck: Spellcheck,
+    /// External LaTeX build and preview tooling.
+    pub latex: Latex,
     /// Source-control integration.
     pub git: Git,
     /// Language-server integration (completions and future language features).
@@ -704,6 +706,42 @@ impl Default for Spellcheck {
     }
 }
 
+/// `latex.*` — external LaTeX compilation and preview behavior.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct Latex {
+    /// Compile the root document after each successful manual or automatic save.
+    pub build_on_save: bool,
+    /// External executable. It is launched directly, never through a shell.
+    pub command: String,
+    /// Arguments supporting `{file}`, `{fileDir}`, and `{outputDir}` placeholders.
+    pub args: Vec<String>,
+    /// Build output directory, absolute or relative to the workspace root. Empty
+    /// uses karet's platform cache and keeps generated files out of the repository.
+    pub output_directory: String,
+    /// Maximum compiler runtime before the process is terminated.
+    pub timeout_ms: u64,
+}
+
+impl Default for Latex {
+    fn default() -> Self {
+        Self {
+            build_on_save: false,
+            command: "latexmk".to_owned(),
+            args: vec![
+                "-pdf".to_owned(),
+                "-interaction=nonstopmode".to_owned(),
+                "-synctex=1".to_owned(),
+                "-file-line-error".to_owned(),
+                "-outdir={outputDir}".to_owned(),
+                "{file}".to_owned(),
+            ],
+            output_directory: String::new(),
+            timeout_ms: 120_000,
+        }
+    }
+}
+
 /// `lsp.*` — language-server integration.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
@@ -830,6 +868,11 @@ mod tests {
         assert!(!s.spellcheck.strings);
         assert!(!s.spellcheck.identifiers);
         assert_eq!(s.spellcheck.debounce_ms, 500);
+        assert!(!s.latex.build_on_save);
+        assert_eq!(s.latex.command, "latexmk");
+        assert!(s.latex.args.iter().any(|argument| argument == "{file}"));
+        assert!(s.latex.output_directory.is_empty());
+        assert_eq!(s.latex.timeout_ms, 120_000);
         assert!(s.git.decorations);
         assert!(s.editor.semantic_comments.enabled);
         assert!(s.lsp.enabled, "LSP is on by default (issue #57)");

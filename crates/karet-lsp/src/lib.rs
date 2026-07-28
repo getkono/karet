@@ -119,22 +119,42 @@ impl LspClient {
     /// Returns [`LspError::Spawn`] if the process cannot start, or any handshake
     /// error from [`LspClient::connect`].
     pub async fn spawn(spec: LspSpec, root: &Path) -> Result<Self, LspError> {
-        let mut child = tokio::process::Command::new(&spec.command)
-            .args(&spec.args)
-            .current_dir(root)
+        let mut command = tokio::process::Command::new(&spec.command);
+        command.args(&spec.args).current_dir(root);
+        Self::spawn_command(command, &spec.command, root).await
+    }
+
+    /// Spawn and initialize a server through a caller-prepared command.
+    ///
+    /// This is the process-ownership seam used by hosts that wrap a language
+    /// server in a crash-safe supervisor. The command's stdin/stdout become the
+    /// LSP transport and its stderr is drained to tracing. karet itself prepares
+    /// a hidden supervisor command here; simple embedders can continue using
+    /// [`Self::spawn`].
+    ///
+    /// # Errors
+    /// Returns [`LspError::Spawn`] if the prepared process cannot start or does
+    /// not expose piped standard I/O, plus initialization errors from
+    /// [`Self::connect`].
+    pub async fn spawn_command(
+        mut command: tokio::process::Command,
+        display_name: &str,
+        root: &Path,
+    ) -> Result<Self, LspError> {
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| {
-                tracing::warn!(command = %spec.command, error = %e, "failed to spawn language server");
+                tracing::warn!(command = %display_name, error = %e, "failed to spawn language server");
                 LspError::Spawn
             })?;
         let stdin = child.stdin.take().ok_or(LspError::Spawn)?;
         let stdout = child.stdout.take().ok_or(LspError::Spawn)?;
         if let Some(stderr) = child.stderr.take() {
-            let command = spec.command.clone();
+            let command = display_name.to_owned();
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {

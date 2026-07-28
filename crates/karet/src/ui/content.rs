@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::LOADING_REVEAL_DELAY;
 
 /// Draw one pane's active tab into `area`. Returns the rect to reserve for a Kitty
 /// image, if the active tab is an image on a Kitty terminal.
@@ -411,6 +412,28 @@ pub(super) fn draw_pane_content(
                 widget = widget.hint(format!("Press {chord} to open anyway"));
             }
             f.render_widget(widget, area);
+        },
+        TabKind::LatexPreview {
+            source,
+            loading_since,
+            error,
+        } => {
+            let message = error.as_deref().or_else(|| {
+                (loading_since.elapsed() >= LOADING_REVEAL_DELAY)
+                    .then_some("Building LaTeX preview…")
+            });
+            if let Some(message) = message {
+                let detail = source.file_name().map_or_else(
+                    || source.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                );
+                f.render_widget(
+                    Paragraph::new(format!("{message}\n{detail}"))
+                        .alignment(Alignment::Center)
+                        .style(Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui())),
+                    area,
+                );
+            }
         },
     }
     PaneContent {
