@@ -6,20 +6,29 @@
 //! (karet-session) owns the text and performs the UTF-16 ↔ UTF-32 translation via
 //! `karet_text::TextBuffer`.
 
+use karet_core::CodeAction;
+use karet_core::CommandId;
 use karet_core::CompletionItem;
 use karet_core::CompletionKind;
 use karet_core::Diagnostic;
 use karet_core::DiagnosticTag;
+use karet_core::Hover;
+use karet_core::InlayHint;
+use karet_core::InlayHintKind;
 use karet_core::LineCol;
 use karet_core::Location;
 use karet_core::Markup;
 use karet_core::MarkupKind;
+use karet_core::ParamInfo;
 use karet_core::Range;
 use karet_core::RelatedInfo;
 use karet_core::Severity;
+use karet_core::Signature;
+use karet_core::SignatureHelp;
 use karet_core::Symbol;
 use karet_core::SymbolKind;
 use karet_core::TextEdit;
+use karet_core::WorkspaceEdit;
 
 use crate::snippet::strip_snippet;
 use crate::uri::uri_to_path;
@@ -34,6 +43,14 @@ pub(crate) fn position_to_lsp(p: LineCol) -> lsp_types::Position {
     lsp_types::Position {
         line: p.line,
         character: p.col,
+    }
+}
+
+/// Map a karet range to LSP positions without changing the negotiated encoding.
+pub(crate) fn range_to_lsp(range: Range) -> lsp_types::Range {
+    lsp_types::Range {
+        start: position_to_lsp(range.start),
+        end: position_to_lsp(range.end),
     }
 }
 
@@ -136,6 +153,284 @@ pub(crate) fn document_symbols_from_lsp(
                 children: Vec::new(),
             })
             .collect(),
+    }
+}
+
+/// Map a hover response, preserving markdown when the server supplies it.
+pub(crate) fn hover_from_lsp(hover: Option<lsp_types::Hover>) -> Option<Hover> {
+    let hover = hover?;
+    let contents = match hover.contents {
+        lsp_types::HoverContents::Markup(markup) => Markup {
+            kind: markup_kind_from_lsp(markup.kind),
+            value: markup.value,
+        },
+        lsp_types::HoverContents::Scalar(marked) => marked_string_from_lsp(marked),
+        lsp_types::HoverContents::Array(marked) => Markup {
+            kind: MarkupKind::Markdown,
+            value: marked
+                .into_iter()
+                .map(marked_string_value)
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        },
+    };
+    Some(Hover {
+        contents,
+        range: hover.range.map(range_from_lsp),
+    })
+}
+
+fn marked_string_from_lsp(marked: lsp_types::MarkedString) -> Markup {
+    Markup {
+        kind: MarkupKind::Markdown,
+        value: marked_string_value(marked),
+    }
+}
+
+fn marked_string_value(marked: lsp_types::MarkedString) -> String {
+    match marked {
+        lsp_types::MarkedString::String(value) => value,
+        lsp_types::MarkedString::LanguageString(code) => {
+            format!("```{}\n{}\n```", code.language, code.value)
+        },
+    }
+}
+
+fn markup_kind_from_lsp(kind: lsp_types::MarkupKind) -> MarkupKind {
+    match kind {
+        lsp_types::MarkupKind::Markdown => MarkupKind::Markdown,
+        lsp_types::MarkupKind::PlainText => MarkupKind::PlainText,
+    }
+}
+
+/// Map workspace symbols into the same neutral symbol shape used by outlines.
+pub(crate) fn workspace_symbols_from_lsp(
+    response: Option<lsp_types::WorkspaceSymbolResponse>,
+) -> Vec<Symbol> {
+    match response {
+        None => Vec::new(),
+        #[allow(deprecated)] // LSP retains the flat response for compatibility.
+        Some(lsp_types::WorkspaceSymbolResponse::Flat(symbols)) => symbols
+            .into_iter()
+            .map(|symbol| Symbol {
+                name: symbol.name,
+                kind: symbol_kind_from_lsp(symbol.kind),
+                detail: None,
+                range: range_from_lsp(symbol.location.range),
+                selection_range: range_from_lsp(symbol.location.range),
+                container_name: symbol.container_name,
+                children: Vec::new(),
+            })
+            .collect(),
+        Some(lsp_types::WorkspaceSymbolResponse::Nested(symbols)) => symbols
+            .into_iter()
+            .filter_map(|symbol| {
+                let lsp_types::OneOf::Left(location) = symbol.location else {
+                    // The unresolved URI-only form has no range that the neutral
+                    // model can navigate to.
+                    return None;
+                };
+                Some(Symbol {
+                    name: symbol.name,
+                    kind: symbol_kind_from_lsp(symbol.kind),
+                    detail: None,
+                    range: range_from_lsp(location.range),
+                    selection_range: range_from_lsp(location.range),
+                    container_name: symbol.container_name,
+                    children: Vec::new(),
+                })
+            })
+            .collect(),
+    }
+}
+
+/// Map definition response variants, dropping non-file URIs.
+pub(crate) fn locations_from_lsp(
+    response: Option<lsp_types::GotoDefinitionResponse>,
+) -> Vec<Location> {
+    let locations = match response {
+        None => return Vec::new(),
+        Some(lsp_types::GotoDefinitionResponse::Scalar(location)) => vec![location],
+        Some(lsp_types::GotoDefinitionResponse::Array(locations)) => locations,
+        Some(lsp_types::GotoDefinitionResponse::Link(links)) => {
+            return links
+                .into_iter()
+                .filter_map(|link| {
+                    Some(Location {
+                        path: uri_to_path(&link.target_uri)?,
+                        range: range_from_lsp(link.target_selection_range),
+                    })
+                })
+                .collect();
+        },
+    };
+    locations
+        .into_iter()
+        .filter_map(|location| {
+            Some(Location {
+                path: uri_to_path(&location.uri)?,
+                range: range_from_lsp(location.range),
+            })
+        })
+        .collect()
+}
+
+/// Map inlay hints into renderable labels and positions.
+pub(crate) fn inlay_hints_from_lsp(hints: Option<Vec<lsp_types::InlayHint>>) -> Vec<InlayHint> {
+    hints
+        .unwrap_or_default()
+        .into_iter()
+        .map(|hint| InlayHint {
+            position: position_from_lsp(hint.position),
+            label: match hint.label {
+                lsp_types::InlayHintLabel::String(label) => label,
+                lsp_types::InlayHintLabel::LabelParts(parts) => {
+                    parts.into_iter().map(|part| part.value).collect()
+                },
+            },
+            kind: match hint.kind {
+                Some(lsp_types::InlayHintKind::PARAMETER) => InlayHintKind::Parameter,
+                _ => InlayHintKind::Type,
+            },
+            padding_left: hint.padding_left.unwrap_or(false),
+            padding_right: hint.padding_right.unwrap_or(false),
+        })
+        .collect()
+}
+
+/// Map a workspace edit while deliberately ignoring resource operations that
+/// the neutral text-edit model cannot represent.
+pub(crate) fn workspace_edit_from_lsp(edit: lsp_types::WorkspaceEdit) -> WorkspaceEdit {
+    let mut changes = Vec::new();
+    if let Some(uri_changes) = edit.changes {
+        changes.extend(uri_changes.into_iter().filter_map(|(uri, edits)| {
+            Some((
+                uri_to_path(&uri)?,
+                edits.into_iter().map(text_edit_from_lsp).collect(),
+            ))
+        }));
+    }
+    if let Some(document_changes) = edit.document_changes {
+        let edits = match document_changes {
+            lsp_types::DocumentChanges::Edits(edits) => edits,
+            lsp_types::DocumentChanges::Operations(operations) => operations
+                .into_iter()
+                .filter_map(|operation| match operation {
+                    lsp_types::DocumentChangeOperation::Edit(edit) => Some(edit),
+                    lsp_types::DocumentChangeOperation::Op(_) => None,
+                })
+                .collect(),
+        };
+        changes.extend(edits.into_iter().filter_map(|edit| {
+            let path = uri_to_path(&edit.text_document.uri)?;
+            let edits = edit
+                .edits
+                .into_iter()
+                .map(|edit| match edit {
+                    lsp_types::OneOf::Left(edit) => edit,
+                    lsp_types::OneOf::Right(edit) => edit.text_edit,
+                })
+                .map(text_edit_from_lsp)
+                .collect();
+            Some((path, edits))
+        }));
+    }
+    changes.sort_by(|(left, _), (right, _)| left.cmp(right));
+    WorkspaceEdit { changes }
+}
+
+/// Map signature help, clamping server-provided active indices.
+pub(crate) fn signature_help_from_lsp(
+    help: Option<lsp_types::SignatureHelp>,
+) -> Option<SignatureHelp> {
+    let help = help?;
+    let signatures = help
+        .signatures
+        .into_iter()
+        .map(|signature| {
+            let label = signature.label;
+            let parameters = signature
+                .parameters
+                .unwrap_or_default()
+                .into_iter()
+                .map(|parameter| ParamInfo {
+                    label: match parameter.label {
+                        lsp_types::ParameterLabel::Simple(label) => label,
+                        lsp_types::ParameterLabel::LabelOffsets([start, end]) => {
+                            utf16_slice(&label, start, end)
+                        },
+                    },
+                    documentation: parameter.documentation.map(markup_from_lsp),
+                })
+                .collect();
+            Signature {
+                label,
+                documentation: signature.documentation.map(markup_from_lsp),
+                parameters,
+            }
+        })
+        .collect::<Vec<_>>();
+    let active_signature = usize::try_from(help.active_signature.unwrap_or(0))
+        .unwrap_or(0)
+        .min(signatures.len().saturating_sub(1));
+    let active_parameter = usize::try_from(help.active_parameter.unwrap_or(0)).unwrap_or(0);
+    Some(SignatureHelp {
+        signatures,
+        active_signature,
+        active_parameter,
+    })
+}
+
+fn utf16_slice(value: &str, start: u32, end: u32) -> String {
+    let mut offset = 0_u32;
+    value
+        .chars()
+        .filter(|character| {
+            let width = character.len_utf16() as u32;
+            let include = offset >= start && offset < end;
+            offset = offset.saturating_add(width);
+            include
+        })
+        .collect()
+}
+
+/// Map code actions and commands, dropping disabled actions.
+pub(crate) fn code_actions_from_lsp(
+    response: Option<lsp_types::CodeActionResponse>,
+) -> Vec<CodeAction> {
+    response
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| match item {
+            lsp_types::CodeActionOrCommand::Command(command) => Some(CodeAction {
+                title: command.title,
+                edit: None,
+                command: Some(CommandId(command.command)),
+            }),
+            lsp_types::CodeActionOrCommand::CodeAction(action) => {
+                action.disabled.is_none().then(|| CodeAction {
+                    title: action.title,
+                    edit: action.edit.map(workspace_edit_from_lsp),
+                    command: action.command.map(|command| CommandId(command.command)),
+                })
+            },
+        })
+        .collect()
+}
+
+/// Map formatting edits.
+pub(crate) fn text_edits_from_lsp(edits: Option<Vec<lsp_types::TextEdit>>) -> Vec<TextEdit> {
+    edits
+        .unwrap_or_default()
+        .into_iter()
+        .map(text_edit_from_lsp)
+        .collect()
+}
+
+fn text_edit_from_lsp(edit: lsp_types::TextEdit) -> TextEdit {
+    TextEdit {
+        range: range_from_lsp(edit.range),
+        new_text: edit.new_text,
     }
 }
 
@@ -648,5 +943,128 @@ mod tests {
             mapped[0].children[0].selection_range.start,
             LineCol::new(2, 3)
         );
+    }
+
+    #[test]
+    fn maps_hover_definitions_and_inlay_hints() -> Result<(), Box<dyn std::error::Error>> {
+        let hover: lsp_types::Hover = serde_json::from_value(serde_json::json!({
+            "contents": {"kind": "markdown", "value": "**type**"},
+            "range": {"start": {"line": 1, "character": 2},
+                      "end": {"line": 1, "character": 5}}
+        }))?;
+        let mapped = hover_from_lsp(Some(hover)).unwrap_or(Hover {
+            contents: Markup {
+                kind: MarkupKind::PlainText,
+                value: String::new(),
+            },
+            range: None,
+        });
+        assert_eq!(mapped.contents.kind, MarkupKind::Markdown);
+        assert_eq!(mapped.contents.value, "**type**");
+        assert_eq!(
+            mapped.range.map(|range| range.start),
+            Some(LineCol::new(1, 2))
+        );
+
+        let definitions: lsp_types::GotoDefinitionResponse =
+            serde_json::from_value(serde_json::json!([{
+                "targetUri": "file:///tmp/lib.rs",
+                "targetRange": {"start": {"line": 3, "character": 0},
+                                "end": {"line": 4, "character": 0}},
+                "targetSelectionRange": {"start": {"line": 3, "character": 4},
+                                         "end": {"line": 3, "character": 8}}
+            }]))?;
+        let mapped = locations_from_lsp(Some(definitions));
+        assert_eq!(mapped[0].path, PathBuf::from("/tmp/lib.rs"));
+        assert_eq!(mapped[0].range.start, LineCol::new(3, 4));
+
+        let hints: Vec<lsp_types::InlayHint> = serde_json::from_value(serde_json::json!([{
+            "position": {"line": 2, "character": 7},
+            "label": [{"value": "value"}, {"value": ": i32"}],
+            "kind": 2,
+            "paddingLeft": true
+        }]))?;
+        let mapped = inlay_hints_from_lsp(Some(hints));
+        assert_eq!(mapped[0].label, "value: i32");
+        assert_eq!(mapped[0].kind, InlayHintKind::Parameter);
+        assert!(mapped[0].padding_left);
+        Ok(())
+    }
+
+    #[test]
+    fn maps_workspace_edits_signatures_and_actions() -> Result<(), Box<dyn std::error::Error>> {
+        let edit: lsp_types::WorkspaceEdit = serde_json::from_value(serde_json::json!({
+            "changes": {
+                "file:///tmp/a.rs": [{
+                    "range": {"start": {"line": 0, "character": 1},
+                              "end": {"line": 0, "character": 2}},
+                    "newText": "renamed"
+                }]
+            },
+            "documentChanges": [{
+                "textDocument": {"uri": "file:///tmp/b.rs", "version": 4},
+                "edits": [{
+                    "range": {"start": {"line": 1, "character": 0},
+                              "end": {"line": 1, "character": 3}},
+                    "newText": "new"
+                }]
+            }]
+        }))?;
+        let mapped = workspace_edit_from_lsp(edit);
+        assert_eq!(mapped.changes.len(), 2);
+        assert_eq!(mapped.changes[0].0, PathBuf::from("/tmp/a.rs"));
+
+        let help: lsp_types::SignatureHelp = serde_json::from_value(serde_json::json!({
+            "signatures": [{
+                "label": "call(😀arg)",
+                "documentation": "docs",
+                "parameters": [{"label": [5, 10], "documentation": "parameter"}]
+            }],
+            "activeSignature": 99,
+            "activeParameter": 1
+        }))?;
+        let mapped = signature_help_from_lsp(Some(help)).unwrap_or(SignatureHelp {
+            signatures: Vec::new(),
+            active_signature: 0,
+            active_parameter: 0,
+        });
+        assert_eq!(mapped.active_signature, 0);
+        assert_eq!(mapped.signatures[0].parameters[0].label, "😀arg");
+
+        let actions: lsp_types::CodeActionResponse = serde_json::from_value(serde_json::json!([
+            {"title": "Run fix", "command": "fix.run"},
+            {"title": "Unavailable", "disabled": {"reason": "nope"}}
+        ]))?;
+        let mapped = code_actions_from_lsp(Some(actions));
+        assert_eq!(mapped.len(), 1);
+        assert_eq!(mapped[0].command, Some(CommandId("fix.run".into())));
+        Ok(())
+    }
+
+    #[test]
+    fn maps_workspace_symbols_and_formatting_edits() -> Result<(), Box<dyn std::error::Error>> {
+        let symbols: lsp_types::WorkspaceSymbolResponse =
+            serde_json::from_value(serde_json::json!([{
+                "name": "Runner",
+                "kind": 23,
+                "location": {
+                    "uri": "file:///tmp/a.rs",
+                    "range": {"start": {"line": 4, "character": 2},
+                              "end": {"line": 4, "character": 8}}
+                }
+            }]))?;
+        let mapped = workspace_symbols_from_lsp(Some(symbols));
+        assert_eq!(mapped[0].name, "Runner");
+        assert_eq!(mapped[0].kind, SymbolKind::Struct);
+
+        let edits: Vec<lsp_types::TextEdit> = serde_json::from_value(serde_json::json!([{
+            "range": {"start": {"line": 0, "character": 0},
+                      "end": {"line": 0, "character": 2}},
+            "newText": "  "
+        }]))?;
+        let mapped = text_edits_from_lsp(Some(edits));
+        assert_eq!(mapped[0].new_text, "  ");
+        assert_eq!(mapped[0].range.end, LineCol::new(0, 2));
+        Ok(())
     }
 }

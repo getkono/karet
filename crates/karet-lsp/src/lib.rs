@@ -30,10 +30,9 @@
 //!   servers send plain-text completions; snippet syntax that leaks through anyway
 //!   is degraded to plain text at the completion mapping.
 //!
-//! Transport, lifecycle, document sync, and completion are implemented. The
-//! remaining typed request methods are being wired incrementally: the ones still
-//! marked `todo!` in their bodies (`hover`, `definition`, `rename`, …) have final
-//! signatures but panic if called.
+//! Transport, lifecycle, document sync, diagnostics, completion, navigation,
+//! symbols, inlay hints, rename, signature help, code actions, and document/range
+//! formatting are implemented as typed, non-panicking operations.
 
 mod codec;
 mod conn;
@@ -97,6 +96,17 @@ pub struct LspSpec {
     pub args: Vec<String>,
     /// Language identifiers this server handles (e.g. `"rust"`).
     pub languages: Vec<String>,
+}
+
+/// One complete diagnostic publication from a language server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublishedDiagnostics {
+    /// File whose diagnostic layer is replaced by this publication.
+    pub path: PathBuf,
+    /// Document version supplied by the server, when available.
+    pub version: Option<i32>,
+    /// Complete diagnostics for this server and file.
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 /// An async client for a single language server.
@@ -333,8 +343,13 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Server`] or [`LspError::Timeout`].
     pub async fn hover(&self, doc: &Path, pos: LineCol) -> Result<Option<Hover>, LspError> {
-        let _ = (doc, pos);
-        todo!()
+        let params = lsp_types::HoverParams {
+            text_document_position_params: text_document_position(doc, pos)?,
+            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+        };
+        let response: Option<lsp_types::Hover> =
+            self.conn.request("textDocument/hover", params).await?;
+        Ok(convert::hover_from_lsp(response))
     }
 
     /// Request the document symbols of `doc`.
@@ -359,8 +374,14 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Server`] or [`LspError::Timeout`].
     pub async fn workspace_symbols(&self, query: &str) -> Result<Vec<Symbol>, LspError> {
-        let _ = query;
-        todo!()
+        let params = lsp_types::WorkspaceSymbolParams {
+            query: query.to_owned(),
+            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+            partial_result_params: lsp_types::PartialResultParams::default(),
+        };
+        let response: Option<lsp_types::WorkspaceSymbolResponse> =
+            self.conn.request("workspace/symbol", params).await?;
+        Ok(convert::workspace_symbols_from_lsp(response))
     }
 
     /// Resolve the definition location(s) of the symbol at `pos`.
@@ -368,8 +389,14 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Server`] or [`LspError::Timeout`].
     pub async fn definition(&self, doc: &Path, pos: LineCol) -> Result<Vec<Location>, LspError> {
-        let _ = (doc, pos);
-        todo!()
+        let params = lsp_types::GotoDefinitionParams {
+            text_document_position_params: text_document_position(doc, pos)?,
+            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+            partial_result_params: lsp_types::PartialResultParams::default(),
+        };
+        let response: Option<lsp_types::GotoDefinitionResponse> =
+            self.conn.request("textDocument/definition", params).await?;
+        Ok(convert::locations_from_lsp(response))
     }
 
     /// Request inlay hints within `range`.
@@ -377,8 +404,14 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Server`] or [`LspError::Timeout`].
     pub async fn inlay_hints(&self, doc: &Path, range: Range) -> Result<Vec<InlayHint>, LspError> {
-        let _ = (doc, range);
-        todo!()
+        let params = lsp_types::InlayHintParams {
+            text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
+            range: convert::range_to_lsp(range),
+            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+        };
+        let response: Option<Vec<lsp_types::InlayHint>> =
+            self.conn.request("textDocument/inlayHint", params).await?;
+        Ok(convert::inlay_hints_from_lsp(response))
     }
 
     /// Rename the symbol at `pos` to `new_name`, returning the edits to apply.
@@ -391,8 +424,14 @@ impl LspClient {
         pos: LineCol,
         new_name: &str,
     ) -> Result<WorkspaceEdit, LspError> {
-        let _ = (doc, pos, new_name);
-        todo!()
+        let params = lsp_types::RenameParams {
+            text_document_position: text_document_position(doc, pos)?,
+            new_name: new_name.to_owned(),
+            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+        };
+        let response: Option<lsp_types::WorkspaceEdit> =
+            self.conn.request("textDocument/rename", params).await?;
+        Ok(response.map_or_else(WorkspaceEdit::default, convert::workspace_edit_from_lsp))
     }
 
     /// Request signature help at `pos` in `doc`.
@@ -404,8 +443,16 @@ impl LspClient {
         doc: &Path,
         pos: LineCol,
     ) -> Result<Option<SignatureHelp>, LspError> {
-        let _ = (doc, pos);
-        todo!()
+        let params = lsp_types::SignatureHelpParams {
+            text_document_position_params: text_document_position(doc, pos)?,
+            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+            context: None,
+        };
+        let response: Option<lsp_types::SignatureHelp> = self
+            .conn
+            .request("textDocument/signatureHelp", params)
+            .await?;
+        Ok(convert::signature_help_from_lsp(response))
     }
 
     /// Request code actions available for `range` in `doc`.
@@ -413,8 +460,20 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Server`] or [`LspError::Timeout`].
     pub async fn code_action(&self, doc: &Path, range: Range) -> Result<Vec<CodeAction>, LspError> {
-        let _ = (doc, range);
-        todo!()
+        let params = lsp_types::CodeActionParams {
+            text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
+            range: convert::range_to_lsp(range),
+            context: lsp_types::CodeActionContext {
+                diagnostics: Vec::new(),
+                only: None,
+                trigger_kind: Some(lsp_types::CodeActionTriggerKind::INVOKED),
+            },
+            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+            partial_result_params: lsp_types::PartialResultParams::default(),
+        };
+        let response: Option<lsp_types::CodeActionResponse> =
+            self.conn.request("textDocument/codeAction", params).await?;
+        Ok(convert::code_actions_from_lsp(response))
     }
 
     /// Request whole-document formatting edits for `doc`.
@@ -422,8 +481,14 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Server`] or [`LspError::Timeout`].
     pub async fn formatting(&self, doc: &Path) -> Result<Vec<TextEdit>, LspError> {
-        let _ = doc;
-        todo!()
+        let params = lsp_types::DocumentFormattingParams {
+            text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
+            options: formatting_options(),
+            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+        };
+        let response: Option<Vec<lsp_types::TextEdit>> =
+            self.conn.request("textDocument/formatting", params).await?;
+        Ok(convert::text_edits_from_lsp(response))
     }
 
     /// Request formatting edits for `range` in `doc`.
@@ -435,16 +500,43 @@ impl LspClient {
         doc: &Path,
         range: Range,
     ) -> Result<Vec<TextEdit>, LspError> {
-        let _ = (doc, range);
-        todo!()
+        let params = lsp_types::DocumentRangeFormattingParams {
+            text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
+            range: convert::range_to_lsp(range),
+            options: formatting_options(),
+            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+        };
+        let response: Option<Vec<lsp_types::TextEdit>> = self
+            .conn
+            .request("textDocument/rangeFormatting", params)
+            .await?;
+        Ok(convert::text_edits_from_lsp(response))
     }
 
-    /// Subscribe to server-pushed diagnostics, keyed by file path.
+    /// Subscribe to server-pushed diagnostics.
     ///
     /// Ranges are in UTF-16 columns, per the crate-level position-encoding note.
     #[must_use]
-    pub fn diagnostics(&self) -> broadcast::Receiver<(PathBuf, Vec<Diagnostic>)> {
+    pub fn diagnostics(&self) -> broadcast::Receiver<PublishedDiagnostics> {
         self.conn.diagnostics()
+    }
+}
+
+fn text_document_position(
+    doc: &Path,
+    position: LineCol,
+) -> Result<lsp_types::TextDocumentPositionParams, LspError> {
+    Ok(lsp_types::TextDocumentPositionParams {
+        text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
+        position: convert::position_to_lsp(position),
+    })
+}
+
+fn formatting_options() -> lsp_types::FormattingOptions {
+    lsp_types::FormattingOptions {
+        tab_size: 4,
+        insert_spaces: true,
+        ..lsp_types::FormattingOptions::default()
     }
 }
 
@@ -714,6 +806,7 @@ mod tests {
                     "jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
                     "params": {
                         "uri": "file:///tmp/ws/a.rs",
+                        "version": 7,
                         "diagnostics": [{
                             "range": {"start": {"line": 2, "character": 4},
                                       "end": {"line": 2, "character": 9}},
@@ -733,8 +826,10 @@ mod tests {
 
         let client = LspClient::connect(read, write, Path::new("/tmp/ws")).await?;
         let mut rx = client.diagnostics();
-        let (path, diags) = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await??;
-        assert_eq!(path, PathBuf::from("/tmp/ws/a.rs"));
+        let publication = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await??;
+        assert_eq!(publication.path, PathBuf::from("/tmp/ws/a.rs"));
+        assert_eq!(publication.version, Some(7));
+        let diags = publication.diagnostics;
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Warning);
         assert_eq!(diags[0].message, "unused variable");
