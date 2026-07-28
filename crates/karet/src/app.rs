@@ -20,6 +20,7 @@ mod runtime;
 mod scm;
 mod search;
 mod sidebar;
+mod snapshot_events;
 mod spellcheck;
 mod startup;
 mod tabs;
