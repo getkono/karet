@@ -189,7 +189,7 @@ impl App {
                 }
             },
             Command::CheckLanguageServerUpdates => {
-                self.send_command(SessionCommand::CheckLanguageServerUpdates);
+                self.send_command(SessionCommand::CheckLanguageServerUpdates { server: None });
                 self.status = Some("checking language-server updates…".to_string());
             },
             Command::ExplorerNewFile => self.explorer_begin_new(false),

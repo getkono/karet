@@ -90,7 +90,10 @@ pub enum TextPurpose {
     /// Confirm the first network-backed installation by typing `install`.
     InstallLanguageServer { server: LanguageServerId },
     /// Approve the exact update plan displayed by the backend.
-    ApplyLanguageServerPlan { plan: LanguageServerPlanId },
+    ApplyLanguageServerPlan {
+        plan: LanguageServerPlanId,
+        servers: Vec<LanguageServerId>,
+    },
     /// Restart a session-local process after an installed update.
     RestartLanguageServer { server: LanguageServerId },
 }

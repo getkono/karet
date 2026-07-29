@@ -173,6 +173,13 @@ pub enum Event {
         /// Whether processes using an older version still need a user-approved restart.
         restart_required: bool,
     },
+    /// A managed provider was deactivated for future resolution.
+    LanguageServerRemoved {
+        /// Provider that was deactivated.
+        server: LanguageServerId,
+        /// Whether its immutable payload remains until shared brokers release it.
+        cleanup_pending: bool,
+    },
     /// A repository-scoped provider changed lifecycle state in this session.
     LanguageServerRuntimeChanged {
         /// Provider whose connection changed.

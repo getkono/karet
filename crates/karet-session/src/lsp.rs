@@ -510,16 +510,16 @@ impl LspManager {
             let runtime_provider = provider
                 .clone()
                 .unwrap_or_else(|| LanguageServerId::new(provider_key.clone()));
-            handle.spawn(runtime::server_task(
-                spec.clone(),
+            handle.spawn(runtime::server_task(runtime::ServerTask {
+                spec: spec.clone(),
                 root,
-                key.clone(),
-                runtime_provider,
+                language: key.clone(),
+                provider: runtime_provider,
                 rx,
-                self.updates.clone(),
-                Arc::clone(&self.connector),
-                self.generation,
-            ));
+                updates: self.updates.clone(),
+                connector: Arc::clone(&self.connector),
+                generation: self.generation,
+            }));
             self.servers.insert(
                 key.clone(),
                 ServerSlot {
@@ -557,16 +557,16 @@ impl LspManager {
         if !self.servers.contains_key(&key) {
             let handle = tokio::runtime::Handle::try_current().ok()?;
             let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
-            handle.spawn(runtime::server_task(
-                spec.clone(),
+            handle.spawn(runtime::server_task(runtime::ServerTask {
+                spec: spec.clone(),
                 root,
-                key.clone(),
-                provider.clone(),
+                language: key.clone(),
+                provider: provider.clone(),
                 rx,
-                self.updates.clone(),
-                Arc::clone(&self.connector),
-                self.generation,
-            ));
+                updates: self.updates.clone(),
+                connector: Arc::clone(&self.connector),
+                generation: self.generation,
+            }));
             self.servers.insert(
                 key.clone(),
                 ServerSlot {

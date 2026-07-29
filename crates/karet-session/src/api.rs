@@ -637,11 +637,21 @@ pub enum Command {
         server: LanguageServerId,
     },
     /// Explicitly perform network metadata checks for installed servers.
-    CheckLanguageServerUpdates,
-    /// Apply the exact update plan previously returned by the backend.
+    CheckLanguageServerUpdates {
+        /// One provider to check, or `None` to force-check every installed provider.
+        server: Option<LanguageServerId>,
+    },
+    /// Apply part or all of the exact update plan previously returned by the backend.
     ApplyLanguageServerPlan {
         /// Opaque plan identifier.
         plan: LanguageServerPlanId,
+        /// Providers from the plan to apply. An empty set is rejected.
+        servers: Vec<LanguageServerId>,
+    },
+    /// Deactivate a Karet-managed provider and safely retire its payload.
+    UninstallLanguageServer {
+        /// Managed provider to uninstall.
+        server: LanguageServerId,
     },
     /// Restart this session's processes for an already-approved active version.
     RestartLanguageServer {
@@ -955,7 +965,13 @@ mod tests {
             Command::InstallLanguageServer {
                 server: server.clone(),
             },
-            Command::ApplyLanguageServerPlan { plan },
+            Command::ApplyLanguageServerPlan {
+                plan,
+                servers: vec![server.clone()],
+            },
+            Command::UninstallLanguageServer {
+                server: server.clone(),
+            },
             Command::RestartLanguageServer { server },
         ];
         let _events = [

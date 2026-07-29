@@ -175,18 +175,30 @@ fn forward_diagnostics(
     })
 }
 
+pub(super) struct ServerTask {
+    pub(super) spec: LspSpec,
+    pub(super) root: PathBuf,
+    pub(super) language: String,
+    pub(super) provider: LanguageServerId,
+    pub(super) rx: mpsc::Receiver<ServerCmd>,
+    pub(super) updates: mpsc::UnboundedSender<LspUpdate>,
+    pub(super) connector: Connector,
+    pub(super) generation: u64,
+}
+
 /// The per-language server task: serialize document sync and requests, restart
 /// closed processes with backoff, and replay the authoritative open-document set.
-pub(super) async fn server_task(
-    spec: LspSpec,
-    root: PathBuf,
-    language: String,
-    provider: LanguageServerId,
-    mut rx: mpsc::Receiver<ServerCmd>,
-    updates: mpsc::UnboundedSender<LspUpdate>,
-    connector: Connector,
-    generation: u64,
-) {
+pub(super) async fn server_task(task: ServerTask) {
+    let ServerTask {
+        spec,
+        root,
+        language,
+        provider,
+        mut rx,
+        updates,
+        connector,
+        generation,
+    } = task;
     let report_state = |state, error: Option<String>| {
         let _ = updates.send(LspUpdate::RuntimeState {
             generation,

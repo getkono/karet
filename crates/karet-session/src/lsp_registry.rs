@@ -14,12 +14,14 @@
 mod catalog;
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc;
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -58,11 +60,20 @@ pub(crate) enum RegistryJob {
         server: LanguageServerId,
     },
     /// Discover newer versions for every installed provider.
-    Check { request: RequestId },
+    Check {
+        request: RequestId,
+        server: Option<LanguageServerId>,
+    },
     /// Apply a previously discovered, exact plan.
     Apply {
         request: RequestId,
         plan: LanguageServerPlanId,
+        servers: Vec<LanguageServerId>,
+    },
+    /// Deactivate one managed provider and retire its immutable payload.
+    Uninstall {
+        request: RequestId,
+        server: LanguageServerId,
     },
 }
 
@@ -78,6 +89,11 @@ pub(crate) enum RegistryUpdate {
         server: LanguageServerId,
         version: String,
         was_installed: bool,
+    },
+    Removed {
+        request: RequestId,
+        server: LanguageServerId,
+        cleanup_pending: bool,
     },
     Progress {
         server: LanguageServerId,
@@ -100,6 +116,18 @@ struct ActiveInstallation {
     args: Vec<String>,
 }
 
+#[derive(Deserialize, Serialize)]
+struct Deactivation {
+    deactivated: bool,
+    version: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct RetiredInstallation {
+    version: String,
+}
+
+#[derive(Clone)]
 struct StoredPlan {
     created: Instant,
     releases: Vec<Release>,
@@ -143,8 +171,18 @@ pub(crate) fn installed_version(root: Option<&Path>, server: &LanguageServerId) 
 }
 
 /// Whether safe reclamation of a deactivated payload is still pending.
-pub(crate) fn cleanup_pending(_root: Option<&Path>, _server: &LanguageServerId) -> bool {
-    false
+pub(crate) fn cleanup_pending(root: Option<&Path>, server: &LanguageServerId) -> bool {
+    let Some(root) = root else {
+        return false;
+    };
+    retired_installations(root, server)
+        .into_iter()
+        .any(|retired| {
+            provider_root(root, server)
+                .join("versions")
+                .join(safe_version(&retired.version))
+                .exists()
+        })
 }
 
 fn run(
@@ -169,7 +207,13 @@ fn run(
         .build();
     let mut plans = HashMap::<LanguageServerPlanId, StoredPlan>::new();
     let mut next_plan = 1_u64;
-    while let Ok(job) = jobs.recv() {
+    loop {
+        cleanup_retired_all(&root);
+        let job = match jobs.recv_timeout(Duration::from_secs(30)) {
+            Ok(job) => job,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
         let job_id = job_request(&job);
         plans.retain(|_, plan| plan.created.elapsed() <= PLAN_LIFETIME);
         let result = match job {
@@ -208,14 +252,23 @@ fn run(
                         })
                 }
             },
-            RegistryJob::Check { request } => {
+            RegistryJob::Check { request, server } => {
                 let result = client
                     .as_ref()
                     .map_err(ToString::to_string)
                     .and_then(|client| {
                         let mut releases = Vec::new();
-                        for server in SERVERS {
-                            let Some(active) = read_active(&root, &server) else {
+                        if server
+                            .as_ref()
+                            .is_some_and(|candidate| !SERVERS.contains(candidate))
+                        {
+                            return Err("provider has no Karet-managed update channel".to_owned());
+                        }
+                        for server in SERVERS
+                            .iter()
+                            .filter(|candidate| server.as_ref().is_none_or(|id| id == *candidate))
+                        {
+                            let Some(active) = read_active(&root, server) else {
                                 continue;
                             };
                             let mut release = discover(client, server.clone())?;
@@ -253,7 +306,11 @@ fn run(
                     }
                 })
             },
-            RegistryJob::Apply { request, plan } => {
+            RegistryJob::Apply {
+                request,
+                plan,
+                servers,
+            } => {
                 let Some(stored) = plans.remove(&plan) else {
                     send_result(
                         updates,
@@ -262,11 +319,46 @@ fn run(
                     );
                     continue;
                 };
-                client
+                if servers.is_empty() {
+                    plans.insert(plan, stored);
+                    send_result(
+                        updates,
+                        request,
+                        Err("language-server update selection is empty".into()),
+                    );
+                    continue;
+                }
+                let selected: HashSet<_> = servers.into_iter().collect();
+                if selected.iter().any(|server| {
+                    !stored
+                        .releases
+                        .iter()
+                        .any(|release| &release.server == server)
+                }) {
+                    plans.insert(plan, stored);
+                    send_result(
+                        updates,
+                        request,
+                        Err("language-server update selection is not in this plan".into()),
+                    );
+                    continue;
+                }
+                let backup = stored.clone();
+                let remaining = stored
+                    .releases
+                    .iter()
+                    .filter(|release| !selected.contains(&release.server))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let result = client
                     .as_ref()
                     .map_err(ToString::to_string)
                     .and_then(|client| {
-                        for release in &stored.releases {
+                        for release in stored
+                            .releases
+                            .iter()
+                            .filter(|release| selected.contains(&release.server))
+                        {
                             // Exact-plan protection: another instance changing the active
                             // version invalidates this approval instead of silently
                             // applying a different transition.
@@ -290,7 +382,26 @@ fn run(
                             });
                         }
                         Ok(RegistryUpdate::Complete { request })
-                    })
+                    });
+                if result.is_err() {
+                    plans.insert(plan, backup);
+                } else if !remaining.is_empty() {
+                    plans.insert(
+                        plan,
+                        StoredPlan {
+                            created: stored.created,
+                            releases: remaining,
+                        },
+                    );
+                }
+                result
+            },
+            RegistryJob::Uninstall { request, server } => {
+                uninstall(&root, &server).map(|cleanup_pending| RegistryUpdate::Removed {
+                    request,
+                    server,
+                    cleanup_pending,
+                })
             },
         };
         send_result(updates, job_id, result);
@@ -300,8 +411,9 @@ fn run(
 fn job_request(job: &RegistryJob) -> RequestId {
     match job {
         RegistryJob::Install { request, .. }
-        | RegistryJob::Check { request }
-        | RegistryJob::Apply { request, .. } => *request,
+        | RegistryJob::Check { request, .. }
+        | RegistryJob::Apply { request, .. }
+        | RegistryJob::Uninstall { request, .. } => *request,
     }
 }
 
@@ -316,15 +428,90 @@ fn send_result(
 
 fn read_active(root: &Path, server: &LanguageServerId) -> Option<ActiveInstallation> {
     let journal = std::fs::read_to_string(provider_root(root, server).join("active.jsonl")).ok()?;
-    journal
-        .lines()
-        .rev()
-        .find_map(|line| serde_json::from_str(line).ok())
-        .filter(|active: &ActiveInstallation| active.command.is_file())
+    let mut active = None;
+    for line in journal.lines() {
+        if serde_json::from_str::<Deactivation>(line).is_ok_and(|record| record.deactivated) {
+            active = None;
+        } else if let Ok(candidate) = serde_json::from_str::<ActiveInstallation>(line) {
+            active = Some(candidate);
+        }
+    }
+    active.filter(|active: &ActiveInstallation| active.command.is_file())
 }
 
 fn provider_root(root: &Path, server: &LanguageServerId) -> PathBuf {
     root.join(server.key())
+}
+
+fn retired_installations(root: &Path, server: &LanguageServerId) -> Vec<RetiredInstallation> {
+    std::fs::read_to_string(provider_root(root, server).join("retired.jsonl"))
+        .ok()
+        .map(|journal| {
+            journal
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn uninstall(root: &Path, server: &LanguageServerId) -> Result<bool, String> {
+    if !SERVERS.contains(server) {
+        return Err(format!("{} is not managed by Karet", server.display_name()));
+    }
+    let provider = provider_root(root, server);
+    let lock = File::options()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(provider.join("install.lock"))
+        .map_err(|error| error.to_string())?;
+    lock.lock().map_err(|error| error.to_string())?;
+    let active = read_active(root, server)
+        .ok_or_else(|| format!("{} is not installed", server.display_name()))?;
+    append_json_line(
+        &provider.join("active.jsonl"),
+        &Deactivation {
+            deactivated: true,
+            version: active.version.clone(),
+        },
+    )?;
+    append_json_line(
+        &provider.join("retired.jsonl"),
+        &RetiredInstallation {
+            version: active.version,
+        },
+    )?;
+    cleanup_retired_provider(root, server);
+    Ok(cleanup_pending(Some(root), server))
+}
+
+fn append_json_line(path: &Path, value: &impl Serialize) -> Result<(), String> {
+    let encoded = serde_json::to_string(value).map_err(|error| error.to_string())?;
+    let mut journal = File::options()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    writeln!(journal, "{encoded}").map_err(|error| error.to_string())?;
+    journal.sync_all().map_err(|error| error.to_string())
+}
+
+fn cleanup_retired_all(root: &Path) {
+    for server in &SERVERS {
+        cleanup_retired_provider(root, server);
+    }
+}
+
+fn cleanup_retired_provider(root: &Path, server: &LanguageServerId) {
+    let versions = provider_root(root, server).join("versions");
+    for retired in retired_installations(root, server) {
+        let payload = versions.join(safe_version(&retired.version));
+        if payload.is_dir() && !crate::lsp_broker::managed_payload_in_use(root, &payload) {
+            let _ = std::fs::remove_dir_all(payload);
+        }
+    }
 }
 
 fn install(
@@ -760,5 +947,75 @@ mod tests {
             release.active_version(),
             "5.3.0+typescript-5.9.3+node-24.4.0"
         );
+    }
+
+    #[test]
+    fn uninstall_deactivates_resolution_and_reclaims_unused_payload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let server = LanguageServerId::Texlab;
+        let provider = provider_root(dir.path(), &server);
+        let payload = provider.join("versions/1.2.3");
+        std::fs::create_dir_all(&payload)?;
+        let command = payload.join(executable("texlab"));
+        std::fs::write(&command, b"test")?;
+        append_json_line(
+            &provider.join("active.jsonl"),
+            &ActiveInstallation {
+                version: "1.2.3".into(),
+                command,
+                args: Vec::new(),
+            },
+        )?;
+
+        assert!(!uninstall(dir.path(), &server)?);
+        assert!(read_active(dir.path(), &server).is_none());
+        assert!(!payload.exists());
+        assert!(!cleanup_pending(Some(dir.path()), &server));
+        Ok(())
+    }
+
+    #[test]
+    fn uninstall_defers_payload_cleanup_while_a_broker_is_live()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let server = LanguageServerId::Texlab;
+        let provider = provider_root(dir.path(), &server);
+        let payload = provider.join("versions/1.2.3");
+        std::fs::create_dir_all(&payload)?;
+        let command = payload.join(executable("texlab"));
+        std::fs::write(&command, b"test")?;
+        append_json_line(
+            &provider.join("active.jsonl"),
+            &ActiveInstallation {
+                version: "1.2.3".into(),
+                command: command.clone(),
+                args: Vec::new(),
+            },
+        )?;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+        let brokers = dir.path().join("brokers");
+        std::fs::create_dir_all(&brokers)?;
+        let endpoint = serde_json::json!({
+            "address": listener.local_addr()?,
+            "token": "test",
+            "pid": std::process::id(),
+            "command": command,
+        });
+        std::fs::write(brokers.join("live.json"), serde_json::to_vec(&endpoint)?)?;
+
+        assert!(uninstall(dir.path(), &server)?);
+        assert!(read_active(dir.path(), &server).is_none());
+        assert!(payload.is_dir());
+        assert!(cleanup_pending(Some(dir.path()), &server));
+        Ok(())
+    }
+
+    #[test]
+    fn uninstall_rejects_external_providers() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let result = uninstall(dir.path(), &LanguageServerId::Clangd);
+        assert!(matches!(result, Err(message) if message.contains("not managed")));
+        Ok(())
     }
 }

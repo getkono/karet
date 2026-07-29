@@ -65,7 +65,10 @@ impl App {
             .join(", ");
         self.overlay = Some(Overlay::text(
             format!("{summary} · type update to approve these exact versions"),
-            TextPurpose::ApplyLanguageServerPlan { plan },
+            TextPurpose::ApplyLanguageServerPlan {
+                plan,
+                servers: changes.iter().map(|change| change.server.clone()).collect(),
+            },
         ));
     }
 

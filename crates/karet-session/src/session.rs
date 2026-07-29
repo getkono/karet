@@ -747,18 +747,32 @@ impl Session {
                     },
                 );
             },
-            Command::CheckLanguageServerUpdates => {
+            Command::CheckLanguageServerUpdates { server } => {
                 self.queue_lsp_registry(
                     id,
-                    crate::lsp_registry::RegistryJob::Check { request: id },
+                    crate::lsp_registry::RegistryJob::Check {
+                        request: id,
+                        server,
+                    },
                 );
             },
-            Command::ApplyLanguageServerPlan { plan } => {
+            Command::ApplyLanguageServerPlan { plan, servers } => {
                 self.queue_lsp_registry(
                     id,
-                    crate::lsp_registry::RegistryJob::Apply { request: id, plan },
+                    crate::lsp_registry::RegistryJob::Apply {
+                        request: id,
+                        plan,
+                        servers,
+                    },
                 );
             },
+            Command::UninstallLanguageServer { server } => self.queue_lsp_registry(
+                id,
+                crate::lsp_registry::RegistryJob::Uninstall {
+                    request: id,
+                    server,
+                },
+            ),
             Command::RestartLanguageServer { server } => {
                 self.restart_lsp(server);
             },

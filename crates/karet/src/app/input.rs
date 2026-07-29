@@ -367,9 +367,12 @@ impl App {
                         self.status = Some("language-server installation cancelled".to_string());
                     }
                 },
-                TextPurpose::ApplyLanguageServerPlan { plan } => {
+                TextPurpose::ApplyLanguageServerPlan { plan, servers } => {
                     if text == "update" {
-                        self.send_command(SessionCommand::ApplyLanguageServerPlan { plan });
+                        self.send_command(SessionCommand::ApplyLanguageServerPlan {
+                            plan,
+                            servers,
+                        });
                         self.status = Some("updating language servers…".to_string());
                     } else {
                         self.status = Some("language-server update cancelled".to_string());

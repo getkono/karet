@@ -87,6 +87,8 @@ struct Endpoint {
     address: SocketAddr,
     token: String,
     pid: u32,
+    #[serde(default)]
+    command: Option<PathBuf>,
 }
 
 struct Pending {
@@ -240,6 +242,7 @@ async fn run_broker(spec: BrokerSpec) -> Result<(), BrokerError> {
         address: listener.local_addr().map_err(io_error)?,
         token: spec.token.clone(),
         pid: std::process::id(),
+        command: Some(PathBuf::from(&spec.launch.command)),
     };
     write_endpoint(&spec.metadata, &endpoint)?;
 
@@ -311,6 +314,33 @@ async fn run_broker(spec: BrokerSpec) -> Result<(), BrokerError> {
     let _ = std::fs::remove_file(&spec.metadata);
     let _ = std::fs::remove_file(&spec.lock);
     outcome
+}
+
+/// Whether a live shared broker still references a managed immutable payload.
+pub(crate) fn managed_payload_in_use(state_root: &Path, payload: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(state_root.join("brokers")) else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|entry| {
+        if entry.path().extension().and_then(std::ffi::OsStr::to_str) != Some("json") {
+            return false;
+        }
+        let Ok(bytes) = std::fs::read(entry.path()) else {
+            return false;
+        };
+        let Ok(endpoint) = serde_json::from_slice::<Endpoint>(&bytes) else {
+            return false;
+        };
+        if std::net::TcpStream::connect_timeout(&endpoint.address, Duration::from_millis(50))
+            .is_err()
+        {
+            return false;
+        }
+        endpoint
+            .command
+            .as_ref()
+            .is_none_or(|command| command.starts_with(payload))
+    })
 }
 
 async fn accept_clients(
