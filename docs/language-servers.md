@@ -148,6 +148,36 @@ Normal shutdown sends `shutdown`/`exit`. Forced editor or broker death closes th
 supervisor lease, which kills and reaps the entire server process group. Stale
 broker leases are time-bounded and replaced on a subsequent connection attempt.
 
+## Language Servers manager
+
+Run **Language Servers: Manage** from the command palette to open the singleton
+Language Servers tab. The tab inventories every effective built-in and configured
+provider, including providers that are disabled or currently unavailable. Each row
+shows its languages, executable source, managed version, and runtime state. The
+selected-server detail lists every repository root, resolved command and arguments,
+open-document count, retry/circuit state, and most recent error.
+
+The table responds to terminal width by dropping secondary columns before primary
+state, and its loading placeholder follows the shared 200 ms reveal delay. It can be
+operated with either the action strip/mouse or these focused-tab keys:
+
+| Key | Action |
+|---|---|
+| `j` / `Down`, `k` / `Up` | select the next or previous provider |
+| `r` | refresh local inventory without network access |
+| `u` | force an update check for the selected managed provider |
+| `U` | force an update check for every installed managed provider |
+| `Enter` / `i` | install, apply the selected discovered update, or check an installed provider |
+| `R` | restart the selected provider connections in this editor session |
+| `x` | uninstall a Karet-managed provider after typed confirmation |
+| `/` | filter by provider or language; submit an empty filter to clear it |
+| `q` | close the manager tab |
+
+Update discovery never applies a change. Discovered target versions remain visible
+in the table until the exact short-lived plan is approved. Install/update/uninstall
+actions are refused for configured, project-local, and `PATH` providers: karet
+reports their state but does not claim ownership of them.
+
 ## Managed installations and consent
 
 Managed versions live below the platform data directory in
@@ -168,6 +198,13 @@ is ignored. Node providers use a registry-owned, verified active-LTS Node runtim
 Update checks are always explicit. An approved plan expires after 15 minutes and
 is rejected if another process changed the active version. Existing brokers keep
 their pinned executable until restarted; new brokers use the new activation.
+
+Uninstall first appends a deactivation record, so future resolution immediately
+stops selecting that managed version. It then retires language-server connections
+only in the requesting editor session. Other karet processes and their shared
+brokers keep running. The immutable payload is deleted only after broker endpoint
+checks show that no live process still references it; until then the manager
+reports `cleanup pending`, and the registry retries reclamation in the background.
 
 ## Configuration
 
