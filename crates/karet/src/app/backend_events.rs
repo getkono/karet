@@ -62,6 +62,9 @@ impl App {
         .flatten()
         .and_then(|since| loading_delay_remaining(since, now));
         let tabs = self.all_tabs().filter_map(|tab| match &tab.kind {
+            TabKind::LanguageServers(view) => view
+                .loading_since
+                .and_then(|since| loading_delay_remaining(since, now)),
             TabKind::CommitLoading {
                 loading_since,
                 error,
@@ -301,7 +304,7 @@ impl App {
                 self.prompt_language_server_install(server);
             },
             SessionEvent::LanguageServerStatus { servers } => {
-                self.show_language_server_status(servers);
+                self.show_language_server_status(id, servers);
             },
             SessionEvent::LanguageServerUpdatePlan { plan, changes } => {
                 self.prompt_language_server_updates(plan, changes);
@@ -320,7 +323,16 @@ impl App {
             } => {
                 self.finish_language_server_change(server, version, restart_required);
             },
-            SessionEvent::LanguageServerRuntimeChanged { .. } => {},
+            SessionEvent::LanguageServerRemoved {
+                server,
+                cleanup_pending,
+            } => self.finish_language_server_remove(server, cleanup_pending),
+            SessionEvent::LanguageServerRuntimeChanged {
+                server,
+                root,
+                state,
+                error,
+            } => self.update_language_server_runtime(server, root, state, error),
             SessionEvent::Saved { doc } => {
                 for tab in self.all_tabs_mut() {
                     if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
@@ -462,6 +474,21 @@ impl App {
                 }
                 if let Some(req) = id {
                     self.fail_pending_commit_detail(req, &message);
+                }
+                for tab in self.all_tabs_mut() {
+                    if let TabKind::LanguageServers(view) = &mut tab.kind
+                        && id.is_some()
+                        && (view.pending == id || view.inventory_request == id)
+                    {
+                        if view.pending == id {
+                            view.pending = None;
+                        }
+                        if view.inventory_request == id {
+                            view.inventory_request = None;
+                        }
+                        view.loading_since = None;
+                        view.error = Some(message.clone());
+                    }
                 }
                 self.notify(severity, kind, message);
             },

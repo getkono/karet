@@ -111,6 +111,7 @@ use Layer::ExplorerDeleteConfirm;
 use Layer::ExplorerEdit;
 use Layer::Find;
 use Layer::Global;
+use Layer::LanguageServers;
 use Layer::Outline;
 use Layer::Overlay;
 use Layer::Oversize;

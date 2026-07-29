@@ -5,6 +5,7 @@
 mod commit;
 mod content;
 mod github;
+mod language_servers;
 mod panes;
 mod scm;
 mod secondary;
@@ -57,6 +58,7 @@ use karet_widgets::FileTree;
 use karet_widgets::SplitAxis;
 use karet_widgets::Toasts;
 use karet_widgets::UiIcon;
+use language_servers::*;
 use panes::*;
 use ratatui::Frame;
 use ratatui::layout::Alignment;

@@ -226,6 +226,21 @@ pub(super) static BINDINGS: &[Binding] = &[
     // leaves the placeholder view.
     b(Oversize, false, false, false, Enter, Command::OpenAnyway),
 
+    // Language-server manager: list navigation plus explicit lifecycle actions.
+    b(LanguageServers, false, false, false, Char('j'), Command::LanguageServerDown),
+    b(LanguageServers, false, false, false, Down,      Command::LanguageServerDown),
+    b(LanguageServers, false, false, false, Char('k'), Command::LanguageServerUp),
+    b(LanguageServers, false, false, false, Up,        Command::LanguageServerUp),
+    b(LanguageServers, false, false, false, Char('r'), Command::LanguageServerRefresh),
+    b(LanguageServers, false, false, false, Char('u'), Command::LanguageServerCheckSelected),
+    b(LanguageServers, false, false, false, Char('U'), Command::LanguageServerCheckAll),
+    b(LanguageServers, false, false, false, Char('i'), Command::LanguageServerPrimaryAction),
+    b(LanguageServers, false, false, false, Enter,     Command::LanguageServerPrimaryAction),
+    b(LanguageServers, false, false, false, Char('R'), Command::LanguageServerRestart),
+    b(LanguageServers, false, false, false, Char('x'), Command::LanguageServerUninstall),
+    b(LanguageServers, false, false, false, Char('/'), Command::LanguageServerFilter),
+    b(LanguageServers, false, false, false, Char('q'), Command::CloseTab),
+
     // Modal contexts. Each is exclusive (see `active_layers`); any key with no
     // binding here falls through to the modal's text input.
     // Quick-open / command palette.

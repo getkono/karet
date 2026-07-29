@@ -20,6 +20,10 @@ use karet_markdown::WrappedDocument;
 use karet_pdf::Document as PdfDocument;
 use karet_search::SearchQuery;
 use karet_session::DocumentId;
+use karet_session::LanguageServerChange;
+use karet_session::LanguageServerId;
+use karet_session::LanguageServerPlanId;
+use karet_session::LanguageServerStatus;
 use karet_session::LoadedConfig;
 use karet_session::ViewId;
 use karet_syntax::FoldRegions;
@@ -121,6 +125,113 @@ pub(crate) struct CommitViewState {
     pub(crate) rail_offset: usize,
 }
 
+/// A clickable operation in the language-server manager's action strip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LanguageServerAction {
+    Refresh,
+    CheckSelected,
+    CheckAll,
+    Primary,
+    Restart,
+    Uninstall,
+    Filter,
+}
+
+/// View-local inventory, selection, update-plan, and hit-testing state.
+pub(crate) struct LanguageServersViewState {
+    pub(crate) servers: Vec<LanguageServerStatus>,
+    pub(crate) selected: usize,
+    pub(crate) offset: usize,
+    pub(crate) filter: String,
+    pub(crate) loading_since: Option<Instant>,
+    pub(crate) inventory_request: Option<karet_session::RequestId>,
+    pub(crate) pending: Option<karet_session::RequestId>,
+    pub(crate) plan: Option<LanguageServerPlanId>,
+    pub(crate) changes: Vec<LanguageServerChange>,
+    pub(crate) error: Option<String>,
+    pub(crate) table_rect: Rect,
+    pub(crate) action_hits: Vec<(Rect, LanguageServerAction)>,
+}
+
+impl LanguageServersViewState {
+    #[must_use]
+    pub(crate) fn loading(inventory_request: Option<karet_session::RequestId>) -> Self {
+        Self {
+            servers: Vec::new(),
+            selected: 0,
+            offset: 0,
+            filter: String::new(),
+            loading_since: Some(Instant::now()),
+            inventory_request,
+            pending: None,
+            plan: None,
+            changes: Vec::new(),
+            error: None,
+            table_rect: Rect::default(),
+            action_hits: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn visible_indices(&self) -> Vec<usize> {
+        let query = self.filter.trim().to_lowercase();
+        self.servers
+            .iter()
+            .enumerate()
+            .filter_map(|(index, status)| {
+                (query.is_empty()
+                    || status.server.display_name().to_lowercase().contains(&query)
+                    || status
+                        .languages
+                        .iter()
+                        .any(|language| language.to_lowercase().contains(&query)))
+                .then_some(index)
+            })
+            .collect()
+    }
+
+    #[must_use]
+    pub(crate) fn selected_server(&self) -> Option<&LanguageServerStatus> {
+        let index = self.visible_indices().get(self.selected).copied()?;
+        self.servers.get(index)
+    }
+
+    #[must_use]
+    pub(crate) fn selected_id(&self) -> Option<LanguageServerId> {
+        self.selected_server().map(|status| status.server.clone())
+    }
+
+    pub(crate) fn select_relative(&mut self, delta: i32) {
+        let count = self.visible_indices().len();
+        if count == 0 {
+            self.selected = 0;
+            self.offset = 0;
+            return;
+        }
+        self.selected =
+            (self.selected as i64 + i64::from(delta)).clamp(0, (count - 1) as i64) as usize;
+    }
+
+    pub(crate) fn set_servers(&mut self, mut servers: Vec<LanguageServerStatus>) {
+        let selected = self.selected_id();
+        servers.sort_by_key(|status| status.server.display_name().to_lowercase());
+        self.servers = servers;
+        self.selected = selected
+            .and_then(|server| {
+                self.visible_indices().iter().position(|&index| {
+                    self.servers
+                        .get(index)
+                        .is_some_and(|status| status.server == server)
+                })
+            })
+            .unwrap_or(0);
+        self.offset = self.offset.min(self.selected);
+        self.loading_since = None;
+        self.inventory_request = None;
+        self.error = None;
+    }
+}
+
 /// The content of a tab and how to render it.
 // The `Code` variant is intentionally the heavy one (it carries the buffer and its
 // derived render state); there are only ever a handful of tabs, so boxing every
@@ -129,6 +240,8 @@ pub(crate) struct CommitViewState {
 pub enum TabKind {
     /// The landing page shown when nothing is open.
     Welcome,
+    /// The singleton language-server inventory and lifecycle manager.
+    LanguageServers(LanguageServersViewState),
     /// A GitHub repository dashboard, detail, or creation form.
     Github(crate::app::github::GithubViewState),
     /// An editable code/text view.
@@ -423,6 +536,15 @@ impl Tab {
     #[must_use]
     pub fn welcome() -> Self {
         Self::new("Welcome", TabKind::Welcome)
+    }
+
+    /// The language-server inventory and lifecycle manager.
+    #[must_use]
+    pub(crate) fn language_servers(pending: Option<karet_session::RequestId>) -> Self {
+        Self::new(
+            "Language Servers",
+            TabKind::LanguageServers(LanguageServersViewState::loading(pending)),
+        )
     }
 
     /// The singleton, permanently pinned GitHub repository dashboard.
@@ -729,6 +851,7 @@ impl Tab {
             TabKind::Document { path, .. } => Some(path),
             TabKind::Diff { file, .. } => Some(&file.change.path),
             TabKind::Welcome
+            | TabKind::LanguageServers(_)
             | TabKind::Github(_)
             | TabKind::Graph { .. }
             | TabKind::LoadedConfig { .. }
@@ -775,6 +898,7 @@ impl Tab {
             TabKind::Compare { .. } => "compare",
             TabKind::CommitGraph { .. } => "commits",
             TabKind::Welcome => "",
+            TabKind::LanguageServers(_) => "language servers",
             TabKind::Github(_) => "github",
         }
     }
@@ -808,6 +932,7 @@ fn tab_kind_path(kind: &TabKind) -> Option<&Path> {
         TabKind::Document { path, .. } => Some(path),
         TabKind::Diff { file, .. } => Some(&file.change.path),
         TabKind::Welcome
+        | TabKind::LanguageServers(_)
         | TabKind::Github(_)
         | TabKind::StashPreview { .. }
         | TabKind::Graph { .. }

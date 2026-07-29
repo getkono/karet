@@ -378,12 +378,23 @@ impl App {
                         self.status = Some("language-server update cancelled".to_string());
                     }
                 },
+                TextPurpose::FilterLanguageServers => {
+                    self.set_language_server_filter(text);
+                },
                 TextPurpose::RestartLanguageServer { server } => {
                     if text == "restart" {
                         self.status = Some(format!("restarted {}", server.display_name()));
                         self.send_command(SessionCommand::RestartLanguageServer { server });
                     } else {
                         self.status = Some("language-server restart deferred".to_string());
+                    }
+                },
+                TextPurpose::UninstallLanguageServer { server } => {
+                    if text == "uninstall" {
+                        self.status = Some(format!("uninstalling {}…", server.display_name()));
+                        self.send_command(SessionCommand::UninstallLanguageServer { server });
+                    } else {
+                        self.status = Some("language-server uninstall cancelled".to_string());
                     }
                 },
             },

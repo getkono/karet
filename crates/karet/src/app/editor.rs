@@ -616,6 +616,10 @@ impl App {
         };
         self.focus_pane_switch(pane);
         self.focus = Focus::Editor;
+        if self.handle_language_server_click(mouse.column, mouse.row) {
+            self.editor_selecting = false;
+            return;
+        }
         if let Some(hit) = file_hit
             && let Some(TabKind::Commit { view, .. } | TabKind::Compare { view, .. }) =
                 self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)

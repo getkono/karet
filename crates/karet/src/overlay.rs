@@ -94,8 +94,12 @@ pub enum TextPurpose {
         plan: LanguageServerPlanId,
         servers: Vec<LanguageServerId>,
     },
+    /// Replace the language-server manager's filter with the submitted text.
+    FilterLanguageServers,
     /// Restart a session-local process after an installed update.
     RestartLanguageServer { server: LanguageServerId },
+    /// Confirm deactivation of one Karet-managed provider by typing `uninstall`.
+    UninstallLanguageServer { server: LanguageServerId },
 }
 
 pub(crate) struct BranchForm {

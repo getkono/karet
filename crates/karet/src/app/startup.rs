@@ -409,6 +409,7 @@ impl App {
                 | TabKind::Hex { .. },
             ) => EditorTab::Pager,
             Some(TabKind::Github(_)) => EditorTab::Github,
+            Some(TabKind::LanguageServers(_)) => EditorTab::LanguageServers,
             Some(TabKind::CommitGraph { .. }) => EditorTab::CommitGraph,
             Some(TabKind::Placeholder {
                 kind: FileKind::TooLarge { .. },
