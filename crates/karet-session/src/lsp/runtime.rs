@@ -181,11 +181,22 @@ pub(super) async fn server_task(
     spec: LspSpec,
     root: PathBuf,
     language: String,
+    provider: LanguageServerId,
     mut rx: mpsc::Receiver<ServerCmd>,
     updates: mpsc::UnboundedSender<LspUpdate>,
     connector: Connector,
     generation: u64,
 ) {
+    let report_state = |state, error: Option<String>| {
+        let _ = updates.send(LspUpdate::RuntimeState {
+            generation,
+            server: provider.clone(),
+            root: root.clone(),
+            state,
+            error,
+        });
+    };
+    report_state(LanguageServerRuntimeState::Starting, None);
     let mut client: Option<LspClient> = None;
     let mut diagnostic_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut documents = HashMap::<PathBuf, OpenDocument>::new();
@@ -237,6 +248,10 @@ pub(super) async fn server_task(
                         failures.push_back(now);
                         next_restart = now + restart_delay;
                         restart_delay = (restart_delay * 2).min(RESTART_MAX_DELAY);
+                        report_state(
+                            LanguageServerRuntimeState::Retrying,
+                            Some("document replay failed".to_owned()),
+                        );
                         continue;
                     }
                     diagnostic_task = Some(forward_diagnostics(
@@ -250,6 +265,7 @@ pub(super) async fn server_task(
                     restart_delay = RESTART_MIN_DELAY;
                     spawn_failure_reported = false;
                     tracing::info!(language, "language server connected");
+                    report_state(LanguageServerRuntimeState::Running, None);
                     continue;
                 },
                 Err(error) => {
@@ -265,8 +281,16 @@ pub(super) async fn server_task(
                     failures.push_back(now);
                     next_restart = if failures.len() >= RESTART_LIMIT {
                         tracing::warn!(language, "language server restart circuit opened");
+                        report_state(
+                            LanguageServerRuntimeState::CircuitOpen,
+                            Some(error.to_string()),
+                        );
                         now + CIRCUIT_COOLDOWN
                     } else {
+                        report_state(
+                            LanguageServerRuntimeState::Retrying,
+                            Some(error.to_string()),
+                        );
                         let next = now + restart_delay;
                         restart_delay = (restart_delay * 2).min(RESTART_MAX_DELAY);
                         next
@@ -299,6 +323,7 @@ pub(super) async fn server_task(
                             task.abort();
                         }
                         next_restart = Instant::now() + restart_delay;
+                        report_state(LanguageServerRuntimeState::Retrying, None);
                     }
                     continue;
                 },
@@ -651,6 +676,7 @@ pub(super) async fn server_task(
             }
             pending = None;
             next_restart = Instant::now() + restart_delay;
+            report_state(LanguageServerRuntimeState::Retrying, None);
         }
     }
     if let Some(client) = client {
@@ -659,6 +685,7 @@ pub(super) async fn server_task(
     if let Some(task) = diagnostic_task {
         task.abort();
     }
+    report_state(LanguageServerRuntimeState::Stopped, None);
 }
 
 /// Send the pending `didChange`, if any.

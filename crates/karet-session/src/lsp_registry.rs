@@ -38,7 +38,6 @@ use tokio::sync::mpsc as tokio_mpsc;
 use crate::api::LanguageServerChange;
 use crate::api::LanguageServerId;
 use crate::api::LanguageServerPlanId;
-use crate::api::LanguageServerStatus;
 use crate::api::RequestId;
 
 const PLAN_LIFETIME: Duration = Duration::from_secs(15 * 60);
@@ -137,21 +136,15 @@ pub(crate) fn installed_spec(
     })
 }
 
-/// Read all local provider states without performing network I/O.
-pub(crate) fn statuses(
-    root: Option<&Path>,
-    running: impl Fn(&LanguageServerId) -> bool,
-) -> Vec<LanguageServerStatus> {
-    SERVERS
-        .iter()
-        .map(|server| LanguageServerStatus {
-            server: server.clone(),
-            installed: root
-                .and_then(|root| read_active(root, server))
-                .map(|active| active.version),
-            running: running(server),
-        })
-        .collect()
+/// Read the active managed version without performing network I/O.
+pub(crate) fn installed_version(root: Option<&Path>, server: &LanguageServerId) -> Option<String> {
+    root.and_then(|root| read_active(root, server))
+        .map(|active| active.version)
+}
+
+/// Whether safe reclamation of a deactivated payload is still pending.
+pub(crate) fn cleanup_pending(_root: Option<&Path>, _server: &LanguageServerId) -> bool {
+    false
 }
 
 fn run(

@@ -320,6 +320,7 @@ impl App {
             } => {
                 self.finish_language_server_change(server, version, restart_required);
             },
+            SessionEvent::LanguageServerRuntimeChanged { .. } => {},
             SessionEvent::Saved { doc } => {
                 for tab in self.all_tabs_mut() {
                     if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {

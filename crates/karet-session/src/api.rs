@@ -418,11 +418,11 @@ impl LanguageServerId {
 }
 
 /// Opaque identifier for an exact, explicitly checked language-server update.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct LanguageServerPlanId(pub u64);
 
 /// One exact language-server change returned by an explicit update check.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LanguageServerChange {
     /// Managed provider.
     pub server: LanguageServerId,
@@ -434,15 +434,76 @@ pub struct LanguageServerChange {
     pub download_bytes: Option<u64>,
 }
 
-/// Local-only status for one managed language server.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// How a language-server executable was resolved for one repository root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub enum LanguageServerSource {
+    /// An explicit `lsp.servers` configuration entry.
+    Configured,
+    /// A repository-local executable such as `node_modules/.bin` or `.venv/bin`.
+    ProjectLocal,
+    /// An executable resolved from the process `PATH`.
+    Path,
+    /// A checksum-verified installation managed by Karet.
+    Managed,
+    /// No usable executable is currently available.
+    Unavailable,
+}
+
+/// Current lifecycle state of a repository-scoped language-server connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub enum LanguageServerRuntimeState {
+    /// No open document currently needs the provider.
+    Idle,
+    /// A connection is being established.
+    Starting,
+    /// The provider is connected and serving this session.
+    Running,
+    /// The provider stopped and is waiting for a bounded retry.
+    Retrying,
+    /// Repeated failures opened the restart circuit.
+    CircuitOpen,
+    /// The provider task stopped without another retry.
+    Stopped,
+}
+
+/// Resolution and runtime state for one provider at one repository root.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LanguageServerInstanceStatus {
+    /// Repository/workspace root passed to the language server.
+    pub root: PathBuf,
+    /// Where the executable was resolved.
+    pub source: LanguageServerSource,
+    /// Resolved executable, absent when unavailable.
+    pub command: Option<String>,
+    /// Resolved command-line arguments.
+    pub args: Vec<String>,
+    /// This session's runtime state for the provider/root pair.
+    pub runtime: LanguageServerRuntimeState,
+    /// Number of open documents attached to the instance.
+    pub open_documents: usize,
+    /// Most recent concise runtime failure, when known.
+    pub error: Option<String>,
+}
+
+/// Complete local status for one built-in or configured language-server provider.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LanguageServerStatus {
-    /// Managed provider.
+    /// Stable provider identity.
     pub server: LanguageServerId,
-    /// Active installed version, if any.
+    /// Language IDs that select this provider.
+    pub languages: Vec<String>,
+    /// Whether the global LSP setting and this provider are enabled.
+    pub enabled: bool,
+    /// Whether Karet owns installation lifecycle operations for this provider.
+    pub managed: bool,
+    /// Active Karet-managed version, if any.
     pub installed: Option<String>,
-    /// Whether this session currently owns a running process for the provider.
-    pub running: bool,
+    /// Whether an unreferenced managed payload still awaits safe cleanup.
+    pub cleanup_pending: bool,
+    /// Repository-scoped resolution and runtime state.
+    pub instances: Vec<LanguageServerInstanceStatus>,
 }
 
 /// Which producer a [`Event::DecorationsChanged`] batch belongs to, so the client
@@ -875,8 +936,20 @@ mod tests {
         };
         let status = LanguageServerStatus {
             server: server.clone(),
+            languages: vec!["tex".into()],
+            enabled: true,
+            managed: true,
             installed: Some("1.0.0".into()),
-            running: true,
+            cleanup_pending: false,
+            instances: vec![LanguageServerInstanceStatus {
+                root: PathBuf::from("/tmp"),
+                source: LanguageServerSource::Managed,
+                command: Some("texlab".into()),
+                args: Vec::new(),
+                runtime: LanguageServerRuntimeState::Running,
+                open_documents: 1,
+                error: None,
+            }],
         };
         let _commands = [
             Command::InstallLanguageServer {

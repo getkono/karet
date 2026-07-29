@@ -21,6 +21,7 @@ mod tests;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::future::Future;
 use std::path::Path;
@@ -41,6 +42,7 @@ use karet_core::WorkspaceEdit;
 use karet_lsp::LspClient;
 use karet_lsp::LspError;
 use karet_lsp::LspSpec;
+use provider::builtin_catalog;
 pub(crate) use provider::builtin_server;
 use provider::builtin_spec;
 use provider::executable_exists;
@@ -54,6 +56,10 @@ use tokio::sync::mpsc;
 
 use crate::api::DocumentId;
 use crate::api::LanguageServerId;
+use crate::api::LanguageServerInstanceStatus;
+use crate::api::LanguageServerRuntimeState;
+use crate::api::LanguageServerSource;
+use crate::api::LanguageServerStatus;
 use crate::api::RequestId;
 use crate::config::schema::Lsp as LspSettings;
 
@@ -259,6 +265,14 @@ pub(crate) enum LspUpdate {
         /// Missing managed provider.
         server: LanguageServerId,
     },
+    /// A provider/root connection changed lifecycle state.
+    RuntimeState {
+        generation: u64,
+        server: LanguageServerId,
+        root: PathBuf,
+        state: LanguageServerRuntimeState,
+        error: Option<String>,
+    },
 }
 
 /// How the manager establishes a client for a spec — [`LspClient::spawn`] in
@@ -309,6 +323,8 @@ pub(crate) struct LspManager {
     missing_reported: HashSet<LanguageServerId>,
     updates: mpsc::UnboundedSender<LspUpdate>,
     connector: Connector,
+    runtime_states:
+        HashMap<(LanguageServerId, PathBuf), (LanguageServerRuntimeState, Option<String>)>,
 }
 
 struct ServerSlot {
@@ -316,6 +332,7 @@ struct ServerSlot {
     documents: HashSet<PathBuf>,
     provider: Option<LanguageServerId>,
     primary: bool,
+    root: PathBuf,
 }
 
 impl LspManager {
@@ -337,6 +354,7 @@ impl LspManager {
                 missing_reported: HashSet::new(),
                 updates,
                 connector: spawn_connector(supervisor, registry_root),
+                runtime_states: HashMap::new(),
             },
             rx,
         )
@@ -357,6 +375,7 @@ impl LspManager {
         self.settings = settings;
         self.generation = self.generation.wrapping_add(1);
         self.servers.clear();
+        self.runtime_states.clear();
         true
     }
 
@@ -373,7 +392,8 @@ impl LspManager {
             | LspUpdate::Diagnostics { generation, .. }
             | LspUpdate::SpawnFailed { generation, .. }
             | LspUpdate::ServerDied { generation, .. }
-            | LspUpdate::InstallRequired { generation, .. } => *generation,
+            | LspUpdate::InstallRequired { generation, .. }
+            | LspUpdate::RuntimeState { generation, .. } => *generation,
         };
         generation == self.generation
     }
@@ -405,7 +425,7 @@ impl LspManager {
                     args: server.args.clone(),
                     languages: vec![language.to_owned()],
                 },
-                None,
+                Some(LanguageServerId::new(language.to_owned())),
             ));
         }
         let provider = builtin_server(language)?;
@@ -422,14 +442,30 @@ impl LspManager {
         root: &Path,
     ) -> Option<LspSpec> {
         let fallback = builtin_spec(provider, language);
+        self.resolve_builtin(provider, language, root, fallback)
+            .map(|(spec, _)| spec)
+    }
+
+    fn resolve_builtin(
+        &self,
+        provider: &LanguageServerId,
+        language: &str,
+        root: &Path,
+        fallback: LspSpec,
+    ) -> Option<(LspSpec, LanguageServerSource)> {
         project_local_spec(root, &fallback)
-            .or_else(|| executable_exists(OsStr::new(&fallback.command)).then_some(fallback))
+            .map(|spec| (spec, LanguageServerSource::ProjectLocal))
+            .or_else(|| {
+                executable_exists(OsStr::new(&fallback.command))
+                    .then_some((fallback, LanguageServerSource::Path))
+            })
             .or_else(|| {
                 crate::lsp_registry::installed_spec(
                     self.registry_root.as_deref(),
                     provider,
                     language,
                 )
+                .map(|spec| (spec, LanguageServerSource::Managed))
             })
     }
 
@@ -471,10 +507,14 @@ impl LspManager {
             // (unit tests, bare library use) simply runs without LSP.
             let handle = tokio::runtime::Handle::try_current().ok()?;
             let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
+            let runtime_provider = provider
+                .clone()
+                .unwrap_or_else(|| LanguageServerId::new(provider_key.clone()));
             handle.spawn(runtime::server_task(
-                spec,
+                spec.clone(),
                 root,
                 key.clone(),
+                runtime_provider,
                 rx,
                 self.updates.clone(),
                 Arc::clone(&self.connector),
@@ -487,6 +527,7 @@ impl LspManager {
                     documents: HashSet::new(),
                     provider,
                     primary: true,
+                    root: nearest_repository_root(path, self.root.as_deref()),
                 },
             );
         }
@@ -517,9 +558,10 @@ impl LspManager {
             let handle = tokio::runtime::Handle::try_current().ok()?;
             let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
             handle.spawn(runtime::server_task(
-                spec,
+                spec.clone(),
                 root,
                 key.clone(),
+                provider.clone(),
                 rx,
                 self.updates.clone(),
                 Arc::clone(&self.connector),
@@ -532,6 +574,7 @@ impl LspManager {
                     documents: HashSet::new(),
                     provider: Some(provider),
                     primary: false,
+                    root: nearest_repository_root(path, self.root.as_deref()),
                 },
             );
         }
@@ -730,6 +773,156 @@ impl LspManager {
     /// Forget a missing-provider suppression after its installation activates.
     pub(crate) fn installed(&mut self, provider: LanguageServerId) {
         self.missing_reported.remove(&provider);
+    }
+
+    /// Record a runtime transition before forwarding it to presentation clients.
+    pub(crate) fn note_runtime(
+        &mut self,
+        server: LanguageServerId,
+        root: PathBuf,
+        state: LanguageServerRuntimeState,
+        error: Option<String>,
+    ) {
+        self.runtime_states.insert((server, root), (state, error));
+    }
+
+    /// Build a complete, network-free provider inventory for known repository roots.
+    pub(crate) fn inventory(
+        &self,
+        document_paths: impl IntoIterator<Item = PathBuf>,
+    ) -> Vec<LanguageServerStatus> {
+        let mut providers = BTreeMap::<String, (LanguageServerId, BTreeSet<String>, bool)>::new();
+        for descriptor in builtin_catalog() {
+            providers.insert(
+                descriptor.server.key().to_owned(),
+                (
+                    descriptor.server,
+                    descriptor.languages.into_iter().collect(),
+                    descriptor.managed,
+                ),
+            );
+        }
+        for (language, selection) in &self.settings.languages {
+            let selected = selection
+                .servers
+                .iter()
+                .chain(selection.formatter.iter())
+                .chain(selection.semantic_tokens.iter())
+                .chain(selection.diagnostics.iter());
+            for server in selected {
+                let entry = providers.entry(server.clone()).or_insert_with(|| {
+                    (
+                        LanguageServerId::new(server.clone()),
+                        BTreeSet::new(),
+                        false,
+                    )
+                });
+                entry.1.insert(language.clone());
+            }
+        }
+        for server in self.settings.servers.keys() {
+            let entry = providers.entry(server.clone()).or_insert_with(|| {
+                (
+                    LanguageServerId::new(server.clone()),
+                    BTreeSet::new(),
+                    false,
+                )
+            });
+            if entry.1.is_empty() {
+                entry.1.insert(server.clone());
+            }
+        }
+
+        let mut known_roots: BTreeSet<PathBuf> = document_paths
+            .into_iter()
+            .map(|path| nearest_repository_root(&path, self.root.as_deref()))
+            .collect();
+        if let Some(root) = &self.root {
+            known_roots.insert(root.clone());
+        }
+        known_roots.extend(self.servers.values().map(|slot| slot.root.clone()));
+        if known_roots.is_empty() {
+            known_roots.insert(PathBuf::from("."));
+        }
+
+        providers
+            .into_values()
+            .map(|(server, languages, managed)| {
+                let installed =
+                    crate::lsp_registry::installed_version(self.registry_root.as_deref(), &server);
+                let instances = known_roots
+                    .iter()
+                    .map(|root| self.inventory_instance(&server, &languages, root))
+                    .collect();
+                LanguageServerStatus {
+                    enabled: self.settings.enabled,
+                    installed,
+                    cleanup_pending: crate::lsp_registry::cleanup_pending(
+                        self.registry_root.as_deref(),
+                        &server,
+                    ),
+                    server,
+                    languages: languages.into_iter().collect(),
+                    managed,
+                    instances,
+                }
+            })
+            .collect()
+    }
+
+    fn inventory_instance(
+        &self,
+        server: &LanguageServerId,
+        languages: &BTreeSet<String>,
+        root: &Path,
+    ) -> LanguageServerInstanceStatus {
+        let configured = self.settings.servers.get(server.key());
+        let language = languages.iter().next().map_or(server.key(), String::as_str);
+        let resolved = configured
+            .filter(|setting| setting.enabled && !setting.command.is_empty())
+            .map(|setting| {
+                (
+                    LspSpec {
+                        command: setting.command.clone(),
+                        args: setting.args.clone(),
+                        languages: vec![language.to_owned()],
+                    },
+                    LanguageServerSource::Configured,
+                )
+            })
+            .or_else(|| {
+                let fallback = builtin_spec(server, language);
+                self.resolve_builtin(server, language, root, fallback)
+            });
+        let slot = self
+            .servers
+            .values()
+            .find(|slot| slot.provider.as_ref() == Some(server) && slot.root == root);
+        let runtime = self
+            .runtime_states
+            .get(&(server.clone(), root.to_path_buf()));
+        let (command, args, source) = resolved.map_or(
+            (None, Vec::new(), LanguageServerSource::Unavailable),
+            |(spec, source)| (Some(spec.command), spec.args, source),
+        );
+        LanguageServerInstanceStatus {
+            root: root.to_path_buf(),
+            source,
+            command,
+            args,
+            runtime: runtime.map_or_else(
+                || {
+                    if slot.is_some() {
+                        LanguageServerRuntimeState::Starting
+                    } else {
+                        LanguageServerRuntimeState::Idle
+                    }
+                },
+                |(state, _)| *state,
+            ),
+            open_documents: slot.map_or(0, |slot| slot.documents.len()),
+            error: runtime.and_then(|(_, error)| error.clone()),
+        }
     }
 
     /// Forward a completion request (`position` already in UTF-16 columns).

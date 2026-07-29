@@ -729,10 +729,13 @@ impl Session {
             } => self.rename(id, doc, position, new_name),
             Command::FormatOnSave { doc } => self.format_document(id, doc),
             Command::LanguageServerStatus => {
-                let servers = crate::lsp_registry::statuses(
-                    self.config.lsp_registry_dir.as_deref(),
-                    |server| self.lsp.is_running(server),
-                );
+                let paths = self
+                    .store
+                    .docs
+                    .values()
+                    .map(|document| document.path.clone())
+                    .collect::<Vec<_>>();
+                let servers = self.lsp.inventory(paths);
                 self.emit(Some(id), Event::LanguageServerStatus { servers });
             },
             Command::InstallLanguageServer { server } => {

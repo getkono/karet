@@ -1,49 +1,105 @@
 use super::*;
 
+/// One built-in provider and the language IDs that resolve to it.
+pub(crate) struct ProviderDescriptor {
+    pub(crate) server: LanguageServerId,
+    pub(crate) languages: Vec<String>,
+    pub(crate) managed: bool,
+}
+
+const BUILTIN_PROVIDERS: &[(&str, &str)] = &[
+    ("rust", "rust-analyzer"),
+    ("typescript", "typescript-language-server"),
+    ("javascript", "typescript-language-server"),
+    ("jsx", "typescript-language-server"),
+    ("tsx", "typescript-language-server"),
+    ("python", "pyright"),
+    ("tex", "texlab"),
+    ("c", "clangd"),
+    ("c++", "clangd"),
+    ("c#", "csharp"),
+    ("go", "gopls"),
+    ("java", "jdtls"),
+    ("zig", "zls"),
+    ("astro", "astro-language-server"),
+    ("svelte", "svelte-language-server"),
+    ("vue", "vue-language-server"),
+    ("yaml", "yaml-language-server"),
+    ("xml", "lemminx"),
+    ("svg", "lemminx"),
+    ("ruby", "ruby-lsp"),
+    ("php", "phpactor"),
+    ("swift", "sourcekit-lsp"),
+    ("scala", "metals"),
+    ("lua", "lua-language-server"),
+    ("haskell", "haskell-language-server"),
+    ("ocaml", "ocamllsp"),
+    ("erlang", "elp"),
+    ("dart", "dart-language-server"),
+    ("r", "r-languageserver"),
+    ("clojure", "clojure-lsp"),
+    ("html", "vscode-html-language-server"),
+    ("css", "vscode-css-language-server"),
+    ("sass", "vscode-css-language-server"),
+    ("less", "vscode-css-language-server"),
+    ("json", "vscode-json-language-server"),
+    ("toml", "taplo"),
+    ("pkl", "pkl-lsp"),
+    ("protobuf", "buf"),
+    ("graphql", "graphql-lsp"),
+    ("shell", "bash-language-server"),
+    ("bash", "bash-language-server"),
+    ("powershell", "powershell-editor-services"),
+    ("markdown", "marksman"),
+    ("restructuredtext", "esbonio"),
+    ("dockerfile", "docker-langserver"),
+    ("cmake", "neocmakelsp"),
+];
+
+pub(crate) fn managed_provider(server: &LanguageServerId) -> bool {
+    matches!(
+        server.key(),
+        "rust-analyzer" | "typescript-language-server" | "pyright" | "ruff" | "texlab"
+    )
+}
+
+pub(crate) fn builtin_catalog() -> Vec<ProviderDescriptor> {
+    let mut providers = std::collections::BTreeMap::<String, Vec<String>>::new();
+    for (language, server) in BUILTIN_PROVIDERS {
+        providers
+            .entry((*server).to_owned())
+            .or_default()
+            .push((*language).to_owned());
+    }
+    // Ruff is a built-in Python diagnostics/formatting companion rather than
+    // Python's primary intelligence provider, so it is not in the direct map.
+    providers
+        .entry("ruff".to_owned())
+        .or_default()
+        .push("python".to_owned());
+    providers
+        .entry("biome".to_owned())
+        .or_default()
+        .extend(["javascript".to_owned(), "typescript".to_owned()]);
+    providers
+        .into_iter()
+        .map(|(server, languages)| {
+            let server = LanguageServerId::new(server);
+            ProviderDescriptor {
+                managed: managed_provider(&server),
+                server,
+                languages,
+            }
+        })
+        .collect()
+}
+
 /// The built-in default servers, used when `lsp.servers` has no entry for a
 /// language. Keys are lowercase language names (the same keys user config uses).
 pub(crate) fn builtin_server(language: &str) -> Option<LanguageServerId> {
-    match language {
-        "rust" => Some(LanguageServerId::RustAnalyzer),
-        "typescript" | "javascript" | "jsx" | "tsx" => Some(LanguageServerId::TypeScript),
-        "python" => Some(LanguageServerId::Pyright),
-        "tex" => Some(LanguageServerId::Texlab),
-        "c" | "c++" => Some(LanguageServerId::Clangd),
-        "c#" => Some(LanguageServerId::CSharp),
-        "go" => Some(LanguageServerId::Gopls),
-        "java" => Some(LanguageServerId::Jdtls),
-        "zig" => Some(LanguageServerId::Zls),
-        "astro" => Some(LanguageServerId::Astro),
-        "svelte" => Some(LanguageServerId::Svelte),
-        "vue" => Some(LanguageServerId::Vue),
-        "yaml" => Some(LanguageServerId::Yaml),
-        "xml" | "svg" => Some(LanguageServerId::Xml),
-        "ruby" => Some(LanguageServerId::new("ruby-lsp")),
-        "php" => Some(LanguageServerId::new("phpactor")),
-        "swift" => Some(LanguageServerId::new("sourcekit-lsp")),
-        "scala" => Some(LanguageServerId::new("metals")),
-        "lua" => Some(LanguageServerId::new("lua-language-server")),
-        "haskell" => Some(LanguageServerId::new("haskell-language-server")),
-        "ocaml" => Some(LanguageServerId::new("ocamllsp")),
-        "erlang" => Some(LanguageServerId::new("elp")),
-        "dart" => Some(LanguageServerId::new("dart-language-server")),
-        "r" => Some(LanguageServerId::new("r-languageserver")),
-        "clojure" => Some(LanguageServerId::new("clojure-lsp")),
-        "html" => Some(LanguageServerId::new("vscode-html-language-server")),
-        "css" | "sass" | "less" => Some(LanguageServerId::new("vscode-css-language-server")),
-        "json" => Some(LanguageServerId::new("vscode-json-language-server")),
-        "toml" => Some(LanguageServerId::new("taplo")),
-        "pkl" => Some(LanguageServerId::new("pkl-lsp")),
-        "protobuf" => Some(LanguageServerId::new("buf")),
-        "graphql" => Some(LanguageServerId::new("graphql-lsp")),
-        "shell" | "bash" => Some(LanguageServerId::new("bash-language-server")),
-        "powershell" => Some(LanguageServerId::new("powershell-editor-services")),
-        "markdown" => Some(LanguageServerId::new("marksman")),
-        "restructuredtext" => Some(LanguageServerId::new("esbonio")),
-        "dockerfile" => Some(LanguageServerId::new("docker-langserver")),
-        "cmake" => Some(LanguageServerId::new("neocmakelsp")),
-        _ => None,
-    }
+    BUILTIN_PROVIDERS.iter().find_map(|(candidate, server)| {
+        (*candidate == language).then(|| LanguageServerId::new(*server))
+    })
 }
 
 pub(super) fn builtin_spec(provider: &LanguageServerId, language: &str) -> LspSpec {

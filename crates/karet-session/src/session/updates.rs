@@ -247,6 +247,25 @@ impl Session {
                     ),
                 },
             ),
+            LspUpdate::RuntimeState {
+                server,
+                root,
+                state,
+                error,
+                ..
+            } => {
+                self.lsp
+                    .note_runtime(server.clone(), root.clone(), state, error.clone());
+                self.emit(
+                    None,
+                    Event::LanguageServerRuntimeChanged {
+                        server,
+                        root,
+                        state,
+                        error,
+                    },
+                );
+            },
             LspUpdate::InstallRequired { server, .. } => {
                 match self.config.settings.lsp.managed_downloads {
                     crate::config::schema::ManagedDownloads::Prompt => {

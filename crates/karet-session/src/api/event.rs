@@ -173,6 +173,17 @@ pub enum Event {
         /// Whether processes using an older version still need a user-approved restart.
         restart_required: bool,
     },
+    /// A repository-scoped provider changed lifecycle state in this session.
+    LanguageServerRuntimeChanged {
+        /// Provider whose connection changed.
+        server: LanguageServerId,
+        /// Repository root owned by the connection.
+        root: PathBuf,
+        /// New lifecycle state.
+        state: LanguageServerRuntimeState,
+        /// Most recent concise failure, when applicable.
+        error: Option<String>,
+    },
     /// Hover result answering a [`Command::Hover`].
     HoverResult {
         /// The hover, if any.
