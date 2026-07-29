@@ -20,6 +20,8 @@ use tokio::io::WriteHalf;
 use super::*;
 use crate::api::Command;
 use crate::api::Event;
+use crate::api::LanguageServerInstanceStatus;
+use crate::api::LanguageServerStatus;
 use crate::backend::Backend;
 use crate::backend::local;
 use crate::session::EventRx;

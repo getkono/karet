@@ -12,6 +12,9 @@
 //! fully installed and verified.
 
 mod catalog;
+mod lifecycle;
+#[cfg(test)]
+mod tests;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -30,6 +33,7 @@ use catalog::Release;
 use catalog::ReleaseKind;
 use catalog::discover;
 use karet_lsp::LspSpec;
+use lifecycle::*;
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use serde::Serialize;
@@ -114,17 +118,6 @@ struct ActiveInstallation {
     version: String,
     command: PathBuf,
     args: Vec<String>,
-}
-
-#[derive(Deserialize, Serialize)]
-struct Deactivation {
-    deactivated: bool,
-    version: String,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-struct RetiredInstallation {
-    version: String,
 }
 
 #[derive(Clone)]
@@ -441,77 +434,6 @@ fn read_active(root: &Path, server: &LanguageServerId) -> Option<ActiveInstallat
 
 fn provider_root(root: &Path, server: &LanguageServerId) -> PathBuf {
     root.join(server.key())
-}
-
-fn retired_installations(root: &Path, server: &LanguageServerId) -> Vec<RetiredInstallation> {
-    std::fs::read_to_string(provider_root(root, server).join("retired.jsonl"))
-        .ok()
-        .map(|journal| {
-            journal
-                .lines()
-                .filter_map(|line| serde_json::from_str(line).ok())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn uninstall(root: &Path, server: &LanguageServerId) -> Result<bool, String> {
-    if !SERVERS.contains(server) {
-        return Err(format!("{} is not managed by Karet", server.display_name()));
-    }
-    let provider = provider_root(root, server);
-    let lock = File::options()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(provider.join("install.lock"))
-        .map_err(|error| error.to_string())?;
-    lock.lock().map_err(|error| error.to_string())?;
-    let active = read_active(root, server)
-        .ok_or_else(|| format!("{} is not installed", server.display_name()))?;
-    append_json_line(
-        &provider.join("active.jsonl"),
-        &Deactivation {
-            deactivated: true,
-            version: active.version.clone(),
-        },
-    )?;
-    append_json_line(
-        &provider.join("retired.jsonl"),
-        &RetiredInstallation {
-            version: active.version,
-        },
-    )?;
-    cleanup_retired_provider(root, server);
-    Ok(cleanup_pending(Some(root), server))
-}
-
-fn append_json_line(path: &Path, value: &impl Serialize) -> Result<(), String> {
-    let encoded = serde_json::to_string(value).map_err(|error| error.to_string())?;
-    let mut journal = File::options()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|error| error.to_string())?;
-    writeln!(journal, "{encoded}").map_err(|error| error.to_string())?;
-    journal.sync_all().map_err(|error| error.to_string())
-}
-
-fn cleanup_retired_all(root: &Path) {
-    for server in &SERVERS {
-        cleanup_retired_provider(root, server);
-    }
-}
-
-fn cleanup_retired_provider(root: &Path, server: &LanguageServerId) {
-    let versions = provider_root(root, server).join("versions");
-    for retired in retired_installations(root, server) {
-        let payload = versions.join(safe_version(&retired.version));
-        if payload.is_dir() && !crate::lsp_broker::managed_payload_in_use(root, &payload) {
-            let _ = std::fs::remove_dir_all(payload);
-        }
-    }
 }
 
 fn install(
@@ -897,125 +819,4 @@ fn safe_version(version: &str) -> String {
             }
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn activation_journal_ignores_a_torn_tail() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let provider = provider_root(dir.path(), &LanguageServerId::Texlab);
-        std::fs::create_dir_all(&provider)?;
-        let command = provider.join("texlab");
-        std::fs::write(&command, b"test")?;
-        let active = ActiveInstallation {
-            version: "1.2.3".into(),
-            command,
-            args: Vec::new(),
-        };
-        let encoded = serde_json::to_string(&active)?;
-        std::fs::write(provider.join("active.jsonl"), format!("{encoded}\n{{"))?;
-        let resolved = read_active(dir.path(), &LanguageServerId::Texlab);
-        assert_eq!(resolved.map(|item| item.version), Some("1.2.3".into()));
-        Ok(())
-    }
-
-    #[test]
-    fn unsafe_versions_cannot_escape_the_provider_directory() {
-        assert_eq!(safe_version("../../bad release"), ".._.._bad_release");
-    }
-
-    #[test]
-    fn node_provider_identity_covers_every_managed_runtime() {
-        let release = Release {
-            server: LanguageServerId::TypeScript,
-            version: "5.3.0".into(),
-            from_version: None,
-            kind: ReleaseKind::Npm {
-                package: "typescript-language-server".into(),
-                companion: Some(("typescript".into(), "5.9.3".into())),
-                node_version: "v24.4.0".into(),
-                node_url: String::new(),
-                node_sha256: String::new(),
-                node_archive: Archive::TarGzip,
-            },
-            download_bytes: None,
-        };
-        assert_eq!(
-            release.active_version(),
-            "5.3.0+typescript-5.9.3+node-24.4.0"
-        );
-    }
-
-    #[test]
-    fn uninstall_deactivates_resolution_and_reclaims_unused_payload()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let server = LanguageServerId::Texlab;
-        let provider = provider_root(dir.path(), &server);
-        let payload = provider.join("versions/1.2.3");
-        std::fs::create_dir_all(&payload)?;
-        let command = payload.join(executable("texlab"));
-        std::fs::write(&command, b"test")?;
-        append_json_line(
-            &provider.join("active.jsonl"),
-            &ActiveInstallation {
-                version: "1.2.3".into(),
-                command,
-                args: Vec::new(),
-            },
-        )?;
-
-        assert!(!uninstall(dir.path(), &server)?);
-        assert!(read_active(dir.path(), &server).is_none());
-        assert!(!payload.exists());
-        assert!(!cleanup_pending(Some(dir.path()), &server));
-        Ok(())
-    }
-
-    #[test]
-    fn uninstall_defers_payload_cleanup_while_a_broker_is_live()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let server = LanguageServerId::Texlab;
-        let provider = provider_root(dir.path(), &server);
-        let payload = provider.join("versions/1.2.3");
-        std::fs::create_dir_all(&payload)?;
-        let command = payload.join(executable("texlab"));
-        std::fs::write(&command, b"test")?;
-        append_json_line(
-            &provider.join("active.jsonl"),
-            &ActiveInstallation {
-                version: "1.2.3".into(),
-                command: command.clone(),
-                args: Vec::new(),
-            },
-        )?;
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
-        let brokers = dir.path().join("brokers");
-        std::fs::create_dir_all(&brokers)?;
-        let endpoint = serde_json::json!({
-            "address": listener.local_addr()?,
-            "token": "test",
-            "pid": std::process::id(),
-            "command": command,
-        });
-        std::fs::write(brokers.join("live.json"), serde_json::to_vec(&endpoint)?)?;
-
-        assert!(uninstall(dir.path(), &server)?);
-        assert!(read_active(dir.path(), &server).is_none());
-        assert!(payload.is_dir());
-        assert!(cleanup_pending(Some(dir.path()), &server));
-        Ok(())
-    }
-
-    #[test]
-    fn uninstall_rejects_external_providers() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let result = uninstall(dir.path(), &LanguageServerId::Clangd);
-        assert!(matches!(result, Err(message) if message.contains("not managed")));
-        Ok(())
-    }
 }

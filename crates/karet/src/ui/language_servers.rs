@@ -1,4 +1,3 @@
-use super::*;
 use karet_session::LanguageServerInstanceStatus;
 use karet_session::LanguageServerRuntimeState;
 use karet_session::LanguageServerSource;
@@ -8,6 +7,7 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
+use super::*;
 use crate::app::LOADING_REVEAL_DELAY;
 use crate::tab::LanguageServerAction;
 use crate::tab::LanguageServersViewState;

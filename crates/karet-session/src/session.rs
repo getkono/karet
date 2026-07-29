@@ -15,6 +15,8 @@
 mod documents;
 #[cfg(feature = "github")]
 mod github;
+mod lsp_commands;
+mod lsp_registry_updates;
 mod persistence;
 mod updates;
 mod vcs;
@@ -532,6 +534,9 @@ impl Session {
     /// Handle one request. The editing fast paths resolve inline; the answering
     /// [`Event`] is tagged with `id`.
     pub fn handle(&mut self, id: RequestId, command: Command) {
+        if self.handle_lsp_command(id, &command) {
+            return;
+        }
         match command {
             Command::Cancel { request } => self.vcs_cancellations.cancel(request),
             Command::OpenDocument { path, language } => self.open(id, path, language.as_deref()),
@@ -728,54 +733,6 @@ impl Session {
                 new_name,
             } => self.rename(id, doc, position, new_name),
             Command::FormatOnSave { doc } => self.format_document(id, doc),
-            Command::LanguageServerStatus => {
-                let paths = self
-                    .store
-                    .docs
-                    .values()
-                    .map(|document| document.path.clone())
-                    .collect::<Vec<_>>();
-                let servers = self.lsp.inventory(paths);
-                self.emit(Some(id), Event::LanguageServerStatus { servers });
-            },
-            Command::InstallLanguageServer { server } => {
-                self.queue_lsp_registry(
-                    id,
-                    crate::lsp_registry::RegistryJob::Install {
-                        request: id,
-                        server,
-                    },
-                );
-            },
-            Command::CheckLanguageServerUpdates { server } => {
-                self.queue_lsp_registry(
-                    id,
-                    crate::lsp_registry::RegistryJob::Check {
-                        request: id,
-                        server,
-                    },
-                );
-            },
-            Command::ApplyLanguageServerPlan { plan, servers } => {
-                self.queue_lsp_registry(
-                    id,
-                    crate::lsp_registry::RegistryJob::Apply {
-                        request: id,
-                        plan,
-                        servers,
-                    },
-                );
-            },
-            Command::UninstallLanguageServer { server } => self.queue_lsp_registry(
-                id,
-                crate::lsp_registry::RegistryJob::Uninstall {
-                    request: id,
-                    server,
-                },
-            ),
-            Command::RestartLanguageServer { server } => {
-                self.restart_lsp(server);
-            },
             // The remaining language-intelligence and search commands are wired in
             // later milestones.
             _ => {},
