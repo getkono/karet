@@ -101,6 +101,7 @@ use karet_session::GithubVerification;
 use karet_session::LanguageServerChange;
 use karet_session::LanguageServerId;
 use karet_session::LanguageServerPlanId;
+use karet_session::LanguageServerRuntimeState;
 use karet_session::LanguageServerStatus;
 use karet_session::LoadedConfig;
 use karet_session::PullRequestSummary;
@@ -136,6 +137,7 @@ use karet_widgets::PendingEdit;
 use karet_widgets::SplitAxis;
 use karet_widgets::SplitDir;
 use karet_widgets::drop_zone;
+pub(crate) use language_servers::LanguageServerBadge;
 use ratatui::layout::Rect;
 pub(crate) use runtime::run;
 use tokio::sync::mpsc;
@@ -1022,6 +1024,8 @@ pub struct App {
     pub(crate) document_diagnostics: HashMap<DocumentId, Vec<Diagnostic>>,
     /// Latest language-server symbol tree for each open document.
     document_symbols: HashMap<DocumentId, Vec<Symbol>>,
+    /// Repository-scoped lifecycle state used by every LSP presentation surface.
+    lsp_runtime: language_servers::LanguageServerRuntimeModel,
     /// Buffer version represented by each cached symbol tree.
     outline_versions: HashMap<DocumentId, u64>,
     /// In-flight symbol request version and start time per document.

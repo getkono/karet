@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::LanguageServerBadge;
 
 pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     app.status_rect = area;
@@ -27,6 +28,9 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
         Some(spelling) => format!("{language} · {}", spelling.display_name()),
         None => language.to_owned(),
     };
+    let lsp_badge = app.active_language_server_badge();
+    let lsp_label = lsp_badge.map(language_server_badge_label);
+    let language = lsp_label.map_or(language.clone(), |badge| format!("{language} · {badge}"));
     let right = match app.tabs.get(app.active) {
         Some(
             tab @ Tab {
@@ -99,10 +103,60 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     }
 
     f.render_widget(Paragraph::new(Line::from(spans)).style(bar), left);
+    let right_line = match lsp_badge.zip(lsp_label) {
+        Some((badge, label)) => styled_status_right(&right, label, badge, bar, theme),
+        None => Line::styled(right, bar),
+    };
     f.render_widget(
-        Paragraph::new(right).style(bar).alignment(Alignment::Right),
+        Paragraph::new(right_line).alignment(Alignment::Right),
         cols[1],
     );
+}
+
+fn language_server_badge_label(badge: LanguageServerBadge) -> &'static str {
+    match badge {
+        LanguageServerBadge::Idle => "LSP idle",
+        LanguageServerBadge::Starting => "LSP starting",
+        LanguageServerBadge::InSync => "LSP in sync",
+        LanguageServerBadge::Retrying => "LSP retrying",
+        LanguageServerBadge::Crashed => "LSP crashed",
+        LanguageServerBadge::Unavailable => "LSP unavailable",
+    }
+}
+
+fn language_server_badge_role(badge: LanguageServerBadge) -> ThemeRole {
+    match badge {
+        LanguageServerBadge::InSync => ThemeRole::DiagnosticHint,
+        LanguageServerBadge::Starting | LanguageServerBadge::Retrying => {
+            ThemeRole::DiagnosticWarning
+        },
+        LanguageServerBadge::Crashed | LanguageServerBadge::Unavailable => {
+            ThemeRole::DiagnosticError
+        },
+        LanguageServerBadge::Idle => ThemeRole::Muted,
+    }
+}
+
+fn styled_status_right(
+    right: &str,
+    label: &str,
+    badge: LanguageServerBadge,
+    bar: Style,
+    theme: &Theme,
+) -> Line<'static> {
+    let Some(start) = right.rfind(label) else {
+        return Line::styled(right.to_owned(), bar);
+    };
+    let end = start.saturating_add(label.len());
+    Line::from(vec![
+        Span::styled(right[..start].to_owned(), bar),
+        Span::styled(
+            label.to_owned(),
+            bar.fg(theme.role(language_server_badge_role(badge)).to_ratatui())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(right[end..].to_owned(), bar),
+    ])
 }
 
 /// The status bar's cursor-position label for a code tab: `"Ln {line}, Col

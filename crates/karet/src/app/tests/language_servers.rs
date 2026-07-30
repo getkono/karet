@@ -284,3 +284,101 @@ fn language_server_actions_wrap_without_disappearing_on_narrow_views() {
     assert!(rendered.contains("Restart"));
     assert!(rendered.contains("Uninstall"));
 }
+
+#[test]
+fn active_file_lsp_badge_reacts_to_runtime_state_and_color() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = app();
+    app.push_tab(text_tab("/workspace/src/main.rs", "fn main() {}\n"));
+    app.show_language_server_status(
+        None,
+        vec![language_server_status(
+            LanguageServerId::RustAnalyzer,
+            "rust",
+            true,
+        )],
+    );
+
+    let mut terminal = Terminal::new(TestBackend::new(100, 12)).expect("test terminal");
+    terminal
+        .draw(|frame| crate::ui::draw(frame, &mut app))
+        .expect("draw shell");
+    let running = terminal.backend().buffer();
+    let running_row = (0..100)
+        .map(|x| running[(x, 11)].symbol())
+        .collect::<String>();
+    let running_x = running_row.find("LSP in sync").expect("running LSP badge");
+    assert_eq!(
+        running[(u16::try_from(running_x).unwrap_or_default(), 11)].fg,
+        app.theme
+            .role(ThemeRole::DiagnosticHint)
+            .to_ratatui()
+    );
+
+    app.on_backend_event(
+        None,
+        SessionEvent::LanguageServerRuntimeChanged {
+            server: LanguageServerId::RustAnalyzer,
+            root: PathBuf::from("/workspace"),
+            state: LanguageServerRuntimeState::CircuitOpen,
+            error: Some("protocol error: cannot convert relative path . to a file URI".to_string()),
+        },
+    );
+    terminal
+        .draw(|frame| crate::ui::draw(frame, &mut app))
+        .expect("redraw shell");
+    let crashed = terminal.backend().buffer();
+    let crashed_row = (0..100)
+        .map(|x| crashed[(x, 11)].symbol())
+        .collect::<String>();
+    let crashed_x = crashed_row.find("LSP crashed").expect("crashed LSP badge");
+    assert_eq!(
+        crashed[(u16::try_from(crashed_x).unwrap_or_default(), 11)].fg,
+        app.theme
+            .role(ThemeRole::DiagnosticError)
+            .to_ratatui()
+    );
+}
+
+#[test]
+fn runtime_protocol_failures_remain_as_deduplicated_notifications() {
+    let mut app = app();
+    app.show_language_server_status(
+        None,
+        vec![language_server_status(
+            LanguageServerId::RustAnalyzer,
+            "rust",
+            true,
+        )],
+    );
+    let root = PathBuf::from("/workspace");
+    app.update_language_server_runtime(
+        LanguageServerId::RustAnalyzer,
+        root.clone(),
+        LanguageServerRuntimeState::Retrying,
+        Some("transport reset".to_string()),
+    );
+    app.update_language_server_runtime(
+        LanguageServerId::RustAnalyzer,
+        root,
+        LanguageServerRuntimeState::CircuitOpen,
+        Some("protocol error: cannot convert relative path . to a file URI".to_string()),
+    );
+
+    let lsp_failures = app
+        .notifications
+        .active()
+        .into_iter()
+        .filter(|notification| notification.kind == NotificationKind::Lsp)
+        .collect::<Vec<_>>();
+    assert_eq!(lsp_failures.len(), 1);
+    assert_eq!(lsp_failures[0].severity, Severity::Error);
+    assert!(lsp_failures[0].timeout.is_none());
+    assert!(
+        lsp_failures[0]
+            .title
+            .contains("protocol error: cannot convert relative path . to a file URI")
+    );
+}

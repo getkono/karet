@@ -144,6 +144,7 @@ impl App {
             document_settings: HashMap::new(),
             document_diagnostics: HashMap::new(),
             document_symbols: HashMap::new(),
+            lsp_runtime: language_servers::LanguageServerRuntimeModel::default(),
             outline_versions: HashMap::new(),
             outline_loading: HashMap::new(),
             auto_save_pending: HashMap::new(),

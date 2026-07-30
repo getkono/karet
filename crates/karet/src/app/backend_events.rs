@@ -135,6 +135,17 @@ impl App {
         kind: NotificationKind,
         title: impl Into<String>,
     ) {
+        self.notify_tagged(severity, kind, title, None);
+    }
+
+    /// Push or replace a persistent condition identified by `tag`.
+    pub(super) fn notify_tagged(
+        &mut self,
+        severity: Severity,
+        kind: NotificationKind,
+        title: impl Into<String>,
+        tag: Option<String>,
+    ) {
         let title = title.into();
         match severity {
             Severity::Error => {
@@ -157,7 +168,7 @@ impl App {
                 kind,
                 title,
                 body: None,
-                tag: None,
+                tag,
                 timeout,
                 dismissable: true,
             },

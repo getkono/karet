@@ -157,6 +157,12 @@ shows its languages, executable source, managed version, and runtime state. The
 selected-server detail lists every repository root, resolved command and arguments,
 open-document count, retry/circuit state, and most recent error.
 
+An open file covered by a provider shows its live lifecycle beside the language label
+in the editor status bar: idle, starting, in sync, retrying, crashed, or unavailable.
+The badge changes color and text as runtime events arrive. Retry and crash failures
+also create persistent LSP notifications containing the underlying protocol or launch
+error, so the failure remains visible without opening the manager.
+
 The table responds to terminal width by dropping secondary columns before primary
 state and wrapping row actions when necessary. Global refresh, check-all, and filter
 controls remain in the action strip; provider-specific controls live on their row

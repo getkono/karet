@@ -4,7 +4,112 @@ use crate::tab::LanguageServerPending;
 use crate::tab::LanguageServerPendingKind;
 use crate::tab::LanguageServersViewState;
 
+/// Lifecycle states retained independently of whether the manager tab is open.
+#[derive(Default)]
+pub(super) struct LanguageServerRuntimeModel {
+    servers: Vec<LanguageServerStatus>,
+    inventory_request: Option<RequestId>,
+}
+
+/// The active file's compact language-server condition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LanguageServerBadge {
+    Idle,
+    Starting,
+    InSync,
+    Retrying,
+    Crashed,
+    Unavailable,
+}
+
+impl LanguageServerBadge {
+    fn priority(self) -> u8 {
+        match self {
+            Self::Idle => 0,
+            Self::InSync => 1,
+            Self::Starting => 2,
+            Self::Retrying => 3,
+            Self::Crashed => 4,
+            Self::Unavailable => 5,
+        }
+    }
+}
+
+impl LanguageServerRuntimeModel {
+    fn replace(&mut self, request: Option<RequestId>, servers: Vec<LanguageServerStatus>) {
+        self.servers = servers;
+        if request.is_none() || self.inventory_request == request {
+            self.inventory_request = None;
+        }
+    }
+
+    fn update(
+        &mut self,
+        server: &LanguageServerId,
+        root: &Path,
+        state: LanguageServerRuntimeState,
+        error: &Option<String>,
+    ) -> bool {
+        let Some(instance) = self
+            .servers
+            .iter_mut()
+            .find(|status| status.server == *server)
+            .and_then(|status| {
+                status
+                    .instances
+                    .iter_mut()
+                    .find(|instance| instance.root == root)
+            })
+        else {
+            return false;
+        };
+        instance.runtime = state;
+        instance.error.clone_from(error);
+        true
+    }
+
+    fn badge_for(&self, path: &Path, language: &str) -> Option<LanguageServerBadge> {
+        let language = language.to_lowercase();
+        self.servers
+            .iter()
+            .filter(|status| {
+                status.enabled
+                    && status
+                        .languages
+                        .iter()
+                        .any(|candidate| candidate.eq_ignore_ascii_case(&language))
+            })
+            .flat_map(|status| &status.instances)
+            .filter(|instance| path_contains_or_equals(&instance.root, path))
+            .map(|instance| {
+                if instance.command.is_none()
+                    || instance.source == karet_session::LanguageServerSource::Unavailable
+                {
+                    return LanguageServerBadge::Unavailable;
+                }
+                match instance.runtime {
+                    LanguageServerRuntimeState::Idle => LanguageServerBadge::Idle,
+                    LanguageServerRuntimeState::Starting => LanguageServerBadge::Starting,
+                    LanguageServerRuntimeState::Running => LanguageServerBadge::InSync,
+                    LanguageServerRuntimeState::Retrying => LanguageServerBadge::Retrying,
+                    LanguageServerRuntimeState::CircuitOpen
+                    | LanguageServerRuntimeState::Stopped => LanguageServerBadge::Crashed,
+                    _ => LanguageServerBadge::Unavailable,
+                }
+            })
+            .max_by_key(|badge| badge.priority())
+    }
+}
+
 impl App {
+    /// The active code file's language-server lifecycle badge, when covered.
+    pub(crate) fn active_language_server_badge(&self) -> Option<LanguageServerBadge> {
+        let TabKind::Code { path, language, .. } = &self.tabs.get(self.active)?.kind else {
+            return None;
+        };
+        self.lsp_runtime.badge_for(path, language)
+    }
+
     pub(super) fn open_language_servers(&mut self) {
         if let Some(index) = self
             .tabs
@@ -418,6 +523,7 @@ impl App {
                     .any(|instance| instance.command.is_some())
             })
             .count();
+        self.lsp_runtime.replace(request, servers.clone());
         for tab in self.all_tabs_mut() {
             if let TabKind::LanguageServers(view) = &mut tab.kind
                 && (request.is_none() || view.inventory_request == request)
@@ -581,6 +687,7 @@ impl App {
         state: karet_session::LanguageServerRuntimeState,
         error: Option<String>,
     ) {
+        let cached = self.lsp_runtime.update(&server, &root, state, &error);
         let mut missing_instance = false;
         for tab in self.all_tabs_mut() {
             if let TabKind::LanguageServers(view) = &mut tab.kind
@@ -594,13 +701,39 @@ impl App {
                 }
             }
         }
-        if missing_instance {
+        if (!cached || missing_instance) && self.lsp_runtime.inventory_request.is_none() {
             let request = self.send_command_id(SessionCommand::LanguageServerStatus);
-            for tab in self.all_tabs_mut() {
-                if let TabKind::LanguageServers(view) = &mut tab.kind {
-                    view.inventory_request = request;
+            self.lsp_runtime.inventory_request = request;
+            if missing_instance {
+                for tab in self.all_tabs_mut() {
+                    if let TabKind::LanguageServers(view) = &mut tab.kind {
+                        view.inventory_request = request;
+                    }
                 }
             }
+        }
+        if let Some(error) = error
+            && matches!(
+                state,
+                LanguageServerRuntimeState::Retrying
+                    | LanguageServerRuntimeState::CircuitOpen
+                    | LanguageServerRuntimeState::Stopped
+            )
+        {
+            let (severity, state_label) = match state {
+                LanguageServerRuntimeState::Retrying => (Severity::Warning, "retrying"),
+                LanguageServerRuntimeState::CircuitOpen => {
+                    (Severity::Error, "crashed (circuit open)")
+                },
+                LanguageServerRuntimeState::Stopped => (Severity::Error, "stopped"),
+                _ => return,
+            };
+            self.notify_tagged(
+                severity,
+                NotificationKind::Lsp,
+                format!("{} {state_label}: {error}", server.display_name()),
+                Some(format!("lsp.runtime.{}.{}", server.key(), root.display())),
+            );
         }
     }
 }
