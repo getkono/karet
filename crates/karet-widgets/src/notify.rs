@@ -47,7 +47,7 @@ pub struct ToastSlot {
 const CLOSE_GLYPH: &str = "\u{00d7}";
 /// The leading severity bullet.
 const BULLET: &str = "\u{25cf}";
-const MAX_WIDTH: u16 = 44;
+const MAX_WIDTH: u16 = 72;
 const MIN_WIDTH: u16 = 16;
 const MARGIN_X: u16 = 1;
 const MARGIN_Y: u16 = 1;
@@ -66,12 +66,44 @@ pub struct Toasts<'a> {
 }
 
 impl Toasts<'_> {
-    /// The card height in rows for `note` at the given card `width` (title row +
-    /// optional single body row + top/bottom border).
+    fn card_width(note: &Notification, area: Rect) -> u16 {
+        let available = area.width.saturating_sub(MARGIN_X.saturating_mul(2));
+        let title = note
+            .title
+            .lines()
+            .map(UnicodeWidthStr::width)
+            .max()
+            .unwrap_or_default()
+            .saturating_add(6);
+        let body = note
+            .body
+            .as_deref()
+            .unwrap_or_default()
+            .lines()
+            .map(UnicodeWidthStr::width)
+            .max()
+            .unwrap_or_default()
+            .saturating_add(2);
+        u16::try_from(title.max(body))
+            .unwrap_or(u16::MAX)
+            .clamp(MIN_WIDTH, MAX_WIDTH.min(available))
+    }
+
+    /// The card height in rows for `note` at the given card `width`.
     fn card_height(note: &Notification, width: u16) -> u16 {
         let inner_w = width.saturating_sub(2);
-        let has_body = note.body.as_ref().is_some_and(|b| !b.is_empty()) && inner_w > 0;
-        3 + u16::from(has_body)
+        let title_width = usize::from(inner_w.saturating_sub(4)).max(1);
+        let title_lines = wrap_display(&note.title, title_width).len().max(1);
+        let body_lines = note
+            .body
+            .as_deref()
+            .filter(|body| !body.is_empty())
+            .map_or(0, |body| {
+                wrap_display(body, usize::from(inner_w).max(1)).len()
+            });
+        2_u16.saturating_add(
+            u16::try_from(title_lines.saturating_add(body_lines)).unwrap_or(u16::MAX),
+        )
     }
 
     /// Compute the on-screen slot for each shown notification. Pure: no clock, no
@@ -80,24 +112,30 @@ impl Toasts<'_> {
     #[must_use]
     pub fn layout(&self, area: Rect) -> Vec<ToastSlot> {
         let mut slots = Vec::new();
-        if area.width < MIN_WIDTH || area.height < 3 {
+        if area.width < MIN_WIDTH.saturating_add(MARGIN_X.saturating_mul(2)) || area.height < 3 {
             return slots;
         }
-        let width = MAX_WIDTH
-            .min(area.width.saturating_sub(MARGIN_X.saturating_mul(2)))
-            .max(MIN_WIDTH);
-        let x = area.right().saturating_sub(MARGIN_X).saturating_sub(width);
-
         match self.corner {
             Corner::BottomRight => {
                 let mut bottom = area.bottom().saturating_sub(MARGIN_Y);
                 for note in self.notifications.iter().take(MAX_ACTIVE) {
-                    let h = Self::card_height(note, width);
+                    let width = Self::card_width(note, area);
+                    let x = area.right().saturating_sub(MARGIN_X).saturating_sub(width);
+                    let desired = Self::card_height(note, width);
+                    let available = bottom.saturating_sub(area.y);
+                    let h = if slots.is_empty() {
+                        desired.min(available)
+                    } else {
+                        desired
+                    };
+                    if h < 3 {
+                        break;
+                    }
                     if bottom < area.y.saturating_add(h) {
                         break;
                     }
                     let top = bottom - h;
-                    slots.push(Self::slot(note, x, top, width));
+                    slots.push(Self::slot(note, x, top, width, h));
                     if top <= area.y.saturating_add(GAP) {
                         break;
                     }
@@ -107,11 +145,22 @@ impl Toasts<'_> {
             Corner::TopRight => {
                 let mut top = area.y.saturating_add(MARGIN_Y);
                 for note in self.notifications.iter().take(MAX_ACTIVE) {
-                    let h = Self::card_height(note, width);
+                    let width = Self::card_width(note, area);
+                    let x = area.right().saturating_sub(MARGIN_X).saturating_sub(width);
+                    let desired = Self::card_height(note, width);
+                    let available = area.bottom().saturating_sub(top);
+                    let h = if slots.is_empty() {
+                        desired.min(available)
+                    } else {
+                        desired
+                    };
+                    if h < 3 {
+                        break;
+                    }
                     if top.saturating_add(h) > area.bottom() {
                         break;
                     }
-                    slots.push(Self::slot(note, x, top, width));
+                    slots.push(Self::slot(note, x, top, width, h));
                     top = top.saturating_add(h).saturating_add(GAP);
                 }
             },
@@ -119,8 +168,7 @@ impl Toasts<'_> {
         slots
     }
 
-    fn slot(note: &Notification, x: u16, top: u16, width: u16) -> ToastSlot {
-        let h = Self::card_height(note, width);
+    fn slot(note: &Notification, x: u16, top: u16, width: u16, h: u16) -> ToastSlot {
         let rect = Rect {
             x,
             y: top,
@@ -135,6 +183,52 @@ impl Toasts<'_> {
             id: note.id,
         }
     }
+}
+
+fn wrap_display(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    for source in text.lines() {
+        if source.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let mut current = String::new();
+        for word in source.split_whitespace() {
+            let separator = usize::from(!current.is_empty());
+            if current
+                .width()
+                .saturating_add(separator)
+                .saturating_add(word.width())
+                <= width
+            {
+                if separator == 1 {
+                    current.push(' ');
+                }
+                current.push_str(word);
+                continue;
+            }
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+            }
+            for character in word.chars() {
+                let character_width = UnicodeWidthStr::width(character.to_string().as_str());
+                if !current.is_empty() && current.width().saturating_add(character_width) > width {
+                    lines.push(std::mem::take(&mut current));
+                }
+                current.push(character);
+            }
+        }
+        if !current.is_empty() {
+            lines.push(current);
+        }
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 /// Truncate `s` to `max` display columns, appending `…` when it overflows.
@@ -160,6 +254,21 @@ fn fit(s: &str, max: usize) -> String {
     out
 }
 
+fn with_ellipsis(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    let mut text = fit(s, max.saturating_sub(1));
+    if text.ends_with('…') {
+        return text;
+    }
+    while text.width() >= max {
+        text.pop();
+    }
+    text.push('…');
+    text
+}
+
 impl Widget for Toasts<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let slots = self.layout(area);
@@ -177,9 +286,22 @@ impl Widget for Toasts<'_> {
                 continue;
             }
             let inner_w = inner.width as usize;
+            let title_width = inner_w.saturating_sub(4).max(1);
+            let title_lines = wrap_display(&note.title, title_width);
+            let body_lines = note
+                .body
+                .as_deref()
+                .filter(|body| !body.is_empty())
+                .map_or_else(Vec::new, |body| wrap_display(body, inner_w));
+            let total_lines = title_lines.len().saturating_add(body_lines.len());
+            let visible_lines = usize::from(inner.height).min(total_lines);
+            let truncated = visible_lines < total_lines;
 
             // Title row: a severity bullet, the title, and a right-aligned `×`.
-            let title = fit(&note.title, inner_w.saturating_sub(4));
+            let mut title = title_lines.first().cloned().unwrap_or_default();
+            if truncated && visible_lines == 1 {
+                title = with_ellipsis(&title, title_width);
+            }
             let title_w = title.width() + BULLET.width() + 1;
             let pad = inner_w.saturating_sub(title_w + CLOSE_GLYPH.width()).max(1);
             let title_line = Line::from(vec![
@@ -193,13 +315,55 @@ impl Widget for Toasts<'_> {
             ]);
             buf.set_line(inner.x, inner.y, &title_line, inner.width);
 
-            // Optional single-line body.
-            if inner.height > 1
-                && let Some(body) = note.body.as_ref().filter(|b| !b.is_empty())
-            {
-                let dim = self.theme.role(ThemeRole::LineNumber).to_ratatui();
-                let body_line = Line::styled(fit(body, inner_w), Style::default().fg(dim));
-                buf.set_line(inner.x, inner.y + 1, &body_line, inner.width);
+            let mut row = 1_usize;
+            for continuation in title_lines.iter().skip(1) {
+                if row >= visible_lines {
+                    break;
+                }
+                let final_visible = truncated && row + 1 == visible_lines;
+                let text = if final_visible {
+                    with_ellipsis(continuation, inner_w.saturating_sub(2))
+                } else {
+                    continuation.clone()
+                };
+                let line = Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        text,
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    ),
+                ]);
+                buf.set_line(
+                    inner.x,
+                    inner
+                        .y
+                        .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
+                    &line,
+                    inner.width,
+                );
+                row += 1;
+            }
+
+            let dim = self.theme.role(ThemeRole::LineNumber).to_ratatui();
+            for body in &body_lines {
+                if row >= visible_lines {
+                    break;
+                }
+                let final_visible = truncated && row + 1 == visible_lines;
+                let text = if final_visible {
+                    with_ellipsis(body, inner_w)
+                } else {
+                    body.clone()
+                };
+                buf.set_line(
+                    inner.x,
+                    inner
+                        .y
+                        .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
+                    &Line::styled(text, Style::default().fg(dim)),
+                    inner.width,
+                );
+                row += 1;
             }
         }
 
@@ -331,5 +495,60 @@ mod tests {
         assert_eq!(fit("hello", 10), "hello");
         assert_eq!(fit("hello world", 6), "hello\u{2026}");
         assert_eq!(fit("hello", 0), "");
+    }
+
+    #[test]
+    fn long_titles_expand_and_wrap_instead_of_being_cut_off() {
+        let a = area();
+        let theme = Theme::dark();
+        let notes = [note(
+            1,
+            "language server installation failed because the downloaded archive was invalid",
+            None,
+        )];
+        let refs: Vec<&Notification> = notes.iter().collect();
+        let toasts = Toasts {
+            notifications: &refs,
+            theme: &theme,
+            corner: Corner::BottomRight,
+        };
+        let slots = toasts.layout(a);
+        assert_eq!(slots.len(), 1);
+        assert!(slots[0].rect.width > MIN_WIDTH);
+        assert!(slots[0].rect.width <= MAX_WIDTH);
+        assert!(slots[0].rect.height > 3);
+
+        let mut buffer = Buffer::empty(a);
+        toasts.render(a, &mut buffer);
+        let rendered = (slots[0].rect.y..slots[0].rect.bottom())
+            .map(|row| {
+                (slots[0].rect.x..slots[0].rect.right())
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("downloaded"), "toast:\n{rendered}");
+        assert!(rendered.contains("archive"), "toast:\n{rendered}");
+        assert!(rendered.contains("was invalid"), "toast:\n{rendered}");
+    }
+
+    #[test]
+    fn oversized_toast_is_clamped_and_ellipsized() {
+        let a = Rect::new(0, 0, 40, 6);
+        let theme = Theme::dark();
+        let notes = [note(1, &"long error message ".repeat(30), None)];
+        let refs: Vec<&Notification> = notes.iter().collect();
+        let toasts = Toasts {
+            notifications: &refs,
+            theme: &theme,
+            corner: Corner::BottomRight,
+        };
+        let slots = toasts.layout(a);
+        assert_eq!(slots.len(), 1);
+        assert!(slots[0].rect.bottom() <= a.bottom());
+        let mut buffer = Buffer::empty(a);
+        toasts.render(a, &mut buffer);
+        assert!(buffer.content.iter().any(|cell| cell.symbol() == "…"));
     }
 }
