@@ -49,6 +49,11 @@ fn main() -> color_eyre::Result<()> {
         std::process::exit(karet_session::process_supervisor::run_from_env());
     }
     color_eyre::install()?;
+    let cli = cli::Cli::parse();
+    if cli.log {
+        logging::report_paths()?;
+        return Ok(());
+    }
     let _logging_guard = match logging::init() {
         Ok(guard) => Some(guard),
         Err(error) => {
@@ -56,7 +61,6 @@ fn main() -> color_eyre::Result<()> {
             None
         },
     };
-    let cli = cli::Cli::parse();
 
     // `--install-desktop` / `--uninstall-desktop` act like subcommands: manage the
     // per-user desktop entry and exit — no config load, never enter the TUI. (clap

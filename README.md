@@ -96,7 +96,8 @@ controls.
 Warnings, errors, and the application's tracing diagnostics are written to daily
 `karet.log.*` files in the platform-standard Karet state directory (falling back to
 the local data directory). The seven most recent log files are retained; set
-`RUST_LOG` to adjust tracing verbosity.
+`RUST_LOG` to adjust tracing verbosity. Run `karet --log` to print the paths of
+the log files that currently exist.
 
 ## Development
 
