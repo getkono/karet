@@ -177,6 +177,44 @@ pub(crate) fn managed_provider(server: &LanguageServerId) -> bool {
     managed_recipe(server).is_some()
 }
 
+/// Why a built-in provider must be supplied by the user on this platform.
+pub(crate) fn manual_install_reason(server: &LanguageServerId) -> Option<String> {
+    if managed_provider(server) {
+        return None;
+    }
+    let reason = match server.key() {
+        "csharp" => "requires the user's .NET SDK and MSBuild installation",
+        "gopls" => "official installation and analysis require the project's Go toolchain",
+        "jdtls" => "requires a user-selected Java 21 runtime and project JDKs",
+        "lemminx" => "requires a compatible user-installed Java runtime",
+        "ruby-lsp" => "must be installed in the project's Ruby and Bundler environment",
+        "phpactor" => "requires the project's PHP runtime and extensions",
+        "sourcekit-lsp" => "ships with and must match the Swift or Xcode toolchain",
+        "metals" => "requires the project's JVM and Scala build environment",
+        "haskell-language-server" => "must match the project's GHC toolchain",
+        "ocamllsp" => "must be installed in the project's opam switch",
+        "elp" => "release selection must match the project's Erlang and OTP toolchain",
+        "dart-language-server" => "ships with the Dart or Flutter SDK",
+        "r-languageserver" => "must be installed into the user's R library",
+        "powershell-editor-services" => "requires and is hosted by the user's PowerShell runtime",
+        "esbonio" => "must use the project's Python and Sphinx environment",
+        "pkl-lsp" => "requires compatible user-installed Java and Pkl runtimes",
+        "taplo" => "current native releases have no publisher-authenticated SHA-256 digest",
+        key if catalog::managed_recipes()
+            .iter()
+            .any(|recipe| recipe.server == key) =>
+        {
+            return Some(format!(
+                "publisher provides no verified release for {}-{}",
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            ));
+        },
+        _ => return None,
+    };
+    Some(reason.to_owned())
+}
+
 fn run(
     root: Option<PathBuf>,
     supervisor: Option<PathBuf>,

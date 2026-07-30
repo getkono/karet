@@ -8,6 +8,7 @@ fn language_server_status(
         languages: vec![language.to_string()],
         enabled: true,
         managed,
+        manual_install_reason: (!managed).then(|| "install with the project toolchain".to_string()),
         installed: managed.then(|| "1.2.3".to_string()),
         cleanup_pending: false,
         instances: vec![karet_session::LanguageServerInstanceStatus {
@@ -108,6 +109,11 @@ fn language_server_manager_renders_inventory_controls_and_detail() {
     );
     assert!(rendered.contains("Karet-managed"));
     assert!(rendered.contains("/bin/server --stdio"));
+
+    app.language_server_select(-1);
+    let rendered = screen(&mut app, 120, 24).join("\n");
+    assert!(rendered.contains("manual install"));
+    assert!(rendered.contains("install with the project toolchain"));
 }
 
 #[test]
@@ -186,6 +192,11 @@ fn language_server_manager_only_renders_applicable_row_actions() {
     missing.instances[0].runtime = karet_session::LanguageServerRuntimeState::Idle;
     missing.instances[0].open_documents = 0;
     let external = language_server_status(LanguageServerId::Clangd, "c", false);
+    let mut manual = language_server_status(LanguageServerId::Gopls, "go", false);
+    manual.instances[0].source = karet_session::LanguageServerSource::Unavailable;
+    manual.instances[0].command = None;
+    manual.instances[0].runtime = karet_session::LanguageServerRuntimeState::Idle;
+    manual.instances[0].open_documents = 0;
 
     let mut app = app();
     app.open_language_servers();
@@ -193,6 +204,7 @@ fn language_server_manager_only_renders_applicable_row_actions() {
         installed.clone(),
         missing.clone(),
         external.clone(),
+        manual.clone(),
     ]);
     let rendered = screen(&mut app, 120, 28).join("\n");
     assert!(!rendered.contains("Install/Update"));
@@ -200,6 +212,7 @@ fn language_server_manager_only_renders_applicable_row_actions() {
     assert!(rendered.contains("Install"));
     assert!(rendered.contains("Restart"));
     assert!(rendered.contains("Uninstall"));
+    assert!(rendered.contains("Install manually"));
 
     let TabKind::LanguageServers(view) = &app.tabs[app.active].kind else {
         panic!("expected language-server manager");
@@ -219,6 +232,7 @@ fn language_server_manager_only_renders_applicable_row_actions() {
         actions(&external.server),
         vec![crate::tab::LanguageServerAction::Restart]
     );
+    assert!(actions(&manual.server).is_empty());
     let installed_actions = actions(&installed.server);
     assert!(installed_actions.contains(&crate::tab::LanguageServerAction::Primary));
     assert!(installed_actions.contains(&crate::tab::LanguageServerAction::Restart));

@@ -498,6 +498,9 @@ pub struct LanguageServerStatus {
     pub enabled: bool,
     /// Whether Karet owns installation lifecycle operations for this provider.
     pub managed: bool,
+    /// Why this built-in provider must be installed by the user, when applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_install_reason: Option<String>,
     /// Active Karet-managed version, if any.
     pub installed: Option<String>,
     /// Whether an unreferenced managed payload still awaits safe cleanup.
@@ -949,6 +952,7 @@ mod tests {
             languages: vec!["tex".into()],
             enabled: true,
             managed: true,
+            manual_install_reason: None,
             installed: Some("1.0.0".into()),
             cleanup_pending: false,
             instances: vec![LanguageServerInstanceStatus {

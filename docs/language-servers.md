@@ -70,6 +70,23 @@ explicitly manual:
 diagnostics, and editor features work without configuration when the conventional
 executable is present. It does not mean karet downloads that third-party tool.
 
+The manual entries are explicit, not an unexplained remainder:
+
+| Providers requiring user installation | Reason |
+|---|---|
+| C# Language Server | distributed with Microsoft's C# tooling and requires the user's .NET SDK/MSBuild |
+| gopls | the official installation and analysis flow uses the project's Go toolchain |
+| jdtls, LemMinX | require a compatible user-selected Java runtime; current jdtls requires Java 21 plus project JDK configuration |
+| ruby-lsp, phpactor | must run inside the project's Ruby/Bundler or PHP environment |
+| sourcekit-lsp, Dart Language Server | ship with the matching Swift/Xcode or Dart/Flutter SDK |
+| Metals, Haskell Language Server, ocamllsp, ELP | must match the project's Scala/JVM, GHC, opam-switch, or Erlang/OTP toolchain |
+| R languageserver, PowerShell Editor Services, Esbonio, pkl-lsp | require the user's R, PowerShell, Python/Sphinx, or Java/Pkl runtime environment |
+| Taplo | current native release assets do not provide a publisher-authenticated SHA-256 digest; the older npm channel is not treated as a current update source |
+
+On an architecture for which a normally managed provider has no verified upstream
+artifact, the manager reports that platform-specific reason and treats the provider
+as manual. Currently this applies to clangd on ARM.
+
 ## Capability ownership and overlap
 
 Only one provider owns a capability that produces edits or navigation results.
@@ -176,6 +193,10 @@ installed provider shows **Check updates** (or **Update** after discovery) and
 replace their action with a progress label. The loading placeholder follows the
 shared 200 ms reveal delay. The view can be operated with either mouse or these
 focused-tab keys:
+
+A missing manual provider instead shows a non-interactive **Install manually**
+label. Its selected-row detail names the required SDK, runtime, toolchain, or
+publisher-verification constraint.
 
 | Key | Action |
 |---|---|

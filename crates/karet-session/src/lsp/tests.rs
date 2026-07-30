@@ -856,6 +856,7 @@ fn language_server_inventory_payload_is_serde_ready() -> TestResult {
         languages: vec!["tex".to_owned()],
         enabled: true,
         managed: true,
+        manual_install_reason: None,
         installed: Some("5.0.0".to_owned()),
         cleanup_pending: false,
         instances: vec![LanguageServerInstanceStatus {

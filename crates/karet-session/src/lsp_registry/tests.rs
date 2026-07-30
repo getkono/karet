@@ -88,6 +88,39 @@ fn builtin_install_recipes_are_complete_for_supported_targets() {
     assert_eq!(actual, expected);
     assert!(actual.len() > 20);
 
+    let mut manual = vec![
+        "csharp",
+        "dart-language-server",
+        "elp",
+        "esbonio",
+        "gopls",
+        "haskell-language-server",
+        "jdtls",
+        "lemminx",
+        "metals",
+        "ocamllsp",
+        "phpactor",
+        "pkl-lsp",
+        "powershell-editor-services",
+        "r-languageserver",
+        "ruby-lsp",
+        "sourcekit-lsp",
+        "taplo",
+    ];
+    if std::env::consts::ARCH != "x86_64" {
+        manual.push("clangd");
+        manual.sort();
+    }
+    for server in &manual {
+        assert!(
+            manual_install_reason(&LanguageServerId::new(*server))
+                .is_some_and(|reason| !reason.trim().is_empty()),
+            "{server} has no manual-install reason"
+        );
+    }
+    assert_eq!(actual.len() + manual.len(), 40);
+    assert!(manual_install_reason(&LanguageServerId::new("company-lsp")).is_none());
+
     let targets = [
         ("linux", "x86_64"),
         ("linux", "aarch64"),

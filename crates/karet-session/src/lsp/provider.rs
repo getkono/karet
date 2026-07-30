@@ -5,6 +5,7 @@ pub(crate) struct ProviderDescriptor {
     pub(crate) server: LanguageServerId,
     pub(crate) languages: Vec<String>,
     pub(crate) managed: bool,
+    pub(crate) manual_install_reason: Option<String>,
 }
 
 const BUILTIN_PROVIDERS: &[(&str, &str)] = &[
@@ -84,6 +85,7 @@ pub(crate) fn builtin_catalog() -> Vec<ProviderDescriptor> {
             let server = LanguageServerId::new(server);
             ProviderDescriptor {
                 managed: managed_provider(&server),
+                manual_install_reason: crate::lsp_registry::manual_install_reason(&server),
                 server,
                 languages,
             }

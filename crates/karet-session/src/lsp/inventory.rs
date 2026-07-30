@@ -12,7 +12,8 @@ impl LspManager {
         &self,
         document_paths: impl IntoIterator<Item = PathBuf>,
     ) -> Vec<LanguageServerStatus> {
-        let mut providers = BTreeMap::<String, (LanguageServerId, BTreeSet<String>, bool)>::new();
+        let mut providers =
+            BTreeMap::<String, (LanguageServerId, BTreeSet<String>, bool, Option<String>)>::new();
         for descriptor in builtin_catalog() {
             providers.insert(
                 descriptor.server.key().to_owned(),
@@ -20,6 +21,7 @@ impl LspManager {
                     descriptor.server,
                     descriptor.languages.into_iter().collect(),
                     descriptor.managed,
+                    descriptor.manual_install_reason,
                 ),
             );
         }
@@ -36,6 +38,7 @@ impl LspManager {
                         LanguageServerId::new(server.clone()),
                         BTreeSet::new(),
                         false,
+                        None,
                     )
                 });
                 entry.1.insert(language.clone());
@@ -47,6 +50,7 @@ impl LspManager {
                     LanguageServerId::new(server.clone()),
                     BTreeSet::new(),
                     false,
+                    None,
                 )
             });
             if entry.1.is_empty() {
@@ -69,7 +73,7 @@ impl LspManager {
 
         providers
             .into_values()
-            .map(|(server, languages, managed)| {
+            .map(|(server, languages, managed, manual_install_reason)| {
                 let installed =
                     crate::lsp_registry::installed_version(self.registry_root.as_deref(), &server);
                 let instances = known_roots
@@ -86,6 +90,7 @@ impl LspManager {
                     server,
                     languages: languages.into_iter().collect(),
                     managed,
+                    manual_install_reason,
                     instances,
                 }
             })

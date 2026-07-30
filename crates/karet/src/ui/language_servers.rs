@@ -320,6 +320,16 @@ fn server_actions(
                 .to_string(),
                 action: Some(LanguageServerAction::Primary),
             });
+        } else if status.manual_install_reason.is_some()
+            && status
+                .instances
+                .iter()
+                .all(|instance| instance.command.is_none())
+        {
+            actions.push(RowAction {
+                label: "Install manually".to_string(),
+                action: None,
+            });
         }
         if status.managed && status.installed.is_some() {
             actions.push(RowAction {
@@ -593,6 +603,8 @@ fn draw_detail(f: &mut Frame, theme: &Theme, area: Rect, view: &LanguageServersV
         });
     let ownership = if status.managed {
         "Karet-managed"
+    } else if status.manual_install_reason.is_some() {
+        "manual install"
     } else {
         "external"
     };
@@ -612,6 +624,8 @@ fn draw_detail(f: &mut Frame, theme: &Theme, area: Rect, view: &LanguageServersV
             ownership,
             style(if status.managed {
                 ThemeRole::DiagnosticHint
+            } else if status.manual_install_reason.is_some() {
+                ThemeRole::DiagnosticWarning
             } else {
                 ThemeRole::DiagnosticInfo
             }),
@@ -648,6 +662,12 @@ fn draw_detail(f: &mut Frame, theme: &Theme, area: Rect, view: &LanguageServersV
             ),
         ]),
     ];
+    if let Some(reason) = &status.manual_install_reason {
+        lines.push(Line::from(vec![
+            Span::raw("Install: "),
+            Span::styled(reason.clone(), style(ThemeRole::DiagnosticWarning)),
+        ]));
+    }
     for instance in status.instances.iter().take(3) {
         lines.push(instance_line(theme, instance));
         if let Some(error) = instance.error.as_deref() {

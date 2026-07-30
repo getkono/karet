@@ -84,10 +84,11 @@ LaTeX source has tree-sitter highlighting and an external-tool workflow: install
 `latexmk`, then run **LaTeX: Build and Open PDF Preview** from the command palette.
 The pending preview opens immediately and fills with the generated PDF. Root-file
 comments, custom recipes, build-on-save, timeouts, and optional `texlab` language
-features are covered in the [LaTeX settings](docs/configuration.md#latex). Built-in
-language servers are installed through karet's
-[explicit, machine-local registry](docs/language-servers.md); no TeX runtime is
-bundled with karet.
+features are covered in the [LaTeX settings](docs/configuration.md#latex). Most
+built-in language servers can be installed through karet's
+[explicit, machine-local registry](docs/language-servers.md). Servers coupled to a
+project SDK/runtime are named as manual in the manager; no compiler or TeX runtime
+is bundled with karet.
 
 Use **Language Servers: Manage** from the command palette for the complete
 per-repository inventory and explicit install, update, restart, and safe-uninstall
