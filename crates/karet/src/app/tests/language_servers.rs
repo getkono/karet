@@ -127,8 +127,8 @@ fn language_server_manager_mouse_selects_rows_and_runs_toolbar_actions() {
             view.offset,
             view.action_hits
                 .iter()
-                .find(|(_, action)| *action == crate::tab::LanguageServerAction::Refresh)
-                .map(|(rect, _)| *rect),
+                .find(|hit| hit.action == crate::tab::LanguageServerAction::Refresh)
+                .map(|hit| hit.rect),
         ),
         _ => panic!("expected language-server manager"),
     };
@@ -170,4 +170,117 @@ fn language_server_manager_delays_its_loading_placeholder() {
             .join("\n")
             .contains("Loading language servers")
     );
+}
+
+#[test]
+fn language_server_manager_only_renders_applicable_row_actions() {
+    let installed = language_server_status(LanguageServerId::RustAnalyzer, "rust", true);
+    let mut missing = language_server_status(LanguageServerId::Texlab, "tex", true);
+    missing.installed = None;
+    missing.instances[0].runtime = karet_session::LanguageServerRuntimeState::Idle;
+    missing.instances[0].open_documents = 0;
+    let external = language_server_status(LanguageServerId::Clangd, "c", false);
+
+    let mut app = app();
+    app.open_language_servers();
+    app.show_language_server_status(None, vec![
+        installed.clone(),
+        missing.clone(),
+        external.clone(),
+    ]);
+    let rendered = screen(&mut app, 120, 28).join("\n");
+    assert!(!rendered.contains("Install/Update"));
+    assert!(rendered.contains("Check updates"));
+    assert!(rendered.contains("Install"));
+    assert!(rendered.contains("Restart"));
+    assert!(rendered.contains("Uninstall"));
+
+    let TabKind::LanguageServers(view) = &app.tabs[app.active].kind else {
+        panic!("expected language-server manager");
+    };
+    let actions = |server: &LanguageServerId| {
+        view.action_hits
+            .iter()
+            .filter(|hit| hit.server.as_ref() == Some(server))
+            .map(|hit| hit.action)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        actions(&missing.server),
+        vec![crate::tab::LanguageServerAction::Primary]
+    );
+    assert_eq!(
+        actions(&external.server),
+        vec![crate::tab::LanguageServerAction::Restart]
+    );
+    let installed_actions = actions(&installed.server);
+    assert!(installed_actions.contains(&crate::tab::LanguageServerAction::Primary));
+    assert!(installed_actions.contains(&crate::tab::LanguageServerAction::Restart));
+    assert!(installed_actions.contains(&crate::tab::LanguageServerAction::Uninstall));
+}
+
+#[test]
+fn language_server_row_action_targets_its_own_server() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    app.open_language_servers();
+    app.show_language_server_status(None, vec![
+        language_server_status(LanguageServerId::RustAnalyzer, "rust", true),
+        language_server_status(LanguageServerId::Clangd, "c", false),
+    ]);
+    let _ = screen(&mut app, 120, 24);
+    let hit = match &app.tabs[app.active].kind {
+        TabKind::LanguageServers(view) => view
+            .action_hits
+            .iter()
+            .find(|hit| {
+                hit.action == crate::tab::LanguageServerAction::Primary
+                    && hit.server.as_ref() == Some(&LanguageServerId::RustAnalyzer)
+            })
+            .cloned(),
+        _ => None,
+    };
+    let Some(hit) = hit else {
+        panic!("expected rust-analyzer row action");
+    };
+    assert!(app.handle_language_server_click(hit.rect.x, hit.rect.y));
+    let targeted = backend
+        .sent
+        .lock()
+        .map(|sent| {
+            sent.iter().any(|(_, command)| {
+                matches!(
+                    command,
+                    SessionCommand::CheckLanguageServerUpdates {
+                        server: Some(server)
+                    } if *server == LanguageServerId::RustAnalyzer
+                )
+            })
+        })
+        .unwrap_or_default();
+    assert!(targeted);
+    assert!(matches!(
+        &app.tabs[app.active].kind,
+        TabKind::LanguageServers(view)
+            if view.selected_id() == Some(LanguageServerId::RustAnalyzer)
+    ));
+}
+
+#[test]
+fn language_server_actions_wrap_without_disappearing_on_narrow_views() {
+    let mut app = app();
+    app.open_language_servers();
+    app.show_language_server_status(
+        None,
+        vec![language_server_status(
+            LanguageServerId::RustAnalyzer,
+            "rust",
+            true,
+        )],
+    );
+    let rendered = screen(&mut app, 50, 24).join("\n");
+    assert!(rendered.contains("Check updates"));
+    assert!(rendered.contains("Restart"));
+    assert!(rendered.contains("Uninstall"));
 }

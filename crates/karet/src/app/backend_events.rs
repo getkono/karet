@@ -317,7 +317,7 @@ impl App {
                 self.show_language_server_status(id, servers);
             },
             SessionEvent::LanguageServerUpdatePlan { plan, changes } => {
-                self.prompt_language_server_updates(plan, changes);
+                self.prompt_language_server_updates(id, plan, changes);
             },
             SessionEvent::LanguageServerProgress {
                 server,
@@ -488,9 +488,17 @@ impl App {
                 for tab in self.all_tabs_mut() {
                     if let TabKind::LanguageServers(view) = &mut tab.kind
                         && id.is_some()
-                        && (view.pending == id || view.inventory_request == id)
+                        && (view
+                            .pending
+                            .as_ref()
+                            .is_some_and(|pending| Some(pending.request) == id)
+                            || view.inventory_request == id)
                     {
-                        if view.pending == id {
+                        if view
+                            .pending
+                            .as_ref()
+                            .is_some_and(|pending| Some(pending.request) == id)
+                        {
                             view.pending = None;
                         }
                         if view.inventory_request == id {

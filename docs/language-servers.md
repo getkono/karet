@@ -158,16 +158,22 @@ selected-server detail lists every repository root, resolved command and argumen
 open-document count, retry/circuit state, and most recent error.
 
 The table responds to terminal width by dropping secondary columns before primary
-state, and its loading placeholder follows the shared 200 ms reveal delay. It can be
-operated with either the action strip/mouse or these focused-tab keys:
+state and wrapping row actions when necessary. Global refresh, check-all, and filter
+controls remain in the action strip; provider-specific controls live on their row
+and appear only when applicable. A missing managed provider shows **Install**, an
+installed provider shows **Check updates** (or **Update** after discovery) and
+**Uninstall**, and an active session instance shows **Restart**. Pending operations
+replace their action with a progress label. The loading placeholder follows the
+shared 200 ms reveal delay. The view can be operated with either mouse or these
+focused-tab keys:
 
 | Key | Action |
 |---|---|
 | `j` / `Down`, `k` / `Up` | select the next or previous provider |
 | `r` | refresh local inventory without network access |
-| `u` | force an update check for the selected managed provider |
+| `u` | force an update check for the selected installed managed provider |
 | `U` | force an update check for every installed managed provider |
-| `Enter` / `i` | install, apply the selected discovered update, or check an installed provider |
+| `Enter` / `i` | run the selected row's contextual install, update, or check action |
 | `R` | restart the selected provider connections in this editor session |
 | `x` | uninstall a Karet-managed provider after typed confirmation |
 | `/` | filter by provider or language; submit an empty filter to clear it |

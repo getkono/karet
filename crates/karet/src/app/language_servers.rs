@@ -1,5 +1,7 @@
 use super::*;
 use crate::tab::LanguageServerAction;
+use crate::tab::LanguageServerPending;
+use crate::tab::LanguageServerPendingKind;
 use crate::tab::LanguageServersViewState;
 
 impl App {
@@ -45,6 +47,37 @@ impl App {
         view.selected_server().cloned()
     }
 
+    fn language_server(&self, server: &LanguageServerId) -> Option<LanguageServerStatus> {
+        let tab = self.tabs.get(self.active)?;
+        let TabKind::LanguageServers(view) = &tab.kind else {
+            return None;
+        };
+        view.servers
+            .iter()
+            .find(|status| status.server == *server)
+            .cloned()
+    }
+
+    fn set_language_server_pending(
+        &mut self,
+        request: Option<RequestId>,
+        server: Option<LanguageServerId>,
+        kind: LanguageServerPendingKind,
+    ) {
+        let Some(request) = request else {
+            return;
+        };
+        if let Some(view) = self.language_servers_mut() {
+            view.pending = Some(LanguageServerPending {
+                request,
+                server,
+                kind,
+            });
+            view.loading_since = Some(Instant::now());
+            view.error = None;
+        }
+    }
+
     pub(super) fn refresh_language_servers(&mut self) {
         let request = self.send_command_id(SessionCommand::LanguageServerStatus);
         if let Some(view) = self.language_servers_mut() {
@@ -64,6 +97,13 @@ impl App {
         let Some(status) = self.selected_language_server() else {
             return;
         };
+        self.check_language_server(status.server);
+    }
+
+    fn check_language_server(&mut self, server: LanguageServerId) {
+        let Some(status) = self.language_server(&server) else {
+            return;
+        };
         if !status.managed {
             self.status = Some(format!(
                 "{} is supplied externally and has no Karet update channel",
@@ -72,28 +112,31 @@ impl App {
             return;
         }
         let request = self.send_command_id(SessionCommand::CheckLanguageServerUpdates {
-            server: Some(status.server),
+            server: Some(status.server.clone()),
         });
-        if let Some(view) = self.language_servers_mut() {
-            view.pending = request;
-            view.loading_since = Some(Instant::now());
-            view.error = None;
-        }
+        self.set_language_server_pending(
+            request,
+            Some(status.server),
+            LanguageServerPendingKind::CheckSelected,
+        );
     }
 
     pub(super) fn check_all_language_servers(&mut self) {
         let request =
             self.send_command_id(SessionCommand::CheckLanguageServerUpdates { server: None });
-        if let Some(view) = self.language_servers_mut() {
-            view.pending = request;
-            view.loading_since = Some(Instant::now());
-            view.error = None;
-        }
+        self.set_language_server_pending(request, None, LanguageServerPendingKind::CheckAll);
         self.status = Some("checking managed language servers for updates…".to_string());
     }
 
     pub(super) fn language_server_primary_action(&mut self) {
         let Some(status) = self.selected_language_server() else {
+            return;
+        };
+        self.language_server_primary_action_for(status.server);
+    }
+
+    fn language_server_primary_action_for(&mut self, server: LanguageServerId) {
+        let Some(status) = self.language_server(&server) else {
             return;
         };
         if !status.managed {
@@ -111,9 +154,11 @@ impl App {
                 .zip(view.plan)
         });
         if let Some((change, plan)) = planned {
+            let install = change.current.is_none();
+            let verb = if install { "install" } else { "update" };
             self.overlay = Some(Overlay::text(
                 format!(
-                    "{} {} → {} · type update to approve",
+                    "{} {} → {} · type {verb} to approve",
                     change.server.display_name(),
                     change.current.as_deref().unwrap_or("missing"),
                     change.target
@@ -121,12 +166,13 @@ impl App {
                 TextPurpose::ApplyLanguageServerPlan {
                     plan,
                     servers: vec![change.server],
+                    install,
                 },
             ));
         } else if status.installed.is_none() {
             self.prompt_language_server_install(status.server);
         } else {
-            self.check_selected_language_server();
+            self.check_language_server(status.server);
         }
     }
 
@@ -134,7 +180,21 @@ impl App {
         let Some(status) = self.selected_language_server() else {
             return;
         };
-        if status.instances.is_empty() {
+        self.restart_language_server(status.server);
+    }
+
+    fn restart_language_server(&mut self, server: LanguageServerId) {
+        let Some(status) = self.language_server(&server) else {
+            return;
+        };
+        if !status.instances.iter().any(|instance| {
+            instance.open_documents > 0
+                || !matches!(
+                    instance.runtime,
+                    karet_session::LanguageServerRuntimeState::Idle
+                        | karet_session::LanguageServerRuntimeState::Stopped
+                )
+        }) {
             self.status = Some(format!(
                 "{} has no process in this session",
                 status.server.display_name()
@@ -149,6 +209,13 @@ impl App {
 
     pub(super) fn uninstall_selected_language_server(&mut self) {
         let Some(status) = self.selected_language_server() else {
+            return;
+        };
+        self.uninstall_language_server_prompt(status.server);
+    }
+
+    fn uninstall_language_server_prompt(&mut self, server: LanguageServerId) {
+        let Some(status) = self.language_server(&server) else {
             return;
         };
         if !status.managed || status.installed.is_none() {
@@ -184,14 +251,35 @@ impl App {
         }
     }
 
-    pub(super) fn language_server_action(&mut self, action: LanguageServerAction) {
+    pub(super) fn language_server_action(
+        &mut self,
+        action: LanguageServerAction,
+        server: Option<LanguageServerId>,
+    ) {
         match action {
             LanguageServerAction::Refresh => self.refresh_language_servers(),
-            LanguageServerAction::CheckSelected => self.check_selected_language_server(),
             LanguageServerAction::CheckAll => self.check_all_language_servers(),
-            LanguageServerAction::Primary => self.language_server_primary_action(),
-            LanguageServerAction::Restart => self.restart_selected_language_server(),
-            LanguageServerAction::Uninstall => self.uninstall_selected_language_server(),
+            LanguageServerAction::Primary => {
+                if let Some(server) = server {
+                    self.language_server_primary_action_for(server);
+                } else {
+                    self.language_server_primary_action();
+                }
+            },
+            LanguageServerAction::Restart => {
+                if let Some(server) = server {
+                    self.restart_language_server(server);
+                } else {
+                    self.restart_selected_language_server();
+                }
+            },
+            LanguageServerAction::Uninstall => {
+                if let Some(server) = server {
+                    self.uninstall_language_server_prompt(server);
+                } else {
+                    self.uninstall_selected_language_server();
+                }
+            },
             LanguageServerAction::Filter => self.prompt_language_server_filter(),
         }
     }
@@ -203,10 +291,21 @@ impl App {
             };
             view.action_hits
                 .iter()
-                .find_map(|(rect, action)| rect_contains(*rect, (column, row)).then_some(*action))
+                .find(|hit| rect_contains(hit.rect, (column, row)))
+                .cloned()
         });
-        if let Some(action) = action {
-            self.language_server_action(action);
+        if let Some(hit) = action {
+            if let Some(server) = hit.server.as_ref()
+                && let Some(view) = self.language_servers_mut()
+                && let Some(selected) = view.visible_indices().iter().position(|&index| {
+                    view.servers
+                        .get(index)
+                        .is_some_and(|status| status.server == *server)
+                })
+            {
+                view.selected = selected;
+            }
+            self.language_server_action(hit.action, hit.server);
             return true;
         }
         let Some(view) = self.language_servers_mut() else {
@@ -215,19 +314,79 @@ impl App {
         if !rect_contains(view.table_rect, (column, row)) {
             return true;
         }
-        let display_row = usize::from(row.saturating_sub(view.table_rect.y).saturating_sub(2));
-        let selected = view.offset.saturating_add(display_row);
-        if selected < view.visible_indices().len() {
+        if let Some(server) = view
+            .row_hits
+            .iter()
+            .find_map(|(rect, server)| rect_contains(*rect, (column, row)).then(|| server.clone()))
+            && let Some(selected) = view.visible_indices().iter().position(|&index| {
+                view.servers
+                    .get(index)
+                    .is_some_and(|status| status.server == server)
+            })
+        {
             view.selected = selected;
         }
         true
+    }
+
+    pub(super) fn update_language_server_hover(&mut self, column: u16, row: u16) {
+        if let Some(view) = self.language_servers_mut() {
+            let point = (column, row);
+            view.action_hover = view
+                .action_hits
+                .iter()
+                .any(|hit| rect_contains(hit.rect, point))
+                .then_some(point);
+        }
+    }
+
+    pub(super) fn begin_language_server_install(&mut self, server: LanguageServerId) {
+        let request = self.send_command_id(SessionCommand::InstallLanguageServer {
+            server: server.clone(),
+        });
+        self.set_language_server_pending(
+            request,
+            Some(server),
+            LanguageServerPendingKind::DiscoverInstall,
+        );
+    }
+
+    pub(super) fn apply_language_server_plan(
+        &mut self,
+        plan: LanguageServerPlanId,
+        servers: Vec<LanguageServerId>,
+        install: bool,
+    ) {
+        let target = (servers.len() == 1).then(|| servers[0].clone());
+        let request =
+            self.send_command_id(SessionCommand::ApplyLanguageServerPlan { plan, servers });
+        self.set_language_server_pending(
+            request,
+            target,
+            if install {
+                LanguageServerPendingKind::Install
+            } else {
+                LanguageServerPendingKind::Update
+            },
+        );
+    }
+
+    pub(super) fn begin_language_server_uninstall(&mut self, server: LanguageServerId) {
+        let request = self.send_command_id(SessionCommand::UninstallLanguageServer {
+            server: server.clone(),
+        });
+        self.set_language_server_pending(
+            request,
+            Some(server),
+            LanguageServerPendingKind::Uninstall,
+        );
     }
 
     pub(super) fn prompt_language_server_install(&mut self, server: LanguageServerId) {
         if self.overlay.is_none() {
             self.overlay = Some(Overlay::text(
                 format!(
-                    "{} is not installed · type install to download it",
+                    "{} is not installed · type install to check the available version",
                     server.display_name()
                 ),
                 TextPurpose::InstallLanguageServer { server },
@@ -271,19 +430,33 @@ impl App {
 
     pub(super) fn prompt_language_server_updates(
         &mut self,
+        request: Option<RequestId>,
         plan: LanguageServerPlanId,
         changes: Vec<LanguageServerChange>,
     ) {
         let mut manager_open = false;
+        let mut adopted = false;
         for tab in self.all_tabs_mut() {
             if let TabKind::LanguageServers(view) = &mut tab.kind {
                 manager_open = true;
+                let matches = request.is_none()
+                    || view
+                        .pending
+                        .as_ref()
+                        .is_some_and(|pending| Some(pending.request) == request);
+                if !matches {
+                    continue;
+                }
+                adopted = true;
                 view.plan = Some(plan);
                 view.changes.clone_from(&changes);
                 view.pending = None;
                 view.loading_since = None;
                 view.error = None;
             }
+        }
+        if manager_open && !adopted {
+            return;
         }
         if changes.is_empty() {
             self.notify(
@@ -317,6 +490,7 @@ impl App {
             TextPurpose::ApplyLanguageServerPlan {
                 plan,
                 servers: changes.iter().map(|change| change.server.clone()).collect(),
+                install: false,
             },
         ));
     }

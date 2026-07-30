@@ -523,6 +523,7 @@ impl App {
             MouseEventKind::Moved => {
                 self.hover = rect_contains(self.sidebar_content_rect, point).then_some(point);
                 self.pane_action_hover = None;
+                self.update_language_server_hover(mouse.column, mouse.row);
                 self.pane_divider_hover = self
                     .pane_dividers
                     .iter()

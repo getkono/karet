@@ -361,21 +361,34 @@ impl App {
                 },
                 TextPurpose::InstallLanguageServer { server } => {
                     if text == "install" {
-                        self.status = Some(format!("installing {}…", server.display_name()));
-                        self.send_command(SessionCommand::InstallLanguageServer { server });
+                        self.status = Some(format!(
+                            "checking {}'s available version…",
+                            server.display_name()
+                        ));
+                        self.begin_language_server_install(server);
                     } else {
                         self.status = Some("language-server installation cancelled".to_string());
                     }
                 },
-                TextPurpose::ApplyLanguageServerPlan { plan, servers } => {
-                    if text == "update" {
-                        self.send_command(SessionCommand::ApplyLanguageServerPlan {
-                            plan,
-                            servers,
+                TextPurpose::ApplyLanguageServerPlan {
+                    plan,
+                    servers,
+                    install,
+                } => {
+                    let confirmation = if install { "install" } else { "update" };
+                    if text == confirmation {
+                        self.apply_language_server_plan(plan, servers, install);
+                        self.status = Some(if install {
+                            "installing language server…".to_string()
+                        } else {
+                            "updating language servers…".to_string()
                         });
-                        self.status = Some("updating language servers…".to_string());
                     } else {
-                        self.status = Some("language-server update cancelled".to_string());
+                        self.status = Some(if install {
+                            "language-server installation cancelled".to_string()
+                        } else {
+                            "language-server update cancelled".to_string()
+                        });
                     }
                 },
                 TextPurpose::FilterLanguageServers => {
@@ -392,7 +405,7 @@ impl App {
                 TextPurpose::UninstallLanguageServer { server } => {
                     if text == "uninstall" {
                         self.status = Some(format!("uninstalling {}…", server.display_name()));
-                        self.send_command(SessionCommand::UninstallLanguageServer { server });
+                        self.begin_language_server_uninstall(server);
                     } else {
                         self.status = Some("language-server uninstall cancelled".to_string());
                     }

@@ -93,6 +93,8 @@ pub enum TextPurpose {
     ApplyLanguageServerPlan {
         plan: LanguageServerPlanId,
         servers: Vec<LanguageServerId>,
+        /// Whether this plan installs a missing provider rather than updating one.
+        install: bool,
     },
     /// Replace the language-server manager's filter with the submitted text.
     FilterLanguageServers,

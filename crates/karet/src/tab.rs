@@ -129,12 +129,38 @@ pub(crate) struct CommitViewState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LanguageServerAction {
     Refresh,
-    CheckSelected,
     CheckAll,
     Primary,
     Restart,
     Uninstall,
     Filter,
+}
+
+/// One in-flight registry operation shown by the language-server manager.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LanguageServerPendingKind {
+    CheckSelected,
+    CheckAll,
+    DiscoverInstall,
+    Install,
+    Update,
+    Uninstall,
+}
+
+/// Request correlation and presentation state for a registry operation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LanguageServerPending {
+    pub(crate) request: karet_session::RequestId,
+    pub(crate) server: Option<LanguageServerId>,
+    pub(crate) kind: LanguageServerPendingKind,
+}
+
+/// A clickable manager action from the most recently rendered frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LanguageServerActionHit {
+    pub(crate) rect: Rect,
+    pub(crate) action: LanguageServerAction,
+    pub(crate) server: Option<LanguageServerId>,
 }
 
 /// View-local inventory, selection, update-plan, and hit-testing state.
@@ -145,12 +171,14 @@ pub(crate) struct LanguageServersViewState {
     pub(crate) filter: String,
     pub(crate) loading_since: Option<Instant>,
     pub(crate) inventory_request: Option<karet_session::RequestId>,
-    pub(crate) pending: Option<karet_session::RequestId>,
+    pub(crate) pending: Option<LanguageServerPending>,
     pub(crate) plan: Option<LanguageServerPlanId>,
     pub(crate) changes: Vec<LanguageServerChange>,
     pub(crate) error: Option<String>,
     pub(crate) table_rect: Rect,
-    pub(crate) action_hits: Vec<(Rect, LanguageServerAction)>,
+    pub(crate) action_hits: Vec<LanguageServerActionHit>,
+    pub(crate) row_hits: Vec<(Rect, LanguageServerId)>,
+    pub(crate) action_hover: Option<(u16, u16)>,
 }
 
 impl LanguageServersViewState {
@@ -169,6 +197,8 @@ impl LanguageServersViewState {
             error: None,
             table_rect: Rect::default(),
             action_hits: Vec::new(),
+            row_hits: Vec::new(),
+            action_hover: None,
         }
     }
 
