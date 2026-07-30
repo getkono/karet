@@ -93,6 +93,11 @@ Use **Language Servers: Manage** from the command palette for the complete
 per-repository inventory and explicit install, update, restart, and safe-uninstall
 controls.
 
+Warnings, errors, and the application's tracing diagnostics are written to daily
+`karet.log.*` files in the platform-standard Karet state directory (falling back to
+the local data directory). The seven most recent log files are retained; set
+`RUST_LOG` to adjust tracing verbosity.
+
 ## Development
 
 | Command             | Description          |

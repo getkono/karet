@@ -135,6 +135,16 @@ impl App {
         kind: NotificationKind,
         title: impl Into<String>,
     ) {
+        let title = title.into();
+        match severity {
+            Severity::Error => {
+                tracing::error!(notification_kind = ?kind, message = %title, "notification");
+            },
+            Severity::Warning => {
+                tracing::warn!(notification_kind = ?kind, message = %title, "notification");
+            },
+            _ => {},
+        }
         let timeout = match severity {
             Severity::Error | Severity::Warning => None,
             // Info, success (Hint), and any future severity auto-dismiss.
@@ -145,7 +155,7 @@ impl App {
                 id: NotificationId(0),
                 severity,
                 kind,
-                title: title.into(),
+                title,
                 body: None,
                 tag: None,
                 timeout,

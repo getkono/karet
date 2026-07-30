@@ -25,6 +25,7 @@ mod doctor;
 mod editing;
 mod keymap;
 mod links;
+mod logging;
 mod notify;
 mod outline;
 mod overlay;
@@ -48,6 +49,13 @@ fn main() -> color_eyre::Result<()> {
         std::process::exit(karet_session::process_supervisor::run_from_env());
     }
     color_eyre::install()?;
+    let _logging_guard = match logging::init() {
+        Ok(guard) => Some(guard),
+        Err(error) => {
+            eprintln!("karet: logging disabled: {error}");
+            None
+        },
+    };
     let cli = cli::Cli::parse();
 
     // `--install-desktop` / `--uninstall-desktop` act like subcommands: manage the
