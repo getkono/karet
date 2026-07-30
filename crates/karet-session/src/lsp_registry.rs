@@ -32,6 +32,8 @@ use catalog::Archive;
 use catalog::Release;
 use catalog::ReleaseKind;
 use catalog::discover;
+use catalog::managed_recipe;
+use catalog::managed_servers;
 use karet_lsp::LspSpec;
 use lifecycle::*;
 use reqwest::blocking::Client;
@@ -48,14 +50,6 @@ use crate::api::RequestId;
 
 const PLAN_LIFETIME: Duration = Duration::from_secs(15 * 60);
 const USER_AGENT: &str = concat!("karet/", env!("CARGO_PKG_VERSION"));
-const SERVERS: [LanguageServerId; 5] = [
-    LanguageServerId::RustAnalyzer,
-    LanguageServerId::TypeScript,
-    LanguageServerId::Pyright,
-    LanguageServerId::Ruff,
-    LanguageServerId::Texlab,
-];
-
 /// Work accepted by the blocking registry worker.
 pub(crate) enum RegistryJob {
     /// Discover and install one missing provider.
@@ -178,6 +172,11 @@ pub(crate) fn cleanup_pending(root: Option<&Path>, server: &LanguageServerId) ->
         })
 }
 
+/// Whether Karet has a complete managed installation recipe for this provider.
+pub(crate) fn managed_provider(server: &LanguageServerId) -> bool {
+    managed_recipe(server).is_some()
+}
+
 fn run(
     root: Option<PathBuf>,
     supervisor: Option<PathBuf>,
@@ -253,11 +252,12 @@ fn run(
                         let mut releases = Vec::new();
                         if server
                             .as_ref()
-                            .is_some_and(|candidate| !SERVERS.contains(candidate))
+                            .is_some_and(|candidate| !managed_provider(candidate))
                         {
                             return Err("provider has no Karet-managed update channel".to_owned());
                         }
-                        for server in SERVERS
+                        let servers = managed_servers();
+                        for server in servers
                             .iter()
                             .filter(|candidate| server.as_ref().is_none_or(|id| id == *candidate))
                         {
@@ -503,6 +503,7 @@ fn install_release(
             sha256,
             archive,
             executable_name,
+            ..
         } => {
             let bytes = download_verified(client, url, sha256, |downloaded, total| {
                 let _ = updates.send(RegistryUpdate::Progress {
@@ -520,6 +521,7 @@ fn install_release(
             node_url,
             node_sha256,
             node_archive,
+            ..
         } => {
             let supervisor =
                 supervisor.ok_or_else(|| "process supervisor is unavailable".to_owned())?;
@@ -590,44 +592,37 @@ fn install_release(
 }
 
 fn activation(release: &Release, destination: &Path) -> Result<ActiveInstallation, String> {
-    let (command, args) = match release.server.key() {
-        "rust-analyzer" => (destination.join(executable("rust-analyzer")), Vec::new()),
-        "texlab" => (destination.join(executable("texlab")), Vec::new()),
-        "ruff" => (
-            destination.join(executable("ruff")),
-            vec!["server".to_owned()],
+    let (command, args) = match &release.kind {
+        ReleaseKind::Standalone {
+            executable_name,
+            arguments,
+            ..
+        } => (
+            destination.join(executable_name),
+            arguments
+                .iter()
+                .map(|argument| (*argument).to_owned())
+                .collect(),
         ),
-        "typescript-language-server" => {
+        ReleaseKind::Npm {
+            entrypoints,
+            arguments,
+            ..
+        } => {
             let node = find_named(&destination.join("node"), node_executable())
                 .ok_or_else(|| "installed Node executable is missing".to_owned())?;
-            let cli = find_named(&destination.join("package"), "cli.mjs")
-                .or_else(|| {
-                    find_named(
-                        &destination.join("package"),
-                        "typescript-language-server.js",
+            let cli = entrypoints
+                .iter()
+                .find_map(|entrypoint| find_named(&destination.join("package"), entrypoint))
+                .ok_or_else(|| {
+                    format!(
+                        "installed {} language server is missing",
+                        release.server.display_name()
                     )
-                })
-                .ok_or_else(|| "installed TypeScript language server is missing".to_owned())?;
-            (
-                node,
-                vec![cli.to_string_lossy().into_owned(), "--stdio".into()],
-            )
-        },
-        "pyright" => {
-            let node = find_named(&destination.join("node"), node_executable())
-                .ok_or_else(|| "installed Node executable is missing".to_owned())?;
-            let cli = find_named(&destination.join("package"), "langserver.index.js")
-                .ok_or_else(|| "installed Pyright language server is missing".to_owned())?;
-            (
-                node,
-                vec![cli.to_string_lossy().into_owned(), "--stdio".into()],
-            )
-        },
-        _ => {
-            return Err(format!(
-                "{} has no managed activation recipe",
-                release.server.display_name()
-            ));
+                })?;
+            let mut args = vec![cli.to_string_lossy().into_owned()];
+            args.extend(arguments.iter().map(|argument| (*argument).to_owned()));
+            (node, args)
         },
     };
     if !command.is_file() {

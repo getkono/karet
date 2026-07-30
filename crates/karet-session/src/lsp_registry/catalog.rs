@@ -5,6 +5,81 @@ use serde::Deserialize;
 
 use crate::api::LanguageServerId;
 
+#[derive(Clone, Copy)]
+pub(super) struct ManagedRecipe {
+    pub(super) server: &'static str,
+    source: ManagedSource,
+    pub(super) arguments: &'static [&'static str],
+}
+
+#[derive(Clone, Copy)]
+enum ManagedSource {
+    Github {
+        repository: &'static str,
+    },
+    Npm {
+        package: &'static str,
+        companion: Option<&'static str>,
+        entrypoints: &'static [&'static str],
+    },
+}
+
+const MANAGED_RECIPES: &[ManagedRecipe] = &[
+    ManagedRecipe {
+        server: "rust-analyzer",
+        source: ManagedSource::Github {
+            repository: "rust-lang/rust-analyzer",
+        },
+        arguments: &[],
+    },
+    ManagedRecipe {
+        server: "typescript-language-server",
+        source: ManagedSource::Npm {
+            package: "typescript-language-server",
+            companion: Some("typescript"),
+            entrypoints: &["cli.mjs", "typescript-language-server.js"],
+        },
+        arguments: &["--stdio"],
+    },
+    ManagedRecipe {
+        server: "pyright",
+        source: ManagedSource::Npm {
+            package: "pyright",
+            companion: None,
+            entrypoints: &["langserver.index.js"],
+        },
+        arguments: &["--stdio"],
+    },
+    ManagedRecipe {
+        server: "ruff",
+        source: ManagedSource::Github {
+            repository: "astral-sh/ruff",
+        },
+        arguments: &["server"],
+    },
+    ManagedRecipe {
+        server: "texlab",
+        source: ManagedSource::Github {
+            repository: "latex-lsp/texlab",
+        },
+        arguments: &[],
+    },
+];
+
+pub(super) fn managed_recipe(server: &LanguageServerId) -> Option<ManagedRecipe> {
+    MANAGED_RECIPES
+        .iter()
+        .find(|recipe| recipe.server == server.key())
+        .copied()
+}
+
+pub(super) fn managed_servers() -> Vec<LanguageServerId> {
+    MANAGED_RECIPES
+        .iter()
+        .map(|recipe| LanguageServerId::new(recipe.server))
+        .collect()
+}
+
 #[derive(Clone)]
 pub(super) struct Release {
     pub(super) server: LanguageServerId,
@@ -22,10 +97,13 @@ pub(super) enum ReleaseKind {
         sha256: String,
         archive: Archive,
         executable_name: String,
+        arguments: &'static [&'static str],
     },
     Npm {
         package: String,
         companion: Option<(String, String)>,
+        entrypoints: &'static [&'static str],
+        arguments: &'static [&'static str],
         node_version: String,
         node_url: String,
         node_sha256: String,
@@ -69,16 +147,28 @@ impl Release {
 }
 
 pub(super) fn discover(client: &Client, server: LanguageServerId) -> Result<Release, String> {
-    match server.key() {
-        "rust-analyzer" => discover_github(client, server, "rust-lang/rust-analyzer"),
-        "texlab" => discover_github(client, server, "latex-lsp/texlab"),
-        "ruff" => discover_github(client, server, "astral-sh/ruff"),
-        "typescript-language-server" => discover_npm(client, server, "typescript-language-server"),
-        "pyright" => discover_npm(client, server, "pyright"),
-        _ => Err(format!(
+    let recipe = managed_recipe(&server).ok_or_else(|| {
+        format!(
             "{} is available from the project or PATH but has no managed installer",
             server.display_name()
-        )),
+        )
+    })?;
+    match recipe.source {
+        ManagedSource::Github { repository } => {
+            discover_github(client, server, repository, recipe.arguments)
+        },
+        ManagedSource::Npm {
+            package,
+            companion,
+            entrypoints,
+        } => discover_npm(
+            client,
+            server,
+            package,
+            companion,
+            entrypoints,
+            recipe.arguments,
+        ),
     }
 }
 
@@ -100,6 +190,7 @@ fn discover_github(
     client: &Client,
     server: LanguageServerId,
     repository: &str,
+    arguments: &'static [&'static str],
 ) -> Result<Release, String> {
     let release: GithubRelease = client
         .get(format!(
@@ -129,6 +220,7 @@ fn discover_github(
             sha256,
             archive,
             executable_name: executable_name.into(),
+            arguments,
         },
         download_bytes: Some(asset.size),
     })
@@ -229,18 +321,17 @@ fn discover_npm(
     client: &Client,
     server: LanguageServerId,
     package: &str,
+    companion: Option<&str>,
+    entrypoints: &'static [&'static str],
+    arguments: &'static [&'static str],
 ) -> Result<Release, String> {
     let npm = npm_metadata(client, package)?;
-    // TypeScript Language Server intentionally declares no TypeScript dependency:
-    // hosts are expected to supply it. The registry versions that runtime too.
-    let companion = if server == LanguageServerId::TypeScript {
-        Some((
-            "typescript".to_owned(),
-            npm_metadata(client, "typescript")?.dist_tags.latest,
-        ))
-    } else {
-        None
-    };
+    let companion = companion
+        .map(|package| {
+            npm_metadata(client, package)
+                .map(|metadata| (package.to_owned(), metadata.dist_tags.latest))
+        })
+        .transpose()?;
     let nodes: Vec<NodeRelease> = client
         .get("https://nodejs.org/dist/index.json")
         .send()
@@ -275,6 +366,8 @@ fn discover_npm(
         kind: ReleaseKind::Npm {
             package: package.into(),
             companion,
+            entrypoints,
+            arguments,
             node_version: node.version,
             node_url: format!("{base}{file}"),
             node_sha256: sha256,

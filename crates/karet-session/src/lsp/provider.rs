@@ -57,10 +57,7 @@ const BUILTIN_PROVIDERS: &[(&str, &str)] = &[
 ];
 
 pub(crate) fn managed_provider(server: &LanguageServerId) -> bool {
-    matches!(
-        server.key(),
-        "rust-analyzer" | "typescript-language-server" | "pyright" | "ruff" | "texlab"
-    )
+    crate::lsp_registry::managed_provider(server)
 }
 
 pub(crate) fn builtin_catalog() -> Vec<ProviderDescriptor> {

@@ -27,7 +27,7 @@ pub(super) fn retired_installations(
 }
 
 pub(super) fn uninstall(root: &Path, server: &LanguageServerId) -> Result<bool, String> {
-    if !SERVERS.contains(server) {
+    if !managed_provider(server) {
         return Err(format!("{} is not managed by Karet", server.display_name()));
     }
     let provider = provider_root(root, server);
@@ -70,8 +70,8 @@ pub(super) fn append_json_line(path: &Path, value: &impl Serialize) -> Result<()
 }
 
 pub(super) fn cleanup_retired_all(root: &Path) {
-    for server in &SERVERS {
-        cleanup_retired_provider(root, server);
+    for server in managed_servers() {
+        cleanup_retired_provider(root, &server);
     }
 }
 
