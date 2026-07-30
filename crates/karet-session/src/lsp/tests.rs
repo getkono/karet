@@ -817,11 +817,22 @@ fn inventory_covers_builtins_and_configured_providers() -> TestResult {
             .filter(|status| status.managed)
             .map(|status| status.server.key())
             .eq([
+                "astro-language-server",
+                "bash-language-server",
+                "biome",
+                "docker-langserver",
+                "graphql-lsp",
                 "pyright",
                 "ruff",
                 "rust-analyzer",
+                "svelte-language-server",
                 "texlab",
-                "typescript-language-server"
+                "typescript-language-server",
+                "vscode-css-language-server",
+                "vscode-html-language-server",
+                "vscode-json-language-server",
+                "vue-language-server",
+                "yaml-language-server",
             ])
     );
     Ok(())

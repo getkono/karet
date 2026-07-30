@@ -605,15 +605,23 @@ fn activation(release: &Release, destination: &Path) -> Result<ActiveInstallatio
                 .collect(),
         ),
         ReleaseKind::Npm {
-            entrypoints,
+            package,
+            entrypoint,
             arguments,
             ..
         } => {
             let node = find_named(&destination.join("node"), node_executable())
                 .ok_or_else(|| "installed Node executable is missing".to_owned())?;
-            let cli = entrypoints
-                .iter()
-                .find_map(|entrypoint| find_named(&destination.join("package"), entrypoint))
+            let package_root = package.split('/').try_fold(
+                destination.join("package").join("node_modules"),
+                |path, component| {
+                    (!component.is_empty() && component != "." && component != "..")
+                        .then(|| path.join(component))
+                },
+            );
+            let cli = package_root
+                .map(|root| root.join(entrypoint))
+                .filter(|path| path.is_file())
                 .ok_or_else(|| {
                     format!(
                         "installed {} language server is missing",

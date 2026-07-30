@@ -116,6 +116,7 @@ pub(super) fn builtin_spec(provider: &LanguageServerId, language: &str) -> LspSp
         "docker-langserver" => ("docker-langserver", &["--stdio"]),
         "biome" => ("biome", &["lsp-proxy"]),
         "buf" => ("buf", &["beta", "lsp"]),
+        "graphql-lsp" => ("graphql-lsp", &["server", "-m", "stream"]),
         "dart-language-server" => ("dart", &["language-server"]),
         "r-languageserver" => ("R", &["--no-echo", "-e", "languageserver::run()"]),
         key => (key, &[]),

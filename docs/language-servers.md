@@ -26,7 +26,7 @@ The managed fallback is intentionally smaller than the recognition catalog:
 | Language | Default providers | Managed by karet | Tree-sitter |
 |---|---|---:|---:|
 | Rust | **rust-analyzer** | yes | yes |
-| JavaScript, TypeScript, JSX, TSX | **typescript-language-server**; **Biome** diagnostics/formatting when a Biome config exists | yes (TypeScript provider) | yes |
+| JavaScript, TypeScript, JSX, TSX | **typescript-language-server**; **Biome** diagnostics/formatting when a Biome config exists | yes (both) | yes |
 | Python | **Pyright** intelligence/type checking + **Ruff** diagnostics/formatting | yes (both) | yes |
 | TeX / LaTeX | **texlab** | yes | yes |
 | C / C++ | **clangd** | project/PATH | yes |
@@ -34,15 +34,15 @@ The managed fallback is intentionally smaller than the recognition catalog:
 | Go | **gopls** | project/PATH | yes |
 | Java | **jdtls** | project/PATH | yes |
 | Zig | **zls** | project/PATH | yes |
-| Astro | **Astro language server** | project/PATH | yes, with injections |
-| Svelte | **svelte-language-server** | project/PATH | yes, with injections |
-| Vue | **vue-language-server** | project/PATH | yes, with injections |
-| YAML | **yaml-language-server** | project/PATH | yes |
+| Astro | **Astro language server** | yes | yes, with injections |
+| Svelte | **svelte-language-server** | yes | yes, with injections |
+| Vue | **vue-language-server** | yes | yes, with injections |
+| YAML | **yaml-language-server** | yes | yes |
 | XML / SVG | **lemminx** (`xml`) | project/PATH | yes |
-| HTML | vscode-html-language-server | project/PATH | yes |
-| CSS / Sass / Less | vscode-css-language-server | project/PATH | yes |
-| JSON | vscode-json-language-server | project/PATH | yes |
-| Shell / Bash | bash-language-server | project/PATH | yes |
+| HTML | vscode-html-language-server | yes | yes |
+| CSS / Sass / Less | vscode-css-language-server | yes | yes |
+| JSON | vscode-json-language-server | yes | yes |
+| Shell / Bash | bash-language-server | yes | yes |
 | Ruby | ruby-lsp | project/PATH | when compiled in |
 | PHP | phpactor | project/PATH | when compiled in |
 | Swift | sourcekit-lsp | project/PATH | when compiled in |
@@ -57,11 +57,11 @@ The managed fallback is intentionally smaller than the recognition catalog:
 | TOML | taplo | project/PATH | yes |
 | Pkl | pkl-lsp | project/PATH | when compiled in |
 | Protobuf | `buf beta lsp` | project/PATH | when compiled in |
-| GraphQL | graphql-lsp | project/PATH | when compiled in |
+| GraphQL | graphql-lsp | yes | when compiled in |
 | PowerShell | PowerShell Editor Services | project/PATH | when compiled in |
 | Markdown | marksman | project/PATH | yes, with injections |
 | reStructuredText | esbonio | project/PATH | when compiled in |
-| Dockerfile | docker-langserver | project/PATH | when compiled in |
+| Dockerfile | docker-langserver | yes | when compiled in |
 | CMake | neocmakelsp | project/PATH | when compiled in |
 
 “Project/PATH” is still built-in support: selection, lifecycle, synchronization,

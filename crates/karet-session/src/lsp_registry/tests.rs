@@ -33,7 +33,7 @@ fn node_provider_identity_covers_every_managed_runtime() {
         kind: ReleaseKind::Npm {
             package: "typescript-language-server".into(),
             companion: Some(("typescript".into(), "5.9.3".into())),
-            entrypoints: &["cli.mjs"],
+            entrypoint: "lib/cli.mjs".into(),
             arguments: &["--stdio"],
             node_version: "v24.4.0".into(),
             node_url: String::new(),

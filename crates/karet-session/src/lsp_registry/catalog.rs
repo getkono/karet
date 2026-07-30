@@ -1,5 +1,7 @@
 //! Explicit release discovery for the built-in provider catalogue.
 
+use std::path::Path;
+
 use reqwest::blocking::Client;
 use serde::Deserialize;
 
@@ -20,7 +22,7 @@ enum ManagedSource {
     Npm {
         package: &'static str,
         companion: Option<&'static str>,
-        entrypoints: &'static [&'static str],
+        binary: &'static str,
     },
 }
 
@@ -37,7 +39,7 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
         source: ManagedSource::Npm {
             package: "typescript-language-server",
             companion: Some("typescript"),
-            entrypoints: &["cli.mjs", "typescript-language-server.js"],
+            binary: "typescript-language-server",
         },
         arguments: &["--stdio"],
     },
@@ -46,7 +48,7 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
         source: ManagedSource::Npm {
             package: "pyright",
             companion: None,
-            entrypoints: &["langserver.index.js"],
+            binary: "pyright-langserver",
         },
         arguments: &["--stdio"],
     },
@@ -63,6 +65,105 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             repository: "latex-lsp/texlab",
         },
         arguments: &[],
+    },
+    ManagedRecipe {
+        server: "astro-language-server",
+        source: ManagedSource::Npm {
+            package: "@astrojs/language-server",
+            companion: None,
+            binary: "astro-ls",
+        },
+        arguments: &["--stdio"],
+    },
+    ManagedRecipe {
+        server: "svelte-language-server",
+        source: ManagedSource::Npm {
+            package: "svelte-language-server",
+            companion: None,
+            binary: "svelteserver",
+        },
+        arguments: &["--stdio"],
+    },
+    ManagedRecipe {
+        server: "vue-language-server",
+        source: ManagedSource::Npm {
+            package: "@vue/language-server",
+            companion: None,
+            binary: "vue-language-server",
+        },
+        arguments: &["--stdio"],
+    },
+    ManagedRecipe {
+        server: "biome",
+        source: ManagedSource::Npm {
+            package: "@biomejs/biome",
+            companion: None,
+            binary: "biome",
+        },
+        arguments: &["lsp-proxy"],
+    },
+    ManagedRecipe {
+        server: "yaml-language-server",
+        source: ManagedSource::Npm {
+            package: "yaml-language-server",
+            companion: None,
+            binary: "yaml-language-server",
+        },
+        arguments: &["--stdio"],
+    },
+    ManagedRecipe {
+        server: "vscode-html-language-server",
+        source: ManagedSource::Npm {
+            package: "vscode-langservers-extracted",
+            companion: None,
+            binary: "vscode-html-language-server",
+        },
+        arguments: &["--stdio"],
+    },
+    ManagedRecipe {
+        server: "vscode-css-language-server",
+        source: ManagedSource::Npm {
+            package: "vscode-langservers-extracted",
+            companion: None,
+            binary: "vscode-css-language-server",
+        },
+        arguments: &["--stdio"],
+    },
+    ManagedRecipe {
+        server: "vscode-json-language-server",
+        source: ManagedSource::Npm {
+            package: "vscode-langservers-extracted",
+            companion: None,
+            binary: "vscode-json-language-server",
+        },
+        arguments: &["--stdio"],
+    },
+    ManagedRecipe {
+        server: "bash-language-server",
+        source: ManagedSource::Npm {
+            package: "bash-language-server",
+            companion: None,
+            binary: "bash-language-server",
+        },
+        arguments: &["start"],
+    },
+    ManagedRecipe {
+        server: "docker-langserver",
+        source: ManagedSource::Npm {
+            package: "dockerfile-language-server-nodejs",
+            companion: None,
+            binary: "docker-langserver",
+        },
+        arguments: &["--stdio"],
+    },
+    ManagedRecipe {
+        server: "graphql-lsp",
+        source: ManagedSource::Npm {
+            package: "graphql-language-service-cli",
+            companion: None,
+            binary: "graphql-lsp",
+        },
+        arguments: &["server", "-m", "stream"],
     },
 ];
 
@@ -102,7 +203,7 @@ pub(super) enum ReleaseKind {
     Npm {
         package: String,
         companion: Option<(String, String)>,
-        entrypoints: &'static [&'static str],
+        entrypoint: String,
         arguments: &'static [&'static str],
         node_version: String,
         node_url: String,
@@ -160,15 +261,8 @@ pub(super) fn discover(client: &Client, server: LanguageServerId) -> Result<Rele
         ManagedSource::Npm {
             package,
             companion,
-            entrypoints,
-        } => discover_npm(
-            client,
-            server,
-            package,
-            companion,
-            entrypoints,
-            recipe.arguments,
-        ),
+            binary,
+        } => discover_npm(client, server, package, companion, binary, recipe.arguments),
     }
 }
 
@@ -303,6 +397,8 @@ fn github_asset(
 struct NpmMetadata {
     #[serde(rename = "dist-tags")]
     dist_tags: NpmTags,
+    #[serde(default)]
+    bin: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -322,10 +418,16 @@ fn discover_npm(
     server: LanguageServerId,
     package: &str,
     companion: Option<&str>,
-    entrypoints: &'static [&'static str],
+    binary: &str,
     arguments: &'static [&'static str],
 ) -> Result<Release, String> {
     let npm = npm_metadata(client, package)?;
+    let entrypoint = npm
+        .bin
+        .get(binary)
+        .filter(|path| safe_relative_path(path))
+        .cloned()
+        .ok_or_else(|| format!("{package} publishes no safe {binary} executable"))?;
     let companion = companion
         .map(|package| {
             npm_metadata(client, package)
@@ -366,7 +468,7 @@ fn discover_npm(
         kind: ReleaseKind::Npm {
             package: package.into(),
             companion,
-            entrypoints,
+            entrypoint,
             arguments,
             node_version: node.version,
             node_url: format!("{base}{file}"),
@@ -375,6 +477,13 @@ fn discover_npm(
         },
         download_bytes: None,
     })
+}
+
+fn safe_relative_path(path: &str) -> bool {
+    !path.is_empty()
+        && Path::new(path)
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
 fn npm_metadata(client: &Client, package: &str) -> Result<NpmMetadata, String> {
