@@ -163,10 +163,12 @@ The badge changes color and text as runtime events arrive. Retry and crash failu
 also create persistent LSP notifications containing the underlying protocol or launch
 error, so the failure remains visible without opening the manager.
 
-The table responds to terminal width by dropping secondary columns before primary
-state and wrapping row actions when necessary. Global refresh, check-all, and filter
-controls remain in the action strip; provider-specific controls live on their row
-and appear only when applicable. A missing managed provider shows **Install**, an
+The bordered table responds to terminal width by dropping secondary columns before
+primary state and wrapping row actions when necessary. Runtime, availability,
+ownership, update, and error text uses the corresponding semantic theme color so
+state changes remain visible at a glance. Global refresh, check-all, and filter
+controls remain in the action strip; provider-specific controls live on their row and
+appear only when applicable. A missing managed provider shows **Install**, an
 installed provider shows **Check updates** (or **Update** after discovery) and
 **Uninstall**, and an active session instance shows **Restart**. Pending operations
 replace their action with a progress label. The loading placeholder follows the

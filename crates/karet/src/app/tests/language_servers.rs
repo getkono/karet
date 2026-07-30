@@ -121,9 +121,9 @@ fn language_server_manager_mouse_selects_rows_and_runs_toolbar_actions() {
         language_server_status(LanguageServerId::Clangd, "c", false),
     ]);
     let _ = screen(&mut app, 120, 24);
-    let (table, offset, refresh) = match &app.tabs[app.active].kind {
+    let (second_row, offset, refresh) = match &app.tabs[app.active].kind {
         TabKind::LanguageServers(view) => (
-            view.table_rect,
+            view.row_hits.get(1).map(|(rect, _)| *rect),
             view.offset,
             view.action_hits
                 .iter()
@@ -133,7 +133,13 @@ fn language_server_manager_mouse_selects_rows_and_runs_toolbar_actions() {
         _ => panic!("expected language-server manager"),
     };
     assert_eq!(offset, 0);
-    assert!(app.handle_language_server_click(table.x, table.y + 3));
+    let Some(second_row) = second_row else {
+        panic!("expected a second language-server row");
+    };
+    assert!(app.handle_language_server_click(
+        second_row.x.saturating_add(1),
+        second_row.y.saturating_add(1)
+    ));
     assert!(matches!(
         &app.tabs[app.active].kind,
         TabKind::LanguageServers(view) if view.selected == 1
@@ -283,6 +289,68 @@ fn language_server_actions_wrap_without_disappearing_on_narrow_views() {
     assert!(rendered.contains("Check updates"));
     assert!(rendered.contains("Restart"));
     assert!(rendered.contains("Uninstall"));
+}
+
+#[test]
+fn language_server_table_borders_and_runtime_text_are_semantic() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut status = language_server_status(LanguageServerId::RustAnalyzer, "rust", true);
+    status.instances[0].runtime = LanguageServerRuntimeState::CircuitOpen;
+    status.instances[0].error = Some("protocol failure".to_string());
+    let mut app = app();
+    app.open_language_servers();
+    app.show_language_server_status(None, vec![status]);
+
+    let mut terminal = Terminal::new(TestBackend::new(120, 24)).expect("test terminal");
+    terminal
+        .draw(|frame| crate::ui::draw(frame, &mut app))
+        .expect("draw shell");
+    let buffer = terminal.backend().buffer();
+    let table = match &app.tabs[app.active].kind {
+        TabKind::LanguageServers(view) => view.table_rect,
+        _ => panic!("expected language-server manager"),
+    };
+    assert_eq!(buffer[(table.x, table.y)].symbol(), "┌");
+    assert_eq!(
+        buffer[(table.x, table.y.saturating_add(1))].symbol(),
+        "│"
+    );
+    assert!(
+        (table.x..table.right()).any(|x| {
+            (table.y..table.bottom()).any(|y| buffer[(x, y)].symbol() == "─")
+        }),
+        "table should render row separators"
+    );
+
+    let semantic_cell = |needle: &str| {
+        let needle = needle.chars().map(|character| character.to_string()).collect::<Vec<_>>();
+        (0_u16..24).find_map(|y| {
+            (0_u16..120).find_map(|x| {
+                needle
+                    .iter()
+                    .enumerate()
+                    .all(|(offset, expected)| {
+                        u16::try_from(offset)
+                            .ok()
+                            .filter(|offset| x.saturating_add(*offset) < 120)
+                            .is_some_and(|offset| {
+                                buffer[(x.saturating_add(offset), y)].symbol() == expected
+                            })
+                    })
+                    .then(|| buffer[(x, y)].clone())
+            })
+        })
+    };
+    assert_eq!(
+        semantic_cell("circuit open").map(|cell| cell.fg),
+        Some(app.theme.role(ThemeRole::DiagnosticHint).to_ratatui())
+    );
+    assert_eq!(
+        semantic_cell("Error: protocol failure").map(|cell| cell.fg),
+        Some(app.theme.role(ThemeRole::DiagnosticError).to_ratatui())
+    );
 }
 
 #[test]
