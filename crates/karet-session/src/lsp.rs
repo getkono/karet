@@ -43,6 +43,7 @@ use karet_core::WorkspaceEdit;
 use karet_lsp::LspClient;
 use karet_lsp::LspError;
 use karet_lsp::LspSpec;
+use provider::absolute_path;
 pub(crate) use provider::builtin_server;
 use provider::builtin_spec;
 use provider::executable_exists;
@@ -346,7 +347,7 @@ impl LspManager {
             Self {
                 settings,
                 generation: 0,
-                root,
+                root: root.map(|path| absolute_path(&path)),
                 registry_root: registry_root.clone(),
                 servers: HashMap::new(),
                 missing_reported: HashSet::new(),
@@ -604,12 +605,13 @@ impl LspManager {
         version: u64,
         text: impl FnOnce() -> String,
     ) {
+        let path = absolute_path(path);
         let language = language_key(language);
-        let Some((tx, key)) = self.ensure_server(language.as_deref(), path) else {
+        let Some((tx, key)) = self.ensure_server(language.as_deref(), &path) else {
             return;
         };
         let mut targets = vec![(tx.clone(), key)];
-        let root = nearest_repository_root(path, self.root.as_deref());
+        let root = nearest_repository_root(&path, self.root.as_deref());
         if let Some(language_key) = language.as_deref() {
             let configured_diagnostics = self
                 .settings
@@ -621,7 +623,7 @@ impl LspManager {
                 if let Some(target) = self.ensure_additional_provider(
                     LanguageServerId::new(provider),
                     language_key,
-                    path,
+                    &path,
                 ) {
                     targets.push(target);
                 }
@@ -638,7 +640,7 @@ impl LspManager {
                 };
                 if let Some(provider) = default_diagnostic
                     && let Some(target) =
-                        self.ensure_additional_provider(provider, language_key, path)
+                        self.ensure_additional_provider(provider, language_key, &path)
                 {
                     targets.push(target);
                 }
@@ -652,10 +654,10 @@ impl LspManager {
                 continue;
             }
             if let Some(slot) = self.servers.get_mut(&key) {
-                slot.documents.insert(path.to_path_buf());
+                slot.documents.insert(path.clone());
             }
             let _ = tx.try_send(ServerCmd::DidOpen {
-                path: path.to_path_buf(),
+                path: path.clone(),
                 language: document_language.clone(),
                 version: version_i32(version),
                 text: document_text.clone(),
@@ -675,10 +677,11 @@ impl LspManager {
         if language_key(language).is_none() {
             return;
         }
+        let path = absolute_path(path);
         let senders: Vec<_> = self
             .servers
             .values()
-            .filter(|slot| slot.documents.contains(path))
+            .filter(|slot| slot.documents.contains(&path))
             .map(|slot| slot.tx.clone())
             .collect();
         if senders.is_empty() {
@@ -687,7 +690,7 @@ impl LspManager {
         let text = text();
         for tx in senders {
             let _ = tx.try_send(ServerCmd::DidChange {
-                path: path.to_path_buf(),
+                path: path.clone(),
                 version: version_i32(version),
                 text: text.clone(),
             });
@@ -699,18 +702,17 @@ impl LspManager {
         let Some(_language) = language_key(language) else {
             return;
         };
+        let path = absolute_path(path);
         let keys: Vec<_> = self
             .servers
             .iter()
-            .filter(|(_, slot)| slot.documents.contains(path))
+            .filter(|(_, slot)| slot.documents.contains(&path))
             .map(|(key, _)| key.clone())
             .collect();
         for key in keys {
             let remove = self.servers.get_mut(&key).is_some_and(|slot| {
-                let _ = slot.tx.try_send(ServerCmd::DidClose {
-                    path: path.to_path_buf(),
-                });
-                slot.documents.remove(path);
+                let _ = slot.tx.try_send(ServerCmd::DidClose { path: path.clone() });
+                slot.documents.remove(&path);
                 slot.documents.is_empty()
             });
             if remove {
@@ -729,10 +731,11 @@ impl LspManager {
         if language_key(language).is_none() {
             return;
         }
+        let path = absolute_path(path);
         let senders: Vec<_> = self
             .servers
             .values()
-            .filter(|slot| slot.documents.contains(path))
+            .filter(|slot| slot.documents.contains(&path))
             .map(|slot| slot.tx.clone())
             .collect();
         if senders.is_empty() {
@@ -741,7 +744,7 @@ impl LspManager {
         let text = text();
         for tx in senders {
             let _ = tx.try_send(ServerCmd::DidSave {
-                path: path.to_path_buf(),
+                path: path.clone(),
                 text: text.clone(),
             });
         }
@@ -759,14 +762,15 @@ impl LspManager {
         path: &Path,
         position: LineCol,
     ) -> bool {
-        let Some(tx) = self.existing_server(language, path) else {
+        let path = absolute_path(path);
+        let Some(tx) = self.existing_server(language, &path) else {
             return false;
         };
         tx.try_send(ServerCmd::Completion {
             request,
             doc,
             version,
-            path: path.to_path_buf(),
+            path,
             position,
         })
         .is_ok()
@@ -781,14 +785,15 @@ impl LspManager {
         version: u64,
         path: &Path,
     ) -> bool {
-        let Some(tx) = self.existing_server(language, path) else {
+        let path = absolute_path(path);
+        let Some(tx) = self.existing_server(language, &path) else {
             return false;
         };
         tx.try_send(ServerCmd::DocumentSymbols {
             request,
             doc,
             version,
-            path: path.to_path_buf(),
+            path,
         })
         .is_ok()
     }
@@ -802,14 +807,15 @@ impl LspManager {
         path: &Path,
         position: LineCol,
     ) -> bool {
-        let Some(tx) = self.existing_server(language, path) else {
+        let path = absolute_path(path);
+        let Some(tx) = self.existing_server(language, &path) else {
             return false;
         };
         tx.try_send(ServerCmd::Hover {
             request,
             doc,
             version,
-            path: path.to_path_buf(),
+            path,
             position,
         })
         .is_ok()
@@ -824,14 +830,15 @@ impl LspManager {
         path: &Path,
         position: LineCol,
     ) -> bool {
-        let Some(tx) = self.existing_server(language, path) else {
+        let path = absolute_path(path);
+        let Some(tx) = self.existing_server(language, &path) else {
             return false;
         };
         tx.try_send(ServerCmd::Definition {
             request,
             doc,
             version,
-            path: path.to_path_buf(),
+            path,
             position,
         })
         .is_ok()
@@ -858,12 +865,13 @@ impl LspManager {
         position: LineCol,
         new_name: String,
     ) -> bool {
-        let Some(tx) = self.existing_server(language, path) else {
+        let path = absolute_path(path);
+        let Some(tx) = self.existing_server(language, &path) else {
             return false;
         };
         tx.try_send(ServerCmd::Rename {
             request,
-            path: path.to_path_buf(),
+            path,
             position,
             new_name,
         })
@@ -881,6 +889,7 @@ impl LspManager {
         let Some(language_key) = language_key(language) else {
             return false;
         };
+        let path = absolute_path(path);
         let preferred = self
             .settings
             .languages
@@ -888,7 +897,7 @@ impl LspManager {
             .and_then(|selection| selection.formatter.as_deref());
         let repository_default = if preferred.is_none() && language_key == "python" {
             Some(python_diagnostic_provider(&nearest_repository_root(
-                path,
+                &path,
                 self.root.as_deref(),
             )))
         } else if preferred.is_none()
@@ -896,7 +905,7 @@ impl LspManager {
                 language_key.as_str(),
                 "javascript" | "typescript" | "jsx" | "tsx"
             )
-            && uses_biome(&nearest_repository_root(path, self.root.as_deref()))
+            && uses_biome(&nearest_repository_root(&path, self.root.as_deref()))
         {
             Some(LanguageServerId::Biome)
         } else {
@@ -909,7 +918,7 @@ impl LspManager {
             .as_deref()
             .and_then(|provider| {
                 self.servers.values().find(|slot| {
-                    slot.documents.contains(path)
+                    slot.documents.contains(&path)
                         && slot
                             .provider
                             .as_ref()
@@ -919,7 +928,7 @@ impl LspManager {
             .or_else(|| {
                 self.servers
                     .values()
-                    .find(|slot| slot.primary && slot.documents.contains(path))
+                    .find(|slot| slot.primary && slot.documents.contains(&path))
             })
             .map(|slot| &slot.tx);
         let Some(tx) = tx else {
@@ -929,7 +938,7 @@ impl LspManager {
             request,
             doc,
             version,
-            path: path.to_path_buf(),
+            path,
         })
         .is_ok()
     }

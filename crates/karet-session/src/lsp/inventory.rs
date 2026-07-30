@@ -56,6 +56,7 @@ impl LspManager {
 
         let mut known_roots: BTreeSet<PathBuf> = document_paths
             .into_iter()
+            .map(|path| absolute_path(&path))
             .map(|path| nearest_repository_root(&path, self.root.as_deref()))
             .collect();
         if let Some(root) = &self.root {
