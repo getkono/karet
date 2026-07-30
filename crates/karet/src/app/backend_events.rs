@@ -347,7 +347,7 @@ impl App {
             SessionEvent::LanguageServerRemoved {
                 server,
                 cleanup_pending,
-            } => self.finish_language_server_remove(server, cleanup_pending),
+            } => self.finish_language_server_remove(id, server, cleanup_pending),
             SessionEvent::LanguageServerRuntimeChanged {
                 server,
                 root,

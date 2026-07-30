@@ -450,3 +450,68 @@ fn runtime_protocol_failures_remain_as_deduplicated_notifications() {
             .contains("protocol error: cannot convert relative path . to a file URI")
     );
 }
+
+#[test]
+fn completed_language_server_uninstall_clears_only_its_pending_request() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    app.open_language_servers();
+    app.show_language_server_status(
+        None,
+        vec![language_server_status(
+            LanguageServerId::RustAnalyzer,
+            "rust",
+            true,
+        )],
+    );
+
+    app.begin_language_server_uninstall(LanguageServerId::RustAnalyzer);
+    app.begin_language_server_uninstall(LanguageServerId::RustAnalyzer);
+    let requests = backend
+        .sent
+        .lock()
+        .map(|sent| {
+            sent.iter()
+                .filter_map(|(request, command)| {
+                    matches!(
+                        command,
+                        SessionCommand::UninstallLanguageServer { server }
+                            if *server == LanguageServerId::RustAnalyzer
+                    )
+                    .then_some(*request)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert_eq!(requests.len(), 2);
+
+    app.on_backend_event(
+        requests.first().copied(),
+        SessionEvent::LanguageServerRemoved {
+            server: LanguageServerId::RustAnalyzer,
+            cleanup_pending: false,
+        },
+    );
+    assert!(matches!(
+        &app.tabs[app.active].kind,
+        TabKind::LanguageServers(view)
+            if view.pending.as_ref().map(|pending| pending.request) == requests.get(1).copied()
+    ));
+    assert!(screen(&mut app, 100, 18).join("\n").contains("Uninstalling"));
+
+    app.on_backend_event(
+        requests.get(1).copied(),
+        SessionEvent::LanguageServerRemoved {
+            server: LanguageServerId::RustAnalyzer,
+            cleanup_pending: false,
+        },
+    );
+    assert!(matches!(
+        &app.tabs[app.active].kind,
+        TabKind::LanguageServers(view) if view.pending.is_none() && view.loading_since.is_none()
+    ));
+    let rendered = screen(&mut app, 100, 18).join("\n");
+    assert!(!rendered.contains("Uninstalling"));
+    assert!(rendered.contains("Install"));
+}

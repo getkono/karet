@@ -652,6 +652,7 @@ impl App {
 
     pub(super) fn finish_language_server_remove(
         &mut self,
+        request: Option<RequestId>,
         server: LanguageServerId,
         cleanup_pending: bool,
     ) {
@@ -665,6 +666,13 @@ impl App {
                 view.changes.retain(|change| change.server != server);
                 if view.changes.is_empty() {
                     view.plan = None;
+                }
+                if view.pending.as_ref().is_some_and(|pending| {
+                    pending.server.as_ref() == Some(&server)
+                        && request.is_none_or(|request| pending.request == request)
+                }) {
+                    view.pending = None;
+                    view.loading_since = None;
                 }
             }
         }
