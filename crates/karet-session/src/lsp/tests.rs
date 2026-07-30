@@ -811,29 +811,40 @@ fn inventory_covers_builtins_and_configured_providers() -> TestResult {
         custom.instances.first().map(|instance| instance.source),
         Some(LanguageServerSource::Configured)
     );
+    let mut expected_managed = vec![
+        "astro-language-server",
+        "bash-language-server",
+        "biome",
+        "buf",
+        "clangd",
+        "clojure-lsp",
+        "docker-langserver",
+        "graphql-lsp",
+        "lua-language-server",
+        "marksman",
+        "neocmakelsp",
+        "pyright",
+        "ruff",
+        "rust-analyzer",
+        "svelte-language-server",
+        "texlab",
+        "typescript-language-server",
+        "vscode-css-language-server",
+        "vscode-html-language-server",
+        "vscode-json-language-server",
+        "vue-language-server",
+        "yaml-language-server",
+        "zls",
+    ];
+    if std::env::consts::ARCH != "x86_64" {
+        expected_managed.retain(|server| *server != "clangd");
+    }
     assert!(
         statuses
             .iter()
             .filter(|status| status.managed)
             .map(|status| status.server.key())
-            .eq([
-                "astro-language-server",
-                "bash-language-server",
-                "biome",
-                "docker-langserver",
-                "graphql-lsp",
-                "pyright",
-                "ruff",
-                "rust-analyzer",
-                "svelte-language-server",
-                "texlab",
-                "typescript-language-server",
-                "vscode-css-language-server",
-                "vscode-html-language-server",
-                "vscode-json-language-server",
-                "vue-language-server",
-                "yaml-language-server",
-            ])
+            .eq(expected_managed)
     );
     Ok(())
 }

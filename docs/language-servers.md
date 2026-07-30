@@ -21,7 +21,9 @@ directory containing several recursively nested repositories gets independent
 roots, configuration, provider selection, and server processes. Files in the
 same repository and using the same launch share a process.
 
-The managed fallback is intentionally smaller than the recognition catalog:
+The managed fallback covers providers with a publisher-authenticated, runnable
+release for the current platform. Providers coupled to a user SDK/runtime remain
+explicitly manual:
 
 | Language | Default providers | Managed by karet | Tree-sitter |
 |---|---|---:|---:|
@@ -29,11 +31,11 @@ The managed fallback is intentionally smaller than the recognition catalog:
 | JavaScript, TypeScript, JSX, TSX | **typescript-language-server**; **Biome** diagnostics/formatting when a Biome config exists | yes (both) | yes |
 | Python | **Pyright** intelligence/type checking + **Ruff** diagnostics/formatting | yes (both) | yes |
 | TeX / LaTeX | **texlab** | yes | yes |
-| C / C++ | **clangd** | project/PATH | yes |
+| C / C++ | **clangd** | yes on x86_64; project/PATH elsewhere | yes |
 | C# | **Microsoft.CodeAnalysis.LanguageServer** | project/PATH | yes |
 | Go | **gopls** | project/PATH | yes |
 | Java | **jdtls** | project/PATH | yes |
-| Zig | **zls** | project/PATH | yes |
+| Zig | **zls** | yes | yes |
 | Astro | **Astro language server** | yes | yes, with injections |
 | Svelte | **svelte-language-server** | yes | yes, with injections |
 | Vue | **vue-language-server** | yes | yes, with injections |
@@ -47,22 +49,22 @@ The managed fallback is intentionally smaller than the recognition catalog:
 | PHP | phpactor | project/PATH | when compiled in |
 | Swift | sourcekit-lsp | project/PATH | when compiled in |
 | Scala | metals | project/PATH | when compiled in |
-| Lua | lua-language-server | project/PATH | when compiled in |
+| Lua | lua-language-server | yes | when compiled in |
 | Haskell | haskell-language-server | project/PATH | when compiled in |
 | OCaml | ocamllsp | project/PATH | when compiled in |
 | Erlang | elp | project/PATH | when compiled in |
 | Dart | `dart language-server` | project/PATH | when compiled in |
 | R | languageserver | project/PATH | when compiled in |
-| Clojure | clojure-lsp | project/PATH | when compiled in |
+| Clojure | clojure-lsp | yes | when compiled in |
 | TOML | taplo | project/PATH | yes |
 | Pkl | pkl-lsp | project/PATH | when compiled in |
-| Protobuf | `buf beta lsp` | project/PATH | when compiled in |
+| Protobuf | `buf beta lsp` | yes | when compiled in |
 | GraphQL | graphql-lsp | yes | when compiled in |
 | PowerShell | PowerShell Editor Services | project/PATH | when compiled in |
-| Markdown | marksman | project/PATH | yes, with injections |
+| Markdown | marksman | yes | yes, with injections |
 | reStructuredText | esbonio | project/PATH | when compiled in |
 | Dockerfile | docker-langserver | yes | when compiled in |
-| CMake | neocmakelsp | project/PATH | when compiled in |
+| CMake | neocmakelsp | yes | when compiled in |
 
 “Project/PATH” is still built-in support: selection, lifecycle, synchronization,
 diagnostics, and editor features work without configuration when the conventional

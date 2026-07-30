@@ -503,6 +503,7 @@ fn install_release(
             sha256,
             archive,
             executable_name,
+            retain_archive,
             ..
         } => {
             let bytes = download_verified(client, url, sha256, |downloaded, total| {
@@ -512,7 +513,11 @@ fn install_release(
                     total,
                 });
             })?;
-            extract_executable(&bytes, *archive, executable_name, destination)
+            if *retain_archive {
+                extract_archive(&bytes, *archive, destination, true)
+            } else {
+                extract_executable(&bytes, *archive, executable_name, destination)
+            }
         },
         ReleaseKind::Npm {
             package,
@@ -597,13 +602,22 @@ fn activation(release: &Release, destination: &Path) -> Result<ActiveInstallatio
             executable_name,
             arguments,
             ..
-        } => (
-            destination.join(executable_name),
-            arguments
-                .iter()
-                .map(|argument| (*argument).to_owned())
-                .collect(),
-        ),
+        } => {
+            let command = find_named(destination, executable_name).ok_or_else(|| {
+                format!(
+                    "installed {} executable is missing",
+                    release.server.display_name()
+                )
+            })?;
+            make_executable(&command)?;
+            (
+                command,
+                arguments
+                    .iter()
+                    .map(|argument| (*argument).to_owned())
+                    .collect(),
+            )
+        },
         ReleaseKind::Npm {
             package,
             entrypoint,
@@ -684,6 +698,11 @@ fn extract_executable(
     destination: &Path,
 ) -> Result<(), String> {
     std::fs::create_dir_all(destination).map_err(|error| error.to_string())?;
+    if matches!(archive, Archive::Raw) {
+        let path = destination.join(executable_name);
+        std::fs::write(&path, bytes).map_err(|error| error.to_string())?;
+        return make_executable(&path);
+    }
     if matches!(archive, Archive::Gzip) {
         let mut decoder = flate2::read::GzDecoder::new(bytes);
         let path = destination.join(executable_name);
@@ -709,27 +728,14 @@ fn extract_archive(
 ) -> Result<(), String> {
     std::fs::create_dir_all(destination).map_err(|error| error.to_string())?;
     match archive {
+        Archive::Raw | Archive::Gzip => Err("payload is not a multi-file archive".into()),
         Archive::TarGzip => {
             let decoder = flate2::read::GzDecoder::new(bytes);
-            let mut archive = tar::Archive::new(decoder);
-            for entry in archive.entries().map_err(|error| error.to_string())? {
-                let mut entry = entry.map_err(|error| error.to_string())?;
-                let path = entry.path().map_err(|error| error.to_string())?;
-                if path.components().any(|part| {
-                    matches!(
-                        part,
-                        std::path::Component::ParentDir | std::path::Component::RootDir
-                    )
-                }) {
-                    return Err("archive contains an unsafe path".into());
-                }
-                if all_files || entry.header().entry_type().is_file() {
-                    entry
-                        .unpack_in(destination)
-                        .map_err(|error| error.to_string())?;
-                }
-            }
-            Ok(())
+            extract_tar(decoder, destination, all_files)
+        },
+        Archive::TarXz => {
+            let decoder = lzma_rust2::XzReader::new(bytes, false);
+            extract_tar(decoder, destination, all_files)
         },
         Archive::Zip => {
             let cursor = std::io::Cursor::new(bytes);
@@ -752,8 +758,29 @@ fn extract_archive(
             }
             Ok(())
         },
-        Archive::Gzip => Err("plain gzip is not a multi-file archive".into()),
     }
+}
+
+fn extract_tar(reader: impl Read, destination: &Path, all_files: bool) -> Result<(), String> {
+    let mut archive = tar::Archive::new(reader);
+    for entry in archive.entries().map_err(|error| error.to_string())? {
+        let mut entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path().map_err(|error| error.to_string())?;
+        if path.components().any(|part| {
+            matches!(
+                part,
+                std::path::Component::ParentDir | std::path::Component::RootDir
+            )
+        }) {
+            return Err("archive contains an unsafe path".into());
+        }
+        if all_files || entry.header().entry_type().is_file() {
+            entry
+                .unpack_in(destination)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 fn find_named(root: &Path, name: &str) -> Option<PathBuf> {
@@ -787,12 +814,12 @@ fn make_executable(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(all(test, windows))]
 fn executable(name: &str) -> String {
     format!("{name}.exe")
 }
 
-#[cfg(not(windows))]
+#[cfg(all(test, not(windows)))]
 fn executable(name: &str) -> String {
     name.into()
 }

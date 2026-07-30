@@ -49,6 +49,83 @@ fn node_provider_identity_covers_every_managed_runtime() {
 }
 
 #[test]
+fn builtin_install_recipes_are_complete_for_supported_targets() {
+    use super::catalog::ManagedSource;
+
+    let mut expected = vec![
+        "astro-language-server",
+        "bash-language-server",
+        "biome",
+        "buf",
+        "clangd",
+        "clojure-lsp",
+        "docker-langserver",
+        "graphql-lsp",
+        "lua-language-server",
+        "marksman",
+        "neocmakelsp",
+        "pyright",
+        "ruff",
+        "rust-analyzer",
+        "svelte-language-server",
+        "texlab",
+        "typescript-language-server",
+        "vscode-css-language-server",
+        "vscode-html-language-server",
+        "vscode-json-language-server",
+        "vue-language-server",
+        "yaml-language-server",
+        "zls",
+    ];
+    if std::env::consts::ARCH != "x86_64" {
+        expected.retain(|server| *server != "clangd");
+    }
+    let mut actual = managed_servers()
+        .into_iter()
+        .map(|server| server.key().to_owned())
+        .collect::<Vec<_>>();
+    actual.sort();
+    assert_eq!(actual, expected);
+    assert!(actual.len() > 20);
+
+    let targets = [
+        ("linux", "x86_64"),
+        ("linux", "aarch64"),
+        ("macos", "x86_64"),
+        ("macos", "aarch64"),
+        ("windows", "x86_64"),
+    ];
+    for recipe in catalog::managed_recipes() {
+        assert!(!recipe.server.is_empty());
+        match recipe.source {
+            ManagedSource::Npm {
+                package, binary, ..
+            } => {
+                assert!(!package.is_empty());
+                assert!(!binary.is_empty());
+            },
+            ManagedSource::Github { repository } => {
+                assert!(!repository.is_empty());
+                for (os, arch) in targets {
+                    let available = catalog::github_asset_for(
+                        &LanguageServerId::new(recipe.server),
+                        "1.2.3",
+                        os,
+                        arch,
+                    )
+                    .is_ok();
+                    assert!(
+                        available || (recipe.server == "clangd" && arch == "aarch64"),
+                        "{} has no recipe for {os}-{arch}",
+                        recipe.server
+                    );
+                }
+            },
+        }
+    }
+}
+
+#[test]
 fn uninstall_deactivates_resolution_and_reclaims_unused_payload()
 -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
@@ -113,7 +190,7 @@ fn uninstall_defers_payload_cleanup_while_a_broker_is_live()
 #[test]
 fn uninstall_rejects_external_providers() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
-    let result = uninstall(dir.path(), &LanguageServerId::Clangd);
+    let result = uninstall(dir.path(), &LanguageServerId::Gopls);
     assert!(matches!(result, Err(message) if message.contains("not managed")));
     Ok(())
 }

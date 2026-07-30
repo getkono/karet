@@ -10,12 +10,12 @@ use crate::api::LanguageServerId;
 #[derive(Clone, Copy)]
 pub(super) struct ManagedRecipe {
     pub(super) server: &'static str,
-    source: ManagedSource,
+    pub(super) source: ManagedSource,
     pub(super) arguments: &'static [&'static str],
 }
 
 #[derive(Clone, Copy)]
-enum ManagedSource {
+pub(super) enum ManagedSource {
     Github {
         repository: &'static str,
     },
@@ -165,20 +165,86 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
         },
         arguments: &["server", "-m", "stream"],
     },
+    ManagedRecipe {
+        server: "clangd",
+        source: ManagedSource::Github {
+            repository: "clangd/clangd",
+        },
+        arguments: &[],
+    },
+    ManagedRecipe {
+        server: "zls",
+        source: ManagedSource::Github {
+            repository: "zigtools/zls",
+        },
+        arguments: &[],
+    },
+    ManagedRecipe {
+        server: "lua-language-server",
+        source: ManagedSource::Github {
+            repository: "LuaLS/lua-language-server",
+        },
+        arguments: &[],
+    },
+    ManagedRecipe {
+        server: "clojure-lsp",
+        source: ManagedSource::Github {
+            repository: "clojure-lsp/clojure-lsp",
+        },
+        arguments: &[],
+    },
+    ManagedRecipe {
+        server: "buf",
+        source: ManagedSource::Github {
+            repository: "bufbuild/buf",
+        },
+        arguments: &["beta", "lsp"],
+    },
+    ManagedRecipe {
+        server: "marksman",
+        source: ManagedSource::Github {
+            repository: "artempyanykh/marksman",
+        },
+        arguments: &[],
+    },
+    ManagedRecipe {
+        server: "neocmakelsp",
+        source: ManagedSource::Github {
+            repository: "neocmakelsp/neocmakelsp",
+        },
+        arguments: &[],
+    },
 ];
+
+pub(super) fn managed_recipes() -> &'static [ManagedRecipe] {
+    MANAGED_RECIPES
+}
 
 pub(super) fn managed_recipe(server: &LanguageServerId) -> Option<ManagedRecipe> {
     MANAGED_RECIPES
         .iter()
-        .find(|recipe| recipe.server == server.key())
+        .find(|recipe| {
+            recipe.server == server.key()
+                && recipe_available(recipe, std::env::consts::OS, std::env::consts::ARCH)
+        })
         .copied()
 }
 
 pub(super) fn managed_servers() -> Vec<LanguageServerId> {
     MANAGED_RECIPES
         .iter()
+        .filter(|recipe| recipe_available(recipe, std::env::consts::OS, std::env::consts::ARCH))
         .map(|recipe| LanguageServerId::new(recipe.server))
         .collect()
+}
+
+fn recipe_available(recipe: &ManagedRecipe, os: &str, arch: &str) -> bool {
+    match recipe.source {
+        ManagedSource::Github { .. } => {
+            github_asset_for(&LanguageServerId::new(recipe.server), "0.0.0", os, arch).is_ok()
+        },
+        ManagedSource::Npm { .. } => node_platform(os, arch).is_some(),
+    }
 }
 
 #[derive(Clone)]
@@ -198,6 +264,7 @@ pub(super) enum ReleaseKind {
         sha256: String,
         archive: Archive,
         executable_name: String,
+        retain_archive: bool,
         arguments: &'static [&'static str],
     },
     Npm {
@@ -214,8 +281,10 @@ pub(super) enum ReleaseKind {
 
 #[derive(Clone, Copy)]
 pub(super) enum Archive {
+    Raw,
     Gzip,
     TarGzip,
+    TarXz,
     Zip,
 }
 
@@ -295,7 +364,13 @@ fn discover_github(
         .map_err(|error| error.to_string())?
         .json()
         .map_err(|error| error.to_string())?;
-    let (name, archive, executable_name) = github_asset(&server)?;
+    let version = release.tag_name.trim_start_matches('v');
+    let (name, archive, executable_name, retain_archive) = github_asset_for(
+        &server,
+        version,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )?;
     let asset = release
         .assets
         .into_iter()
@@ -313,82 +388,202 @@ fn discover_github(
             url: asset.browser_download_url,
             sha256,
             archive,
-            executable_name: executable_name.into(),
+            executable_name,
+            retain_archive,
             arguments,
         },
         download_bytes: Some(asset.size),
     })
 }
 
-fn github_asset(
+pub(super) fn github_asset_for(
     server: &LanguageServerId,
-) -> Result<(&'static str, Archive, &'static str), String> {
-    let platform = (std::env::consts::OS, std::env::consts::ARCH);
-    match (server.key(), platform) {
-        ("rust-analyzer", ("linux", "x86_64")) => Ok((
+    version: &str,
+    os: &str,
+    arch: &str,
+) -> Result<(String, Archive, String, bool), String> {
+    let simple = |name: &str, archive, executable: &str| {
+        Ok((name.to_owned(), archive, executable.to_owned(), false))
+    };
+    let bundle = |name: &str, archive, executable: &str| {
+        Ok((name.to_owned(), archive, executable.to_owned(), true))
+    };
+    match (server.key(), os, arch) {
+        ("rust-analyzer", "linux", "x86_64") => simple(
             "rust-analyzer-x86_64-unknown-linux-musl.gz",
             Archive::Gzip,
             "rust-analyzer",
-        )),
-        ("rust-analyzer", ("linux", "aarch64")) => Ok((
+        ),
+        ("rust-analyzer", "linux", "aarch64") => simple(
             "rust-analyzer-aarch64-unknown-linux-gnu.gz",
             Archive::Gzip,
             "rust-analyzer",
-        )),
-        ("rust-analyzer", ("macos", "x86_64")) => Ok((
+        ),
+        ("rust-analyzer", "macos", "x86_64") => simple(
             "rust-analyzer-x86_64-apple-darwin.gz",
             Archive::Gzip,
             "rust-analyzer",
-        )),
-        ("rust-analyzer", ("macos", "aarch64")) => Ok((
+        ),
+        ("rust-analyzer", "macos", "aarch64") => simple(
             "rust-analyzer-aarch64-apple-darwin.gz",
             Archive::Gzip,
             "rust-analyzer",
-        )),
-        ("rust-analyzer", ("windows", "x86_64")) => Ok((
+        ),
+        ("rust-analyzer", "windows", "x86_64") => simple(
             "rust-analyzer-x86_64-pc-windows-msvc.zip",
             Archive::Zip,
             "rust-analyzer.exe",
-        )),
-        ("texlab", ("linux", "x86_64")) => {
-            Ok(("texlab-x86_64-linux.tar.gz", Archive::TarGzip, "texlab"))
+        ),
+        ("texlab", "linux", "x86_64") => {
+            simple("texlab-x86_64-linux.tar.gz", Archive::TarGzip, "texlab")
         },
-        ("texlab", ("linux", "aarch64")) => {
-            Ok(("texlab-aarch64-linux.tar.gz", Archive::TarGzip, "texlab"))
+        ("texlab", "linux", "aarch64") => {
+            simple("texlab-aarch64-linux.tar.gz", Archive::TarGzip, "texlab")
         },
-        ("texlab", ("macos", "x86_64")) => {
-            Ok(("texlab-x86_64-macos.tar.gz", Archive::TarGzip, "texlab"))
+        ("texlab", "macos", "x86_64") => {
+            simple("texlab-x86_64-macos.tar.gz", Archive::TarGzip, "texlab")
         },
-        ("texlab", ("macos", "aarch64")) => {
-            Ok(("texlab-aarch64-macos.tar.gz", Archive::TarGzip, "texlab"))
+        ("texlab", "macos", "aarch64") => {
+            simple("texlab-aarch64-macos.tar.gz", Archive::TarGzip, "texlab")
         },
-        ("texlab", ("windows", "x86_64")) => {
-            Ok(("texlab-x86_64-windows.zip", Archive::Zip, "texlab.exe"))
+        ("texlab", "windows", "x86_64") => {
+            simple("texlab-x86_64-windows.zip", Archive::Zip, "texlab.exe")
         },
-        ("ruff", ("linux", "x86_64")) => Ok((
+        ("ruff", "linux", "x86_64") => simple(
             "ruff-x86_64-unknown-linux-gnu.tar.gz",
             Archive::TarGzip,
             "ruff",
-        )),
-        ("ruff", ("linux", "aarch64")) => Ok((
+        ),
+        ("ruff", "linux", "aarch64") => simple(
             "ruff-aarch64-unknown-linux-gnu.tar.gz",
             Archive::TarGzip,
             "ruff",
-        )),
-        ("ruff", ("macos", "x86_64")) => {
-            Ok(("ruff-x86_64-apple-darwin.tar.gz", Archive::TarGzip, "ruff"))
+        ),
+        ("ruff", "macos", "x86_64") => {
+            simple("ruff-x86_64-apple-darwin.tar.gz", Archive::TarGzip, "ruff")
         },
-        ("ruff", ("macos", "aarch64")) => {
-            Ok(("ruff-aarch64-apple-darwin.tar.gz", Archive::TarGzip, "ruff"))
+        ("ruff", "macos", "aarch64") => {
+            simple("ruff-aarch64-apple-darwin.tar.gz", Archive::TarGzip, "ruff")
         },
-        ("ruff", ("windows", "x86_64")) => {
-            Ok(("ruff-x86_64-pc-windows-msvc.zip", Archive::Zip, "ruff.exe"))
+        ("ruff", "windows", "x86_64") => {
+            simple("ruff-x86_64-pc-windows-msvc.zip", Archive::Zip, "ruff.exe")
         },
+        ("clangd", "linux", "x86_64") => bundle(
+            &format!("clangd-linux-{version}.zip"),
+            Archive::Zip,
+            "clangd",
+        ),
+        ("clangd", "macos", "x86_64") => {
+            bundle(&format!("clangd-mac-{version}.zip"), Archive::Zip, "clangd")
+        },
+        ("clangd", "windows", "x86_64") => bundle(
+            &format!("clangd-windows-{version}.zip"),
+            Archive::Zip,
+            "clangd.exe",
+        ),
+        ("zls", "linux", "x86_64") => simple("zls-x86_64-linux.tar.xz", Archive::TarXz, "zls"),
+        ("zls", "linux", "aarch64") => simple("zls-aarch64-linux.tar.xz", Archive::TarXz, "zls"),
+        ("zls", "macos", "x86_64") => simple("zls-x86_64-macos.tar.xz", Archive::TarXz, "zls"),
+        ("zls", "macos", "aarch64") => simple("zls-aarch64-macos.tar.xz", Archive::TarXz, "zls"),
+        ("zls", "windows", "x86_64") => simple("zls-x86_64-windows.zip", Archive::Zip, "zls.exe"),
+        ("lua-language-server", "linux", "x86_64") => bundle(
+            &format!("lua-language-server-{version}-linux-x64.tar.gz"),
+            Archive::TarGzip,
+            "lua-language-server",
+        ),
+        ("lua-language-server", "linux", "aarch64") => bundle(
+            &format!("lua-language-server-{version}-linux-arm64.tar.gz"),
+            Archive::TarGzip,
+            "lua-language-server",
+        ),
+        ("lua-language-server", "macos", "x86_64") => bundle(
+            &format!("lua-language-server-{version}-darwin-x64.tar.gz"),
+            Archive::TarGzip,
+            "lua-language-server",
+        ),
+        ("lua-language-server", "macos", "aarch64") => bundle(
+            &format!("lua-language-server-{version}-darwin-arm64.tar.gz"),
+            Archive::TarGzip,
+            "lua-language-server",
+        ),
+        ("lua-language-server", "windows", "x86_64") => bundle(
+            &format!("lua-language-server-{version}-win32-x64.zip"),
+            Archive::Zip,
+            "lua-language-server.exe",
+        ),
+        ("clojure-lsp", "linux", "x86_64") => simple(
+            "clojure-lsp-native-linux-amd64.zip",
+            Archive::Zip,
+            "clojure-lsp",
+        ),
+        ("clojure-lsp", "linux", "aarch64") => simple(
+            "clojure-lsp-native-linux-aarch64.zip",
+            Archive::Zip,
+            "clojure-lsp",
+        ),
+        ("clojure-lsp", "macos", "x86_64") => simple(
+            "clojure-lsp-native-macos-amd64.zip",
+            Archive::Zip,
+            "clojure-lsp",
+        ),
+        ("clojure-lsp", "macos", "aarch64") => simple(
+            "clojure-lsp-native-macos-aarch64.zip",
+            Archive::Zip,
+            "clojure-lsp",
+        ),
+        ("clojure-lsp", "windows", "x86_64") => simple(
+            "clojure-lsp-native-windows-amd64.zip",
+            Archive::Zip,
+            "clojure-lsp.exe",
+        ),
+        ("buf", "linux", "x86_64") => simple("buf-Linux-x86_64", Archive::Raw, "buf-Linux-x86_64"),
+        ("buf", "linux", "aarch64") => {
+            simple("buf-Linux-aarch64", Archive::Raw, "buf-Linux-aarch64")
+        },
+        ("buf", "macos", "x86_64") => {
+            simple("buf-Darwin-x86_64", Archive::Raw, "buf-Darwin-x86_64")
+        },
+        ("buf", "macos", "aarch64") => simple("buf-Darwin-arm64", Archive::Raw, "buf-Darwin-arm64"),
+        ("buf", "windows", "x86_64") => simple(
+            "buf-Windows-x86_64.exe",
+            Archive::Raw,
+            "buf-Windows-x86_64.exe",
+        ),
+        ("marksman", "linux", "x86_64") => {
+            simple("marksman-linux-x64", Archive::Raw, "marksman-linux-x64")
+        },
+        ("marksman", "linux", "aarch64") => {
+            simple("marksman-linux-arm64", Archive::Raw, "marksman-linux-arm64")
+        },
+        ("marksman", "macos", "x86_64" | "aarch64") => {
+            simple("marksman-macos", Archive::Raw, "marksman-macos")
+        },
+        ("marksman", "windows", "x86_64") => simple("marksman.exe", Archive::Raw, "marksman.exe"),
+        ("neocmakelsp", "linux", "x86_64") => simple(
+            "neocmakelsp-x86_64-unknown-linux-gnu.tar.gz",
+            Archive::TarGzip,
+            "neocmakelsp",
+        ),
+        ("neocmakelsp", "linux", "aarch64") => simple(
+            "neocmakelsp-aarch64-unknown-linux-gnu.tar.gz",
+            Archive::TarGzip,
+            "neocmakelsp",
+        ),
+        ("neocmakelsp", "macos", "x86_64" | "aarch64") => simple(
+            "neocmakelsp-universal-apple-darwin.tar.gz",
+            Archive::TarGzip,
+            "neocmakelsp",
+        ),
+        ("neocmakelsp", "windows", "x86_64") => simple(
+            "neocmakelsp-x86_64-pc-windows-msvc.zip",
+            Archive::Zip,
+            "neocmakelsp.exe",
+        ),
         _ => Err(format!(
             "{} has no managed release for {}-{}",
             server.display_name(),
-            platform.0,
-            platform.1
+            os,
+            arch
         )),
     }
 }
@@ -497,16 +692,13 @@ fn npm_metadata(client: &Client, package: &str) -> Result<NpmMetadata, String> {
 }
 
 fn node_asset(node: &NodeRelease) -> Result<(String, Archive), String> {
-    let suffix = match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => "linux-x64.tar.gz",
-        ("linux", "aarch64") => "linux-arm64.tar.gz",
-        ("macos", "x86_64") => "darwin-x64.tar.gz",
-        ("macos", "aarch64") => "darwin-arm64.tar.gz",
-        ("windows", "x86_64") => "win-x64.zip",
-        other => {
+    let platform = (std::env::consts::OS, std::env::consts::ARCH);
+    let suffix = match node_platform(platform.0, platform.1) {
+        Some(suffix) => suffix,
+        None => {
             return Err(format!(
                 "Node has no managed release for {}-{}",
-                other.0, other.1
+                platform.0, platform.1
             ));
         },
     };
@@ -523,4 +715,15 @@ fn node_asset(node: &NodeRelease) -> Result<(String, Archive), String> {
             Archive::TarGzip
         },
     ))
+}
+
+fn node_platform(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("linux", "x86_64") => Some("linux-x64.tar.gz"),
+        ("linux", "aarch64") => Some("linux-arm64.tar.gz"),
+        ("macos", "x86_64") => Some("darwin-x64.tar.gz"),
+        ("macos", "aarch64") => Some("darwin-arm64.tar.gz"),
+        ("windows", "x86_64") => Some("win-x64.zip"),
+        _ => None,
+    }
 }
