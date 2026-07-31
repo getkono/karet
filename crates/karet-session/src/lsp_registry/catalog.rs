@@ -590,15 +590,9 @@ pub(super) fn github_asset_for(
 
 #[derive(Deserialize)]
 struct NpmMetadata {
-    #[serde(rename = "dist-tags")]
-    dist_tags: NpmTags,
+    version: String,
     #[serde(default)]
     bin: std::collections::BTreeMap<String, String>,
-}
-
-#[derive(Deserialize)]
-struct NpmTags {
-    latest: String,
 }
 
 #[derive(Deserialize)]
@@ -625,8 +619,7 @@ fn discover_npm(
         .ok_or_else(|| format!("{package} publishes no safe {binary} executable"))?;
     let companion = companion
         .map(|package| {
-            npm_metadata(client, package)
-                .map(|metadata| (package.to_owned(), metadata.dist_tags.latest))
+            npm_metadata(client, package).map(|metadata| (package.to_owned(), metadata.version))
         })
         .transpose()?;
     let nodes: Vec<NodeRelease> = client
@@ -658,7 +651,7 @@ fn discover_npm(
         .ok_or_else(|| format!("Node checksum manifest has no {file}"))?;
     Ok(Release {
         server,
-        version: npm.dist_tags.latest,
+        version: npm.version,
         from_version: None,
         kind: ReleaseKind::Npm {
             package: package.into(),
@@ -675,15 +668,24 @@ fn discover_npm(
 }
 
 fn safe_relative_path(path: &str) -> bool {
+    let mut saw_normal = false;
     !path.is_empty()
         && Path::new(path)
             .components()
-            .all(|component| matches!(component, std::path::Component::Normal(_)))
+            .all(|component| match component {
+                std::path::Component::Normal(_) => {
+                    saw_normal = true;
+                    true
+                },
+                std::path::Component::CurDir => true,
+                _ => false,
+            })
+        && saw_normal
 }
 
 fn npm_metadata(client: &Client, package: &str) -> Result<NpmMetadata, String> {
     client
-        .get(format!("https://registry.npmjs.org/{package}"))
+        .get(format!("https://registry.npmjs.org/{package}/latest"))
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
         .map_err(|error| error.to_string())?
@@ -725,5 +727,40 @@ fn node_platform(os: &str, arch: &str) -> Option<&'static str> {
         ("macos", "aarch64") => Some("darwin-arm64.tar.gz"),
         ("windows", "x86_64") => Some("win-x64.zip"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn npm_latest_metadata_exposes_the_published_executable() -> Result<(), serde_json::Error> {
+        let metadata: NpmMetadata = serde_json::from_str(
+            r#"{
+                "name": "typescript-language-server",
+                "version": "5.3.0",
+                "bin": {
+                    "typescript-language-server": "lib/cli.mjs"
+                }
+            }"#,
+        )?;
+
+        assert_eq!(metadata.version, "5.3.0");
+        assert_eq!(
+            metadata.bin.get("typescript-language-server"),
+            Some(&"lib/cli.mjs".to_owned())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn npm_executable_paths_must_stay_inside_the_package() {
+        assert!(safe_relative_path("lib/cli.mjs"));
+        assert!(safe_relative_path("./bin/nodeServer.js"));
+        assert!(!safe_relative_path("../outside.js"));
+        assert!(!safe_relative_path("/tmp/outside.js"));
+        assert!(!safe_relative_path("./"));
+        assert!(!safe_relative_path(""));
     }
 }
