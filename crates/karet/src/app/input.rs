@@ -361,10 +361,7 @@ impl App {
                 },
                 TextPurpose::InstallLanguageServer { server } => {
                     if text == "install" {
-                        self.status = Some(format!(
-                            "checking {}'s available version…",
-                            server.display_name()
-                        ));
+                        self.status = Some(format!("installing {}…", server.display_name()));
                         self.begin_language_server_install(server);
                     } else {
                         self.status = Some("language-server installation cancelled".to_string());

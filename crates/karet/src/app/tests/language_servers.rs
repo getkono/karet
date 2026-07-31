@@ -288,6 +288,110 @@ fn language_server_row_action_targets_its_own_server() {
 }
 
 #[test]
+fn language_server_install_action_is_the_only_install_approval() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    app.open_language_servers();
+    let mut missing = language_server_status(LanguageServerId::Texlab, "tex", true);
+    missing.installed = None;
+    app.show_language_server_status(None, vec![missing]);
+
+    app.language_server_action(
+        crate::tab::LanguageServerAction::Primary,
+        Some(LanguageServerId::Texlab),
+    );
+
+    let install_sent = backend
+        .sent
+        .lock()
+        .map(|sent| {
+            sent.iter().any(|(_, command)| {
+                matches!(
+                    command,
+                    SessionCommand::InstallLanguageServer { server }
+                        if *server == LanguageServerId::Texlab
+                )
+            })
+        })
+        .unwrap_or_default();
+    assert!(install_sent);
+    assert!(app.overlay.is_none());
+    assert!(matches!(
+        &app.tabs[app.active].kind,
+        TabKind::LanguageServers(view)
+            if matches!(
+                view.pending.as_ref(),
+                Some(crate::tab::LanguageServerPending {
+                    kind: crate::tab::LanguageServerPendingKind::Install,
+                    ..
+                })
+            )
+    ));
+}
+
+#[test]
+fn language_server_update_action_applies_the_visible_plan_directly() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    app.open_language_servers();
+    app.show_language_server_status(
+        None,
+        vec![language_server_status(
+            LanguageServerId::RustAnalyzer,
+            "rust",
+            true,
+        )],
+    );
+    let plan = LanguageServerPlanId(9);
+    app.prompt_language_server_updates(
+        None,
+        plan,
+        vec![LanguageServerChange {
+            server: LanguageServerId::RustAnalyzer,
+            current: Some("1.2.3".into()),
+            target: "1.3.0".into(),
+            download_bytes: Some(42),
+        }],
+    );
+
+    app.language_server_action(
+        crate::tab::LanguageServerAction::Primary,
+        Some(LanguageServerId::RustAnalyzer),
+    );
+
+    let apply_sent = backend
+        .sent
+        .lock()
+        .map(|sent| {
+            sent.iter().any(|(_, command)| {
+                matches!(
+                    command,
+                    SessionCommand::ApplyLanguageServerPlan {
+                        plan: applied,
+                        servers,
+                    } if *applied == plan && servers == &[LanguageServerId::RustAnalyzer]
+                )
+            })
+        })
+        .unwrap_or_default();
+    assert!(apply_sent);
+    assert!(app.overlay.is_none());
+    assert!(matches!(
+        &app.tabs[app.active].kind,
+        TabKind::LanguageServers(view)
+            if matches!(
+                view.pending.as_ref(),
+                Some(crate::tab::LanguageServerPending {
+                    kind: crate::tab::LanguageServerPendingKind::Update,
+                    ..
+                })
+            )
+    ));
+}
+
+#[test]
 fn language_server_actions_wrap_without_disappearing_on_narrow_views() {
     let mut app = app();
     app.open_language_servers();

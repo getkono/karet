@@ -257,28 +257,16 @@ fn run(
                     client
                         .as_ref()
                         .map_err(ToString::to_string)
-                        .and_then(|client| discover(client, server.clone()))
-                        .map(|release| {
-                            let plan = LanguageServerPlanId(next_plan);
-                            next_plan = next_plan.wrapping_add(1).max(1);
-                            let changes = vec![LanguageServerChange {
-                                server: release.server.clone(),
-                                current: None,
-                                target: release.active_version(),
-                                download_bytes: release.download_bytes,
-                            }];
-                            plans.insert(
-                                plan,
-                                StoredPlan {
-                                    created: Instant::now(),
-                                    releases: vec![release],
-                                },
-                            );
-                            RegistryUpdate::Plan {
+                        .and_then(|client| {
+                            let release = discover(client, server.clone())?;
+                            install_discovered(
+                                &root,
+                                supervisor.as_deref(),
+                                client,
                                 request,
-                                plan,
-                                changes,
-                            }
+                                &release,
+                                updates,
+                            )
                         })
                 }
             },
@@ -526,6 +514,23 @@ fn install(
     writeln!(journal, "{encoded}").map_err(|error| error.to_string())?;
     journal.sync_all().map_err(|error| error.to_string())?;
     Ok(active)
+}
+
+fn install_discovered(
+    root: &Path,
+    supervisor: Option<&Path>,
+    client: &Client,
+    request: RequestId,
+    release: &Release,
+    updates: &tokio_mpsc::UnboundedSender<RegistryUpdate>,
+) -> Result<RegistryUpdate, String> {
+    let active = install(root, supervisor, client, release, updates)?;
+    Ok(RegistryUpdate::Changed {
+        request,
+        server: release.server.clone(),
+        version: active.version,
+        was_installed: false,
+    })
 }
 
 fn install_release(

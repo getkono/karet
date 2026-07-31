@@ -285,7 +285,6 @@ fn server_actions(
     {
         let label = match pending.kind {
             LanguageServerPendingKind::CheckSelected => "Checking…",
-            LanguageServerPendingKind::DiscoverInstall => "Checking…",
             LanguageServerPendingKind::Install => "Installing…",
             LanguageServerPendingKind::Update => "Updating…",
             LanguageServerPendingKind::Uninstall => "Uninstalling…",

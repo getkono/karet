@@ -49,6 +49,58 @@ fn node_provider_identity_covers_every_managed_runtime() {
 }
 
 #[test]
+fn approved_first_install_activates_without_returning_another_plan()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let server = LanguageServerId::Texlab;
+    let version = "1.2.3";
+    let payload = provider_root(dir.path(), &server)
+        .join("versions")
+        .join(version);
+    std::fs::create_dir_all(&payload)?;
+    std::fs::write(payload.join(executable("texlab")), b"test")?;
+    let release = Release {
+        server: server.clone(),
+        version: version.into(),
+        from_version: None,
+        kind: ReleaseKind::Standalone {
+            url: String::new(),
+            sha256: String::new(),
+            archive: Archive::Raw,
+            executable_name: executable("texlab"),
+            retain_archive: false,
+            arguments: &[],
+        },
+        download_bytes: None,
+    };
+    let (updates, _updates_rx) = tokio_mpsc::unbounded_channel();
+
+    let update = install_discovered(
+        dir.path(),
+        None,
+        &Client::new(),
+        RequestId(7),
+        &release,
+        &updates,
+    )?;
+
+    assert!(matches!(
+        update,
+        RegistryUpdate::Changed {
+            request: RequestId(7),
+            server: changed,
+            version: installed,
+            was_installed: false,
+        } if changed == server && installed == version
+    ));
+    assert_eq!(
+        installed_version(Some(dir.path()), &server).as_deref(),
+        Some(version)
+    );
+    Ok(())
+}
+
+#[test]
 fn builtin_install_recipes_are_complete_for_supported_targets() {
     use super::catalog::ManagedSource;
 

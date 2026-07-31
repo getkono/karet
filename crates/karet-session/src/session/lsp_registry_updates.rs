@@ -13,26 +13,10 @@ impl Session {
                 plan,
                 changes,
             } => {
-                let automatic_install = self.config.settings.lsp.managed_downloads
-                    == crate::config::schema::ManagedDownloads::Auto
-                    && !changes.is_empty()
-                    && changes.iter().all(|change| change.current.is_none());
-                if automatic_install {
-                    let servers = changes.iter().map(|change| change.server.clone()).collect();
-                    self.queue_lsp_registry(
-                        request,
-                        crate::lsp_registry::RegistryJob::Apply {
-                            request,
-                            plan,
-                            servers,
-                        },
-                    );
-                } else {
-                    self.emit(
-                        Some(request),
-                        Event::LanguageServerUpdatePlan { plan, changes },
-                    );
-                }
+                self.emit(
+                    Some(request),
+                    Event::LanguageServerUpdatePlan { plan, changes },
+                );
             },
             RegistryUpdate::Changed {
                 request,

@@ -141,7 +141,6 @@ pub(crate) enum LanguageServerAction {
 pub(crate) enum LanguageServerPendingKind {
     CheckSelected,
     CheckAll,
-    DiscoverInstall,
     Install,
     Update,
     Uninstall,

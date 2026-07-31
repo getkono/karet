@@ -260,22 +260,15 @@ impl App {
         });
         if let Some((change, plan)) = planned {
             let install = change.current.is_none();
-            let verb = if install { "install" } else { "update" };
-            self.overlay = Some(Overlay::text(
-                format!(
-                    "{} {} → {} · type {verb} to approve",
-                    change.server.display_name(),
-                    change.current.as_deref().unwrap_or("missing"),
-                    change.target
-                ),
-                TextPurpose::ApplyLanguageServerPlan {
-                    plan,
-                    servers: vec![change.server],
-                    install,
-                },
-            ));
+            self.apply_language_server_plan(plan, vec![change.server], install);
+            self.status = Some(if install {
+                "installing language server…".to_string()
+            } else {
+                "updating language server…".to_string()
+            });
         } else if status.installed.is_none() {
-            self.prompt_language_server_install(status.server);
+            self.begin_language_server_install(status.server.clone());
+            self.status = Some(format!("installing {}…", status.server.display_name()));
         } else {
             self.check_language_server(status.server);
         }
@@ -449,11 +442,7 @@ impl App {
         let request = self.send_command_id(SessionCommand::InstallLanguageServer {
             server: server.clone(),
         });
-        self.set_language_server_pending(
-            request,
-            Some(server),
-            LanguageServerPendingKind::DiscoverInstall,
-        );
+        self.set_language_server_pending(request, Some(server), LanguageServerPendingKind::Install);
     }
 
     pub(super) fn apply_language_server_plan(
@@ -491,7 +480,7 @@ impl App {
         if self.overlay.is_none() {
             self.overlay = Some(Overlay::text(
                 format!(
-                    "{} is not installed · type install to check the available version",
+                    "{} is not installed · type install to install the latest stable version",
                     server.display_name()
                 ),
                 TextPurpose::InstallLanguageServer { server },

@@ -211,9 +211,12 @@ publisher-verification constraint.
 | `q` | close the manager tab |
 
 Update discovery never applies a change. Discovered target versions remain visible
-in the table until the exact short-lived plan is approved. Install/update/uninstall
-actions are refused for configured, project-local, and `PATH` providers: karet
-reports their state but does not claim ownership of them.
+in the table until the exact short-lived plan is approved by clicking **Update** (or
+running the selected row action). **Install** likewise starts the approved
+installation immediately; neither row action asks for the same approval a second
+time. Install/update/uninstall actions are refused for configured, project-local,
+and `PATH` providers: karet reports their state but does not claim ownership of
+them.
 
 ## Managed installations and consent
 
@@ -226,15 +229,15 @@ is ignored. Node providers use a registry-owned, verified active-LTS Node runtim
 `lsp.managedDownloads` controls missing fallbacks:
 
 - `prompt` (default): opening a file performs no network I/O. karet first asks
-  permission to discover release metadata, then displays the exact provider,
-  version, transition, and known download size. Applying that short-lived plan is
-  a separate confirmation.
-- `auto`: the user has pre-authorized discovery and exact-plan application.
+  permission to discover and install the provider's latest stable version. That
+  single approval covers the resulting verified download and activation.
+- `auto`: the user has pre-authorized discovery and installation.
 - `off`: no discovery or download.
 
-Update checks are always explicit. An approved plan expires after 15 minutes and
-is rejected if another process changed the active version. Existing brokers keep
-their pinned executable until restarted; new brokers use the new activation.
+Update checks are always explicit. Their discovered exact-version plan expires
+after 15 minutes and is rejected if another process changed the active version.
+Existing brokers keep their pinned executable until restarted; new brokers use the
+new activation.
 
 Uninstall first appends a deactivation record, so future resolution immediately
 stops selecting that managed version. It then retires language-server connections
