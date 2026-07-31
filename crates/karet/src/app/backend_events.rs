@@ -342,7 +342,7 @@ impl App {
                 version,
                 restart_required,
             } => {
-                self.finish_language_server_change(server, version, restart_required);
+                self.finish_language_server_change(id, server, version, restart_required);
             },
             SessionEvent::LanguageServerRemoved {
                 server,
@@ -477,6 +477,8 @@ impl App {
                 kind,
                 message,
             } => {
+                let language_server_operation_failed = id
+                    .is_some_and(|request| self.fail_language_server_operation(request, &message));
                 if id.is_some() && id == self.commit_input.pending {
                     self.commit_input.pending = None;
                 }
@@ -499,19 +501,8 @@ impl App {
                 for tab in self.all_tabs_mut() {
                     if let TabKind::LanguageServers(view) = &mut tab.kind
                         && id.is_some()
-                        && (view
-                            .pending
-                            .as_ref()
-                            .is_some_and(|pending| Some(pending.request) == id)
-                            || view.inventory_request == id)
+                        && view.inventory_request == id
                     {
-                        if view
-                            .pending
-                            .as_ref()
-                            .is_some_and(|pending| Some(pending.request) == id)
-                        {
-                            view.pending = None;
-                        }
                         if view.inventory_request == id {
                             view.inventory_request = None;
                         }
@@ -519,7 +510,9 @@ impl App {
                         view.error = Some(message.clone());
                     }
                 }
-                self.notify(severity, kind, message);
+                if !language_server_operation_failed {
+                    self.notify(severity, kind, message);
+                }
             },
             SessionEvent::VcsStatus { staged, working } => {
                 self.live_blame = None;

@@ -35,8 +35,8 @@ fn draw_actions(f: &mut Frame, theme: &Theme, area: Rect, view: &mut LanguageSer
     let refreshing = view.inventory_request.is_some();
     let check_all_pending = view
         .pending
-        .as_ref()
-        .is_some_and(|pending| pending.kind == LanguageServerPendingKind::CheckAll);
+        .iter()
+        .any(|pending| pending.kind == LanguageServerPendingKind::CheckAll);
     let has_installed = view
         .servers
         .iter()
@@ -51,7 +51,7 @@ fn draw_actions(f: &mut Frame, theme: &Theme, area: Rect, view: &mut LanguageSer
     )];
     if check_all_pending {
         buttons.push(("Checking all…", None));
-    } else if has_installed && view.pending.is_none() {
+    } else if has_installed {
         buttons.push(("U Check all", Some(LanguageServerAction::CheckAll)));
     }
     buttons.push(("/ Filter", Some(LanguageServerAction::Filter)));
@@ -280,21 +280,29 @@ fn server_actions(
     let mut actions = Vec::new();
     if let Some(pending) = view
         .pending
-        .as_ref()
-        .filter(|pending| pending.server.as_ref() == Some(&status.server))
+        .iter()
+        .find(|pending| pending.server.as_ref() == Some(&status.server))
     {
-        let label = match pending.kind {
+        let mut label = match pending.kind {
             LanguageServerPendingKind::CheckSelected => "Checking…",
             LanguageServerPendingKind::Install => "Installing…",
             LanguageServerPendingKind::Update => "Updating…",
             LanguageServerPendingKind::Uninstall => "Uninstalling…",
             LanguageServerPendingKind::CheckAll => "Checking…",
-        };
+        }
+        .to_string();
+        if let Some(downloaded) = pending.downloaded {
+            if let Some(total) = pending.total.filter(|total| *total > 0) {
+                label = format!("{label} {}%", downloaded.saturating_mul(100) / total);
+            } else {
+                label = format!("{label} {downloaded} B");
+            }
+        }
         actions.push(RowAction {
-            label: label.to_string(),
+            label,
             action: None,
         });
-    } else if view.pending.is_none() {
+    } else {
         if let Some(change) = view
             .changes
             .iter()

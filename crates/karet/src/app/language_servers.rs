@@ -9,6 +9,8 @@ use crate::tab::LanguageServersViewState;
 pub(super) struct LanguageServerRuntimeModel {
     servers: Vec<LanguageServerStatus>,
     inventory_request: Option<RequestId>,
+    operations: Vec<LanguageServerPending>,
+    operation_error: Option<String>,
 }
 
 /// The active file's compact language-server condition.
@@ -99,6 +101,45 @@ impl LanguageServerRuntimeModel {
             })
             .max_by_key(|badge| badge.priority())
     }
+
+    fn start_operation(&mut self, operation: LanguageServerPending) {
+        self.operations
+            .retain(|pending| pending.request != operation.request);
+        self.operations.push(operation);
+        self.operation_error = None;
+    }
+
+    fn update_progress(&mut self, server: &LanguageServerId, downloaded: u64, total: Option<u64>) {
+        if let Some(operation) = self
+            .operations
+            .iter_mut()
+            .find(|pending| pending.server.as_ref() == Some(server))
+        {
+            operation.downloaded = Some(downloaded);
+            operation.total = total;
+        }
+    }
+
+    fn finish_operation(&mut self, request: Option<RequestId>, server: Option<&LanguageServerId>) {
+        self.operations.retain(|pending| {
+            let request_matches = request.is_none_or(|request| pending.request == request);
+            let server_matches =
+                server.is_none_or(|server| pending.server.as_ref() == Some(server));
+            !(request_matches && server_matches)
+        });
+    }
+
+    fn fail_operation(&mut self, request: RequestId, message: &str) -> bool {
+        let matched = self
+            .operations
+            .iter()
+            .any(|pending| pending.request == request);
+        if matched {
+            self.operations.retain(|pending| pending.request != request);
+            self.operation_error = Some(message.to_owned());
+        }
+        matched
+    }
 }
 
 impl App {
@@ -134,6 +175,7 @@ impl App {
 
         let request = self.send_command_id(SessionCommand::LanguageServerStatus);
         self.push_tab(Tab::language_servers(request));
+        self.sync_language_server_operations();
     }
 
     fn language_servers_mut(&mut self) -> Option<&mut LanguageServersViewState> {
@@ -172,15 +214,37 @@ impl App {
         let Some(request) = request else {
             return;
         };
-        if let Some(view) = self.language_servers_mut() {
-            view.pending = Some(LanguageServerPending {
-                request,
-                server,
-                kind,
-            });
-            view.loading_since = Some(Instant::now());
-            view.error = None;
+        self.lsp_runtime.start_operation(LanguageServerPending {
+            request,
+            server,
+            kind,
+            downloaded: None,
+            total: None,
+        });
+        self.sync_language_server_operations();
+    }
+
+    fn sync_language_server_operations(&mut self) {
+        let operations = self.lsp_runtime.operations.clone();
+        let error = self.lsp_runtime.operation_error.clone();
+        for tab in self.all_tabs_mut() {
+            if let TabKind::LanguageServers(view) = &mut tab.kind {
+                view.pending.clone_from(&operations);
+                view.error.clone_from(&error);
+            }
         }
+    }
+
+    pub(super) fn fail_language_server_operation(
+        &mut self,
+        request: RequestId,
+        message: &str,
+    ) -> bool {
+        let failed = self.lsp_runtime.fail_operation(request, message);
+        if failed {
+            self.sync_language_server_operations();
+        }
+        failed
     }
 
     pub(super) fn refresh_language_servers(&mut self) {
@@ -261,14 +325,8 @@ impl App {
         if let Some((change, plan)) = planned {
             let install = change.current.is_none();
             self.apply_language_server_plan(plan, vec![change.server], install);
-            self.status = Some(if install {
-                "installing language server…".to_string()
-            } else {
-                "updating language server…".to_string()
-            });
         } else if status.installed.is_none() {
-            self.begin_language_server_install(status.server.clone());
-            self.status = Some(format!("installing {}…", status.server.display_name()));
+            self.begin_language_server_install(status.server);
         } else {
             self.check_language_server(status.server);
         }
@@ -529,6 +587,9 @@ impl App {
         plan: LanguageServerPlanId,
         changes: Vec<LanguageServerChange>,
     ) {
+        if let Some(request) = request {
+            self.lsp_runtime.finish_operation(Some(request), None);
+        }
         let mut manager_open = false;
         let mut adopted = false;
         for tab in self.all_tabs_mut() {
@@ -537,19 +598,21 @@ impl App {
                 let matches = request.is_none()
                     || view
                         .pending
-                        .as_ref()
-                        .is_some_and(|pending| Some(pending.request) == request);
+                        .iter()
+                        .any(|pending| Some(pending.request) == request);
                 if !matches {
                     continue;
                 }
                 adopted = true;
                 view.plan = Some(plan);
                 view.changes.clone_from(&changes);
-                view.pending = None;
+                view.pending
+                    .retain(|pending| Some(pending.request) != request);
                 view.loading_since = None;
                 view.error = None;
             }
         }
+        self.sync_language_server_operations();
         if manager_open && !adopted {
             return;
         }
@@ -596,23 +659,27 @@ impl App {
         downloaded: u64,
         total: Option<u64>,
     ) {
-        self.status = Some(total.map_or_else(
-            || format!("downloading {}: {downloaded} bytes", server.display_name()),
-            |total| {
-                format!(
-                    "downloading {}: {downloaded}/{total} bytes",
-                    server.display_name()
-                )
-            },
-        ));
+        self.lsp_runtime.update_progress(&server, downloaded, total);
+        self.sync_language_server_operations();
     }
 
     pub(super) fn finish_language_server_change(
         &mut self,
+        request: Option<RequestId>,
         server: LanguageServerId,
         version: String,
-        restart_required: bool,
+        _restart_required: bool,
     ) {
+        self.lsp_runtime.finish_operation(request, Some(&server));
+        if let Some(status) = self
+            .lsp_runtime
+            .servers
+            .iter_mut()
+            .find(|item| item.server == server)
+        {
+            status.installed = Some(version.clone());
+            status.cleanup_pending = false;
+        }
         for tab in self.all_tabs_mut() {
             if let TabKind::LanguageServers(view) = &mut tab.kind {
                 if let Some(status) = view.servers.iter_mut().find(|item| item.server == server) {
@@ -623,20 +690,9 @@ impl App {
                 if view.changes.is_empty() {
                     view.plan = None;
                 }
-                view.pending = None;
-                view.loading_since = None;
             }
         }
-        let suffix = if restart_required {
-            " · restart to use it in this session"
-        } else {
-            ""
-        };
-        self.notify(
-            Severity::Information,
-            NotificationKind::Lsp,
-            format!("installed {} {version}{suffix}", server.display_name()),
-        );
+        self.sync_language_server_operations();
     }
 
     pub(super) fn finish_language_server_remove(
@@ -645,6 +701,7 @@ impl App {
         server: LanguageServerId,
         cleanup_pending: bool,
     ) {
+        self.lsp_runtime.finish_operation(request, Some(&server));
         for tab in self.all_tabs_mut() {
             if let TabKind::LanguageServers(view) = &mut tab.kind {
                 if let Some(status) = view.servers.iter_mut().find(|item| item.server == server) {
@@ -656,15 +713,9 @@ impl App {
                 if view.changes.is_empty() {
                     view.plan = None;
                 }
-                if view.pending.as_ref().is_some_and(|pending| {
-                    pending.server.as_ref() == Some(&server)
-                        && request.is_none_or(|request| pending.request == request)
-                }) {
-                    view.pending = None;
-                    view.loading_since = None;
-                }
             }
         }
+        self.sync_language_server_operations();
         let suffix = if cleanup_pending {
             "; payload cleanup is deferred until shared processes exit"
         } else {

@@ -190,9 +190,12 @@ controls remain in the action strip; provider-specific controls live on their ro
 appear only when applicable. A missing managed provider shows **Install**, an
 installed provider shows **Check updates** (or **Update** after discovery) and
 **Uninstall**, and an active session instance shows **Restart**. Pending operations
-replace their action with a progress label. The loading placeholder follows the
-shared 200 ms reveal delay. The view can be operated with either mouse or these
-focused-tab keys:
+replace only that provider's action with a progress label, so other providers remain
+independently actionable. Installation progress and completion stay in this view
+instead of creating status-bar messages or notifications. The operation state is
+owned independently of the tab, so closing and reopening the manager does not lose
+it. The loading placeholder follows the shared 200 ms reveal delay. The view can be
+operated with either mouse or these focused-tab keys:
 
 A missing manual provider instead shows a non-interactive **Install manually**
 label. Its selected-row detail names the required SDK, runtime, toolchain, or

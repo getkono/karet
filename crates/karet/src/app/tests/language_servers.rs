@@ -320,14 +320,169 @@ fn language_server_install_action_is_the_only_install_approval() {
     assert!(matches!(
         &app.tabs[app.active].kind,
         TabKind::LanguageServers(view)
-            if matches!(
-                view.pending.as_ref(),
-                Some(crate::tab::LanguageServerPending {
-                    kind: crate::tab::LanguageServerPendingKind::Install,
-                    ..
-                })
-            )
+            if view.pending.iter().any(|pending| {
+                pending.kind == crate::tab::LanguageServerPendingKind::Install
+            })
     ));
+}
+
+#[test]
+fn language_server_installs_are_independent_per_provider() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    app.open_language_servers();
+    let mut texlab = language_server_status(LanguageServerId::Texlab, "tex", true);
+    texlab.installed = None;
+    let mut zls = language_server_status(LanguageServerId::Zls, "zig", true);
+    zls.installed = None;
+    app.show_language_server_status(None, vec![texlab, zls]);
+
+    app.language_server_action(
+        crate::tab::LanguageServerAction::Primary,
+        Some(LanguageServerId::Texlab),
+    );
+    app.language_server_action(
+        crate::tab::LanguageServerAction::Primary,
+        Some(LanguageServerId::Zls),
+    );
+
+    let installs = backend
+        .sent
+        .lock()
+        .map(|sent| {
+            sent.iter()
+                .filter_map(|(_, command)| match command {
+                    SessionCommand::InstallLanguageServer { server } => Some(server.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        installs,
+        vec![LanguageServerId::Texlab, LanguageServerId::Zls]
+    );
+    assert!(matches!(
+        &app.tabs[app.active].kind,
+        TabKind::LanguageServers(view) if view.pending.len() == 2
+    ));
+    assert_eq!(
+        screen(&mut app, 120, 24)
+            .join("\n")
+            .matches("Installing")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn language_server_install_state_survives_manager_reopen() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend);
+    app.open_language_servers();
+    let mut missing = language_server_status(LanguageServerId::Texlab, "tex", true);
+    missing.installed = None;
+    app.show_language_server_status(None, vec![missing.clone()]);
+    app.begin_language_server_install(LanguageServerId::Texlab);
+
+    app.close_tab_at(app.active);
+    app.open_language_servers();
+    app.show_language_server_status(None, vec![missing]);
+
+    assert!(matches!(
+        &app.tabs[app.active].kind,
+        TabKind::LanguageServers(view)
+            if view.pending.iter().any(|pending| {
+                pending.server.as_ref() == Some(&LanguageServerId::Texlab)
+            })
+    ));
+    assert!(screen(&mut app, 100, 18).join("\n").contains("Installing"));
+}
+
+#[test]
+fn language_server_install_progress_stays_in_manager() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    app.open_language_servers();
+    let mut missing = language_server_status(LanguageServerId::Texlab, "tex", true);
+    missing.installed = None;
+    app.show_language_server_status(None, vec![missing]);
+    app.status = None;
+    app.begin_language_server_install(LanguageServerId::Texlab);
+    let request = backend
+        .sent
+        .lock()
+        .ok()
+        .and_then(|sent| sent.last().map(|(request, _)| *request));
+
+    app.on_backend_event(
+        None,
+        SessionEvent::LanguageServerProgress {
+            server: LanguageServerId::Texlab,
+            downloaded: 50,
+            total: Some(100),
+        },
+    );
+
+    assert_eq!(app.status, None);
+    assert!(screen(&mut app, 100, 18).join("\n").contains("Installing… 50%"));
+
+    app.on_backend_event(
+        request,
+        SessionEvent::LanguageServerChanged {
+            server: LanguageServerId::Texlab,
+            version: "1.3.0".to_string(),
+            restart_required: false,
+        },
+    );
+    assert!(
+        app.notifications
+            .active()
+            .iter()
+            .all(|notification| notification.kind != NotificationKind::Lsp)
+    );
+    assert!(!screen(&mut app, 100, 18).join("\n").contains("Installing"));
+}
+
+#[test]
+fn language_server_install_failure_stays_in_manager() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    app.open_language_servers();
+    let mut missing = language_server_status(LanguageServerId::Texlab, "tex", true);
+    missing.installed = None;
+    app.show_language_server_status(None, vec![missing]);
+    app.begin_language_server_install(LanguageServerId::Texlab);
+    let request = backend
+        .sent
+        .lock()
+        .ok()
+        .and_then(|sent| sent.last().map(|(request, _)| *request));
+
+    app.on_backend_event(
+        request,
+        SessionEvent::Notification {
+            severity: Severity::Error,
+            kind: NotificationKind::Lsp,
+            message: "language-server registry: checksum mismatch".to_string(),
+        },
+    );
+
+    assert!(
+        app.notifications
+            .active()
+            .iter()
+            .all(|notification| notification.kind != NotificationKind::Lsp)
+    );
+    assert!(
+        screen(&mut app, 120, 18)
+            .join("\n")
+            .contains("checksum mismatch")
+    );
 }
 
 #[test]
@@ -381,13 +536,9 @@ fn language_server_update_action_applies_the_visible_plan_directly() {
     assert!(matches!(
         &app.tabs[app.active].kind,
         TabKind::LanguageServers(view)
-            if matches!(
-                view.pending.as_ref(),
-                Some(crate::tab::LanguageServerPending {
-                    kind: crate::tab::LanguageServerPendingKind::Update,
-                    ..
-                })
-            )
+            if view.pending.iter().any(|pending| {
+                pending.kind == crate::tab::LanguageServerPendingKind::Update
+            })
     ));
 }
 
@@ -614,7 +765,8 @@ fn completed_language_server_uninstall_clears_only_its_pending_request() {
     assert!(matches!(
         &app.tabs[app.active].kind,
         TabKind::LanguageServers(view)
-            if view.pending.as_ref().map(|pending| pending.request) == requests.get(1).copied()
+            if view.pending.iter().map(|pending| pending.request).collect::<Vec<_>>()
+                == requests.get(1).copied().into_iter().collect::<Vec<_>>()
     ));
     assert!(screen(&mut app, 100, 18).join("\n").contains("Uninstalling"));
 
@@ -627,7 +779,7 @@ fn completed_language_server_uninstall_clears_only_its_pending_request() {
     );
     assert!(matches!(
         &app.tabs[app.active].kind,
-        TabKind::LanguageServers(view) if view.pending.is_none() && view.loading_since.is_none()
+        TabKind::LanguageServers(view) if view.pending.is_empty() && view.loading_since.is_none()
     ));
     let rendered = screen(&mut app, 100, 18).join("\n");
     assert!(!rendered.contains("Uninstalling"));

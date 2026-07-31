@@ -152,6 +152,8 @@ pub(crate) struct LanguageServerPending {
     pub(crate) request: karet_session::RequestId,
     pub(crate) server: Option<LanguageServerId>,
     pub(crate) kind: LanguageServerPendingKind,
+    pub(crate) downloaded: Option<u64>,
+    pub(crate) total: Option<u64>,
 }
 
 /// A clickable manager action from the most recently rendered frame.
@@ -170,7 +172,7 @@ pub(crate) struct LanguageServersViewState {
     pub(crate) filter: String,
     pub(crate) loading_since: Option<Instant>,
     pub(crate) inventory_request: Option<karet_session::RequestId>,
-    pub(crate) pending: Option<LanguageServerPending>,
+    pub(crate) pending: Vec<LanguageServerPending>,
     pub(crate) plan: Option<LanguageServerPlanId>,
     pub(crate) changes: Vec<LanguageServerChange>,
     pub(crate) error: Option<String>,
@@ -190,7 +192,7 @@ impl LanguageServersViewState {
             filter: String::new(),
             loading_since: Some(Instant::now()),
             inventory_request,
-            pending: None,
+            pending: Vec::new(),
             plan: None,
             changes: Vec::new(),
             error: None,
