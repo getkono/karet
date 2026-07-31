@@ -96,10 +96,14 @@ impl App {
         true
     }
 
-    /// Handle a left click on a toast card: dismiss it. Returns `true` when the
-    /// click landed on a card (so it is not routed elsewhere).
+    /// Handle a click on a toast card: left-click dismisses it, while right-click
+    /// copies an error's complete text. Returns `true` when the click landed on a
+    /// card (so it is not routed elsewhere).
     pub(super) fn handle_toast_mouse(&mut self, mouse: MouseEvent) -> bool {
-        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+        if !matches!(
+            mouse.kind,
+            MouseEventKind::Down(MouseButton::Left | MouseButton::Right)
+        ) {
             return false;
         }
         let point = (mouse.column, mouse.row);
@@ -111,7 +115,21 @@ impl App {
             return false;
         };
         let id = hit.id;
-        self.notifications.dismiss(id);
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => self.notifications.dismiss(id),
+            MouseEventKind::Down(MouseButton::Right) => {
+                let text = self
+                    .notifications
+                    .active()
+                    .into_iter()
+                    .find(|note| note.id == id && note.severity == Severity::Error)
+                    .map(notification_clipboard_text);
+                if let Some(text) = text {
+                    self.copy_to_clipboard(text, "error");
+                }
+            },
+            _ => {},
+        }
         true
     }
 
@@ -332,7 +350,7 @@ impl App {
     fn handle_mouse_event(&mut self, mouse: MouseEvent) {
         self.update_pointer_shape_hint(&mouse);
         // Toasts float above everything (including the overlay), so hit-test them
-        // first: a left click on a card dismisses it.
+        // first: left-click dismisses and right-click copies an error.
         if self.handle_toast_mouse(mouse) {
             return;
         }
@@ -833,4 +851,11 @@ impl App {
     pub(super) fn reset_graphics_caret_blink(&mut self) {
         self.graphics_caret_blink_epoch = Instant::now();
     }
+}
+
+pub(super) fn notification_clipboard_text(notification: &Notification) -> String {
+    notification.body.as_ref().map_or_else(
+        || notification.title.clone(),
+        |body| format!("{}\n{body}", notification.title),
+    )
 }

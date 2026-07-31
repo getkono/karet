@@ -91,6 +91,45 @@
     }
 
     #[test]
+    fn right_clicking_an_error_toast_copies_it_without_dismissing() {
+        let mut app = app();
+        app.notify(Severity::Error, NotificationKind::Lsp, "server failed");
+        let id = app.notifications.active()[0].id;
+        app.toast_hits = vec![ToastHit {
+            rect: Rect::new(5, 3, 20, 4),
+            id,
+        }];
+
+        assert!(app.handle_toast_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column: 10,
+            row: 4,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(app.status.as_deref(), Some("copied error"));
+        assert_eq!(app.notifications.active()[0].id, id);
+    }
+
+    #[test]
+    fn copied_notification_text_includes_the_body() {
+        let notification = Notification {
+            id: NotificationId(7),
+            severity: Severity::Error,
+            kind: NotificationKind::Lsp,
+            title: "server failed".to_owned(),
+            body: Some("permission denied".to_owned()),
+            tag: None,
+            timeout: None,
+            dismissable: true,
+        };
+
+        assert_eq!(
+            mouse::notification_clipboard_text(&notification),
+            "server failed\npermission denied"
+        );
+    }
+
+    #[test]
     fn select_line_end_then_select_all_dispatch_in_editor() {
         let mut app = app();
         app.push_tab(text_tab("t.rs", "hello world\nsecond"));
