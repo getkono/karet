@@ -25,6 +25,20 @@ fn unsafe_versions_cannot_escape_the_provider_directory() {
 }
 
 #[test]
+fn named_file_discovery_ignores_matching_directories() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    std::fs::create_dir(dir.path().join("node"))?;
+    assert_eq!(find_file_named(dir.path(), "node"), None);
+
+    let runtime = dir.path().join("runtime");
+    std::fs::create_dir(&runtime)?;
+    let executable = runtime.join("node");
+    std::fs::write(&executable, b"binary")?;
+    assert_eq!(find_file_named(dir.path(), "node"), Some(executable));
+    Ok(())
+}
+
+#[test]
 fn node_provider_identity_covers_every_managed_runtime() {
     let release = Release {
         server: LanguageServerId::TypeScript,

@@ -582,9 +582,9 @@ fn install_release(
             })?;
             let node_root = destination.join("node");
             extract_archive(&bytes, *node_archive, &node_root, true)?;
-            let node = find_named(&node_root, node_executable())
+            let node = find_file_named(&node_root, node_executable())
                 .ok_or_else(|| "downloaded Node archive contains no executable".to_owned())?;
-            let npm = find_named(&node_root, npm_cli())
+            let npm = find_file_named(&node_root, npm_cli())
                 .ok_or_else(|| "downloaded Node archive contains no npm CLI".to_owned())?;
             let package_root = destination.join("package");
             std::fs::create_dir_all(&package_root).map_err(|error| error.to_string())?;
@@ -646,7 +646,7 @@ fn activation(release: &Release, destination: &Path) -> Result<ActiveInstallatio
             arguments,
             ..
         } => {
-            let command = find_named(destination, executable_name).ok_or_else(|| {
+            let command = find_file_named(destination, executable_name).ok_or_else(|| {
                 format!(
                     "installed {} executable is missing",
                     release.server.display_name()
@@ -667,7 +667,7 @@ fn activation(release: &Release, destination: &Path) -> Result<ActiveInstallatio
             arguments,
             ..
         } => {
-            let node = find_named(&destination.join("node"), node_executable())
+            let node = find_file_named(&destination.join("node"), node_executable())
                 .ok_or_else(|| "installed Node executable is missing".to_owned())?;
             let package_root = package.split('/').try_fold(
                 destination.join("package").join("node_modules"),
@@ -756,7 +756,7 @@ fn extract_executable(
     }
     let scratch = tempfile::tempdir_in(destination).map_err(|error| error.to_string())?;
     extract_archive(bytes, archive, scratch.path(), false)?;
-    let source = find_named(scratch.path(), executable_name)
+    let source = find_file_named(scratch.path(), executable_name)
         .ok_or_else(|| format!("archive contains no {executable_name}"))?;
     let target = destination.join(executable_name);
     std::fs::copy(source, &target).map_err(|error| error.to_string())?;
@@ -826,15 +826,15 @@ fn extract_tar(reader: impl Read, destination: &Path, all_files: bool) -> Result
     Ok(())
 }
 
-fn find_named(root: &Path, name: &str) -> Option<PathBuf> {
+fn find_file_named(root: &Path, name: &str) -> Option<PathBuf> {
     let entries = std::fs::read_dir(root).ok()?;
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.file_name().is_some_and(|candidate| candidate == name) {
+        if path.is_file() && path.file_name().is_some_and(|candidate| candidate == name) {
             return Some(path);
         }
         if path.is_dir()
-            && let Some(found) = find_named(&path, name)
+            && let Some(found) = find_file_named(&path, name)
         {
             return Some(found);
         }
