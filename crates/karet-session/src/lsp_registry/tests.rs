@@ -1,6 +1,52 @@
 use super::*;
 
 #[test]
+fn registry_tasks_can_run_concurrently() -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::Arc;
+    use std::sync::Condvar;
+    use std::sync::Mutex;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let (started_tx, started_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let mut tasks = Vec::new();
+    for name in ["one", "two"] {
+        let gate = Arc::clone(&gate);
+        let started_tx = started_tx.clone();
+        let finished_tx = finished_tx.clone();
+        tasks.push(spawn_registry_task(name.to_string(), move || {
+            let _ = started_tx.send(name);
+            let (lock, ready) = &*gate;
+            if let Ok(released) = lock.lock() {
+                drop(ready.wait_while(released, |released| !*released));
+            }
+            let _ = finished_tx.send(name);
+        })?);
+    }
+    drop(started_tx);
+    drop(finished_tx);
+
+    let first = started_rx.recv_timeout(Duration::from_secs(1));
+    let second = started_rx.recv_timeout(Duration::from_secs(1));
+    let (lock, ready) = &*gate;
+    if let Ok(mut released) = lock.lock() {
+        *released = true;
+        ready.notify_all();
+    }
+
+    assert!(first.is_ok());
+    assert!(second.is_ok());
+    assert!(finished_rx.recv_timeout(Duration::from_secs(1)).is_ok());
+    assert!(finished_rx.recv_timeout(Duration::from_secs(1)).is_ok());
+    for task in tasks {
+        assert!(task.join().is_ok());
+    }
+    Ok(())
+}
+
+#[test]
 fn activation_journal_ignores_a_torn_tail() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let provider = provider_root(dir.path(), &LanguageServerId::Texlab);

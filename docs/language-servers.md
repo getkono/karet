@@ -227,7 +227,9 @@ Managed versions live below the platform data directory in
 `language-servers/`. Provider locks serialize concurrent changes; immutable
 version directories are activated through an append-only journal only after
 archive traversal checks and publisher SHA-256 verification. A torn journal tail
-is ignored. Node providers use a registry-owned, verified active-LTS Node runtime.
+is ignored. Independent providers install on separate background workers, while
+the per-provider lock still serializes competing changes to the same provider.
+Node providers use a registry-owned, verified active-LTS Node runtime.
 
 `lsp.managedDownloads` controls missing fallbacks:
 

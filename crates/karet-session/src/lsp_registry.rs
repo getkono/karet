@@ -237,7 +237,9 @@ fn run(
         .build();
     let mut plans = HashMap::<LanguageServerPlanId, StoredPlan>::new();
     let mut next_plan = 1_u64;
+    let mut installers = Vec::new();
     loop {
+        reap_registry_tasks(&mut installers);
         cleanup_retired_all(&root);
         let job = match jobs.recv_timeout(Duration::from_secs(30)) {
             Ok(job) => job,
@@ -248,27 +250,25 @@ fn run(
         plans.retain(|_, plan| plan.created.elapsed() <= PLAN_LIFETIME);
         let result = match job {
             RegistryJob::Install { request, server } => {
-                if read_active(&root, &server).is_some() {
-                    Err(format!(
-                        "{} is already installed; check for updates first",
-                        server.display_name()
-                    ))
-                } else {
-                    client
-                        .as_ref()
-                        .map_err(ToString::to_string)
-                        .and_then(|client| {
-                            let release = discover(client, server.clone())?;
-                            install_discovered(
-                                &root,
-                                supervisor.as_deref(),
-                                client,
-                                request,
-                                &release,
-                                updates,
-                            )
-                        })
+                let client = match client.as_ref() {
+                    Ok(client) => client,
+                    Err(error) => {
+                        send_result(updates, request, Err(error.to_string()));
+                        continue;
+                    },
+                };
+                match spawn_install(
+                    root.clone(),
+                    supervisor.clone(),
+                    client.clone(),
+                    request,
+                    server,
+                    updates.clone(),
+                ) {
+                    Ok(installer) => installers.push(installer),
+                    Err(message) => send_result(updates, request, Err(message)),
                 }
+                continue;
             },
             RegistryJob::Check { request, server } => {
                 let result = client
@@ -425,6 +425,60 @@ fn run(
         };
         send_result(updates, job_id, result);
     }
+    for installer in installers {
+        let _ = installer.join();
+    }
+}
+
+fn spawn_install(
+    root: PathBuf,
+    supervisor: Option<PathBuf>,
+    client: Client,
+    request: RequestId,
+    server: LanguageServerId,
+    updates: tokio_mpsc::UnboundedSender<RegistryUpdate>,
+) -> Result<std::thread::JoinHandle<()>, String> {
+    let name = format!("karet-lsp-install-{}", server.key());
+    spawn_registry_task(name, move || {
+        let result = if read_active(&root, &server).is_some() {
+            Err(format!(
+                "{} is already installed; check for updates first",
+                server.display_name()
+            ))
+        } else {
+            discover(&client, server).and_then(|release| {
+                install_discovered(
+                    &root,
+                    supervisor.as_deref(),
+                    &client,
+                    request,
+                    &release,
+                    &updates,
+                )
+            })
+        };
+        send_result(&updates, request, result);
+    })
+    .map_err(|error| format!("cannot start language-server installer: {error}"))
+}
+
+fn spawn_registry_task(
+    name: String,
+    task: impl FnOnce() + Send + 'static,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new().name(name).spawn(task)
+}
+
+fn reap_registry_tasks(tasks: &mut Vec<std::thread::JoinHandle<()>>) {
+    let mut active = Vec::with_capacity(tasks.len());
+    for task in tasks.drain(..) {
+        if task.is_finished() {
+            let _ = task.join();
+        } else {
+            active.push(task);
+        }
+    }
+    *tasks = active;
 }
 
 fn job_request(job: &RegistryJob) -> RequestId {
