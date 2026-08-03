@@ -20,6 +20,10 @@ hooks {
         fix = true
         stage = true
         steps {
+            ["rust-file-lines"] {
+                glob = "**/*.rs"
+                check = "mise run file-lines"
+            }
             ["cargo-fmt"] {
                 glob = "**/*.rs"
                 // Delegates to mise so the pinned nightly (rust-nightly.txt) stays in

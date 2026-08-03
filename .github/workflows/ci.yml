@@ -48,7 +48,7 @@ jobs:
         with:
           tool: tokei@12.1.2
       - name: Rust file size
-        run: ./scripts/check-rust-file-lines.sh
+        run: cargo run --quiet --package xtask -- file-lines
       - name: Format check
         run: cargo "+$(cat rust-nightly.txt)" fmt --all -- --check
       - name: Clippy
