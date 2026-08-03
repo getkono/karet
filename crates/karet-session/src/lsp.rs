@@ -13,6 +13,7 @@
 //! exponential backoff, replays every `didOpen`, and opens a cooldown circuit
 //! after repeated failures instead of creating a respawn storm.
 
+mod connector;
 mod inventory;
 mod lifecycle;
 mod provider;
@@ -24,14 +25,14 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::ffi::OsStr;
-use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+pub(crate) use connector::Connector;
+use connector::spawn_connector;
 use karet_core::CompletionItem;
 use karet_core::Diagnostic;
 use karet_core::Hover;
@@ -272,44 +273,6 @@ pub(crate) enum LspUpdate {
         state: LanguageServerRuntimeState,
         error: Option<String>,
     },
-}
-
-/// How the manager establishes a client for a spec — [`LspClient::spawn`] in
-/// production; tests inject an in-memory duplex connection instead.
-pub(crate) type Connector = Arc<
-    dyn Fn(LspSpec, PathBuf) -> Pin<Box<dyn Future<Output = Result<LspClient, LspError>> + Send>>
-        + Send
-        + Sync,
->;
-
-/// The production connector: run the server through karet's crash-safe process
-/// supervisor. A headless host that supplied no supervisor fails closed.
-fn spawn_connector(supervisor: Option<PathBuf>, registry_root: Option<PathBuf>) -> Connector {
-    Arc::new(move |spec, root| {
-        let supervisor = supervisor.clone();
-        let registry_root = registry_root.clone();
-        Box::pin(async move {
-            let supervisor = supervisor.ok_or(LspError::Spawn)?;
-            if let Some(registry_root) = registry_root {
-                let stream = crate::lsp_broker::connect(&supervisor, &registry_root, &spec, &root)
-                    .await
-                    .map_err(|error| {
-                        tracing::warn!(error = %error, "shared LSP broker connection failed");
-                        LspError::Spawn
-                    })?;
-                let (read, write) = tokio::io::split(stream);
-                return LspClient::connect(read, write, &root).await;
-            }
-            let command = crate::process_supervisor::command(
-                &supervisor,
-                spec.command.clone(),
-                spec.args.clone(),
-                &root,
-            )
-            .map_err(|_| LspError::Spawn)?;
-            LspClient::spawn_command(command, &spec.command, &root).await
-        })
-    })
 }
 
 /// Lazy per-language language-server orchestration (see the module docs).
