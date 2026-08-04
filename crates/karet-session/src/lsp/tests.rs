@@ -20,6 +20,8 @@ use tokio::io::WriteHalf;
 use super::*;
 use crate::api::Command;
 use crate::api::Event;
+use crate::api::LanguageServerInstanceStatus;
+use crate::api::LanguageServerStatus;
 use crate::backend::Backend;
 use crate::backend::local;
 use crate::session::EventRx;
@@ -62,9 +64,9 @@ async fn last_document_close_retires_the_server_slot() {
     ));
     let path = PathBuf::from("/tmp/owned.rs");
     manager.document_opened(Some("rust"), &path, 1, || "fn main() {}".into());
-    assert!(manager.is_running(LanguageServerId::RustAnalyzer));
+    assert!(manager.is_running(&LanguageServerId::RustAnalyzer));
     manager.document_closed(Some("rust"), &path);
-    assert!(!manager.is_running(LanguageServerId::RustAnalyzer));
+    assert!(!manager.is_running(&LanguageServerId::RustAnalyzer));
 }
 
 #[tokio::test]
@@ -79,9 +81,60 @@ async fn javascript_and_typescript_share_one_builtin_process() {
     manager.document_opened(Some("typescript"), Path::new("/tmp/b.ts"), 1, String::new);
     assert_eq!(manager.servers.len(), 1);
     manager.document_closed(Some("javascript"), Path::new("/tmp/a.js"));
-    assert!(manager.is_running(LanguageServerId::TypeScript));
+    assert!(manager.is_running(&LanguageServerId::TypeScript));
     manager.document_closed(Some("typescript"), Path::new("/tmp/b.ts"));
-    assert!(!manager.is_running(LanguageServerId::TypeScript));
+    assert!(!manager.is_running(&LanguageServerId::TypeScript));
+}
+
+#[tokio::test]
+async fn relative_root_and_document_paths_reach_lsp_as_absolute_uris() -> TestResult {
+    let root = PathBuf::from("relative-workspace");
+    let path = root.join("main.rs");
+    let (observed_tx, mut observed_rx) = mpsc::unbounded_channel();
+    let (mut manager, _updates) = LspManager::new(LspSettings::default(), Some(root), None, None);
+    manager.set_connector(test_connector(
+        Behavior::Normal,
+        Some(observed_tx),
+        Arc::new(AtomicUsize::new(0)),
+    ));
+
+    manager.document_opened(Some("rust"), &path, 1, || "fn main() {}".into());
+    manager.document_changed(Some("rust"), &path, 2, || "fn changed() {}".into());
+    manager.document_saved(Some("rust"), &path, || "fn changed() {}".into());
+    manager.document_closed(Some("rust"), &path);
+
+    let mut methods = Vec::new();
+    while methods
+        .last()
+        .is_none_or(|method| method != "textDocument/didClose")
+    {
+        let message = tokio::time::timeout(Duration::from_secs(2), observed_rx.recv())
+            .await?
+            .ok_or("language server did not receive document sync")?;
+        let uri = message["params"]["textDocument"]["uri"]
+            .as_str()
+            .ok_or("document URI was not a string")?;
+        assert!(
+            uri.starts_with("file:///") && uri.ends_with("/relative-workspace/main.rs"),
+            "expected an absolute file URI, got {uri}"
+        );
+        methods.push(
+            message["method"]
+                .as_str()
+                .ok_or("document sync method was not a string")?
+                .to_owned(),
+        );
+    }
+    assert_eq!(
+        methods,
+        [
+            "textDocument/didOpen",
+            "textDocument/didChange",
+            "textDocument/didSave",
+            "textDocument/didClose"
+        ]
+    );
+    Ok(())
 }
 
 // --- a minimal LSP wire for the fake server (framing + JSON) -----------
@@ -123,6 +176,8 @@ enum Behavior {
     Normal,
     /// Hang up right after the handshake (a crashing server).
     DieAfterHandshake,
+    /// Crash the first process, then serve normally after the supervisor retries.
+    DieOnce,
 }
 
 /// A connector that runs a scripted in-memory server per "spawn".
@@ -135,7 +190,12 @@ fn test_connector(
         let observed = observed.clone();
         let spawns = Arc::clone(&spawns);
         Box::pin(async move {
-            spawns.fetch_add(1, Ordering::SeqCst);
+            let attempt = spawns.fetch_add(1, Ordering::SeqCst);
+            let behavior = if matches!(behavior, Behavior::DieOnce) && attempt > 0 {
+                Behavior::Normal
+            } else {
+                behavior
+            };
             let (client_end, server_end) = tokio::io::duplex(1 << 20);
             let (server_read, mut server_write) = tokio::io::split(server_end);
             tokio::spawn(async move {
@@ -151,7 +211,7 @@ fn test_connector(
                 )
                 .await;
                 let _initialized = read_msg(&mut reader).await;
-                if matches!(behavior, Behavior::DieAfterHandshake) {
+                if matches!(behavior, Behavior::DieAfterHandshake | Behavior::DieOnce) {
                     return; // both halves drop: the client sees EOF
                 }
                 while let Some(msg) = read_msg(&mut reader).await {
@@ -636,67 +696,66 @@ async fn server_death_is_reported_and_completions_stay_answered() -> TestResult 
     Ok(())
 }
 
-// --- unit tests for the pure pieces --------------------------------------
+#[tokio::test]
+async fn crashed_server_restarts_and_replays_open_documents() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "fn recovered() {}\n").ok_or("write failed")?;
+    let (observed_tx, mut observed_rx) = mpsc::unbounded_channel();
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events) = session_with_connector(test_connector(
+        Behavior::DieOnce,
+        Some(observed_tx),
+        Arc::clone(&spawns),
+    ));
+    let backend = local(session);
+    backend.send(
+        backend.next_id(),
+        Command::OpenDocument {
+            path,
+            language: None,
+        },
+    )?;
+    let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
+    backend.send(
+        backend.next_id(),
+        Command::Completion {
+            doc,
+            position: LineCol::new(0, 3),
+        },
+    )?;
+    let _ = await_completions(&mut events)
+        .await
+        .ok_or("no outage answer")?;
 
-#[test]
-fn builtin_registry_covers_the_documented_languages() {
-    assert_eq!(builtin_server("rust"), Some(LanguageServerId::RustAnalyzer));
-    for lang in ["typescript", "javascript"] {
-        assert_eq!(builtin_server(lang), Some(LanguageServerId::TypeScript));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    backend.send(
+        backend.next_id(),
+        Command::Completion {
+            doc,
+            position: LineCol::new(0, 3),
+        },
+    )?;
+    let (_, _, _, items) = await_completions(&mut events)
+        .await
+        .ok_or("no recovered answer")?;
+    assert_eq!(items.len(), 1);
+    assert!(spawns.load(Ordering::SeqCst) >= 2);
+    let mut replayed = false;
+    while let Ok(Some(message)) =
+        tokio::time::timeout(Duration::from_millis(100), observed_rx.recv()).await
+    {
+        if message["method"] == "textDocument/didOpen"
+            && message["params"]["textDocument"]["text"] == "fn recovered() {}\n"
+        {
+            replayed = true;
+            break;
+        }
     }
-    assert_eq!(builtin_server("python"), Some(LanguageServerId::Pyright));
-    assert_eq!(builtin_server("tex"), Some(LanguageServerId::Texlab));
-    assert!(builtin_server("cobol").is_none());
+    assert!(
+        replayed,
+        "reconnected server must receive the latest full text"
+    );
+    Ok(())
 }
 
-#[test]
-fn user_config_overrides_builtins() {
-    let mut settings = LspSettings::default();
-    settings.servers.insert(
-        "rust".to_owned(),
-        crate::config::schema::LspServer {
-            command: "my-ra".to_owned(),
-            args: vec!["--custom".to_owned()],
-        },
-    );
-    // And extends to languages with no builtin.
-    settings.servers.insert(
-        "zig".to_owned(),
-        crate::config::schema::LspServer {
-            command: "zls".to_owned(),
-            args: Vec::new(),
-        },
-    );
-    let (manager, _rx) = LspManager::new(settings, None, None, None);
-    let rust = manager.spec_for("rust");
-    assert_eq!(
-        rust.map(|(s, _)| (s.command, s.args)),
-        Some(("my-ra".to_owned(), vec!["--custom".to_owned()]))
-    );
-    assert_eq!(
-        manager.spec_for("zig").map(|(s, _)| s.command),
-        Some("zls".to_owned())
-    );
-    // Untouched languages keep their builtin.
-    assert_eq!(
-        manager.spec_for("python").map(|(s, _)| s.command),
-        Some("pyright".to_owned())
-    );
-}
-
-#[test]
-fn language_keys_lowercase_display_names() {
-    assert_eq!(language_key(Some("Rust")), Some("rust".to_owned()));
-    assert_eq!(
-        language_key(Some("TypeScript")),
-        Some("typescript".to_owned())
-    );
-    assert_eq!(language_key(None), None);
-}
-
-#[test]
-fn versions_clamp_into_i32() {
-    assert_eq!(version_i32(0), 0);
-    assert_eq!(version_i32(41), 41);
-    assert!(version_i32(u64::MAX) >= 0);
-}
+mod inventory_tests;

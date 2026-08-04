@@ -47,6 +47,8 @@ pub enum EditorTab {
     CommitGraph,
     /// GitHub dashboard, detail, or form tab.
     Github,
+    /// Language-server inventory and lifecycle manager.
+    LanguageServers,
     /// A too-large-file placeholder, which offers an "open anyway" override.
     Oversize,
 }
@@ -70,6 +72,8 @@ pub enum FocusTarget {
     CommitGraph,
     /// A GitHub dashboard, detail, or form.
     Github,
+    /// The language-server inventory and lifecycle manager.
+    LanguageServers,
     /// A too-large-file placeholder, which offers an "open anyway" override.
     Oversize,
     /// The file explorer panel.
@@ -94,6 +98,7 @@ impl FocusTarget {
                 EditorTab::Pager => FocusTarget::Pager,
                 EditorTab::CommitGraph => FocusTarget::CommitGraph,
                 EditorTab::Github => FocusTarget::Github,
+                EditorTab::LanguageServers => FocusTarget::LanguageServers,
                 EditorTab::Oversize => FocusTarget::Oversize,
                 EditorTab::Plain => FocusTarget::Editor,
             },
@@ -131,6 +136,8 @@ pub enum Layer {
     CommitGraph,
     /// Active on GitHub dashboard, detail, and form tabs.
     Github,
+    /// Active on the language-server manager tab.
+    LanguageServers,
     /// Active when a too-large-file placeholder has focus (the "open anyway"
     /// override). A placeholder is not editable, so this does not stack the
     /// [`Editor`](Layer::Editor) layer.
@@ -256,6 +263,7 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
             // straight onto Global, never the editor's editing/motion keys.
             FocusTarget::CommitGraph => &[L::CommitGraph, L::Global],
             FocusTarget::Github => &[L::Github, L::Global],
+            FocusTarget::LanguageServers => &[L::LanguageServers, L::Global],
             FocusTarget::Oversize => &[L::Oversize, L::Global],
             FocusTarget::Explorer => &[L::Explorer, L::Sidebar, L::Global],
             FocusTarget::Search => &[L::Sidebar, L::Global],
@@ -321,12 +329,29 @@ mod tests {
     }
 
     #[test]
+    fn language_server_manager_has_a_non_editing_layer() {
+        assert_eq!(
+            active_layers(Context::focus(FocusTarget::LanguageServers)),
+            &[Layer::LanguageServers, Layer::Global]
+        );
+        assert_eq!(
+            FocusTarget::from(
+                Focus::Editor,
+                SidebarPanel::Explorer,
+                EditorTab::LanguageServers
+            ),
+            FocusTarget::LanguageServers
+        );
+    }
+
+    #[test]
     fn global_is_always_last_for_focus_contexts() {
         for target in [
             FocusTarget::Editor,
             FocusTarget::DiffEditor,
             FocusTarget::Pager,
             FocusTarget::Oversize,
+            FocusTarget::LanguageServers,
             FocusTarget::Explorer,
             FocusTarget::Search,
             FocusTarget::SourceControl,

@@ -63,7 +63,7 @@ impl Session {
         let lang_id = language_id_from_path(&path);
         let language = language
             .and_then(name_for_language)
-            .or_else(|| language_name_from_path(&path));
+            .or_else(|| language_name_for_path(&path));
         let (document_settings, editorconfig_error) =
             resolve_document_settings(&path, language, &self.config.settings);
         apply_serialization_settings(&mut buffer, document_settings);
@@ -91,6 +91,7 @@ impl Session {
             semantic_blocks: Arc::new(SemanticBlocks::default()),
             error_lines: Arc::default(),
             spell_diagnostics: Vec::new(),
+            lsp_diagnostics: HashMap::new(),
             decorations: Vec::new(),
             refs: 1,
             dirty_since: None,
@@ -259,6 +260,8 @@ impl Session {
                     if let Some(store) = self.swaps.as_ref() {
                         store.remove(&path);
                     }
+                    self.lsp
+                        .document_saved(doc.language, &doc.path, || doc.buffer.text());
                 }
                 self.publish(doc_id, None);
                 self.emit(Some(id), Event::Saved { doc: doc_id });
@@ -393,7 +396,7 @@ impl Session {
         self.store.by_path.remove(&old);
         doc.path = path.clone();
         doc.lang_id = language_id_from_path(&path);
-        doc.language = language_name_from_path(&path);
+        doc.language = language_name_for_path(&path);
         // The language may have changed with the extension; re-highlight from scratch.
         let spell_without_syntax =
             update_syntax(&self.config.settings, &self.highlight_tx, doc_id, doc, None);

@@ -65,6 +65,7 @@ url.workspace = true                      # validate links and resolve workspace
 tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tracing-appender.workspace = true
 clap.workspace = true
 color-eyre.workspace = true
 directories.workspace = true

@@ -5,6 +5,7 @@
 //! is the designated extraction point for a future dependency-light
 //! `karet-protocol` crate when the client-server split is undertaken.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 
 use karet_core::BlameAttribution;
@@ -19,6 +20,8 @@ use karet_core::Location;
 use karet_core::NotificationKind;
 use karet_core::Severity;
 use karet_core::Symbol;
+use karet_core::TextEdit;
+use karet_core::WorkspaceEdit;
 use karet_search::FileHit;
 use karet_search::SearchQuery;
 use karet_syntax::HighlightSpan;
@@ -318,49 +321,108 @@ pub struct ViewId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RequestId(pub u64);
 
-/// A language server managed by karet's per-user installation registry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum LanguageServerId {
-    /// Rust language intelligence from rust-analyzer.
-    RustAnalyzer,
-    /// JavaScript and TypeScript intelligence from TypeScript Language Server.
-    TypeScript,
-    /// Python language intelligence from Pyright.
-    Pyright,
-    /// TeX and LaTeX language intelligence from texlab.
-    Texlab,
-}
+/// Stable, opaque identity for a language-server provider.
+///
+/// The value is string-backed rather than a closed enum so adding a provider
+/// does not break exhaustive downstream matches. Built-in constants cover
+/// Karet's catalog; embedders may define their own static identifiers with
+/// [`Self::new`].
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct LanguageServerId(Cow<'static, str>);
 
 impl LanguageServerId {
+    /// Construct a stable provider ID.
+    #[must_use]
+    pub fn new(key: impl Into<String>) -> Self {
+        Self(Cow::Owned(key.into()))
+    }
+
+    const fn builtin(key: &'static str) -> Self {
+        Self(Cow::Borrowed(key))
+    }
+
+    /// Rust language intelligence from rust-analyzer.
+    #[allow(non_upper_case_globals)]
+    pub const RustAnalyzer: Self = Self::builtin("rust-analyzer");
+    /// JavaScript and TypeScript intelligence from TypeScript Language Server.
+    #[allow(non_upper_case_globals)]
+    pub const TypeScript: Self = Self::builtin("typescript-language-server");
+    /// Python language intelligence from Pyright.
+    #[allow(non_upper_case_globals)]
+    pub const Pyright: Self = Self::builtin("pyright");
+    /// Python linting and formatting from Ruff.
+    #[allow(non_upper_case_globals)]
+    pub const Ruff: Self = Self::builtin("ruff");
+    /// TeX and LaTeX language intelligence from texlab.
+    #[allow(non_upper_case_globals)]
+    pub const Texlab: Self = Self::builtin("texlab");
+    /// C and C++ intelligence from clangd.
+    #[allow(non_upper_case_globals)]
+    pub const Clangd: Self = Self::builtin("clangd");
+    /// C# intelligence from Roslyn.
+    #[allow(non_upper_case_globals)]
+    pub const CSharp: Self = Self::builtin("csharp");
+    /// Go intelligence from gopls.
+    #[allow(non_upper_case_globals)]
+    pub const Gopls: Self = Self::builtin("gopls");
+    /// Java intelligence from Eclipse JDT LS.
+    #[allow(non_upper_case_globals)]
+    pub const Jdtls: Self = Self::builtin("jdtls");
+    /// Zig intelligence from ZLS.
+    #[allow(non_upper_case_globals)]
+    pub const Zls: Self = Self::builtin("zls");
+    /// Astro framework intelligence.
+    #[allow(non_upper_case_globals)]
+    pub const Astro: Self = Self::builtin("astro-language-server");
+    /// Svelte framework intelligence.
+    #[allow(non_upper_case_globals)]
+    pub const Svelte: Self = Self::builtin("svelte-language-server");
+    /// Vue framework intelligence.
+    #[allow(non_upper_case_globals)]
+    pub const Vue: Self = Self::builtin("vue-language-server");
+    /// Biome linting and formatting.
+    #[allow(non_upper_case_globals)]
+    pub const Biome: Self = Self::builtin("biome");
+    /// YAML intelligence.
+    #[allow(non_upper_case_globals)]
+    pub const Yaml: Self = Self::builtin("yaml-language-server");
+    /// XML intelligence from LemMinX.
+    #[allow(non_upper_case_globals)]
+    pub const Xml: Self = Self::builtin("lemminx");
+
     /// Stable registry key used in on-disk paths and manifests.
     #[must_use]
-    pub const fn key(self) -> &'static str {
-        match self {
-            Self::RustAnalyzer => "rust-analyzer",
-            Self::TypeScript => "typescript-language-server",
-            Self::Pyright => "pyright",
-            Self::Texlab => "texlab",
-        }
+    pub fn key(&self) -> &str {
+        &self.0
     }
 
     /// Human-readable provider name for prompts and status.
     #[must_use]
-    pub const fn display_name(self) -> &'static str {
-        match self {
-            Self::RustAnalyzer => "rust-analyzer",
-            Self::TypeScript => "TypeScript Language Server",
-            Self::Pyright => "Pyright",
-            Self::Texlab => "texlab",
+    pub fn display_name(&self) -> &str {
+        match self.0.as_ref() {
+            "typescript-language-server" => "TypeScript Language Server",
+            "pyright" => "Pyright",
+            "ruff" => "Ruff",
+            "csharp" => "C# Language Server",
+            "astro-language-server" => "Astro Language Server",
+            "svelte-language-server" => "Svelte Language Server",
+            "vue-language-server" => "Vue Language Server",
+            "yaml-language-server" => "YAML Language Server",
+            "lemminx" => "Eclipse LemMinX",
+            other => other,
         }
     }
 }
 
 /// Opaque identifier for an exact, explicitly checked language-server update.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct LanguageServerPlanId(pub u64);
 
 /// One exact language-server change returned by an explicit update check.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LanguageServerChange {
     /// Managed provider.
     pub server: LanguageServerId,
@@ -372,15 +434,79 @@ pub struct LanguageServerChange {
     pub download_bytes: Option<u64>,
 }
 
-/// Local-only status for one managed language server.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// How a language-server executable was resolved for one repository root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub enum LanguageServerSource {
+    /// An explicit `lsp.servers` configuration entry.
+    Configured,
+    /// A repository-local executable such as `node_modules/.bin` or `.venv/bin`.
+    ProjectLocal,
+    /// An executable resolved from the process `PATH`.
+    Path,
+    /// A checksum-verified installation managed by Karet.
+    Managed,
+    /// No usable executable is currently available.
+    Unavailable,
+}
+
+/// Current lifecycle state of a repository-scoped language-server connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub enum LanguageServerRuntimeState {
+    /// No open document currently needs the provider.
+    Idle,
+    /// A connection is being established.
+    Starting,
+    /// The provider is connected and serving this session.
+    Running,
+    /// The provider stopped and is waiting for a bounded retry.
+    Retrying,
+    /// Repeated failures opened the restart circuit.
+    CircuitOpen,
+    /// The provider task stopped without another retry.
+    Stopped,
+}
+
+/// Resolution and runtime state for one provider at one repository root.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LanguageServerInstanceStatus {
+    /// Repository/workspace root passed to the language server.
+    pub root: PathBuf,
+    /// Where the executable was resolved.
+    pub source: LanguageServerSource,
+    /// Resolved executable, absent when unavailable.
+    pub command: Option<String>,
+    /// Resolved command-line arguments.
+    pub args: Vec<String>,
+    /// This session's runtime state for the provider/root pair.
+    pub runtime: LanguageServerRuntimeState,
+    /// Number of open documents attached to the instance.
+    pub open_documents: usize,
+    /// Most recent concise runtime failure, when known.
+    pub error: Option<String>,
+}
+
+/// Complete local status for one built-in or configured language-server provider.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LanguageServerStatus {
-    /// Managed provider.
+    /// Stable provider identity.
     pub server: LanguageServerId,
-    /// Active installed version, if any.
+    /// Language IDs that select this provider.
+    pub languages: Vec<String>,
+    /// Whether the global LSP setting and this provider are enabled.
+    pub enabled: bool,
+    /// Whether Karet owns installation lifecycle operations for this provider.
+    pub managed: bool,
+    /// Why this built-in provider must be installed by the user, when applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_install_reason: Option<String>,
+    /// Active Karet-managed version, if any.
     pub installed: Option<String>,
-    /// Whether this session currently owns a running process for the provider.
-    pub running: bool,
+    /// Whether an unreferenced managed payload still awaits safe cleanup.
+    pub cleanup_pending: bool,
+    /// Repository-scoped resolution and runtime state.
+    pub instances: Vec<LanguageServerInstanceStatus>,
 }
 
 /// Which producer a [`Event::DecorationsChanged`] batch belongs to, so the client
@@ -514,11 +640,21 @@ pub enum Command {
         server: LanguageServerId,
     },
     /// Explicitly perform network metadata checks for installed servers.
-    CheckLanguageServerUpdates,
-    /// Apply the exact update plan previously returned by the backend.
+    CheckLanguageServerUpdates {
+        /// One provider to check, or `None` to force-check every installed provider.
+        server: Option<LanguageServerId>,
+    },
+    /// Apply part or all of the exact update plan previously returned by the backend.
     ApplyLanguageServerPlan {
         /// Opaque plan identifier.
         plan: LanguageServerPlanId,
+        /// Providers from the plan to apply. An empty set is rejected.
+        servers: Vec<LanguageServerId>,
+    },
+    /// Deactivate a Karet-managed provider and safely retire its payload.
+    UninstallLanguageServer {
+        /// Managed provider to uninstall.
+        server: LanguageServerId,
     },
     /// Restart this session's processes for an already-approved active version.
     RestartLanguageServer {
@@ -806,19 +942,40 @@ mod tests {
         assert_eq!(server.display_name(), "texlab");
         let plan = LanguageServerPlanId(9);
         let change = LanguageServerChange {
-            server,
+            server: server.clone(),
             current: Some("1.0.0".into()),
             target: "2.0.0".into(),
             download_bytes: Some(42),
         };
         let status = LanguageServerStatus {
-            server,
+            server: server.clone(),
+            languages: vec!["tex".into()],
+            enabled: true,
+            managed: true,
+            manual_install_reason: None,
             installed: Some("1.0.0".into()),
-            running: true,
+            cleanup_pending: false,
+            instances: vec![LanguageServerInstanceStatus {
+                root: PathBuf::from("/tmp"),
+                source: LanguageServerSource::Managed,
+                command: Some("texlab".into()),
+                args: Vec::new(),
+                runtime: LanguageServerRuntimeState::Running,
+                open_documents: 1,
+                error: None,
+            }],
         };
         let _commands = [
-            Command::InstallLanguageServer { server },
-            Command::ApplyLanguageServerPlan { plan },
+            Command::InstallLanguageServer {
+                server: server.clone(),
+            },
+            Command::ApplyLanguageServerPlan {
+                plan,
+                servers: vec![server.clone()],
+            },
+            Command::UninstallLanguageServer {
+                server: server.clone(),
+            },
             Command::RestartLanguageServer { server },
         ];
         let _events = [

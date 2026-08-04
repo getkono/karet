@@ -62,6 +62,9 @@ impl App {
         .flatten()
         .and_then(|since| loading_delay_remaining(since, now));
         let tabs = self.all_tabs().filter_map(|tab| match &tab.kind {
+            TabKind::LanguageServers(view) => view
+                .loading_since
+                .and_then(|since| loading_delay_remaining(since, now)),
             TabKind::CommitLoading {
                 loading_since,
                 error,
@@ -122,57 +125,6 @@ impl App {
             .flatten()
             .chain(tabs)
             .min()
-    }
-
-    /// Push a notification onto the center. Errors and warnings persist until
-    /// dismissed; info and success auto-expire after a few seconds.
-    pub(super) fn notify(
-        &mut self,
-        severity: Severity,
-        kind: NotificationKind,
-        title: impl Into<String>,
-    ) {
-        let timeout = match severity {
-            Severity::Error | Severity::Warning => None,
-            // Info, success (Hint), and any future severity auto-dismiss.
-            _ => Some(Duration::from_secs(4)),
-        };
-        self.notifications.push(
-            Notification {
-                id: NotificationId(0),
-                severity,
-                kind,
-                title: title.into(),
-                body: None,
-                tag: None,
-                timeout,
-                dismissable: true,
-            },
-            Instant::now(),
-        );
-    }
-
-    /// Surface a dropped backend-submission error as a persistent notification, so a
-    /// closed or wedged backend never fails silently.
-    pub(super) fn notify_backend_error(&mut self, error: BackendError) {
-        self.notify(
-            Severity::Error,
-            NotificationKind::System,
-            format!("backend: {error}"),
-        );
-    }
-
-    /// Replace the complete merged diagnostic set for one document.
-    pub(super) fn replace_document_diagnostics(
-        &mut self,
-        doc: DocumentId,
-        diagnostics: Vec<Diagnostic>,
-    ) {
-        if diagnostics.is_empty() {
-            self.document_diagnostics.remove(&doc);
-        } else {
-            self.document_diagnostics.insert(doc, diagnostics);
-        }
     }
 
     /// Handle a backend event: correlate opens to tabs, surface save/progress status.
@@ -301,10 +253,10 @@ impl App {
                 self.prompt_language_server_install(server);
             },
             SessionEvent::LanguageServerStatus { servers } => {
-                self.show_language_server_status(servers);
+                self.show_language_server_status(id, servers);
             },
             SessionEvent::LanguageServerUpdatePlan { plan, changes } => {
-                self.prompt_language_server_updates(plan, changes);
+                self.prompt_language_server_updates(id, plan, changes);
             },
             SessionEvent::LanguageServerProgress {
                 server,
@@ -318,8 +270,18 @@ impl App {
                 version,
                 restart_required,
             } => {
-                self.finish_language_server_change(server, version, restart_required);
+                self.finish_language_server_change(id, server, version, restart_required);
             },
+            SessionEvent::LanguageServerRemoved {
+                server,
+                cleanup_pending,
+            } => self.finish_language_server_remove(id, server, cleanup_pending),
+            SessionEvent::LanguageServerRuntimeChanged {
+                server,
+                root,
+                state,
+                error,
+            } => self.update_language_server_runtime(server, root, state, error),
             SessionEvent::Saved { doc } => {
                 for tab in self.all_tabs_mut() {
                     if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
@@ -443,6 +405,8 @@ impl App {
                 kind,
                 message,
             } => {
+                let language_server_operation_failed = id
+                    .is_some_and(|request| self.fail_language_server_operation(request, &message));
                 if id.is_some() && id == self.commit_input.pending {
                     self.commit_input.pending = None;
                 }
@@ -462,7 +426,21 @@ impl App {
                 if let Some(req) = id {
                     self.fail_pending_commit_detail(req, &message);
                 }
-                self.notify(severity, kind, message);
+                for tab in self.all_tabs_mut() {
+                    if let TabKind::LanguageServers(view) = &mut tab.kind
+                        && id.is_some()
+                        && view.inventory_request == id
+                    {
+                        if view.inventory_request == id {
+                            view.inventory_request = None;
+                        }
+                        view.loading_since = None;
+                        view.error = Some(message.clone());
+                    }
+                }
+                if !language_server_operation_failed {
+                    self.notify(severity, kind, message);
+                }
             },
             SessionEvent::VcsStatus { staged, working } => {
                 self.live_blame = None;
@@ -735,6 +713,42 @@ impl App {
                 self.status = Some(format!("dependency graph: {count} package(s)"));
             },
             SessionEvent::LoadedConfig { report } => self.open_loaded_config(*report),
+            SessionEvent::HoverResult { hover } => {
+                self.status = hover.map_or_else(
+                    || Some("no hover information".to_string()),
+                    |hover| {
+                        hover
+                            .contents
+                            .value
+                            .lines()
+                            .next()
+                            .map(|line| format!("hover: {line}"))
+                    },
+                );
+            },
+            SessionEvent::Definitions { locations } => {
+                self.status = locations.first().map_or_else(
+                    || Some("definition not found".to_string()),
+                    |location| {
+                        Some(format!(
+                            "definition: {}:{}:{}",
+                            location.path.display(),
+                            location.range.start.line + 1,
+                            location.range.start.col + 1
+                        ))
+                    },
+                );
+            },
+            SessionEvent::WorkspaceSymbols { symbols } => {
+                self.status = Some(format!("{} workspace symbol(s)", symbols.len()));
+            },
+            SessionEvent::WorkspaceEdit { edit } => {
+                let files = edit.changes.len();
+                self.status = Some(format!("rename preview: {files} file(s)"));
+            },
+            SessionEvent::FormattingEdits { edits, .. } => {
+                self.status = Some(format!("formatter returned {} edit(s)", edits.len()));
+            },
             _ => {},
         }
         // A "save & close" runs the parked request once every issued save succeeds.
@@ -774,88 +788,5 @@ impl App {
             swaps.len()
         ));
         self.pending_swaps = Some(swaps);
-    }
-
-    /// Apply a document snapshot to the matching code tab(s): the snapshot is the
-    /// render source of truth (buffer, highlights, the search text, and the
-    /// unsaved-changes flag).
-    pub(super) fn on_snapshot(&mut self, doc: DocumentId, snap: &DocSnapshot) {
-        for tab in self.all_tabs_mut() {
-            let matches = matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc);
-            if !matches {
-                continue;
-            }
-            if let TabKind::Code {
-                buffer,
-                highlights,
-                semantic_blocks,
-                folds,
-                folded,
-                text,
-                next_version,
-                syntax_errors,
-                ..
-            } = &mut tab.kind
-            {
-                // A slow-arriving snapshot must not regress a tab that has since
-                // advanced further via `submit_edit`'s local speculative apply —
-                // only the buffer/text catch up when the snapshot is at least as
-                // new as what's already applied locally.
-                if snap.version >= buffer.version() {
-                    *buffer = snap.buffer.clone();
-                    *text = snap.buffer.text();
-                }
-                *highlights = (*snap.highlights).clone();
-                *semantic_blocks = (*snap.semantic_blocks).clone();
-                *folds = (*snap.folds).clone();
-                *syntax_errors = snap.syntax_error_lines.as_ref().clone();
-                *next_version = (*next_version).max(snap.version);
-                // Drop collapsed markers whose fold no longer starts where it did (an
-                // edit shifted or removed it), so stale hidden lines can't linger.
-                let starts: HashSet<u32> = folds.regions().iter().map(|r| r.start).collect();
-                folded.retain(|line| starts.contains(line));
-            }
-            // The clean→dirty transition permanently promotes a preview tab (VS
-            // Code behavior): once edited, it survives being navigated away from
-            // instead of getting silently replaced by the next preview-opened file.
-            if snap.dirty && !tab.dirty {
-                tab.is_preview = false;
-            }
-            tab.dirty = snap.dirty;
-            // Undo/redo snapshots carry the caret to jump to; ordinary edits carry
-            // `None` so the optimistic placement from `submit_edit` is preserved.
-            if let Some(cursor) = &snap.cursor {
-                let heads: Vec<LineCol> = cursor.selections.iter().map(|s| s.head).collect();
-                if !heads.is_empty() {
-                    tab.editor.set_carets(&heads);
-                    tab.editor.scroll_to(cursor.primary().head);
-                }
-            }
-        }
-        if snap.dirty {
-            self.schedule_auto_save(doc, snap.version, Instant::now());
-        } else if self
-            .auto_save_pending
-            .get(&doc)
-            .is_some_and(|pending| pending.version <= snap.version)
-        {
-            self.auto_save_pending.remove(&doc);
-        }
-        self.request_active_outline();
-        // If the find bar is open, an edit (e.g. a replace) just changed the buffer,
-        // so recompute the match highlights against the fresh text.
-        if self.find_open {
-            self.run_find();
-        }
-        // Likewise for global search matches: a newly-opened or just-edited tab
-        // should show its highlights immediately, not only after the next
-        // explicit search re-run.
-        if !self.search.query.is_empty() {
-            self.refresh_search_decorations();
-        }
-        // An undo/redo snapshot may have moved the caret away from the popup's
-        // anchor; re-validate it.
-        self.reconcile_completion();
-        self.request_live_blame();
     }
 }

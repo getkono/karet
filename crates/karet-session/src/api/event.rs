@@ -173,6 +173,24 @@ pub enum Event {
         /// Whether processes using an older version still need a user-approved restart.
         restart_required: bool,
     },
+    /// A managed provider was deactivated for future resolution.
+    LanguageServerRemoved {
+        /// Provider that was deactivated.
+        server: LanguageServerId,
+        /// Whether its immutable payload remains until shared brokers release it.
+        cleanup_pending: bool,
+    },
+    /// A repository-scoped provider changed lifecycle state in this session.
+    LanguageServerRuntimeChanged {
+        /// Provider whose connection changed.
+        server: LanguageServerId,
+        /// Repository root owned by the connection.
+        root: PathBuf,
+        /// New lifecycle state.
+        state: LanguageServerRuntimeState,
+        /// Most recent concise failure, when applicable.
+        error: Option<String>,
+    },
     /// Hover result answering a [`Command::Hover`].
     HoverResult {
         /// The hover, if any.
@@ -182,6 +200,25 @@ pub enum Event {
     Definitions {
         /// The resolved locations.
         locations: Vec<Location>,
+    },
+    /// Workspace symbols answering a [`Command::WorkspaceSymbols`] query.
+    WorkspaceSymbols {
+        /// Matching symbols from the active repository servers.
+        symbols: Vec<Symbol>,
+    },
+    /// A refactoring edit for preview and explicit application by the client.
+    WorkspaceEdit {
+        /// Version-independent, path-grouped edits in buffer coordinates.
+        edit: WorkspaceEdit,
+    },
+    /// Formatting edits answering [`Command::FormatOnSave`].
+    FormattingEdits {
+        /// Document the edits target.
+        doc: DocumentId,
+        /// Buffer version the edits were computed against.
+        version: u64,
+        /// Non-overlapping edits in buffer coordinates.
+        edits: Vec<TextEdit>,
     },
     /// Search results answering a [`Command::Search`].
     SearchResults {

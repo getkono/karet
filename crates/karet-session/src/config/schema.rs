@@ -748,6 +748,8 @@ impl Default for Latex {
 pub struct Lsp {
     /// Run language servers for open documents (powers completions).
     pub enabled: bool,
+    /// Whether Karet may install a missing managed fallback.
+    pub managed_downloads: ManagedDownloads,
     /// Per-language server launch configurations, keyed by the lowercase
     /// language name (e.g. `"rust"`, `"typescript"`, `"python"`). Entries are
     /// merged *over* the built-in defaults (rust → `rust-analyzer`,
@@ -755,26 +757,69 @@ pub struct Lsp {
     /// python → `pyright-langserver --stdio`), so setting a language here
     /// overrides its default and unlisted languages keep theirs.
     pub servers: BTreeMap<String, LspServer>,
+    /// Per-language provider order and exclusive capability owners.
+    pub languages: BTreeMap<String, LspLanguage>,
 }
 
 impl Default for Lsp {
     fn default() -> Self {
         Self {
             enabled: true,
+            managed_downloads: ManagedDownloads::Prompt,
             servers: BTreeMap::new(),
+            languages: BTreeMap::new(),
         }
     }
 }
 
+/// Managed language-server download policy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ManagedDownloads {
+    /// Show exact release metadata and require confirmation.
+    #[default]
+    Prompt,
+    /// Install an approved managed fallback automatically.
+    Auto,
+    /// Never discover or download managed language servers.
+    Off,
+}
+
 /// How to launch one language server (see [`Lsp::servers`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct LspServer {
+    /// Whether this provider participates in resolution.
+    pub enabled: bool,
     /// The server executable, looked up on `PATH` (or an absolute path).
     pub command: String,
     /// Command-line arguments.
     #[serde(default)]
     pub args: Vec<String>,
+}
+
+impl Default for LspServer {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            command: String::new(),
+            args: Vec::new(),
+        }
+    }
+}
+
+/// Provider selection and exclusive capability owners for one language.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct LspLanguage {
+    /// Ordered provider IDs. The first capable provider owns intelligence.
+    pub servers: Vec<String>,
+    /// Explicit formatting owner, when repository defaults should be overridden.
+    pub formatter: Option<String>,
+    /// Explicit semantic-token owner.
+    pub semantic_tokens: Option<String>,
+    /// Additional providers whose diagnostics should be merged.
+    pub diagnostics: Vec<String>,
 }
 
 /// `git.*` — source-control integration.
@@ -986,6 +1031,7 @@ mod tests {
             serde_json::from_str(r#"{ "command": "pylsp" }"#).unwrap_or(LspServer {
                 command: String::new(),
                 args: vec!["sentinel".into()],
+                ..LspServer::default()
             });
         assert_eq!(parsed.command, "pylsp");
         assert!(parsed.args.is_empty());

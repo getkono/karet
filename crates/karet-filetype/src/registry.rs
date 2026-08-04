@@ -194,6 +194,7 @@ static REGISTRY: &[FileType] = &[
     overflow("Less", Markup, None, &["less"], &[]),
     overflow("Vue", Markup, None, &["vue"], &[]),
     overflow("Svelte", Markup, None, &["svelte"], &[]),
+    overflow("Astro", Markup, None, &["astro"], &[]),
     // --- data / config ---
     overflow(
         "JSON",

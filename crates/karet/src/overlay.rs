@@ -90,9 +90,18 @@ pub enum TextPurpose {
     /// Confirm the first network-backed installation by typing `install`.
     InstallLanguageServer { server: LanguageServerId },
     /// Approve the exact update plan displayed by the backend.
-    ApplyLanguageServerPlan { plan: LanguageServerPlanId },
+    ApplyLanguageServerPlan {
+        plan: LanguageServerPlanId,
+        servers: Vec<LanguageServerId>,
+        /// Whether this plan installs a missing provider rather than updating one.
+        install: bool,
+    },
+    /// Replace the language-server manager's filter with the submitted text.
+    FilterLanguageServers,
     /// Restart a session-local process after an installed update.
     RestartLanguageServer { server: LanguageServerId },
+    /// Confirm deactivation of one Karet-managed provider by typing `uninstall`.
+    UninstallLanguageServer { server: LanguageServerId },
 }
 
 pub(crate) struct BranchForm {

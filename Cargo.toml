@@ -7,7 +7,7 @@
 # released in lockstep at a single synchronized version.
 [workspace]
 resolver = "3"
-members  = ["crates/*"]
+members  = ["crates/*", "xtask"]
 
 [workspace.package]
 version      = "0.3.0"
@@ -65,10 +65,12 @@ blameline        = { path = "crates/blameline", version = "1.0.4", default-featu
 thiserror = "2.0.18"
 tokio     = { version = "1.52.3", default-features = false }  # crates opt into features
 tracing   = "0.1.44"
+tracing-appender = "0.2.3"
 serde     = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha2       = "0.10.9"
 flate2     = "1.1.9"
+lzma-rust2 = { version = "0.18.0", default-features = false, features = ["std", "xz"] }
 tar        = "0.4.44"
 bytes      = { version = "1.12.0", features = ["serde"] }
 secrecy    = "0.10.3"
@@ -117,6 +119,11 @@ tree-sitter-yaml       = "0.7.2"
 tree-sitter-typescript = "0.23.2"
 tree-sitter-md         = "0.5.3"
 codebook-tree-sitter-latex = "0.6.1"
+tree-sitter-zig        = "1.1.2"
+tree-sitter-xml        = "0.7.0"
+tree-sitter-svelte-next = "0.1.1"
+tree-sitter-astro-next = "0.1.1"
+tree-sitter-vue-next   = "0.1.0"
 # Diff / markdown / image
 imara-diff    = "0.2.0"
 pulldown-cmark = "0.13.4"

@@ -144,6 +144,7 @@ impl App {
             document_settings: HashMap::new(),
             document_diagnostics: HashMap::new(),
             document_symbols: HashMap::new(),
+            lsp_runtime: language_servers::LanguageServerRuntimeModel::default(),
             outline_versions: HashMap::new(),
             outline_loading: HashMap::new(),
             auto_save_pending: HashMap::new(),
@@ -409,6 +410,7 @@ impl App {
                 | TabKind::Hex { .. },
             ) => EditorTab::Pager,
             Some(TabKind::Github(_)) => EditorTab::Github,
+            Some(TabKind::LanguageServers(_)) => EditorTab::LanguageServers,
             Some(TabKind::CommitGraph { .. }) => EditorTab::CommitGraph,
             Some(TabKind::Placeholder {
                 kind: FileKind::TooLarge { .. },

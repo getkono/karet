@@ -124,6 +124,12 @@ pub struct Cli {
     #[arg(long)]
     pub doctor: bool,
 
+    /// Print the paths of existing application log files and exit instead of
+    /// starting the editor. When no logs exist, prints an informational message.
+    /// The other flags are ignored.
+    #[arg(long)]
+    pub log: bool,
+
     /// Install a per-user desktop entry that opens karet in a terminal, then exit
     /// instead of starting the editor: an XDG .desktop entry + icon on Linux, a
     /// ~/Applications/karet.app bundle on macOS, a Start-Menu launcher on Windows
@@ -295,6 +301,14 @@ mod tests {
     fn doctor_defaults_to_off() -> Result<(), clap::Error> {
         let cli = Cli::try_parse_from(["karet"])?;
         assert!(!cli.doctor);
+        Ok(())
+    }
+
+    #[test]
+    fn log_flag_parses_and_defaults_to_off() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from(["karet", "--log"])?;
+        assert!(cli.log);
+        assert!(!Cli::try_parse_from(["karet"])?.log);
         Ok(())
     }
 

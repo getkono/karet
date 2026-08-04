@@ -298,8 +298,28 @@ pub enum Command {
     OpenBlameDetail,
     /// Open a read-only view of the loaded settings and their provenance.
     ShowLoadedConfig,
+    /// Open the persistent language-server inventory and lifecycle manager.
+    ManageLanguageServers,
     /// Explicitly check installed managed language servers for updates.
     CheckLanguageServerUpdates,
+    /// Move to the previous row in the language-server manager.
+    LanguageServerUp,
+    /// Move to the next row in the language-server manager.
+    LanguageServerDown,
+    /// Reload language-server inventory without network access.
+    LanguageServerRefresh,
+    /// Force an update check for the selected managed provider.
+    LanguageServerCheckSelected,
+    /// Force an update check for every installed managed provider.
+    LanguageServerCheckAll,
+    /// Install or update the selected managed provider.
+    LanguageServerPrimaryAction,
+    /// Restart the selected provider in this session.
+    LanguageServerRestart,
+    /// Uninstall the selected Karet-managed provider.
+    LanguageServerUninstall,
+    /// Filter the language-server inventory.
+    LanguageServerFilter,
     /// Begin creating a new file in the explorer (inline name editor).
     ExplorerNewFile,
     /// Begin creating a new folder in the explorer (inline name editor).
@@ -585,7 +605,17 @@ impl Command {
             Self::ToggleInlineBlame => "Source Control: Toggle Inline Blame",
             Self::OpenBlameDetail => "Source Control: Open Blame Details",
             Self::ShowLoadedConfig => "Settings: Show Loaded Configuration",
+            Self::ManageLanguageServers => "Language Servers: Manage",
             Self::CheckLanguageServerUpdates => "Language Servers: Check for Updates…",
+            Self::LanguageServerUp => "Language Servers: Select Previous",
+            Self::LanguageServerDown => "Language Servers: Select Next",
+            Self::LanguageServerRefresh => "Language Servers: Refresh",
+            Self::LanguageServerCheckSelected => "Language Servers: Check Selected",
+            Self::LanguageServerCheckAll => "Language Servers: Check All",
+            Self::LanguageServerPrimaryAction => "Language Servers: Install / Update",
+            Self::LanguageServerRestart => "Language Servers: Restart Selected",
+            Self::LanguageServerUninstall => "Language Servers: Uninstall Selected",
+            Self::LanguageServerFilter => "Language Servers: Filter…",
             Self::ExplorerNewFile => "Explorer: New File…",
             Self::ExplorerNewFolder => "Explorer: New Folder…",
             Self::ExplorerRename => "Explorer: Rename…",
@@ -703,7 +733,15 @@ impl Command {
             Self::ToggleInlineBlame => "blame",
             Self::OpenBlameDetail => "blame detail",
             Self::ShowLoadedConfig => "settings",
+            Self::ManageLanguageServers => "language servers",
             Self::CheckLanguageServerUpdates => "lsp updates",
+            Self::LanguageServerRefresh => "refresh",
+            Self::LanguageServerCheckSelected => "check",
+            Self::LanguageServerCheckAll => "check all",
+            Self::LanguageServerPrimaryAction => "install/update",
+            Self::LanguageServerRestart => "restart",
+            Self::LanguageServerUninstall => "uninstall",
+            Self::LanguageServerFilter => "filter",
             Self::ToggleFold => "fold",
             Self::AddCursorNextOccurrence => "add cursor",
             // Diff.
@@ -876,7 +914,9 @@ impl Command {
             | Self::OpenCommitByHash
             | Self::ShowFileHistory
             | Self::DiffUnpushed
-            | Self::DiffSinceBase => return None,
+            | Self::DiffSinceBase
+            | Self::LanguageServerUp
+            | Self::LanguageServerDown => return None,
         })
     }
 
@@ -945,6 +985,7 @@ impl Command {
                 | Self::ToggleInlineBlame
                 | Self::OpenBlameDetail
                 | Self::ShowLoadedConfig
+                | Self::ManageLanguageServers
                 | Self::CheckLanguageServerUpdates
                 | Self::ExplorerNewFile
                 | Self::ExplorerNewFolder

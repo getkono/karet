@@ -188,10 +188,20 @@ impl App {
                     self.open_loaded_config(self.loaded_config.clone());
                 }
             },
+            Command::ManageLanguageServers => self.open_language_servers(),
             Command::CheckLanguageServerUpdates => {
-                self.send_command(SessionCommand::CheckLanguageServerUpdates);
-                self.status = Some("checking language-server updates…".to_string());
+                self.open_language_servers();
+                self.check_all_language_servers();
             },
+            Command::LanguageServerUp => self.language_server_select(-1),
+            Command::LanguageServerDown => self.language_server_select(1),
+            Command::LanguageServerRefresh => self.refresh_language_servers(),
+            Command::LanguageServerCheckSelected => self.check_selected_language_server(),
+            Command::LanguageServerCheckAll => self.check_all_language_servers(),
+            Command::LanguageServerPrimaryAction => self.language_server_primary_action(),
+            Command::LanguageServerRestart => self.restart_selected_language_server(),
+            Command::LanguageServerUninstall => self.uninstall_selected_language_server(),
+            Command::LanguageServerFilter => self.prompt_language_server_filter(),
             Command::ExplorerNewFile => self.explorer_begin_new(false),
             Command::ExplorerNewFolder => self.explorer_begin_new(true),
             Command::ExplorerRename => self.explorer_begin_rename(),

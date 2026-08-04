@@ -6,6 +6,7 @@ include!("tests/scm.rs");
 include!("tests/tabs_search.rs");
 include!("tests/blame.rs");
 include!("tests/preview.rs");
+include!("tests/language_servers.rs");
 include!("tests/commit_view.rs");
 include!("tests/commit_navigation.rs");
 include!("tests/editor_mouse.rs");

@@ -101,6 +101,129 @@ impl Session {
                 convert_symbol_columns(&document.buffer, &mut symbols);
                 self.emit(Some(request), Event::Symbols { doc, symbols });
             },
+            LspUpdate::Hover {
+                request,
+                doc,
+                version,
+                mut hover,
+                ..
+            } => {
+                let Some(document) = self.store.docs.get(&doc) else {
+                    return;
+                };
+                if document.buffer.version() != version {
+                    return;
+                }
+                if let Some(range) = hover.as_mut().and_then(|hover| hover.range.as_mut()) {
+                    *range = utf16_range_to_buffer(&document.buffer, *range);
+                }
+                self.emit(Some(request), Event::HoverResult { hover });
+            },
+            LspUpdate::Definitions {
+                request,
+                doc,
+                version,
+                mut locations,
+                ..
+            } => {
+                let Some(document) = self.store.docs.get(&doc) else {
+                    return;
+                };
+                if document.buffer.version() != version {
+                    return;
+                }
+                for location in &mut locations {
+                    if location.path == document.path {
+                        location.range = utf16_range_to_buffer(&document.buffer, location.range);
+                    }
+                }
+                self.emit(Some(request), Event::Definitions { locations });
+            },
+            LspUpdate::WorkspaceSymbols {
+                request, symbols, ..
+            } => {
+                self.emit(Some(request), Event::WorkspaceSymbols { symbols });
+            },
+            LspUpdate::WorkspaceEdit { request, edit, .. } => {
+                let mut edit = edit;
+                for (path, edits) in &mut edit.changes {
+                    let open = self
+                        .store
+                        .by_path
+                        .get(path)
+                        .and_then(|doc| self.store.docs.get(doc))
+                        .map(|document| document.buffer.clone());
+                    let buffer = open.or_else(|| {
+                        std::fs::read_to_string(path)
+                            .ok()
+                            .map(|text| karet_text::TextBuffer::from_text(&text))
+                    });
+                    if let Some(buffer) = buffer {
+                        for edit in edits {
+                            edit.range = utf16_range_to_buffer(&buffer, edit.range);
+                        }
+                    }
+                }
+                self.emit(Some(request), Event::WorkspaceEdit { edit });
+            },
+            LspUpdate::Formatting {
+                request,
+                doc,
+                version,
+                mut edits,
+                ..
+            } => {
+                let Some(document) = self.store.docs.get(&doc) else {
+                    return;
+                };
+                if document.buffer.version() != version {
+                    return;
+                }
+                for edit in &mut edits {
+                    edit.range = utf16_range_to_buffer(&document.buffer, edit.range);
+                }
+                self.emit(
+                    Some(request),
+                    Event::FormattingEdits {
+                        doc,
+                        version,
+                        edits,
+                    },
+                );
+            },
+            LspUpdate::Diagnostics {
+                server,
+                path,
+                version,
+                mut diagnostics,
+                ..
+            } => {
+                let Some(&doc_id) = self.store.by_path.get(&path) else {
+                    return;
+                };
+                let Some(document) = self.store.docs.get_mut(&doc_id) else {
+                    return;
+                };
+                if version.is_some_and(|published| {
+                    published != crate::lsp::version_i32(document.buffer.version())
+                }) {
+                    return;
+                }
+                for diagnostic in &mut diagnostics {
+                    diagnostic.range = utf16_range_to_buffer(&document.buffer, diagnostic.range);
+                    for related in &mut diagnostic.related {
+                        if related.location.path == path {
+                            related.location.range =
+                                utf16_range_to_buffer(&document.buffer, related.location.range);
+                        }
+                    }
+                }
+                if document.lsp_diagnostics.get(&server) == Some(&diagnostics) {
+                    return;
+                }
+                document.lsp_diagnostics.insert(server, diagnostics);
+                self.publish_document_diagnostics(doc_id);
+            },
             LspUpdate::SpawnFailed {
                 language, command, ..
             } => self.emit(
@@ -120,81 +243,44 @@ impl Session {
                     severity: Severity::Warning,
                     kind: NotificationKind::Lsp,
                     message: format!(
-                        "the {language} language server stopped; restart karet to relaunch it"
+                        "the {language} language server stopped; reconnecting with bounded backoff"
                     ),
                 },
             ),
-            LspUpdate::InstallRequired { server, .. } => {
-                self.emit(None, Event::LanguageServerInstallRequired { server });
-            },
-        }
-    }
-
-    /// Adopt a completed registry operation.
-    pub(crate) fn apply_lsp_registry_update(
-        &mut self,
-        update: crate::lsp_registry::RegistryUpdate,
-    ) {
-        use crate::lsp_registry::RegistryUpdate;
-        match update {
-            RegistryUpdate::Plan {
-                request,
-                plan,
-                changes,
-            } => self.emit(
-                Some(request),
-                Event::LanguageServerUpdatePlan { plan, changes },
-            ),
-            RegistryUpdate::Changed {
-                request,
+            LspUpdate::RuntimeState {
                 server,
-                version,
-                was_installed,
+                root,
+                state,
+                error,
+                ..
             } => {
-                self.lsp.installed(server);
-                let restart_required = was_installed && self.lsp.is_running(server);
-                if !was_installed {
-                    self.reopen_lsp_documents(Some(server));
-                }
+                self.lsp
+                    .note_runtime(server.clone(), root.clone(), state, error.clone());
                 self.emit(
-                    Some(request),
-                    Event::LanguageServerChanged {
+                    None,
+                    Event::LanguageServerRuntimeChanged {
                         server,
-                        version,
-                        restart_required,
+                        root,
+                        state,
+                        error,
                     },
                 );
             },
-            RegistryUpdate::Progress {
-                server,
-                downloaded,
-                total,
-            } => self.emit(
-                None,
-                Event::LanguageServerProgress {
-                    server,
-                    downloaded,
-                    total,
-                },
-            ),
-            RegistryUpdate::Complete { request } => {
-                self.emit(
-                    Some(request),
-                    Event::Notification {
-                        severity: Severity::Information,
-                        kind: NotificationKind::Lsp,
-                        message: "language-server update plan applied".into(),
+            LspUpdate::InstallRequired { server, .. } => {
+                match self.config.settings.lsp.managed_downloads {
+                    crate::config::schema::ManagedDownloads::Prompt => {
+                        self.emit(None, Event::LanguageServerInstallRequired { server });
                     },
-                );
+                    crate::config::schema::ManagedDownloads::Auto => {
+                        let request = RequestId(0);
+                        self.queue_lsp_registry(
+                            request,
+                            crate::lsp_registry::RegistryJob::Install { request, server },
+                        );
+                    },
+                    crate::config::schema::ManagedDownloads::Off => {},
+                }
             },
-            RegistryUpdate::Failed { request, message } => self.emit(
-                Some(request),
-                Event::Notification {
-                    severity: Severity::Error,
-                    kind: NotificationKind::Lsp,
-                    message: format!("language-server registry: {message}"),
-                },
-            ),
         }
     }
 
@@ -204,8 +290,12 @@ impl Session {
             .docs
             .values()
             .filter(|document| {
-                only.is_none_or(|server| {
-                    document.language.and_then(crate::lsp::builtin_server) == Some(server)
+                only.as_ref().is_none_or(|server| {
+                    document
+                        .language
+                        .and_then(crate::lsp::builtin_server)
+                        .as_ref()
+                        == Some(server)
                 })
             })
             .map(|document| {
@@ -293,6 +383,97 @@ impl Session {
         }
     }
 
+    pub(super) fn hover(&mut self, id: RequestId, doc_id: DocumentId, position: LineCol) {
+        let Some(doc) = self.store.docs.get(&doc_id) else {
+            self.emit(Some(id), unknown_document(doc_id));
+            return;
+        };
+        let version = doc.buffer.version();
+        let utf16 = LineCol::new(position.line, doc.buffer.line_col_to_utf16(position));
+        if !self
+            .lsp
+            .hover(doc.language, id, doc_id, version, &doc.path, utf16)
+        {
+            self.emit(Some(id), Event::HoverResult { hover: None });
+        }
+    }
+
+    pub(super) fn definition(&mut self, id: RequestId, doc_id: DocumentId, position: LineCol) {
+        let Some(doc) = self.store.docs.get(&doc_id) else {
+            self.emit(Some(id), unknown_document(doc_id));
+            return;
+        };
+        let version = doc.buffer.version();
+        let utf16 = LineCol::new(position.line, doc.buffer.line_col_to_utf16(position));
+        if !self
+            .lsp
+            .definition(doc.language, id, doc_id, version, &doc.path, utf16)
+        {
+            self.emit(
+                Some(id),
+                Event::Definitions {
+                    locations: Vec::new(),
+                },
+            );
+        }
+    }
+
+    pub(super) fn workspace_symbols(&mut self, id: RequestId, query: String) {
+        if !self.lsp.workspace_symbols(id, query) {
+            self.emit(
+                Some(id),
+                Event::WorkspaceSymbols {
+                    symbols: Vec::new(),
+                },
+            );
+        }
+    }
+
+    pub(super) fn rename(
+        &mut self,
+        id: RequestId,
+        doc_id: DocumentId,
+        position: LineCol,
+        new_name: String,
+    ) {
+        let Some(doc) = self.store.docs.get(&doc_id) else {
+            self.emit(Some(id), unknown_document(doc_id));
+            return;
+        };
+        let utf16 = LineCol::new(position.line, doc.buffer.line_col_to_utf16(position));
+        if !self
+            .lsp
+            .rename(doc.language, id, &doc.path, utf16, new_name)
+        {
+            self.emit(
+                Some(id),
+                Event::WorkspaceEdit {
+                    edit: karet_core::WorkspaceEdit::default(),
+                },
+            );
+        }
+    }
+
+    pub(super) fn format_document(&mut self, id: RequestId, doc_id: DocumentId) {
+        let Some(doc) = self.store.docs.get(&doc_id) else {
+            self.emit(Some(id), unknown_document(doc_id));
+            return;
+        };
+        if !self
+            .lsp
+            .formatting(doc.language, id, doc_id, doc.buffer.version(), &doc.path)
+        {
+            self.emit(
+                Some(id),
+                Event::FormattingEdits {
+                    doc: doc_id,
+                    version: doc.buffer.version(),
+                    edits: Vec::new(),
+                },
+            );
+        }
+    }
+
     /// Adopt a completed highlight, then publish the refreshed snapshot.
     ///
     /// A result for a version the buffer has already moved past is dropped: a newer
@@ -368,13 +549,7 @@ impl Session {
             return;
         }
         doc.spell_diagnostics = result.diagnostics.clone();
-        self.emit(
-            None,
-            Event::DiagnosticsPublished {
-                doc: result.doc,
-                diagnostics: result.diagnostics,
-            },
-        );
+        self.publish_document_diagnostics(result.doc);
     }
 
     fn clear_spell_diagnostics(&mut self, doc_id: DocumentId) {
@@ -388,14 +563,43 @@ impl Session {
             }
         });
         if changed {
-            self.emit(
-                None,
-                Event::DiagnosticsPublished {
-                    doc: doc_id,
-                    diagnostics: Vec::new(),
-                },
-            );
+            self.publish_document_diagnostics(doc_id);
         }
+    }
+
+    fn publish_document_diagnostics(&self, doc_id: DocumentId) {
+        let Some(document) = self.store.docs.get(&doc_id) else {
+            return;
+        };
+        let lsp_count = document
+            .lsp_diagnostics
+            .values()
+            .map(Vec::len)
+            .sum::<usize>();
+        let mut diagnostics = Vec::with_capacity(lsp_count + document.spell_diagnostics.len());
+        diagnostics.extend(
+            document
+                .lsp_diagnostics
+                .values()
+                .flat_map(|layer| layer.iter().cloned()),
+        );
+        diagnostics.extend(document.spell_diagnostics.iter().cloned());
+        diagnostics.sort_by(|left, right| {
+            left.range
+                .start
+                .cmp(&right.range.start)
+                .then_with(|| left.severity.cmp(&right.severity))
+                .then_with(|| left.source.cmp(&right.source))
+                .then_with(|| left.message.cmp(&right.message))
+        });
+        diagnostics.dedup();
+        self.emit(
+            None,
+            Event::DiagnosticsPublished {
+                doc: doc_id,
+                diagnostics,
+            },
+        );
     }
 
     /// React to a debounced filesystem event by reloading or flagging any open
@@ -574,5 +778,12 @@ fn convert_symbol_columns(buffer: &TextBuffer, symbols: &mut [Symbol]) {
             end: buffer.utf16_to_line_col(selection.end.line, selection.end.col),
         };
         convert_symbol_columns(buffer, &mut symbol.children);
+    }
+}
+
+fn utf16_range_to_buffer(buffer: &TextBuffer, range: Range) -> Range {
+    Range {
+        start: buffer.utf16_to_line_col(range.start.line, range.start.col),
+        end: buffer.utf16_to_line_col(range.end.line, range.end.col),
     }
 }

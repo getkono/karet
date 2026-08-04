@@ -313,6 +313,16 @@ pub(crate) const MARKDOWN: LanguageId = LanguageId(19);
 pub(crate) const MARKDOWN_INLINE: LanguageId = LanguageId(20);
 #[cfg(feature = "lang-latex")]
 pub(crate) const LATEX: LanguageId = LanguageId(21);
+#[cfg(feature = "lang-zig")]
+pub(crate) const ZIG: LanguageId = LanguageId(22);
+#[cfg(feature = "lang-xml")]
+pub(crate) const XML: LanguageId = LanguageId(23);
+#[cfg(feature = "lang-svelte")]
+pub(crate) const SVELTE: LanguageId = LanguageId(24);
+#[cfg(feature = "lang-astro")]
+pub(crate) const ASTRO: LanguageId = LanguageId(25);
+#[cfg(feature = "lang-vue")]
+pub(crate) const VUE: LanguageId = LanguageId(26);
 
 #[cfg(feature = "lang-latex")]
 const LATEX_HIGHLIGHTS: &str = r#"
@@ -331,6 +341,42 @@ const LATEX_HIGHLIGHTS: &str = r#"
 #[cfg(feature = "lang-latex")]
 const LATEX_SEMANTIC: &str = r#"
 [(part) (chapter) (section) (subsection) (subsubsection)] @semantic.scope
+"#;
+
+// tree-sitter-vue-next 0.1 publishes its queries under `queries/vue/`, while
+// its Rust binding currently looks only in `queries/`. Keep the small Karet
+// query here until the crate exposes those constants correctly.
+#[cfg(feature = "lang-vue")]
+const VUE_HIGHLIGHTS: &str = r#"
+(comment) @comment
+(doctype) @keyword
+(tag_name) @tag
+(attribute_name) @tag.attribute
+(directive_name) @tag.attribute
+(directive_value) @variable
+(attribute_value) @string
+(quoted_attribute_value) @string
+["<" ">" "</" "/>" "="] @punctuation.delimiter
+"#;
+
+#[cfg(feature = "lang-vue")]
+const VUE_INJECTIONS: &str = r#"
+((style_element
+  (start_tag
+    (attribute
+      (attribute_name) @_attr
+      (quoted_attribute_value (attribute_value) @injection.language)))
+  (raw_text) @injection.content)
+ (#eq? @_attr "lang"))
+((script_element
+  (start_tag
+    (attribute
+      (attribute_name) @_attr
+      (quoted_attribute_value (attribute_value) @injection.language)))
+  (raw_text) @injection.content)
+ (#eq? @_attr "lang"))
+((interpolation (raw_text) @injection.content)
+ (#set! injection.language "typescript"))
 "#;
 
 /// karet's own addition to Rust's injections query: a doc comment is markdown.
@@ -588,6 +634,61 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             language: || codebook_tree_sitter_latex::LANGUAGE.into(),
             highlights: LATEX_HIGHLIGHTS,
             injections: None,
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-zig")]
+        v.push(GrammarInfo {
+            id: ZIG,
+            name: "Zig",
+            extensions: &["zig"],
+            names: &["zig"],
+            language: || tree_sitter_zig::LANGUAGE.into(),
+            highlights: tree_sitter_zig::HIGHLIGHTS_QUERY,
+            injections: Some(tree_sitter_zig::INJECTIONS_QUERY),
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-xml")]
+        v.push(GrammarInfo {
+            id: XML,
+            name: "XML",
+            extensions: &["xml", "svg"],
+            names: &["xml", "svg"],
+            language: || tree_sitter_xml::LANGUAGE_XML.into(),
+            highlights: tree_sitter_xml::XML_HIGHLIGHT_QUERY,
+            injections: None,
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-svelte")]
+        v.push(GrammarInfo {
+            id: SVELTE,
+            name: "Svelte",
+            extensions: &["svelte"],
+            names: &["svelte"],
+            language: || tree_sitter_svelte_next::LANGUAGE.into(),
+            highlights: tree_sitter_svelte_next::HIGHLIGHTS_QUERY,
+            injections: Some(tree_sitter_svelte_next::INJECTIONS_QUERY),
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-astro")]
+        v.push(GrammarInfo {
+            id: ASTRO,
+            name: "Astro",
+            extensions: &["astro"],
+            names: &["astro"],
+            language: || tree_sitter_astro_next::LANGUAGE.into(),
+            highlights: tree_sitter_astro_next::HIGHLIGHTS_QUERY,
+            injections: Some(tree_sitter_astro_next::INJECTIONS_QUERY),
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-vue")]
+        v.push(GrammarInfo {
+            id: VUE,
+            name: "Vue",
+            extensions: &["vue"],
+            names: &["vue"],
+            language: || tree_sitter_vue_next::LANGUAGE.into(),
+            highlights: VUE_HIGHLIGHTS,
+            injections: Some(VUE_INJECTIONS),
             injections_extra: None,
         });
         #[cfg(feature = "lang-markdown")]

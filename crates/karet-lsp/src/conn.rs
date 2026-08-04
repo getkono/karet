@@ -9,7 +9,6 @@
 //! [`LspError::Closed`].
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
@@ -17,7 +16,6 @@ use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use karet_core::Diagnostic;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -30,6 +28,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::LspError;
+use crate::PublishedDiagnostics;
 use crate::codec;
 use crate::convert;
 use crate::jsonrpc;
@@ -46,6 +45,9 @@ pub(crate) const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Diagnostics broadcast capacity; slow subscribers drop the oldest sets.
 const DIAGNOSTICS_CHANNEL_CAPACITY: usize = 64;
+/// Frames waiting to be written. A buggy producer cannot grow memory without
+/// bound; requests wait for capacity and notifications fail fast.
+const OUTBOUND_CHANNEL_CAPACITY: usize = 256;
 
 type Pending = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, ResponseError>>>>>;
 
@@ -58,10 +60,10 @@ enum Outbound {
 
 /// A live JSON-RPC connection to one language server.
 pub(crate) struct Connection {
-    outbound: mpsc::UnboundedSender<Outbound>,
+    outbound: mpsc::Sender<Outbound>,
     pending: Pending,
     next_id: AtomicI64,
-    diagnostics: broadcast::Sender<(PathBuf, Vec<Diagnostic>)>,
+    diagnostics: broadcast::Sender<PublishedDiagnostics>,
     /// Set once either I/O task stops, so requests issued *after* the
     /// connection died fail fast with [`LspError::Closed`] instead of sitting in
     /// the pending map until they time out.
@@ -77,7 +79,7 @@ impl Connection {
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
     {
-        let (outbound, mut outbound_rx) = mpsc::unbounded_channel::<Outbound>();
+        let (outbound, mut outbound_rx) = mpsc::channel::<Outbound>(OUTBOUND_CHANNEL_CAPACITY);
         let (diagnostics, _) = broadcast::channel(DIAGNOSTICS_CHANNEL_CAPACITY);
         let pending: Pending = Arc::default();
         let closed = Arc::new(AtomicBool::new(false));
@@ -152,7 +154,7 @@ impl Connection {
             self.forget(id);
             return Err(LspError::Closed);
         }
-        if self.outbound.send(Outbound::Frame(frame)).is_err() {
+        if self.outbound.send(Outbound::Frame(frame)).await.is_err() {
             self.forget(id);
             return Err(LspError::Closed);
         }
@@ -178,12 +180,17 @@ impl Connection {
         let frame = serde_json::to_vec(&jsonrpc::OutgoingNotification::new(method, params))
             .map_err(|e| LspError::Protocol(format!("failed to encode {method}: {e}")))?;
         self.outbound
-            .send(Outbound::Frame(frame))
-            .map_err(|_| LspError::Closed)
+            .try_send(Outbound::Frame(frame))
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Closed(_) => LspError::Closed,
+                mpsc::error::TrySendError::Full(_) => {
+                    LspError::Protocol("language-server outbound queue is full".to_owned())
+                },
+            })
     }
 
     /// Subscribe to server-pushed diagnostics.
-    pub(crate) fn diagnostics(&self) -> broadcast::Receiver<(PathBuf, Vec<Diagnostic>)> {
+    pub(crate) fn diagnostics(&self) -> broadcast::Receiver<PublishedDiagnostics> {
         self.diagnostics.subscribe()
     }
 
@@ -191,7 +198,7 @@ impl Connection {
     /// flushed), then stop both I/O tasks. Bounded by [`SHUTDOWN_TIMEOUT`] in
     /// case the peer stops consuming.
     pub(crate) async fn close(&mut self) {
-        let _ = self.outbound.send(Outbound::Close);
+        let _ = self.outbound.send(Outbound::Close).await;
         let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, &mut self.writer_task).await;
         self.writer_task.abort(); // no-op when it drained cleanly
         self.reader_task.abort();
@@ -217,8 +224,8 @@ impl Drop for Connection {
 async fn read_loop<R>(
     mut reader: BufReader<R>,
     pending: Pending,
-    diagnostics: broadcast::Sender<(PathBuf, Vec<Diagnostic>)>,
-    outbound: mpsc::UnboundedSender<Outbound>,
+    diagnostics: broadcast::Sender<PublishedDiagnostics>,
+    outbound: mpsc::Sender<Outbound>,
     closed: Arc<AtomicBool>,
 ) where
     R: AsyncRead + Send + Unpin + 'static,
@@ -247,8 +254,8 @@ async fn read_loop<R>(
 fn handle_frame(
     bytes: &[u8],
     pending: &Pending,
-    diagnostics: &broadcast::Sender<(PathBuf, Vec<Diagnostic>)>,
-    outbound: &mpsc::UnboundedSender<Outbound>,
+    diagnostics: &broadcast::Sender<PublishedDiagnostics>,
+    outbound: &mpsc::Sender<Outbound>,
 ) {
     let value: Value = match serde_json::from_slice(bytes) {
         Ok(v) => v,
@@ -273,7 +280,12 @@ fn handle_frame(
             let outcome = answer_server_request(&method, &params);
             match serde_json::to_vec(&jsonrpc::OutgoingResponse::new(id, outcome)) {
                 Ok(frame) => {
-                    let _ = outbound.send(Outbound::Frame(frame));
+                    if outbound.try_send(Outbound::Frame(frame)).is_err() {
+                        tracing::warn!(
+                            method,
+                            "dropping server-request response: outbound queue full"
+                        );
+                    }
                 },
                 Err(e) => {
                     tracing::warn!(error = %e, method, "failed to encode a response");
@@ -317,7 +329,7 @@ fn answer_server_request(method: &str, params: &Value) -> Result<Value, Response
 }
 
 /// Decode and broadcast one `textDocument/publishDiagnostics` notification.
-fn route_diagnostics(params: Value, diagnostics: &broadcast::Sender<(PathBuf, Vec<Diagnostic>)>) {
+fn route_diagnostics(params: Value, diagnostics: &broadcast::Sender<PublishedDiagnostics>) {
     let parsed: lsp_types::PublishDiagnosticsParams = match serde_json::from_value(params) {
         Ok(p) => p,
         Err(e) => {
@@ -334,5 +346,9 @@ fn route_diagnostics(params: Value, diagnostics: &broadcast::Sender<(PathBuf, Ve
         .into_iter()
         .map(convert::diagnostic_from_lsp)
         .collect();
-    let _ = diagnostics.send((path, mapped)); // no subscribers is fine
+    let _ = diagnostics.send(PublishedDiagnostics {
+        path,
+        version: parsed.version,
+        diagnostics: mapped,
+    }); // no subscribers is fine
 }

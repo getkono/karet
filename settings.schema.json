@@ -629,6 +629,19 @@
           "type": "boolean",
           "default": true
         },
+        "languages": {
+          "description": "Per-language provider order and exclusive capability owners.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/LspLanguage"
+          },
+          "default": {}
+        },
+        "managedDownloads": {
+          "description": "Whether Karet may install a missing managed fallback.",
+          "$ref": "#/$defs/ManagedDownloads",
+          "default": "prompt"
+        },
         "servers": {
           "description": "Per-language server launch configurations, keyed by the lowercase\nlanguage name (e.g. `\"rust\"`, `\"typescript\"`, `\"python\"`). Entries are\nmerged *over* the built-in defaults (rust → `rust-analyzer`,\ntypescript/javascript → `typescript-language-server --stdio`,\npython → `pyright-langserver --stdio`), so setting a language here\noverrides its default and unlisted languages keep theirs.",
           "type": "object",
@@ -636,6 +649,45 @@
             "$ref": "#/$defs/LspServer"
           },
           "default": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "LspLanguage": {
+      "description": "Provider selection and exclusive capability owners for one language.",
+      "type": "object",
+      "properties": {
+        "diagnostics": {
+          "description": "Additional providers whose diagnostics should be merged.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "formatter": {
+          "description": "Explicit formatting owner, when repository defaults should be overridden.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "semanticTokens": {
+          "description": "Explicit semantic-token owner.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "servers": {
+          "description": "Ordered provider IDs. The first capable provider owns intelligence.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
@@ -654,12 +706,35 @@
         },
         "command": {
           "description": "The server executable, looked up on `PATH` (or an absolute path).",
-          "type": "string"
+          "type": "string",
+          "default": ""
+        },
+        "enabled": {
+          "description": "Whether this provider participates in resolution.",
+          "type": "boolean",
+          "default": true
         }
       },
-      "additionalProperties": false,
-      "required": [
-        "command"
+      "additionalProperties": false
+    },
+    "ManagedDownloads": {
+      "description": "Managed language-server download policy.",
+      "oneOf": [
+        {
+          "description": "Show exact release metadata and require confirmation.",
+          "type": "string",
+          "const": "prompt"
+        },
+        {
+          "description": "Install an approved managed fallback automatically.",
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "description": "Never discover or download managed language servers.",
+          "type": "string",
+          "const": "off"
+        }
       ]
     },
     "Search": {

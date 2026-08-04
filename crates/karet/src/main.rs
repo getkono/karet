@@ -25,6 +25,7 @@ mod doctor;
 mod editing;
 mod keymap;
 mod links;
+mod logging;
 mod notify;
 mod outline;
 mod overlay;
@@ -41,11 +42,25 @@ use std::path::PathBuf;
 use clap::Parser;
 
 fn main() -> color_eyre::Result<()> {
+    if karet_session::lsp_broker::requested() {
+        std::process::exit(karet_session::lsp_broker::run_from_env());
+    }
     if karet_session::process_supervisor::requested() {
         std::process::exit(karet_session::process_supervisor::run_from_env());
     }
     color_eyre::install()?;
     let cli = cli::Cli::parse();
+    if cli.log {
+        logging::report_paths()?;
+        return Ok(());
+    }
+    let _logging_guard = match logging::init() {
+        Ok(guard) => Some(guard),
+        Err(error) => {
+            eprintln!("karet: logging disabled: {error}");
+            None
+        },
+    };
 
     // `--install-desktop` / `--uninstall-desktop` act like subcommands: manage the
     // per-user desktop entry and exit — no config load, never enter the TUI. (clap
