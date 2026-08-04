@@ -32,6 +32,12 @@ pub enum UiIcon {
     Refresh,
     /// The explorer "collapse all folders" toolbar action.
     CollapseAll,
+    /// A filesystem symbolic-link marker.
+    Symlink,
+    /// Show or hide a rendered preview for the active document.
+    Preview,
+    /// Format a source table.
+    FormatTable,
 }
 
 impl UiIcon {
@@ -57,6 +63,9 @@ impl UiIcon {
             Self::NewFolder => '\u{f07b}',     // folder
             Self::Refresh => '\u{f021}',       // refresh
             Self::CollapseAll => '\u{f066}',   // compress
+            Self::Symlink => '\u{f0c1}',       // link
+            Self::Preview => '\u{f06e}',       // eye
+            Self::FormatTable => '\u{f0ce}',   // table
         }
     }
 
@@ -72,6 +81,9 @@ impl UiIcon {
             Self::NewFolder => '\u{25B0}',     // ▰ (folder-ish block)
             Self::Refresh => '\u{21BB}',       // ↻
             Self::CollapseAll => '\u{2212}',   // − (minus / collapse)
+            Self::Symlink => '\u{2197}',       // ↗ (redirect / link)
+            Self::Preview => '\u{25c9}',       // ◉ (preview)
+            Self::FormatTable => '\u{25a6}',   // ▦ (grid)
         }
     }
 
@@ -87,6 +99,9 @@ impl UiIcon {
             Self::NewFolder => 'D', // new directory
             Self::Refresh => 'R',
             Self::CollapseAll => '-',
+            Self::Symlink => '@',
+            Self::Preview => 'P',
+            Self::FormatTable => 'T',
         }
     }
 }
@@ -114,6 +129,9 @@ mod tests {
             UiIcon::NewFolder,
             UiIcon::Refresh,
             UiIcon::CollapseAll,
+            UiIcon::Symlink,
+            UiIcon::Preview,
+            UiIcon::FormatTable,
         ] {
             assert!(icon.glyph(IconStyle::Ascii).is_ascii_graphic());
         }

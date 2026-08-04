@@ -1,3 +1,5 @@
+use std::ops::RangeInclusive;
+
 use super::text::*;
 use super::*;
 
@@ -22,7 +24,53 @@ impl VisualRange {
 /// Split one logical line into source-column ranges for soft wrapping. Whitespace is
 /// kept in the range before the break so every source column maps to exactly one row;
 /// words wider than the viewport are split at the hard width.
-pub(super) fn visual_ranges(buffer: &TextBuffer, line: u32, width: u32) -> Vec<VisualRange> {
+pub(super) fn character_width(ch: char, display_col: u32, tab_width: u16) -> u32 {
+    if ch == '\t' {
+        let width = u32::from(tab_width.max(1));
+        width - (display_col % width)
+    } else {
+        u32::try_from(unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0)).unwrap_or(u32::MAX)
+    }
+}
+
+pub(super) fn display_col(chars: &[char], source_col: u32, tab_width: u16) -> u32 {
+    chars
+        .iter()
+        .take(source_col as usize)
+        .fold(0_u32, |col, ch| {
+            col.saturating_add(character_width(*ch, col, tab_width))
+        })
+}
+
+pub(super) fn source_col_at_display_offset(
+    chars: &[char],
+    start: u32,
+    end: u32,
+    offset: u32,
+    tab_width: u16,
+) -> u32 {
+    let mut source = start.min(chars.len() as u32);
+    let end = end.min(chars.len() as u32);
+    let mut absolute = display_col(chars, source, tab_width);
+    let target = absolute.saturating_add(offset);
+    while source < end {
+        let width = character_width(chars[source as usize], absolute, tab_width);
+        if absolute.saturating_add(width) > target {
+            break;
+        }
+        absolute = absolute.saturating_add(width);
+        source += 1;
+    }
+    source
+}
+
+pub(super) fn visual_ranges(
+    buffer: &TextBuffer,
+    line: u32,
+    width: u32,
+    tab_width: u16,
+    unwrapped_lines: &[RangeInclusive<u32>],
+) -> Vec<VisualRange> {
     let chars: Vec<char> = buffer
         .line(line as usize)
         .unwrap_or_default()
@@ -32,11 +80,28 @@ pub(super) fn visual_ranges(buffer: &TextBuffer, line: u32, width: u32) -> Vec<V
     if len == 0 {
         return vec![VisualRange::empty(0)];
     }
+    if unwrapped_lines.iter().any(|range| range.contains(&line)) {
+        return vec![VisualRange { start: 0, end: len }];
+    }
     let width = width.max(1);
     let mut ranges = Vec::new();
     let mut start = 0_u32;
     while start < len {
-        let hard_end = start.saturating_add(width).min(len);
+        let mut hard_end = start;
+        let mut used = 0_u32;
+        let mut absolute = display_col(&chars, start, tab_width);
+        while hard_end < len {
+            let char_width = character_width(chars[hard_end as usize], absolute, tab_width);
+            if hard_end > start && used.saturating_add(char_width) > width {
+                break;
+            }
+            used = used.saturating_add(char_width);
+            absolute = absolute.saturating_add(char_width);
+            hard_end += 1;
+            if used >= width {
+                break;
+            }
+        }
         let end = if hard_end < len {
             chars[start as usize..hard_end as usize]
                 .iter()
@@ -56,6 +121,8 @@ pub(super) fn normalize_visual_anchor(
     buffer: &TextBuffer,
     folds: &[Fold],
     width: u32,
+    tab_width: u16,
+    unwrapped_lines: &[RangeInclusive<u32>],
     anchor: VisualAnchor,
 ) -> VisualAnchor {
     let last = last_line(buffer);
@@ -66,7 +133,9 @@ pub(super) fn normalize_visual_anchor(
     while line > 0 && hidden_in(folds, line) {
         line -= 1;
     }
-    let rows = visual_ranges(buffer, line, width).len().max(1) as u32;
+    let rows = visual_ranges(buffer, line, width, tab_width, unwrapped_lines)
+        .len()
+        .max(1) as u32;
     VisualAnchor {
         line,
         subrow: anchor.subrow.min(rows - 1),
@@ -77,10 +146,12 @@ pub(super) fn next_visual_anchor(
     buffer: &TextBuffer,
     folds: &[Fold],
     width: u32,
+    tab_width: u16,
+    unwrapped_lines: &[RangeInclusive<u32>],
     anchor: VisualAnchor,
 ) -> VisualAnchor {
-    let anchor = normalize_visual_anchor(buffer, folds, width, anchor);
-    let rows = visual_ranges(buffer, anchor.line, width).len() as u32;
+    let anchor = normalize_visual_anchor(buffer, folds, width, tab_width, unwrapped_lines, anchor);
+    let rows = visual_ranges(buffer, anchor.line, width, tab_width, unwrapped_lines).len() as u32;
     if anchor.subrow + 1 < rows {
         return VisualAnchor {
             subrow: anchor.subrow + 1,
@@ -103,9 +174,11 @@ pub(super) fn previous_visual_anchor(
     buffer: &TextBuffer,
     folds: &[Fold],
     width: u32,
+    tab_width: u16,
+    unwrapped_lines: &[RangeInclusive<u32>],
     anchor: VisualAnchor,
 ) -> VisualAnchor {
-    let anchor = normalize_visual_anchor(buffer, folds, width, anchor);
+    let anchor = normalize_visual_anchor(buffer, folds, width, tab_width, unwrapped_lines, anchor);
     if anchor.subrow > 0 {
         return VisualAnchor {
             subrow: anchor.subrow - 1,
@@ -116,7 +189,9 @@ pub(super) fn previous_visual_anchor(
     while line > 0 {
         line -= 1;
         if !hidden_in(folds, line) {
-            let rows = visual_ranges(buffer, line, width).len().max(1) as u32;
+            let rows = visual_ranges(buffer, line, width, tab_width, unwrapped_lines)
+                .len()
+                .max(1) as u32;
             return VisualAnchor {
                 line,
                 subrow: rows - 1,
@@ -146,12 +221,15 @@ pub(super) fn visual_anchor_at_row(
     buffer: &TextBuffer,
     folds: &[Fold],
     width: u32,
+    tab_width: u16,
+    unwrapped_lines: &[RangeInclusive<u32>],
     start: VisualAnchor,
     row: u32,
 ) -> VisualAnchor {
-    let mut anchor = normalize_visual_anchor(buffer, folds, width, start);
+    let mut anchor =
+        normalize_visual_anchor(buffer, folds, width, tab_width, unwrapped_lines, start);
     for _ in 0..row {
-        let next = next_visual_anchor(buffer, folds, width, anchor);
+        let next = next_visual_anchor(buffer, folds, width, tab_width, unwrapped_lines, anchor);
         if next == anchor {
             break;
         }
@@ -163,10 +241,12 @@ pub(super) fn visual_anchor_at_row(
 pub(super) fn visual_anchor_for_position(
     buffer: &TextBuffer,
     width: u32,
+    tab_width: u16,
+    unwrapped_lines: &[RangeInclusive<u32>],
     pos: LineCol,
 ) -> VisualAnchor {
     let line = pos.line.min(last_line(buffer));
-    let ranges = visual_ranges(buffer, line, width);
+    let ranges = visual_ranges(buffer, line, width, tab_width, unwrapped_lines);
     let last = ranges.len().saturating_sub(1);
     let subrow = ranges
         .iter()
@@ -180,22 +260,28 @@ pub(super) fn visual_anchor_for_position(
     VisualAnchor { line, subrow }
 }
 
+#[allow(clippy::too_many_arguments)]
+// These are the independent viewport inputs needed to reveal one logical cursor;
+// bundling them would duplicate the editor widget/state split solely for this helper.
 pub(super) fn reveal_visual_anchor(
     buffer: &TextBuffer,
     folds: &[Fold],
     width: u32,
+    tab_width: u16,
+    unwrapped_lines: &[RangeInclusive<u32>],
     height: u16,
     current: VisualAnchor,
     cursor: LineCol,
 ) -> VisualAnchor {
-    let current = normalize_visual_anchor(buffer, folds, width, current);
-    let target = visual_anchor_for_position(buffer, width, cursor);
+    let current =
+        normalize_visual_anchor(buffer, folds, width, tab_width, unwrapped_lines, current);
+    let target = visual_anchor_for_position(buffer, width, tab_width, unwrapped_lines, cursor);
     let mut probe = current;
     for _ in 0..height.max(1) {
         if probe == target {
             return current;
         }
-        let next = next_visual_anchor(buffer, folds, width, probe);
+        let next = next_visual_anchor(buffer, folds, width, tab_width, unwrapped_lines, probe);
         if next == probe {
             break;
         }
@@ -206,7 +292,8 @@ pub(super) fn reveal_visual_anchor(
     }
     let mut revealed = target;
     for _ in 1..height.max(1) {
-        let previous = previous_visual_anchor(buffer, folds, width, revealed);
+        let previous =
+            previous_visual_anchor(buffer, folds, width, tab_width, unwrapped_lines, revealed);
         if previous == revealed {
             break;
         }
@@ -238,13 +325,21 @@ pub(super) fn caret_cell(
             buffer,
             folds,
             width,
+            state.last_tab_width,
+            &state.last_unwrapped_lines,
             VisualAnchor {
                 line: state.scroll_line,
                 subrow: state.scroll_subrow,
             },
         );
         for row in 0..content_height {
-            let ranges = visual_ranges(buffer, anchor.line, width);
+            let ranges = visual_ranges(
+                buffer,
+                anchor.line,
+                width,
+                state.last_tab_width,
+                &state.last_unwrapped_lines,
+            );
             let index = (anchor.subrow as usize).min(ranges.len().saturating_sub(1));
             let range = ranges
                 .get(index)
@@ -255,14 +350,27 @@ pub(super) fn caret_cell(
                 && (range.start <= at.col)
                 && (at.col < range.end || (last && at.col == range.end))
             {
-                let rel = at.col.saturating_sub(range.start);
+                let chars: Vec<char> = buffer
+                    .line(at.line as usize)
+                    .unwrap_or_default()
+                    .chars()
+                    .collect();
+                let rel = display_col(&chars, at.col, state.last_tab_width)
+                    .saturating_sub(display_col(&chars, range.start, state.last_tab_width));
                 let x = content_x.saturating_add(
                     u16::try_from(rel.min(u32::from(content_width.saturating_sub(1))))
                         .unwrap_or(u16::MAX),
                 );
                 return Some((x, content_y.saturating_add(row)));
             }
-            anchor = next_visual_anchor(buffer, folds, width, anchor);
+            anchor = next_visual_anchor(
+                buffer,
+                folds,
+                width,
+                state.last_tab_width,
+                &state.last_unwrapped_lines,
+                anchor,
+            );
         }
         return None;
     }
@@ -286,9 +394,25 @@ pub(super) fn caret_cell(
     if vis_row >= content_height {
         return None;
     }
-    let rel = i64::from(at.col) - i64::from(state.scroll_col);
-    let max_rel = i64::from(content_width.saturating_sub(1));
-    let cx = content_x.saturating_add(u16::try_from(rel.clamp(0, max_rel)).unwrap_or(0));
+    let chars: Vec<char> = buffer
+        .line(at.line as usize)
+        .unwrap_or_default()
+        .chars()
+        .collect();
+    if at.col > chars.len() as u32 {
+        return None;
+    }
+    let rel = if at.col < state.scroll_col {
+        0
+    } else {
+        display_col(&chars, at.col, state.last_tab_width).saturating_sub(display_col(
+            &chars,
+            state.scroll_col,
+            state.last_tab_width,
+        ))
+    };
+    let rel = rel.min(u32::from(content_width.saturating_sub(1)));
+    let cx = content_x.saturating_add(u16::try_from(rel).unwrap_or(u16::MAX));
     let cy = content_y.saturating_add(vis_row);
     (cy < area.bottom()).then_some((cx, cy))
 }

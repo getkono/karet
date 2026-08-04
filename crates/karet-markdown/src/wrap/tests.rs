@@ -206,6 +206,33 @@ fn width_is_measured_in_terminal_columns() {
     assert_eq!(out.len(), 2, "got {out:?}");
 }
 
+#[test]
+fn link_targets_survive_soft_wrapping() {
+    let doc = wrap(
+        &parse::parse("before [a linked phrase](https://example.com) after\n"),
+        12,
+    );
+    let linked: String = doc
+        .lines
+        .iter()
+        .flat_map(|line| &line.spans)
+        .filter(|span| span.link.as_deref() == Some("https://example.com"))
+        .map(|span| span.text.as_str())
+        .collect();
+    assert_eq!(linked, "alinkedphrase");
+}
+
+#[test]
+fn links_inside_table_cells_keep_their_targets() {
+    let doc = wrap(
+        &parse::parse("| link |\n| - |\n| [site](https://example.com) |\n"),
+        40,
+    );
+    assert!(doc.lines.iter().flat_map(|line| &line.spans).any(|span| {
+        span.text == "site" && span.link.as_deref() == Some("https://example.com")
+    }));
+}
+
 const TABLE: &str = "| Left | Center | Right |\n| :--- | :----: | ----: |\n\
                          | a | bb | ccc |\n| longer cell | x | y |\n";
 
@@ -218,6 +245,7 @@ fn a_table_renders_as_a_box_drawn_grid() {
             "│ Left        │ Center │ Right │",
             "├─────────────┼────────┼───────┤",
             "│ a           │   bb   │   ccc │",
+            "├─────────────┼────────┼───────┤",
             "│ longer cell │   x    │     y │",
             "└─────────────┴────────┴───────┘",
         ]
@@ -280,8 +308,27 @@ fn a_narrow_table_shrinks_its_widest_column_first() {
         Some("│ Left      │ Center │ Right │")
     );
     assert_eq!(
-        out.get(4).map(String::as_str),
+        out.get(5).map(String::as_str),
         Some("│ longer    │   x    │     y │")
+    );
+}
+
+#[test]
+fn every_body_row_is_separated_by_a_horizontal_rule() {
+    let out = lines("| h |\n| - |\n| one |\n| two |\n| three |\n", 30);
+    assert_eq!(
+        out,
+        vec![
+            "┌───────┐",
+            "│ h     │",
+            "├───────┤",
+            "│ one   │",
+            "├───────┤",
+            "│ two   │",
+            "├───────┤",
+            "│ three │",
+            "└───────┘",
+        ]
     );
 }
 

@@ -10,6 +10,12 @@
 pub mod load;
 pub mod schema;
 
+use std::io::Write;
+use std::path::Path;
+use std::path::PathBuf;
+
+use jsonc_parser::cst::CstRootNode;
+use jsonc_parser::json;
 pub use load::ConfigDiagnostic;
 pub use load::ConfigLayer;
 pub use load::ConfigLayerReport;
@@ -18,6 +24,137 @@ pub use load::LoadedConfig;
 pub use load::load;
 pub use load::load_report;
 pub use schema::Settings;
+
+/// Errors while updating a user-owned JSONC setting.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ConfigWriteError {
+    /// The platform has no discoverable user configuration directory.
+    #[error("user configuration directory is unavailable")]
+    NoUserDirectory,
+    /// Existing JSONC could not be parsed safely.
+    #[error("invalid configuration: {0}")]
+    Parse(String),
+    /// None of the workspace roots belongs to a Git worktree, so there is no
+    /// project settings location.
+    #[error("workspace is not inside a Git worktree")]
+    NoProjectDirectory,
+    /// A project settings file is absent and the caller did not explicitly confirm
+    /// creating it.
+    #[error("creating project configuration at {} requires confirmation", .0.display())]
+    ProjectCreationRequiresConfirmation(PathBuf),
+    /// Reading, writing, or atomically replacing the file failed.
+    #[error("configuration I/O failed: {0}")]
+    Io(String),
+}
+
+/// Persist live-blame settings in the user layer while retaining JSONC comments and
+/// unrelated formatting. Returns the updated file path.
+///
+/// # Errors
+/// Returns [`ConfigWriteError`] when the user path is unavailable, the existing file
+/// is invalid JSONC, or the atomic write fails.
+pub fn set_user_blame(enabled: bool) -> Result<PathBuf, ConfigWriteError> {
+    let path = load::user_config_path().ok_or(ConfigWriteError::NoUserDirectory)?;
+    let current = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "{}\n".to_string(),
+        Err(error) => return Err(ConfigWriteError::Io(error.to_string())),
+    };
+    let updated = update_blame_jsonc(&current, enabled)?;
+    atomic_write(&path, updated.as_bytes())?;
+    Ok(path)
+}
+
+/// Add `word` to the project-layer spell-check dictionary while preserving JSONC
+/// comments and unrelated settings.
+///
+/// The project file is updated directly when it already exists. When it is missing,
+/// this function refuses to create it unless `allow_create` is `true`, making the
+/// caller's confirmation step explicit and fail-safe.
+///
+/// # Errors
+/// Returns [`ConfigWriteError`] when no project layer can be resolved, creation was
+/// not confirmed, the existing file has an incompatible JSON shape, or the atomic
+/// write fails.
+pub fn add_project_dictionary_word(
+    roots: &[PathBuf],
+    word: &str,
+    allow_create: bool,
+) -> Result<PathBuf, ConfigWriteError> {
+    let path = load::project_config_path(roots).ok_or(ConfigWriteError::NoProjectDirectory)?;
+    let current = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && !allow_create => {
+            return Err(ConfigWriteError::ProjectCreationRequiresConfirmation(path));
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "{}\n".to_string(),
+        Err(error) => return Err(ConfigWriteError::Io(error.to_string())),
+    };
+    let updated = update_dictionary_jsonc(&current, word)?;
+    atomic_write(&path, updated.as_bytes())?;
+    Ok(path)
+}
+
+fn update_blame_jsonc(text: &str, enabled: bool) -> Result<String, ConfigWriteError> {
+    let root = CstRootNode::parse(text, &Default::default())
+        .map_err(|error| ConfigWriteError::Parse(error.to_string()))?;
+    let object = root.object_value_or_set();
+    let git = object.object_value_or_set("git");
+    if let Some(property) = git.get("blame") {
+        property.set_value(json!(enabled));
+    } else {
+        git.append("blame", json!(enabled));
+    }
+    if let Some(property) = git.get("blameMode") {
+        property.remove();
+    }
+    Ok(root.to_string())
+}
+
+fn update_dictionary_jsonc(text: &str, word: &str) -> Result<String, ConfigWriteError> {
+    if word.trim().is_empty() {
+        return Err(ConfigWriteError::Parse(
+            "dictionary word cannot be empty".to_string(),
+        ));
+    }
+    let root = CstRootNode::parse(text, &Default::default())
+        .map_err(|error| ConfigWriteError::Parse(error.to_string()))?;
+    let object = root.object_value_or_create().ok_or_else(|| {
+        ConfigWriteError::Parse("expected a JSON object at the top level".to_string())
+    })?;
+    let spellcheck = object
+        .object_value_or_create("spellcheck")
+        .ok_or_else(|| ConfigWriteError::Parse("`spellcheck` must be a JSON object".to_string()))?;
+    let words = spellcheck.array_value_or_create("words").ok_or_else(|| {
+        ConfigWriteError::Parse("`spellcheck.words` must be a JSON array".to_string())
+    })?;
+    let already_present = words.elements().iter().any(|element| {
+        element
+            .as_string_lit()
+            .and_then(|value| value.decoded_value().ok())
+            .is_some_and(|existing| existing.eq_ignore_ascii_case(word))
+    });
+    if !already_present {
+        words.append(json!(word));
+    }
+    Ok(root.to_string())
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ConfigWriteError> {
+    let parent = path.parent().ok_or_else(|| {
+        ConfigWriteError::Io("configuration path has no parent directory".to_string())
+    })?;
+    std::fs::create_dir_all(parent).map_err(|error| ConfigWriteError::Io(error.to_string()))?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| ConfigWriteError::Io(error.to_string()))?;
+    temp.write_all(bytes)
+        .and_then(|()| temp.flush())
+        .map_err(|error| ConfigWriteError::Io(error.to_string()))?;
+    temp.persist(path)
+        .map_err(|error| ConfigWriteError::Io(error.error.to_string()))?;
+    Ok(())
+}
 
 /// The JSON Schema for [`Settings`], pretty-printed. This is the single source the
 /// checked-in `settings.schema.json` is generated from; a test asserts they match.
@@ -38,6 +175,76 @@ mod tests {
         assert!(schema.contains("\"editor\""));
         assert!(schema.contains("\"tabSize\""));
         assert!(schema.contains("\"formatOnSave\""));
+    }
+
+    #[test]
+    fn blame_update_preserves_comments_and_unrelated_settings() -> Result<(), ConfigWriteError> {
+        let source = r#"{
+  // retain this explanation
+  "editor": { "tabSize": 2 },
+  "git": { "decorations": false, "blameMode": "line" }
+}"#;
+        let updated = update_blame_jsonc(source, true)?;
+        assert!(updated.contains("// retain this explanation"));
+        assert!(updated.contains("\"tabSize\": 2"));
+        assert!(updated.contains("\"decorations\": false"));
+        assert!(updated.contains("\"blame\": true"));
+        assert!(!updated.contains("blameMode"));
+        Ok(())
+    }
+
+    #[test]
+    fn project_dictionary_requires_confirmation_before_creating_settings()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir(dir.path().join(".git"))?;
+        let path = dir.path().join(".karet/setting.jsonc");
+
+        let error = add_project_dictionary_word(&[dir.path().to_path_buf()], "Karet", false).err();
+
+        assert!(matches!(
+            error,
+            Some(ConfigWriteError::ProjectCreationRequiresConfirmation(candidate))
+                if candidate == path
+        ));
+        assert!(!path.exists(), "refusal must not create the settings tree");
+        Ok(())
+    }
+
+    #[test]
+    fn confirmed_project_dictionary_creation_writes_a_valid_layer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir(dir.path().join(".git"))?;
+
+        let path = add_project_dictionary_word(&[dir.path().to_path_buf()], "Karet", true)?;
+        let text = std::fs::read_to_string(&path)?;
+        let parsed: Option<serde_json::Value> =
+            jsonc_parser::parse_to_serde_value(&text, &Default::default())?;
+
+        assert_eq!(
+            parsed.and_then(|value| value.pointer("/spellcheck/words/0").cloned()),
+            Some(serde_json::Value::String("Karet".to_string()))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn project_dictionary_update_preserves_jsonc_and_avoids_case_duplicates()
+    -> Result<(), ConfigWriteError> {
+        let source = r#"{
+  // project convention
+  "editor": { "tabSize": 2 },
+  "spellcheck": { "enabled": true, "words": ["Karet"] }
+}"#;
+
+        let updated = update_dictionary_jsonc(source, "karet")?;
+
+        assert!(updated.contains("// project convention"));
+        assert!(updated.contains("\"tabSize\": 2"));
+        assert_eq!(updated.matches("\"Karet\"").count(), 1);
+        assert!(!updated.contains("\"karet\""));
+        Ok(())
     }
 
     /// Guards the checked-in schema against drift: regenerate with

@@ -17,6 +17,8 @@ use karet_core::MarkupKind;
 use karet_core::Range;
 use karet_core::RelatedInfo;
 use karet_core::Severity;
+use karet_core::Symbol;
+use karet_core::SymbolKind;
 use karet_core::TextEdit;
 
 use crate::snippet::strip_snippet;
@@ -110,6 +112,80 @@ pub(crate) fn completions_from_lsp(
         Some(lsp_types::CompletionResponse::List(list)) => list.items,
     };
     items.into_iter().map(completion_item_from_lsp).collect()
+}
+
+/// Map either LSP document-symbol response shape into the neutral nested model.
+pub(crate) fn document_symbols_from_lsp(
+    response: Option<lsp_types::DocumentSymbolResponse>,
+) -> Vec<Symbol> {
+    match response {
+        None => Vec::new(),
+        Some(lsp_types::DocumentSymbolResponse::Nested(symbols)) => {
+            symbols.into_iter().map(document_symbol_from_lsp).collect()
+        },
+        #[allow(deprecated)] // LSP still permits the flat SymbolInformation response.
+        Some(lsp_types::DocumentSymbolResponse::Flat(symbols)) => symbols
+            .into_iter()
+            .map(|symbol| Symbol {
+                name: symbol.name,
+                kind: symbol_kind_from_lsp(symbol.kind),
+                detail: None,
+                range: range_from_lsp(symbol.location.range),
+                selection_range: range_from_lsp(symbol.location.range),
+                container_name: symbol.container_name,
+                children: Vec::new(),
+            })
+            .collect(),
+    }
+}
+
+fn document_symbol_from_lsp(symbol: lsp_types::DocumentSymbol) -> Symbol {
+    Symbol {
+        name: symbol.name,
+        kind: symbol_kind_from_lsp(symbol.kind),
+        detail: symbol.detail,
+        range: range_from_lsp(symbol.range),
+        selection_range: range_from_lsp(symbol.selection_range),
+        container_name: None,
+        children: symbol
+            .children
+            .unwrap_or_default()
+            .into_iter()
+            .map(document_symbol_from_lsp)
+            .collect(),
+    }
+}
+
+fn symbol_kind_from_lsp(kind: lsp_types::SymbolKind) -> SymbolKind {
+    match kind {
+        lsp_types::SymbolKind::FILE => SymbolKind::File,
+        lsp_types::SymbolKind::MODULE => SymbolKind::Module,
+        lsp_types::SymbolKind::NAMESPACE => SymbolKind::Namespace,
+        lsp_types::SymbolKind::PACKAGE => SymbolKind::Package,
+        lsp_types::SymbolKind::CLASS => SymbolKind::Class,
+        lsp_types::SymbolKind::METHOD => SymbolKind::Method,
+        lsp_types::SymbolKind::PROPERTY => SymbolKind::Property,
+        lsp_types::SymbolKind::FIELD => SymbolKind::Field,
+        lsp_types::SymbolKind::CONSTRUCTOR => SymbolKind::Constructor,
+        lsp_types::SymbolKind::ENUM => SymbolKind::Enum,
+        lsp_types::SymbolKind::INTERFACE => SymbolKind::Interface,
+        lsp_types::SymbolKind::FUNCTION => SymbolKind::Function,
+        lsp_types::SymbolKind::VARIABLE => SymbolKind::Variable,
+        lsp_types::SymbolKind::CONSTANT => SymbolKind::Constant,
+        lsp_types::SymbolKind::STRING => SymbolKind::String,
+        lsp_types::SymbolKind::NUMBER => SymbolKind::Number,
+        lsp_types::SymbolKind::BOOLEAN => SymbolKind::Boolean,
+        lsp_types::SymbolKind::ARRAY => SymbolKind::Array,
+        lsp_types::SymbolKind::OBJECT => SymbolKind::Object,
+        lsp_types::SymbolKind::KEY => SymbolKind::Key,
+        lsp_types::SymbolKind::NULL => SymbolKind::Null,
+        lsp_types::SymbolKind::ENUM_MEMBER => SymbolKind::EnumMember,
+        lsp_types::SymbolKind::STRUCT => SymbolKind::Struct,
+        lsp_types::SymbolKind::EVENT => SymbolKind::Event,
+        lsp_types::SymbolKind::OPERATOR => SymbolKind::Operator,
+        lsp_types::SymbolKind::TYPE_PARAMETER => SymbolKind::TypeParameter,
+        _ => SymbolKind::Variable,
+    }
 }
 
 /// Map one completion item.
@@ -535,5 +611,42 @@ mod tests {
     fn positions_convert_to_lsp_unchanged() {
         let p = position_to_lsp(LineCol::new(7, 42));
         assert_eq!((p.line, p.character), (7, 42));
+    }
+
+    #[test]
+    fn nested_document_symbols_preserve_hierarchy_and_details() {
+        let child = lsp_types::DocumentSymbol {
+            name: "run".into(),
+            detail: Some("(&self)".into()),
+            kind: lsp_types::SymbolKind::METHOD,
+            tags: None,
+            #[allow(deprecated)]
+            deprecated: None,
+            range: lsp_range(2, 0, 4, 1),
+            selection_range: lsp_range(2, 3, 2, 6),
+            children: None,
+        };
+        let parent = lsp_types::DocumentSymbol {
+            name: "Runner".into(),
+            detail: None,
+            kind: lsp_types::SymbolKind::STRUCT,
+            tags: None,
+            #[allow(deprecated)]
+            deprecated: None,
+            range: lsp_range(0, 0, 5, 1),
+            selection_range: lsp_range(0, 7, 0, 13),
+            children: Some(vec![child]),
+        };
+        let mapped =
+            document_symbols_from_lsp(Some(lsp_types::DocumentSymbolResponse::Nested(vec![
+                parent,
+            ])));
+        assert_eq!(mapped[0].kind, SymbolKind::Struct);
+        assert_eq!(mapped[0].children[0].name, "run");
+        assert_eq!(mapped[0].children[0].detail.as_deref(), Some("(&self)"));
+        assert_eq!(
+            mapped[0].children[0].selection_range.start,
+            LineCol::new(2, 3)
+        );
     }
 }

@@ -390,12 +390,7 @@ mod tests {
     #[cfg(feature = "images")]
     #[test]
     fn kitty_reserves_and_flushes() {
-        let mut png = Vec::new();
-        let img = ::image::RgbaImage::from_pixel(2, 2, ::image::Rgba([1, 2, 3, 255]));
-        let _ = ::image::DynamicImage::ImageRgba8(img).write_to(
-            &mut std::io::Cursor::new(&mut png),
-            ::image::ImageFormat::Png,
-        );
+        let png = image::test_png();
         let doc = FileDoc::prepare(
             Path::new("x.png"),
             &png,

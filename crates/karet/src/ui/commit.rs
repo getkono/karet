@@ -1,46 +1,11 @@
+use unicode_width::UnicodeWidthStr;
+
 use super::*;
 
-/// Draw the commit view (metadata header + changed-file list + per-file diffs) as one
-/// scrollable paragraph.
-#[allow(clippy::too_many_arguments)] // a commit view has several independent inputs
-pub(super) fn draw_commit(
-    f: &mut Frame,
-    theme: &Theme,
-    area: Rect,
-    detail: &karet_vcs::CommitDetail,
-    files: &[render::FileView],
-    file_status: CommitFileStatus<'_>,
-    verification: Option<&karet_session::GithubVerification>,
-    explain_since: Option<Instant>,
-    scroll: &mut u16,
-) -> Option<Rect> {
-    let reveal = explain_since.is_some_and(|t| t.elapsed() < crate::app::COMMIT_REVEAL);
-    let (lines, badge) = commit_detail_lines(
-        theme,
-        detail,
-        files,
-        file_status,
-        verification,
-        reveal,
-        area.width,
-    );
-    let max = u16::try_from(lines.len())
-        .unwrap_or(u16::MAX)
-        .saturating_sub(area.height);
-    *scroll = (*scroll).min(max);
-    f.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), area);
-    // Translate the badge's content-row into a screen rect for click hit-testing,
-    // dropping it when scrolled out of view.
-    badge.and_then(|b| {
-        let row = b.line.checked_sub(*scroll)?;
-        (row < area.height).then_some(Rect {
-            x: area.x.saturating_add(b.col),
-            y: area.y.saturating_add(row),
-            width: b.width,
-            height: 1,
-        })
-    })
-}
+mod responsive;
+
+pub(super) use responsive::draw_commit;
+pub(super) use responsive::draw_compare;
 
 pub(super) fn draw_commit_loading(
     f: &mut Frame,
@@ -189,14 +154,11 @@ pub(super) fn file_load_status(
 }
 
 #[allow(clippy::too_many_arguments)] // commit metadata, file state, badge state, and width are independent
-pub(super) fn commit_detail_lines(
+pub(super) fn commit_metadata_lines(
     theme: &Theme,
     detail: &karet_vcs::CommitDetail,
-    files: &[render::FileView],
-    file_status: CommitFileStatus<'_>,
     verification: Option<&karet_session::GithubVerification>,
     reveal: bool,
-    width: u16,
 ) -> (Vec<Line<'static>>, Option<BadgeHit>) {
     let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
     let subject = fg.add_modifier(Modifier::BOLD);
@@ -322,9 +284,22 @@ pub(super) fn commit_detail_lines(
         ]));
     }
 
-    // The summary, the changed-file table of contents, and the per-file diff cards.
-    // Metadata can arrive before file extraction; keep this lower block stable while
-    // the heavier work finishes.
+    (lines, Some(badge_hit))
+}
+
+#[allow(clippy::too_many_arguments)] // shared graph-browser rendering keeps the full commit vocabulary
+pub(super) fn commit_detail_lines(
+    theme: &Theme,
+    detail: &karet_vcs::CommitDetail,
+    files: &[render::FileView],
+    file_status: CommitFileStatus<'_>,
+    verification: Option<&karet_session::GithubVerification>,
+    reveal: bool,
+    width: u16,
+) -> (Vec<Line<'static>>, Option<BadgeHit>) {
+    let (mut lines, badge) = commit_metadata_lines(theme, detail, verification, reveal);
+    let muted = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
+    let label = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
     match file_status {
         CommitFileStatus::Ready => lines.extend(changed_files_lines(theme, files, width)),
         CommitFileStatus::Loading(since) => {
@@ -342,7 +317,7 @@ pub(super) fn commit_detail_lines(
             ]));
         },
     }
-    (lines, Some(badge_hit))
+    (lines, badge)
 }
 
 /// Build the shared "changed files" block: a `N files changed +a −b` summary, a
@@ -407,11 +382,91 @@ pub(super) fn changed_files_lines(
     lines
 }
 
+/// Presentation-neutral input for the shared commit-list renderer.
+pub(super) struct CommitListEntry<'a> {
+    pub(super) hash: &'a str,
+    pub(super) short_hash: &'a str,
+    pub(super) summary: &'a str,
+    pub(super) time: i64,
+    pub(super) parents: &'a [String],
+    pub(super) head: bool,
+}
+
+/// Render the commit rows shared by Source Control, the graph browser, and GitHub
+/// pull-request `Commits`. Keeping the rail/hash/summary/time vocabulary here prevents
+/// those three screens from drifting apart.
+pub(super) fn commit_list_items(
+    theme: &Theme,
+    entries: &[CommitListEntry<'_>],
+    selected: Option<usize>,
+    include_header: bool,
+) -> Vec<ListItem<'static>> {
+    const LANE_COLORS: [Color; 6] = [
+        Color::Cyan,
+        Color::Green,
+        Color::Yellow,
+        Color::Magenta,
+        Color::Blue,
+        Color::Red,
+    ];
+    let lane_style = |lane: u8| Style::default().fg(LANE_COLORS[lane as usize % LANE_COLORS.len()]);
+    let header_style = Style::default()
+        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+        .add_modifier(Modifier::BOLD);
+    let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
+    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let sel_bg = theme.role(ThemeRole::Selection).to_ratatui();
+    let inputs: Vec<LaneInput> = entries
+        .iter()
+        .map(|entry| LaneInput {
+            id: entry.hash.to_string(),
+            parents: entry.parents.to_vec(),
+            head: entry.head,
+        })
+        .collect();
+    let rails = assign_lanes(&inputs);
+    let mut items = Vec::with_capacity(entries.len() + usize::from(include_header));
+    if include_header {
+        items.push(ListItem::new(Line::styled(" COMMITS", header_style)));
+    }
+    for (index, (entry, rail)) in entries.iter().zip(rails.iter()).enumerate() {
+        let mut spans = vec![Span::raw(" ")];
+        spans.extend(render_rail(rail, lane_style).spans);
+        spans.push(Span::styled(format!(" {} ", entry.short_hash), hash_style));
+        spans.push(Span::raw(entry.summary.to_string()));
+        spans.push(Span::styled(
+            format!("  {}", relative_time(entry.time)),
+            dim,
+        ));
+        let mut line = Line::from(spans);
+        if selected == Some(index) {
+            line = line.style(Style::default().bg(sel_bg));
+        }
+        items.push(ListItem::new(line));
+    }
+    items
+}
+
 /// Render one file's diff as a boxed "card": a top rule carrying the status glyph, the
 /// path (and the old path for renames), and the `+a −b` stats; each diff line prefixed
 /// with a left rail; then a bottom rule. `width` sizes the rules (a small floor keeps a
 /// narrow pane from producing a degenerate box).
 pub(super) fn file_card(theme: &Theme, file: &render::FileView, width: u16) -> Vec<Line<'static>> {
+    let mut out = vec![file_card_header(theme, file, width)];
+    if width < 11 {
+        return out;
+    }
+    // Body: each diff line behind a left rail.
+    out.extend(file_card_body(theme, file, 0, usize::MAX));
+    out.push(file_card_footer(theme, width));
+    out
+}
+
+pub(super) fn file_card_header(
+    theme: &Theme,
+    file: &render::FileView,
+    width: u16,
+) -> Line<'static> {
     let border = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
     let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
     let add_fg = Style::default().fg(theme.role(ThemeRole::DiagnosticHint).to_ratatui());
@@ -420,43 +475,104 @@ pub(super) fn file_card(theme: &Theme, file: &render::FileView, width: u16) -> V
     let glyph_style = Style::default().fg(theme.role(role).to_ratatui());
     let (a, r) = file.line_stats();
 
-    // A small floor keeps a narrow pane from underflowing into a degenerate rule.
-    let w = usize::from(width).max(24);
+    let w = usize::from(width);
     let mut path = file.change.path.to_string_lossy().into_owned();
     if let Some(old) = &file.change.old_path {
         path.push_str(&format!(" \u{2190} {}", old.to_string_lossy()));
     }
-    let (add, rem) = (format!("+{a}"), format!("\u{2212}{r}"));
+    let stats = format!("+{a} \u{2212}{r}");
 
-    // Top rule: "╭─ {g} path " + dashes + " +a −b ─╮", padded so the row is `w` columns.
-    // Column counts assume 1-wide cells (paths are ~ASCII; box/±/− glyphs are 1 wide).
-    let fixed =
-        3 + 2 + path.chars().count() + 1 + 1 + add.chars().count() + 1 + rem.chars().count() + 3;
-    let dashes = w.saturating_sub(fixed).max(1);
-    let top: Vec<Span<'static>> = vec![
+    if w < 11 {
+        return Line::styled(truncate_start(&path, w), fg.add_modifier(Modifier::BOLD));
+    }
+
+    let prefix_width = 5usize; // "╭─ {g} "
+    let stats_suffix = format!(" {stats} ─╮");
+    let plain_suffix = " ─╮";
+    let show_stats = prefix_width + 4 + 2 + UnicodeWidthStr::width(stats_suffix.as_str()) <= w;
+    let suffix = if show_stats {
+        stats_suffix.as_str()
+    } else {
+        plain_suffix
+    };
+    let suffix_width = UnicodeWidthStr::width(suffix);
+    let path_budget = w.saturating_sub(prefix_width + suffix_width + 2).max(1);
+    path = truncate_start(&path, path_budget);
+    let path_width = UnicodeWidthStr::width(path.as_str());
+    let dashes = w
+        .saturating_sub(prefix_width + path_width + suffix_width + 1)
+        .max(1);
+
+    let mut top: Vec<Span<'static>> = vec![
         Span::styled("\u{256d}\u{2500} ", border),
         Span::styled(format!("{glyph} "), glyph_style),
         Span::styled(path, fg.add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" {} ", "\u{2500}".repeat(dashes)), border),
-        Span::styled(add, add_fg),
-        Span::raw(" "),
-        Span::styled(rem, rem_fg),
-        Span::styled(" \u{2500}\u{256e}", border),
+        Span::styled(format!(" {}", "\u{2500}".repeat(dashes)), border),
     ];
+    if show_stats {
+        top.push(Span::raw(" "));
+        top.push(Span::styled(format!("+{a}"), add_fg));
+        top.push(Span::raw(" "));
+        top.push(Span::styled(format!("\u{2212}{r}"), rem_fg));
+        top.push(Span::styled(" \u{2500}\u{256e}", border));
+    } else {
+        top.push(Span::styled(plain_suffix, border));
+    }
 
-    let mut out = vec![Line::from(top)];
-    // Body: each diff line behind a left rail.
-    for line in render::unified_lines(file, theme) {
+    Line::from(top)
+}
+
+pub(super) fn file_card_body(
+    theme: &Theme,
+    file: &render::FileView,
+    start: usize,
+    count: usize,
+) -> Vec<Line<'static>> {
+    let border = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let mut out = Vec::new();
+    for line in render::unified_lines_window(file, theme, start, count) {
         let mut spans = vec![Span::styled("\u{2502} ", border)];
         spans.extend(line.spans);
         out.push(Line::from(spans));
     }
-    // Bottom rule: "╰" + dashes + "╯", `w` columns wide.
-    out.push(Line::styled(
-        format!("\u{2570}{}\u{256f}", "\u{2500}".repeat(w.saturating_sub(2))),
-        border,
-    ));
     out
+}
+
+pub(super) fn file_card_footer(theme: &Theme, width: u16) -> Line<'static> {
+    let border = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let width = usize::from(width);
+    Line::styled(
+        format!(
+            "\u{2570}{}\u{256f}",
+            "\u{2500}".repeat(width.saturating_sub(2))
+        ),
+        border,
+    )
+}
+
+/// Keep the right-most, most-specific part of `text` within `max` terminal cells.
+pub(super) fn truncate_start(text: &str, max: usize) -> String {
+    if UnicodeWidthStr::width(text) <= max {
+        return text.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    if max == 1 {
+        return "\u{2026}".to_string();
+    }
+    let mut used = 1usize;
+    let mut kept = Vec::new();
+    for ch in text.chars().rev() {
+        let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + width > max {
+            break;
+        }
+        kept.push(ch);
+        used += width;
+    }
+    kept.reverse();
+    format!("\u{2026}{}", kept.into_iter().collect::<String>())
 }
 
 /// Draw the full-screen commit graph browser: a DAG commit list on the left and the
@@ -487,49 +603,20 @@ pub(super) fn draw_commit_graph(
     let (list_area, detail_area) = (cols[0], cols[2]);
     f.render_widget(Block::new().borders(Borders::LEFT), cols[1]);
 
-    // Left: the DAG commit list (same rail palette as the SCM sidebar log).
-    const LANE_COLORS: [Color; 6] = [
-        Color::Cyan,
-        Color::Green,
-        Color::Yellow,
-        Color::Magenta,
-        Color::Blue,
-        Color::Red,
-    ];
-    let lane_style = |lane: u8| Style::default().fg(LANE_COLORS[lane as usize % LANE_COLORS.len()]);
-    let header_style = Style::default()
-        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
-        .add_modifier(Modifier::BOLD);
-    let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
     let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
-    let sel_bg = theme.role(ThemeRole::Selection).to_ratatui();
-
-    let inputs: Vec<LaneInput> = commits
+    let entries: Vec<CommitListEntry<'_>> = commits
         .iter()
         .enumerate()
-        .map(|(i, c)| LaneInput {
-            id: c.hash.clone(),
-            parents: c.parents.clone(),
+        .map(|(i, commit)| CommitListEntry {
+            hash: &commit.hash,
+            short_hash: &commit.short_hash,
+            summary: &commit.summary,
+            time: commit.time,
+            parents: &commit.parents,
             head: i == 0,
         })
         .collect();
-    let rails = assign_lanes(&inputs);
-    let mut items: Vec<ListItem> = vec![ListItem::new(Line::styled(" COMMITS", header_style))];
-    for (i, (commit, rail)) in commits.iter().zip(rails.iter()).enumerate() {
-        let mut spans = vec![Span::raw(" ")];
-        spans.extend(render_rail(rail, lane_style).spans);
-        spans.push(Span::styled(format!(" {} ", commit.short_hash), hash_style));
-        spans.push(Span::raw(commit.summary.clone()));
-        spans.push(Span::styled(
-            format!("  {}", relative_time(commit.time)),
-            dim,
-        ));
-        let mut line = Line::from(spans);
-        if i == selected {
-            line = line.style(Style::default().bg(sel_bg));
-        }
-        items.push(ListItem::new(line));
-    }
+    let mut items = commit_list_items(theme, &entries, Some(selected), true);
     if loading && commits.is_empty() && loading_since.is_some_and(loading_visible) {
         items.push(ListItem::new(Line::styled(" loading\u{2026}", dim)));
     } else if has_more {
@@ -601,8 +688,6 @@ pub(super) fn loading_visible(since: Instant) -> bool {
     since.elapsed() >= crate::app::LOADING_REVEAL_DELAY
 }
 
-/// Render the semantic-blame view: each commit group as a header (line range, short
-/// hash, author, date) followed by its full commit message — the "why".
 /// Draw a code-visualization graph as a scrollable indented tree: a DFS from the
 /// graph's roots along dependency edges, with box-drawing depth guides. Cycles and
 /// already-expanded nodes are shown once and marked `⟲` rather than re-expanded.

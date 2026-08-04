@@ -84,6 +84,35 @@ pub const MIN_W: u16 = 10;
 /// The minimum pane height, in rows, a split should leave.
 pub const MIN_H: u16 = 3;
 
+/// One draggable boundary between adjacent children of a pane split.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PaneDivider {
+    /// The axis perpendicular to the boundary.
+    pub axis: SplitAxis,
+    /// Screen column for a column split, or screen row for a row split. The
+    /// divider occupies the final cell of the child before the boundary.
+    pub position: u16,
+    /// Inclusive start of the boundary along its other axis.
+    pub start: u16,
+    /// Exclusive end of the boundary along its other axis.
+    pub end: u16,
+    /// Last pane in the child before the boundary.
+    pub before: PaneId,
+    /// First pane in the child after the boundary.
+    pub after: PaneId,
+}
+
+impl PaneDivider {
+    /// Whether the screen cell `(x, y)` lies on this divider.
+    #[must_use]
+    pub fn contains(self, x: u16, y: u16) -> bool {
+        match self.axis {
+            SplitAxis::Cols => x == self.position && y >= self.start && y < self.end,
+            SplitAxis::Rows => y == self.position && x >= self.start && x < self.end,
+        }
+    }
+}
+
 /// A node in the pane tree: a single pane (leaf) or a split of child nodes.
 enum Node {
     Leaf(PaneId),
@@ -216,6 +245,71 @@ impl PaneLayout {
             .into_iter()
             .find(|(id, _)| *id == pane)
             .map(|(_, r)| r)
+    }
+
+    /// Every draggable split boundary in screen coordinates, outer splits first.
+    #[must_use]
+    pub fn dividers(&self, area: Rect) -> Vec<PaneDivider> {
+        let mut out = Vec::new();
+        dividers_in(&self.root, area, &mut out);
+        out
+    }
+
+    /// Move `divider` by `delta` cells, preserving the combined size of its two
+    /// adjacent children and enforcing [`MIN_W`] / [`MIN_H`] for every descendant.
+    /// Returns whether the divider moved.
+    pub fn resize_divider(&mut self, divider: PaneDivider, delta: i16, area: Rect) -> bool {
+        resize_divider_in(&mut self.root, area, divider, delta)
+    }
+
+    /// Grow focused `pane` toward `dir` by up to `cells`, using the nearest boundary
+    /// on that edge. Returns whether a matching boundary moved.
+    pub fn resize_pane(&mut self, pane: PaneId, dir: SplitDir, cells: u16, area: Rect) -> bool {
+        let Some(rect) = self.pane_rect(pane, area) else {
+            return false;
+        };
+        let center_x = rect.x.saturating_add(rect.width / 2);
+        let center_y = rect.y.saturating_add(rect.height / 2);
+        let mut candidates: Vec<PaneDivider> = self
+            .dividers(area)
+            .into_iter()
+            .filter(|divider| match dir {
+                SplitDir::Left => {
+                    divider.axis == SplitAxis::Cols
+                        && divider.position.saturating_add(1) == rect.x
+                        && center_y >= divider.start
+                        && center_y < divider.end
+                },
+                SplitDir::Right => {
+                    divider.axis == SplitAxis::Cols
+                        && divider.position.saturating_add(1) == rect.right()
+                        && center_y >= divider.start
+                        && center_y < divider.end
+                },
+                SplitDir::Up => {
+                    divider.axis == SplitAxis::Rows
+                        && divider.position.saturating_add(1) == rect.y
+                        && center_x >= divider.start
+                        && center_x < divider.end
+                },
+                SplitDir::Down => {
+                    divider.axis == SplitAxis::Rows
+                        && divider.position.saturating_add(1) == rect.bottom()
+                        && center_x >= divider.start
+                        && center_x < divider.end
+                },
+            })
+            .collect();
+        candidates.sort_by_key(|divider| divider.end.saturating_sub(divider.start));
+        let Some(divider) = candidates.first().copied() else {
+            return false;
+        };
+        let magnitude = i16::try_from(cells).unwrap_or(i16::MAX);
+        let delta = match dir {
+            SplitDir::Left | SplitDir::Up => -magnitude,
+            SplitDir::Right | SplitDir::Down => magnitude,
+        };
+        self.resize_divider(divider, delta, area)
     }
 
     /// Whether `pane`'s current rectangle within `area` is large enough to split in
@@ -353,6 +447,13 @@ fn first_leaf(node: &Node) -> PaneId {
     }
 }
 
+fn last_leaf(node: &Node) -> PaneId {
+    match node {
+        Node::Leaf(id) => *id,
+        Node::Split { children, .. } => children.last().map_or(PaneId(0), last_leaf),
+    }
+}
+
 /// Collect every pane id in tree order.
 fn collect_leaves(node: &Node, out: &mut Vec<PaneId>) {
     match node {
@@ -374,40 +475,153 @@ fn layout_in(node: &Node, area: Rect, out: &mut Vec<(PaneId, Rect)>) {
             children,
             weights,
         } => {
-            let total: f32 = weights.iter().copied().sum::<f32>().max(f32::EPSILON);
-            let extent = match axis {
-                SplitAxis::Cols => area.width,
-                SplitAxis::Rows => area.height,
-            };
-            let n = children.len();
-            let mut used: u16 = 0;
-            for (i, child) in children.iter().enumerate() {
-                let cells = if i + 1 == n {
-                    extent.saturating_sub(used)
-                } else {
-                    let w = weights.get(i).copied().unwrap_or(0.0);
-                    let raw = (f32::from(extent) * (w / total)).round() as u16;
-                    raw.min(extent.saturating_sub(used))
-                };
-                let sub = match axis {
-                    SplitAxis::Cols => Rect {
-                        x: area.x.saturating_add(used),
-                        y: area.y,
-                        width: cells,
-                        height: area.height,
-                    },
-                    SplitAxis::Rows => Rect {
-                        x: area.x,
-                        y: area.y.saturating_add(used),
-                        width: area.width,
-                        height: cells,
-                    },
-                };
+            for (child, sub) in children.iter().zip(split_rects(*axis, weights, area)) {
                 layout_in(child, sub, out);
-                used = used.saturating_add(cells);
             }
         },
     }
+}
+
+fn split_rects(axis: SplitAxis, weights: &[f32], area: Rect) -> Vec<Rect> {
+    let total = weights.iter().copied().sum::<f32>().max(f32::EPSILON);
+    let extent = match axis {
+        SplitAxis::Cols => area.width,
+        SplitAxis::Rows => area.height,
+    };
+    let mut used = 0_u16;
+    (0..weights.len())
+        .map(|index| {
+            let cells = if index + 1 == weights.len() {
+                extent.saturating_sub(used)
+            } else {
+                let weight = weights.get(index).copied().unwrap_or(0.0);
+                let raw = (f32::from(extent) * (weight / total)).round() as u16;
+                raw.min(extent.saturating_sub(used))
+            };
+            let rect = match axis {
+                SplitAxis::Cols => Rect {
+                    x: area.x.saturating_add(used),
+                    y: area.y,
+                    width: cells,
+                    height: area.height,
+                },
+                SplitAxis::Rows => Rect {
+                    x: area.x,
+                    y: area.y.saturating_add(used),
+                    width: area.width,
+                    height: cells,
+                },
+            };
+            used = used.saturating_add(cells);
+            rect
+        })
+        .collect()
+}
+
+fn dividers_in(node: &Node, area: Rect, out: &mut Vec<PaneDivider>) {
+    let Node::Split {
+        axis,
+        children,
+        weights,
+    } = node
+    else {
+        return;
+    };
+    let rects = split_rects(*axis, weights, area);
+    for index in 0..children.len().saturating_sub(1) {
+        let position = match axis {
+            SplitAxis::Cols => rects[index].right().saturating_sub(1),
+            SplitAxis::Rows => rects[index].bottom().saturating_sub(1),
+        };
+        let (start, end) = match axis {
+            SplitAxis::Cols => (area.y, area.bottom()),
+            SplitAxis::Rows => (area.x, area.right()),
+        };
+        out.push(PaneDivider {
+            axis: *axis,
+            position,
+            start,
+            end,
+            before: last_leaf(&children[index]),
+            after: first_leaf(&children[index + 1]),
+        });
+    }
+    for (child, rect) in children.iter().zip(rects) {
+        dividers_in(child, rect, out);
+    }
+}
+
+fn minimum_extent(node: &Node, axis: SplitAxis) -> u16 {
+    match node {
+        Node::Leaf(_) => match axis {
+            SplitAxis::Cols => MIN_W,
+            SplitAxis::Rows => MIN_H,
+        },
+        Node::Split {
+            axis: node_axis,
+            children,
+            ..
+        } if *node_axis == axis => children.iter().fold(0_u16, |sum, child| {
+            sum.saturating_add(minimum_extent(child, axis))
+        }),
+        Node::Split { children, .. } => children
+            .iter()
+            .map(|child| minimum_extent(child, axis))
+            .max()
+            .unwrap_or(0),
+    }
+}
+
+fn resize_divider_in(node: &mut Node, area: Rect, divider: PaneDivider, delta: i16) -> bool {
+    let Node::Split {
+        axis,
+        children,
+        weights,
+    } = node
+    else {
+        return false;
+    };
+    let rects = split_rects(*axis, weights, area);
+    if *axis == divider.axis {
+        for index in 0..children.len().saturating_sub(1) {
+            if last_leaf(&children[index]) != divider.before
+                || first_leaf(&children[index + 1]) != divider.after
+            {
+                continue;
+            }
+            let sizes: Vec<u16> = rects
+                .iter()
+                .map(|rect| match axis {
+                    SplitAxis::Cols => rect.width,
+                    SplitAxis::Rows => rect.height,
+                })
+                .collect();
+            let pair = sizes[index].saturating_add(sizes[index + 1]);
+            let minimum_before = minimum_extent(&children[index], *axis);
+            let minimum_after = minimum_extent(&children[index + 1], *axis);
+            if pair < minimum_before.saturating_add(minimum_after) {
+                return false;
+            }
+            let desired = (i32::from(sizes[index]) + i32::from(delta)).clamp(
+                i32::from(minimum_before),
+                i32::from(pair.saturating_sub(minimum_after)),
+            ) as u16;
+            if desired == sizes[index] {
+                return false;
+            }
+            let mut resized = sizes;
+            resized[index] = desired;
+            resized[index + 1] = pair.saturating_sub(desired);
+            *weights = resized.into_iter().map(f32::from).collect();
+            return true;
+        }
+    }
+    for (child, rect) in children.iter_mut().zip(rects) {
+        if resize_divider_in(child, rect, divider, delta) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Classify a point within a pane's `rect` as a center or edge drop zone. The edge
@@ -477,12 +691,7 @@ mod tests {
     use super::*;
 
     fn area() -> Rect {
-        Rect {
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 24,
-        }
+        Rect::new(0, 0, 80, 24)
     }
 
     fn rect_of(layout: &PaneLayout, pane: PaneId) -> Rect {
@@ -621,6 +830,82 @@ mod tests {
             height: 2,
         };
         assert!(!l.can_split(a, SplitDir::Down, tiny));
+    }
+
+    #[test]
+    fn dividers_report_geometry_and_hit_testing() {
+        let mut layout = PaneLayout::new();
+        let left = layout.root_pane();
+        let right = layout.split(left, SplitDir::Right);
+        let dividers = layout.dividers(area());
+        assert_eq!(dividers.len(), 1);
+        assert_eq!(
+            dividers[0],
+            PaneDivider {
+                axis: SplitAxis::Cols,
+                position: 39,
+                start: 0,
+                end: 24,
+                before: left,
+                after: right,
+            }
+        );
+        assert!(dividers[0].contains(39, 12));
+        assert!(!dividers[0].contains(40, 12));
+    }
+
+    #[test]
+    fn divider_resize_changes_weights_and_clamps_to_descendant_minimums() {
+        let mut layout = PaneLayout::new();
+        let left = layout.root_pane();
+        let right = layout.split(left, SplitDir::Right);
+        let divider = layout.dividers(area())[0];
+
+        assert!(layout.resize_divider(divider, 10, area()));
+        assert_eq!(rect_of(&layout, left).width, 50);
+        assert_eq!(rect_of(&layout, right).width, 30);
+        assert!(layout.resize_divider(divider, i16::MAX, area()));
+        assert_eq!(rect_of(&layout, left).width, 70);
+        assert_eq!(rect_of(&layout, right).width, MIN_W);
+        assert!(!layout.resize_divider(divider, 1, area()));
+    }
+
+    #[test]
+    fn directional_resize_grows_the_focused_pane_toward_that_edge() {
+        let mut layout = PaneLayout::new();
+        let left = layout.root_pane();
+        let right = layout.split(left, SplitDir::Right);
+
+        assert!(layout.resize_pane(right, SplitDir::Left, 7, area()));
+        assert_eq!(rect_of(&layout, left).width, 33);
+        assert_eq!(rect_of(&layout, right).width, 47);
+        assert!(!layout.resize_pane(right, SplitDir::Right, 7, area()));
+    }
+
+    #[test]
+    fn nested_split_minimum_reserves_space_for_every_leaf() {
+        let mut layout = PaneLayout::new();
+        let left = layout.root_pane();
+        let right = layout.split(left, SplitDir::Right);
+        let lower_right = layout.split(right, SplitDir::Down);
+        let _fourth = layout.split(lower_right, SplitDir::Right);
+        let outer = layout
+            .dividers(area())
+            .into_iter()
+            .find(|divider| divider.before == left)
+            .unwrap_or(PaneDivider {
+                axis: SplitAxis::Cols,
+                position: 0,
+                start: 0,
+                end: 0,
+                before: left,
+                after: right,
+            });
+
+        assert!(layout.resize_divider(outer, i16::MAX, area()));
+        let rects = layout.layout(area());
+        assert!(rects.iter().all(|(_, rect)| rect.width >= MIN_W));
+        assert_eq!(rect_of(&layout, left).width, 60);
     }
 
     #[test]

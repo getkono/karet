@@ -15,6 +15,7 @@
 //! markdown it was rendered from.
 
 mod parse;
+mod table;
 mod wrap;
 
 #[cfg(feature = "highlight")]
@@ -161,6 +162,9 @@ impl MarkdownDocument {
 pub fn parse(source: &str) -> MarkdownDocument {
     parse::parse(source)
 }
+
+pub use table::format_tables;
+pub use table::table_line_ranges;
 
 /// The checkbox a [`ListItem::task`] renders as, trailing space included.
 pub(crate) fn task_marker(checked: bool) -> &'static str {

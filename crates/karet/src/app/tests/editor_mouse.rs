@@ -14,6 +14,73 @@
     }
 
     #[test]
+    fn active_indentation_uses_the_backend_resolved_document_settings() {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", ""));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(9));
+        }
+        app.document_settings.insert(
+            DocumentId(9),
+            DocumentSettings {
+                insert_spaces: false,
+                indent_size: 6,
+                tab_width: 4,
+                ..DocumentSettings::default()
+            },
+        );
+
+        assert_eq!(app.active_indentation(), "\t  ");
+    }
+
+    #[test]
+    fn markdown_table_formatting_is_one_undoable_document_edit() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        app.push_tab(text_tab("table.md", "|a|long|\n|-|:-:|\n|x|y|\n"));
+        let active = app.active;
+        if let Tab {
+            kind: TabKind::Code { doc, buffer, .. },
+            editor,
+            ..
+        } = &mut app.tabs[active]
+        {
+            *doc = Some(DocumentId(9));
+            editor.set_selection(buffer, LineCol::new(0, 1), LineCol::new(2, 1));
+        }
+
+        app.dispatch(Command::FormatMarkdownTables);
+
+        let TabKind::Code { text, .. } = &app.tabs[active].kind else {
+            return;
+        };
+        assert_eq!(
+            text,
+            "| a   | long |\n| --- | :--: |\n| x   |  y   |\n"
+        );
+        assert_eq!(
+            app.tabs[active].editor.selection_range(),
+            Some(Range {
+                start: LineCol::new(0, 1),
+                end: LineCol::new(2, 1),
+            })
+        );
+        let apply_count = backend
+            .sent
+            .lock()
+            .map(|sent| {
+                sent.iter()
+                    .filter(|(_, command)| {
+                        matches!(command, SessionCommand::ApplyChange { .. })
+                    })
+                    .count()
+            })
+            .unwrap_or_default();
+        assert_eq!(apply_count, 1);
+    }
+
+    #[test]
     fn copy_reports_status() {
         let mut app = app();
         app.push_tab(text_tab("t.rs", "hello world"));
@@ -78,6 +145,66 @@
         app.focus = Focus::Editor;
         app.dispatch(Command::CollapseCarets);
         assert_eq!(app.focus, Focus::Editor);
+    }
+
+    #[test]
+    fn markdown_links_require_a_modifier_and_open_workspace_files() {
+        let root = test_dir("markdown-links");
+        write_file(&root, "README.md", b"[guide](docs/guide.md)");
+        write_file(&root, "docs/guide.md", b"guide");
+        let mut app = App::new(root.clone(), Vec::new(), Vec::new(), false);
+        app.open_path(&root.join("README.md"));
+        app.markdown_link_hits = vec![MarkdownLinkHit {
+            rect: Rect::new(4, 3, 5, 1),
+            target: "docs/guide.md".to_string(),
+        }];
+        let click = |modifiers| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 3,
+            modifiers,
+        };
+
+        assert!(!app.handle_markdown_link_mouse(click(KeyModifiers::NONE)));
+        assert_eq!(app.tabs[app.active].path(), Some(root.join("README.md").as_path()));
+        assert!(app.handle_markdown_link_mouse(click(KeyModifiers::CONTROL)));
+        assert_eq!(
+            app.tabs[app.active].path(),
+            Some(root.join("docs/guide.md").as_path())
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn markdown_file_links_outside_the_workspace_require_typed_confirmation() {
+        let parent = test_dir("markdown-link-boundary");
+        let root = parent.join("workspace");
+        write_file(&root, "README.md", b"[outside](../outside.md)");
+        write_file(&parent, "outside.md", b"outside");
+        let mut app = App::new(root.clone(), Vec::new(), Vec::new(), false);
+        app.open_path(&root.join("README.md"));
+        app.markdown_link_hits = vec![MarkdownLinkHit {
+            rect: Rect::new(1, 1, 7, 1),
+            target: "../outside.md".to_string(),
+        }];
+
+        assert!(app.handle_markdown_link_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 2,
+            row: 1,
+            modifiers: KeyModifiers::SUPER,
+        }));
+        assert!(app.overlay.is_some());
+        assert_eq!(app.tabs[app.active].path(), Some(root.join("README.md").as_path()));
+        if let Some(overlay) = app.overlay.as_mut() {
+            overlay.push_str("open");
+        }
+        app.overlay_accept();
+        assert_eq!(
+            app.tabs[app.active].path(),
+            Some(parent.join("outside.md").as_path())
+        );
+        let _ = std::fs::remove_dir_all(parent);
     }
 
     #[test]
@@ -317,9 +444,11 @@
                     close: 22,
                 },
             ],
+            action_hits: Vec::new(),
             breadcrumb_rect: Rect::default(),
             breadcrumb_hits: Vec::new(),
             content_rect: Rect::default(),
+            commit_file_hits: Vec::new(),
         }];
         app.active = 0;
         app.tab_drag = Some(TabDrag {
@@ -330,6 +459,43 @@
         let titles: Vec<_> = app.tabs.iter().map(|t| t.title.clone()).collect();
         assert_eq!(titles, vec!["b.rs", "c.rs", "a.rs"]);
         assert_eq!(app.active, 2);
+    }
+
+    #[test]
+    fn pane_action_click_wins_over_the_underlying_tab_hit() {
+        let mut app = app();
+        app.push_tab(text_tab("README.md", "# Title\n"));
+        app.pane_frames = vec![PaneFrame {
+            pane: app.focus_pane(),
+            tabstrip_rect: Rect::new(0, 0, 30, 1),
+            tab_hits: vec![TabHit {
+                start: 0,
+                end: 30,
+                close: 28,
+            }],
+            action_hits: vec![(24, 27, Command::MarkdownPreviewSide)],
+            breadcrumb_rect: Rect::default(),
+            breadcrumb_hits: Vec::new(),
+            content_rect: Rect::default(),
+            commit_file_hits: Vec::new(),
+        }];
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 25,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.pane_action_hover, Some((25, 0)));
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 25,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert!(app.tabs[app.active].markdown_preview.is_some());
+        assert!(app.tab_drag.is_none());
     }
 
     #[test]
@@ -379,6 +545,92 @@
     }
 
     #[test]
+    fn keyboard_resize_grows_the_focused_pane_toward_the_requested_edge() {
+        let mut app = app();
+        app.main_rect = Rect::new(0, 0, 80, 24);
+        let left = app.layout.root_pane();
+        let right = app.layout.split(left, SplitDir::Right);
+        app.layout.set_focus(right);
+
+        app.dispatch(Command::ResizePaneLeft);
+
+        assert_eq!(
+            app.layout.pane_rect(left, app.main_rect).map(|rect| rect.width),
+            Some(38)
+        );
+        assert_eq!(
+            app.layout.pane_rect(right, app.main_rect).map(|rect| rect.width),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn mouse_drag_resizes_a_pane_divider_and_releases_cleanly() {
+        let mut app = app();
+        app.main_rect = Rect::new(0, 0, 80, 24);
+        let left = app.layout.root_pane();
+        let right = app.layout.split(left, SplitDir::Right);
+        app.pane_dividers = app.layout.dividers(app.main_rect);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 39,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(app.pane_resize.is_some());
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 48,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 100,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(
+            app.layout.pane_rect(left, app.main_rect).map(|rect| rect.width),
+            Some(70)
+        );
+        // Remaining outside the minimum-size boundary must not make it jump back.
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 90,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(
+            app.layout.pane_rect(left, app.main_rect).map(|rect| rect.width),
+            Some(70)
+        );
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 60,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 60,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(
+            app.layout.pane_rect(left, app.main_rect).map(|rect| rect.width),
+            Some(61)
+        );
+        assert_eq!(
+            app.layout.pane_rect(right, app.main_rect).map(|rect| rect.width),
+            Some(19)
+        );
+        assert!(app.pane_resize.is_none());
+    }
+
+    #[test]
     fn drop_tab_center_on_self_is_a_noop() {
         let mut app = app();
         app.push_tab(code_tab("a.rs"));
@@ -419,3 +671,44 @@
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn closing_the_last_tab_collapses_its_tile_when_another_remains() {
+        let mut app = app();
+        app.push_tab(code_tab("a.rs"));
+        app.dispatch(Command::SplitRight);
+        assert_eq!(app.layout.pane_count(), 2);
+
+        app.close_tab_at(0);
+
+        assert_eq!(app.layout.pane_count(), 1);
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.tabs[0].title, "a.rs");
+        assert_eq!(app.focus, Focus::Editor);
+    }
+
+    #[test]
+    fn closing_a_welcome_tab_collapses_its_tile_when_another_remains() {
+        let mut app = app();
+        app.push_tab(code_tab("a.rs"));
+        app.dispatch(Command::SplitRight);
+        app.tabs = vec![Tab::welcome()];
+        app.active = 0;
+
+        app.close_tab_at(0);
+
+        assert_eq!(app.layout.pane_count(), 1);
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.tabs[0].title, "a.rs");
+    }
+
+    #[test]
+    fn closing_the_only_panes_last_tab_keeps_one_welcome_tab() {
+        let mut app = app();
+        app.push_tab(code_tab("a.rs"));
+
+        app.close_tab_at(0);
+
+        assert_eq!(app.layout.pane_count(), 1);
+        assert_eq!(app.tabs.len(), 1);
+        assert!(matches!(app.tabs[0].kind, TabKind::Welcome));
+    }

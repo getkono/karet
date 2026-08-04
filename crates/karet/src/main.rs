@@ -24,6 +24,7 @@ mod desktop;
 mod doctor;
 mod editing;
 mod keymap;
+mod links;
 mod notify;
 mod outline;
 mod overlay;
@@ -40,6 +41,9 @@ use std::path::PathBuf;
 use clap::Parser;
 
 fn main() -> color_eyre::Result<()> {
+    if karet_session::process_supervisor::requested() {
+        std::process::exit(karet_session::process_supervisor::run_from_env());
+    }
     color_eyre::install()?;
     let cli = cli::Cli::parse();
 

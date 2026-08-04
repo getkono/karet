@@ -4,6 +4,7 @@
 
 mod commit;
 mod content;
+mod github;
 mod panes;
 mod scm;
 mod secondary;
@@ -13,6 +14,7 @@ mod status;
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -21,7 +23,9 @@ use std::time::UNIX_EPOCH;
 
 use commit::*;
 use content::*;
+use github::*;
 use karet_core::Decoration;
+use karet_core::Diagnostic;
 use karet_core::Severity;
 use karet_core::ThemeRole;
 use karet_editor::Editor;
@@ -42,6 +46,7 @@ use karet_markdown::WrappedDocument;
 use karet_markdown::view::MarkdownView;
 use karet_markdown::view::MarkdownViewState;
 use karet_session::ConfigLayerStatus;
+use karet_session::DocumentId;
 use karet_session::LoadedConfig;
 use karet_text::TextBuffer;
 use karet_theme::Theme;
@@ -49,6 +54,7 @@ use karet_vcs::StatusKind;
 use karet_widgets::CompletionPopup;
 use karet_widgets::Corner;
 use karet_widgets::FileTree;
+use karet_widgets::SplitAxis;
 use karet_widgets::Toasts;
 use karet_widgets::UiIcon;
 use panes::*;
@@ -82,9 +88,11 @@ pub(crate) use scm::relative_time;
 use secondary::*;
 use sidebar::*;
 use status::*;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::app::MIN_SCM_REGION;
+use crate::app::OperationBlocker;
 use crate::app::SIDEBAR_MIN_WIDTH;
 use crate::app::TabDrag;
 use crate::app::TabHit;
@@ -142,8 +150,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_sidebar_divider(f, &theme, divider, app.sidebar_resizing);
     }
 
-    // Reserve a right-side column for the outline panel, carved from the main region.
-    // Skipped on a terminal too narrow to keep the editor usable.
+    // On wide terminals the fixed-width outline reserves space. On narrow ones it
+    // temporarily overlays the right edge and dismisses as soon as the editor is used.
+    let mut outline_area = None;
+    let mut outline_divider = None;
+    app.outline_overlay = false;
     if app.outline_visible && app.main_rect.width > app.outline_width + 8 {
         let region = app.main_rect;
         let cols = Layout::horizontal([
@@ -154,17 +165,31 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .split(region);
         app.main_rect = cols[0];
         app.outline_rect = cols[2];
-        draw_sidebar_divider(f, &theme, cols[1], false);
-        draw_outline(f, app, &theme, cols[2]);
+        outline_area = Some(cols[2]);
+        outline_divider = Some(cols[1]);
+    } else if app.outline_visible && app.main_rect.width > 0 {
+        let width = app.outline_width.min(app.main_rect.width);
+        let rect = Rect::new(
+            app.main_rect.right().saturating_sub(width),
+            app.main_rect.y,
+            width,
+            app.main_rect.height,
+        );
+        app.outline_rect = rect;
+        app.outline_overlay = true;
+        outline_area = Some(rect);
     } else {
         app.outline_rect = Rect::default();
         app.outline_content_rect = Rect::default();
     }
 
-    // Align a markdown preview with its source before either is painted, using the wrap
-    // the last frame cached.
-    app.sync_markdown_preview();
     draw_panes(f, app, &theme, app.main_rect);
+    if let Some(divider) = outline_divider {
+        draw_sidebar_divider(f, &theme, divider, false);
+    }
+    if let Some(area) = outline_area {
+        draw_outline(f, app, &theme, area);
+    }
     draw_drop_preview(f, app, &theme);
     draw_status(f, app, &theme, rows[1]);
 
@@ -179,9 +204,35 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_rev_input(f, rev, &theme, area);
     }
     draw_context_menu(f, app, &theme, area);
+    if let Some(blocker) = &app.operation_blocker {
+        draw_operation_blocker(f, blocker, &theme, area);
+    }
 
     // Toasts float above everything, including the modal overlay.
     draw_toasts(f, app, &theme, area);
+}
+
+/// Draw the modal explaining why a destructive operation is delaying shutdown.
+fn draw_operation_blocker(f: &mut Frame, blocker: &OperationBlocker, theme: &Theme, area: Rect) {
+    let rect = centered(area, 62, 7);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Finishing source control operation")
+        .border_style(Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui()))
+        .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui()));
+    let inner = block.inner(rect);
+    f.render_widget(Clear, rect);
+    f.render_widget(block, rect);
+    let remaining = blocker
+        .deadline
+        .saturating_duration_since(Instant::now())
+        .as_secs();
+    let text = vec![
+        Line::raw(format!("{} must finish before karet exits.", blocker.label)),
+        Line::raw(""),
+        Line::raw(format!("Waiting up to {remaining}s · Esc cancels quit")),
+    ];
+    f.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), inner);
 }
 
 /// Draw the centered go-to-commit (revision) input prompt.
@@ -215,6 +266,7 @@ fn draw_rev_input(f: &mut Frame, rev: &str, theme: &Theme, area: Rect) {
 struct PaneCtx<'a> {
     theme: &'a Theme,
     root: &'a Path,
+    icon_style: karet_filetype::IconStyle,
     graphics: GraphicsProtocol,
     /// Whether this pane holds the window focus (affects tab-strip styling).
     pane_focused: bool,
@@ -226,29 +278,52 @@ struct PaneCtx<'a> {
     word_wrap: Option<bool>,
     /// Language-resolved semantic sticky-scroll setting.
     sticky_scroll: bool,
+    /// Per-document hard-tab display width.
+    tab_width: u16,
+    /// Complete diagnostic sets keyed by backend document.
+    diagnostics: &'a HashMap<DocumentId, Vec<Diagnostic>>,
     /// The find bar to draw atop this pane's content, if any (focused pane only).
     /// Owned (not borrowed): it now lives on the active `Tab` itself, and
     /// `render_pane` needs a mutable borrow of the tabs slice at the same time.
     find: Option<FindState>,
+    /// Stale-checked virtual text for the focused editor.
+    blame: Option<Decoration>,
+    /// Whether the blame decoration represents an attributed commit.
+    blame_clickable: bool,
+    /// Mouse position over a link in this pane, used for hover emphasis.
+    markdown_link_hover: Option<(u16, u16)>,
+    /// Mouse position over a format-specific pane action.
+    pane_action_hover: Option<(u16, u16)>,
 }
 
 /// What a rendered pane reported back for hit-testing and image placement.
 struct RenderedPane {
     tabstrip_rect: Rect,
     tab_hits: Vec<TabHit>,
+    action_hits: Vec<(u16, u16, Command)>,
     breadcrumb_rect: Rect,
     breadcrumb_hits: Vec<crate::app::BreadcrumbHit>,
     content_rect: Rect,
+    editor_rect: Rect,
+    markdown_preview_rect: Rect,
     image_area: Option<Rect>,
     commit_badge_rect: Option<Rect>,
+    commit_file_hits: Vec<crate::app::CommitFileHit>,
+    blame_rect: Option<Rect>,
+    markdown_link_hits: Vec<crate::app::MarkdownLinkHit>,
 }
 
 /// Geometry a tab's content reported for post-draw use: a reserved Kitty image rect
 /// and the commit view's signature-badge rect (for double-click hit-testing).
 #[derive(Default)]
 struct PaneContent {
+    editor_rect: Rect,
+    markdown_preview_rect: Rect,
     image_area: Option<Rect>,
     badge_rect: Option<Rect>,
+    file_hits: Vec<crate::app::CommitFileHit>,
+    blame_rect: Option<Rect>,
+    markdown_link_hits: Vec<crate::app::MarkdownLinkHit>,
 }
 
 /// A `width`×`height` rect centered within `area`.
@@ -285,45 +360,97 @@ fn draw_pane_tabs(
     f: &mut Frame,
     tabs: &[Tab],
     active: usize,
-    pane_focused: bool,
-    theme: &Theme,
-    root: &Path,
+    ctx: &PaneCtx<'_>,
     area: Rect,
-) -> (Rect, Vec<TabHit>) {
+) -> (Rect, Vec<TabHit>, Vec<(u16, u16, Command)>) {
     let mut hits = Vec::new();
     let mut spans = Vec::new();
     let mut x = area.x;
-    let titles = tab_display_titles(tabs, root);
+    let titles = tab_display_titles(tabs, ctx.root, ctx.icon_style);
     for (i, tab) in tabs.iter().enumerate() {
-        let style = tab_text_style(theme, i == active, pane_focused, tab.is_preview);
+        let style = tab_text_style(ctx.theme, i == active, ctx.pane_focused, tab.is_preview);
         // A pre-allocated 1-cell status slot keeps the layout stable: `●` for
         // unsaved changes (a spinner frame while a slow save writes), else blank.
         let mark = save_mark(tab);
         let title = &titles[i];
-        let label_w = (4 + title.prefix.chars().count() + title.name.chars().count()) as u16;
+        let label_w = 4u16
+            .saturating_add(cell_width(&title.prefix))
+            .saturating_add(cell_width(&title.name));
         let start = x;
         spans.push(Span::styled(format!(" {mark} "), style));
         if !title.prefix.is_empty() {
             spans.push(Span::styled(
                 title.prefix.clone(),
-                tab_prefix_style(theme, style, i == active, pane_focused),
+                tab_prefix_style(ctx.theme, style, i == active, ctx.pane_focused),
             ));
         }
         spans.push(Span::styled(title.name.clone(), style));
         spans.push(Span::styled(" ", style));
-        spans.push(Span::styled("\u{00d7}", style)); // × close glyph
+        let pinned = tab.is_github_dashboard();
+        spans.push(Span::styled(if pinned { " " } else { "\u{00d7}" }, style));
         spans.push(Span::styled(" ", style));
         let close = start + label_w;
         x = close + 2;
         hits.push(TabHit {
             start,
             end: x,
-            close,
+            close: if pinned { u16::MAX } else { close },
         });
     }
-    let bar = Style::default().bg(theme.role(ThemeRole::Background).to_ratatui());
+    let bar = Style::default().bg(ctx.theme.role(ThemeRole::Background).to_ratatui());
     f.render_widget(Paragraph::new(Line::from(spans)).style(bar), area);
-    (area, hits)
+    let actions = tabs.get(active).map_or_else(Vec::new, pane_actions);
+    let visible = usize::from(area.width / 3).min(actions.len());
+    let start = area
+        .right()
+        .saturating_sub(u16::try_from(visible.saturating_mul(3)).unwrap_or(u16::MAX));
+    let mut action_hits = Vec::with_capacity(visible);
+    for (index, (icon, command, active)) in actions.into_iter().take(visible).enumerate() {
+        let x = start.saturating_add(u16::try_from(index.saturating_mul(3)).unwrap_or(u16::MAX));
+        let hovered = ctx
+            .pane_action_hover
+            .is_some_and(|(col, row)| row == area.y && col >= x && col < x.saturating_add(3));
+        let state = match (active, hovered) {
+            (true, true) => ChromeButtonState::ActiveHovered,
+            (true, false) => ChromeButtonState::Active,
+            (false, true) => ChromeButtonState::Hovered,
+            (false, false) => ChromeButtonState::Normal,
+        };
+        f.buffer_mut().set_string(
+            x,
+            area.y,
+            format!(" {} ", icon.glyph(ctx.icon_style)),
+            chrome_button_style(ctx.theme, state)
+                .bg(ctx.theme.role(ThemeRole::Background).to_ratatui()),
+        );
+        action_hits.push((x, x.saturating_add(3), command));
+    }
+    (area, hits, action_hits)
+}
+
+fn pane_actions(tab: &Tab) -> Vec<(UiIcon, Command, bool)> {
+    match &tab.kind {
+        TabKind::Code { path, .. }
+            if karet_filetype::file_type_for_path(path).name() == "Markdown" =>
+        {
+            vec![
+                (
+                    UiIcon::Preview,
+                    Command::MarkdownPreviewSide,
+                    tab.markdown_preview.is_some(),
+                ),
+                (UiIcon::FormatTable, Command::FormatMarkdownTables, false),
+            ]
+        },
+        TabKind::Code { path, .. }
+            if path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("tex")) =>
+        {
+            vec![(UiIcon::Preview, Command::LatexBuildPreview, false)]
+        },
+        _ => Vec::new(),
+    }
 }
 
 fn tab_text_style(theme: &Theme, active: bool, pane_focused: bool, preview: bool) -> Style {
@@ -332,9 +459,10 @@ fn tab_text_style(theme: &Theme, active: bool, pane_focused: bool, preview: bool
             .fg(theme.role(ThemeRole::Foreground).to_ratatui())
             .add_modifier(Modifier::BOLD | Modifier::REVERSED)
     } else if active {
-        // Active tab of an unfocused pane: emphasized but not reversed.
+        // Active tab of an unfocused pane: a distinct accent keeps pane ownership
+        // visible without competing with the reversed tab in the focused pane.
         Style::default()
-            .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+            .fg(theme.role(ThemeRole::DiagnosticInfo).to_ratatui())
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())
@@ -363,17 +491,30 @@ struct TabDisplayTitle {
     name: String,
 }
 
-fn tab_display_titles(tabs: &[Tab], root: &Path) -> Vec<TabDisplayTitle> {
+fn tab_display_titles(
+    tabs: &[Tab],
+    root: &Path,
+    icon_style: karet_filetype::IconStyle,
+) -> Vec<TabDisplayTitle> {
     tabs.iter()
         .map(|tab| {
-            let name = tab_name(tab);
-            let duplicate = tabs.iter().filter(|other| tab_name(other) == name).count() > 1;
+            let raw_name = tab_name(tab);
+            let duplicate = tabs
+                .iter()
+                .filter(|other| tab_name(other) == raw_name)
+                .count()
+                > 1;
             let prefix = if duplicate {
                 tab.path().and_then(|path| tab_parent_prefix(path, root))
             } else {
                 None
             }
             .unwrap_or_default();
+            let name = if tab.is_symlink {
+                format!("{raw_name} {}", UiIcon::Symlink.glyph(icon_style))
+            } else {
+                raw_name
+            };
             TabDisplayTitle { prefix, name }
         })
         .collect()
@@ -453,15 +594,22 @@ fn draw_pane_breadcrumb(
     tab: Option<&Tab>,
     theme: &Theme,
     root: &Path,
+    icon_style: karet_filetype::IconStyle,
     area: Rect,
 ) -> Vec<crate::app::BreadcrumbHit> {
     let Some(path) = tab.and_then(Tab::path) else {
         return Vec::new();
     };
-    let components: Vec<String> = path
+    let mut components: Vec<String> = path
         .components()
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
         .collect();
+    if tab.is_some_and(|tab| tab.is_symlink)
+        && let Some(last) = components.last_mut()
+    {
+        last.push(' ');
+        last.push(UiIcon::Symlink.glyph(icon_style));
+    }
     let crumbs = components.join(BREADCRUMB_SEP);
     let style = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
     f.render_widget(Paragraph::new(Line::styled(crumbs, style)), area);

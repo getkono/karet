@@ -482,13 +482,28 @@ fn default_base_branch_skips_the_current_branch() -> Result<(), VcsError> {
 }
 
 #[test]
-fn upstream_of_head_is_none_without_a_tracking_branch() -> Result<(), VcsError> {
+fn upstream_of_head_is_none_without_a_live_tracking_branch() -> Result<(), VcsError> {
     let repo = init_repo()?;
     write(&repo.path, "a.txt", b"a\n")?;
     git(&repo.path, &["add", "."])?;
     git(&repo.path, &["commit", "-q", "-m", "first"])?;
     let r = Repository::discover(&repo.path)?;
     // A fresh local repo has no remote, so the branch has no upstream.
+    assert!(r.upstream_of_head()?.is_none());
+
+    let remote = init_repo()?;
+    git(
+        &repo.path,
+        &["remote", "add", "origin", &remote.path.to_string_lossy()],
+    )?;
+    git(&repo.path, &["push", "-q", "-u", "origin", "HEAD:main"])?;
+    git(
+        &repo.path,
+        &["update-ref", "-d", "refs/remotes/origin/main"],
+    )?;
+    let r = Repository::discover(&repo.path)?;
+    // A configured upstream whose local remote-tracking ref is gone cannot be
+    // compared and therefore behaves like no live upstream.
     assert!(r.upstream_of_head()?.is_none());
     Ok(())
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::LOADING_REVEAL_DELAY;
 
 /// Draw one pane's active tab into `area`. Returns the rect to reserve for a Kitty
 /// image, if the active tab is an image on a Kitty terminal.
@@ -21,9 +22,17 @@ pub(super) fn draw_pane_content(
     #[cfg(not(any(feature = "images", feature = "pdf")))]
     let image_area: Option<Rect> = None;
     let mut badge_rect = None;
+    let mut file_hits = Vec::new();
+    let mut blame_rect = None;
+    let mut markdown_link_hits = Vec::new();
+    let mut editor_rect = area;
+    let mut markdown_preview_rect = Rect::default();
     match &mut tab.kind {
         TabKind::Welcome => draw_welcome(f, theme, area),
+        TabKind::Github(view) => draw_github(f, theme, area, view),
         TabKind::Code {
+            path,
+            doc,
             buffer,
             highlights,
             semantic_blocks,
@@ -33,33 +42,159 @@ pub(super) fn draw_pane_content(
             search_decos,
             ..
         } => {
+            if tab.markdown_preview.is_some() && area.width >= 3 {
+                let columns = Layout::horizontal([
+                    Constraint::Percentage(50),
+                    Constraint::Length(1),
+                    Constraint::Min(0),
+                ])
+                .split(area);
+                editor_rect = columns[0];
+                markdown_preview_rect = columns[2];
+                f.render_widget(
+                    Block::default().borders(Borders::LEFT).border_style(
+                        Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui()),
+                    ),
+                    columns[1],
+                );
+            }
             let fold_lines = crate::app::resolve_folds(folds, folded);
+            let version = buffer.version();
+            if tab
+                .conflict_decorations
+                .as_ref()
+                .is_none_or(|(cached, _)| *cached != version)
+            {
+                tab.conflict_decorations =
+                    Some((version, karet_editor::conflict_decorations(&buffer.text())));
+            }
+            let conflict_decorations = tab
+                .conflict_decorations
+                .as_ref()
+                .map_or(&[][..], |(_, decorations)| decorations.as_slice());
+            let table_lines = if karet_filetype::file_type_for_path(path).name() == "Markdown" {
+                if tab
+                    .markdown_table_lines
+                    .as_ref()
+                    .is_none_or(|(cached, _)| *cached != version)
+                {
+                    tab.markdown_table_lines =
+                        Some((version, karet_markdown::table_line_ranges(&buffer.text())));
+                }
+                tab.markdown_table_lines
+                    .as_ref()
+                    .map_or(&[][..], |(_, ranges)| ranges.as_slice())
+            } else {
+                &[]
+            };
             // Local find and global search highlights are kept in separate
             // fields (so closing/rerunning one can't wipe the other) and
             // combined only here, at render time.
-            let combined: Vec<Decoration> =
-                decos.iter().chain(search_decos.iter()).cloned().collect();
+            let combined: Vec<Decoration> = decos
+                .iter()
+                .chain(search_decos.iter())
+                .chain(conflict_decorations.iter())
+                .chain(ctx.blame.iter())
+                .cloned()
+                .collect();
+            let diagnostics = doc
+                .and_then(|doc| ctx.diagnostics.get(&doc))
+                .map_or(&[][..], Vec::as_slice);
             let editor = Editor::new(buffer)
                 .highlights(highlights)
                 .semantic_blocks(semantic_blocks)
                 .theme(theme)
                 .decorations(&combined)
+                .diagnostics(diagnostics)
                 .folds(&fold_lines)
                 .focused(ctx.editor_focused)
                 .cell_caret(!ctx.graphical_cursor)
-                .word_wrap(word_wrap);
+                .word_wrap(word_wrap)
+                .tab_width(ctx.tab_width)
+                .unwrapped_lines(table_lines);
             let editor = editor.sticky_scroll(ctx.sticky_scroll);
-            f.render_stateful_widget(editor, area, &mut tab.editor);
+            f.render_stateful_widget(editor, editor_rect, &mut tab.editor);
+            if ctx.blame_clickable
+                && let Some(Decoration {
+                    range,
+                    kind:
+                        karet_core::DecorationKind::InlineText {
+                            text,
+                            before: false,
+                        },
+                    ..
+                }) = ctx.blame.as_ref()
+            {
+                let end = buffer
+                    .line(range.start.line as usize)
+                    .map_or(0, |line| line.chars().count() as u32);
+                if let Some((x, y)) = tab.editor.screen_cell(
+                    editor_rect,
+                    buffer,
+                    &fold_lines,
+                    karet_core::LineCol::new(range.start.line, end),
+                ) {
+                    let width = u16::try_from(Span::raw(text).width()).unwrap_or(u16::MAX);
+                    let visible = width.min(editor_rect.right().saturating_sub(x));
+                    if visible > 0 {
+                        blame_rect = Some(Rect::new(x, y, visible, 1));
+                    }
+                }
+            }
+            if let Some(preview) = tab.markdown_preview.as_mut()
+                && markdown_preview_rect.width > 0
+            {
+                markdown_link_hits = draw_markdown_preview(
+                    f,
+                    theme,
+                    markdown_preview_rect,
+                    MarkdownPreviewRender {
+                        buffer,
+                        wrapped: &mut preview.wrapped,
+                        rendered: &mut preview.rendered,
+                        scroll: &mut preview.scroll,
+                        hover: ctx.markdown_link_hover,
+                        source: path,
+                        root: ctx.root,
+                        source_scroll: Some(tab.editor.scroll_line as usize),
+                    },
+                );
+            }
         },
         TabKind::MarkdownPreview {
+            path,
             buffer,
             wrapped,
             rendered,
             scroll,
             ..
-        } => draw_markdown_preview(f, theme, area, buffer, wrapped, rendered, scroll),
+        } => {
+            markdown_link_hits = draw_markdown_preview(
+                f,
+                theme,
+                area,
+                MarkdownPreviewRender {
+                    buffer,
+                    wrapped,
+                    rendered,
+                    scroll,
+                    hover: ctx.markdown_link_hover,
+                    source: path,
+                    root: ctx.root,
+                    source_scroll: None,
+                },
+            );
+        },
         TabKind::Diff { file, view, scroll } => draw_diff(f, theme, area, file, *view, scroll),
-        TabKind::Blame { groups, scroll, .. } => draw_blame(f, theme, area, groups, scroll),
+        TabKind::StashPreview { patch, scroll, .. } => {
+            let lines: Vec<Line> = patch
+                .lines()
+                .map(|line| Line::raw(line.to_string()))
+                .collect();
+            let max = lines.len().saturating_sub(area.height as usize);
+            *scroll = (*scroll).min(u16::try_from(max).unwrap_or(u16::MAX));
+            f.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), area);
+        },
         TabKind::Graph {
             title,
             view,
@@ -75,9 +210,9 @@ pub(super) fn draw_pane_content(
             files_error,
             verification,
             explain_since,
-            scroll,
+            view,
         } => {
-            badge_rect = draw_commit(
+            let painted = draw_commit(
                 f,
                 theme,
                 area,
@@ -86,8 +221,10 @@ pub(super) fn draw_pane_content(
                 file_load_status(*files_loading_since, files_error.as_deref()),
                 verification.as_ref(),
                 *explain_since,
-                scroll,
+                view,
             );
+            badge_rect = painted.badge_rect;
+            file_hits = painted.file_hits;
         },
         TabKind::CommitLoading {
             rev,
@@ -108,17 +245,20 @@ pub(super) fn draw_pane_content(
             head_label,
             merge_base,
             files,
-            scroll,
-        } => draw_compare(
-            f,
-            theme,
-            area,
-            base_label,
-            head_label,
-            *merge_base,
-            files,
-            scroll,
-        ),
+            view,
+        } => {
+            let painted = draw_compare(
+                f,
+                theme,
+                area,
+                base_label,
+                head_label,
+                *merge_base,
+                files,
+                view,
+            );
+            file_hits = painted.file_hits;
+        },
         TabKind::CommitGraph {
             history_path: _,
             commits,
@@ -273,10 +413,37 @@ pub(super) fn draw_pane_content(
             }
             f.render_widget(widget, area);
         },
+        TabKind::LatexPreview {
+            source,
+            loading_since,
+            error,
+        } => {
+            let message = error.as_deref().or_else(|| {
+                (loading_since.elapsed() >= LOADING_REVEAL_DELAY)
+                    .then_some("Building LaTeX preview…")
+            });
+            if let Some(message) = message {
+                let detail = source.file_name().map_or_else(
+                    || source.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                );
+                f.render_widget(
+                    Paragraph::new(format!("{message}\n{detail}"))
+                        .alignment(Alignment::Center)
+                        .style(Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui())),
+                    area,
+                );
+            }
+        },
     }
     PaneContent {
+        editor_rect,
+        markdown_preview_rect,
         image_area,
         badge_rect,
+        file_hits,
+        blame_rect,
+        markdown_link_hits,
     }
 }
 
@@ -315,62 +482,4 @@ pub(super) fn draw_diff(
             f.render_widget(Paragraph::new(right).scroll((*scroll, 0)), panes[2]);
         },
     }
-}
-
-/// Draw the compare view (a range header + changed-file cards) as one scrollable
-/// paragraph, reusing the commit view's file rendering.
-#[allow(clippy::too_many_arguments)] // a range view has several independent inputs
-pub(super) fn draw_compare(
-    f: &mut Frame,
-    theme: &Theme,
-    area: Rect,
-    base_label: &str,
-    head_label: &str,
-    merge_base: bool,
-    files: &[render::FileView],
-    scroll: &mut u16,
-) {
-    let lines = compare_lines(theme, base_label, head_label, merge_base, files, area.width);
-    let max = u16::try_from(lines.len())
-        .unwrap_or(u16::MAX)
-        .saturating_sub(area.height);
-    *scroll = (*scroll).min(max);
-    f.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), area);
-}
-
-/// Build the compare view's scrollable lines: a range header, then the shared
-/// changed-files block ([`changed_files_lines`]).
-pub(super) fn compare_lines(
-    theme: &Theme,
-    base_label: &str,
-    head_label: &str,
-    merge_base: bool,
-    files: &[render::FileView],
-    width: u16,
-) -> Vec<Line<'static>> {
-    let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
-    let label = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
-    let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
-    let muted = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
-
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    lines.push(Line::from(vec![
-        Span::styled(" Comparing ", fg.add_modifier(Modifier::BOLD)),
-        Span::styled(base_label.to_string(), hash_style),
-        Span::styled(if merge_base { " \u{2026} " } else { " .. " }, muted),
-        Span::styled(head_label.to_string(), hash_style),
-    ]));
-    lines.push(Line::styled(
-        format!(
-            "  {}",
-            if merge_base {
-                "changes since the two diverged (merge base)"
-            } else {
-                "changes from the first to the second"
-            }
-        ),
-        label,
-    ));
-    lines.extend(changed_files_lines(theme, files, width));
-    lines
 }

@@ -73,6 +73,10 @@ pub enum Command {
     DismissAllNotifications,
     /// Open a rendered preview of the active Markdown file in a pane to the right.
     MarkdownPreviewSide,
+    /// Align every GFM table in the active Markdown document.
+    FormatMarkdownTables,
+    /// Compile the active TeX document and open its generated PDF preview.
+    LatexBuildPreview,
     /// Split the focused pane into a new pane on the right.
     SplitRight,
     /// Split the focused pane into a new pane below.
@@ -81,6 +85,14 @@ pub enum Command {
     FocusNextPane,
     /// Move focus to the previous pane.
     FocusPrevPane,
+    /// Grow the focused pane toward its left boundary.
+    ResizePaneLeft,
+    /// Grow the focused pane toward its right boundary.
+    ResizePaneRight,
+    /// Grow the focused pane toward its upper boundary.
+    ResizePaneUp,
+    /// Grow the focused pane toward its lower boundary.
+    ResizePaneDown,
     /// Copy the selection (or the cursor line) to the clipboard.
     Copy,
     /// Copy the active file's absolute path to the clipboard.
@@ -250,12 +262,44 @@ pub enum Command {
     ScmCommit,
     /// Recompute the Source-Control status.
     ScmRefresh,
-    /// Open a semantic-blame view (blameline) for the active file.
-    ShowBlame,
-    /// Open a semantic-blame view narrowed to the function under the caret.
-    BlameFunction,
+    /// Pull then push using repository configuration.
+    ScmSync,
+    /// Open the Source-Control actions menu.
+    ScmMenu,
+    /// Pick a local or remote branch to switch to.
+    ScmSwitchBranch,
+    /// Open the full create-branch form.
+    ScmCreateBranch,
+    /// Pick and check out an open GitHub pull request.
+    ScmPickPullRequest,
+    /// Guardedly undo the latest commit.
+    ScmUndoCommit,
+    /// Open the stash creation form.
+    ScmStash,
+    /// Open the stash manager.
+    ScmManageStashes,
+    /// Publish the current branch.
+    ScmPublish,
+    /// Rename the current local branch.
+    ScmRenameBranch,
+    /// Pick a local branch for safe deletion.
+    ScmDeleteBranch,
+    /// Pick a remote branch for typed-confirmation deletion.
+    ScmDeleteRemoteBranch,
+    /// Continue an in-progress Git operation.
+    ScmContinue,
+    /// Abort an in-progress Git operation.
+    ScmAbort,
+    /// Skip the current rebase or cherry-pick step.
+    ScmSkip,
+    /// Toggle inline current-line blame.
+    ToggleInlineBlame,
+    /// Open the current line's attributed commit.
+    OpenBlameDetail,
     /// Open a read-only view of the loaded settings and their provenance.
     ShowLoadedConfig,
+    /// Explicitly check installed managed language servers for updates.
+    CheckLanguageServerUpdates,
     /// Begin creating a new file in the explorer (inline name editor).
     ExplorerNewFile,
     /// Begin creating a new folder in the explorer (inline name editor).
@@ -316,7 +360,7 @@ pub enum Command {
     FindToggleWord,
     /// Submit the commit message.
     CommitSubmit,
-    /// Cancel the commit input.
+    /// Blur the commit input while preserving its draft.
     CommitCancel,
     /// Generate a commit message from the staged diff (AI).
     CommitGenerate,
@@ -430,11 +474,17 @@ impl Command {
             Self::OpenAnyway => "File: Open Anyway (Ignore Size Limit)",
             Self::DismissNotification => "Notifications: Dismiss",
             Self::DismissAllNotifications => "Notifications: Dismiss All",
-            Self::MarkdownPreviewSide => "Markdown: Open Preview to the Side",
+            Self::MarkdownPreviewSide => "Markdown: Toggle Preview to the Side",
+            Self::FormatMarkdownTables => "Markdown: Format Tables",
+            Self::LatexBuildPreview => "LaTeX: Build and Open PDF Preview",
             Self::SplitRight => "View: Split Editor Right",
             Self::SplitDown => "View: Split Editor Down",
             Self::FocusNextPane => "View: Focus Next Pane",
             Self::FocusPrevPane => "View: Focus Previous Pane",
+            Self::ResizePaneLeft => "View: Resize Pane Left",
+            Self::ResizePaneRight => "View: Resize Pane Right",
+            Self::ResizePaneUp => "View: Resize Pane Up",
+            Self::ResizePaneDown => "View: Resize Pane Down",
             Self::Copy => "Copy",
             Self::CopyPath => "Copy Path of Active File",
             Self::CopyRelativePath => "Copy Relative Path of Active File",
@@ -517,9 +567,25 @@ impl Command {
             Self::ScmDiscard => "Source Control: Discard Selected Changes",
             Self::ScmCommit => "Source Control: Commit…",
             Self::ScmRefresh => "Source Control: Refresh",
-            Self::ShowBlame => "Source Control: Show Blame",
-            Self::BlameFunction => "Source Control: Blame This Function",
+            Self::ScmSync => "Source Control: Sync",
+            Self::ScmMenu => "Source Control: More Actions…",
+            Self::ScmSwitchBranch => "Source Control: Switch Branch…",
+            Self::ScmCreateBranch => "Source Control: Create Branch…",
+            Self::ScmPickPullRequest => "Source Control: Pick Open Pull Request…",
+            Self::ScmUndoCommit => "Source Control: Undo Last Commit",
+            Self::ScmStash => "Source Control: Stash Changes…",
+            Self::ScmManageStashes => "Source Control: Manage Stashes…",
+            Self::ScmPublish => "Source Control: Publish Branch…",
+            Self::ScmRenameBranch => "Source Control: Rename Current Branch…",
+            Self::ScmDeleteBranch => "Source Control: Delete Local Branch…",
+            Self::ScmDeleteRemoteBranch => "Source Control: Delete Remote Branch…",
+            Self::ScmContinue => "Source Control: Continue Operation",
+            Self::ScmAbort => "Source Control: Abort Operation",
+            Self::ScmSkip => "Source Control: Skip Operation Step",
+            Self::ToggleInlineBlame => "Source Control: Toggle Inline Blame",
+            Self::OpenBlameDetail => "Source Control: Open Blame Details",
             Self::ShowLoadedConfig => "Settings: Show Loaded Configuration",
+            Self::CheckLanguageServerUpdates => "Language Servers: Check for Updates…",
             Self::ExplorerNewFile => "Explorer: New File…",
             Self::ExplorerNewFolder => "Explorer: New Folder…",
             Self::ExplorerRename => "Explorer: Rename…",
@@ -548,7 +614,7 @@ impl Command {
             Self::FindToggleCase => "Find: Toggle Case Sensitivity",
             Self::FindToggleWord => "Find: Toggle Whole Word",
             Self::CommitSubmit => "Commit: Submit",
-            Self::CommitCancel => "Commit: Cancel",
+            Self::CommitCancel => "Commit: Keep Draft and Close",
             Self::CommitGenerate => "Commit: Generate Message (AI)",
             Self::ExplorerEditSubmit => "Explorer: Confirm Name",
             Self::ExplorerEditCancel => "Explorer: Cancel Edit",
@@ -634,9 +700,10 @@ impl Command {
             Self::Save => "save",
             Self::Cut => "cut",
             Self::Paste => "paste",
-            Self::ShowBlame => "blame",
-            Self::BlameFunction => "blame fn",
+            Self::ToggleInlineBlame => "blame",
+            Self::OpenBlameDetail => "blame detail",
             Self::ShowLoadedConfig => "settings",
+            Self::CheckLanguageServerUpdates => "lsp updates",
             Self::ToggleFold => "fold",
             Self::AddCursorNextOccurrence => "add cursor",
             // Diff.
@@ -653,6 +720,21 @@ impl Command {
             Self::ScmDiscard => "discard",
             Self::ScmCommit => "commit",
             Self::ScmRefresh => "refresh",
+            Self::ScmSync => "sync",
+            Self::ScmMenu => "more",
+            Self::ScmSwitchBranch => "switch branch",
+            Self::ScmCreateBranch => "create branch",
+            Self::ScmPickPullRequest => "pull requests",
+            Self::ScmUndoCommit => "undo commit",
+            Self::ScmStash => "stash",
+            Self::ScmManageStashes => "stashes",
+            Self::ScmPublish => "publish",
+            Self::ScmRenameBranch => "rename branch",
+            Self::ScmDeleteBranch => "delete branch",
+            Self::ScmDeleteRemoteBranch => "delete remote branch",
+            Self::ScmContinue => "continue",
+            Self::ScmAbort => "abort",
+            Self::ScmSkip => "skip",
             // Explorer.
             Self::ExplorerNewFile => "new file",
             Self::ExplorerNewFolder => "new folder",
@@ -681,7 +763,7 @@ impl Command {
             Self::FindToggleCase => "case",
             Self::FindToggleWord => "word",
             Self::CommitSubmit => "submit",
-            Self::CommitCancel => "cancel",
+            Self::CommitCancel => "keep draft",
             Self::CommitGenerate => "generate",
             Self::ExplorerEditSubmit => "confirm",
             Self::ExplorerEditCancel => "cancel",
@@ -714,6 +796,12 @@ impl Command {
             Self::SearchToggleCase => "case",
             Self::SearchToggleWord => "word",
             Self::MarkdownPreviewSide => "preview",
+            Self::FormatMarkdownTables => "format tables",
+            Self::LatexBuildPreview => "build preview",
+            Self::ResizePaneLeft
+            | Self::ResizePaneRight
+            | Self::ResizePaneUp
+            | Self::ResizePaneDown => "resize pane",
             // Self-evident motion, selection, and editing — no hint.
             Self::MoveTabLeft
             | Self::MoveTabRight
@@ -839,9 +927,25 @@ impl Command {
                 | Self::ScmUnstageAll
                 | Self::ScmCommit
                 | Self::ScmRefresh
-                | Self::ShowBlame
-                | Self::BlameFunction
+                | Self::ScmSync
+                | Self::ScmMenu
+                | Self::ScmSwitchBranch
+                | Self::ScmCreateBranch
+                | Self::ScmPickPullRequest
+                | Self::ScmUndoCommit
+                | Self::ScmStash
+                | Self::ScmManageStashes
+                | Self::ScmPublish
+                | Self::ScmRenameBranch
+                | Self::ScmDeleteBranch
+                | Self::ScmDeleteRemoteBranch
+                | Self::ScmContinue
+                | Self::ScmAbort
+                | Self::ScmSkip
+                | Self::ToggleInlineBlame
+                | Self::OpenBlameDetail
                 | Self::ShowLoadedConfig
+                | Self::CheckLanguageServerUpdates
                 | Self::ExplorerNewFile
                 | Self::ExplorerNewFolder
                 | Self::ExplorerRename
@@ -857,10 +961,16 @@ impl Command {
                 | Self::DismissNotification
                 | Self::DismissAllNotifications
                 | Self::MarkdownPreviewSide
+                | Self::FormatMarkdownTables
+                | Self::LatexBuildPreview
                 | Self::SplitRight
                 | Self::SplitDown
                 | Self::FocusNextPane
                 | Self::FocusPrevPane
+                | Self::ResizePaneLeft
+                | Self::ResizePaneRight
+                | Self::ResizePaneUp
+                | Self::ResizePaneDown
                 | Self::ShowDependencyGraph
                 | Self::ShowCommitGraph
                 | Self::OpenCommitByHash

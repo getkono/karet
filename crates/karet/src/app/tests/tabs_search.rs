@@ -552,21 +552,21 @@
                 head_label,
                 merge_base,
                 files,
-                scroll,
+                view,
             } => {
                 assert_eq!(base_label, "main");
                 assert_eq!(head_label, "HEAD");
                 assert!(*merge_base);
                 assert_eq!(files.len(), 1);
-                assert_eq!(*scroll, 0);
+                assert_eq!(view.scroll, 0);
             },
             _ => panic!("expected a compare tab"),
         }
         // A compare tab scrolls via the shared pager arm.
         app.scroll_lines(2);
         assert!(matches!(
-            app.tabs[app.active].kind,
-            TabKind::Compare { scroll: 2, .. }
+            &app.tabs[app.active].kind,
+            TabKind::Compare { view, .. } if view.scroll == 2
         ));
     }
 
@@ -643,14 +643,14 @@
         )];
         app.push_tab(Tab::commit(Box::new(detail), files));
         assert!(matches!(
-            app.tabs[app.active].kind,
-            TabKind::Commit { scroll: 0, .. }
+            &app.tabs[app.active].kind,
+            TabKind::Commit { view, .. } if view.scroll == 0
         ));
 
         // A wheel notch / ScrollDown advances the offset (the draw-time clamp caps it).
         app.scroll_lines(3);
-        let scrolled = match app.tabs[app.active].kind {
-            TabKind::Commit { scroll, .. } => scroll,
+        let scrolled = match &app.tabs[app.active].kind {
+            TabKind::Commit { view, .. } => view.scroll,
             _ => unreachable!(),
         };
         assert_eq!(scrolled, 3, "the commit view scrolls on a wheel notch");
@@ -658,16 +658,13 @@
         // Bottom pins to u16::MAX (clamped against content only during draw); Top returns to 0.
         app.scroll_edge(false);
         assert!(matches!(
-            app.tabs[app.active].kind,
-            TabKind::Commit {
-                scroll: u16::MAX,
-                ..
-            }
+            &app.tabs[app.active].kind,
+            TabKind::Commit { view, .. } if view.scroll == u16::MAX
         ));
         app.scroll_edge(true);
         assert!(matches!(
-            app.tabs[app.active].kind,
-            TabKind::Commit { scroll: 0, .. }
+            &app.tabs[app.active].kind,
+            TabKind::Commit { view, .. } if view.scroll == 0
         ));
     }
 
@@ -806,62 +803,3 @@
 
         let _ = std::fs::remove_dir_all(&dir);
     }
-
-    #[test]
-    fn blame_without_a_code_tab_reports_status() {
-        let mut app = app();
-        // The Welcome tab is active — there is nothing to blame.
-        app.dispatch(Command::ShowBlame);
-        assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
-        assert_eq!(app.status.as_deref(), Some("blame: open a text file first"));
-    }
-
-    #[test]
-    fn blame_outside_a_repo_surfaces_an_error() {
-        use karet_syntax::Highlights;
-        use karet_text::TextBuffer;
-
-        // A scratch directory that is not a git repository.
-        let n = std::sync::atomic::AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "karet-blame-{}-{}",
-            std::process::id(),
-            n.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        let _ = std::fs::create_dir_all(&dir);
-        let file = dir.join("orphan.rs");
-        let _ = std::fs::write(&file, "fn main() {}\n");
-
-        let mut app = app();
-        app.push_tab(Tab::new(
-            "orphan.rs",
-            TabKind::Code {
-                path: file,
-                language: "Rust",
-                doc: None,
-                next_version: 0,
-                buffer: TextBuffer::from_text("fn main() {}\n"),
-                text: "fn main() {}\n".to_string(),
-                highlights: Highlights::default(),
-                semantic_blocks: karet_syntax::SemanticBlocks::default(),
-                folds: FoldRegions::default(),
-                folded: BTreeSet::new(),
-                decos: Vec::new(),
-                search_decos: Vec::new(),
-                syntax_errors: Vec::new(),
-            },
-        ));
-        app.dispatch(Command::ShowBlame);
-
-        // No Blame tab is created; the failure is surfaced as an error notification.
-        assert!(!matches!(app.tabs[app.active].kind, TabKind::Blame { .. }));
-        let active = app.notifications.active();
-        assert!(
-            active
-                .iter()
-                .any(|n| n.severity == Severity::Error && n.title.starts_with("blame:"))
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-

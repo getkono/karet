@@ -15,6 +15,9 @@ impl App {
                 if panel == SidebarPanel::SourceControl && self.scm.log.is_empty() {
                     self.request_scm_log(0);
                 }
+                if panel == SidebarPanel::SourceControl {
+                    self.request_repository_snapshot();
+                }
             },
             Command::OpenQuickOpen => self.open_quick_open(),
             Command::OpenCommandPalette => self.overlay = Some(Overlay::command_palette()),
@@ -34,10 +37,16 @@ impl App {
             Command::DismissNotification => self.notifications.dismiss_latest(),
             Command::DismissAllNotifications => self.notifications.dismiss_all(),
             Command::MarkdownPreviewSide => self.open_markdown_preview_side(),
+            Command::FormatMarkdownTables => self.format_markdown_tables(),
+            Command::LatexBuildPreview => self.build_latex_preview(),
             Command::SplitRight => self.split_focused(SplitDir::Right),
             Command::SplitDown => self.split_focused(SplitDir::Down),
             Command::FocusNextPane => self.focus_pane_cycle(true),
             Command::FocusPrevPane => self.focus_pane_cycle(false),
+            Command::ResizePaneLeft => self.resize_focused_pane(SplitDir::Left),
+            Command::ResizePaneRight => self.resize_focused_pane(SplitDir::Right),
+            Command::ResizePaneUp => self.resize_focused_pane(SplitDir::Up),
+            Command::ResizePaneDown => self.resize_focused_pane(SplitDir::Down),
             Command::Copy => self.copy_selection(),
             Command::CopyPath => self.copy_path(false),
             Command::CopyRelativePath => self.copy_path(true),
@@ -120,10 +129,16 @@ impl App {
                 self.submit_edit_with_cause(EditCause::Delete, editing::delete_forward);
             },
             Command::Indent => {
-                self.submit_edit(|caret, sel, _b, base| Some(editing::indent(caret, sel, base)));
+                let indentation = self.active_indentation();
+                self.submit_edit(|caret, sel, _b, base| {
+                    editing::indent(caret, sel, base, &indentation)
+                });
             },
             Command::Dedent => {
-                self.submit_edit(|caret, _sel, buf, base| editing::dedent(caret, buf, base));
+                let indentation = self.active_indentation();
+                self.submit_edit(|caret, _sel, buf, base| {
+                    editing::dedent(caret, buf, base, &indentation)
+                });
             },
             Command::Undo => self.send_doc_command(|doc| SessionCommand::Undo { doc }),
             Command::Redo => self.send_doc_command(|doc| SessionCommand::Redo { doc }),
@@ -141,15 +156,41 @@ impl App {
             Command::ScmUnstageAll => self.send_vcs(SessionCommand::UnstageAll),
             Command::ScmDiscard => self.scm_arm_discard(),
             Command::ScmCommit => self.scm_open_commit_input(),
-            Command::ScmRefresh => self.send_vcs(SessionCommand::RefreshVcs),
-            Command::ShowBlame => self.open_blame(false),
-            Command::BlameFunction => self.open_blame(true),
+            Command::ScmRefresh => {
+                self.send_vcs(SessionCommand::RefreshVcs);
+                self.request_repository_snapshot();
+            },
+            Command::ScmSync => self.run_vcs_action(VcsAction::Sync),
+            Command::ScmMenu => self.open_scm_menu(),
+            Command::ScmSwitchBranch => self.open_branch_picker(),
+            Command::ScmCreateBranch => self.open_create_branch_form(),
+            Command::ScmPickPullRequest => self.open_pull_request_picker(),
+            Command::ScmUndoCommit => {
+                self.run_vcs_action(VcsAction::UndoCommit {
+                    allow_upstream: false,
+                });
+            },
+            Command::ScmStash => self.open_stash_form(),
+            Command::ScmManageStashes => self.open_stash_manager(),
+            Command::ScmPublish => self.publish_current_branch(),
+            Command::ScmRenameBranch => self.prompt_rename_current_branch(),
+            Command::ScmDeleteBranch => self.open_delete_branch_picker(),
+            Command::ScmDeleteRemoteBranch => self.open_delete_remote_branch_picker(),
+            Command::ScmContinue => self.run_vcs_action(VcsAction::Continue),
+            Command::ScmAbort => self.run_vcs_action(VcsAction::Abort),
+            Command::ScmSkip => self.run_vcs_action(VcsAction::Skip),
+            Command::ToggleInlineBlame => self.toggle_live_blame(),
+            Command::OpenBlameDetail => self.open_live_blame_detail(),
             Command::ShowLoadedConfig => {
                 if self.backend.is_some() {
                     self.send_command(SessionCommand::LoadedConfig);
                 } else {
                     self.open_loaded_config(self.loaded_config.clone());
                 }
+            },
+            Command::CheckLanguageServerUpdates => {
+                self.send_command(SessionCommand::CheckLanguageServerUpdates);
+                self.status = Some("checking language-server updates…".to_string());
             },
             Command::ExplorerNewFile => self.explorer_begin_new(false),
             Command::ExplorerNewFolder => self.explorer_begin_new(true),

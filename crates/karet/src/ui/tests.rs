@@ -1,9 +1,90 @@
+use super::scm::commit_cursor_row;
+use super::scm::commit_input_display;
 use super::*;
+use crate::app::CommitInput;
 
 #[test]
 fn a_markdown_preview_is_inset_from_its_pane_on_every_side() {
     let inner = markdown_preview_rect(Rect::new(10, 5, 40, 20));
     assert_eq!(inner, Rect::new(12, 6, 36, 18));
+}
+
+#[test]
+fn markdown_link_hits_follow_wrapping_scrolling_and_wide_text() {
+    let wrapped = karet_markdown::parse("[日本語 link](docs/readme.md)\n\nplain\n").wrap(8);
+    let hits = markdown_link_hits(&wrapped, Rect::new(10, 5, 8, 2), 0);
+    assert!(!hits.is_empty());
+    assert!(hits.iter().all(|hit| hit.target == "docs/readme.md"));
+    assert!(
+        hits.iter()
+            .all(|hit| hit.rect.x >= 10 && hit.rect.right() <= 18)
+    );
+    assert!(hits.iter().any(|hit| hit.rect.width >= 6));
+
+    let scrolled = markdown_link_hits(&wrapped, Rect::new(10, 5, 8, 1), 2);
+    assert!(scrolled.is_empty());
+}
+
+#[test]
+fn osc8_link_cells_are_self_contained_and_share_an_explicit_id() {
+    let uri = "https://example.com";
+    let id = osc8_id(uri);
+    let first = osc8_symbol(uri, "x");
+    let second = osc8_symbol(uri, "y");
+
+    assert_eq!(
+        first,
+        format!("\u{1b}]8;id={id};{uri}\u{1b}\\x\u{1b}]8;;\u{1b}\\")
+    );
+    assert!(second.starts_with(&format!("\u{1b}]8;id={id};{uri}\u{1b}\\")));
+    assert_ne!(id, osc8_id("https://example.org"));
+    assert!(
+        id.bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    );
+}
+
+#[test]
+fn osc8_link_bytes_reach_the_crossterm_backend() -> Result<(), Box<dyn std::error::Error>> {
+    use std::num::NonZeroU16;
+
+    use ratatui::backend::Backend;
+    use ratatui::backend::CrosstermBackend;
+    use ratatui::buffer::Cell;
+    use ratatui::buffer::CellDiffOption;
+
+    let sequence = osc8_symbol("https://example.com", "x");
+    let mut cell = Cell::default();
+    cell.set_symbol(&sequence);
+    if let Some(width) = NonZeroU16::new(1) {
+        cell.set_diff_option(CellDiffOption::ForcedWidth(width));
+    }
+    let mut output = Vec::new();
+    {
+        let mut backend = CrosstermBackend::new(&mut output);
+        backend.draw(std::iter::once((0, 0, &cell)))?;
+        Backend::flush(&mut backend)?;
+    }
+
+    assert!(
+        output
+            .windows(sequence.len())
+            .any(|window| window == sequence.as_bytes())
+    );
+    Ok(())
+}
+
+#[test]
+fn commit_input_display_preserves_lines_and_marks_the_caret() {
+    let input = CommitInput {
+        text: "subject\nbody".to_string(),
+        cursor: 8,
+        focused: true,
+        ..CommitInput::default()
+    };
+    assert_eq!(commit_input_display(&input), "subject\n▏body");
+    assert_eq!(commit_cursor_row(&input.text, input.cursor, 40), 1);
+    assert_eq!(commit_cursor_row("abcdefghij", 10, 5), 2);
 }
 
 #[test]
@@ -29,6 +110,19 @@ fn breadcrumb_spans_use_display_width_for_wide_characters() {
 #[test]
 fn breadcrumb_spans_of_no_components_are_empty() {
     assert!(breadcrumb_segment_spans(&[]).is_empty());
+}
+
+#[test]
+fn relative_time_uses_compact_git_style_units() {
+    let now = 40_000_000;
+    assert_eq!(scm::relative_time_at(now + 1, now), "just now");
+    assert_eq!(scm::relative_time_at(now - 42, now), "42s ago");
+    assert_eq!(scm::relative_time_at(now - 120, now), "2m ago");
+    assert_eq!(scm::relative_time_at(now - 10_800, now), "3h ago");
+    assert_eq!(scm::relative_time_at(now - 172_800, now), "2d ago");
+    assert_eq!(scm::relative_time_at(now - 1_209_600, now), "2w ago");
+    assert_eq!(scm::relative_time_at(now - 5_184_000, now), "2mo ago");
+    assert_eq!(scm::relative_time_at(now - 63_072_000, now), "2y ago");
 }
 
 #[test]
@@ -76,7 +170,7 @@ fn tab_titles_disambiguate_duplicate_file_names() {
         test_code_tab("/repo/src/lib.rs"),
     ];
 
-    let titles = tab_display_titles(&tabs, root);
+    let titles = tab_display_titles(&tabs, root, karet_filetype::IconStyle::Unicode);
 
     assert_eq!(titles[0].prefix, "src/view/");
     assert_eq!(titles[0].name, "mod.rs");
@@ -84,6 +178,41 @@ fn tab_titles_disambiguate_duplicate_file_names() {
     assert_eq!(titles[1].name, "mod.rs");
     assert_eq!(titles[2].prefix, "");
     assert_eq!(titles[2].name, "lib.rs");
+}
+
+#[test]
+fn symbolic_link_tabs_carry_the_configured_link_marker() {
+    let mut tab = test_code_tab("/repo/alias.rs");
+    tab.is_symlink = true;
+    let titles = tab_display_titles(&[tab], Path::new("/repo"), karet_filetype::IconStyle::Ascii);
+    assert_eq!(titles[0].name, "alias.rs @");
+}
+
+#[test]
+fn markdown_tabs_expose_preview_and_table_actions() {
+    let mut tab = test_code_tab("/repo/README.md");
+    let actions = pane_actions(&tab);
+    assert_eq!(actions.len(), 2);
+    assert_eq!(
+        actions[0],
+        (UiIcon::Preview, Command::MarkdownPreviewSide, false)
+    );
+    assert_eq!(
+        actions[1],
+        (UiIcon::FormatTable, Command::FormatMarkdownTables, false)
+    );
+
+    tab.markdown_preview = Some(crate::tab::MarkdownPreviewState::default());
+    assert!(pane_actions(&tab)[0].2);
+    assert!(pane_actions(&test_code_tab("/repo/main.rs")).is_empty());
+}
+
+#[test]
+fn tex_tabs_expose_the_external_build_preview_action() {
+    assert_eq!(
+        pane_actions(&test_code_tab("/repo/main.tex")),
+        vec![(UiIcon::Preview, Command::LatexBuildPreview, false)]
+    );
 }
 
 #[test]
@@ -107,6 +236,10 @@ fn unfocused_active_tab_prefix_stays_muted_without_fill() {
     let theme = Theme::dark();
     let base = tab_text_style(&theme, true, false, false);
 
+    assert_eq!(
+        base.fg,
+        Some(theme.role(ThemeRole::DiagnosticInfo).to_ratatui())
+    );
     let prefix = tab_prefix_style(&theme, base, true, false);
 
     assert_eq!(prefix.fg, Some(theme.role(ThemeRole::Muted).to_ratatui()));
@@ -211,6 +344,38 @@ fn file_cards_are_boxed_and_width_sized() {
     assert!(
         text.iter().any(|t| t.starts_with("\u{2502} ")),
         "diff lines are railed"
+    );
+}
+
+#[test]
+fn narrow_file_card_headers_never_exceed_the_pane() {
+    use karet_vcs::FileChange;
+    use karet_vcs::StatusKind;
+    use unicode_width::UnicodeWidthStr;
+
+    let file = render::FileView::new(
+        FileChange {
+            path: PathBuf::from("very/long/\u{65e5}\u{672c}\u{8a9e}/filename.rs"),
+            old_path: None,
+            status: StatusKind::Modified,
+            is_binary: false,
+            old: String::new(),
+            new: "x\n".to_string(),
+        },
+        render::Section::Staged,
+        false,
+    );
+    for width in 1..24u16 {
+        let top = file_card(&Theme::dark(), &file, width)
+            .into_iter()
+            .next()
+            .expect("a card header");
+        let text: String = top.spans.iter().map(|span| span.content.as_ref()).collect();
+        assert!(UnicodeWidthStr::width(text.as_str()) <= usize::from(width));
+    }
+    assert_eq!(
+        truncate_start("a/\u{65e5}\u{672c}\u{8a9e}/file.rs", 8),
+        "\u{2026}file.rs"
     );
 }
 

@@ -293,6 +293,24 @@ mod tests {
         assert!(matches!(tab.kind, TabKind::Code { .. }));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn opening_a_symlink_keeps_its_filesystem_identity() -> std::io::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let dir = temp_dir();
+        let target = dir.path.join("target.rs");
+        let alias = dir.path.join("alias.rs");
+        std::fs::write(&target, "fn target() {}\n")?;
+        symlink("target.rs", &alias)?;
+
+        let tab = open_file(&alias);
+        assert!(tab.is_symlink);
+        assert_eq!(tab.path(), Some(alias.as_path()));
+        assert!(matches!(tab.kind, TabKind::Code { .. }));
+        Ok(())
+    }
+
     #[test]
     fn code_opens_with_text_and_defers_highlighting() {
         let dir = temp_dir();
@@ -440,19 +458,9 @@ trailer<</Size 4/Root 1 0 R>>\n%%EOF";
         let _ = std::fs::write(&file, tiny_docx());
         let tab = open_file(&file);
         assert_eq!(tab.title, "report.docx");
-        let TabKind::MarkdownPreview {
-            doc,
-            source_view,
-            buffer,
-            ..
-        } = tab.kind
-        else {
+        let TabKind::MarkdownPreview { buffer, .. } = tab.kind else {
             panic!("expected a markdown preview tab for a .docx file");
         };
-        // Standalone: no session document will ever bind, and the source-view
-        // sentinel keeps the preview↔source machinery away from this tab.
-        assert_eq!(doc, None);
-        assert_eq!(source_view, crate::tab::DETACHED_SOURCE_VIEW);
         assert_eq!(buffer.text(), "# Report\n\n**bold**");
     }
 

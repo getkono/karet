@@ -5,6 +5,61 @@ use super::text::*;
 use super::*;
 
 #[test]
+fn inline_text_decoration_renders_after_the_line() {
+    let buffer = TextBuffer::from_text("let answer = 42;\n");
+    let Ok(range) = Range::new(LineCol::new(0, 0), LineCol::new(0, 1)) else {
+        return;
+    };
+    let decoration = Decoration {
+        range,
+        kind: DecorationKind::InlineText {
+            text: "  Ada, initial".to_string(),
+            before: false,
+        },
+        role: Some(ThemeRole::Muted),
+    };
+    let mut state = EditorState::new();
+    let area = Rect::new(0, 0, 40, 1);
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .decorations(&[decoration])
+        .render(area, &mut target, &mut state);
+    let rendered: String = (0..area.width)
+        .map(|x| target[(x, 0)].symbol().chars().next().unwrap_or(' '))
+        .collect();
+    assert!(rendered.contains("Ada, initial"));
+}
+
+#[test]
+fn merge_conflict_decorations_render_section_backgrounds() {
+    let buffer = TextBuffer::from_text("<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> topic\n");
+    let decorations = crate::conflict_decorations(&buffer.text());
+    let theme = Theme::dark();
+    let area = Rect::new(0, 0, 32, 5);
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .decorations(&decorations)
+        .theme(&theme)
+        .focused(false)
+        .render(area, &mut target, &mut EditorState::new());
+
+    let ours = (0..area.width)
+        .find(|x| target[(*x, 1)].symbol() == "o")
+        .unwrap_or_default();
+    let theirs = (0..area.width)
+        .find(|x| target[(*x, 3)].symbol() == "t")
+        .unwrap_or_default();
+    assert_eq!(
+        target[(ours, 1)].bg,
+        theme.role(ThemeRole::DiffModified).to_ratatui()
+    );
+    assert_eq!(
+        target[(theirs, 3)].bg,
+        theme.role(ThemeRole::DiffAdded).to_ratatui()
+    );
+}
+
+#[test]
 fn editor_builder_collects_layers() {
     let buffer = TextBuffer::from_text("fn main() {}");
     let _editor = Editor::new(&buffer).diagnostics(&[]).decorations(&[]);
@@ -140,6 +195,43 @@ fn word_wrap_renders_continuations_and_maps_clicks() {
 }
 
 #[test]
+fn selected_lines_stay_on_one_row_when_soft_wrap_is_enabled() {
+    let buffer = TextBuffer::from_text("head\n| a very long table row |\ntail");
+    let mut state = EditorState::new();
+    let area = Rect::new(0, 0, 10, 3); // 3-cell gutter, 7 content cells.
+    let mut buf = Buffer::empty(area);
+    Editor::new(&buffer)
+        .word_wrap(true)
+        .unwrapped_lines(&[1..=1])
+        .render(area, &mut buf, &mut state);
+
+    let row: String = (0..area.width)
+        .map(|x| buf[(x, 2)].symbol().chars().next().unwrap_or(' '))
+        .collect();
+    assert!(row.contains("tail"));
+    assert_eq!(state.pos_at(area, &buffer, &[], 4, 2).line, 2);
+}
+
+#[test]
+fn configured_tab_width_controls_rendering_caret_and_click_geometry() {
+    let buffer = TextBuffer::from_text("\tX");
+    let mut state = EditorState::new();
+    state.place_caret(LineCol::new(0, 1));
+    let area = Rect::new(0, 0, 12, 1);
+    let mut buf = Buffer::empty(area);
+    Editor::new(&buffer)
+        .tab_width(4)
+        .focused(true)
+        .render(area, &mut buf, &mut state);
+
+    // The one-digit gutter occupies three cells, followed by four tab cells.
+    assert_eq!(buf[(7, 0)].symbol(), "X");
+    assert!(buf[(7, 0)].modifier.contains(Modifier::REVERSED));
+    assert_eq!(state.pos_at(area, &buffer, &[], 5, 0), LineCol::new(0, 0));
+    assert_eq!(state.pos_at(area, &buffer, &[], 7, 0), LineCol::new(0, 1));
+}
+
+#[test]
 fn wrapped_row_scrolling_walks_continuations_before_lines() {
     let buffer = TextBuffer::from_text("alpha beta gamma\ntail");
     let mut state = EditorState::new();
@@ -263,6 +355,47 @@ fn render_draws_gutter_and_cursor_line() {
 }
 
 #[test]
+fn diagnostics_render_as_severity_colored_underlines() {
+    let buffer = TextBuffer::from_text("alpha beta\n");
+    let theme = Theme::dark();
+    let diagnostic = Diagnostic {
+        range: Range {
+            start: LineCol::new(0, 1),
+            end: LineCol::new(0, 4),
+        },
+        severity: Severity::Warning,
+        message: "Unknown word".to_owned(),
+        source: Some("karet-spell".to_owned()),
+        code: None,
+        tags: Vec::new(),
+        related: Vec::new(),
+    };
+    let area = Rect::new(0, 0, 20, 1);
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .diagnostics(&[diagnostic])
+        .theme(&theme)
+        .focused(false)
+        .render(area, &mut target, &mut EditorState::new());
+
+    // One marker, one line-number digit, and one separating space precede text.
+    let first_diagnostic_cell = &target[(4, 0)];
+    assert!(
+        first_diagnostic_cell
+            .modifier
+            .contains(Modifier::UNDERLINED)
+    );
+    assert_eq!(
+        first_diagnostic_cell.underline_color,
+        theme.role(ThemeRole::DiagnosticWarning).to_ratatui()
+    );
+    assert!(
+        !target[(3, 0)].modifier.contains(Modifier::UNDERLINED),
+        "the diagnostic must not leak outside its source range"
+    );
+}
+
+#[test]
 fn line_word_and_doc_motions() {
     let buffer = TextBuffer::from_text("foo bar\nbaz");
     let mut state = EditorState::new();
@@ -350,6 +483,27 @@ fn primary_caret_cell_matches_rendered_gutter_geometry() {
 }
 
 #[test]
+fn screen_cell_maps_arbitrary_visible_positions() {
+    let buffer = TextBuffer::from_text("abc\ndef\n");
+    let mut state = EditorState::new();
+    let area = Rect::new(10, 5, 20, 4);
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer).render(area, &mut target, &mut state);
+    assert_eq!(
+        state.screen_cell(area, &buffer, &[], LineCol::new(1, 3)),
+        Some((16, 6))
+    );
+    assert_eq!(
+        state.screen_cell(area, &buffer, &[], LineCol::new(8, 0)),
+        None
+    );
+    assert_eq!(
+        state.screen_cell(area, &buffer, &[], LineCol::new(0, 30)),
+        None
+    );
+}
+
+#[test]
 fn set_carets_preserves_count_and_merges_coincident() {
     let mut state = EditorState::new();
     state.set_carets(&[LineCol::new(0, 0), LineCol::new(1, 2)]);
@@ -358,6 +512,29 @@ fn set_carets_preserves_count_and_merges_coincident() {
     state.set_carets(&[LineCol::new(3, 3), LineCol::new(3, 3)]);
     assert!(!state.has_multiple_cursors());
     assert_eq!(state.cursor(), LineCol::new(3, 3));
+}
+
+#[test]
+fn set_cursor_state_preserves_selections_and_clamps_endpoints() {
+    let buffer = TextBuffer::from_text("abc\nx");
+    let mut state = EditorState::new();
+    state.set_cursor_state(
+        &buffer,
+        CursorState {
+            selections: vec![Selection {
+                anchor: LineCol::new(0, 1),
+                head: LineCol::new(9, 9),
+            }],
+            primary: 7,
+        },
+    );
+    assert_eq!(
+        state.cursors().primary(),
+        Selection {
+            anchor: LineCol::new(0, 1),
+            head: LineCol::new(1, 1),
+        }
+    );
 }
 
 #[test]

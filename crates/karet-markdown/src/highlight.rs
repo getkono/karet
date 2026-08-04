@@ -60,6 +60,7 @@ fn paint(
             spans.push(TextSpan {
                 text: text.to_owned(),
                 token,
+                link: None,
             });
         }
     };

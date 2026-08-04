@@ -53,6 +53,53 @@ fn rebuild_lists_top_level_dirs_first() {
     assert_eq!(names(&state), vec!["sub", "a.txt"]);
 }
 
+#[cfg(unix)]
+#[test]
+fn symlink_rows_keep_the_link_identity() -> std::io::Result<()> {
+    use std::os::unix::fs::symlink;
+
+    let dir = temp_dir();
+    write(&dir.path, "target.txt", b"target");
+    symlink("target.txt", dir.path.join("alias.txt"))?;
+    let mut state = FileTreeState::new();
+    state.ensure_built(&dir.path);
+
+    let alias = state
+        .rows()
+        .iter()
+        .find(|row| row.path == dir.path.join("alias.txt"));
+    assert!(alias.is_some_and(|row| row.is_symlink && !row.is_dir));
+    assert!(
+        state
+            .rows()
+            .iter()
+            .any(|row| { row.path == dir.path.join("target.txt") && !row.is_symlink })
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_rows_render_the_link_glyph() -> std::io::Result<()> {
+    use std::os::unix::fs::symlink;
+
+    let dir = temp_dir();
+    write(&dir.path, "target.txt", b"target");
+    symlink("target.txt", dir.path.join("alias.txt"))?;
+    let mut state = FileTreeState::new();
+    let area = Rect::new(0, 0, 30, 3);
+    let mut buffer = Buffer::empty(area);
+    FileTree::new(&dir.path)
+        .icons(IconStyle::Ascii)
+        .render(area, &mut buffer, &mut state);
+    let rendered = (0..area.height)
+        .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+        .map(|point| buffer[point].symbol())
+        .collect::<String>();
+    assert!(rendered.contains(" @ alias.txt"));
+    Ok(())
+}
+
 #[test]
 fn toggle_reveals_children() {
     let dir = temp_dir();
@@ -369,6 +416,18 @@ fn git_directory_is_always_excluded() {
 }
 
 #[test]
+fn nested_repository_marks_its_directory_and_stops_compaction_there() {
+    let dir = temp_dir();
+    write(&dir.path, "group/project/.git/config", b"[core]\n");
+    write(&dir.path, "group/project/src/main.rs", b"fn main() {}\n");
+    let mut state = FileTreeState::new();
+    state.ensure_built(&dir.path);
+    let row = state.rows().first();
+    assert_eq!(row.map(|row| row.label.as_str()), Some("group/project"));
+    assert!(row.is_some_and(|row| row.is_repository));
+}
+
+#[test]
 fn selection_moves_and_clamps() {
     let dir = temp_dir();
     write(&dir.path, "a.txt", b"a");
@@ -536,6 +595,82 @@ fn active_file_row_is_bold() {
 }
 
 #[test]
+fn active_file_uses_deepest_visible_directory_ancestor() {
+    let dir = temp_dir();
+    write(&dir.path, "a/b/foo.rs", b"fn main() {}\n");
+    write(&dir.path, "a/note.txt", b"note\n");
+    let mut state = FileTreeState::new();
+    let theme = Theme::dark();
+    let active = dir.path.join("a/b/foo.rs");
+    let a = dir.path.join("a");
+    let b = dir.path.join("a/b");
+    let area = Rect::new(0, 0, 30, 6);
+    let width = area.width as usize;
+    let active_bg = theme.role(ThemeRole::ActiveEditorRow).to_ratatui();
+
+    state.expand(&a);
+    let mut collapsed = Buffer::empty(area);
+    FileTree::new(&dir.path)
+        .theme(&theme)
+        .active(Some(&active))
+        .render(area, &mut collapsed, &mut state);
+
+    let a_index = state.rows().iter().position(|row| row.path == a);
+    let b_index = state.rows().iter().position(|row| row.path == b);
+    assert!(a_index.is_some());
+    assert!(b_index.is_some());
+    let (Some(a_index), Some(b_index)) = (a_index, b_index) else {
+        return;
+    };
+    assert_ne!(collapsed.content()[a_index * width].bg, active_bg);
+    assert_eq!(collapsed.content()[b_index * width].bg, active_bg);
+    assert!(
+        collapsed.content()[b_index * width..(b_index + 1) * width]
+            .iter()
+            .any(|cell| cell.modifier.contains(Modifier::BOLD))
+    );
+
+    state.expand(&b);
+    let mut expanded = Buffer::empty(area);
+    FileTree::new(&dir.path)
+        .theme(&theme)
+        .active(Some(&active))
+        .render(area, &mut expanded, &mut state);
+
+    let b_index = state.rows().iter().position(|row| row.path == b);
+    let file_index = state.rows().iter().position(|row| row.path == active);
+    assert!(b_index.is_some());
+    assert!(file_index.is_some());
+    let (Some(b_index), Some(file_index)) = (b_index, file_index) else {
+        return;
+    };
+    assert_ne!(expanded.content()[b_index * width].bg, active_bg);
+    assert_eq!(expanded.content()[file_index * width].bg, active_bg);
+}
+
+#[test]
+fn active_file_highlights_collapsed_compact_directory_chain() {
+    let dir = temp_dir();
+    write(&dir.path, "a/b/c/leaf.txt", b"leaf\n");
+    let mut state = FileTreeState::new();
+    let theme = Theme::dark();
+    let active = dir.path.join("a/b/c/leaf.txt");
+    let area = Rect::new(0, 0, 30, 2);
+    let mut buf = Buffer::empty(area);
+
+    FileTree::new(&dir.path)
+        .theme(&theme)
+        .active(Some(&active))
+        .render(area, &mut buf, &mut state);
+
+    assert_eq!(state.rows()[0].path, dir.path.join("a/b/c"));
+    assert_eq!(
+        buf.content()[0].bg,
+        theme.role(ThemeRole::ActiveEditorRow).to_ratatui()
+    );
+}
+
+#[test]
 fn visible_file_row_is_accent_not_bold() {
     let dir = temp_dir();
     write(&dir.path, "a.txt", b"a");
@@ -618,6 +753,24 @@ fn render_draws_status_glyph() {
         .collect();
     assert!(rendered.contains("a.txt"));
     assert!(rendered.contains('M'));
+}
+
+#[test]
+fn repository_badge_is_right_aligned_and_survives_a_long_label() {
+    let dir = temp_dir();
+    write(&dir.path, "long-project-name/.git/config", b"[core]\n");
+    write(&dir.path, "long-project-name/a.txt", b"a\n");
+    let badges = vec![(dir.path.join("long-project-name"), "↑2 +3 -1".to_string())];
+    let mut state = FileTreeState::new();
+    let theme = Theme::dark();
+    let area = Rect::new(0, 0, 18, 1);
+    let mut buf = Buffer::empty(area);
+    FileTree::new(&dir.path)
+        .theme(&theme)
+        .badges(&badges)
+        .render(area, &mut buf, &mut state);
+    let rendered: String = buf.content().iter().map(|cell| cell.symbol()).collect();
+    assert!(rendered.ends_with("↑2 +3 -1"), "{rendered:?}");
 }
 
 #[test]

@@ -35,16 +35,7 @@ impl Repository {
     /// [`VcsError::Git`] for any other discovery failure.
     pub fn discover(path: &Path) -> Result<Self, VcsError> {
         let inner = gix::discover(path).map_err(map_discover)?;
-        // `git2::Repository::discover` (not `open`) follows a linked worktree's
-        // `.git` file to its per-worktree git directory, so `repo.index()` reads and
-        // writes the correct (per-worktree) index. gix already succeeded above.
-        #[cfg(feature = "git2")]
-        let git2 = git2::Repository::discover(path).map_err(to_git)?;
-        Ok(Self {
-            inner,
-            #[cfg(feature = "git2")]
-            git2,
-        })
+        Ok(Self { inner })
     }
 
     /// The URL of the `origin` remote, if one is configured. Used to derive the
@@ -56,6 +47,16 @@ impl Repository {
             .config_snapshot()
             .string("remote.origin.url")
             .map(|v| v.to_str_lossy().into_owned())
+    }
+
+    /// The canonical root of this repository's working tree, or `None` for a bare
+    /// repository. Linked worktrees return the linked worktree root rather than the
+    /// common repository directory.
+    #[must_use]
+    pub fn worktree_root(&self) -> Option<PathBuf> {
+        self.inner
+            .workdir()
+            .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()))
     }
 
     /// The path of `path` relative to the repository's worktree root, or `None` when
@@ -151,6 +152,28 @@ mod tests {
             Some(std::path::PathBuf::from("sub/a.txt"))
         );
         assert!(repo.path_in_worktree(&std::env::temp_dir()).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn worktree_root_is_canonical_repository_root() -> Result<(), VcsError> {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "karet-vcs-worktree-root-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(dir.join("nested")).map_err(|e| VcsError::Git(e.to_string()))?;
+        let _guard = TempDir(dir.clone());
+        let status = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .map_err(|e| VcsError::Git(e.to_string()))?;
+        assert!(status.success());
+
+        let repo = Repository::discover(&dir.join("nested"))?;
+        let expected = std::fs::canonicalize(&dir).map_err(|e| VcsError::Git(e.to_string()))?;
+        assert_eq!(repo.worktree_root().as_deref(), Some(expected.as_path()));
         Ok(())
     }
 }

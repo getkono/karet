@@ -527,11 +527,11 @@ impl Repository {
         Ok(self.merge_base_id(a, b)?.map(|id| id.to_hex().to_string()))
     }
 
-    /// The short name of the current branch's upstream (tracking) branch — e.g.
+    /// The short name of the current branch's live upstream (tracking) branch — e.g.
     /// `origin/main` — resolved from `branch.<name>.remote` / `.merge`, or `None` when
-    /// `HEAD` is detached or the branch has no configured upstream. The returned name is
-    /// itself a valid revision (it resolves to the remote-tracking ref), so it can be
-    /// passed straight back to [`range_changes`](Self::range_changes).
+    /// `HEAD` is detached, no upstream is configured, or its remote-tracking ref is gone.
+    /// The returned name is itself a valid revision, so it can be passed straight back to
+    /// [`range_changes`](Self::range_changes).
     ///
     /// # Errors
     /// Returns [`VcsError::Git`] on failure to read the head or the tracking ref.
@@ -544,7 +544,17 @@ impl Repository {
             .inner
             .branch_remote_tracking_ref_name(head.as_ref(), gix::remote::Direction::Fetch)
         {
-            Some(Ok(name)) => Ok(Some(name.shorten().to_str_lossy().into_owned())),
+            Some(Ok(name)) => {
+                if self
+                    .inner
+                    .try_find_reference(name.as_ref())
+                    .map_err(to_git)?
+                    .is_none()
+                {
+                    return Ok(None);
+                }
+                Ok(Some(name.shorten().to_str_lossy().into_owned()))
+            },
             Some(Err(e)) => Err(to_git(e)),
             None => Ok(None),
         }

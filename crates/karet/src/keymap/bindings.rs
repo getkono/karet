@@ -52,9 +52,17 @@ pub(super) static BINDINGS: &[Binding] = &[
     seq(Global, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('\\'))], Command::SplitDown),
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Right)], Command::FocusNextPane),
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Left)],  Command::FocusPrevPane),
+    // Tiling-WM-style pane growth. Shift keeps these distinct from multi-cursor
+    // Ctrl+Alt+Up/Down in the editor layer.
+    b(Global, true, true, true, Left,  Command::ResizePaneLeft),
+    b(Global, true, true, true, Right, Command::ResizePaneRight),
+    b(Global, true, true, true, Up,    Command::ResizePaneUp),
+    b(Global, true, true, true, Down,  Command::ResizePaneDown),
 
     // Markdown preview to the side (VS Code parity: `Ctrl+K V`). Inert on a non-Markdown tab.
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('v'))], Command::MarkdownPreviewSide),
+    // Markdown All in One parity on Linux: format GFM tables in the document.
+    b(Editor, true, true, false, Char('i'), Command::FormatMarkdownTables),
 
     // Source-Control panel (sidebar focus, SCM panel active). Listed before the
     // generic sidebar bindings so its keys win when both would match.
@@ -69,8 +77,10 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(SourceControl, false, false, false, Char('g'), Command::ShowCommitGraph),
 
     // Explorer panel (sidebar focus, Explorer active). Listed before the generic
-    // sidebar bindings so its keys win. New file/folder, rename, refresh; collapse-all
-    // and new file/folder are also on the panel's toolbar buttons and in the palette.
+    // sidebar bindings so its keys win. Path-copy shortcuts follow VS Code; placing
+    // them first also keeps them visible in the width-limited status hints bar.
+    b(Explorer, false, true,  true,  Char('c'), Command::ExplorerCopyPath),
+    seq(Explorer, chord(true, false, false, Char('k')), &[chord(true, true, false, Char('c'))], Command::ExplorerCopyRelativePath),
     b(Explorer, false, false, false, Char('a'), Command::ExplorerNewFile),
     b(Explorer, false, false, false, Char('A'), Command::ExplorerNewFolder),
     b(Explorer, true,  false, false, Char('c'), Command::ExplorerCopy),
@@ -171,9 +181,9 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Editor, true,  false, false, Char('x'), Command::Cut),
     b(Editor, true,  false, false, Char('v'), Command::Paste),
 
-    // Semantic blame (blameline): whole file, or the function under the caret.
-    b(Editor, true,  true,  false, Char('b'), Command::ShowBlame),
-    b(Editor, false, false, true,  Char('b'), Command::BlameFunction),
+    // Live blame: toggle inline attribution, or open the attributed commit.
+    b(Editor, true,  true,  false, Char('b'), Command::ToggleInlineBlame),
+    b(Editor, false, false, true,  Char('b'), Command::OpenBlameDetail),
 
     // Code folding (VS Code parity): `Ctrl+K Ctrl+L` toggles the fold at the cursor.
     seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('l'))], Command::ToggleFold),
@@ -193,6 +203,8 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Pager, false, false, false, PageUp,    Command::PageUp),
     b(Pager, false, false, false, Home,      Command::Top),
     b(Pager, false, false, false, End,       Command::Bottom),
+    b(Pager, false, false, false, Char(']'), Command::NextChangedFile),
+    b(Pager, false, false, false, Char('['), Command::PrevChangedFile),
     b(Pager, false, false, false, Char('q'), Command::CloseTab),
 
     // The full-screen commit graph browser: j/k or arrows move the selection, Enter
@@ -238,7 +250,7 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Find, false, false, true,  Char('w'), Command::FindToggleWord),
     // Commit-message input.
     b(CommitInput, false, false, false, Esc,   Command::CommitCancel),
-    b(CommitInput, false, false, false, Enter, Command::CommitSubmit),
+    b(CommitInput, true,  false, false, Enter, Command::CommitSubmit),
     b(CommitInput, true,  false, false, Char('g'), Command::CommitGenerate),
     // Go-to-commit (revision) input.
     b(RevInput, false, false, false, Esc,   Command::RevInputCancel),

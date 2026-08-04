@@ -1,6 +1,167 @@
 use super::*;
 
 impl App {
+    /// Reserve a preview immediately, then compile the active editable TeX document
+    /// through the backend's configured external recipe.
+    pub(super) fn build_latex_preview(&mut self) {
+        let (doc, source) = match self.tabs.get(self.active).map(|tab| &tab.kind) {
+            Some(TabKind::Code {
+                path,
+                doc: Some(doc),
+                ..
+            }) if path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("tex")) =>
+            {
+                (*doc, path.clone())
+            },
+            _ => {
+                self.status = Some("LaTeX preview requires an open editable .tex file".to_owned());
+                return;
+            },
+        };
+
+        self.push_tab(Tab::latex_preview(source));
+        let view = self.tabs[self.active].view;
+        if let Some(request) = self.send_command_id(SessionCommand::BuildLatex { doc }) {
+            self.latex_previews.insert(request, view);
+        } else if let TabKind::LatexPreview { error, .. } = &mut self.tabs[self.active].kind {
+            *error = Some("LaTeX backend is unavailable".to_owned());
+        }
+    }
+
+    /// Merge compiler diagnostics into the document and fill the reserved preview.
+    pub(super) fn finish_latex_build(
+        &mut self,
+        id: Option<RequestId>,
+        doc: DocumentId,
+        pdf: Option<PathBuf>,
+        diagnostics: Vec<Diagnostic>,
+        error: Option<String>,
+    ) {
+        let mut combined = self
+            .document_diagnostics
+            .get(&doc)
+            .into_iter()
+            .flatten()
+            .filter(|diagnostic| diagnostic.source.as_deref() != Some("latex"))
+            .cloned()
+            .collect::<Vec<_>>();
+        combined.extend(diagnostics);
+        self.replace_document_diagnostics(doc, combined);
+        let destination = id.and_then(|request| self.latex_previews.remove(&request));
+        if let Some(view) = destination
+            && let Some(index) = self.tabs.iter().position(|tab| tab.view == view)
+        {
+            if let Some(pdf) = pdf {
+                let mut tab = workspace::open_file(&pdf);
+                tab.view = view;
+                self.tabs[index] = tab;
+                self.active = index;
+                self.status = Some("LaTeX preview built".to_owned());
+            } else if let TabKind::LatexPreview {
+                error: preview_error,
+                ..
+            } = &mut self.tabs[index].kind
+            {
+                *preview_error = Some(
+                    error
+                        .clone()
+                        .unwrap_or_else(|| "LaTeX build produced no PDF".to_owned()),
+                );
+            }
+        }
+        if let Some(error) = error {
+            self.notify(Severity::Error, NotificationKind::System, error);
+        }
+        self.maybe_auto_complete_spelling(doc);
+    }
+
+    /// Format every GFM table in the active Markdown document as one undoable edit.
+    pub(super) fn format_markdown_tables(&mut self) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        if !matches!(
+            &tab.kind,
+            TabKind::Code { path, .. }
+                if karet_filetype::file_type_for_path(path).name() == "Markdown"
+        ) {
+            self.status = Some("Table formatting is available for Markdown files".to_string());
+            return;
+        }
+        let TabKind::Code { buffer, .. } = &tab.kind else {
+            return;
+        };
+        let original = buffer.text();
+        let ranges = karet_markdown::table_line_ranges(&original);
+        if ranges.is_empty() {
+            self.status = Some("No Markdown tables found".to_string());
+            return;
+        }
+        let formatted = karet_markdown::format_tables(&original);
+        if formatted == original {
+            self.status = Some("Markdown tables are already formatted".to_string());
+            return;
+        }
+        let primary = tab.editor.cursor();
+        let cursors = tab.editor.cursors().clone();
+        self.submit_edit(move |caret, _selection, buffer, base| {
+            (caret == primary).then(|| editing::replace_document(buffer, formatted.clone(), base))
+        });
+        if let Some(Tab {
+            kind: TabKind::Code { buffer, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            editor.set_cursor_state(buffer, cursors);
+        }
+        self.status = Some(format!(
+            "Formatted {} Markdown table{}",
+            ranges.len(),
+            if ranges.len() == 1 { "" } else { "s" }
+        ));
+    }
+
+    /// The display width of hard tabs in `tab`, after per-document EditorConfig and
+    /// language settings have been resolved.
+    pub(crate) fn tab_width_for(&self, tab: &Tab) -> u16 {
+        let fallback = u16::from(
+            self.settings
+                .editor
+                .for_language(tab_language(tab))
+                .tab_size(),
+        );
+        App::tab_doc(tab)
+            .and_then(|doc| self.document_settings.get(&doc))
+            .map_or(fallback, |settings| settings.tab_width)
+            .max(1)
+    }
+
+    /// The concrete indentation string for the active document. EditorConfig may
+    /// combine hard tabs and spaces when an indent is not divisible by tab width.
+    pub(super) fn active_indentation(&self) -> String {
+        let tab = self.tabs.get(self.active);
+        let resolved = tab.map(|tab| self.settings.editor.for_language(tab_language(tab)));
+        let fallback_size = resolved.map_or(4, |settings| u16::from(settings.tab_size()));
+        let fallback_spaces = resolved.is_none_or(|settings| settings.insert_spaces());
+        let document = tab
+            .and_then(App::tab_doc)
+            .and_then(|doc| self.document_settings.get(&doc).copied());
+        let size = usize::from(document.map_or(fallback_size, |settings| settings.indent_size));
+        let insert_spaces = document.map_or(fallback_spaces, |settings| settings.insert_spaces);
+        if insert_spaces {
+            return " ".repeat(size);
+        }
+        let tab_width = tab.map_or(1, |tab| self.tab_width_for(tab)) as usize;
+        format!(
+            "{}{}",
+            "\t".repeat(size / tab_width),
+            " ".repeat(size % tab_width)
+        )
+    }
+
     /// Scroll the active tab by `delta` lines/rows (clamped to its content).
     pub(super) fn scroll_lines(&mut self, delta: i32) {
         // The browser has no free scroll: a wheel notch moves the commit selection.
@@ -45,19 +206,34 @@ impl App {
                 *scroll = next as u16;
             },
             TabKind::Diff { scroll, .. }
-            | TabKind::Blame { scroll, .. }
+            | TabKind::StashPreview { scroll, .. }
             | TabKind::Graph { scroll, .. }
             | TabKind::LoadedConfig { scroll, .. }
-            | TabKind::CommitLoading { scroll, .. }
-            | TabKind::Commit { scroll, .. }
-            | TabKind::Compare { scroll, .. } => {
+            | TabKind::CommitLoading { scroll, .. } => {
                 let next = (i64::from(*scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
                 *scroll = next as u16;
+            },
+            TabKind::Commit { view, .. } | TabKind::Compare { view, .. } => {
+                let next =
+                    (i64::from(view.scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
+                view.scroll = next as u16;
             },
             TabKind::Hex { bytes, scroll, .. } => {
                 let max = bytes.len().div_ceil(16).saturating_sub(1) as i64;
                 let next = (*scroll as i64 + i64::from(delta)).clamp(0, max);
                 *scroll = next as usize;
+            },
+            TabKind::Github(crate::app::github::GithubViewState::Issue { scroll, .. })
+            | TabKind::Github(crate::app::github::GithubViewState::WorkflowRun {
+                scroll, ..
+            }) => {
+                let next = (i64::from(*scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
+                *scroll = next as u16;
+            },
+            TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) => {
+                let next =
+                    (i64::from(view.scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
+                view.scroll = next as u16;
             },
             // Scrolling a document turns pages (one page per scroll gesture).
             #[cfg(feature = "pdf")]
@@ -70,6 +246,28 @@ impl App {
             },
             _ => {},
         }
+    }
+
+    /// Scroll the active code tab's in-editor Markdown preview and align the
+    /// source editor to the preview's nearest source anchor.
+    pub(super) fn scroll_markdown_preview(&mut self, delta: i32) {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let TabKind::Code { buffer, .. } = &tab.kind else {
+            return;
+        };
+        let Some(preview) = tab.markdown_preview.as_mut() else {
+            return;
+        };
+        let max = preview.wrapped.lines.len().saturating_sub(1) as i64;
+        let next = (i64::from(preview.scroll) + i64::from(delta)).clamp(0, max);
+        preview.scroll = next as u16;
+        let source = preview
+            .wrapped
+            .source_line_for_wrapped(usize::from(preview.scroll));
+        let last = buffer.line_count().saturating_sub(1);
+        tab.editor.scroll_line = u32::try_from(source.min(last)).unwrap_or(u32::MAX);
     }
 
     /// Scroll the active overflow-mode code tab horizontally by `delta` columns.
@@ -114,13 +312,14 @@ impl App {
                 *scroll = if top { 0 } else { last };
             },
             TabKind::Diff { scroll, .. }
-            | TabKind::Blame { scroll, .. }
+            | TabKind::StashPreview { scroll, .. }
             | TabKind::Graph { scroll, .. }
             | TabKind::LoadedConfig { scroll, .. }
-            | TabKind::CommitLoading { scroll, .. }
-            | TabKind::Commit { scroll, .. }
-            | TabKind::Compare { scroll, .. } => {
+            | TabKind::CommitLoading { scroll, .. } => {
                 *scroll = if top { 0 } else { u16::MAX };
+            },
+            TabKind::Commit { view, .. } | TabKind::Compare { view, .. } => {
+                view.scroll = if top { 0 } else { u16::MAX };
             },
             TabKind::Hex { bytes, scroll, .. } => {
                 *scroll = if top {
@@ -128,6 +327,13 @@ impl App {
                 } else {
                     bytes.len().div_ceil(16).saturating_sub(1)
                 };
+            },
+            TabKind::Github(crate::app::github::GithubViewState::Issue { scroll, .. })
+            | TabKind::Github(crate::app::github::GithubViewState::WorkflowRun {
+                scroll, ..
+            }) => *scroll = if top { 0 } else { u16::MAX },
+            TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) => {
+                view.scroll = if top { 0 } else { u16::MAX };
             },
             #[cfg(feature = "pdf")]
             TabKind::Document {
@@ -202,6 +408,24 @@ impl App {
 
     /// Replace the active diff tab with the next/previous changed file.
     pub(super) fn step_changed_file(&mut self, delta: i32) {
+        if let Some(TabKind::Commit { files, view, .. } | TabKind::Compare { files, view, .. }) =
+            self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
+        {
+            if files.is_empty() || view.file_anchors.is_empty() {
+                return;
+            }
+            let current = view
+                .file_anchors
+                .iter()
+                .rposition(|anchor| *anchor <= view.scroll);
+            let next = current.map_or(0, |file| {
+                (file as i64 + i64::from(delta))
+                    .clamp(0, view.file_anchors.len().saturating_sub(1) as i64)
+                    as usize
+            });
+            view.scroll = view.file_anchors[next];
+            return;
+        }
         if !self.active_is_diff() {
             return;
         }
@@ -373,16 +597,33 @@ impl App {
     pub(super) fn handle_editor_click(&mut self, mouse: MouseEvent) {
         let point = (mouse.column, mouse.row);
         // Route the click to the pane whose content it landed in, focusing it.
-        let Some((pane, area)) = self
+        let Some((pane, area, file_hit)) = self
             .pane_frames
             .iter()
             .find(|f| rect_contains(f.content_rect, point))
-            .map(|f| (f.pane, f.content_rect))
+            .map(|f| {
+                (
+                    f.pane,
+                    f.content_rect,
+                    f.commit_file_hits
+                        .iter()
+                        .find(|hit| rect_contains(hit.rect, point))
+                        .copied(),
+                )
+            })
         else {
             return;
         };
         self.focus_pane_switch(pane);
         self.focus = Focus::Editor;
+        if let Some(hit) = file_hit
+            && let Some(TabKind::Commit { view, .. } | TabKind::Compare { view, .. }) =
+                self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
+        {
+            view.scroll = hit.scroll;
+            self.editor_selecting = false;
+            return;
+        }
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         let alt = mouse.modifiers.contains(KeyModifiers::ALT);
         let streak = self.click_streak(mouse.column, mouse.row);
@@ -398,6 +639,29 @@ impl App {
             }) = self.tabs.get_mut(self.active)
         {
             *explain_since = Some(Instant::now());
+            self.editor_selecting = false;
+            return;
+        }
+        let code_pos = self.tabs.get(self.active).and_then(|tab| {
+            let TabKind::Code {
+                buffer,
+                folds,
+                folded,
+                ..
+            } = &tab.kind
+            else {
+                return None;
+            };
+            let fold_lines = resolve_folds(folds, folded);
+            Some(
+                tab.editor
+                    .pos_at(area, buffer, &fold_lines, mouse.column, mouse.row),
+            )
+        });
+        if streak == 2
+            && let Some(pos) = code_pos
+            && self.open_spelling_menu(mouse.column, mouse.row, pos)
+        {
             self.editor_selecting = false;
             return;
         }
@@ -475,13 +739,14 @@ impl App {
     /// Register the code tab at `idx` with the session so it can be edited, if it is
     /// an as-yet-unregistered code tab and a backend is attached.
     pub(super) fn register_doc(&mut self, idx: usize) {
-        let path = match self.tabs.get(idx) {
+        let (path, view) = match self.tabs.get(idx) {
             Some(Tab {
                 kind: TabKind::Code {
                     path, doc: None, ..
                 },
+                view,
                 ..
-            }) => path.clone(),
+            }) => (path.clone(), *view),
             _ => return,
         };
         let Some(backend) = &self.backend else {
@@ -495,7 +760,7 @@ impl App {
                 language: None,
             },
         );
-        self.pending_open.insert(id, path);
+        self.pending_open.insert(id, PendingOpen { path, view });
     }
 
     /// Build an edit from the active code tab's caret/selection via `build` and
@@ -588,6 +853,7 @@ impl App {
                 },
             );
         }
+        let mut auto_save_version = None;
         if let Some(Tab {
             kind:
                 TabKind::Code {
@@ -615,10 +881,14 @@ impl App {
             ) {
                 *next_version = applied.version;
                 *text = buffer.text();
+                auto_save_version = Some(applied.version);
             }
             editor.set_carets(&carets);
             let head = editor.cursor();
             editor.scroll_to(head);
+        }
+        if let Some(version) = auto_save_version {
+            self.schedule_auto_save(doc, version, Instant::now());
         }
     }
 }

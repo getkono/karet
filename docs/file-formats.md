@@ -53,7 +53,8 @@ These extensions highlight via a compiled-in grammar (the `karet` app enables th
 | HTML | `html`, `htm` |
 | CSS | `css` |
 | YAML | `yml`, `yaml` |
-| Markdown | `md`, `markdown`, `mdown`, `mkd` — *block grammar only* (headings, code fences, lists); inline emphasis/links are not yet highlighted |
+| Markdown | `md`, `markdown`, `mdown`, `mkd` — layered block + inline grammar, including fenced-language injection |
+| TeX / LaTeX | `tex`, `sty`, `cls` |
 
 ## Recognized for icons / labels (no bundled grammar)
 
@@ -68,7 +69,7 @@ These get an icon, a display name, and renderer routing, but open as plain
   `Dockerfile`/`Containerfile`, `Makefile`/`GNUmakefile`/`CMakeLists.txt`, git
   config dotfiles, `.editorconfig`, `.env`.
 - **Web:** Less, Vue, Svelte.
-- **Prose / docs:** reStructuredText, AsciiDoc, TeX, plain text, `LICENSE` /
+- **Prose / docs:** reStructuredText, AsciiDoc, plain text, `LICENSE` /
   `README` / `AUTHORS`.
 
 ## Non-text renderers
@@ -80,15 +81,31 @@ bytes so a mislabeled file still routes sensibly):
 |---|---|---|
 | Image | inline image widget — Kitty graphics with a truecolor halfblock fallback (or a placeholder if it can't decode) | `png`, `jpg`, `jpeg`, `gif`, `webp`, `bmp`, `ico`, `tiff`, `tif` + magic bytes |
 | PDF | pages rasterized and shown inline via the **Kitty graphics protocol** — via [`karet-pdf`](../crates/karet-pdf) (pure-Rust [`hayro`](https://github.com/LaurenzV/hayro)); on a terminal without Kitty graphics, a message explaining the requirement | `pdf` + `%PDF-` magic |
-| DOCX | placeholder — visual rendering is pending a pure-Rust rasterizer (see below) | `docx` |
+| DOCX | OOXML converted to a standalone rendered Markdown preview by the pure-Rust `karet-docx` engine | `docx` |
 | CBOR | decoded to editable [diagnostic notation](https://www.rfc-editor.org/rfc/rfc8949#section-8) text and re-encoded on save (hex view if it can't decode) — via [`karet-cbor`](../crates/karet-cbor) | `cbor` + `0xD9D9F7` self-describe tag |
 | Binary | hex view | NUL byte / invalid UTF-8 in the sampled head |
 | Too large | placeholder, with an "open anyway" override | larger than 10 MiB |
 
+Image decoding uses Gamut exclusively:
+
+| Formats | Decoder | Current scope |
+|---|---|---|
+| PNG (`png`) | [`gamut`](https://github.com/justin13888/gamut) | still images; every PNG colour type and bit depth, including Adam7 interlacing |
+| JPEG (`jpg`, `jpeg`) | [`gamut`](https://github.com/justin13888/gamut) | baseline and progressive 8-bit JPEG, converted to the shared RGBA model |
+| WebP (`webp`) | [`gamut`](https://github.com/justin13888/gamut) | VP8/VP8L still images, including alpha |
+| TIFF (`tiff`, `tif`) | [`gamut`](https://github.com/justin13888/gamut) | baseline 8-bit grayscale/RGB/RGBA and palette; supported strip/tile compression modes |
+
+The shared Kitty/halfblock raster path no longer depends on a codec library; PDF
+pixels use the same built-in RGBA resampler. GIF, BMP, and ICO are still
+classified as images by extension or magic bytes, but fall back to the image
+placeholder because Gamut does not publish those codecs. AVIF/JPEG XL/HEIC are
+not advertised yet because the published Gamut versions do not currently provide
+the pure-Rust decode path karet needs (and no C `*-sys` dependency is permitted).
+
 The **Image** and **PDF** renderers are optional, default-on Cargo features
 (`images` and `pdf` on the `karet` app; `raster`/`images`/`pdf` on
 `karet-fileview`). Building the app with `--no-default-features` drops their heavy
-dependency trees (`image` codecs, `hayro`) and routes those kinds to the
+dependency trees (Gamut, `hayro`) and routes those kinds to the
 placeholder branch instead — see [binary-size.md](binary-size.md). Classification
 (`FileKind`) is unaffected; only rendering degrades.
 
@@ -107,16 +124,5 @@ placeholder.
 - **Pkl highlighting** — pkl is recognized (icon + label) but there is no
   published `tree-sitter-pkl` Rust crate; once one exists, add a `lang-pkl`
   feature + registry entry in `karet-treesitter`.
-- **DOCX rendering** — `.docx` is recognized and routed to `FileKind::Docx`, but
-  visual page rendering is deferred: the only pure-Rust DOCX renderer with a
-  layout engine (`rdocx`) currently pulls in the C library `zstd-sys` transitively
-  (via its `zip` dependency), which conflicts with karet's pure-Rust policy. When a
-  pure-Rust DOCX rasterizer is available, a `karet-docx` engine can rasterize pages
-  into the same Kitty-graphics path as PDF.
-- **Inline Markdown highlighting** — only `tree-sitter-md`'s block grammar is
-  wired; the inline grammar (emphasis, links) needs the multi-grammar injection
-  path.
-- **Rich rendered Markdown** — the `karet-markdown` render model is still a
-  skeleton; Markdown opens as highlighted source for now.
 - **Per-segment clicks on compacted folders** — a compacted `a/b/c` row toggles
   as a unit; clicking an individual segment is a future refinement.

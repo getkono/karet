@@ -222,6 +222,7 @@ const SECTIONS: &[&str] = &[
     "workbench",
     "search",
     "spellcheck",
+    "latex",
     "git",
     "lsp",
 ];
@@ -387,6 +388,7 @@ fn deserialize_sections(
             "workbench" => section(value, |v| settings.workbench = v),
             "search" => section(value, |v| settings.search = v),
             "spellcheck" => section(value, |v| settings.spellcheck = v),
+            "latex" => section(value, |v| settings.latex = v),
             "git" => section(value, |v| settings.git = v),
             "lsp" => section(value, |v| settings.lsp = v),
             _ => Ok(()),
@@ -465,7 +467,7 @@ fn to_object<T: serde::Serialize>(value: &T) -> Map<String, Value> {
 /// `$GIT_ROOT/.karet/setting.jsonc` for the first root that sits inside a git
 /// worktree. Ascends parents looking for a `.git` entry (file or directory), mirroring
 /// git's own discovery, so this stays unit-testable without a live repository.
-fn project_config_path(roots: &[PathBuf]) -> Option<PathBuf> {
+pub(crate) fn project_config_path(roots: &[PathBuf]) -> Option<PathBuf> {
     roots
         .iter()
         .find_map(|root| git_root(root))
@@ -485,7 +487,7 @@ fn git_root(start: &Path) -> Option<PathBuf> {
 }
 
 /// `$XDG_CONFIG_HOME/karet/setting.jsonc` (platform config dir on macOS/Windows).
-fn user_config_path() -> Option<PathBuf> {
+pub(crate) fn user_config_path() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "getkono", "karet")
         .map(|dirs| dirs.config_dir().join("setting.jsonc"))
 }

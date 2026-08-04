@@ -1,6 +1,363 @@
+use unicode_width::UnicodeWidthChar;
+
 use super::*;
 
 impl App {
+    /// Refresh branch, remote, recovery, and stash facts without blocking the UI.
+    pub(super) fn request_repository_snapshot(&mut self) {
+        if self.scm.repository_loading_since.is_some() {
+            return;
+        }
+        self.scm.repository_loading_since = Some(Instant::now());
+        self.scm.repository_request = self.send_command_id(SessionCommand::RepositorySnapshot);
+    }
+
+    /// Submit one ordered repository action.
+    pub(super) fn run_vcs_action(&mut self, action: VcsAction) {
+        if self
+            .send_command_id(SessionCommand::VcsAction {
+                action: action.clone(),
+            })
+            .is_some()
+        {
+            self.scm.operation = Some(action);
+        }
+    }
+
+    /// Refuse to change the worktree while any editor has unsaved content, offering
+    /// the explicit save-all path instead.
+    pub(super) fn guard_branch_switch(&mut self, target: karet_vcs::BranchTarget) {
+        if self.all_tabs().any(|tab| tab.dirty) {
+            self.overlay = Some(Overlay::text(
+                "Unsaved editors · type save to save all and switch",
+                TextPurpose::SaveAndSwitch { target },
+            ));
+        } else {
+            self.run_vcs_action(VcsAction::SwitchBranch(target));
+        }
+    }
+
+    /// Save every distinct dirty document and park the switch until all answers arrive.
+    pub(super) fn save_then_switch(&mut self, target: karet_vcs::BranchTarget) {
+        let mut docs: Vec<DocumentId> = self
+            .all_tabs()
+            .filter(|tab| tab.dirty)
+            .filter_map(Self::tab_doc)
+            .collect();
+        docs.sort();
+        docs.dedup();
+        let action = VcsAction::SwitchBranch(target);
+        if self.save_docs(&docs) == 0 {
+            self.run_vcs_action(action);
+        } else {
+            self.vcs_after_save = Some(action);
+            self.status = Some(format!("saving {} editor(s) before switching…", docs.len()));
+        }
+    }
+
+    /// Open the discoverable overflow menu for repository workflows.
+    pub(super) fn open_scm_menu(&mut self) {
+        let mut commands = vec![
+            Command::ScmSync,
+            Command::ScmSwitchBranch,
+            Command::ScmCreateBranch,
+            Command::ScmPickPullRequest,
+            Command::ScmUndoCommit,
+            Command::ScmStash,
+            Command::ScmManageStashes,
+            Command::ScmPublish,
+            Command::ScmRenameBranch,
+            Command::ScmDeleteBranch,
+            Command::ScmDeleteRemoteBranch,
+            Command::ScmRefresh,
+        ];
+        if let Some(operation) = self
+            .scm
+            .repository
+            .as_ref()
+            .and_then(|snapshot| snapshot.state.operation)
+        {
+            commands.insert(0, Command::ScmAbort);
+            commands.insert(0, Command::ScmContinue);
+            if !matches!(operation, karet_vcs::RepositoryOperation::Merge) {
+                commands.insert(2, Command::ScmSkip);
+            }
+        }
+        self.overlay = Some(Overlay::commands("Source Control", commands));
+    }
+
+    /// Open a combined local/remote branch picker.
+    pub(super) fn open_branch_picker(&mut self) {
+        let Some(snapshot) = self.scm.repository.as_ref() else {
+            self.request_repository_snapshot();
+            self.status = Some("branches: loading repository state".to_string());
+            return;
+        };
+        let mut items = Vec::new();
+        for branch in &snapshot.branches {
+            let head = if branch.is_head { "✓ " } else { "  " };
+            items.push((
+                format!("{head}{}", branch.name),
+                karet_vcs::BranchTarget::Local(branch.name.clone()),
+            ));
+        }
+        for branch in &snapshot.remote_branches {
+            let local_name = branch.name.clone();
+            items.push((
+                format!("  {}/{}", branch.remote, branch.name),
+                karet_vcs::BranchTarget::Remote {
+                    remote: branch.remote.clone(),
+                    branch: branch.name.clone(),
+                    local_name,
+                },
+            ));
+        }
+        self.overlay = Some(Overlay::branches(items));
+    }
+
+    /// Open the full branch-creation form with every configured remote available.
+    pub(super) fn open_create_branch_form(&mut self) {
+        let remotes = self
+            .scm
+            .repository
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .remotes
+                    .iter()
+                    .map(|remote| remote.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.overlay = Some(Overlay::create_branch(remotes));
+    }
+
+    /// Query open pull requests for the upstream-aware primary remote.
+    pub(super) fn open_pull_request_picker(&mut self) {
+        let Some(snapshot) = self.scm.repository.as_ref() else {
+            self.request_repository_snapshot();
+            self.status = Some("pull requests: loading repository state".to_string());
+            return;
+        };
+        let preferred = snapshot
+            .state
+            .upstream
+            .as_deref()
+            .and_then(|upstream| upstream.split_once('/').map(|(remote, _)| remote));
+        let remote = preferred
+            .and_then(|name| snapshot.remotes.iter().find(|remote| remote.name == name))
+            .or_else(|| {
+                snapshot
+                    .remotes
+                    .iter()
+                    .find(|remote| remote.name == "origin")
+            })
+            .or_else(|| snapshot.remotes.first())
+            .map(|remote| remote.name.clone());
+        let Some(remote) = remote else {
+            self.status = Some("pull requests: no remote is configured".to_string());
+            return;
+        };
+        self.status = Some(format!("loading open pull requests from {remote}"));
+        self.pull_request_items.clear();
+        self.pull_request_remote = Some(remote.clone());
+        self.pending_pull_requests = self.send_command_id(SessionCommand::PullRequests {
+            remote,
+            page: 1,
+            per_page: 100,
+        });
+    }
+
+    /// Open stash creation controls.
+    pub(super) fn open_stash_form(&mut self) {
+        self.overlay = Some(Overlay::stash_form());
+    }
+
+    /// Open actions for every current stash entry.
+    pub(super) fn open_stash_manager(&mut self) {
+        let Some(snapshot) = self.scm.repository.as_ref() else {
+            self.request_repository_snapshot();
+            return;
+        };
+        if snapshot.stashes.is_empty() {
+            self.status = Some("stashes: none".to_string());
+            return;
+        }
+        self.overlay = Some(Overlay::stashes(&snapshot.stashes));
+    }
+
+    /// Publish the current branch to its upstream remote, `origin`, or first remote.
+    pub(super) fn publish_current_branch(&mut self) {
+        let Some(snapshot) = self.scm.repository.as_ref() else {
+            self.request_repository_snapshot();
+            return;
+        };
+        let Some(branch) = snapshot.state.branch.clone() else {
+            self.status = Some("publish: HEAD is detached".to_string());
+            return;
+        };
+        let preferred = snapshot
+            .state
+            .upstream
+            .as_deref()
+            .and_then(|upstream| upstream.split_once('/').map(|(remote, _)| remote));
+        let remote = preferred
+            .and_then(|name| snapshot.remotes.iter().find(|remote| remote.name == name))
+            .or_else(|| {
+                snapshot
+                    .remotes
+                    .iter()
+                    .find(|remote| remote.name == "origin")
+            })
+            .or_else(|| snapshot.remotes.first())
+            .map(|remote| remote.name.clone());
+        let Some(remote) = remote else {
+            self.status = Some("publish: no remote is configured".to_string());
+            return;
+        };
+        self.run_vcs_action(VcsAction::PublishBranch {
+            remote,
+            branch,
+            set_upstream: true,
+        });
+    }
+
+    /// Prompt for a replacement name for the current local branch.
+    pub(super) fn prompt_rename_current_branch(&mut self) {
+        let current = self
+            .scm
+            .repository
+            .as_ref()
+            .and_then(|snapshot| snapshot.state.branch.clone());
+        let Some(old) = current else {
+            self.status = Some("rename branch: HEAD is detached".to_string());
+            return;
+        };
+        self.overlay = Some(Overlay::text(
+            format!("Rename {old}"),
+            TextPurpose::RenameBranch { old },
+        ));
+    }
+
+    /// Pick a non-current local branch for safe (`git branch -d`) deletion.
+    pub(super) fn open_delete_branch_picker(&mut self) {
+        let Some(snapshot) = self.scm.repository.as_ref() else {
+            self.request_repository_snapshot();
+            return;
+        };
+        let items: Vec<String> = snapshot
+            .branches
+            .iter()
+            .filter(|branch| !branch.is_head)
+            .map(|branch| branch.name.clone())
+            .collect();
+        if items.is_empty() {
+            self.status = Some("delete branch: no eligible local branches".to_string());
+        } else {
+            self.overlay = Some(Overlay::delete_local_branches(items));
+        }
+    }
+
+    /// Pick a non-default remote branch, then require its exact name as confirmation.
+    pub(super) fn open_delete_remote_branch_picker(&mut self) {
+        let Some(snapshot) = self.scm.repository.as_ref() else {
+            self.request_repository_snapshot();
+            return;
+        };
+        let items: Vec<(String, String)> = snapshot
+            .remote_branches
+            .iter()
+            .filter(|branch| !branch.is_default)
+            .map(|branch| (branch.remote.clone(), branch.name.clone()))
+            .collect();
+        if items.is_empty() {
+            self.status = Some("delete remote branch: no eligible branches".to_string());
+        } else {
+            self.overlay = Some(Overlay::delete_remote_branches(items));
+        }
+    }
+
+    /// Request live blame when its document/version/cursor anchor changed.
+    pub(super) fn request_live_blame(&mut self) {
+        if !self.settings.git.blame {
+            self.live_blame = None;
+            self.pending_blame = None;
+            self.failed_blame = None;
+            return;
+        }
+        let target = self.tabs.get(self.active).and_then(|tab| match &tab.kind {
+            TabKind::Code {
+                doc: Some(doc),
+                buffer,
+                ..
+            } => Some((*doc, buffer.version(), tab.editor.cursor().line)),
+            _ => None,
+        });
+        let Some((doc, version, line)) = target else {
+            self.live_blame = None;
+            self.pending_blame = None;
+            self.failed_blame = None;
+            return;
+        };
+        if self.failed_blame == Some((doc, version, line)) {
+            return;
+        }
+        self.failed_blame = None;
+        if self
+            .live_blame
+            .as_ref()
+            .is_some_and(|blame| blame.doc == doc && blame.version == version && blame.line == line)
+        {
+            return;
+        }
+        self.live_blame = None;
+        // Let the one in-flight computation finish instead of queueing a full blame
+        // for every intermediate cursor row. Its result handler immediately requests
+        // the latest anchor when the cursor has moved in the meantime.
+        if self.pending_blame.is_some() {
+            return;
+        }
+        if let Some(id) = self.send_command_id(SessionCommand::Blame { doc, version, line }) {
+            self.pending_blame = Some((id, doc, version, line));
+        }
+    }
+
+    /// Toggle current-line blame and persist the user setting.
+    pub(super) fn toggle_live_blame(&mut self) {
+        self.apply_blame_setting(!self.settings.git.blame);
+    }
+
+    /// Open the attributed commit for the current line in the standard commit tab.
+    pub(super) fn open_live_blame_detail(&mut self) {
+        let hash = self
+            .live_blame
+            .as_ref()
+            .and_then(LiveBlame::commit_hash)
+            .map(str::to_string);
+        if let Some(hash) = hash {
+            self.open_commit(hash);
+        }
+    }
+
+    fn apply_blame_setting(&mut self, enabled: bool) {
+        self.settings.git.blame = enabled;
+        self.loaded_config.settings.git.blame = enabled;
+        #[cfg(not(test))]
+        if let Err(error) = karet_session::config::set_user_blame(enabled) {
+            self.notify(
+                Severity::Error,
+                NotificationKind::System,
+                format!("settings: {error}"),
+            );
+        }
+        self.pending_blame = None;
+        self.failed_blame = None;
+        self.live_blame = None;
+        self.request_live_blame();
+        let label = if enabled { "on" } else { "off" };
+        self.status = Some(format!("inline blame: {label}"));
+    }
+
     /// Open the Source-Control cursor's change as a materialized (permanent) diff
     /// view and move keyboard focus into it — the explicit Enter / double-click
     /// "take me into the view" action. Browsing (arrow moves, single click) goes
@@ -117,10 +474,13 @@ impl App {
     /// Open the full-screen commit graph browser and request its first history page.
     pub(super) fn open_commit_graph(&mut self) {
         self.push_tab(Tab::commit_graph(None, "Commits"));
-        self.graph_log_req = self.send_command_id(SessionCommand::VcsLog {
-            skip: 0,
-            limit: SCM_LOG_PAGE,
-        });
+        let view = self.tabs[self.active].view;
+        self.graph_log_req = self
+            .send_command_id(SessionCommand::VcsLog {
+                skip: 0,
+                limit: SCM_LOG_PAGE,
+            })
+            .map(|id| (id, view));
     }
 
     /// Open the graph browser scoped to the active file's history (`git log -- file`).
@@ -140,11 +500,14 @@ impl App {
             .unwrap_or("history")
             .to_string();
         self.push_tab(Tab::commit_graph(Some(path.clone()), format!("⌥ {name}")));
-        self.graph_log_req = self.send_command_id(SessionCommand::FileHistory {
-            path,
-            skip: 0,
-            limit: SCM_LOG_PAGE,
-        });
+        let view = self.tabs[self.active].view;
+        self.graph_log_req = self
+            .send_command_id(SessionCommand::FileHistory {
+                path,
+                skip: 0,
+                limit: SCM_LOG_PAGE,
+            })
+            .map(|id| (id, view));
     }
 
     /// Open the go-to-commit input; the typed revision resolves via [`open_commit`].
@@ -302,13 +665,12 @@ impl App {
         }
     }
 
-    /// Open the commit-message input, if there is something staged to commit.
+    /// Focus the permanent commit-message editor.
     pub(super) fn scm_open_commit_input(&mut self) {
-        if self.scm.staged_count == 0 {
-            self.status = Some("commit: stage changes first".to_string());
-            return;
-        }
-        self.commit_input = Some(String::new());
+        self.sidebar_visible = true;
+        self.sidebar_panel = SidebarPanel::SourceControl;
+        self.focus = Focus::Sidebar;
+        self.commit_input.focused = true;
     }
 
     /// Arm a discard confirmation for the current selection.
@@ -324,21 +686,30 @@ impl App {
         self.pending_discard = Some(paths);
     }
 
-    /// Cancel the commit input.
+    /// Blur the commit editor while preserving its draft.
     pub(super) fn commit_cancel(&mut self) {
-        self.commit_input = None;
-        self.status = Some("commit cancelled".to_string());
+        self.commit_input.focused = false;
+        self.status = Some("commit message kept as a draft".to_string());
     }
 
     /// Submit the commit message (or report that one is required).
     pub(super) fn commit_submit(&mut self) {
-        let message = self.commit_input.take().unwrap_or_default();
-        let message = message.trim().to_string();
+        if self.commit_input.pending.is_some() {
+            self.status = Some("commit already in progress".to_string());
+            return;
+        }
+        if self.scm.staged_count == 0 {
+            self.status = Some("commit: stage changes first".to_string());
+            return;
+        }
+        let message = self.commit_input.text.trim().to_string();
         if message.is_empty() {
-            self.commit_input = Some(String::new());
             self.status = Some("commit: message required".to_string());
-        } else {
-            self.send_vcs(SessionCommand::Commit { message });
+            return;
+        }
+        if let Some(id) = self.send_command_id(SessionCommand::Commit { message }) {
+            self.commit_input.pending = Some(id);
+            self.status = Some("committing…".to_string());
         }
     }
 
@@ -351,25 +722,37 @@ impl App {
         self.send_vcs(SessionCommand::GenerateCommitMessage);
     }
 
-    /// Edit the commit message with an unbound key (backspace / printable).
+    /// Edit the multiline commit message with an unbound text-field key.
     pub(super) fn commit_edit(&mut self, key: KeyEvent) {
+        if matches!(key.code, KeyCode::Enter) && key.modifiers.contains(KeyModifiers::SUPER) {
+            self.commit_submit();
+            return;
+        }
         match key.code {
-            KeyCode::Backspace => {
-                if let Some(message) = self.commit_input.as_mut() {
-                    message.pop();
-                }
-            },
+            KeyCode::Backspace => self.commit_input.backspace(),
+            KeyCode::Delete => self.commit_input.delete(),
+            KeyCode::Left => self.commit_input.move_left(),
+            KeyCode::Right => self.commit_input.move_right(),
+            KeyCode::Home => self.commit_input.move_home(),
+            KeyCode::End => self.commit_input.move_end(),
+            KeyCode::Up => self.commit_input.move_vertical(-1),
+            KeyCode::Down => self.commit_input.move_vertical(1),
+            KeyCode::Enter => self.commit_input.insert_char('\n'),
             KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                if !key.modifiers.intersects(
+                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                ) =>
             {
-                if let Some(message) = self.commit_input.as_mut() {
-                    message.push(c);
-                }
+                self.commit_input.insert_char(c);
             },
             _ => {},
         }
+    }
+
+    /// Insert pasted text at the commit editor's caret, normalizing line endings.
+    pub(super) fn commit_paste(&mut self, text: &str) {
+        self.commit_input
+            .insert_text(&text.replace("\r\n", "\n").replace('\r', "\n"));
     }
 
     /// Resolve a pending discard: `confirmed` discards the armed paths, otherwise
@@ -435,5 +818,126 @@ impl App {
         if self.scm_commits_offset > 0 {
             self.scm_commits_offset += inserted;
         }
+    }
+}
+
+impl CommitInput {
+    fn insert_char(&mut self, character: char) {
+        self.text.insert(self.cursor, character);
+        self.cursor += character.len_utf8();
+    }
+
+    fn insert_text(&mut self, text: &str) {
+        self.text.insert_str(self.cursor, text);
+        self.cursor += text.len();
+    }
+
+    fn backspace(&mut self) {
+        let Some(previous) = self.text[..self.cursor]
+            .char_indices()
+            .next_back()
+            .map(|(index, _)| index)
+        else {
+            return;
+        };
+        self.text.drain(previous..self.cursor);
+        self.cursor = previous;
+    }
+
+    fn delete(&mut self) {
+        let Some(width) = self.text[self.cursor..].chars().next().map(char::len_utf8) else {
+            return;
+        };
+        self.text.drain(self.cursor..self.cursor + width);
+    }
+
+    fn move_left(&mut self) {
+        if let Some(previous) = self.text[..self.cursor]
+            .char_indices()
+            .next_back()
+            .map(|(index, _)| index)
+        {
+            self.cursor = previous;
+        }
+    }
+
+    fn move_right(&mut self) {
+        if let Some(width) = self.text[self.cursor..].chars().next().map(char::len_utf8) {
+            self.cursor += width;
+        }
+    }
+
+    fn move_home(&mut self) {
+        self.cursor = self.text[..self.cursor]
+            .rfind('\n')
+            .map_or(0, |newline| newline + 1);
+    }
+
+    fn move_end(&mut self) {
+        self.cursor = self.text[self.cursor..]
+            .find('\n')
+            .map_or(self.text.len(), |newline| self.cursor + newline);
+    }
+
+    fn move_vertical(&mut self, delta: i8) {
+        let start = self.text[..self.cursor]
+            .rfind('\n')
+            .map_or(0, |newline| newline + 1);
+        let column = self.text[start..self.cursor].chars().count();
+        let target_start = if delta < 0 {
+            let Some(previous_end) = start.checked_sub(1) else {
+                return;
+            };
+            self.text[..previous_end]
+                .rfind('\n')
+                .map_or(0, |newline| newline + 1)
+        } else {
+            let Some(next) = self.text[self.cursor..].find('\n') else {
+                return;
+            };
+            self.cursor + next + 1
+        };
+        let target_end = self.text[target_start..]
+            .find('\n')
+            .map_or(self.text.len(), |newline| target_start + newline);
+        self.cursor = self.text[target_start..target_end]
+            .char_indices()
+            .nth(column)
+            .map_or(target_end, |(offset, _)| target_start + offset);
+    }
+
+    pub(super) fn place_cursor(&mut self, column: u16, row: u16, width: u16) {
+        let target_row = usize::from(row.saturating_add(self.scroll));
+        let target_col = usize::from(column);
+        let width = usize::from(width.max(1));
+        let mut display_row = 0usize;
+        let mut display_col = 0usize;
+        let mut candidate = 0usize;
+        for (index, character) in self.text.char_indices() {
+            if character == '\n' {
+                if display_row == target_row {
+                    self.cursor = candidate;
+                    return;
+                }
+                display_row += 1;
+                display_col = 0;
+                candidate = index + 1;
+                continue;
+            }
+            let char_width = character.width().unwrap_or(0).max(1);
+            if display_col + char_width > width {
+                display_row += 1;
+                display_col = 0;
+            }
+            if display_row > target_row
+                || display_row == target_row && target_col < display_col + char_width
+            {
+                self.cursor = index;
+                return;
+            }
+            display_col += char_width;
+            candidate = index + character.len_utf8();
+        }
+        self.cursor = candidate;
     }
 }

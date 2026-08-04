@@ -27,6 +27,38 @@
     }
 
     #[test]
+    fn missing_language_server_requires_typed_install_approval() {
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        app.on_backend_event(
+            None,
+            SessionEvent::LanguageServerInstallRequired {
+                server: karet_session::LanguageServerId::Texlab,
+            },
+        );
+        assert!(matches!(app.overlay, Some(Overlay::Text(_))));
+    }
+
+    #[test]
+    fn update_plan_displays_exact_versions_before_approval() {
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        app.on_backend_event(
+            Some(RequestId(8)),
+            SessionEvent::LanguageServerUpdatePlan {
+                plan: karet_session::LanguageServerPlanId(3),
+                changes: vec![karet_session::LanguageServerChange {
+                    server: karet_session::LanguageServerId::Texlab,
+                    current: Some("5.25.0".into()),
+                    target: "5.26.0".into(),
+                    download_bytes: Some(1),
+                }],
+            },
+        );
+        let painted = screen(&mut app, 100, 16).join("\n");
+        assert!(painted.contains("5.25.0"), "{painted}");
+        assert!(painted.contains("5.26.0"), "{painted}");
+    }
+
+    #[test]
     fn live_config_preserves_cli_icons_and_current_sidebar_state() {
         use karet_session::config::schema::IconStyleSetting;
         use karet_session::config::schema::StartupPanel;
@@ -492,4 +524,3 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
             "blink hides a valid caret without losing its placement"
         );
     }
-

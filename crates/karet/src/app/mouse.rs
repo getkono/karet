@@ -5,9 +5,13 @@ impl App {
     /// to cycle). Returns `true` when the event was consumed.
     pub(super) fn handle_tabstrip_mouse(&mut self, mouse: MouseEvent) -> bool {
         let point = (mouse.column, mouse.row);
-        let Some((pane, hit)) = self.pane_frames.iter().find_map(|f| {
-            rect_contains(f.tabstrip_rect, point)
-                .then(|| (f.pane, tab_at(&f.tab_hits, mouse.column)))
+        let Some((pane, hit, action)) = self.pane_frames.iter().find_map(|f| {
+            rect_contains(f.tabstrip_rect, point).then(|| {
+                let action = f.action_hits.iter().find_map(|&(start, end, command)| {
+                    (mouse.column >= start && mouse.column < end).then_some(command)
+                });
+                (f.pane, tab_at(&f.tab_hits, mouse.column), action)
+            })
         }) else {
             return false;
         };
@@ -23,21 +27,27 @@ impl App {
             },
             MouseEventKind::Down(MouseButton::Left) => {
                 self.focus_pane_switch(pane);
-                if let Some((i, on_close)) = hit {
+                if let Some(command) = action {
+                    self.dispatch(command);
+                } else if let Some((i, on_close)) = hit {
                     if on_close {
                         self.request_close_tab_at(i);
                     } else {
                         self.select_tab(i);
-                        self.tab_drag = Some(TabDrag {
-                            from_pane: pane,
-                            hover: None,
-                        });
+                        if !self.tabs[i].is_github_dashboard() {
+                            self.tab_drag = Some(TabDrag {
+                                from_pane: pane,
+                                hover: None,
+                            });
+                        }
                     }
                 }
             },
             MouseEventKind::Down(MouseButton::Middle) => {
                 self.focus_pane_switch(pane);
-                if let Some((i, _)) = hit {
+                if action.is_none()
+                    && let Some((i, _)) = hit
+                {
                     self.request_close_tab_at(i);
                 }
             },
@@ -45,10 +55,15 @@ impl App {
                 // Right-click on a tab selects it and opens the pane context menu
                 // for it; the strip's empty tail opens nothing.
                 self.focus_pane_switch(pane);
-                if let Some((i, _)) = hit {
+                if action.is_none()
+                    && let Some((i, _)) = hit
+                {
                     self.select_tab(i);
                     self.open_pane_context_menu(mouse.column, mouse.row);
                 }
+            },
+            MouseEventKind::Moved => {
+                self.pane_action_hover = action.map(|_| point);
             },
             _ => {},
         }
@@ -118,6 +133,86 @@ impl App {
             self.dispatch(cmd);
         }
         true
+    }
+
+    /// Open the attributed commit when the visible inline blame label is clicked.
+    pub(super) fn handle_blame_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            || !self
+                .blame_rect
+                .is_some_and(|rect| rect_contains(rect, (mouse.column, mouse.row)))
+        {
+            return false;
+        }
+        self.open_live_blame_detail();
+        true
+    }
+
+    /// Activate a Markdown link only for the explicit Ctrl/Cmd-click gesture.
+    pub(super) fn handle_markdown_link_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            || !mouse
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER)
+        {
+            return false;
+        }
+        let point = (mouse.column, mouse.row);
+        let Some(target) = self
+            .markdown_link_hits
+            .iter()
+            .find(|hit| rect_contains(hit.rect, point))
+            .map(|hit| hit.target.clone())
+        else {
+            return false;
+        };
+        let Some(source) = self
+            .tabs
+            .get(self.active)
+            .and_then(Tab::path)
+            .map(Path::to_path_buf)
+        else {
+            return false;
+        };
+
+        match crate::links::resolve(&target, &source, &self.root) {
+            Ok(crate::links::LinkTarget::ExternalUrl(url)) => {
+                if let Err(error) = crate::links::open_external(&url) {
+                    self.notify(
+                        Severity::Error,
+                        NotificationKind::System,
+                        format!("could not open link: {error}"),
+                    );
+                }
+            },
+            Ok(crate::links::LinkTarget::WorkspaceFile { path, .. }) => {
+                self.open_markdown_file_link(&path);
+            },
+            Ok(crate::links::LinkTarget::OutsideWorkspaceFile(path)) => {
+                self.overlay = Some(Overlay::text(
+                    "Type open to open a file outside this workspace",
+                    TextPurpose::ConfirmOutsideWorkspaceLink { path },
+                ));
+            },
+            Err(error) => self.notify(
+                Severity::Warning,
+                NotificationKind::System,
+                format!("link blocked: {error}"),
+            ),
+        }
+        true
+    }
+
+    pub(super) fn open_markdown_file_link(&mut self, path: &Path) {
+        if path.is_file() {
+            self.open_path(path);
+        } else {
+            self.notify(
+                Severity::Warning,
+                NotificationKind::Io,
+                format!("linked file does not exist: {}", path.display()),
+            );
+        }
     }
 
     /// Handle mouse interaction with an open context menu.
@@ -193,10 +288,28 @@ impl App {
                 && self.scm_divider_y != 0
                 && mouse.row == self.scm_divider_y
                 && rect_contains(self.sidebar_rect, (mouse.column, mouse.row)));
-        let shape = if over_sidebar_divider {
+        let pane_axis = self
+            .pane_resize
+            .map(|resize| resize.divider.axis)
+            .or_else(|| {
+                self.pane_dividers
+                    .iter()
+                    .find(|divider| divider.contains(mouse.column, mouse.row))
+                    .map(|divider| divider.axis)
+            });
+        let over_blame = self
+            .blame_rect
+            .is_some_and(|rect| rect_contains(rect, (mouse.column, mouse.row)));
+        let over_markdown_link = self
+            .markdown_link_hits
+            .iter()
+            .any(|hit| rect_contains(hit.rect, (mouse.column, mouse.row)));
+        let shape = if over_sidebar_divider || pane_axis == Some(SplitAxis::Cols) {
             Some("col-resize")
-        } else if over_scm_divider {
+        } else if over_scm_divider || pane_axis == Some(SplitAxis::Rows) {
             Some("row-resize")
+        } else if over_blame || over_markdown_link {
+            Some("pointer")
         } else {
             None
         };
@@ -209,6 +322,14 @@ impl App {
     }
 
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent) {
+        self.handle_mouse_event(mouse);
+        // Mouse clicks, drag-selection, tab switches, and pane focus changes can all
+        // move the active caret without passing through the keyboard input hook.
+        self.reconcile_completion();
+        self.request_live_blame();
+    }
+
+    fn handle_mouse_event(&mut self, mouse: MouseEvent) {
         self.update_pointer_shape_hint(&mouse);
         // Toasts float above everything (including the overlay), so hit-test them
         // first: a left click on a card dismisses it.
@@ -250,6 +371,41 @@ impl App {
             }
             return;
         }
+        if let Some(resize) = self.pane_resize {
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    let coordinate = match resize.divider.axis {
+                        SplitAxis::Cols => mouse.column,
+                        SplitAxis::Rows => mouse.row,
+                    };
+                    let current = self
+                        .layout
+                        .dividers(self.main_rect)
+                        .into_iter()
+                        .find(|divider| {
+                            divider.axis == resize.divider.axis
+                                && divider.before == resize.divider.before
+                                && divider.after == resize.divider.after
+                        })
+                        .map_or(resize.divider.position, |divider| divider.position);
+                    let delta = i32::from(coordinate) - i32::from(current);
+                    let delta = i16::try_from(delta).unwrap_or_else(|_| {
+                        if delta.is_negative() {
+                            i16::MIN
+                        } else {
+                            i16::MAX
+                        }
+                    });
+                    if delta != 0 {
+                        self.layout
+                            .resize_divider(resize.divider, delta, self.main_rect);
+                    }
+                },
+                MouseEventKind::Up(MouseButton::Left) => self.pane_resize = None,
+                _ => {},
+            }
+            return;
+        }
         // An in-progress text selection captures motion until the button is released.
         if self.editor_selecting {
             match mouse.kind {
@@ -261,6 +417,17 @@ impl App {
             }
             return;
         }
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            && let Some(divider) = self
+                .pane_dividers
+                .iter()
+                .copied()
+                .find(|divider| divider.contains(mouse.column, mouse.row))
+        {
+            self.pane_resize = Some(PaneResize { divider });
+            self.pane_divider_hover = Some(divider);
+            return;
+        }
         if self.handle_tabstrip_mouse(mouse) {
             return;
         }
@@ -270,16 +437,35 @@ impl App {
         if self.handle_status_mouse(mouse) {
             return;
         }
+        if self.github_mouse(mouse) {
+            return;
+        }
+        if self.handle_blame_mouse(mouse) {
+            return;
+        }
+        if self.handle_markdown_link_mouse(mouse) {
+            return;
+        }
         let point = (mouse.column, mouse.row);
         let in_sidebar = self.sidebar_visible && rect_contains(self.sidebar_rect, point);
         let in_outline = self.outline_visible && rect_contains(self.outline_rect, point);
         let in_editor = rect_contains(self.editor_rect, point);
+        let in_markdown_preview = rect_contains(self.markdown_preview_rect, point);
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+        if in_editor && !in_outline && !matches!(mouse.kind, MouseEventKind::Moved) {
+            self.dismiss_outline_overlay();
+        }
         match mouse.kind {
             MouseEventKind::ScrollDown if in_outline => self.outline_step(1),
             MouseEventKind::ScrollUp if in_outline => self.outline_step(-1),
             MouseEventKind::ScrollDown if in_sidebar => self.sidebar_wheel(3, mouse.row),
             MouseEventKind::ScrollUp if in_sidebar => self.sidebar_wheel(-3, mouse.row),
+            MouseEventKind::ScrollDown if in_markdown_preview => {
+                self.scroll_markdown_preview(3);
+            },
+            MouseEventKind::ScrollUp if in_markdown_preview => {
+                self.scroll_markdown_preview(-3);
+            },
             MouseEventKind::ScrollRight if in_editor => self.scroll_columns(3),
             MouseEventKind::ScrollLeft if in_editor => self.scroll_columns(-3),
             MouseEventKind::ScrollDown if in_editor && shift => self.scroll_columns(3),
@@ -328,6 +514,7 @@ impl App {
                 } else if in_sidebar {
                     self.handle_sidebar_click(mouse.column, mouse.row, mouse.modifiers);
                 } else {
+                    self.commit_input.focused = false;
                     self.handle_editor_click(mouse);
                 }
             },
@@ -335,8 +522,19 @@ impl App {
             // explorer / source-control lists (cleared when off the content area).
             MouseEventKind::Moved => {
                 self.hover = rect_contains(self.sidebar_content_rect, point).then_some(point);
+                self.pane_action_hover = None;
+                self.pane_divider_hover = self
+                    .pane_dividers
+                    .iter()
+                    .copied()
+                    .find(|divider| divider.contains(mouse.column, mouse.row));
                 self.sidebar_header_hover =
                     (in_sidebar && mouse.row == self.sidebar_rect.y).then_some(point);
+                self.markdown_link_hover = self
+                    .markdown_link_hits
+                    .iter()
+                    .any(|hit| rect_contains(hit.rect, point))
+                    .then_some(point);
             },
             _ => {},
         }
@@ -377,6 +575,18 @@ impl App {
     /// (neither activates).
     pub(super) fn handle_sidebar_click(&mut self, col: u16, row_y: u16, modifiers: KeyModifiers) {
         self.focus = Focus::Sidebar;
+        if self.sidebar_panel == SidebarPanel::SourceControl
+            && rect_contains(self.scm_commit_rect, (col, row_y))
+        {
+            self.commit_input.focused = true;
+            self.commit_input.place_cursor(
+                col.saturating_sub(self.scm_commit_rect.x),
+                row_y.saturating_sub(self.scm_commit_rect.y),
+                self.scm_commit_rect.width,
+            );
+            return;
+        }
+        self.commit_input.focused = false;
         // Explorer header toolbar buttons sit on the header row alongside the switcher.
         if row_y == self.sidebar_rect.y
             && let Some(cmd) = self
@@ -389,6 +599,17 @@ impl App {
         }
         if let Some(panel) = self.panel_at(col, row_y) {
             self.dispatch(Command::SelectPanel(panel));
+            return;
+        }
+        if self.sidebar_panel == SidebarPanel::SourceControl
+            && let Some(command) =
+                self.scm_header_hits
+                    .iter()
+                    .find_map(|&(start, end, row, command)| {
+                        (row_y == row && col >= start && col < end).then_some(command)
+                    })
+        {
+            self.dispatch(command);
             return;
         }
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);

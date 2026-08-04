@@ -8,8 +8,11 @@ worktree, plus untracked) changes — VS Code's default — and enumerates each 
 file's full *before*/*after* content so a consumer can diff it (e.g. with `karet-diff`),
 with binary detection and rename handling. Headless by default.
 
-Per-line blame, branch listing and interactive staging are reserved (the public joints
-are defined).
+The same headless API provides blame, staging, guarded commit undo, branch creation,
+switching, rename and deletion, stash management, upstream-aware sync and publish,
+conflict recovery, and reusable pull-request branch checkout. Read-oriented repository
+inspection uses `gix`; mutations and network operations use the installed Git CLI so
+they honor the user's credential helpers, signing, hooks, and Git configuration.
 
 Part of the [karet](https://github.com/getkono/karet) workspace.
 

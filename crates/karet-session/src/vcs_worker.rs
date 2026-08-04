@@ -1,0 +1,834 @@
+//! Ordered background execution for repository and forge operations.
+
+use std::collections::HashMap;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::mpsc;
+
+use karet_core::BlameAttribution;
+use karet_core::BlameCommit;
+use karet_vcs::Repository;
+use karet_vcs::Selection;
+use karet_vcs::SyncOutcome;
+use karet_vcs::VcsError;
+use tokio::sync::mpsc::UnboundedSender;
+
+use crate::api::DocumentId;
+use crate::api::Event;
+use crate::api::PullRequestSummary;
+use crate::api::RangeSpec;
+use crate::api::RepositorySnapshot;
+use crate::api::RequestId;
+use crate::api::VcsAction;
+use crate::api::VcsOutcome;
+use crate::cancellation::Cancellation;
+
+/// A unit of work sent by the session actor to its serialized VCS worker.
+pub(crate) enum VcsJob {
+    /// Load the current repository snapshot.
+    Snapshot { id: RequestId, cancel: Cancellation },
+    /// Compute compact status for one exact nested repository path.
+    NestedRepositoryStatus {
+        id: RequestId,
+        path: PathBuf,
+        cancel: Cancellation,
+    },
+    /// Run one repository action.
+    Action { id: RequestId, action: VcsAction },
+    /// Query open GitHub pull requests.
+    PullRequests {
+        id: RequestId,
+        remote: String,
+        page: u32,
+        per_page: u8,
+        cancel: Cancellation,
+    },
+    /// Attribute a current document buffer.
+    Blame {
+        id: RequestId,
+        doc: DocumentId,
+        version: u64,
+        path: PathBuf,
+        text: String,
+        line: u32,
+        cancel: Cancellation,
+    },
+    /// Fetch a page of repository history.
+    Log {
+        id: RequestId,
+        skip: usize,
+        limit: usize,
+        cancel: Cancellation,
+    },
+    /// Resolve a commit, then load its changed files progressively.
+    CommitDetail {
+        id: RequestId,
+        rev: String,
+        cancel: Cancellation,
+    },
+    /// Compute a comparison between revisions.
+    RangeChanges {
+        id: RequestId,
+        spec: RangeSpec,
+        cancel: Cancellation,
+    },
+    /// Fetch one file's history.
+    FileHistory {
+        id: RequestId,
+        path: PathBuf,
+        skip: usize,
+        limit: usize,
+        cancel: Cancellation,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct BlameCacheKey {
+    doc: DocumentId,
+    version: u64,
+    path: PathBuf,
+    head: String,
+}
+
+type BlameCache = HashMap<BlameCacheKey, Vec<BlameAttribution>>;
+
+/// Start the one-per-session ordered repository worker.
+pub(crate) fn spawn(
+    root: Option<PathBuf>,
+    events: UnboundedSender<(Option<RequestId>, Event)>,
+) -> mpsc::Sender<VcsJob> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut blame_cache = BlameCache::new();
+        while let Ok(job) = rx.recv() {
+            run(&root, &events, &mut blame_cache, job);
+        }
+    });
+    tx
+}
+
+fn run(
+    root: &Option<PathBuf>,
+    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    blame_cache: &mut BlameCache,
+    job: VcsJob,
+) {
+    match job {
+        VcsJob::Snapshot { id, cancel } => {
+            match repository(root).and_then(|repo| snapshot(&repo)) {
+                Ok(snapshot) => emit_cancellable(
+                    events,
+                    id,
+                    &cancel,
+                    Event::RepositorySnapshot {
+                        snapshot: Box::new(snapshot),
+                    },
+                ),
+                Err(message) => notify_cancellable(events, id, &cancel, message),
+            }
+        },
+        VcsJob::NestedRepositoryStatus { id, path, cancel } => {
+            if cancel.is_cancelled() {
+                return;
+            }
+            let result = nested_repository(root, &path)
+                .and_then(|repository| repository.summary().map_err(|error| error.to_string()));
+            match result {
+                Ok(summary) => emit_cancellable(
+                    events,
+                    id,
+                    &cancel,
+                    Event::NestedRepositoryStatus { path, summary },
+                ),
+                Err(message) => {
+                    notify_cancellable(
+                        events,
+                        id,
+                        &cancel,
+                        format!("repository status: {message}"),
+                    );
+                },
+            }
+        },
+        VcsJob::Action { id, action } => {
+            let result = repository(root).and_then(|repo| {
+                let outcome = execute(&repo, &action)?;
+                let snapshot = snapshot(&repo)?;
+                let staged = repo
+                    .changes(Selection::Staged, None)
+                    .map_err(|error| error.to_string())?;
+                let working = repo
+                    .changes(Selection::Unstaged, None)
+                    .map_err(|error| error.to_string())?;
+                Ok((outcome, snapshot, (staged, working)))
+            });
+            match result {
+                Ok((outcome, snapshot, (staged, working))) => {
+                    emit(events, id, Event::VcsStatus { staged, working });
+                    emit(
+                        events,
+                        id,
+                        Event::RepositorySnapshot {
+                            snapshot: Box::new(snapshot),
+                        },
+                    );
+                    emit(
+                        events,
+                        id,
+                        Event::VcsOperationFinished {
+                            action,
+                            outcome: Some(outcome),
+                            error: None,
+                        },
+                    );
+                },
+                Err(error) => emit(
+                    events,
+                    id,
+                    Event::VcsOperationFinished {
+                        action,
+                        outcome: None,
+                        error: Some(error),
+                    },
+                ),
+            }
+        },
+        VcsJob::PullRequests {
+            id,
+            remote,
+            page,
+            per_page,
+            cancel,
+        } => match pull_requests(root, &remote, page, per_page) {
+            Ok((items, next_page)) => emit_cancellable(
+                events,
+                id,
+                &cancel,
+                Event::PullRequests {
+                    remote,
+                    items,
+                    next_page,
+                },
+            ),
+            Err(message) => notify_cancellable(events, id, &cancel, message),
+        },
+        VcsJob::Blame {
+            id,
+            doc,
+            version,
+            path,
+            text,
+            line,
+            cancel,
+        } => match blame(blame_cache, root, doc, version, &path, &text, line) {
+            Ok(attribution) => emit_cancellable(
+                events,
+                id,
+                &cancel,
+                Event::BlameResult {
+                    doc,
+                    version,
+                    line,
+                    attribution,
+                },
+            ),
+            Err(message) => {
+                notify_cancellable(events, id, &cancel, format!("blame: {message}"));
+            },
+        },
+        VcsJob::Log {
+            id,
+            skip,
+            limit,
+            cancel,
+        } => run_log(root, events, id, skip, limit, &cancel),
+        VcsJob::CommitDetail { id, rev, cancel } => {
+            run_commit_detail(root, events, id, &rev, &cancel);
+        },
+        VcsJob::RangeChanges { id, spec, cancel } => {
+            run_range_changes(root, events, id, &spec, &cancel);
+        },
+        VcsJob::FileHistory {
+            id,
+            path,
+            skip,
+            limit,
+            cancel,
+        } => run_file_history(root, events, id, path, skip, limit, &cancel),
+    }
+}
+
+fn run_log(
+    root: &Option<PathBuf>,
+    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    id: RequestId,
+    skip: usize,
+    limit: usize,
+    cancel: &Cancellation,
+) {
+    if cancel.is_cancelled() {
+        return;
+    }
+    let result = repository(root).and_then(|repo| {
+        let mut commits = repo
+            .log(skip, limit.saturating_add(1))
+            .map_err(|error| error.to_string())?;
+        let has_more = commits.len() > limit;
+        commits.truncate(limit);
+        Ok((commits, has_more))
+    });
+    match result {
+        Ok((commits, has_more)) => emit_cancellable(
+            events,
+            id,
+            cancel,
+            Event::VcsLog {
+                skip,
+                commits,
+                has_more,
+            },
+        ),
+        Err(message) => notify_cancellable(events, id, cancel, message),
+    }
+}
+
+fn run_commit_detail(
+    root: &Option<PathBuf>,
+    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    id: RequestId,
+    rev: &str,
+    cancel: &Cancellation,
+) {
+    if cancel.is_cancelled() {
+        return;
+    }
+    let Ok(repo) = repository(root) else {
+        return;
+    };
+    let detail = match repo.commit_detail(rev) {
+        Ok(detail) => detail,
+        Err(error) => {
+            notify_cancellable(events, id, cancel, error.to_string());
+            return;
+        },
+    };
+    emit_cancellable(
+        events,
+        id,
+        cancel,
+        Event::CommitDetailReady {
+            detail: Box::new(detail.clone()),
+        },
+    );
+    if cancel.is_cancelled() {
+        return;
+    }
+    match repo.commit_changes(rev) {
+        Ok(changes) => emit_cancellable(
+            events,
+            id,
+            cancel,
+            Event::CommitReady {
+                detail: Box::new(detail),
+                changes,
+            },
+        ),
+        Err(error) => notify_cancellable(events, id, cancel, error.to_string()),
+    }
+}
+
+fn run_range_changes(
+    root: &Option<PathBuf>,
+    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    id: RequestId,
+    spec: &RangeSpec,
+    cancel: &Cancellation,
+) {
+    if cancel.is_cancelled() {
+        return;
+    }
+    let outcome = repository(root).and_then(|repo| {
+        let (base_rev, head_rev, merge_base, base_label, head_label) = match spec {
+            RangeSpec::Unpushed => {
+                let upstream = repo
+                    .upstream_of_head()
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| {
+                        "no upstream branch is set for the current branch".to_string()
+                    })?;
+                (
+                    upstream.clone(),
+                    "HEAD".to_string(),
+                    true,
+                    upstream,
+                    "HEAD".to_string(),
+                )
+            },
+            RangeSpec::SinceBase { base } => {
+                let base = base
+                    .clone()
+                    .or_else(|| repo.default_base_branch())
+                    .ok_or_else(|| {
+                        "could not determine a base branch; use a range like main...HEAD"
+                            .to_string()
+                    })?;
+                (
+                    base.clone(),
+                    "HEAD".to_string(),
+                    true,
+                    base,
+                    "HEAD".to_string(),
+                )
+            },
+            RangeSpec::Between {
+                base,
+                head,
+                merge_base,
+            } => (
+                base.clone(),
+                head.clone(),
+                *merge_base,
+                base.clone(),
+                head.clone(),
+            ),
+        };
+        let changes = repo
+            .range_changes(&base_rev, &head_rev, merge_base)
+            .map_err(|error| error.to_string())?;
+        Ok((base_label, head_label, merge_base, changes))
+    });
+    match outcome {
+        Ok((base_label, head_label, merge_base, changes)) => emit_cancellable(
+            events,
+            id,
+            cancel,
+            Event::RangeReady {
+                base_label,
+                head_label,
+                merge_base,
+                changes,
+            },
+        ),
+        Err(message) => notify_cancellable(events, id, cancel, message),
+    }
+}
+
+fn run_file_history(
+    root: &Option<PathBuf>,
+    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    id: RequestId,
+    path: PathBuf,
+    skip: usize,
+    limit: usize,
+    cancel: &Cancellation,
+) {
+    if cancel.is_cancelled() {
+        return;
+    }
+    let result = repository(root).and_then(|repo| {
+        let mut commits = repo
+            .file_history(&path, skip, limit.saturating_add(1))
+            .map_err(|error| error.to_string())?;
+        let has_more = commits.len() > limit;
+        commits.truncate(limit);
+        Ok((commits, has_more))
+    });
+    match result {
+        Ok((commits, has_more)) => emit_cancellable(
+            events,
+            id,
+            cancel,
+            Event::FileHistory {
+                path,
+                skip,
+                commits,
+                has_more,
+            },
+        ),
+        Err(message) => notify_cancellable(events, id, cancel, message),
+    }
+}
+
+fn nested_repository(root: &Option<PathBuf>, path: &Path) -> Result<Repository, String> {
+    let root = root
+        .as_deref()
+        .ok_or_else(|| "workspace has no root".to_string())?;
+    let root = std::fs::canonicalize(root)
+        .map_err(|error| format!("workspace root cannot be resolved: {error}"))?;
+    let path = std::fs::canonicalize(path)
+        .map_err(|error| format!("nested repository cannot be resolved: {error}"))?;
+    if path == root || !path.starts_with(&root) {
+        return Err("repository is not nested inside the workspace root".to_string());
+    }
+    if !path.join(".git").exists() {
+        return Err("nested repository no longer exists".to_string());
+    }
+    let repository = Repository::discover(&path).map_err(|error| error.to_string())?;
+    if repository.worktree_root().as_deref() != Some(path.as_path()) {
+        return Err("path is not the exact root of a nested repository".to_string());
+    }
+    Ok(repository)
+}
+
+fn repository(root: &Option<PathBuf>) -> Result<Repository, String> {
+    let root = root
+        .as_ref()
+        .ok_or_else(|| "no workspace repository is open".to_string())?;
+    Repository::discover(root).map_err(|error| error.to_string())
+}
+
+fn snapshot(repo: &Repository) -> Result<RepositorySnapshot, String> {
+    Ok(RepositorySnapshot {
+        state: repo.repository_state().map_err(|error| error.to_string())?,
+        branches: repo.branches().map_err(|error| error.to_string())?,
+        remotes: repo.remotes().map_err(|error| error.to_string())?,
+        remote_branches: repo.remote_branches().map_err(|error| error.to_string())?,
+        stashes: repo.stashes().map_err(|error| error.to_string())?,
+    })
+}
+
+fn execute(repo: &Repository, action: &VcsAction) -> Result<VcsOutcome, String> {
+    let result = match action {
+        VcsAction::CreateBranch(options) => {
+            repo.create_branch(options).map(|()| VcsOutcome::Completed)
+        },
+        VcsAction::SwitchBranch(target) => {
+            repo.switch_branch(target).map(|()| VcsOutcome::Completed)
+        },
+        VcsAction::RenameBranch { old, new } => {
+            repo.rename_branch(old, new).map(|()| VcsOutcome::Completed)
+        },
+        VcsAction::DeleteBranch { name } => {
+            repo.delete_branch(name).map(|()| VcsOutcome::Completed)
+        },
+        VcsAction::PublishBranch {
+            remote,
+            branch,
+            set_upstream,
+        } => repo
+            .publish_branch(remote, branch, *set_upstream)
+            .map(|()| VcsOutcome::Completed),
+        VcsAction::DeleteRemoteBranch { remote, branch } => repo
+            .delete_remote_branch(remote, branch)
+            .map(|()| VcsOutcome::Completed),
+        VcsAction::UndoCommit { allow_upstream } => {
+            repo.undo_commit(*allow_upstream)
+                .map(|outcome| VcsOutcome::CommitUndone {
+                    commit: outcome.commit,
+                    was_upstream: outcome.was_upstream,
+                })
+        },
+        VcsAction::StashPush(options) => repo.stash_push(options).map(VcsOutcome::StashCreated),
+        VcsAction::StashPreview { reference } => {
+            repo.stash_preview(reference)
+                .map(|patch| VcsOutcome::StashPreview {
+                    reference: reference.clone(),
+                    patch,
+                })
+        },
+        VcsAction::StashApply { reference } => {
+            repo.stash_apply(reference).map(|()| VcsOutcome::Completed)
+        },
+        VcsAction::StashPop { reference } => {
+            repo.stash_pop(reference).map(|()| VcsOutcome::Completed)
+        },
+        VcsAction::StashDrop { reference } => {
+            repo.stash_drop(reference).map(|()| VcsOutcome::Completed)
+        },
+        VcsAction::StashBranch { name, reference } => repo
+            .stash_branch(name, reference)
+            .map(|()| VcsOutcome::Completed),
+        VcsAction::Fetch { remote } => repo.fetch(remote).map(|()| VcsOutcome::Completed),
+        VcsAction::Sync => repo.sync().map(|outcome| match outcome {
+            SyncOutcome::Synced => VcsOutcome::Completed,
+            SyncOutcome::NeedsPublish => VcsOutcome::NeedsPublish,
+            SyncOutcome::PullRequestUpdated => VcsOutcome::PullRequestUpdated,
+            _ => VcsOutcome::Completed,
+        }),
+        VcsAction::Continue => repo.continue_operation().map(|()| VcsOutcome::Completed),
+        VcsAction::Abort => repo.abort_operation().map(|()| VcsOutcome::Completed),
+        VcsAction::Skip => repo.skip_operation().map(|()| VcsOutcome::Completed),
+        VcsAction::CheckoutPullRequest { remote, number } => repo
+            .checkout_github_pull_request(remote, *number)
+            .map(|branch| VcsOutcome::PullRequestCheckedOut { branch }),
+    };
+    result.map_err(|error| error.to_string())
+}
+
+#[cfg(feature = "github")]
+fn pull_requests(
+    root: &Option<PathBuf>,
+    remote_name: &str,
+    page: u32,
+    per_page: u8,
+) -> Result<(Vec<PullRequestSummary>, Option<u32>), String> {
+    let repo = repository(root)?;
+    let remote = repo
+        .remotes()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|remote| remote.name == remote_name)
+        .ok_or_else(|| format!("unknown remote: {remote_name}"))?;
+    let url = remote
+        .url
+        .ok_or_else(|| format!("remote {remote_name} has no fetch URL"))?;
+    let (owner, name) = karet_github::parse_remote(&url)
+        .ok_or_else(|| format!("remote {remote_name} is not hosted on GitHub"))?;
+    let response = karet_github::open_pull_requests(&owner, &name, page, per_page)
+        .map_err(|error| error.to_string())?;
+    let items = response
+        .items
+        .into_iter()
+        .map(|item| PullRequestSummary {
+            number: item.number,
+            title: item.title,
+            author: item.author,
+            draft: item.draft,
+            head_ref: item.head_ref,
+            head_repo: item.head_repo,
+            head_sha: item.head_sha,
+            base_ref: item.base_ref,
+            base_repo: item.base_repo,
+            url: item.url,
+        })
+        .collect();
+    Ok((items, response.next_page))
+}
+
+#[cfg(not(feature = "github"))]
+fn pull_requests(
+    _root: &Option<PathBuf>,
+    _remote_name: &str,
+    _page: u32,
+    _per_page: u8,
+) -> Result<(Vec<PullRequestSummary>, Option<u32>), String> {
+    Err("GitHub integration is disabled in this build".to_string())
+}
+
+fn blame(
+    cache: &mut BlameCache,
+    root: &Option<PathBuf>,
+    doc: DocumentId,
+    version: u64,
+    path: &Path,
+    text: &str,
+    line: u32,
+) -> Result<Option<BlameAttribution>, String> {
+    let Some(root) = root.as_ref() else {
+        return Ok(None);
+    };
+    let repo = match Repository::discover(root) {
+        Ok(repo) => repo,
+        Err(VcsError::NotARepository) => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    let Some(head_hash) = repo.head_hash().map_err(|error| error.to_string())? else {
+        return Ok(None);
+    };
+    let key = BlameCacheKey {
+        doc,
+        version,
+        path: path.to_path_buf(),
+        head: head_hash,
+    };
+    if let Some(attribution) = cache.get(&key) {
+        return Ok(attribution.get(line as usize).cloned());
+    }
+    let Some(head) = repo
+        .file_at_rev(path, "HEAD")
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let Ok(head) = String::from_utf8(head) else {
+        return Ok(None);
+    };
+    let groups = match blameline::blame_file(root, path) {
+        Ok(groups) => groups,
+        Err(blameline::BlameError::NotARepository | blameline::BlameError::NotCommitted(_)) => {
+            return Ok(None);
+        },
+        Err(error) => return Err(error.to_string()),
+    };
+    let current_lines: Vec<&str> = text.lines().collect();
+    let head_lines: Vec<&str> = head.lines().collect();
+    let attribution = map_attribution(&current_lines, &head_lines, &groups);
+    let result = attribution.get(line as usize).cloned();
+    // Cursor movement reuses this full-file mapping. Keep only the newest version
+    // for a document so typing cannot grow the worker cache without bound.
+    cache.retain(|cached, _| cached.doc != doc);
+    cache.insert(key, attribution);
+    Ok(result)
+}
+
+fn map_attribution(
+    current: &[&str],
+    head: &[&str],
+    groups: &[blameline::BlameGroup],
+) -> Vec<BlameAttribution> {
+    let mut positions: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (index, content) in head.iter().enumerate() {
+        positions.entry(content).or_default().push(index);
+    }
+    let mut by_head = vec![BlameAttribution::Uncommitted; head.len()];
+    for group in groups {
+        let Some(author_time) = group.author_time() else {
+            continue;
+        };
+        let commit = BlameCommit {
+            hash: group.commit_hash.clone(),
+            author: group.author.clone(),
+            author_time,
+        };
+        let start = group.lines.start.saturating_sub(1) as usize;
+        let end = (group.lines.end as usize).min(by_head.len());
+        for item in by_head.iter_mut().take(end).skip(start) {
+            *item = BlameAttribution::Commit(commit.clone());
+        }
+    }
+    current
+        .iter()
+        .enumerate()
+        .map(|(index, content)| {
+            if head.get(index) == Some(content) {
+                return by_head
+                    .get(index)
+                    .cloned()
+                    .unwrap_or(BlameAttribution::Uncommitted);
+            }
+            match positions.get(content).map(Vec::as_slice) {
+                Some([unique]) => by_head
+                    .get(*unique)
+                    .cloned()
+                    .unwrap_or(BlameAttribution::Uncommitted),
+                _ => BlameAttribution::Uncommitted,
+            }
+        })
+        .collect()
+}
+
+fn emit(events: &UnboundedSender<(Option<RequestId>, Event)>, id: RequestId, event: Event) {
+    let _ = events.send((Some(id), event));
+}
+
+fn emit_cancellable(
+    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    id: RequestId,
+    cancel: &Cancellation,
+    event: Event,
+) {
+    if !cancel.is_cancelled() {
+        emit(events, id, event);
+    }
+}
+
+fn notify(events: &UnboundedSender<(Option<RequestId>, Event)>, id: RequestId, message: String) {
+    emit(
+        events,
+        id,
+        Event::Notification {
+            severity: karet_core::Severity::Error,
+            kind: karet_core::NotificationKind::Vcs,
+            message,
+        },
+    );
+}
+
+fn notify_cancellable(
+    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    id: RequestId,
+    cancel: &Cancellation,
+    message: String,
+) {
+    if !cancel.is_cancelled() {
+        notify(events, id, message);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn init_repository(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        std::fs::create_dir_all(path)?;
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(path)
+            .status()?;
+        if !status.success() {
+            return Err(std::io::Error::other("git init failed").into());
+        }
+        Ok(())
+    }
+
+    fn commit(hash: &str) -> BlameAttribution {
+        BlameAttribution::Commit(BlameCommit {
+            hash: hash.to_string(),
+            author: "Ada".to_string(),
+            author_time: 1_773_619_200,
+        })
+    }
+
+    #[test]
+    fn current_buffer_mapping_keeps_exact_and_unique_moved_lines() {
+        let groups = vec![blameline::BlameGroup {
+            lines: blameline::LineRange { start: 1, end: 3 },
+            commit_hash: "one".to_string(),
+            message: "change".to_string(),
+            author: "Ada".to_string(),
+            date: "1773619200 +0000".to_string(),
+        }];
+        let mapped = map_attribution(&["a", "new", "c", "b"], &["a", "b", "c"], &groups);
+        assert_eq!(mapped[0], commit("one"));
+        assert_eq!(mapped[1], BlameAttribution::Uncommitted);
+        assert_eq!(mapped[2], commit("one"));
+        assert_eq!(mapped[3], commit("one"));
+    }
+
+    #[test]
+    fn ambiguous_moved_lines_are_uncommitted() {
+        let mapped = map_attribution(&["x"], &["a", "x", "x"], &[]);
+        assert_eq!(mapped, vec![BlameAttribution::Uncommitted]);
+    }
+
+    #[test]
+    fn cancellation_hub_signals_live_job_and_forgets_finished_job() {
+        let hub = crate::cancellation::CancellationHub::default();
+        let token = hub.register(RequestId(41));
+        assert!(!token.is_cancelled());
+        hub.cancel(RequestId(41));
+        assert!(token.is_cancelled());
+        drop(token);
+
+        // Cancelling after completion is a harmless no-op and does not poison a
+        // later request that happens to use a different id.
+        hub.cancel(RequestId(41));
+        let next = hub.register(RequestId(42));
+        assert!(!next.is_cancelled());
+    }
+
+    #[test]
+    fn nested_repository_must_be_an_exact_child_worktree() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let workspace = tempfile::tempdir()?;
+        init_repository(workspace.path())?;
+        let nested = workspace.path().join("nested");
+        init_repository(&nested)?;
+        let ordinary_child = workspace.path().join("ordinary");
+        std::fs::create_dir_all(&ordinary_child)?;
+        let outside = tempfile::tempdir()?;
+        init_repository(outside.path())?;
+        let root = Some(workspace.path().to_path_buf());
+
+        assert_eq!(
+            nested_repository(&root, &nested)?
+                .worktree_root()
+                .as_deref(),
+            std::fs::canonicalize(&nested).ok().as_deref()
+        );
+        assert!(nested_repository(&root, workspace.path()).is_err());
+        assert!(nested_repository(&root, &ordinary_child).is_err());
+        assert!(nested_repository(&root, outside.path()).is_err());
+        Ok(())
+    }
+}

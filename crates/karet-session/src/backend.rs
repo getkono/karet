@@ -17,6 +17,7 @@ use crate::api::RequestId;
 use crate::highlight::HighlightResult;
 use crate::lsp::LspUpdate;
 use crate::session::Session;
+use crate::spell::SpellResult;
 
 /// Errors produced when submitting to a [`Backend`].
 #[derive(Debug, thiserror::Error)]
@@ -85,7 +86,9 @@ pub fn local(mut session: Session) -> LocalBackend {
     let (commands, mut rx) = mpsc::unbounded_channel::<(RequestId, Command)>();
     let (watcher, mut fs_rx) = session.take_watch();
     let mut highlights = session.take_highlights();
+    let mut spell_results = session.take_spell_results();
     let mut lsp_updates = session.take_lsp_updates();
+    let mut registry_updates = session.take_lsp_registry_updates();
     tokio::spawn(async move {
         // Hold the watcher alive for exactly as long as the actor consumes events.
         let _watcher = watcher;
@@ -112,10 +115,18 @@ pub fn local(mut session: Session) -> LocalBackend {
                     Some(result) => session.apply_highlights(result),
                     None => highlights = None, // the worker stopped; stop selecting it
                 },
+                result = recv_spell(&mut spell_results) => match result {
+                    Some(result) => session.apply_spell_result(result),
+                    None => spell_results = None,
+                },
                 // LSP answers computed on the server tasks; converted and emitted here.
                 update = recv_lsp(&mut lsp_updates) => match update {
                     Some(update) => session.apply_lsp_update(update),
                     None => lsp_updates = None, // no LSP; stop selecting it
+                },
+                update = recv_registry(&mut registry_updates) => match update {
+                    Some(update) => session.apply_lsp_registry_update(update),
+                    None => registry_updates = None,
                 },
                 _ = backup.tick() => session.backup_tick(),
             }
@@ -124,6 +135,15 @@ pub fn local(mut session: Session) -> LocalBackend {
     LocalBackend {
         commands,
         next: AtomicU64::new(1),
+    }
+}
+
+async fn recv_registry(
+    rx: &mut Option<mpsc::UnboundedReceiver<crate::lsp_registry::RegistryUpdate>>,
+) -> Option<crate::lsp_registry::RegistryUpdate> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -140,6 +160,14 @@ async fn recv_fs(rx: &mut Option<mpsc::UnboundedReceiver<FsEvent>>) -> Option<Fs
 async fn recv_highlights(
     rx: &mut Option<mpsc::UnboundedReceiver<HighlightResult>>,
 ) -> Option<HighlightResult> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Await a completed spell pass, or never resolve after its worker stops.
+async fn recv_spell(rx: &mut Option<mpsc::UnboundedReceiver<SpellResult>>) -> Option<SpellResult> {
     match rx {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,
@@ -195,12 +223,276 @@ mod tests {
                 .is_ok()
         );
 
-        // The actor processes the command and emits Opened on the event stream.
-        let received = events.recv().await;
+        // Startup producers may announce capability state first. Correlate the answer
+        // instead of assuming this command owns the stream's first event.
+        let opened = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some((event_id, event)) = events.recv().await {
+                if event_id == Some(id) && matches!(event, Event::Opened { .. }) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .unwrap_or(false);
         assert!(
-            matches!(received, Some((_, Event::Opened { .. }))),
-            "local backend should drive the session to open the file, got {received:?}"
+            opened,
+            "local backend should drive the session to open the file"
         );
+    }
+
+    #[tokio::test]
+    async fn local_backend_reports_an_exact_nested_repository_status() {
+        use crate::api::Event;
+        use crate::session::Session;
+        use crate::session::SessionConfig;
+
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let nested = dir.path().join("nested");
+        if std::fs::create_dir_all(&nested).is_err() {
+            return;
+        }
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&nested)
+                .status()
+                .ok()
+                .is_some_and(|status| status.success())
+        };
+        if !git(&["init", "-q"])
+            || !git(&["config", "user.email", "test@example.com"])
+            || !git(&["config", "user.name", "karet test"])
+            || std::fs::write(nested.join("file.txt"), "one\n").is_err()
+            || !git(&["add", "file.txt"])
+            || !git(&["commit", "-q", "-m", "initial"])
+            || std::fs::write(nested.join("file.txt"), "one\ntwo\n").is_err()
+        {
+            return;
+        }
+
+        let (session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![dir.path().to_path_buf()],
+            ..SessionConfig::default()
+        });
+        let backend = local(session);
+        let id = backend.next_id();
+        assert!(
+            backend
+                .send(
+                    id,
+                    Command::NestedRepositoryStatus {
+                        path: nested.clone(),
+                    },
+                )
+                .is_ok()
+        );
+
+        let received = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some((event_id, event)) = events.recv().await {
+                if event_id == Some(id)
+                    && let Event::NestedRepositoryStatus { path, summary } = event
+                {
+                    return Some((path, summary));
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some((path, summary)) = received else {
+            return;
+        };
+        assert_eq!(path, nested);
+        assert_eq!((summary.added, summary.removed), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn repository_actions_and_blame_run_off_actor() {
+        use karet_core::BlameAttribution;
+        use karet_vcs::CreateBranchOptions;
+
+        use crate::api::Event;
+        use crate::api::VcsAction;
+        use crate::session::Session;
+        use crate::session::SessionConfig;
+
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let root = dir.path().to_path_buf();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .status()
+                .ok()
+                .is_some_and(|status| status.success())
+        };
+        if !git(&["init", "-q"])
+            || !git(&["config", "user.email", "test@example.com"])
+            || !git(&["config", "user.name", "karet test"])
+            || std::fs::write(root.join("code.rs"), "fn main() {}\n").is_err()
+            || !git(&["add", "code.rs"])
+            || !git(&["commit", "-q", "-m", "initial"])
+        {
+            return;
+        }
+
+        let (session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root.clone()],
+            ..SessionConfig::default()
+        });
+        let backend = local(session);
+        let open_id = backend.next_id();
+        assert!(
+            backend
+                .send(
+                    open_id,
+                    Command::OpenDocument {
+                        path: root.join("code.rs"),
+                        language: None,
+                    },
+                )
+                .is_ok()
+        );
+        let opened = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some((id, event)) = events.recv().await {
+                if id == Some(open_id)
+                    && let Event::Opened { doc, version } = event
+                {
+                    return Some((doc, version));
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some((doc, version)) = opened else {
+            return;
+        };
+
+        let blame_id = backend.next_id();
+        assert!(
+            backend
+                .send(
+                    blame_id,
+                    Command::Blame {
+                        doc,
+                        version,
+                        line: 0,
+                    },
+                )
+                .is_ok()
+        );
+        let blamed = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some((id, event)) = events.recv().await {
+                if id == Some(blame_id)
+                    && let Event::BlameResult { attribution, .. } = event
+                {
+                    return attribution;
+                }
+            }
+            None
+        })
+        .await
+        .unwrap_or_default();
+        assert!(matches!(blamed, Some(BlameAttribution::Commit(_))));
+
+        if std::fs::write(root.join("untracked.rs"), "fn new_file() {}\n").is_err() {
+            return;
+        }
+        let untracked_open_id = backend.next_id();
+        assert!(
+            backend
+                .send(
+                    untracked_open_id,
+                    Command::OpenDocument {
+                        path: root.join("untracked.rs"),
+                        language: None,
+                    },
+                )
+                .is_ok()
+        );
+        let untracked = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some((id, event)) = events.recv().await {
+                if id == Some(untracked_open_id)
+                    && let Event::Opened { doc, version } = event
+                {
+                    return Some((doc, version));
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some((untracked_doc, untracked_version)) = untracked else {
+            return;
+        };
+        let untracked_blame_id = backend.next_id();
+        assert!(
+            backend
+                .send(
+                    untracked_blame_id,
+                    Command::Blame {
+                        doc: untracked_doc,
+                        version: untracked_version,
+                        line: 0,
+                    },
+                )
+                .is_ok()
+        );
+        let unavailable = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some((id, event)) = events.recv().await {
+                if id == Some(untracked_blame_id) {
+                    return Some(event);
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
+        assert!(matches!(
+            unavailable,
+            Some(Event::BlameResult {
+                attribution: None,
+                ..
+            })
+        ));
+
+        let branch_id = backend.next_id();
+        let mut branch_options = CreateBranchOptions::default();
+        branch_options.name = "feature".to_string();
+        assert!(
+            backend
+                .send(
+                    branch_id,
+                    Command::VcsAction {
+                        action: VcsAction::CreateBranch(branch_options),
+                    },
+                )
+                .is_ok()
+        );
+        let branch = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some((id, event)) = events.recv().await {
+                if id == Some(branch_id)
+                    && let Event::RepositorySnapshot { snapshot } = event
+                {
+                    return snapshot.state.branch;
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
+        assert_eq!(branch.as_deref(), Some("feature"));
     }
 
     /// Drain snapshots until one satisfies `wanted`, or time out.

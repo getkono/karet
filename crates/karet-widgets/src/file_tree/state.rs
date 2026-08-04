@@ -16,6 +16,10 @@ pub struct FileTreeRow {
     pub is_dir: bool,
     /// Whether the entry is an expanded directory.
     pub expanded: bool,
+    /// Whether the filesystem entry itself is a symbolic link.
+    pub is_symlink: bool,
+    /// Whether this directory is itself a Git worktree (the explorer root excluded).
+    pub is_repository: bool,
     /// Whether the entry is gitignored (shown dimmed, VS Code style).
     pub ignored: bool,
     /// Whether this row is the in-progress inline name editor (a new file/folder
@@ -527,6 +531,8 @@ impl FileTreeState {
                         depth,
                         is_dir,
                         expanded: false,
+                        is_symlink: false,
+                        is_repository: false,
                         ignored: false,
                         editing: true,
                     },
@@ -618,6 +624,8 @@ impl FileTreeState {
                     depth,
                     is_dir: false,
                     expanded: false,
+                    is_symlink: entry.is_symlink,
+                    is_repository: false,
                     ignored: parent_ignored || entry.ignored,
                     editing: false,
                 });
@@ -641,6 +649,9 @@ impl FileTreeState {
         // Descend while the current directory's *only* entry is another directory.
         let children = loop {
             let entries = read_dir_sorted(&tip, self.show_hidden, self.respect_gitignore);
+            if is_repository_dir(&tip) {
+                break entries;
+            }
             match entries.as_slice() {
                 [child] if child.is_dir => {
                     label.push('/');
@@ -652,12 +663,15 @@ impl FileTreeState {
             }
         };
         let expanded = self.expanded.contains(&tip);
+        let is_repository = is_repository_dir(&tip);
         rows.push(FileTreeRow {
             path: tip,
             label,
             depth,
             is_dir: true,
             expanded,
+            is_symlink: first.is_symlink,
+            is_repository,
             ignored,
             editing: false,
         });
@@ -665,4 +679,8 @@ impl FileTreeState {
             self.push_entries(children, depth + 1, ignored, rows);
         }
     }
+}
+
+fn is_repository_dir(path: &Path) -> bool {
+    path.join(".git").exists()
 }

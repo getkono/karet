@@ -236,6 +236,10 @@ pub(crate) fn semantic_query(_lang: LanguageId) -> Option<&'static str> {
     if _lang == MARKDOWN {
         return Some(MARKDOWN_SEMANTIC);
     }
+    #[cfg(feature = "lang-latex")]
+    if _lang == LATEX {
+        return Some(LATEX_SEMANTIC);
+    }
     None
 }
 
@@ -307,6 +311,27 @@ pub(crate) const MARKDOWN: LanguageId = LanguageId(19);
 /// block grammar reaches it only through an `markdown_inline` injection.
 #[cfg(feature = "lang-markdown")]
 pub(crate) const MARKDOWN_INLINE: LanguageId = LanguageId(20);
+#[cfg(feature = "lang-latex")]
+pub(crate) const LATEX: LanguageId = LanguageId(21);
+
+#[cfg(feature = "lang-latex")]
+const LATEX_HIGHLIGHTS: &str = r#"
+[(line_comment) (block_comment) (comment) (comment_environment)] @comment
+(todo) @comment.mark
+[(part) (chapter) (section) (subsection) (subsubsection) (paragraph) (subparagraph)] @markup.heading
+[(inline_formula) (displayed_equation) (math_environment)] @markup.raw
+[(generic_command) (begin) (end) (class_include) (package_include)] @function
+[(citation) (label_definition) (label_reference) (label_reference_range)] @variable
+[(hyperlink) (curly_group_uri)] @markup.link
+[(curly_group_path) (curly_group_path_list) (glob_pattern)] @string
+[(operator) (math_delimiter)] @operator
+[(subscript) (superscript)] @punctuation.special
+"#;
+
+#[cfg(feature = "lang-latex")]
+const LATEX_SEMANTIC: &str = r#"
+[(part) (chapter) (section) (subsection) (subsubsection)] @semantic.scope
+"#;
 
 /// karet's own addition to Rust's injections query: a doc comment is markdown.
 ///
@@ -552,6 +577,17 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             language: || tree_sitter_md::LANGUAGE.into(),
             highlights: tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
             injections: Some(tree_sitter_md::INJECTION_QUERY_BLOCK),
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-latex")]
+        v.push(GrammarInfo {
+            id: LATEX,
+            name: "TeX",
+            extensions: &["tex", "sty", "cls"],
+            names: &["tex", "latex"],
+            language: || codebook_tree_sitter_latex::LANGUAGE.into(),
+            highlights: LATEX_HIGHLIGHTS,
+            injections: None,
             injections_extra: None,
         });
         #[cfg(feature = "lang-markdown")]

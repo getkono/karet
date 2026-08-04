@@ -8,15 +8,22 @@
 //! placement lifecycle across scroll/resize is intentionally minimal (active tab
 //! only) for now; Sixel/iTerm2 protocols and PDF rasterization are out of scope.
 //!
-//! Pixel work sits behind two features so a lean build pulls no `image` codec
-//! tree: the shared primitives ([`Image`], [`ImageWidget`]) require `raster`
-//! (enabled by both `images` and `pdf`), while the image-file decoders
-//! ([`decode`], [`dimensions`]) require `images`. Protocol detection
-//! ([`GraphicsProtocol`], [`detect_protocol`], [`fit_rect`]) carries no `image`
-//! dependency and is always compiled.
+//! Pixel work sits behind two features so a lean build pulls no codec tree: the
+//! shared primitives ([`Image`], [`ImageWidget`]) and their built-in bilinear
+//! resampler require `raster` (enabled by both `images` and `pdf`), while the
+//! image-file decoders ([`decode`], [`dimensions`]) require `images`. Gamut owns
+//! every supported codec. Protocol detection ([`GraphicsProtocol`],
+//! [`detect_protocol`], [`fit_rect`]) carries no codec dependency and is always
+//! compiled.
 
 #[cfg(feature = "raster")]
 use base64::Engine as _;
+#[cfg(feature = "images")]
+use gamut::core::DecodeImage as _;
+#[cfg(feature = "images")]
+use gamut::core::Rgb8;
+#[cfg(feature = "images")]
+use gamut::core::Rgba8;
 #[cfg(feature = "raster")]
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -170,10 +177,6 @@ impl Image {
         if area.width == 0 || area.height == 0 || self.width == 0 || self.height == 0 {
             return;
         }
-        let Some(src) = ::image::RgbaImage::from_raw(self.width, self.height, self.rgba.clone())
-        else {
-            return;
-        };
         // Fit within the available pixels: width columns × (height × 2) rows.
         let avail_w = f64::from(area.width);
         let avail_h = f64::from(area.height) * 2.0;
@@ -181,19 +184,12 @@ impl Image {
         let target_w = ((f64::from(self.width) * scale) as u32).clamp(1, u32::from(area.width));
         let target_h =
             ((f64::from(self.height) * scale) as u32).clamp(1, u32::from(area.height) * 2);
-        let resized = ::image::imageops::resize(
-            &src,
-            target_w,
-            target_h,
-            ::image::imageops::FilterType::Triangle,
-        );
-
         for cy in 0..target_h.div_ceil(2) {
             for cx in 0..target_w {
-                let top = *resized.get_pixel(cx, (cy * 2).min(target_h - 1));
+                let top = self.sample_resized(cx, (cy * 2).min(target_h - 1), target_w, target_h);
                 let bottom_y = cy * 2 + 1;
                 let bottom = if bottom_y < target_h {
-                    *resized.get_pixel(cx, bottom_y)
+                    self.sample_resized(cx, bottom_y, target_w, target_h)
                 } else {
                     top
                 };
@@ -207,6 +203,44 @@ impl Image {
             }
         }
     }
+
+    /// Bilinearly sample one destination pixel. Mapping pixel centers instead of
+    /// corners avoids a half-pixel drift while scaling both up and down.
+    fn sample_resized(&self, x: u32, y: u32, width: u32, height: u32) -> [u8; 4] {
+        let source_x = ((x as f64 + 0.5) * f64::from(self.width) / f64::from(width) - 0.5)
+            .clamp(0.0, f64::from(self.width - 1));
+        let source_y = ((y as f64 + 0.5) * f64::from(self.height) / f64::from(height) - 0.5)
+            .clamp(0.0, f64::from(self.height - 1));
+        let x0 = source_x.floor() as u32;
+        let y0 = source_y.floor() as u32;
+        let x1 = x0.saturating_add(1).min(self.width - 1);
+        let y1 = y0.saturating_add(1).min(self.height - 1);
+        let x_weight = source_x - f64::from(x0);
+        let y_weight = source_y - f64::from(y0);
+        let top_left = self.pixel(x0, y0);
+        let top_right = self.pixel(x1, y0);
+        let bottom_left = self.pixel(x0, y1);
+        let bottom_right = self.pixel(x1, y1);
+        let mut result = [0_u8; 4];
+        for channel in 0..4 {
+            let top = f64::from(top_left[channel]) * (1.0 - x_weight)
+                + f64::from(top_right[channel]) * x_weight;
+            let bottom = f64::from(bottom_left[channel]) * (1.0 - x_weight)
+                + f64::from(bottom_right[channel]) * x_weight;
+            result[channel] = (top * (1.0 - y_weight) + bottom * y_weight).round() as u8;
+        }
+        result
+    }
+
+    fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
+        let offset = (y as usize * self.width as usize + x as usize) * 4;
+        [
+            self.rgba[offset],
+            self.rgba[offset + 1],
+            self.rgba[offset + 2],
+            self.rgba[offset + 3],
+        ]
+    }
 }
 
 /// Decode image bytes into an [`Image`].
@@ -215,14 +249,78 @@ impl Image {
 /// Returns [`ImageError::Decode`] if the bytes are not a supported format.
 #[cfg(feature = "images")]
 pub fn decode(bytes: &[u8]) -> Result<Image, ImageError> {
-    let img = ::image::load_from_memory(bytes).map_err(|_| ImageError::Decode)?;
-    let rgba = img.to_rgba8();
-    let (width, height) = (rgba.width(), rgba.height());
+    if is_png(bytes) {
+        return decode_gamut_rgba(gamut::png::PngDecoder::new(), bytes);
+    }
+    if is_jpeg(bytes) {
+        return decode_gamut_jpeg(bytes);
+    }
+    if is_webp(bytes) {
+        return decode_gamut_rgba(gamut::webp::WebpDecoder::new(), bytes);
+    }
+    if is_tiff(bytes) {
+        return decode_gamut_rgba(gamut::tiff::TiffDecoder::new(), bytes);
+    }
+    Err(ImageError::Decode)
+}
+
+#[cfg(feature = "images")]
+fn decode_gamut_rgba(
+    decoder: impl gamut::core::DecodeImage<Rgba8>,
+    bytes: &[u8],
+) -> Result<Image, ImageError> {
+    let decoded = decoder
+        .decode_image(bytes)
+        .map_err(|_| ImageError::Decode)?;
+    Ok(from_gamut(decoded))
+}
+
+#[cfg(feature = "images")]
+fn decode_gamut_jpeg(bytes: &[u8]) -> Result<Image, ImageError> {
+    let decoded: gamut::core::ImageBuf<Rgb8> = gamut::jpeg::JpegDecoder::new()
+        .decode_image(bytes)
+        .map_err(|_| ImageError::Decode)?;
+    let dimensions = decoded.dimensions();
+    let rgb = decoded.into_samples();
+    let mut rgba = Vec::with_capacity(rgb.len() / 3 * 4);
+    for pixel in rgb.chunks_exact(3) {
+        rgba.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
+    }
     Ok(Image {
-        rgba: rgba.into_raw(),
-        width,
-        height,
+        rgba,
+        width: dimensions.width,
+        height: dimensions.height,
     })
+}
+
+#[cfg(feature = "images")]
+fn from_gamut(decoded: gamut::core::ImageBuf<Rgba8>) -> Image {
+    let dimensions = decoded.dimensions();
+    Image {
+        rgba: decoded.into_samples(),
+        width: dimensions.width,
+        height: dimensions.height,
+    }
+}
+
+#[cfg(feature = "images")]
+fn is_png(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+}
+
+#[cfg(feature = "images")]
+fn is_jpeg(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\xff\xd8\xff")
+}
+
+#[cfg(feature = "images")]
+fn is_webp(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP")
+}
+
+#[cfg(feature = "images")]
+fn is_tiff(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*")
 }
 
 /// Read just the pixel dimensions of `bytes` without fully decoding it (used for
@@ -230,11 +328,39 @@ pub fn decode(bytes: &[u8]) -> Result<Image, ImageError> {
 #[cfg(feature = "images")]
 #[must_use]
 pub fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
-    ::image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?
-        .into_dimensions()
-        .ok()
+    if is_png(bytes) && bytes.get(12..16) == Some(b"IHDR") {
+        let header = bytes.get(16..24)?;
+        let width = u32::from_be_bytes(header.get(..4)?.try_into().ok()?);
+        let height = u32::from_be_bytes(header.get(4..)?.try_into().ok()?);
+        return (width > 0 && height > 0).then_some((width, height));
+    }
+    if is_jpeg(bytes) {
+        let info = gamut::jpeg::info(bytes).ok()?;
+        if info.width > 0 && info.height > 0 {
+            return Some((info.width, info.height));
+        }
+    }
+    decode(bytes).ok().map(|image| (image.width, image.height))
+}
+
+#[cfg(all(test, feature = "images"))]
+pub(crate) fn test_png() -> Vec<u8> {
+    use gamut::core::Dimensions;
+    use gamut::core::EncodeImage as _;
+    use gamut::core::ImageRef;
+
+    let rgba = [
+        255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 128,
+    ];
+    let Ok(dimensions) = Dimensions::new(2, 2) else {
+        return Vec::new();
+    };
+    let Ok(image) = ImageRef::<Rgba8>::new(&rgba, dimensions) else {
+        return Vec::new();
+    };
+    gamut::png::PngEncoder::new()
+        .encode_to_vec(image)
+        .unwrap_or_default()
 }
 
 /// A ratatui widget that renders an [`Image`] using truecolor halfblocks.
@@ -266,18 +392,39 @@ impl Widget for ImageWidget<'_> {
 mod tests {
     use super::*;
 
-    /// A 2×2 PNG built in-memory (no test fixtures on disk).
     #[cfg(feature = "images")]
-    fn tiny_png() -> Vec<u8> {
-        let mut img = ::image::RgbaImage::new(2, 2);
-        img.put_pixel(0, 0, ::image::Rgba([255, 0, 0, 255]));
-        img.put_pixel(1, 1, ::image::Rgba([0, 255, 0, 255]));
-        let mut bytes = Vec::new();
-        let _ = ::image::DynamicImage::ImageRgba8(img).write_to(
-            &mut std::io::Cursor::new(&mut bytes),
-            ::image::ImageFormat::Png,
-        );
-        bytes
+    fn rgba_fixture(encoder: impl gamut::core::EncodeImage<Rgba8>) -> Vec<u8> {
+        use gamut::core::Dimensions;
+        use gamut::core::ImageRef;
+
+        let rgba = [
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 128,
+        ];
+        let Ok(dimensions) = Dimensions::new(2, 2) else {
+            return Vec::new();
+        };
+        let Ok(image) = ImageRef::<Rgba8>::new(&rgba, dimensions) else {
+            return Vec::new();
+        };
+        encoder.encode_to_vec(image).unwrap_or_default()
+    }
+
+    #[cfg(feature = "images")]
+    fn jpeg_fixture() -> Vec<u8> {
+        use gamut::core::Dimensions;
+        use gamut::core::EncodeImage as _;
+        use gamut::core::ImageRef;
+
+        let rgb = [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
+        let Ok(dimensions) = Dimensions::new(2, 2) else {
+            return Vec::new();
+        };
+        let Ok(image) = ImageRef::<Rgb8>::new(&rgb, dimensions) else {
+            return Vec::new();
+        };
+        gamut::jpeg::JpegEncoder::new()
+            .encode_to_vec(image)
+            .unwrap_or_default()
     }
 
     #[cfg(feature = "images")]
@@ -292,12 +439,38 @@ mod tests {
     #[cfg(feature = "images")]
     #[test]
     fn decode_and_dimensions() {
-        let png = tiny_png();
+        let png = test_png();
         assert_eq!(dimensions(&png), Some((2, 2)));
+        assert_eq!(dimensions(&png[..24]), Some((2, 2)));
+        assert!(decode(&png[..24]).is_err());
         let img = decode(&png);
         assert!(img.is_ok());
         let img = img.unwrap_or_else(|_| empty());
         assert_eq!((img.width(), img.height()), (2, 2));
+    }
+
+    #[cfg(feature = "images")]
+    #[test]
+    fn gamut_decodes_all_supported_formats_to_the_shared_rgba_model() {
+        let png = test_png();
+        let jpeg = jpeg_fixture();
+        let webp = rgba_fixture(gamut::webp::WebpEncoder::lossless());
+        let tiff = rgba_fixture(gamut::tiff::TiffEncoder::new());
+        assert!(is_png(&png));
+        assert!(is_jpeg(&jpeg));
+        assert!(is_webp(&webp));
+        assert!(is_tiff(&tiff));
+        for encoded in [&png, &jpeg, &webp, &tiff] {
+            assert_eq!(dimensions(encoded), Some((2, 2)));
+            let decoded = decode(encoded);
+            assert!(decoded.is_ok());
+            let image = decoded.unwrap_or_else(|_| empty());
+            assert_eq!((image.width(), image.height()), (2, 2));
+            assert_eq!(image.rgba.len(), 16);
+            if is_jpeg(encoded) {
+                assert!(image.rgba.chunks_exact(4).all(|pixel| pixel[3] == 255));
+            }
+        }
     }
 
     #[cfg(feature = "images")]
@@ -329,10 +502,19 @@ mod tests {
         assert!(buf.content().iter().any(|c| c.symbol() == "▀"));
     }
 
+    #[cfg(feature = "raster")]
+    #[test]
+    fn built_in_resampler_bilinearly_blends_pixel_centers() {
+        let pixel = |value: u8| [value, value, value, 255];
+        let rgba = [pixel(0), pixel(100), pixel(200), pixel(255)].concat();
+        let image = Image::from_rgba(rgba, 2, 2);
+        assert_eq!(image.sample_resized(1, 1, 3, 3), [139, 139, 139, 255]);
+    }
+
     #[cfg(feature = "images")]
     #[test]
     fn halfblocks_fill_cells() {
-        let img = decode(&tiny_png()).unwrap_or_else(|_| empty());
+        let img = decode(&test_png()).unwrap_or_else(|_| empty());
         let area = Rect::new(0, 0, 4, 2);
         let mut buf = Buffer::empty(area);
         ImageWidget::new(&img).render(area, &mut buf);
@@ -342,7 +524,7 @@ mod tests {
     #[cfg(feature = "images")]
     #[test]
     fn kitty_escape_has_header_and_terminators() {
-        let img = decode(&tiny_png()).unwrap_or_else(|_| empty());
+        let img = decode(&test_png()).unwrap_or_else(|_| empty());
         let esc = img.kitty_escape(4, 2);
         assert!(esc.starts_with("\x1b_G"));
         assert!(esc.ends_with("\x1b\\"));

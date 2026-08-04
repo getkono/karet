@@ -14,6 +14,7 @@ impl App {
         let mut changes = staged;
         changes.extend(working);
         let graphics = image::detect_protocol();
+        let (prepare_tx, prepare_rx) = prepare::spawn();
         Self {
             root,
             settings: Settings::default(),
@@ -42,7 +43,18 @@ impl App {
                 log_has_more: false,
                 log_loading: false,
                 log_loading_since: None,
+                repository: None,
+                repository_loading_since: None,
+                repository_request: None,
+                operation: None,
             },
+            live_blame: None,
+            pending_blame: None,
+            failed_blame: None,
+            pending_pull_requests: None,
+            pull_request_items: Vec::new(),
+            pull_request_remote: None,
+            vcs_after_save: None,
             tabs: vec![Tab::welcome()],
             active: 0,
             layout: PaneLayout::new(),
@@ -50,11 +62,12 @@ impl App {
             closed: Vec::new(),
             overlay: None,
             find_open: false,
-            commit_input: None,
+            commit_input: CommitInput::default(),
             rev_input: None,
             pending_discard: None,
             pending_explorer_delete: None,
             pending_close: None,
+            operation_blocker: None,
             saving_close: None,
             pending_swaps: None,
             pending: Vec::new(),
@@ -69,12 +82,17 @@ impl App {
             sidebar_resizing: false,
             diff_layout: ViewMode::Unified,
             pane_frames: Vec::new(),
+            pane_dividers: Vec::new(),
+            pane_divider_hover: None,
+            pane_resize: None,
             tab_drag: None,
             sidebar_content_rect: Rect::default(),
             hover: None,
+            pane_action_hover: None,
             sidebar_header_hover: None,
             panel_hits: Vec::new(),
             outline_visible: false,
+            outline_overlay: false,
             outline_sel: ListSelection::new(0),
             outline_rect: Rect::default(),
             outline_content_rect: Rect::default(),
@@ -82,8 +100,12 @@ impl App {
             outline_scroll: 0,
             header_action_hits: Vec::new(),
             scm_row_map: Vec::new(),
+            scm_header_hits: Vec::new(),
+            nested_repository_status: HashMap::new(),
+            nested_repository_pending: HashMap::new(),
             scm_offset: 0,
             scm_changes_rect: Rect::default(),
+            scm_commit_rect: Rect::default(),
             scm_total_rows: 0,
             scm_commits_offset: 0,
             scm_commits_rect: Rect::default(),
@@ -100,6 +122,10 @@ impl App {
             status_rect: Rect::default(),
             status_hits: Vec::new(),
             editor_rect: Rect::default(),
+            markdown_preview_rect: Rect::default(),
+            blame_rect: None,
+            markdown_link_hits: Vec::new(),
+            markdown_link_hover: None,
             commit_badge_rect: None,
             editor_selecting: false,
             last_click: None,
@@ -113,12 +139,25 @@ impl App {
             should_quit: false,
             backend: None,
             pending_open: HashMap::new(),
+            abandoned_open: HashSet::new(),
             pending_saves: HashMap::new(),
+            document_settings: HashMap::new(),
+            document_diagnostics: HashMap::new(),
+            document_symbols: HashMap::new(),
+            outline_versions: HashMap::new(),
+            outline_loading: HashMap::new(),
+            auto_save_pending: HashMap::new(),
             pending_completion: None,
             completion: None,
             completion_matcher: karet_fuzzy::Matcher::new(),
             pending_commit_detail: HashMap::new(),
+            latex_previews: HashMap::new(),
+            pending_commit_preparation: HashMap::new(),
+            pending_commit_verification: HashMap::new(),
+            prepare_tx,
+            prepare_rx: Some(prepare_rx),
             graph_log_req: None,
+            cancelled_requests: HashSet::new(),
             open_docs: HashSet::new(),
             next_view: 1,
         }
@@ -198,6 +237,7 @@ impl App {
         }
 
         self.settings = settings;
+        self.reconcile_auto_save_settings(Instant::now());
     }
 
     /// Open `path` as the initial tab at startup (used when `karet <file>` is run).
@@ -361,12 +401,14 @@ impl App {
                 TabKind::CommitLoading { .. }
                 | TabKind::Commit { .. }
                 | TabKind::Compare { .. }
-                | TabKind::Blame { .. }
+                | TabKind::StashPreview { .. }
                 | TabKind::Graph { .. }
                 | TabKind::LoadedConfig { .. }
                 | TabKind::MarkdownPreview { .. }
+                | TabKind::LatexPreview { .. }
                 | TabKind::Hex { .. },
             ) => EditorTab::Pager,
+            Some(TabKind::Github(_)) => EditorTab::Github,
             Some(TabKind::CommitGraph { .. }) => EditorTab::CommitGraph,
             Some(TabKind::Placeholder {
                 kind: FileKind::TooLarge { .. },

@@ -1,3 +1,5 @@
+use karet_core::Symbol;
+
 use super::*;
 
 impl Session {
@@ -22,9 +24,21 @@ impl Session {
         self.highlight_rx.take()
     }
 
+    /// Take the spell worker's result stream, to be driven by the actor.
+    pub(crate) fn take_spell_results(&mut self) -> Option<mpsc::UnboundedReceiver<SpellResult>> {
+        self.spell_rx.take()
+    }
+
     /// Take the LSP tasks' result stream, to be driven by the actor.
     pub(crate) fn take_lsp_updates(&mut self) -> Option<mpsc::UnboundedReceiver<LspUpdate>> {
         self.lsp_rx.take()
+    }
+
+    /// Take shared-registry results, to be driven by the actor.
+    pub(crate) fn take_lsp_registry_updates(
+        &mut self,
+    ) -> Option<mpsc::UnboundedReceiver<crate::lsp_registry::RegistryUpdate>> {
+        self.lsp_registry_rx.take()
     }
 
     /// Replace how language servers are connected (tests inject an in-memory
@@ -71,6 +85,22 @@ impl Session {
                     },
                 );
             },
+            LspUpdate::Symbols {
+                request,
+                doc,
+                version,
+                mut symbols,
+                ..
+            } => {
+                let Some(document) = self.store.docs.get(&doc) else {
+                    return;
+                };
+                if document.buffer.version() != version {
+                    return;
+                }
+                convert_symbol_columns(&document.buffer, &mut symbols);
+                self.emit(Some(request), Event::Symbols { doc, symbols });
+            },
             LspUpdate::SpawnFailed {
                 language, command, ..
             } => self.emit(
@@ -80,7 +110,7 @@ impl Session {
                     kind: NotificationKind::Lsp,
                     message: format!(
                         "no language server for {language}: '{command}' could not be started \
-                         (completions disabled for {language})"
+                         (language features disabled for {language})"
                     ),
                 },
             ),
@@ -94,6 +124,126 @@ impl Session {
                     ),
                 },
             ),
+            LspUpdate::InstallRequired { server, .. } => {
+                self.emit(None, Event::LanguageServerInstallRequired { server });
+            },
+        }
+    }
+
+    /// Adopt a completed registry operation.
+    pub(crate) fn apply_lsp_registry_update(
+        &mut self,
+        update: crate::lsp_registry::RegistryUpdate,
+    ) {
+        use crate::lsp_registry::RegistryUpdate;
+        match update {
+            RegistryUpdate::Plan {
+                request,
+                plan,
+                changes,
+            } => self.emit(
+                Some(request),
+                Event::LanguageServerUpdatePlan { plan, changes },
+            ),
+            RegistryUpdate::Changed {
+                request,
+                server,
+                version,
+                was_installed,
+            } => {
+                self.lsp.installed(server);
+                let restart_required = was_installed && self.lsp.is_running(server);
+                if !was_installed {
+                    self.reopen_lsp_documents(Some(server));
+                }
+                self.emit(
+                    Some(request),
+                    Event::LanguageServerChanged {
+                        server,
+                        version,
+                        restart_required,
+                    },
+                );
+            },
+            RegistryUpdate::Progress {
+                server,
+                downloaded,
+                total,
+            } => self.emit(
+                None,
+                Event::LanguageServerProgress {
+                    server,
+                    downloaded,
+                    total,
+                },
+            ),
+            RegistryUpdate::Complete { request } => {
+                self.emit(
+                    Some(request),
+                    Event::Notification {
+                        severity: Severity::Information,
+                        kind: NotificationKind::Lsp,
+                        message: "language-server update plan applied".into(),
+                    },
+                );
+            },
+            RegistryUpdate::Failed { request, message } => self.emit(
+                Some(request),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::Lsp,
+                    message: format!("language-server registry: {message}"),
+                },
+            ),
+        }
+    }
+
+    pub(super) fn reopen_lsp_documents(&mut self, only: Option<crate::api::LanguageServerId>) {
+        let documents: Vec<_> = self
+            .store
+            .docs
+            .values()
+            .filter(|document| {
+                only.is_none_or(|server| {
+                    document.language.and_then(crate::lsp::builtin_server) == Some(server)
+                })
+            })
+            .map(|document| {
+                (
+                    document.language,
+                    document.path.clone(),
+                    document.buffer.version(),
+                    document.buffer.text(),
+                )
+            })
+            .collect();
+        for (language, path, version, text) in documents {
+            self.lsp.document_opened(language, &path, version, || text);
+        }
+    }
+
+    pub(super) fn restart_lsp(&mut self, server: crate::api::LanguageServerId) {
+        if self.lsp.restart(server) {
+            // Restart advances a global generation and retires every slot so no
+            // late answer from the old provider can be adopted.
+            self.reopen_lsp_documents(None);
+        }
+    }
+
+    pub(super) fn queue_lsp_registry(
+        &self,
+        request: RequestId,
+        job: crate::lsp_registry::RegistryJob,
+    ) {
+        if self.lsp_registry.send(job).is_err() {
+            self.emit(
+                Some(request),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::Lsp,
+                    message: "language-server registry worker stopped".into(),
+                },
+            );
         }
     }
 
@@ -122,6 +272,27 @@ impl Session {
         }
     }
 
+    /// Serve [`Command::DocumentSymbols`] from the document's language server.
+    pub(super) fn document_symbols(&mut self, id: RequestId, doc_id: DocumentId) {
+        let Some(doc) = self.store.docs.get(&doc_id) else {
+            self.emit(Some(id), unknown_document(doc_id));
+            return;
+        };
+        let version = doc.buffer.version();
+        let forwarded = self
+            .lsp
+            .document_symbols(doc.language, id, doc_id, version, &doc.path);
+        if !forwarded {
+            self.emit(
+                Some(id),
+                Event::Symbols {
+                    doc: doc_id,
+                    symbols: Vec::new(),
+                },
+            );
+        }
+    }
+
     /// Adopt a completed highlight, then publish the refreshed snapshot.
     ///
     /// A result for a version the buffer has already moved past is dropped: a newer
@@ -139,6 +310,92 @@ impl Session {
         doc.semantic_blocks = result.semantic_blocks;
         doc.error_lines = result.error_lines;
         self.publish(result.doc, None);
+        self.schedule_spell(result.doc);
+    }
+
+    /// Queue the current token model after highlighting has settled. Disabled or
+    /// unsupported settings clear only spell diagnostics, leaving other producers intact.
+    pub(crate) fn schedule_spell(&mut self, doc_id: DocumentId) {
+        let Some(doc) = self.store.docs.get(&doc_id) else {
+            return;
+        };
+        let Some(spelling_language) = doc.settings.spelling_language else {
+            self.clear_spell_diagnostics(doc_id);
+            return;
+        };
+        let job = SpellJob {
+            doc: doc_id,
+            version: doc.buffer.version(),
+            language: doc.language,
+            spelling_language,
+            text: doc.buffer.text(),
+            highlights: doc.highlights.clone(),
+            syntax_error_lines: doc.error_lines.clone(),
+            settings: self.config.settings.spellcheck.clone(),
+        };
+        if self.spell_tx.send(job).is_err() {
+            self.clear_spell_diagnostics(doc_id);
+        }
+    }
+
+    /// Adopt one versioned spell result and publish the complete spell layer.
+    pub(crate) fn apply_spell_result(&mut self, result: SpellResult) {
+        let Some(doc) = self.store.docs.get_mut(&result.doc) else {
+            return;
+        };
+        if doc.buffer.version() != result.version {
+            return;
+        }
+        if let Some(error) = result.error {
+            if self.spell_errors.get(&result.doc) != Some(&error) {
+                self.spell_errors.insert(result.doc, error.clone());
+                self.emit(
+                    None,
+                    Event::Notification {
+                        severity: Severity::Warning,
+                        kind: NotificationKind::System,
+                        message: error,
+                    },
+                );
+            }
+        } else {
+            self.spell_errors.remove(&result.doc);
+        }
+        let Some(doc) = self.store.docs.get_mut(&result.doc) else {
+            return;
+        };
+        if doc.spell_diagnostics == result.diagnostics {
+            return;
+        }
+        doc.spell_diagnostics = result.diagnostics.clone();
+        self.emit(
+            None,
+            Event::DiagnosticsPublished {
+                doc: result.doc,
+                diagnostics: result.diagnostics,
+            },
+        );
+    }
+
+    fn clear_spell_diagnostics(&mut self, doc_id: DocumentId) {
+        self.spell_errors.remove(&doc_id);
+        let changed = self.store.docs.get_mut(&doc_id).is_some_and(|doc| {
+            if doc.spell_diagnostics.is_empty() {
+                false
+            } else {
+                doc.spell_diagnostics.clear();
+                true
+            }
+        });
+        if changed {
+            self.emit(
+                None,
+                Event::DiagnosticsPublished {
+                    doc: doc_id,
+                    diagnostics: Vec::new(),
+                },
+            );
+        }
     }
 
     /// React to a debounced filesystem event by reloading or flagging any open
@@ -173,6 +430,15 @@ impl Session {
             .and_then(|manager| manager.reload(&config_paths));
         if let Some(report) = changed_config {
             self.apply_config_report(report);
+        }
+
+        if event
+            .paths
+            .iter()
+            .any(|path| path.file_name().is_some_and(|name| name == ".editorconfig"))
+        {
+            let docs: Vec<DocumentId> = self.store.docs.keys().copied().collect();
+            self.refresh_document_settings(&docs);
         }
 
         let workspace_paths: Vec<PathBuf> = event
@@ -214,13 +480,21 @@ impl Session {
         let lsp_changed = self.lsp.reconfigure(report.settings.lsp.clone());
         self.config.settings = report.settings.clone();
         self.config.loaded_config = report.clone();
+        let docs: Vec<DocumentId> = self.store.docs.keys().copied().collect();
+        self.refresh_document_settings(&docs);
 
         // Semantic-comment settings can vary by language. Requeue every open
         // document from scratch so both global and selector changes take effect.
         let settings = &self.config.settings;
         let highlight_tx = &self.highlight_tx;
+        let mut spell_without_syntax = Vec::new();
         for (&doc_id, doc) in &mut self.store.docs {
-            update_syntax(settings, highlight_tx, doc_id, doc, None);
+            if update_syntax(settings, highlight_tx, doc_id, doc, None) {
+                spell_without_syntax.push(doc_id);
+            }
+        }
+        for doc_id in spell_without_syntax {
+            self.schedule_spell(doc_id);
         }
 
         if lsp_changed {
@@ -238,5 +512,67 @@ impl Session {
                 report: Box::new(report),
             },
         );
+    }
+
+    /// Re-resolve per-path behavior after an application or EditorConfig change.
+    pub(super) fn refresh_document_settings(&mut self, docs: &[DocumentId]) {
+        let settings = self.config.settings.clone();
+        let inputs: Vec<(DocumentId, PathBuf, Option<&'static str>)> = docs
+            .iter()
+            .filter_map(|doc_id| {
+                self.store
+                    .docs
+                    .get(doc_id)
+                    .map(|doc| (*doc_id, doc.path.clone(), doc.language))
+            })
+            .collect();
+        for (doc_id, path, language) in inputs {
+            let (resolved, error) = resolve_document_settings(&path, language, &settings);
+            let changed = self.store.docs.get_mut(&doc_id).is_some_and(|doc| {
+                if doc.settings == resolved {
+                    return false;
+                }
+                doc.settings = resolved;
+                apply_serialization_settings(&mut doc.buffer, resolved);
+                true
+            });
+            if let Some(message) = error {
+                self.emit(
+                    None,
+                    Event::Notification {
+                        severity: Severity::Warning,
+                        kind: NotificationKind::Io,
+                        message,
+                    },
+                );
+            }
+            if changed {
+                self.emit(
+                    None,
+                    Event::DocumentSettingsChanged {
+                        doc: doc_id,
+                        settings: resolved,
+                    },
+                );
+                self.publish(doc_id, None);
+                self.schedule_spell(doc_id);
+            }
+        }
+    }
+}
+
+fn convert_symbol_columns(buffer: &TextBuffer, symbols: &mut [Symbol]) {
+    for symbol in symbols {
+        let range = symbol.range;
+        symbol.range = Range {
+            start: buffer.utf16_to_line_col(range.start.line, range.start.col),
+            end: buffer.utf16_to_line_col(range.end.line, range.end.col),
+        };
+        let selection = symbol.selection_range;
+        symbol.selection_range = Range {
+            start: buffer.utf16_to_line_col(selection.start.line, selection.start.col),
+            end: buffer.utf16_to_line_col(selection.end.line, selection.end.col),
+        };
+        convert_symbol_columns(buffer, &mut symbol.children);
     }
 }

@@ -23,6 +23,18 @@
         )
     }
 
+    fn finish_preparation(app: &mut App) {
+        let Some(mut rx) = app.prepare_rx.take() else {
+            panic!("preparation receiver missing");
+        };
+        let result = rx.blocking_recv();
+        app.prepare_rx = Some(rx);
+        let Some(result) = result else {
+            panic!("preparation worker stopped");
+        };
+        app.on_prepare_result(result);
+    }
+
     fn test_dir(name: &str) -> PathBuf {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -80,6 +92,25 @@
             .unwrap_or_default()
     }
 
+    fn blame_commands(
+        backend: &RecordingBackend,
+    ) -> Vec<(RequestId, DocumentId, u64, u32)> {
+        backend
+            .sent
+            .lock()
+            .map(|sent| {
+                sent.iter()
+                    .filter_map(|(id, command)| match command {
+                        SessionCommand::Blame { doc, version, line } => {
+                            Some((*id, *doc, *version, *line))
+                        },
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     struct RecordingBackend {
         next: std::sync::atomic::AtomicU64,
         sent: std::sync::Mutex<Vec<(RequestId, SessionCommand)>>,
@@ -106,4 +137,3 @@
             RequestId(self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
         }
     }
-

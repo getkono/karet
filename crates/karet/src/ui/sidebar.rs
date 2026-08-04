@@ -4,6 +4,7 @@ use super::*;
 /// outline (a depth-indented, selectable list). Records the content rect and syncs
 /// the selection length for keyboard navigation and mouse hit-testing.
 pub(super) fn draw_outline(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+    app.request_active_outline();
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
     let header = rows[0];
     let content = rows[1];
@@ -25,8 +26,17 @@ pub(super) fn draw_outline(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
     let entries = app.active_outline_rows();
     app.outline_sel.set_len(entries.len());
     if entries.is_empty() {
+        let pending = app.active_outline_loading_since();
+        let label =
+            if pending.is_some_and(|since| since.elapsed() >= crate::app::LOADING_REVEAL_DELAY) {
+                " Loading…"
+            } else if pending.is_some() {
+                ""
+            } else {
+                " No outline"
+            };
         f.render_widget(
-            Paragraph::new(" No outline")
+            Paragraph::new(label)
                 .style(Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui())),
             content,
         );
@@ -88,6 +98,8 @@ pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
                 app.focus == Focus::Sidebar && app.sidebar_panel == SidebarPanel::Explorer;
             let hover = app.hovered_explorer_row();
             let cut_paths = app.explorer_cut_paths().to_vec();
+            app.request_nested_repository_statuses();
+            let repository_badges = app.nested_repository_badges(Instant::now());
             f.render_stateful_widget(
                 FileTree::new(&root)
                     .theme(theme)
@@ -96,7 +108,8 @@ pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
                     .active(active.as_deref())
                     .cut_paths(&cut_paths)
                     .explorer_focused(explorer_focused)
-                    .hover(hover),
+                    .hover(hover)
+                    .badges(&repository_badges),
                 rows[1],
                 &mut app.explorer,
             );
@@ -117,12 +130,24 @@ pub(super) fn draw_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, are
     let hints: Vec<Option<String>> = menu
         .entries
         .iter()
-        .map(|entry| keymap::hint_for(entry.command, ChordStyle::Verbose))
+        .map(|entry| {
+            entry
+                .command()
+                .and_then(|command| keymap::hint_for(command, ChordStyle::Verbose))
+        })
         .collect();
-    let labels: Vec<&str> = menu
+    let labels: Vec<String> = menu
         .entries
         .iter()
-        .map(|entry| context_menu_label(entry.command))
+        .map(|entry| {
+            entry.label.clone().unwrap_or_else(|| {
+                entry
+                    .command()
+                    .map(context_menu_label)
+                    .unwrap_or_default()
+                    .to_string()
+            })
+        })
         .collect();
     let label_w = labels
         .iter()
@@ -169,12 +194,12 @@ pub(super) fn draw_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, are
                     let used = cell_width(label) + cell_width(hint);
                     let pad = inner.width.saturating_sub(used).max(1);
                     ListItem::new(Line::from(vec![
-                        Span::styled((*label).to_string(), label_style),
+                        Span::styled(label.clone(), label_style),
                         Span::raw(" ".repeat(pad as usize)),
                         Span::styled(hint.clone(), dim),
                     ]))
                 },
-                None => ListItem::new(Line::from(Span::styled((*label).to_string(), label_style))),
+                None => ListItem::new(Line::from(Span::styled(label.clone(), label_style))),
             }
         })
         .collect();

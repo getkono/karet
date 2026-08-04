@@ -10,10 +10,10 @@ resolver = "3"
 members  = ["crates/*"]
 
 [workspace.package]
-version      = "0.2.2"
+version      = "0.3.0"
 edition      = "2024"
-rust-version = "1.90"                  # edition 2024 needs 1.85; pinned deps (ratatui 0.30,
-                                       # image, ratatui-image→quantette) raise the real floor
+rust-version = "1.92"                  # edition 2024 needs 1.85; pinned deps (gamut 0.3.1,
+                                       # ratatui 0.30, ratatui-image→quantette) raise the real floor
 
 authors      = ["Justin Chung"]
 license      = "MIT OR Apache-2.0"
@@ -32,33 +32,33 @@ categories   = ["text-editors", "command-line-utilities"]
 # unpublished crate would go stale on the next bump (`karet-cbor = "^0.1.0"` can't match
 # the bumped `0.2.0` package) and break `cargo update`. Path-only keeps them resolvable.
 # (`karet-pdf` keeps its version: it IS published — `karet-fileview` depends on it.)
-karet-core       = { path = "crates/karet-core", version = "0.2.2" }
-karet-filetype   = { path = "crates/karet-filetype", version = "0.2.2" }
-karet-text       = { path = "crates/karet-text", version = "0.2.2" }
-karet-treesitter = { path = "crates/karet-treesitter", version = "0.2.2" }
-karet-syntax     = { path = "crates/karet-syntax", version = "0.2.2" }
-karet-theme      = { path = "crates/karet-theme", version = "0.2.2" }
-karet-diff       = { path = "crates/karet-diff", version = "0.2.2" }
+karet-core       = { path = "crates/karet-core", version = "0.3.0" }
+karet-filetype   = { path = "crates/karet-filetype", version = "0.3.0" }
+karet-text       = { path = "crates/karet-text", version = "0.3.0" }
+karet-treesitter = { path = "crates/karet-treesitter", version = "0.3.0" }
+karet-syntax     = { path = "crates/karet-syntax", version = "0.3.0" }
+karet-theme      = { path = "crates/karet-theme", version = "0.3.0" }
+karet-diff       = { path = "crates/karet-diff", version = "0.3.0" }
 karet-markdown   = { path = "crates/karet-markdown" }
 karet-cbor       = { path = "crates/karet-cbor" }
 karet-docx       = { path = "crates/karet-docx" }
 karet-terminal   = { path = "crates/karet-terminal" }
-karet-lsp        = { path = "crates/karet-lsp", version = "0.2.2" }
-karet-dap        = { path = "crates/karet-dap", version = "0.2.2" }
-karet-vcs        = { path = "crates/karet-vcs", version = "0.2.2" }
-karet-search     = { path = "crates/karet-search", version = "0.2.2" }
+karet-lsp        = { path = "crates/karet-lsp", version = "0.3.0" }
+karet-dap        = { path = "crates/karet-dap", version = "0.3.0" }
+karet-vcs        = { path = "crates/karet-vcs", version = "0.3.0" }
+karet-search     = { path = "crates/karet-search", version = "0.3.0" }
 karet-fuzzy      = { path = "crates/karet-fuzzy" }
 karet-widgets    = { path = "crates/karet-widgets" }
-karet-editor     = { path = "crates/karet-editor", version = "0.2.2" }
-karet-fileview   = { path = "crates/karet-fileview", version = "0.2.2" }
-karet-pdf        = { path = "crates/karet-pdf", version = "0.2.2" }
+karet-editor     = { path = "crates/karet-editor", version = "0.3.0" }
+karet-fileview   = { path = "crates/karet-fileview", version = "0.3.0" }
+karet-pdf        = { path = "crates/karet-pdf", version = "0.3.0" }
 karet-session    = { path = "crates/karet-session" }
 karet-watch      = { path = "crates/karet-watch" }
 karet-graph      = { path = "crates/karet-graph" }
 karet-github     = { path = "crates/karet-github" }
 # blameline is a standalone library on its OWN SemVer line (NOT the workspace lockstep);
 # pin its independent version here. See crates/blameline/README.md.
-blameline        = { path = "crates/blameline", version = "1.0.3" }
+blameline        = { path = "crates/blameline", version = "1.0.4", default-features = false }
 
 # --- shared external dependencies (versions verified via `cargo add`) ---
 # Foundational
@@ -67,8 +67,17 @@ tokio     = { version = "1.52.3", default-features = false }  # crates opt into 
 tracing   = "0.1.44"
 serde     = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+sha2       = "0.10.9"
+flate2     = "1.1.9"
+tar        = "0.4.44"
+bytes      = { version = "1.12.0", features = ["serde"] }
+secrecy    = "0.10.3"
+time       = { version = "0.3.47", features = ["serde-human-readable", "formatting", "parsing"] }
 toml      = "1.1.2"
 smallvec  = "1.15.2"
+# Host-only OpenAPI generator for karet-github. Generated Rust is written to
+# OUT_DIR, so spargen never enters a karet runtime dependency graph.
+spargen   = { version = "=0.2.1", default-features = false }
 # Terminal UI
 ratatui   = "0.30.2"
 crossterm = "0.29.0"
@@ -77,6 +86,7 @@ crossterm = "0.29.0"
 # `karet-image` once that system dependency is acceptable.
 unicode-width = "0.2.2"
 unicode-segmentation = "1.13.3"
+url = "2.5.8"
 # Text / rope
 ropey    = "1.6.1"
 memmap2  = "0.9.11"
@@ -106,10 +116,12 @@ tree-sitter-css        = "0.25.0"
 tree-sitter-yaml       = "0.7.2"
 tree-sitter-typescript = "0.23.2"
 tree-sitter-md         = "0.5.3"
+codebook-tree-sitter-latex = "0.6.1"
 # Diff / markdown / image
 imara-diff    = "0.2.0"
 pulldown-cmark = "0.13.4"
-image         = "0.25.10"
+# Keep the codec matrix in docs/file-formats.md synchronized with these features.
+gamut         = { version = "0.3.1", default-features = false, features = ["png", "jpeg", "webp", "tiff"] }
 # PDF rasterization (karet-pdf). `hayro` is a pure-Rust PDF interpreter/renderer
 # (`#![forbid(unsafe_code)]`, CPU-only, no C-sys deps — verified via `cargo tree`).
 # It re-exports `hayro_syntax` (parsing) and `vello_cpu` (the pixmap), so a single
@@ -137,9 +149,6 @@ lsp-types = "0.97.0"
 # NOTE: the `blameline` crate enables gix's `blame` feature; feature unification means
 # the workspace build compiles gix's blame module even though it's not listed here.
 gix = { version = "0.85.0", default-features = false, features = ["status", "max-performance-safe", "sha1", "revision"] }
-# Optional libgit2 write backend for karet-vcs staging (no ssh/https system deps;
-# libgit2-sys still vendors and builds libgit2 via a C toolchain when enabled).
-git2 = { version = "0.20", default-features = false }
 # SSH commit-signature parsing (karet-vcs `signature` feature): decode an SSHSIG
 # armored blob to recover the signer's public key + SHA256 fingerprint. Pure-Rust
 # (RustCrypto), no C deps — we trim the optional cipher/curve features we don't use.
@@ -162,9 +171,10 @@ plist       = "1.9.0"
 ec4rs       = "1.2.0"
 spellbook   = "0.4.2"
 directories = "6.0.0"
+command-group = { version = "5.0.1", features = ["with-tokio"] }
 # Configuration file (karet-session): JSONC parsing (pure-Rust, byte-span errors)
 # and JSON Schema generation from the typed `Settings` for editor autocomplete.
-jsonc-parser = { version = "0.32.4", features = ["serde"] }
+jsonc-parser = { version = "0.32.4", features = ["serde", "cst"] }
 schemars     = "1.2.1"
 # Package dependency-graph backend (karet-session viz): the pure-Rust core of
 # `dependable` parses a Cargo.lock into a resolved graph offline (no network stack).

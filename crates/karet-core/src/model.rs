@@ -171,10 +171,28 @@ pub enum SymbolKind {
     Variable,
     /// A constant.
     Constant,
+    /// A string value.
+    String,
+    /// A numeric value.
+    Number,
+    /// A boolean value.
+    Boolean,
+    /// An array value.
+    Array,
+    /// An object value.
+    Object,
+    /// An object key.
+    Key,
+    /// A null value.
+    Null,
     /// A struct.
     Struct,
     /// An enum member.
     EnumMember,
+    /// An event.
+    Event,
+    /// An operator.
+    Operator,
     /// A type parameter.
     TypeParameter,
 }
@@ -413,5 +431,22 @@ mod tests {
             role: Some(ThemeRole::DiagnosticError),
         };
         assert_eq!(dec.kind, DecorationKind::Underline(UnderlineStyle::Curly));
+    }
+
+    #[test]
+    fn symbol_kinds_cover_structural_and_value_symbols() {
+        let kinds = [
+            SymbolKind::String,
+            SymbolKind::Number,
+            SymbolKind::Boolean,
+            SymbolKind::Array,
+            SymbolKind::Object,
+            SymbolKind::Key,
+            SymbolKind::Null,
+            SymbolKind::Event,
+            SymbolKind::Operator,
+        ];
+        assert_eq!(kinds.len(), 9);
+        assert!(kinds.contains(&SymbolKind::Object));
     }
 }

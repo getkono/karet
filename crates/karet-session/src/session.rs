@@ -13,6 +13,8 @@
 //! in the frames before the worker answers.
 
 mod documents;
+#[cfg(feature = "github")]
+mod github;
 mod persistence;
 mod updates;
 mod vcs;
@@ -26,6 +28,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+#[cfg(feature = "github")]
+use github::GithubJob;
 use karet_core::BytePos;
 use karet_core::Change;
 use karet_core::CursorState;
@@ -44,6 +48,8 @@ use karet_syntax::SemanticBlocks;
 use karet_text::AppliedEdit;
 use karet_text::EditCause;
 use karet_text::EditContext;
+use karet_text::Encoding;
+use karet_text::Eol as TextEol;
 use karet_text::LoadError;
 use karet_text::TextBuffer;
 use karet_text::TextError;
@@ -59,10 +65,12 @@ use karet_watch::Watcher;
 use tokio::sync::mpsc;
 
 use crate::api::Command;
+use crate::api::DocumentEncoding;
 use crate::api::DocumentId;
+use crate::api::DocumentLineEnding;
+use crate::api::DocumentSettings;
 use crate::api::Event;
-#[cfg(feature = "github")]
-use crate::api::GithubVerification;
+#[cfg(test)]
 use crate::api::RangeSpec;
 use crate::api::RequestId;
 use crate::api::SwapInfo;
@@ -78,6 +86,8 @@ use crate::local::DocSnapshot;
 use crate::local::SnapshotRx;
 use crate::lsp::LspManager;
 use crate::lsp::LspUpdate;
+use crate::spell::SpellJob;
+use crate::spell::SpellResult;
 
 /// Errors produced by the backend session.
 #[derive(Debug, thiserror::Error)]
@@ -105,6 +115,17 @@ pub struct SessionConfig {
     /// user data directory ([`crate::backup::default_swap_dir`]); left `None` (as in
     /// tests) the session keeps no backups and never touches the user's data dir.
     pub swap_dir: Option<PathBuf>,
+    /// Executable that can enter [`crate::process_supervisor`] mode.
+    ///
+    /// The karet application supplies its own current executable. `None` is the
+    /// safe headless/test default: external language servers are not spawned
+    /// unless the host explicitly provides crash-safe process ownership.
+    pub process_supervisor: Option<PathBuf>,
+    /// Per-user, machine-local root for managed language-server installations.
+    ///
+    /// A headless embedding may leave this unset to disable built-in providers;
+    /// configured custom servers remain available through the process supervisor.
+    pub lsp_registry_dir: Option<PathBuf>,
 }
 
 impl SessionConfig {
@@ -158,6 +179,69 @@ fn load_document(path: &Path) -> Result<(TextBuffer, DocFormat), LoadError> {
     }
 }
 
+fn resolve_document_settings(
+    path: &Path,
+    language: Option<&str>,
+    settings: &crate::config::Settings,
+) -> (DocumentSettings, Option<String>) {
+    let (resolved, editorconfig_error) =
+        match crate::editorconfig::resolve(path, language, settings) {
+            Ok(resolved) => (resolved, None),
+            Err(error) => (
+                crate::editorconfig::defaults(language, settings),
+                Some(format!("EditorConfig: {error}")),
+            ),
+        };
+    let language_error = (settings.spellcheck.enabled && resolved.spelling_language.is_none())
+        .then(|| {
+            format!(
+                "spell-checking is enabled for {}, but no supported language resolved; use en_US or en_GB",
+                path.display()
+            )
+        });
+    let error = match (editorconfig_error, language_error) {
+        (Some(editorconfig), Some(language)) => Some(format!("{editorconfig}; {language}")),
+        (Some(error), None) | (None, Some(error)) => Some(error),
+        (None, None) => None,
+    };
+    (resolved, error)
+}
+
+fn apply_serialization_settings(buffer: &mut TextBuffer, settings: DocumentSettings) {
+    match settings.line_ending {
+        Some(DocumentLineEnding::Lf) => buffer.set_eol(TextEol::Lf),
+        Some(DocumentLineEnding::Crlf) => buffer.set_eol(TextEol::Crlf),
+        None => {},
+    }
+    match settings.encoding {
+        Some(DocumentEncoding::Utf8) => buffer.set_encoding(Encoding::Utf8),
+        Some(DocumentEncoding::Utf8Bom) => buffer.set_encoding(Encoding::Utf8Bom),
+        None => {},
+    }
+}
+
+fn normalize_text_for_save(text: &str, settings: DocumentSettings) -> String {
+    let mut normalized = String::with_capacity(text.len().saturating_add(1));
+    for segment in text.split_inclusive('\n') {
+        if let Some(line) = segment.strip_suffix('\n') {
+            if settings.trim_trailing_whitespace {
+                normalized.push_str(line.trim_end_matches([' ', '\t']));
+            } else {
+                normalized.push_str(line);
+            }
+            normalized.push('\n');
+        } else {
+            // The specification trims whitespace preceding a newline. Whitespace
+            // at EOF has no following newline and is therefore preserved.
+            normalized.push_str(segment);
+        }
+    }
+    if settings.insert_final_newline && !normalized.is_empty() && !normalized.ends_with('\n') {
+        normalized.push('\n');
+    }
+    normalized
+}
+
 /// Save `doc` to disk, re-encoding a decoded binary format (CBOR) from its edit
 /// text. A CBOR encode error (e.g. malformed diagnostic notation after editing)
 /// leaves the file untouched and surfaces as a save failure. Returns
@@ -183,6 +267,8 @@ struct Document {
     buffer: TextBuffer,
     /// How the buffer is (de)serialized on disk.
     format: DocFormat,
+    /// Per-path behavior after application settings and EditorConfig resolution.
+    settings: DocumentSettings,
     /// The last highlights the worker produced, translated across any edits applied
     /// since. The parsed trees themselves live on the worker, not here.
     highlights: Arc<Highlights>,
@@ -192,6 +278,8 @@ struct Document {
     /// Syntax-error line ranges from the worker's last parse (see
     /// [`DocSnapshot::syntax_error_lines`]).
     error_lines: Arc<Vec<(u32, u32)>>,
+    /// Last spell-check diagnostics emitted for this exact document state.
+    spell_diagnostics: Vec<karet_core::Diagnostic>,
     decorations: Vec<Decoration>,
     /// Open reference count (a path opened in N views shares one document).
     refs: u32,
@@ -245,6 +333,12 @@ pub struct Session {
     highlight_tx: std::sync::mpsc::Sender<HighlightJob>,
     /// The worker's results, taken by [`crate::backend::local`] for the actor loop.
     highlight_rx: Option<mpsc::UnboundedReceiver<HighlightResult>>,
+    /// Jobs for the debounced token-aware spell worker.
+    spell_tx: std::sync::mpsc::Sender<SpellJob>,
+    /// Spell results, taken by the local backend actor.
+    spell_rx: Option<mpsc::UnboundedReceiver<SpellResult>>,
+    /// Last dictionary/load error per document, used to suppress edit-time spam.
+    spell_errors: HashMap<DocumentId, String>,
     clock: Instant,
     /// The workspace file-watcher, kept alive for the session's lifetime.
     watcher: Option<Watcher>,
@@ -252,6 +346,12 @@ pub struct Session {
     fs_rx: Option<mpsc::UnboundedReceiver<FsEvent>>,
     /// The source-control repository for the first workspace root, if any.
     vcs: Option<Repository>,
+    /// Ordered background repository actions and network reads.
+    vcs_worker: std::sync::mpsc::Sender<crate::vcs_worker::VcsJob>,
+    /// Cancellation registry for safely-droppable repository reads and builds.
+    vcs_cancellations: crate::cancellation::CancellationHub,
+    /// Serialized external LaTeX builds.
+    latex_worker: std::sync::mpsc::Sender<crate::latex::LatexJob>,
     /// The last emitted `(staged, working)` status. Spontaneous recomputes (from
     /// filesystem events) emit only when this changes, which absorbs the feedback
     /// from the session's own index writes.
@@ -267,6 +367,22 @@ pub struct Session {
     lsp: LspManager,
     /// The LSP tasks' results, taken by [`crate::backend::local`] for the actor.
     lsp_rx: Option<mpsc::UnboundedReceiver<LspUpdate>>,
+    /// Explicit install/update work for the shared managed-server registry.
+    lsp_registry: std::sync::mpsc::Sender<crate::lsp_registry::RegistryJob>,
+    /// Registry results, taken by the local backend actor.
+    lsp_registry_rx: Option<mpsc::UnboundedReceiver<crate::lsp_registry::RegistryUpdate>>,
+    /// Exact-root public-GitHub identity, when this workspace is eligible.
+    #[cfg(feature = "github")]
+    github_repository: Option<karet_github::RepositoryIdentity>,
+    /// Commands for the asynchronous GitHub manager, installed in [`Self::start`].
+    #[cfg(feature = "github")]
+    github_tx: Option<
+        mpsc::UnboundedSender<(
+            RequestId,
+            GithubJob,
+            Option<crate::cancellation::Cancellation>,
+        )>,
+    >,
 }
 
 /// The most new commits [`Session::reconcile_vcs_log`] will prepend at once. Beyond
@@ -310,6 +426,11 @@ impl Session {
         };
         // Seed the tip so the first ref change reconciles against a known baseline.
         let last_head = vcs.as_ref().and_then(|r| r.head_hash().ok().flatten());
+        let vcs_cancellations = crate::cancellation::CancellationHub::default();
+        #[cfg(feature = "github")]
+        let github_repository = github::eligible_repository(&config.roots, vcs.as_ref());
+        let vcs_worker = crate::vcs_worker::spawn(config.roots.first().cloned(), events.clone());
+        let latex_worker = crate::latex::spawn(events.clone());
         // Open this session's swap store and scan for swaps a previous run left behind
         // (a crash, or a save that failed). They are offered to the UI for recovery.
         let session_id = u64::from(std::process::id());
@@ -329,9 +450,18 @@ impl Session {
         // applies the spans it sends back. Each request carries the document's resolved
         // semantic-comment settings, so language overrides can update live.
         let (highlight_tx, highlight_rx) = crate::highlight::spawn();
+        let (spell_tx, spell_rx) = crate::spell::spawn();
         // Language servers spawn lazily, per language, on the first matching open.
-        let (lsp, lsp_rx) =
-            LspManager::new(config.settings.lsp.clone(), config.roots.first().cloned());
+        let (lsp, lsp_rx) = LspManager::new(
+            config.settings.lsp.clone(),
+            config.roots.first().cloned(),
+            config.process_supervisor.clone(),
+            config.lsp_registry_dir.clone(),
+        );
+        let (lsp_registry, lsp_registry_rx) = crate::lsp_registry::spawn(
+            config.lsp_registry_dir.clone(),
+            config.process_supervisor.clone(),
+        );
         let mut session = Self {
             config,
             config_manager,
@@ -343,16 +473,28 @@ impl Session {
             },
             highlight_tx,
             highlight_rx: Some(highlight_rx),
+            spell_tx,
+            spell_rx: Some(spell_rx),
+            spell_errors: HashMap::new(),
             clock: Instant::now(),
             watcher,
             fs_rx,
             vcs,
+            vcs_worker,
+            vcs_cancellations,
+            latex_worker,
             last_vcs: None,
             last_head,
             swaps,
             pending_swaps,
             lsp,
             lsp_rx: Some(lsp_rx),
+            lsp_registry,
+            lsp_registry_rx: Some(lsp_registry_rx),
+            #[cfg(feature = "github")]
+            github_repository,
+            #[cfg(feature = "github")]
+            github_tx: None,
         };
         // Announce any recoverable swaps so the UI can prompt on the first frame.
         session.announce_pending_swaps();
@@ -368,12 +510,28 @@ impl Session {
     pub(crate) fn start(&mut self) {
         // Seed the client with the initial status; it buffers until the UI reads it.
         self.emit_vcs_status(None);
+        #[cfg(feature = "github")]
+        self.start_github();
+        #[cfg(not(feature = "github"))]
+        self.emit(
+            None,
+            Event::GithubAvailability {
+                repository: None,
+                auth: crate::api::GithubAuth {
+                    source: crate::api::GithubAuthSource::Anonymous,
+                    can_write: false,
+                    viewer_id: None,
+                    viewer_login: None,
+                },
+            },
+        );
     }
 
     /// Handle one request. The editing fast paths resolve inline; the answering
     /// [`Event`] is tagged with `id`.
     pub fn handle(&mut self, id: RequestId, command: Command) {
         match command {
+            Command::Cancel { request } => self.vcs_cancellations.cancel(request),
             Command::OpenDocument { path, language } => self.open(id, path, language.as_deref()),
             Command::CloseDocument { doc } => self.close(id, doc),
             Command::ApplyChange { doc, change, cause } => self.apply(id, doc, &change, cause),
@@ -381,6 +539,7 @@ impl Session {
             Command::Redo { doc } => self.undo_redo(id, doc, false),
             Command::Save { doc } => self.save(id, doc),
             Command::RetargetDocument { doc, path } => self.retarget(id, doc, path),
+            Command::BuildLatex { doc } => self.request_latex_build(id, doc),
             // The caret is UI-local; `SetCursor` becomes meaningful when producers
             // (LSP at a position, multi-view sync) need it.
             Command::SetCursor { .. } => {},
@@ -392,13 +551,161 @@ impl Session {
             Command::Commit { message } => self.commit(id, &message),
             Command::GenerateCommitMessage => self.generate_commit_message(id),
             Command::RefreshVcs => self.emit_vcs_status(Some(id)),
-            Command::VcsLog { skip, limit } => self.emit_vcs_log(Some(id), skip, limit),
-            Command::CommitDetail { rev } => self.emit_commit_detail(id, &rev),
-            Command::RangeChanges { spec } => self.emit_range_changes(id, spec),
+            Command::RepositorySnapshot => {
+                let cancel = self.vcs_cancellations.register(id);
+                let _ = self
+                    .vcs_worker
+                    .send(crate::vcs_worker::VcsJob::Snapshot { id, cancel });
+            },
+            Command::NestedRepositoryStatus { path } => {
+                let cancel = self.vcs_cancellations.register(id);
+                let _ = self
+                    .vcs_worker
+                    .send(crate::vcs_worker::VcsJob::NestedRepositoryStatus { id, path, cancel });
+            },
+            Command::VcsAction { action } => {
+                self.emit(
+                    Some(id),
+                    Event::VcsOperationStarted {
+                        action: action.clone(),
+                    },
+                );
+                let _ = self
+                    .vcs_worker
+                    .send(crate::vcs_worker::VcsJob::Action { id, action });
+            },
+            Command::PullRequests {
+                remote,
+                page,
+                per_page,
+            } => {
+                let cancel = self.vcs_cancellations.register(id);
+                let _ = self
+                    .vcs_worker
+                    .send(crate::vcs_worker::VcsJob::PullRequests {
+                        id,
+                        remote,
+                        page,
+                        per_page,
+                        cancel,
+                    });
+            },
+            Command::Blame { doc, version, line } => self.request_blame(id, doc, version, line),
+            Command::VcsLog { skip, limit } => {
+                let cancel = self.vcs_cancellations.register(id);
+                let _ = self.vcs_worker.send(crate::vcs_worker::VcsJob::Log {
+                    id,
+                    skip,
+                    limit,
+                    cancel,
+                });
+            },
+            Command::CommitDetail { rev } => {
+                let cancel = self.vcs_cancellations.register(id);
+                let _ = self
+                    .vcs_worker
+                    .send(crate::vcs_worker::VcsJob::CommitDetail { id, rev, cancel });
+            },
+            Command::RangeChanges { spec } => {
+                let cancel = self.vcs_cancellations.register(id);
+                let _ = self
+                    .vcs_worker
+                    .send(crate::vcs_worker::VcsJob::RangeChanges { id, spec, cancel });
+            },
             Command::FileHistory { path, skip, limit } => {
-                self.emit_file_history(id, path, skip, limit)
+                let cancel = self.vcs_cancellations.register(id);
+                let _ = self
+                    .vcs_worker
+                    .send(crate::vcs_worker::VcsJob::FileHistory {
+                        id,
+                        path,
+                        skip,
+                        limit,
+                        cancel,
+                    });
             },
             Command::FetchCommitVerification { hash } => self.fetch_commit_verification(id, hash),
+            #[cfg(feature = "github")]
+            Command::GithubRefresh => self.refresh_github(id),
+            #[cfg(feature = "github")]
+            Command::GithubLogin { token } => self.send_github(
+                id,
+                GithubJob::Login {
+                    token: token.into_inner(),
+                },
+            ),
+            #[cfg(feature = "github")]
+            Command::GithubSearchIssues { query, page } => {
+                self.send_github(id, GithubJob::Issues { query, page })
+            },
+            #[cfg(feature = "github")]
+            Command::GithubSearchPullRequests { query, page } => {
+                self.send_github(id, GithubJob::PullRequests { query, page })
+            },
+            #[cfg(feature = "github")]
+            Command::GithubActions { page } => self.send_github(id, GithubJob::Actions { page }),
+            #[cfg(feature = "github")]
+            Command::GithubIssue { number } => self.send_github(id, GithubJob::Issue { number }),
+            #[cfg(feature = "github")]
+            Command::GithubPullRequest { number } => {
+                self.send_github(id, GithubJob::PullRequest { number })
+            },
+            #[cfg(feature = "github")]
+            Command::GithubUpdatePullRequestBody { number, body } => {
+                self.send_github(id, GithubJob::UpdatePullRequestBody { number, body })
+            },
+            #[cfg(feature = "github")]
+            Command::GithubCommentPullRequest { number, body } => {
+                self.send_github(id, GithubJob::CommentPullRequest { number, body })
+            },
+            #[cfg(feature = "github")]
+            Command::GithubMergePullRequest { number, head_sha } => {
+                self.send_github(id, GithubJob::MergePullRequest { number, head_sha })
+            },
+            #[cfg(feature = "github")]
+            Command::GithubSetPullRequestDraft {
+                node_id,
+                number,
+                draft,
+            } => self.send_github(
+                id,
+                GithubJob::SetPullRequestDraft {
+                    node_id,
+                    number,
+                    draft,
+                },
+            ),
+            #[cfg(feature = "github")]
+            Command::GithubIssueMetadata => self.send_github(id, GithubJob::IssueMetadata),
+            #[cfg(feature = "github")]
+            Command::GithubCreateIssue { issue } => {
+                self.send_github(id, GithubJob::CreateIssue { issue })
+            },
+            #[cfg(feature = "github")]
+            Command::GithubCreatePullRequest { pull_request } => {
+                self.send_github(id, GithubJob::CreatePullRequest { pull_request })
+            },
+            #[cfg(not(feature = "github"))]
+            Command::GithubRefresh
+            | Command::GithubLogin { .. }
+            | Command::GithubSearchIssues { .. }
+            | Command::GithubSearchPullRequests { .. }
+            | Command::GithubActions { .. }
+            | Command::GithubIssue { .. }
+            | Command::GithubPullRequest { .. }
+            | Command::GithubUpdatePullRequestBody { .. }
+            | Command::GithubCommentPullRequest { .. }
+            | Command::GithubMergePullRequest { .. }
+            | Command::GithubSetPullRequestDraft { .. }
+            | Command::GithubIssueMetadata
+            | Command::GithubCreateIssue { .. }
+            | Command::GithubCreatePullRequest { .. } => self.emit(
+                Some(id),
+                Event::GithubError {
+                    operation: "github".to_string(),
+                    message: "the backend was built without the github feature".to_string(),
+                },
+            ),
             Command::RecoverSwaps => self.recover_swaps(id),
             Command::DiscardSwaps => self.discard_swaps(),
             Command::DependencyGraph => self.emit_dependency_graph(id),
@@ -409,6 +716,38 @@ impl Session {
                 },
             ),
             Command::Completion { doc, position } => self.completion(id, doc, position),
+            Command::DocumentSymbols { doc } => self.document_symbols(id, doc),
+            Command::LanguageServerStatus => {
+                let servers = crate::lsp_registry::statuses(
+                    self.config.lsp_registry_dir.as_deref(),
+                    |server| self.lsp.is_running(server),
+                );
+                self.emit(Some(id), Event::LanguageServerStatus { servers });
+            },
+            Command::InstallLanguageServer { server } => {
+                self.queue_lsp_registry(
+                    id,
+                    crate::lsp_registry::RegistryJob::Install {
+                        request: id,
+                        server,
+                    },
+                );
+            },
+            Command::CheckLanguageServerUpdates => {
+                self.queue_lsp_registry(
+                    id,
+                    crate::lsp_registry::RegistryJob::Check { request: id },
+                );
+            },
+            Command::ApplyLanguageServerPlan { plan } => {
+                self.queue_lsp_registry(
+                    id,
+                    crate::lsp_registry::RegistryJob::Apply { request: id, plan },
+                );
+            },
+            Command::RestartLanguageServer { server } => {
+                self.restart_lsp(server);
+            },
             // The remaining language-intelligence and search commands are wired in
             // later milestones.
             _ => {},
@@ -416,6 +755,81 @@ impl Session {
     }
 
     // --- source control ---------------------------------------------------
+
+    fn request_blame(&self, id: RequestId, doc: DocumentId, version: u64, line: u32) {
+        let Some(document) = self.store.docs.get(&doc) else {
+            self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::Vcs,
+                    message: "blame: unknown document".to_string(),
+                },
+            );
+            return;
+        };
+        if document.buffer.version() != version {
+            return;
+        }
+        let _ = self.vcs_worker.send(crate::vcs_worker::VcsJob::Blame {
+            id,
+            doc,
+            version,
+            path: document.path.clone(),
+            text: document.buffer.text(),
+            line,
+            cancel: self.vcs_cancellations.register(id),
+        });
+    }
+
+    fn request_latex_build(&mut self, id: RequestId, doc: DocumentId) {
+        match self.save_for_external_build(doc) {
+            Ok(source) => {
+                if self.enqueue_latex_build(Some(id), id, doc, source).is_err() {
+                    self.emit(
+                        Some(id),
+                        Event::LatexBuildFinished {
+                            doc,
+                            root: PathBuf::new(),
+                            pdf: None,
+                            diagnostics: Vec::new(),
+                            error: Some("LaTeX build worker is unavailable".to_owned()),
+                        },
+                    );
+                }
+            },
+            Err(error) => self.emit(
+                Some(id),
+                Event::LatexBuildFinished {
+                    doc,
+                    root: PathBuf::new(),
+                    pdf: None,
+                    diagnostics: Vec::new(),
+                    error: Some(error),
+                },
+            ),
+        }
+    }
+
+    fn enqueue_latex_build(
+        &self,
+        event_id: Option<RequestId>,
+        cancel_id: RequestId,
+        doc: DocumentId,
+        source: PathBuf,
+    ) -> Result<(), ()> {
+        self.latex_worker
+            .send(crate::latex::LatexJob {
+                id: event_id,
+                doc,
+                source,
+                workspace: self.config.roots.first().cloned(),
+                settings: self.config.settings.latex.clone(),
+                cancel: self.vcs_cancellations.register(cancel_id),
+                supervisor: self.config.process_supervisor.clone(),
+            })
+            .map_err(|_| ())
+    }
 }
 /// Re-(or incrementally) parse `doc` and recompute its highlights.
 ///
@@ -423,20 +837,21 @@ impl Session {
 /// and reparsed incrementally (streaming the rope, no whole-file `String`);
 /// otherwise a full parse runs. Highlights are recomputed against the resulting
 /// tree (the query still materializes the text — the rope-native query is a
-/// follow-up).
+/// follow-up). Returns `true` for plaintext formats that need their spell job
+/// scheduled immediately because no syntax-worker answer will arrive.
 fn update_syntax(
     settings: &crate::config::Settings,
     highlight_tx: &std::sync::mpsc::Sender<HighlightJob>,
     doc_id: DocumentId,
     doc: &mut Document,
     edits: Option<&[AppliedEdit]>,
-) {
+) -> bool {
     let Some(lang) = doc.lang_id else {
         // Plaintext: nothing to parse, and no worker round-trip to wait for.
         doc.highlights = Arc::new(Highlights::default());
         doc.folds = Arc::new(FoldRegions::default());
         doc.semantic_blocks = Arc::new(SemanticBlocks::default());
-        return;
+        return true;
     };
 
     // Keep the spans we already have usable until the worker answers. Rendering them
@@ -474,6 +889,7 @@ fn update_syntax(
     };
     // A dead worker only means no highlights; editing carries on.
     highlight_tx.send(HighlightJob::Update(request)).ok();
+    false
 }
 
 /// Derive an [`EditContext`] from a change's geometry: a single-`char` insertion is

@@ -123,6 +123,79 @@
     }
 
     #[test]
+    fn closing_a_loading_commit_cancels_it_and_late_results_stay_closed() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        app.open_commit("aaaaaaa111".to_string());
+        let view = app.tabs[app.active].view;
+
+        app.request_close_active_tab();
+
+        assert!(!app.all_tabs().any(|tab| tab.view == view));
+        let cancelled = backend
+            .sent
+            .lock()
+            .map(|sent| {
+                sent.iter().any(|(_, command)| {
+                    matches!(command, SessionCommand::Cancel { request } if *request == RequestId(1))
+                })
+            })
+            .unwrap_or_default();
+        assert!(cancelled, "closing sends cooperative cancellation");
+
+        app.on_backend_event(
+            Some(RequestId(1)),
+            SessionEvent::CommitDetailReady {
+                detail: Box::new(commit_detail("aaaaaaa111", "first")),
+            },
+        );
+        app.on_backend_event(
+            Some(RequestId(1)),
+            SessionEvent::CommitReady {
+                detail: Box::new(commit_detail("aaaaaaa111", "first")),
+                changes: vec![change("a.rs", StatusKind::Modified)],
+            },
+        );
+        assert!(!app
+            .all_tabs()
+            .any(|tab| matches!(tab.kind, TabKind::Commit { .. } | TabKind::CommitLoading { .. })));
+    }
+
+    #[test]
+    fn closing_while_commit_diffs_prepare_off_thread_stays_closed() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend);
+        app.open_commit("aaaaaaa111".to_string());
+        let view = app.tabs[app.active].view;
+
+        app.on_backend_event(
+            Some(RequestId(1)),
+            SessionEvent::CommitReady {
+                detail: Box::new(commit_detail("aaaaaaa111", "first")),
+                changes: (0..64)
+                    .map(|index| {
+                        change(&format!("src/file-{index}.rs"), StatusKind::Modified)
+                    })
+                    .collect(),
+            },
+        );
+        assert!(app.pending_commit_preparation.contains_key(&RequestId(1)));
+
+        app.request_close_active_tab();
+
+        assert!(!app.all_tabs().any(|tab| tab.view == view));
+        assert!(app.pending_commit_preparation.is_empty());
+        if let Some(rx) = app.prepare_rx.as_mut()
+            && let Ok(result) = rx.try_recv()
+        {
+            app.on_prepare_result(result);
+        }
+        assert!(!app.all_tabs().any(|tab| tab.view == view));
+    }
+
+    #[test]
     fn commit_detail_response_fills_the_pending_tab_in_place() {
         let backend = Arc::new(RecordingBackend::new());
         let mut app = app();
@@ -142,6 +215,7 @@
                 changes: vec![change("a.rs", StatusKind::Modified)],
             },
         );
+        finish_preparation(&mut app);
 
         assert_eq!(app.tabs[app.active].view, view);
         assert_eq!(app.tabs[app.active].title, "Commit aaaaaaa");
@@ -204,6 +278,7 @@
                 changes: vec![change("a.rs", StatusKind::Modified)],
             },
         );
+        finish_preparation(&mut app);
 
         match &app.tabs[app.active].kind {
             TabKind::Commit {
@@ -360,18 +435,83 @@
     }
 
     #[test]
-    fn commit_input_requires_staged_changes() {
+    fn permanent_commit_input_focuses_even_before_changes_are_staged() {
         let mut app = app();
-        // a.rs is staged, so the input opens.
         app.dispatch(Command::ScmCommit);
-        assert!(app.commit_input.is_some());
+        assert!(app.commit_input.focused);
 
-        // With nothing staged, it refuses and reports why.
+        // Drafting is always available; only submission requires staged changes.
         app.apply_vcs_status(Vec::new(), vec![change("b.rs", StatusKind::Modified)]);
-        app.commit_input = None;
+        app.commit_cancel();
         app.dispatch(Command::ScmCommit);
-        assert!(app.commit_input.is_none());
+        assert!(app.commit_input.focused);
+        app.commit_input.text = "draft".to_string();
+        app.commit_input.cursor = app.commit_input.text.len();
+        app.commit_submit();
         assert!(app.status.is_some());
+        assert_eq!(app.commit_input.text, "draft");
+    }
+
+    #[test]
+    fn commit_editor_supports_multiline_navigation_paste_and_submit() {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        app.dispatch(Command::ScmCommit);
+        for key in [
+            KeyCode::Char('s'),
+            KeyCode::Char('u'),
+            KeyCode::Char('b'),
+            KeyCode::Char('j'),
+            KeyCode::Char('e'),
+            KeyCode::Char('c'),
+            KeyCode::Char('t'),
+            KeyCode::Enter,
+        ] {
+            app.commit_edit(KeyEvent::new(key, KeyModifiers::NONE));
+        }
+        app.commit_paste("body\r\nmore");
+        assert_eq!(app.commit_input.text, "subject\nbody\nmore");
+        app.commit_edit(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        app.commit_edit(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        app.commit_edit(KeyEvent::new(KeyCode::Char('>'), KeyModifiers::NONE));
+        assert_eq!(app.commit_input.text, "subject\n>body\nmore");
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
+        assert!(app.commit_input.pending.is_some());
+        assert_eq!(app.commit_input.text, "subject\n>body\nmore");
+        let sent = backend
+            .sent
+            .lock()
+            .map(|sent| sent.clone())
+            .unwrap_or_default();
+        assert!(sent.iter().any(|(_, command)| matches!(
+            command,
+            SessionCommand::Commit { message } if message == "subject\n>body\nmore"
+        )));
+
+        let pending = app.commit_input.pending;
+        app.on_backend_event(
+            pending,
+            SessionEvent::Notification {
+                severity: Severity::Error,
+                kind: NotificationKind::Vcs,
+                message: "identity missing".to_string(),
+            },
+        );
+        assert_eq!(app.commit_input.pending, None);
+        assert_eq!(app.commit_input.text, "subject\n>body\nmore");
+
+        app.commit_submit();
+        let pending = app.commit_input.pending;
+        app.on_backend_event(
+            pending,
+            SessionEvent::Committed {
+                oid: "1234567890abcdef".to_string(),
+            },
+        );
+        assert!(app.commit_input.text.is_empty());
+        assert_eq!(app.commit_input.pending, None);
     }
 
     #[test]
@@ -660,4 +800,3 @@
             }
         ));
     }
-

@@ -20,6 +20,11 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
         // The real app persists crash-recovery swaps to the user data directory;
         // headless/test sessions leave this unset and keep no backups.
         swap_dir: karet_session::backup::default_swap_dir(),
+        // Every external process is owned by a hidden copy of this executable.
+        process_supervisor: std::env::current_exe().ok(),
+        // Immutable installations are shared by every local karet instance.
+        lsp_registry_dir: directories::ProjectDirs::from("", "getkono", "karet")
+            .map(|dirs| dirs.data_local_dir().join("language-servers")),
     });
 
     let mut terminal = ratatui::init();
@@ -39,7 +44,12 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     };
     // Bracketed paste makes a multi-line paste arrive as one `Event::Paste`, never a
     // storm of keystrokes the keymap would misinterpret.
-    let _ = crossterm::execute!(io::stdout(), EnableMouseCapture, EnableBracketedPaste);
+    let _ = crossterm::execute!(
+        io::stdout(),
+        EnableMouseCapture,
+        EnableBracketedPaste,
+        EnableFocusChange
+    );
 
     // Refine the env-var graphics heuristic with a real handshake (raw mode is on and
     // the input reader thread has not started yet, so we can read the reply here).
@@ -82,11 +92,19 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
                 "graphical cursor is not compatible with this terminal",
             );
         }
-        event_loop(&mut terminal, &mut app, events, snaps).await
+        let Some(prepared) = app.prepare_rx.take() else {
+            return Err(eyre!("diff preparation result stream is unavailable"));
+        };
+        event_loop(&mut terminal, &mut app, events, snaps, prepared).await
     });
 
     let _ = write!(io::stdout(), "{}", image::kitty_delete_all());
-    let _ = crossterm::execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
+    let _ = crossterm::execute!(
+        io::stdout(),
+        DisableFocusChange,
+        DisableBracketedPaste,
+        DisableMouseCapture
+    );
     drop(_keyboard);
     ratatui::restore();
     result
@@ -99,6 +117,7 @@ async fn event_loop(
     app: &mut App,
     mut events: EventRx,
     mut snaps: SnapshotRx,
+    mut prepared: tokio::sync::mpsc::UnboundedReceiver<prepare::PrepareResult>,
 ) -> color_eyre::Result<()> {
     // A dedicated thread turns the blocking `event::read` into an async stream.
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Event>();
@@ -130,6 +149,9 @@ async fn event_loop(
             snap = snaps.recv() => if let Some((doc, snap)) = snap {
                 app.on_snapshot(doc, &snap);
             },
+            result = prepared.recv() => if let Some(result) = result {
+                app.on_prepare_result(result);
+            },
             () = async move {
                 match deadline {
                     Some(d) => tokio::time::sleep(d).await,
@@ -138,6 +160,8 @@ async fn event_loop(
             } => {},
         }
         app.notifications.expire(Instant::now());
+        app.expire_operation_blocker(Instant::now());
+        app.fire_auto_save(Instant::now());
 
         // Drain everything else that is ready so a burst collapses into one frame.
         while let Ok(event) = input_rx.try_recv() {
@@ -152,6 +176,9 @@ async fn event_loop(
         while let Some((doc, snap)) = snaps.try_recv() {
             app.on_snapshot(doc, &snap);
         }
+        while let Ok(result) = prepared.try_recv() {
+            app.on_prepare_result(result);
+        }
 
         if app.should_quit {
             return Ok(());
@@ -162,10 +189,15 @@ async fn event_loop(
 /// Dispatch one terminal event to the app.
 fn handle_terminal_event(app: &mut App, event: Event) {
     app.reset_graphics_caret_blink();
+    let previous = (app.focus == Focus::Editor)
+        .then(|| app.active_code_doc())
+        .flatten();
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => app.handle_key(key),
         Event::Mouse(mouse) => app.handle_mouse(mouse),
         Event::Paste(text) => app.handle_paste(text),
+        Event::FocusLost => app.auto_save_focus_lost(),
         _ => {},
     }
+    app.auto_save_context_changed(previous);
 }

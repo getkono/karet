@@ -45,6 +45,8 @@ pub enum EditorTab {
     Pager,
     /// The full-screen commit graph browser.
     CommitGraph,
+    /// GitHub dashboard, detail, or form tab.
+    Github,
     /// A too-large-file placeholder, which offers an "open anyway" override.
     Oversize,
 }
@@ -66,6 +68,8 @@ pub enum FocusTarget {
     Pager,
     /// The full-screen commit graph browser.
     CommitGraph,
+    /// A GitHub dashboard, detail, or form.
+    Github,
     /// A too-large-file placeholder, which offers an "open anyway" override.
     Oversize,
     /// The file explorer panel.
@@ -89,6 +93,7 @@ impl FocusTarget {
                 EditorTab::Diff => FocusTarget::DiffEditor,
                 EditorTab::Pager => FocusTarget::Pager,
                 EditorTab::CommitGraph => FocusTarget::CommitGraph,
+                EditorTab::Github => FocusTarget::Github,
                 EditorTab::Oversize => FocusTarget::Oversize,
                 EditorTab::Plain => FocusTarget::Editor,
             },
@@ -124,6 +129,8 @@ pub enum Layer {
     Pager,
     /// Active when the full-screen commit graph browser has focus.
     CommitGraph,
+    /// Active on GitHub dashboard, detail, and form tabs.
+    Github,
     /// Active when a too-large-file placeholder has focus (the "open anyway"
     /// override). A placeholder is not editable, so this does not stack the
     /// [`Editor`](Layer::Editor) layer.
@@ -248,6 +255,7 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
             // The browser is a self-contained list/detail view — its own layer stacks
             // straight onto Global, never the editor's editing/motion keys.
             FocusTarget::CommitGraph => &[L::CommitGraph, L::Global],
+            FocusTarget::Github => &[L::Github, L::Global],
             FocusTarget::Oversize => &[L::Oversize, L::Global],
             FocusTarget::Explorer => &[L::Explorer, L::Sidebar, L::Global],
             FocusTarget::Search => &[L::Sidebar, L::Global],

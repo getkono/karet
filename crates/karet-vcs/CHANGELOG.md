@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/getkono/karet/compare/karet-vcs-v0.2.2...karet-vcs-v0.3.0) - 2026-07-19
+
+### Added
+
+- *(vcs)* expose the staged diff as a unified patch
+
+### Other
+
+- *(engines)* move oversized unit suites into modules
+- Merge pull request #71 from getkono/feat/46-aicommit-integration
+
 ## [0.2.1](https://github.com/getkono/karet/compare/karet-vcs-v0.2.0...karet-vcs-v0.2.1) - 2026-07-09
 
 ### Added

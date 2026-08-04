@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/getkono/karet/compare/karet-lsp-v0.2.2...karet-lsp-v0.3.0) - 2026-07-19
+
+### Added
+
+- *(karet-lsp)* completion requests mapped to core models
+- *(karet-lsp)* implement the JSON-RPC transport and client lifecycle
+
+### Fixed
+
+- *(karet-lsp)* fail requests issued on a dead connection fast
+
 ## [0.1.0](https://github.com/getkono/karet/releases/tag/karet-lsp-v0.1.0) - 2026-07-02
 
 ### Added

@@ -1,3 +1,5 @@
+use std::ops::RangeInclusive;
+
 use super::text::*;
 use super::visual::*;
 use super::*;
@@ -19,6 +21,8 @@ pub struct Editor<'a> {
     cell_caret: bool,
     read_only: bool,
     word_wrap: bool,
+    tab_width: u16,
+    unwrapped_lines: &'a [RangeInclusive<u32>],
     semantic_blocks: Option<&'a SemanticBlocks>,
     sticky_scroll: bool,
 }
@@ -39,6 +43,8 @@ impl<'a> Editor<'a> {
             cell_caret: true,
             read_only: false,
             word_wrap: false,
+            tab_width: 4,
+            unwrapped_lines: &[],
             semantic_blocks: None,
             sticky_scroll: false,
         }
@@ -75,6 +81,23 @@ impl<'a> Editor<'a> {
     #[must_use]
     pub fn word_wrap(mut self, word_wrap: bool) -> Self {
         self.word_wrap = word_wrap;
+        self
+    }
+
+    /// Set the display width between hard-tab stops (clamped to at least one).
+    #[must_use]
+    pub fn tab_width(mut self, width: u16) -> Self {
+        self.tab_width = width.max(1);
+        self
+    }
+
+    /// Keep selected logical lines on one visual row even when soft wrapping is on.
+    ///
+    /// This is useful for source constructs such as Markdown tables whose columns
+    /// lose their relationship when individual rows wrap independently.
+    #[must_use]
+    pub fn unwrapped_lines(mut self, lines: &'a [RangeInclusive<u32>]) -> Self {
+        self.unwrapped_lines = lines;
         self
     }
 
@@ -172,6 +195,34 @@ impl Editor<'_> {
         None
     }
 
+    /// Inline virtual text attached to `l`, filtered by whether it belongs before or
+    /// after the decorated range.
+    fn push_inline_spans(
+        &self,
+        spans: &mut Vec<Span<'static>>,
+        l: u32,
+        before: bool,
+        theme: &Theme,
+    ) {
+        for decoration in self.decorations {
+            if let DecorationKind::InlineText {
+                text,
+                before: decoration_before,
+            } = &decoration.kind
+                && *decoration_before == before
+                && line_in_range(l, decoration.range)
+            {
+                let color = decoration
+                    .role
+                    .map_or_else(|| theme.role(ThemeRole::Muted), |role| theme.role(role));
+                spans.push(Span::styled(
+                    text.clone(),
+                    Style::default().fg(color.to_ratatui()),
+                ));
+            }
+        }
+    }
+
     /// Append the syntax-colored content spans for line `l`, honoring horizontal
     /// scroll, active selections, and text-background decorations.
     fn push_content_spans(
@@ -195,8 +246,11 @@ impl Editor<'_> {
         let mut run = String::new();
         let mut run_style: Option<Style> = None;
         let mut col: u32 = 0;
+        let mut display_col = 0_u32;
         for (boff, ch) in content.char_indices() {
+            let width = character_width(ch, display_col, self.tab_width);
             if col < range.start {
+                display_col = display_col.saturating_add(width);
                 col += 1;
                 continue;
             }
@@ -204,6 +258,11 @@ impl Editor<'_> {
                 break;
             }
             let mut style = token_style(line_start + boff, hl, theme, default_fg);
+            if let Some(color) = self.diagnostic_underline(l, col, theme) {
+                style = style
+                    .underline_color(color.to_ratatui())
+                    .add_modifier(Modifier::UNDERLINED);
+            }
             let bg = if in_any(selections, l, col) {
                 Some(theme.role(ThemeRole::Selection))
             } else {
@@ -213,19 +272,47 @@ impl Editor<'_> {
                 style = style.bg(bg.to_ratatui());
             }
             if run_style == Some(style) {
-                run.push(ch);
+                if ch == '\t' {
+                    run.push_str(&" ".repeat(width as usize));
+                } else {
+                    run.push(ch);
+                }
             } else {
                 if let Some(prev) = run_style {
                     spans.push(Span::styled(std::mem::take(&mut run), prev));
                 }
-                run.push(ch);
+                if ch == '\t' {
+                    run.push_str(&" ".repeat(width as usize));
+                } else {
+                    run.push(ch);
+                }
                 run_style = Some(style);
             }
+            display_col = display_col.saturating_add(width);
             col += 1;
         }
         if let Some(prev) = run_style {
             spans.push(Span::styled(run, prev));
         }
+    }
+
+    /// Warning/error diagnostics use a colored underline while preserving syntax
+    /// foreground and selection backgrounds. Terminals supporting styled underline
+    /// rendering present this as their native diagnostic underline.
+    fn diagnostic_underline(&self, line: u32, col: u32, theme: &Theme) -> Option<Rgba> {
+        self.diagnostics
+            .iter()
+            .filter(|diagnostic| col_in_range(line, col, diagnostic.range))
+            .min_by_key(|diagnostic| diagnostic.severity)
+            .map(|diagnostic| {
+                theme.role(match diagnostic.severity {
+                    Severity::Error => ThemeRole::DiagnosticError,
+                    Severity::Warning => ThemeRole::DiagnosticWarning,
+                    Severity::Information => ThemeRole::DiagnosticInfo,
+                    Severity::Hint => ThemeRole::DiagnosticHint,
+                    _ => ThemeRole::DiagnosticInfo,
+                })
+            })
     }
 
     /// Draw the caret at buffer position `at` as a reversed cell, when it falls within
@@ -378,6 +465,8 @@ impl StatefulWidget for Editor<'_> {
         // content height is resolved after semantic sticky rows are selected.
         state.last_content_width = content_width;
         state.last_word_wrap = self.word_wrap;
+        state.last_tab_width = self.tab_width;
+        state.last_unwrapped_lines = self.unwrapped_lines.to_vec();
         state.scroll_line = state.scroll_line.min(line_count.saturating_sub(1));
         if self.word_wrap {
             state.scroll_col = 0;
@@ -390,6 +479,8 @@ impl StatefulWidget for Editor<'_> {
             self.buffer,
             self.folds,
             width,
+            self.tab_width,
+            self.unwrapped_lines,
             VisualAnchor {
                 line: state.scroll_line,
                 subrow: state.scroll_subrow,
@@ -404,6 +495,8 @@ impl StatefulWidget for Editor<'_> {
                 self.buffer,
                 self.folds,
                 width,
+                self.tab_width,
+                self.unwrapped_lines,
                 initial_content_height,
                 anchor,
                 state.cursor(),
@@ -508,7 +601,7 @@ impl StatefulWidget for Editor<'_> {
                 ),
             ];
             let ranges = if self.word_wrap {
-                visual_ranges(self.buffer, l, width)
+                visual_ranges(self.buffer, l, width, self.tab_width, self.unwrapped_lines)
             } else {
                 vec![VisualRange {
                     start: state.scroll_col,
@@ -524,6 +617,9 @@ impl StatefulWidget for Editor<'_> {
                 .get(range_index)
                 .copied()
                 .unwrap_or_else(|| VisualRange::empty(0));
+            if range_index == 0 {
+                self.push_inline_spans(&mut spans, l, true, theme);
+            }
             self.push_content_spans(&mut spans, l, theme, default_fg, range, &selections);
             // A collapsed header hints at the hidden lines it conceals.
             if fold.is_some_and(|f| f.collapsed) && range_index + 1 == ranges.len() {
@@ -532,10 +628,20 @@ impl StatefulWidget for Editor<'_> {
                     Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
                 ));
             }
+            if range_index + 1 == ranges.len() {
+                self.push_inline_spans(&mut spans, l, false, theme);
+            }
             buf.set_line(area.x, y, &Line::from(spans), area.width);
 
             let next = if self.word_wrap {
-                next_visual_anchor(self.buffer, self.folds, width, anchor)
+                next_visual_anchor(
+                    self.buffer,
+                    self.folds,
+                    width,
+                    self.tab_width,
+                    self.unwrapped_lines,
+                    anchor,
+                )
             } else {
                 next_line_anchor(self.folds, line_count, anchor)
             };

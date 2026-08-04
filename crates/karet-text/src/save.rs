@@ -238,6 +238,19 @@ mod tests {
     }
 
     #[test]
+    fn encoding_override_controls_the_saved_bom() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("bom.txt");
+        let mut buf = TextBuffer::from_text("hello\n");
+        buf.set_encoding(Encoding::Utf8Bom);
+
+        assert!(buf.save(&path).is_ok());
+        assert!(std::fs::read(&path).is_ok_and(|bytes| bytes.starts_with(&[0xEF, 0xBB, 0xBF])));
+    }
+
+    #[test]
     fn save_is_refused_when_the_file_changed_on_disk_since_it_was_read() {
         let Ok(dir) = tempfile::tempdir() else {
             return;

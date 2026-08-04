@@ -21,13 +21,13 @@ hooks {
         stage = true
         steps {
             ["cargo-fmt"] {
-                glob = "*.rs"
+                glob = "**/*.rs"
                 // Delegates to mise so the pinned nightly (rust-nightly.txt) stays in
                 // one place; rustfmt.toml enables unstable import options.
                 fix = "mise run format"
             }
             ["cargo-clippy"] {
-                glob = "*.rs"
+                glob = "**/*.rs"
                 fix = "cargo clippy --fix --allow-dirty --allow-staged"
             }
         }
@@ -37,13 +37,13 @@ hooks {
     ["pre-push"] {
         steps {
             ["cargo-fmt-check"] {
-                glob = "*.rs"
+                glob = "**/*.rs"
                 // Delegates to mise so the pinned nightly (rust-nightly.txt) stays in
                 // one place; rustfmt.toml enables unstable import options.
                 check = "mise run format-check"
             }
             ["cargo-clippy-check"] {
-                glob = "*.rs"
+                glob = "**/*.rs"
                 check = "cargo clippy --all-targets -- -D warnings"
             }
             ["cargo-test"] {

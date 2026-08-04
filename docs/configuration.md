@@ -127,16 +127,102 @@ selector, the normal layer precedence still applies. Arrays such as `rulers` and
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `enabled` | bool | `false` | Spell-check comments and strings. |
-| `language` | string | `"en_US"` | Dictionary language. |
+| `enabled` | bool | `false` | Opt in to spell-checking for editable files. |
+| `language` | string | `"en_US"` | Dictionary language: `en_US` or `en_GB`. |
 | `words` | string[] | `[]` | Extra correctly-spelled words. |
+| `documents` | bool | `true` | Check prose in Markdown, plain text, reStructuredText, AsciiDoc, and TeX. |
+| `comments` | bool | `true` | Check comments and documentation prose in source files. |
+| `strings` | bool | `false` | Check source-code string literals. |
+| `identifiers` | bool | `false` | Check class/type, function, method, and property names while the file parses cleanly. |
+| `debounceMs` | number | `500` | Quiet period after the latest token update before checking (clamped to 50–5000 ms). |
+
+Enable the feature in any system, user, or project `setting.jsonc` layer:
+
+```jsonc
+{
+  "spellcheck": {
+    "enabled": true,
+    "language": "en_US"
+  }
+}
+```
+
+Spellcheck uses system Hunspell dictionaries at runtime rather than bundling them in
+the binary. This keeps the optional feature small. Install both the `.aff` and `.dic`
+files for the selected locale in your platform's Hunspell directory, set `DICPATH`, or
+copy them into karet's platform data directory under `dictionaries/`. The status bar
+shows `English (US)` or `English (UK)` beside the detected file language when active.
+
+A repository can choose between the supported dictionaries without opting users in:
+
+```ini
+# .editorconfig
+[*.md]
+spelling_language = en-GB
+```
+
+The `spelling_language` property selects between `en_US` and `en_GB`; it does **not**
+enable spellcheck. It is applied only when `spellcheck.enabled` is `true` in a
+`setting.jsonc` layer.
+URLs, email-like text, numeric/qualified identifiers, code spans, links, and likely
+proper names are ignored. Warnings are token-ranged and preserve syntax colours.
+
+When a misspelling has close dictionary matches, they appear in the completion popup
+after the debounced warning reaches a stationary caret; `Ctrl+Space` also opens them
+when automatic completion is disabled. Double-clicking a spelling squiggle opens the
+same replacements in a correction menu. A warning without close matches instead shows
+a muted `No similar words found` row, while still offering the dictionary action.
+
+`Add “…” to Project Dictionary` appends the word to `spellcheck.words` in the project
+layer. An existing `$GIT_ROOT/.karet/setting.jsonc` is updated in place while retaining
+its comments and unrelated settings. If that file does not exist, karet requires the
+user to type `create` before it creates the `.karet` settings tree; it never silently
+falls back to a user or system dictionary.
+
+### `latex`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `buildOnSave` | bool | `false` | Rebuild a TeX root after successfully saving an editable `.tex` file (manual or automatic). |
+| `command` | string | `"latexmk"` | External compiler executable, launched directly without a shell. |
+| `args` | string[] | latexmk PDF recipe | Compiler arguments; `{file}`, `{fileDir}`, and `{outputDir}` are substituted inside each argument. |
+| `outputDirectory` | string | `""` | Absolute output path, or a path relative to the workspace; empty uses karet's per-workspace platform cache. |
+| `timeoutMs` | number | `120000` | Compiler timeout in milliseconds (clamped to 1000–600000). |
+
+The default recipe runs `latexmk -pdf` in nonstop, SyncTeX, and file-line-error
+modes. karet never bundles a TeX distribution: install `latexmk` plus the TeX
+packages used by the document, or replace `command` and `args` with another engine.
+Arguments are passed as an argv array, so paths containing spaces remain one argument
+and configuration values are not evaluated by a shell.
+
+Run **LaTeX: Build and Open PDF Preview** from the command palette while an editable
+`.tex` file is active. The preview tab appears immediately, the compiler runs off the
+editor thread, and closing the pending tab terminates the build. Compiler messages in
+`file.tex:line: message` form become editor diagnostics. A source can select a root
+file with a TeX magic comment in its first 40 lines; chained directives are supported:
+
+```tex
+% !TeX root = ../main.tex
+```
+
+The generated PDF opens in karet's existing PDF viewer when the `pdf` application
+feature is enabled (it is enabled in default builds). `texlab` is the built-in TeX
+language-server default. When a TeX file first needs it, karet offers to install it
+into the shared machine-local registry; the editor does not use a system `texlab`.
+See [Managed language servers](language-servers.md) for install approval,
+explicit-only updates, and crash-safe process ownership. The TeX compiler remains
+an external prerequisite.
 
 ### `git`
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `decorations` | bool | `true` | Gutter change decorations + file-tree status colouring. |
-| `blame` | bool | `false` | Inline blame for the current line. |
+| `blame` | bool | `true` | Muted cursor-line attribution; click it or press `Alt+B` to open the commit. |
+
+`Ctrl+Shift+B` toggles inline blame and persists this field in the user JSONC file
+while retaining comments and unrelated settings. Files without committed Git history
+show no attribution and do not report an error.
 
 > An explicit `--icons` flag (or the `KARET_ICONS` environment variable) overrides
 > `workbench.iconStyle`.

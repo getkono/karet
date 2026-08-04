@@ -7,6 +7,7 @@
 
 use std::path::PathBuf;
 
+use karet_core::BlameAttribution;
 use karet_core::Change;
 use karet_core::CompletionItem;
 use karet_core::CursorState;
@@ -22,9 +23,286 @@ use karet_search::FileHit;
 use karet_search::SearchQuery;
 use karet_syntax::HighlightSpan;
 use karet_text::EditCause;
+use karet_vcs::Branch;
+use karet_vcs::BranchTarget;
 use karet_vcs::Commit;
 use karet_vcs::CommitDetail;
+use karet_vcs::CreateBranchOptions;
 use karet_vcs::FileChange;
+use karet_vcs::Remote;
+use karet_vcs::RemoteBranch;
+use karet_vcs::RepositoryState;
+use karet_vcs::RepositorySummary;
+use karet_vcs::StashEntry;
+use karet_vcs::StashOptions;
+
+mod event;
+mod github;
+
+pub use event::Event;
+pub use github::*;
+
+/// Per-document editing and serialization behavior after application settings and
+/// matching EditorConfig files have been resolved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DocumentSettings {
+    /// Whether indentation commands insert spaces (`true`) or hard tabs (`false`).
+    pub insert_spaces: bool,
+    /// Display columns in one indentation level.
+    pub indent_size: u16,
+    /// Display columns between hard-tab stops.
+    pub tab_width: u16,
+    /// Remove whitespace immediately before line endings on save.
+    pub trim_trailing_whitespace: bool,
+    /// Ensure non-empty files end in a newline on save when enabled.
+    pub insert_final_newline: bool,
+    /// Explicit line-ending override, or `None` to preserve the detected style.
+    pub line_ending: Option<DocumentLineEnding>,
+    /// Explicit text-encoding override, or `None` to preserve the detected encoding.
+    pub encoding: Option<DocumentEncoding>,
+    /// Active spell-check dictionary after settings and EditorConfig resolution.
+    pub spelling_language: Option<SpellingLanguage>,
+}
+
+impl Default for DocumentSettings {
+    fn default() -> Self {
+        Self {
+            insert_spaces: true,
+            indent_size: 4,
+            tab_width: 4,
+            trim_trailing_whitespace: true,
+            insert_final_newline: true,
+            line_ending: None,
+            encoding: None,
+            spelling_language: None,
+        }
+    }
+}
+
+/// A bundled spell-check behavior supported by karet.
+///
+/// The dictionary files themselves are discovered at runtime so the application
+/// package stays small; this enum deliberately keeps the supported locale set narrow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SpellingLanguage {
+    /// American English (`en_US`).
+    EnglishUnitedStates,
+    /// British English (`en_GB`).
+    EnglishUnitedKingdom,
+}
+
+impl SpellingLanguage {
+    /// Parse an EditorConfig/BCP-47 or Hunspell spelling locale.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().replace('_', "-").to_ascii_lowercase().as_str() {
+            "en" | "en-us" => Some(Self::EnglishUnitedStates),
+            "en-gb" => Some(Self::EnglishUnitedKingdom),
+            _ => None,
+        }
+    }
+
+    /// Hunspell dictionary basename.
+    #[must_use]
+    pub const fn locale(self) -> &'static str {
+        match self {
+            Self::EnglishUnitedStates => "en_US",
+            Self::EnglishUnitedKingdom => "en_GB",
+        }
+    }
+
+    /// Human-readable status-bar label.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::EnglishUnitedStates => "English (US)",
+            Self::EnglishUnitedKingdom => "English (UK)",
+        }
+    }
+}
+
+/// A text line-ending style supported by editable karet documents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DocumentLineEnding {
+    /// Line feed (`\n`).
+    Lf,
+    /// Carriage return followed by line feed (`\r\n`).
+    Crlf,
+}
+
+/// A text encoding supported by editable karet documents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DocumentEncoding {
+    /// UTF-8 without a byte-order mark.
+    Utf8,
+    /// UTF-8 with a byte-order mark.
+    Utf8Bom,
+}
+
+/// A complete repository snapshot for Source Control controls and pickers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RepositorySnapshot {
+    /// Current branch, upstream divergence, and recovery state.
+    pub state: RepositoryState,
+    /// Local branches.
+    pub branches: Vec<Branch>,
+    /// Configured remotes.
+    pub remotes: Vec<Remote>,
+    /// Locally known remote-tracking branches.
+    pub remote_branches: Vec<RemoteBranch>,
+    /// Stash entries, newest first.
+    pub stashes: Vec<StashEntry>,
+}
+
+/// A forge-neutral open pull request suitable for the branch picker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PullRequestSummary {
+    /// Repository-local pull request number.
+    pub number: u64,
+    /// Pull request title.
+    pub title: String,
+    /// Author login, when available.
+    pub author: Option<String>,
+    /// Whether the pull request is a draft.
+    pub draft: bool,
+    /// Source branch name.
+    pub head_ref: String,
+    /// Source repository, including fork owner.
+    pub head_repo: String,
+    /// Current source commit.
+    pub head_sha: String,
+    /// Target branch name.
+    pub base_ref: String,
+    /// Target repository.
+    pub base_repo: String,
+    /// Browser URL.
+    pub url: String,
+}
+
+/// One serialized repository mutation. The backend runs these off the actor thread.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum VcsAction {
+    /// Create, optionally switch to, and optionally publish a branch.
+    CreateBranch(CreateBranchOptions),
+    /// Switch to a local or remote-tracking branch.
+    SwitchBranch(BranchTarget),
+    /// Rename a local branch.
+    RenameBranch {
+        /// Existing local name.
+        old: String,
+        /// Replacement local name.
+        new: String,
+    },
+    /// Safely delete a merged local branch.
+    DeleteBranch {
+        /// Local branch to delete.
+        name: String,
+    },
+    /// Publish a local branch.
+    PublishBranch {
+        /// Destination remote.
+        remote: String,
+        /// Local branch to publish.
+        branch: String,
+        /// Whether to configure the published branch as upstream.
+        set_upstream: bool,
+    },
+    /// Delete a remote branch.
+    DeleteRemoteBranch {
+        /// Destination remote.
+        remote: String,
+        /// Remote branch to delete.
+        branch: String,
+    },
+    /// Undo the latest commit with a soft reset.
+    UndoCommit {
+        /// Explicit confirmation when the commit is already upstream.
+        allow_upstream: bool,
+    },
+    /// Create a stash.
+    StashPush(StashOptions),
+    /// Load a stash patch without changing the repository.
+    StashPreview {
+        /// Stable stash selector.
+        reference: String,
+    },
+    /// Apply a stash while keeping it.
+    StashApply {
+        /// Stable stash selector.
+        reference: String,
+    },
+    /// Apply and remove a stash.
+    StashPop {
+        /// Stable stash selector.
+        reference: String,
+    },
+    /// Permanently remove a stash.
+    StashDrop {
+        /// Stable stash selector.
+        reference: String,
+    },
+    /// Create and switch to a branch from a stash.
+    StashBranch {
+        /// New local branch name.
+        name: String,
+        /// Stable stash selector.
+        reference: String,
+    },
+    /// Fetch and prune a remote.
+    Fetch {
+        /// Remote to fetch and prune.
+        remote: String,
+    },
+    /// Pull using Git configuration and push the current branch.
+    Sync,
+    /// Continue the in-progress merge, rebase, or cherry-pick.
+    Continue,
+    /// Abort the in-progress merge, rebase, or cherry-pick.
+    Abort,
+    /// Skip the current rebase or cherry-pick commit.
+    Skip,
+    /// Fetch and switch to a reusable local GitHub pull-request branch.
+    CheckoutPullRequest {
+        /// GitHub remote that owns the pull-request ref.
+        remote: String,
+        /// Repository-local pull-request number.
+        number: u64,
+    },
+}
+
+/// Structured result from a repository action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum VcsOutcome {
+    /// The action completed without a more specific result.
+    Completed,
+    /// A stash was created; false means there were no changes to save.
+    StashCreated(bool),
+    /// Patch text for a stash preview.
+    StashPreview {
+        /// Previewed stash selector.
+        reference: String,
+        /// Unified diff and stat text.
+        patch: String,
+    },
+    /// Sync cannot proceed until the current branch is published.
+    NeedsPublish,
+    /// A managed pull-request branch was fast-forwarded.
+    PullRequestUpdated,
+    /// The new local branch used for a checked-out pull request.
+    PullRequestCheckedOut {
+        /// Reusable local branch name.
+        branch: String,
+    },
+    /// Commit removed from `HEAD` by undo.
+    CommitUndone {
+        /// Commit removed from `HEAD`.
+        commit: String,
+        /// Whether the removed commit was already reachable upstream.
+        was_upstream: bool,
+    },
+}
 
 use crate::config::LoadedConfig;
 
@@ -39,6 +317,71 @@ pub struct ViewId(pub u64);
 /// Correlates a [`Command`] with the [`Event`] that answers it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RequestId(pub u64);
+
+/// A language server managed by karet's per-user installation registry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum LanguageServerId {
+    /// Rust language intelligence from rust-analyzer.
+    RustAnalyzer,
+    /// JavaScript and TypeScript intelligence from TypeScript Language Server.
+    TypeScript,
+    /// Python language intelligence from Pyright.
+    Pyright,
+    /// TeX and LaTeX language intelligence from texlab.
+    Texlab,
+}
+
+impl LanguageServerId {
+    /// Stable registry key used in on-disk paths and manifests.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::RustAnalyzer => "rust-analyzer",
+            Self::TypeScript => "typescript-language-server",
+            Self::Pyright => "pyright",
+            Self::Texlab => "texlab",
+        }
+    }
+
+    /// Human-readable provider name for prompts and status.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::RustAnalyzer => "rust-analyzer",
+            Self::TypeScript => "TypeScript Language Server",
+            Self::Pyright => "Pyright",
+            Self::Texlab => "texlab",
+        }
+    }
+}
+
+/// Opaque identifier for an exact, explicitly checked language-server update.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LanguageServerPlanId(pub u64);
+
+/// One exact language-server change returned by an explicit update check.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LanguageServerChange {
+    /// Managed provider.
+    pub server: LanguageServerId,
+    /// Currently active version, absent for a first installation.
+    pub current: Option<String>,
+    /// Exact version whose download metadata is held by the plan.
+    pub target: String,
+    /// Expected compressed download bytes, when upstream supplied a size.
+    pub download_bytes: Option<u64>,
+}
+
+/// Local-only status for one managed language server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LanguageServerStatus {
+    /// Managed provider.
+    pub server: LanguageServerId,
+    /// Active installed version, if any.
+    pub installed: Option<String>,
+    /// Whether this session currently owns a running process for the provider.
+    pub running: bool,
+}
 
 /// Which producer a [`Event::DecorationsChanged`] batch belongs to, so the client
 /// can replace one producer's decoration layer atomically.
@@ -86,6 +429,14 @@ pub enum RangeSpec {
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum Command {
+    /// Cancel a safely-droppable background request.
+    ///
+    /// Cancellation is cooperative: a worker suppresses results and stops before
+    /// the next expensive phase. Repository mutations are never cancellable.
+    Cancel {
+        /// The original request to cancel.
+        request: RequestId,
+    },
     /// Open a document.
     OpenDocument {
         /// The file path to open.
@@ -155,6 +506,25 @@ pub enum Command {
         /// The target document.
         doc: DocumentId,
     },
+    /// Query the managed language-server registry without performing network I/O.
+    LanguageServerStatus,
+    /// Explicitly approve discovery and installation of one missing server.
+    InstallLanguageServer {
+        /// Provider to install at its latest stable version.
+        server: LanguageServerId,
+    },
+    /// Explicitly perform network metadata checks for installed servers.
+    CheckLanguageServerUpdates,
+    /// Apply the exact update plan previously returned by the backend.
+    ApplyLanguageServerPlan {
+        /// Opaque plan identifier.
+        plan: LanguageServerPlanId,
+    },
+    /// Restart this session's processes for an already-approved active version.
+    RestartLanguageServer {
+        /// Provider whose running slots should restart.
+        server: LanguageServerId,
+    },
     /// Search workspace symbols.
     WorkspaceSymbols {
         /// The query string.
@@ -172,6 +542,11 @@ pub enum Command {
     /// Format a document as part of saving it.
     FormatOnSave {
         /// The document to format.
+        doc: DocumentId,
+    },
+    /// Compile the LaTeX root containing an editable TeX document and produce a PDF.
+    BuildLatex {
+        /// The open TeX document that initiated the build.
         doc: DocumentId,
     },
     /// Run a workspace search.
@@ -219,6 +594,36 @@ pub enum Command {
     GenerateCommitMessage,
     /// Recompute and re-emit the source-control status.
     RefreshVcs,
+    /// Load branch, remote, operation, and stash state for Source Control.
+    RepositorySnapshot,
+    /// Compute compact status for a nested repository shown in the explorer.
+    NestedRepositoryStatus {
+        /// Exact nested repository worktree directory.
+        path: PathBuf,
+    },
+    /// Run one repository mutation on the serialized background worker.
+    VcsAction {
+        /// Action to run.
+        action: VcsAction,
+    },
+    /// Fetch a page of open pull requests for one GitHub remote.
+    PullRequests {
+        /// Configured remote whose URL identifies the GitHub repository.
+        remote: String,
+        /// One-based page number.
+        page: u32,
+        /// Maximum entries per page, from 1 to 100.
+        per_page: u8,
+    },
+    /// Attribute the current buffer's cursor line.
+    Blame {
+        /// Open document to attribute.
+        doc: DocumentId,
+        /// Buffer version the client currently renders.
+        version: u64,
+        /// Zero-based cursor line.
+        line: u32,
+    },
     /// Fetch a page of the commit-history log (newest first), for lazy loading.
     VcsLog {
         /// How many commits to skip from `HEAD`.
@@ -256,6 +661,85 @@ pub enum Command {
         /// The full commit hash to look up.
         hash: String,
     },
+    /// Re-evaluate GitHub eligibility and authentication for the workspace root.
+    GithubRefresh,
+    /// Authenticate the GitHub manager for this session with a personal access token.
+    /// The backend consumes the token immediately and never includes it in an event.
+    GithubLogin {
+        /// Personal access token entered through the presentation's masked control.
+        token: GithubToken,
+    },
+    /// Search repository issues with GitHub query syntax.
+    GithubSearchIssues {
+        /// User query without the repository/object scope controlled by the backend.
+        query: String,
+        /// One-based result page.
+        page: u32,
+    },
+    /// Search repository pull requests with GitHub query syntax.
+    GithubSearchPullRequests {
+        /// User query without the repository/object scope controlled by the backend.
+        query: String,
+        /// One-based result page.
+        page: u32,
+    },
+    /// Load repository Actions workflows and recent runs.
+    GithubActions {
+        /// One-based result page.
+        page: u32,
+    },
+    /// Load one issue and its complete conversation comments.
+    GithubIssue {
+        /// Repository-local issue number.
+        number: u64,
+    },
+    /// Load one pull request's canonical primary resource.
+    GithubPullRequest {
+        /// Repository-local pull request number.
+        number: u64,
+    },
+    /// Replace a pull request's Markdown description.
+    GithubUpdatePullRequestBody {
+        /// Repository-local pull-request number.
+        number: u64,
+        /// New Markdown body.
+        body: String,
+    },
+    /// Add a Markdown comment to a pull request conversation.
+    GithubCommentPullRequest {
+        /// Repository-local pull-request number.
+        number: u64,
+        /// Comment Markdown.
+        body: String,
+    },
+    /// Merge a pull request at its currently displayed head SHA.
+    GithubMergePullRequest {
+        /// Repository-local pull-request number.
+        number: u64,
+        /// Expected head SHA, preventing an unseen update from being merged.
+        head_sha: String,
+    },
+    /// Convert a pull request to draft or mark it ready for review.
+    GithubSetPullRequestDraft {
+        /// GraphQL pull-request node identifier.
+        node_id: String,
+        /// Repository-local pull-request number, used to refresh after mutation.
+        number: u64,
+        /// Desired draft state.
+        draft: bool,
+    },
+    /// Load repository-aware options for the new-issue form.
+    GithubIssueMetadata,
+    /// Create a repository issue.
+    GithubCreateIssue {
+        /// The complete primary create payload.
+        issue: GithubNewIssue,
+    },
+    /// Create a repository pull request.
+    GithubCreatePullRequest {
+        /// The complete primary create payload.
+        pull_request: GithubNewPullRequest,
+    },
     /// Recover the crash-recovery swaps announced by [`Event::SwapsFound`]: restore
     /// each backed-up buffer as an unsaved (dirty) document.
     RecoverSwaps,
@@ -278,20 +762,6 @@ pub enum GraphKind {
     Usage,
 }
 
-/// A forge's verification verdict for a commit signature (see
-/// [`Event::CommitVerification`]). Mirrors GitHub's `commit.verification`; defined here
-/// (rather than re-exported from `karet-github`) so the seam stays stable whether or not
-/// the `github` feature is compiled in.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GithubVerification {
-    /// Whether the forge considers the signature verified.
-    pub verified: bool,
-    /// The forge's machine reason (`valid`, `unsigned`, `unknown_key`, …).
-    pub reason: String,
-    /// The signer the forge attributes the commit to, when present.
-    pub signer: Option<String>,
-}
-
 /// A crash-recovery swap offered to the UI on startup (see [`Event::SwapsFound`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SwapInfo {
@@ -302,257 +772,6 @@ pub struct SwapInfo {
     /// Whether the original file changed on disk since the swap was written —
     /// recovering would discard those on-disk changes.
     pub conflict: bool,
-}
-
-/// A message emitted by the backend to the presentation layer. When it answers a
-/// [`Command`], it is delivered with that command's [`RequestId`].
-#[derive(Clone, Debug)]
-#[non_exhaustive]
-pub enum Event {
-    /// A document was opened at the given version.
-    Opened {
-        /// The opened document.
-        doc: DocumentId,
-        /// Its initial version.
-        version: u64,
-    },
-    /// A change was applied, producing a new version.
-    Applied {
-        /// The document.
-        doc: DocumentId,
-        /// The resulting version.
-        version: u64,
-    },
-    /// A document was saved.
-    Saved {
-        /// The saved document.
-        doc: DocumentId,
-    },
-    /// A document path was retargeted after a filesystem rename/move.
-    Retargeted {
-        /// The retargeted document.
-        doc: DocumentId,
-        /// The document's new file path.
-        path: PathBuf,
-    },
-    /// A document was closed.
-    Closed {
-        /// The closed document.
-        doc: DocumentId,
-    },
-    /// A clean document was reloaded from disk after an external change. The new
-    /// content arrives on the snapshot stream; this event carries the new version.
-    Reloaded {
-        /// The reloaded document.
-        doc: DocumentId,
-        /// The version after reloading.
-        version: u64,
-    },
-    /// A document changed on disk while it had unsaved edits. The client should
-    /// prompt the user (keep mine / reload theirs / view diff).
-    ExternalConflict {
-        /// The document with the conflict.
-        doc: DocumentId,
-    },
-    /// An `OpenDocument` failed because the file's contents are not valid UTF-8.
-    /// No document is registered for `path` — full non-UTF-8 editing isn't
-    /// supported, so the client should fall back to a read-only view instead of
-    /// leaving the tab's document unset forever.
-    NotUtf8 {
-        /// The path that could not be opened as text.
-        path: PathBuf,
-    },
-    /// A debounced filesystem change was observed (see `karet-watch`). Distinct
-    /// from the specific `Reloaded`/`VcsStatus`/`VcsLog` reactions the backend
-    /// already performs on the same event — this tells the client something on
-    /// disk changed so it can refresh anything else it derives from the
-    /// workspace (e.g. re-run a live workspace search).
-    FsChanged {
-        /// The affected paths, as reported by the debounced watcher.
-        paths: Vec<PathBuf>,
-    },
-    /// The watched configuration changed and a new in-memory snapshot is active.
-    ConfigChanged {
-        /// The merged settings, diagnostics, and provenance now used by the session.
-        report: Box<LoadedConfig>,
-    },
-    /// New diagnostics were published for a document.
-    DiagnosticsPublished {
-        /// The document.
-        doc: DocumentId,
-        /// The full diagnostic set for the document.
-        diagnostics: Vec<Diagnostic>,
-    },
-    /// A producer's decoration layer changed.
-    DecorationsChanged {
-        /// The document.
-        doc: DocumentId,
-        /// Which producer's layer this replaces.
-        layer: DecorationLayer,
-        /// The new decorations for that layer.
-        decorations: Vec<Decoration>,
-    },
-    /// Updated syntax highlight spans for a document.
-    Highlights {
-        /// The document.
-        doc: DocumentId,
-        /// The highlight spans.
-        spans: Vec<HighlightSpan>,
-    },
-    /// Resolved document symbols.
-    Symbols {
-        /// The document.
-        doc: DocumentId,
-        /// The symbols.
-        symbols: Vec<Symbol>,
-    },
-    /// Completion results answering a [`Command::Completion`]. Delivered with the
-    /// originating command's [`RequestId`]; `doc` and `version` echo the request's
-    /// target so the client can drop sets that are stale by the time they arrive
-    /// (document switched, or edited past `version`).
-    Completions {
-        /// The document the completions are for.
-        doc: DocumentId,
-        /// The document version the request was made against.
-        version: u64,
-        /// The completion items, with edit ranges in buffer (UTF-32) columns.
-        items: Vec<CompletionItem>,
-    },
-    /// Hover result answering a [`Command::Hover`].
-    HoverResult {
-        /// The hover, if any.
-        hover: Option<Hover>,
-    },
-    /// Definition locations answering a [`Command::Definition`].
-    Definitions {
-        /// The resolved locations.
-        locations: Vec<Location>,
-    },
-    /// Search results answering a [`Command::Search`].
-    SearchResults {
-        /// The per-file hits.
-        hits: Vec<FileHit>,
-    },
-    /// Progress on a long-running operation.
-    Progress {
-        /// A human-readable status message.
-        message: String,
-        /// Percent complete (0–100), if known.
-        percent: Option<u8>,
-    },
-    /// A condition the client should surface to the user (an error, a warning, or
-    /// an out-of-band informational message). Distinct from [`Progress`](Self::Progress),
-    /// which is for genuine long-running progress.
-    Notification {
-        /// How prominently to surface it.
-        severity: Severity,
-        /// The originating subsystem.
-        kind: NotificationKind,
-        /// A human-readable message.
-        message: String,
-    },
-    /// The current source-control status: the staged (`HEAD`↔index) and working
-    /// (index↔worktree, plus untracked and conflicted) change sets.
-    VcsStatus {
-        /// The staged changes.
-        staged: Vec<FileChange>,
-        /// The working-tree changes (unstaged, untracked, conflicted).
-        working: Vec<FileChange>,
-    },
-    /// A commit was created.
-    Committed {
-        /// The new commit's hex object id.
-        oid: String,
-    },
-    /// A commit message was generated from the staged diff, answering
-    /// [`Command::GenerateCommitMessage`]. The client fills its commit input with it.
-    CommitMessageGenerated {
-        /// The generated commit message.
-        message: String,
-    },
-    /// A page of the commit-history log, answering a [`Command::VcsLog`].
-    VcsLog {
-        /// How many commits were skipped from `HEAD` (the page offset).
-        skip: usize,
-        /// The commits in this page, newest first.
-        commits: Vec<Commit>,
-        /// Whether more commits exist beyond this page.
-        has_more: bool,
-    },
-    /// New commits appeared at the tip (an external `git commit`, amend, or small
-    /// rebase detected via file-watching). These should be prepended to the loaded
-    /// log without disturbing already-paged history. Emitted spontaneously, never in
-    /// answer to a request.
-    VcsCommitsPrepended {
-        /// The new commits, newest first.
-        commits: Vec<Commit>,
-    },
-    /// A commit's metadata, answering the first stage of [`Command::CommitDetail`].
-    CommitDetailReady {
-        /// The commit metadata (message, author/committer, parents, signature). Boxed
-        /// to keep this large payload from bloating every other [`Event`] variant.
-        detail: Box<CommitDetail>,
-    },
-    /// A commit's full detail plus its file changes, answering the final stage of
-    /// [`Command::CommitDetail`].
-    CommitReady {
-        /// The commit metadata (message, author/committer, parents, signature). Boxed
-        /// to keep this large payload from bloating every other [`Event`] variant.
-        detail: Box<CommitDetail>,
-        /// The files this commit changed relative to its first parent, for the diff view.
-        changes: Vec<FileChange>,
-    },
-    /// The diff between two points, answering [`Command::RangeChanges`].
-    RangeReady {
-        /// The resolved "before" endpoint, for the compare header (e.g. `origin/main`,
-        /// or a short hash).
-        base_label: String,
-        /// The resolved "after" endpoint, for the compare header (e.g. `HEAD`).
-        head_label: String,
-        /// Whether the diff was taken from the merge base (three-dot) rather than the tips.
-        merge_base: bool,
-        /// The files that differ between the two points, for the diff view.
-        changes: Vec<FileChange>,
-    },
-    /// A page of a file's history, answering [`Command::FileHistory`].
-    FileHistory {
-        /// The file the history is for.
-        path: PathBuf,
-        /// How many commits were skipped (the page offset).
-        skip: usize,
-        /// The commits touching the file in this page, newest first.
-        commits: Vec<Commit>,
-        /// Whether more commits exist beyond this page.
-        has_more: bool,
-    },
-    /// A commit's GitHub verification status, answering
-    /// [`Command::FetchCommitVerification`]. Emitted only on a successful fetch.
-    CommitVerification {
-        /// The commit this verdict is for.
-        hash: String,
-        /// The forge's verification verdict.
-        status: GithubVerification,
-    },
-    /// Crash-recovery swaps from a previous session were found on startup. The UI
-    /// prompts the user to [`Command::RecoverSwaps`] or [`Command::DiscardSwaps`].
-    SwapsFound {
-        /// The recoverable swaps.
-        swaps: Vec<SwapInfo>,
-    },
-    /// A visualization graph is ready to render (answers [`Command::DependencyGraph`]).
-    GraphReady {
-        /// Which visualization this is.
-        kind: GraphKind,
-        /// A short title for the view (e.g. the workspace or symbol name).
-        title: String,
-        /// The neutral graph to render.
-        view: karet_core::GraphView,
-    },
-    /// The loaded settings and provenance for this running session.
-    LoadedConfig {
-        /// The loaded configuration report.
-        report: Box<LoadedConfig>,
-    },
 }
 
 #[cfg(test)]
@@ -568,12 +787,140 @@ mod tests {
             doc: DocumentId(7),
             path: PathBuf::from("new.txt"),
         };
+        let _cmd = Command::BuildLatex { doc: DocumentId(7) };
         let _ev = Event::Saved { doc: DocumentId(7) };
         let _ev = Event::Retargeted {
             doc: DocumentId(7),
             path: PathBuf::from("new.txt"),
         };
+        let _ev = Event::LatexBuildFinished {
+            doc: DocumentId(7),
+            root: PathBuf::from("main.tex"),
+            pdf: Some(PathBuf::from("main.pdf")),
+            diagnostics: Vec::new(),
+            error: None,
+        };
         let _cfg = Command::LoadedConfig;
+        let server = LanguageServerId::Texlab;
+        assert_eq!(server.key(), "texlab");
+        assert_eq!(server.display_name(), "texlab");
+        let plan = LanguageServerPlanId(9);
+        let change = LanguageServerChange {
+            server,
+            current: Some("1.0.0".into()),
+            target: "2.0.0".into(),
+            download_bytes: Some(42),
+        };
+        let status = LanguageServerStatus {
+            server,
+            installed: Some("1.0.0".into()),
+            running: true,
+        };
+        let _commands = [
+            Command::InstallLanguageServer { server },
+            Command::ApplyLanguageServerPlan { plan },
+            Command::RestartLanguageServer { server },
+        ];
+        let _events = [
+            Event::LanguageServerUpdatePlan {
+                plan,
+                changes: vec![change],
+            },
+            Event::LanguageServerStatus {
+                servers: vec![status],
+            },
+        ];
         assert_eq!(DecorationLayer::Vcs, DecorationLayer::Vcs);
+        assert_eq!(
+            DocumentSettings::default(),
+            DocumentSettings {
+                insert_spaces: true,
+                indent_size: 4,
+                tab_width: 4,
+                trim_trailing_whitespace: true,
+                insert_final_newline: true,
+                line_ending: None,
+                encoding: None,
+                spelling_language: None,
+            }
+        );
+        assert_eq!(
+            SpellingLanguage::parse("en-GB").map(SpellingLanguage::display_name),
+            Some("English (UK)")
+        );
+        assert_eq!(
+            SpellingLanguage::parse("en_US").map(SpellingLanguage::locale),
+            Some("en_US")
+        );
+        assert!(SpellingLanguage::parse("fr_FR").is_none());
+    }
+
+    #[test]
+    fn github_token_debug_never_exposes_the_secret() {
+        let token = GithubToken::new("github_pat_super_secret".to_string());
+        let debug = format!("{token:?}");
+        assert_eq!(debug, "GithubToken(***)");
+        assert!(!debug.contains("super_secret"));
+    }
+
+    #[test]
+    fn pull_request_conversation_models_remain_serde_ready() -> Result<(), serde_json::Error> {
+        let commit = GithubPullRequestCommit {
+            sha: "bbbbbbbb".to_string(),
+            summary: "Add feature".to_string(),
+            author: "Octo Cat".to_string(),
+            committed_unix: 2,
+            parents: vec!["aaaaaaaa".to_string()],
+            html_url: "https://github.com/o/r/commit/bbbbbbbb".to_string(),
+        };
+        let check = GithubCheckRun {
+            id: 9,
+            name: "CI".to_string(),
+            status: "completed".to_string(),
+            conclusion: Some("success".to_string()),
+            html_url: "https://github.com/o/r/runs/9".to_string(),
+        };
+        let activity = GithubPullRequestActivity {
+            id: Some(3),
+            kind: "committed".to_string(),
+            actor: Some("octocat".to_string()),
+            commit_id: Some(commit.sha.clone()),
+            before: None,
+            after: None,
+            created_unix: Some(2),
+        };
+        let commit_json = serde_json::to_string(&commit)?;
+        let check_json = serde_json::to_string(&check)?;
+        let activity_json = serde_json::to_string(&activity)?;
+        assert_eq!(
+            serde_json::from_str::<GithubPullRequestCommit>(&commit_json)?,
+            commit
+        );
+        assert_eq!(serde_json::from_str::<GithubCheckRun>(&check_json)?, check);
+        assert_eq!(
+            serde_json::from_str::<GithubPullRequestActivity>(&activity_json)?,
+            activity
+        );
+        let commands = [
+            Command::GithubUpdatePullRequestBody {
+                number: 12,
+                body: "body".to_string(),
+            },
+            Command::GithubCommentPullRequest {
+                number: 12,
+                body: "comment".to_string(),
+            },
+            Command::GithubMergePullRequest {
+                number: 12,
+                head_sha: "bbbbbbbb".to_string(),
+            },
+            Command::GithubSetPullRequestDraft {
+                node_id: "PR_node".to_string(),
+                number: 12,
+                draft: true,
+            },
+        ];
+        assert_eq!(commands.len(), 4);
+        Ok(())
     }
 }

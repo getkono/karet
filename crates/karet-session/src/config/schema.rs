@@ -30,8 +30,10 @@ pub struct Settings {
     pub workbench: Workbench,
     /// Workspace search behaviour.
     pub search: Search,
-    /// Spell-checking of comments and strings.
+    /// Spell-checking of prose and selected source-code tokens.
     pub spellcheck: Spellcheck,
+    /// External LaTeX build and preview tooling.
+    pub latex: Latex,
     /// Source-control integration.
     pub git: Git,
     /// Language-server integration (completions and future language features).
@@ -667,7 +669,7 @@ impl Default for Search {
     }
 }
 
-/// `spellcheck.*` — spell-checking of comments and strings.
+/// `spellcheck.*` — spell-checking of prose and selected source-code tokens.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Spellcheck {
@@ -677,6 +679,16 @@ pub struct Spellcheck {
     pub language: String,
     /// Extra words treated as correctly spelled.
     pub words: Vec<String>,
+    /// Check prose-oriented editable documents such as Markdown.
+    pub documents: bool,
+    /// Check comments in source code.
+    pub comments: bool,
+    /// Check string literals in source code.
+    pub strings: bool,
+    /// Check identifier-like syntax tokens when the file parses cleanly.
+    pub identifiers: bool,
+    /// Quiet period after the latest token update before checking.
+    pub debounce_ms: u64,
 }
 
 impl Default for Spellcheck {
@@ -685,6 +697,47 @@ impl Default for Spellcheck {
             enabled: false,
             language: "en_US".to_string(),
             words: Vec::new(),
+            documents: true,
+            comments: true,
+            strings: false,
+            identifiers: false,
+            debounce_ms: 500,
+        }
+    }
+}
+
+/// `latex.*` — external LaTeX compilation and preview behavior.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct Latex {
+    /// Compile the root document after each successful manual or automatic save.
+    pub build_on_save: bool,
+    /// External executable. It is launched directly, never through a shell.
+    pub command: String,
+    /// Arguments supporting `{file}`, `{fileDir}`, and `{outputDir}` placeholders.
+    pub args: Vec<String>,
+    /// Build output directory, absolute or relative to the workspace root. Empty
+    /// uses karet's platform cache and keeps generated files out of the repository.
+    pub output_directory: String,
+    /// Maximum compiler runtime before the process is terminated.
+    pub timeout_ms: u64,
+}
+
+impl Default for Latex {
+    fn default() -> Self {
+        Self {
+            build_on_save: false,
+            command: "latexmk".to_owned(),
+            args: vec![
+                "-pdf".to_owned(),
+                "-interaction=nonstopmode".to_owned(),
+                "-synctex=1".to_owned(),
+                "-file-line-error".to_owned(),
+                "-outdir={outputDir}".to_owned(),
+                "{file}".to_owned(),
+            ],
+            output_directory: String::new(),
+            timeout_ms: 120_000,
         }
     }
 }
@@ -740,7 +793,7 @@ impl Default for Git {
     fn default() -> Self {
         Self {
             decorations: true,
-            blame: false,
+            blame: true,
             ai_commit: AiCommit::default(),
         }
     }
@@ -809,6 +862,17 @@ mod tests {
         assert_eq!(s.workbench.color_theme, "dark");
         assert!(s.search.smart_case);
         assert!(!s.spellcheck.enabled);
+        assert_eq!(s.spellcheck.language, "en_US");
+        assert!(s.spellcheck.documents);
+        assert!(s.spellcheck.comments);
+        assert!(!s.spellcheck.strings);
+        assert!(!s.spellcheck.identifiers);
+        assert_eq!(s.spellcheck.debounce_ms, 500);
+        assert!(!s.latex.build_on_save);
+        assert_eq!(s.latex.command, "latexmk");
+        assert!(s.latex.args.iter().any(|argument| argument == "{file}"));
+        assert!(s.latex.output_directory.is_empty());
+        assert_eq!(s.latex.timeout_ms, 120_000);
         assert!(s.git.decorations);
         assert!(s.editor.semantic_comments.enabled);
         assert!(s.lsp.enabled, "LSP is on by default (issue #57)");

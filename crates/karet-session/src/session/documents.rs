@@ -20,6 +20,7 @@ impl Session {
             if let Some(doc) = self.store.docs.get_mut(&existing) {
                 doc.refs += 1;
                 let version = doc.buffer.version();
+                let settings = doc.settings;
                 self.emit(
                     Some(id),
                     Event::Opened {
@@ -27,11 +28,18 @@ impl Session {
                         version,
                     },
                 );
+                self.emit(
+                    None,
+                    Event::DocumentSettingsChanged {
+                        doc: existing,
+                        settings,
+                    },
+                );
                 self.publish(existing, None);
             }
             return;
         }
-        let (buffer, format) = match load_document(&path) {
+        let (mut buffer, format) = match load_document(&path) {
             Ok(loaded) => loaded,
             Err(LoadError::NotUtf8 { .. }) => {
                 // Full non-UTF-8 editing isn't supported; tell the client so it can
@@ -56,6 +64,19 @@ impl Session {
         let language = language
             .and_then(name_for_language)
             .or_else(|| language_name_from_path(&path));
+        let (document_settings, editorconfig_error) =
+            resolve_document_settings(&path, language, &self.config.settings);
+        apply_serialization_settings(&mut buffer, document_settings);
+        if let Some(message) = editorconfig_error {
+            self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Warning,
+                    kind: NotificationKind::Io,
+                    message,
+                },
+            );
+        }
         let doc_id = DocumentId(self.store.next);
         self.store.next += 1;
         let mut doc = Document {
@@ -64,16 +85,18 @@ impl Session {
             lang_id,
             buffer,
             format,
+            settings: document_settings,
             highlights: Arc::new(Highlights::default()),
             folds: Arc::new(FoldRegions::default()),
             semantic_blocks: Arc::new(SemanticBlocks::default()),
             error_lines: Arc::default(),
+            spell_diagnostics: Vec::new(),
             decorations: Vec::new(),
             refs: 1,
             dirty_since: None,
             backed_up_version: None,
         };
-        update_syntax(
+        let spell_without_syntax = update_syntax(
             &self.config.settings,
             &self.highlight_tx,
             doc_id,
@@ -93,7 +116,17 @@ impl Session {
                 version,
             },
         );
+        self.emit(
+            None,
+            Event::DocumentSettingsChanged {
+                doc: doc_id,
+                settings: document_settings,
+            },
+        );
         self.publish(doc_id, None);
+        if spell_without_syntax {
+            self.schedule_spell(doc_id);
+        }
     }
 
     pub(super) fn apply(
@@ -109,7 +142,7 @@ impl Session {
         // speculative state has diverged from ours); either way we still publish
         // below so the authoritative buffer flows back down to the client instead
         // of leaving it stuck rejecting every future edit forever.
-        let version = {
+        let (version, spell_without_syntax) = {
             let highlight_tx = &self.highlight_tx;
             let settings = &self.config.settings;
             let lsp = &mut self.lsp;
@@ -117,9 +150,10 @@ impl Session {
                 self.events.send((Some(id), unknown_document(doc_id))).ok();
                 return;
             };
-            match doc.buffer.apply(change, ctx) {
+            let version = match doc.buffer.apply(change, ctx) {
                 Ok(applied) => {
-                    update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
+                    let _ =
+                        update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
                     // Arm the backup clock on the clean→dirty transition (see
                     // `backup_tick`).
                     doc.sync_dirty_since(tick);
@@ -132,7 +166,8 @@ impl Session {
                     Some(applied.version)
                 },
                 Err(_) => None,
-            }
+            };
+            (version, doc.lang_id.is_none())
         };
         match version {
             Some(version) => self.emit(
@@ -152,11 +187,14 @@ impl Session {
             ),
         }
         self.publish(doc_id, None);
+        if version.is_some() && spell_without_syntax {
+            self.schedule_spell(doc_id);
+        }
     }
 
     pub(super) fn undo_redo(&mut self, id: RequestId, doc_id: DocumentId, undo: bool) {
         let tick = self.elapsed_ms();
-        let (version, cursor) = {
+        let (version, cursor, spell_without_syntax) = {
             let highlight_tx = &self.highlight_tx;
             let settings = &self.config.settings;
             let lsp = &mut self.lsp;
@@ -171,7 +209,7 @@ impl Session {
             let Some(applied) = applied else {
                 return; // nothing to undo/redo
             };
-            update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
+            let _ = update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
             // Undoing back to the save point clears dirtiness (and any pending backup).
             doc.sync_dirty_since(tick);
             // The buffer changed like any other edit: keep the server in sync.
@@ -191,7 +229,7 @@ impl Session {
                         CursorState::single(Selection::caret(pos))
                     })
             });
-            (applied.version, cursor)
+            (applied.version, cursor, doc.lang_id.is_none())
         };
         self.emit(
             Some(id),
@@ -201,9 +239,15 @@ impl Session {
             },
         );
         self.publish(doc_id, cursor);
+        if spell_without_syntax {
+            self.schedule_spell(doc_id);
+        }
     }
 
     pub(super) fn save(&mut self, id: RequestId, doc_id: DocumentId) {
+        if self.apply_save_cleanup(doc_id) {
+            self.publish(doc_id, None);
+        }
         let result = self.store.docs.get_mut(&doc_id).map(save_document);
         match result {
             Some(Ok(_)) => {
@@ -218,6 +262,24 @@ impl Session {
                 }
                 self.publish(doc_id, None);
                 self.emit(Some(id), Event::Saved { doc: doc_id });
+                if self.config.settings.latex.build_on_save
+                    && self.store.docs.get(&doc_id).is_some_and(|doc| {
+                        doc.path
+                            .extension()
+                            .is_some_and(|extension| extension.eq_ignore_ascii_case("tex"))
+                    })
+                    && let Some(source) = self.store.docs.get(&doc_id).map(|doc| doc.path.clone())
+                    && self.enqueue_latex_build(None, id, doc_id, source).is_err()
+                {
+                    self.emit(
+                        None,
+                        Event::Notification {
+                            severity: Severity::Warning,
+                            kind: NotificationKind::System,
+                            message: "LaTeX build worker is unavailable".to_owned(),
+                        },
+                    );
+                }
             },
             Some(Err(TextError::Conflict)) => {
                 // The file changed on disk since it was last read — writing now would
@@ -245,6 +307,82 @@ impl Session {
         }
     }
 
+    /// Persist one dirty TeX source before handing it to an external compiler.
+    pub(super) fn save_for_external_build(
+        &mut self,
+        doc_id: DocumentId,
+    ) -> Result<PathBuf, String> {
+        let Some(doc) = self.store.docs.get(&doc_id) else {
+            return Err("LaTeX build: unknown document".to_owned());
+        };
+        if !doc
+            .path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("tex"))
+        {
+            return Err("LaTeX build requires an editable .tex document".to_owned());
+        }
+        let path = doc.path.clone();
+        if !doc.buffer.is_dirty() {
+            return Ok(path);
+        }
+        if self.apply_save_cleanup(doc_id) {
+            self.publish(doc_id, None);
+        }
+        let result = self.store.docs.get_mut(&doc_id).map(save_document);
+        match result {
+            Some(Ok(())) => {
+                if let Some(doc) = self.store.docs.get_mut(&doc_id) {
+                    doc.dirty_since = None;
+                    doc.backed_up_version = None;
+                    if let Some(store) = self.swaps.as_ref() {
+                        store.remove(&doc.path);
+                    }
+                }
+                self.publish(doc_id, None);
+                Ok(path)
+            },
+            Some(Err(TextError::Conflict)) => Err(
+                "LaTeX build cancelled: the source changed on disk; resolve the save conflict first"
+                    .to_owned(),
+            ),
+            Some(Err(error)) => Err(format!("LaTeX build cancelled: save failed: {error}")),
+            None => Err("LaTeX build: unknown document".to_owned()),
+        }
+    }
+
+    fn apply_save_cleanup(&mut self, doc_id: DocumentId) -> bool {
+        let tick = self.elapsed_ms();
+        let highlight_tx = &self.highlight_tx;
+        let settings = &self.config.settings;
+        let lsp = &mut self.lsp;
+        let Some(doc) = self.store.docs.get_mut(&doc_id) else {
+            return false;
+        };
+        let current = doc.buffer.text();
+        let normalized = normalize_text_for_save(&current, doc.settings);
+        if normalized == current {
+            return false;
+        }
+        let Some(change) = whole_document_change(doc, normalized) else {
+            return false;
+        };
+        let ctx = edit_context(tick, EditCause::Replace, &change);
+        let Ok(applied) = doc.buffer.apply(&change, ctx) else {
+            return false;
+        };
+        let spell_without_syntax =
+            update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
+        doc.sync_dirty_since(tick);
+        lsp.document_changed(doc.language, &doc.path, applied.version, || {
+            doc.buffer.text()
+        });
+        if spell_without_syntax {
+            self.schedule_spell(doc_id);
+        }
+        true
+    }
+
     pub(super) fn retarget(&mut self, id: RequestId, doc_id: DocumentId, path: PathBuf) {
         let Some(doc) = self.store.docs.get_mut(&doc_id) else {
             self.emit(Some(id), unknown_document(doc_id));
@@ -257,7 +395,8 @@ impl Session {
         doc.lang_id = language_id_from_path(&path);
         doc.language = language_name_from_path(&path);
         // The language may have changed with the extension; re-highlight from scratch.
-        update_syntax(&self.config.settings, &self.highlight_tx, doc_id, doc, None);
+        let spell_without_syntax =
+            update_syntax(&self.config.settings, &self.highlight_tx, doc_id, doc, None);
         // The old URI is gone; the (possibly different) new language's server
         // adopts the new one.
         self.lsp.document_closed(old_language, &old);
@@ -267,7 +406,11 @@ impl Session {
             });
         self.store.by_path.insert(path.clone(), doc_id);
         self.emit(Some(id), Event::Retargeted { doc: doc_id, path });
+        self.refresh_document_settings(&[doc_id]);
         self.publish(doc_id, None);
+        if spell_without_syntax {
+            self.schedule_spell(doc_id);
+        }
     }
 
     pub(super) fn close(&mut self, id: RequestId, doc_id: DocumentId) {
@@ -284,6 +427,7 @@ impl Session {
                 self.lsp.document_closed(doc.language, &doc.path);
                 // Release the worker's retained trees for this document.
                 self.highlight_tx.send(HighlightJob::Drop(doc_id)).ok();
+                self.spell_errors.remove(&doc_id);
                 // The document is gone from the editor: skipping a save is an explicit
                 // decision, so clean up its swap.
                 if let Some(store) = self.swaps.as_ref() {

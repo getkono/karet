@@ -7,18 +7,23 @@ mod commands;
 mod completion;
 mod editor;
 mod explorer;
+pub(crate) mod github;
 mod history;
 mod input;
+mod language_servers;
 mod lifecycle;
 mod mouse;
 mod panes;
+mod prepare;
 mod remote_actions;
 mod runtime;
 mod scm;
 mod search;
 mod sidebar;
+mod spellcheck;
 mod startup;
 mod tabs;
+mod util;
 
 #[cfg(test)]
 mod tests;
@@ -31,13 +36,16 @@ use std::io::{self};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use std::time::Instant;
 
 use color_eyre::eyre::eyre;
 use crossterm::event::DisableBracketedPaste;
+use crossterm::event::DisableFocusChange;
 use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableBracketedPaste;
+use crossterm::event::EnableFocusChange;
 use crossterm::event::EnableMouseCapture;
 use crossterm::event::Event;
 use crossterm::event::KeyCode;
@@ -52,16 +60,19 @@ use crossterm::event::PopKeyboardEnhancementFlags;
 use crossterm::event::PushKeyboardEnhancementFlags;
 use crossterm::event::{self};
 use crossterm::terminal::SetTitle;
+use karet_core::BlameAttribution;
 use karet_core::BytePos;
 use karet_core::Change;
 use karet_core::Decoration;
 use karet_core::DecorationKind;
+use karet_core::Diagnostic;
 use karet_core::LineCol;
 use karet_core::Notification;
 use karet_core::NotificationId;
 use karet_core::NotificationKind;
 use karet_core::Range;
 use karet_core::Severity;
+use karet_core::Symbol;
 use karet_core::TextEdit;
 use karet_core::ThemeRole;
 use karet_editor::EditorState;
@@ -82,18 +93,28 @@ use karet_session::Command as SessionCommand;
 use karet_session::ConfigDiagnostic;
 use karet_session::DocSnapshot;
 use karet_session::DocumentId;
+use karet_session::DocumentSettings;
 use karet_session::Event as SessionEvent;
 use karet_session::EventRx;
 use karet_session::GithubVerification;
+use karet_session::LanguageServerChange;
+use karet_session::LanguageServerId;
+use karet_session::LanguageServerPlanId;
+use karet_session::LanguageServerStatus;
 use karet_session::LoadedConfig;
+use karet_session::PullRequestSummary;
 use karet_session::RangeSpec;
+use karet_session::RepositorySnapshot;
 use karet_session::RequestId;
 use karet_session::Session;
 use karet_session::SessionConfig;
 use karet_session::Settings;
 use karet_session::SnapshotRx;
 use karet_session::SwapInfo;
+use karet_session::VcsAction;
+use karet_session::VcsOutcome;
 use karet_session::ViewId;
+use karet_session::config::schema::AutoSave;
 use karet_session::local;
 use karet_syntax::FoldRegions;
 use karet_text::EditCause;
@@ -102,18 +123,44 @@ use karet_theme::Theme;
 use karet_vcs::Commit;
 use karet_vcs::CommitDetail;
 use karet_vcs::FileChange;
+use karet_vcs::RepositorySummary;
 use karet_vcs::StatusKind;
 use karet_widgets::DropZone;
 use karet_widgets::FileTreeState;
 use karet_widgets::ListSelection;
+use karet_widgets::PaneDivider;
 use karet_widgets::PaneId;
 use karet_widgets::PaneLayout;
 use karet_widgets::PendingEdit;
+use karet_widgets::SplitAxis;
 use karet_widgets::SplitDir;
 use karet_widgets::drop_zone;
 use ratatui::layout::Rect;
 pub(crate) use runtime::run;
 use tokio::sync::mpsc;
+use util::KeyboardEnhancementGuard;
+use util::canonical;
+use util::close_prompt_message;
+use util::copy_path_recursive;
+pub(crate) use util::effective_word_wrap;
+use util::line_span;
+use util::load_theme;
+use util::loading_delay_remaining;
+use util::move_path;
+use util::parse_rev_range;
+use util::path_contains_or_equals;
+use util::path_under;
+use util::rebase_path;
+use util::rect_contains;
+pub(crate) use util::resolve_folds;
+use util::retarget_tab_path;
+use util::row_in_rect;
+use util::same_path;
+use util::selection_text;
+use util::tab_at;
+pub(crate) use util::tab_language;
+use util::unique_child_path;
+use util::word_at;
 
 use crate::clipboard::Clipboard;
 use crate::command::Command;
@@ -135,10 +182,14 @@ use crate::outline::OutlineTarget;
 use crate::overlay::DiffTarget;
 use crate::overlay::Overlay;
 use crate::overlay::OverlayEvent;
+use crate::overlay::StashAction;
+use crate::overlay::TextPurpose;
 use crate::remote;
 use crate::render::FileView;
 use crate::render::Section;
+use crate::tab::CommitViewState;
 use crate::tab::FindState;
+use crate::tab::MarkdownPreviewState;
 use crate::tab::SearchField;
 use crate::tab::Tab;
 use crate::tab::TabKind;
@@ -163,6 +214,62 @@ pub(crate) struct Scm {
     pub(crate) log_loading: bool,
     /// When the current log-page request began, if one is in flight.
     pub(crate) log_loading_since: Option<Instant>,
+    /// Latest branch, remote, recovery, and stash snapshot.
+    pub(crate) repository: Option<RepositorySnapshot>,
+    /// Whether a repository snapshot is being loaded.
+    pub(crate) repository_loading_since: Option<Instant>,
+    /// Request currently loading the repository snapshot.
+    pub(crate) repository_request: Option<RequestId>,
+    /// The repository action currently running, if any.
+    pub(crate) operation: Option<VcsAction>,
+}
+
+/// Live current-buffer blame that still matches the active document and cursor.
+#[derive(Clone)]
+pub(crate) struct LiveBlame {
+    pub(crate) doc: DocumentId,
+    pub(crate) version: u64,
+    pub(crate) line: u32,
+    pub(crate) attribution: Option<BlameAttribution>,
+}
+
+impl LiveBlame {
+    /// Compact attribution text shown after the active line.
+    pub(crate) fn text(&self) -> Option<String> {
+        match self.attribution.as_ref()? {
+            BlameAttribution::Commit(commit) => Some(format!(
+                "  {} {}",
+                commit.author,
+                crate::ui::relative_time(commit.author_time)
+            )),
+            BlameAttribution::Uncommitted => Some("  Uncommitted changes".to_string()),
+            _ => None,
+        }
+    }
+
+    /// Commit opened by the inline attribution's detail action.
+    pub(crate) fn commit_hash(&self) -> Option<&str> {
+        match self.attribution.as_ref()? {
+            BlameAttribution::Commit(commit) => Some(&commit.hash),
+            _ => None,
+        }
+    }
+
+    /// Compact current-line attribution rendered as editor virtual text.
+    pub(crate) fn decoration(&self) -> Option<Decoration> {
+        let text = self.text()?;
+        Some(Decoration {
+            range: Range {
+                start: LineCol::new(self.line, 0),
+                end: LineCol::new(self.line, 1),
+            },
+            kind: DecorationKind::InlineText {
+                text,
+                before: false,
+            },
+            role: Some(ThemeRole::Muted),
+        })
+    }
 }
 
 impl Scm {
@@ -284,6 +391,8 @@ pub(crate) const COMMIT_REVEAL: Duration = Duration::from_secs(5);
 /// Delay before rendering non-blocking loading text. Fast operations can complete
 /// without visual churn; slower ones get an explicit, stable placeholder.
 pub(crate) const LOADING_REVEAL_DELAY: Duration = Duration::from_millis(200);
+/// Maximum graceful wait for a repository mutation during application shutdown.
+const OPERATION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Half-period for the app-drawn graphical editor caret.
 const GRAPHICS_CARET_BLINK_INTERVAL: Duration = Duration::from_millis(530);
@@ -312,6 +421,41 @@ pub(crate) struct BreadcrumbHit {
     pub(crate) path: PathBuf,
 }
 
+/// A clickable changed-file row from a commit or compare view's last frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CommitFileHit {
+    /// The rendered row in screen coordinates.
+    pub(crate) rect: Rect,
+    /// The changed file's index in the tab.
+    pub(crate) file: usize,
+    /// The layout-specific scroll offset that puts its card header at the top.
+    pub(crate) scroll: u16,
+}
+
+/// A visible link run in the focused Markdown preview's last rendered frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MarkdownLinkHit {
+    /// The rendered cells occupied by this run.
+    pub(crate) rect: Rect,
+    /// The renderer-neutral target from the Markdown source.
+    pub(crate) target: String,
+}
+
+/// Persistent multiline commit-message editor shown in the Source Control panel.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CommitInput {
+    /// Draft message, retained while the field is blurred and while a commit runs.
+    pub(crate) text: String,
+    /// Byte offset of the insertion caret (always a UTF-8 boundary).
+    pub(crate) cursor: usize,
+    /// First wrapped display row visible inside the field.
+    pub(crate) scroll: u16,
+    /// Whether keyboard input is currently routed into the field.
+    pub(crate) focused: bool,
+    /// Commit request in flight; prevents accidental duplicate submissions.
+    pub(crate) pending: Option<RequestId>,
+}
+
 /// A rendered pane's clickable regions, recorded during the last frame for mouse
 /// hit-testing (which pane a click lands in, and its tab strip / content).
 #[derive(Clone)]
@@ -322,12 +466,16 @@ pub(crate) struct PaneFrame {
     pub(crate) tabstrip_rect: Rect,
     /// Per-tab clickable regions within the strip.
     pub(crate) tab_hits: Vec<TabHit>,
+    /// Format-specific actions right-aligned in the pane's tab strip.
+    pub(crate) action_hits: Vec<(u16, u16, Command)>,
     /// The pane's breadcrumb row (zero-sized when the active tab has no path).
     pub(crate) breadcrumb_rect: Rect,
     /// Per-segment clickable regions within the breadcrumb row.
     pub(crate) breadcrumb_hits: Vec<BreadcrumbHit>,
     /// The pane's content (editor) area.
     pub(crate) content_rect: Rect,
+    /// Changed-file rows clickable within the pane's commit-like view.
+    pub(crate) commit_file_hits: Vec<CommitFileHit>,
 }
 
 /// An in-progress tab drag: the pane it started from and the current drop target
@@ -340,6 +488,13 @@ pub(crate) struct TabDrag {
     pub(crate) hover: Option<(PaneId, DropZone)>,
 }
 
+/// An in-progress drag of a pane split boundary.
+#[derive(Clone, Copy)]
+pub(crate) struct PaneResize {
+    /// Stable identity and geometry of the boundary when dragging began.
+    pub(crate) divider: PaneDivider,
+}
+
 /// A clickable toast card, recorded during the last render for click hit-testing.
 #[derive(Clone, Copy)]
 pub(crate) struct ToastHit {
@@ -349,13 +504,34 @@ pub(crate) struct ToastHit {
     pub(crate) id: NotificationId,
 }
 
+/// A quit request waiting for a repository mutation that must not be interrupted.
+pub(crate) struct OperationBlocker {
+    /// Human-readable operation label.
+    pub(crate) label: String,
+    /// Point after which shutdown stops waiting.
+    pub(crate) deadline: Instant,
+}
+
 /// Where a resolved commit detail should be shown.
 #[derive(Clone)]
 enum CommitDest {
     /// Fill the already-open standalone commit tab with this view id.
     Tab { view: ViewId },
     /// Fill the graph browser's detail pane if it still selects this hash.
-    Browser { hash: String },
+    Browser { view: ViewId, hash: String },
+}
+
+/// A commit result whose render model is being prepared away from the UI thread.
+struct PendingCommitPreparation {
+    destination: CommitDest,
+    detail: Box<CommitDetail>,
+    cancelled: Arc<AtomicBool>,
+}
+
+/// A document open owned by one concrete editor view.
+struct PendingOpen {
+    path: PathBuf,
+    view: ViewId,
 }
 
 /// Which filesystem operation the explorer's internal file clipboard will perform.
@@ -375,12 +551,35 @@ struct ExplorerFileClipboard {
     paths: Vec<PathBuf>,
 }
 
-/// One row of a positioned context menu: the command it dispatches, whether it can
-/// run right now, and an optional note explaining why not.
+/// The action dispatched by a positioned context-menu row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ContextMenuAction {
+    /// Dispatch an ordinary named application command.
+    Command(Command),
+    /// Replace one misspelled range with a dictionary suggestion.
+    ReplaceSpelling {
+        /// The document containing the warning.
+        doc: DocumentId,
+        /// The exact warning range to replace.
+        range: Range,
+        /// The suggested replacement.
+        replacement: String,
+    },
+    /// Add a word to the project spell-check dictionary.
+    AddSpellingToDictionary {
+        /// The word accepted by the user.
+        word: String,
+    },
+}
+
+/// One row of a positioned context menu: its action, whether it can run right now,
+/// and an optional note explaining why not.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ContextMenuEntry {
-    /// The command this row dispatches when accepted.
-    pub(crate) command: Command,
+    /// The action this row dispatches when accepted.
+    pub(crate) action: ContextMenuAction,
+    /// An action-specific label. Ordinary commands use their standard menu label.
+    pub(crate) label: Option<String>,
     /// Whether the row can be activated. A disabled row renders dimmed, is skipped
     /// by keyboard navigation, and refuses Accept.
     pub(crate) enabled: bool,
@@ -393,7 +592,8 @@ impl ContextMenuEntry {
     /// An enabled entry dispatching `command`.
     fn enabled(command: Command) -> Self {
         Self {
-            command,
+            action: ContextMenuAction::Command(command),
+            label: None,
             enabled: true,
             note: None,
         }
@@ -402,9 +602,43 @@ impl ContextMenuEntry {
     /// A disabled entry for `command`, greyed out with an explanatory `note`.
     fn disabled(command: Command, note: impl Into<String>) -> Self {
         Self {
-            command,
+            action: ContextMenuAction::Command(command),
+            label: None,
             enabled: false,
             note: Some(note.into()),
+        }
+    }
+
+    /// An enabled contextual action with a label supplied by its producer.
+    fn custom(label: impl Into<String>, action: ContextMenuAction) -> Self {
+        Self {
+            action,
+            label: Some(label.into()),
+            enabled: true,
+            note: None,
+        }
+    }
+
+    /// A disabled contextual row carrying an explanatory note.
+    fn disabled_custom(
+        label: impl Into<String>,
+        action: ContextMenuAction,
+        note: impl Into<String>,
+    ) -> Self {
+        Self {
+            action,
+            label: Some(label.into()),
+            enabled: false,
+            note: Some(note.into()),
+        }
+    }
+
+    /// The named command behind this row, when it is a regular command action.
+    pub(crate) fn command(&self) -> Option<Command> {
+        match &self.action {
+            ContextMenuAction::Command(command) => Some(*command),
+            ContextMenuAction::ReplaceSpelling { .. }
+            | ContextMenuAction::AddSpellingToDictionary { .. } => None,
         }
     }
 }
@@ -518,6 +752,21 @@ pub(crate) enum CloseRequest {
     AllTabs,
 }
 
+/// An edit waiting for the configured automatic-save trigger.
+#[derive(Clone, Copy)]
+struct PendingAutoSave {
+    /// Newest document version covered by this trigger.
+    version: u64,
+    /// Debounce deadline, or `None` when waiting for an editor-focus change.
+    deadline: Option<Instant>,
+}
+
+/// One save request in flight.
+#[derive(Clone, Copy)]
+struct PendingSave {
+    doc: DocumentId,
+}
+
 /// The IDE shell state.
 pub struct App {
     /// The workspace root.
@@ -564,6 +813,20 @@ pub struct App {
     pub(crate) context_menu: Option<ContextMenu>,
     /// The Source-Control panel state.
     pub(crate) scm: Scm,
+    /// Most recent stale-checked live blame result.
+    pub(crate) live_blame: Option<LiveBlame>,
+    /// Request currently computing live blame.
+    pub(crate) pending_blame: Option<(RequestId, DocumentId, u64, u32)>,
+    /// Failed blame anchor, suppressed until its inputs change.
+    pub(crate) failed_blame: Option<(DocumentId, u64, u32)>,
+    /// Open-pull-request query currently filling the picker.
+    pub(crate) pending_pull_requests: Option<RequestId>,
+    /// Pull-request pages accumulated until GitHub has no next page.
+    pub(crate) pull_request_items: Vec<PullRequestSummary>,
+    /// Remote associated with the accumulating pull-request query.
+    pub(crate) pull_request_remote: Option<String>,
+    /// Repository action parked until all dirty editors save successfully.
+    pub(crate) vcs_after_save: Option<VcsAction>,
     /// The focused pane's open tabs.
     pub(crate) tabs: Vec<Tab>,
     /// The focused pane's active tab index.
@@ -581,8 +844,8 @@ pub struct App {
     /// visibility — closing the bar (Esc) clears this without discarding that
     /// data, and it is reset whenever the active tab changes.
     pub(crate) find_open: bool,
-    /// The in-progress commit message while the Source-Control commit input is open.
-    pub(crate) commit_input: Option<String>,
+    /// The permanent multiline Source-Control commit-message editor.
+    pub(crate) commit_input: CommitInput,
     /// The in-progress revision text while the go-to-commit input is open.
     pub(crate) rev_input: Option<String>,
     /// Paths awaiting a discard confirmation (set after pressing discard; cleared
@@ -593,6 +856,8 @@ pub struct App {
     /// The irreversible close awaiting the unsaved-changes confirmation prompt, if
     /// one is armed (unified across quit and tab/pane closes).
     pub(crate) pending_close: Option<CloseRequest>,
+    /// Destructive backend work currently delaying a requested quit.
+    pub(crate) operation_blocker: Option<OperationBlocker>,
     /// The close parked mid-save after choosing "save & close": run it once the
     /// issued saves drain (see [`App::on_backend_event`]).
     pub(crate) saving_close: Option<CloseRequest>,
@@ -624,6 +889,12 @@ pub struct App {
     pub(crate) diff_layout: ViewMode,
     /// Per-pane clickable regions from the last frame (mouse hit-testing).
     pub(crate) pane_frames: Vec<PaneFrame>,
+    /// Draggable split boundaries from the last rendered frame.
+    pub(crate) pane_dividers: Vec<PaneDivider>,
+    /// Current pointer-hovered split boundary.
+    pub(crate) pane_divider_hover: Option<PaneDivider>,
+    /// Active pane-boundary drag.
+    pub(crate) pane_resize: Option<PaneResize>,
     /// The in-progress tab drag, if the pointer is dragging a tab.
     pub(crate) tab_drag: Option<TabDrag>,
     /// The sidebar's content area (below the header) from the last frame.
@@ -631,12 +902,16 @@ pub struct App {
     /// The current mouse position while hovering the sidebar content, for a
     /// secondary-accent row highlight (explorer / source-control lists).
     pub(crate) hover: Option<(u16, u16)>,
+    /// Current pointer position over a pane's format-specific action strip.
+    pub(crate) pane_action_hover: Option<(u16, u16)>,
     /// The current mouse position while hovering the sidebar header controls.
     pub(crate) sidebar_header_hover: Option<(u16, u16)>,
     /// The header panel-switcher cells (`1 2 3`) from the last frame.
     pub(crate) panel_hits: Vec<(u16, u16, SidebarPanel)>,
     /// Whether the right-side outline panel is shown.
     pub(crate) outline_visible: bool,
+    /// Whether the outline currently overlays (rather than reserves) editor space.
+    pub(crate) outline_overlay: bool,
     /// The outline panel's row selection, driving keyboard navigation.
     pub(crate) outline_sel: ListSelection,
     /// The outline panel rect from the last frame (mouse hit-testing).
@@ -653,10 +928,18 @@ pub struct App {
     pub(crate) header_action_hits: Vec<(u16, u16, Command)>,
     /// Source-Control *changes* display-row → change-index map from the last frame.
     pub(crate) scm_row_map: Vec<Option<usize>>,
+    /// Source-Control header controls `(start, end, row, command)`.
+    pub(crate) scm_header_hits: Vec<(u16, u16, u16, Command)>,
+    /// Last completed compact status for nested repositories in the explorer.
+    nested_repository_status: HashMap<PathBuf, RepositorySummary>,
+    /// In-flight nested-repository requests keyed by request id.
+    nested_repository_pending: HashMap<RequestId, (PathBuf, Instant)>,
     /// The changes-region scroll offset (top region; wheel + selection-follow).
     pub(crate) scm_offset: usize,
     /// The changes-region viewport rect from the last frame (hit-testing/hover).
     pub(crate) scm_changes_rect: Rect,
+    /// The editable inner rect of the permanent Source-Control commit field.
+    pub(crate) scm_commit_rect: Rect,
     /// The total number of changes display rows from the last frame.
     pub(crate) scm_total_rows: usize,
     /// The commit-log region scroll offset (bottom pinned region; wheel + autoload).
@@ -690,6 +973,14 @@ pub struct App {
     pub(crate) status_hits: Vec<(u16, u16, Command)>,
     /// The active code tab's editor content area from the last frame.
     pub(crate) editor_rect: Rect,
+    /// The active code tab's in-editor Markdown preview area from the last frame.
+    pub(crate) markdown_preview_rect: Rect,
+    /// Visible committed-attribution text from the last frame, for click routing.
+    pub(crate) blame_rect: Option<Rect>,
+    /// Visible Markdown link runs from the focused preview's last frame.
+    pub(crate) markdown_link_hits: Vec<MarkdownLinkHit>,
+    /// Current mouse position when it rests over a visible Markdown link.
+    pub(crate) markdown_link_hover: Option<(u16, u16)>,
     /// The focused commit view's signature-badge rect (screen coords) from the last
     /// frame, for double-click hit-testing. `None` when no badge is on screen.
     pub(crate) commit_badge_rect: Option<Rect>,
@@ -718,10 +1009,24 @@ pub struct App {
     /// where editing commands are inert.
     backend: Option<Arc<dyn Backend>>,
     /// Open requests awaiting their `Opened` event, mapping request id → file path.
-    pending_open: HashMap<RequestId, PathBuf>,
+    pending_open: HashMap<RequestId, PendingOpen>,
+    /// Opens whose view closed before the backend answered; a late document is released.
+    abandoned_open: HashSet<RequestId>,
     /// In-flight save requests, mapping request id → document, so the tab's saving
     /// spinner clears when the answering event (saved or error) arrives.
-    pending_saves: HashMap<RequestId, DocumentId>,
+    pending_saves: HashMap<RequestId, PendingSave>,
+    /// Editing/save behavior resolved per open session document.
+    pub(crate) document_settings: HashMap<DocumentId, DocumentSettings>,
+    /// Latest complete diagnostic set per editable backend document.
+    pub(crate) document_diagnostics: HashMap<DocumentId, Vec<Diagnostic>>,
+    /// Latest language-server symbol tree for each open document.
+    document_symbols: HashMap<DocumentId, Vec<Symbol>>,
+    /// Buffer version represented by each cached symbol tree.
+    outline_versions: HashMap<DocumentId, u64>,
+    /// In-flight symbol request version and start time per document.
+    outline_loading: HashMap<DocumentId, (u64, Instant)>,
+    /// Dirty document versions waiting for the configured automatic-save trigger.
+    auto_save_pending: HashMap<DocumentId, PendingAutoSave>,
     /// The in-flight completion request, if any (see [`crate::completion`]).
     pub(crate) pending_completion: Option<crate::completion::PendingCompletion>,
     /// The open completion popup, if any.
@@ -731,9 +1036,22 @@ pub struct App {
     /// In-flight commit-detail requests, mapping request id → where its result goes
     /// (a new standalone commit tab, or the graph browser's detail pane).
     pending_commit_detail: HashMap<RequestId, CommitDest>,
+    /// Explicit LaTeX build requests mapped to their reserved preview view.
+    latex_previews: HashMap<RequestId, ViewId>,
+    /// Backend commit results currently being diffed and highlighted off-thread.
+    pending_commit_preparation: HashMap<RequestId, PendingCommitPreparation>,
+    /// Lazy forge-verification reads, owned by their exact commit view.
+    pending_commit_verification: HashMap<RequestId, (ViewId, String)>,
+    /// Submission side of the app-local diff preparation worker.
+    prepare_tx: std::sync::mpsc::Sender<prepare::PrepareJob>,
+    /// Result side, taken by the runtime event loop while the TUI is running.
+    prepare_rx: Option<tokio::sync::mpsc::UnboundedReceiver<prepare::PrepareResult>>,
     /// The graph browser's in-flight history-page request, so its answering
     /// [`SessionEvent::VcsLog`] fills the browser rather than the sidebar log.
-    graph_log_req: Option<RequestId>,
+    graph_log_req: Option<(RequestId, ViewId)>,
+    /// Requests cancelled because their owning view closed. Late queued events
+    /// bearing these ids are ignored and cannot resurrect UI.
+    cancelled_requests: HashSet<RequestId>,
     /// Session documents the app has opened, so closing the last tab for a document
     /// can release it (the session ref-counts; the app must balance opens/closes).
     open_docs: HashSet<DocumentId>,
@@ -741,291 +1059,4 @@ pub struct App {
     /// is the seam future tiled/split panes build on — multiple views can share one
     /// document, whose edit log already lives once in the session.
     next_view: u64,
-}
-
-pub(crate) fn resolve_folds(folds: &FoldRegions, folded: &BTreeSet<u32>) -> Vec<Fold> {
-    folds
-        .regions()
-        .iter()
-        .map(|r| Fold {
-            start: r.start,
-            end: r.end,
-            collapsed: folded.contains(&r.start),
-        })
-        .collect()
-}
-
-/// Whether the screen point `(x, y)` lies inside `r`.
-fn rect_contains(r: Rect, (x, y): (u16, u16)) -> bool {
-    x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
-}
-
-/// The unsaved-changes confirmation prompt for `request`, naming the scope and its
-/// `count` at-risk files. The default (any other key) is always to abort.
-fn close_prompt_message(request: CloseRequest, count: usize) -> String {
-    let files = if count == 1 { "file" } else { "files" };
-    if matches!(request, CloseRequest::Quit) {
-        format!(
-            "{count} unsaved {files} — press s to save all & quit, d to discard & quit, \
-             any other key to cancel"
-        )
-    } else {
-        format!(
-            "{count} unsaved {files} — press s to save & close, d to discard & close, \
-             any other key to cancel"
-        )
-    }
-}
-
-/// Whether screen row `y` lies within `r`'s vertical span (column ignored).
-fn row_in_rect(r: Rect, y: u16) -> bool {
-    r.height > 0 && y >= r.y && y < r.bottom()
-}
-
-/// The tab at column `x` among `hits`, and whether `x` is on its close glyph.
-fn tab_at(hits: &[TabHit], x: u16) -> Option<(usize, bool)> {
-    hits.iter()
-        .enumerate()
-        .find_map(|(i, h)| (x >= h.start && x < h.end).then_some((i, x == h.close)))
-}
-
-/// A non-empty language selector for resolving editor configuration.
-pub(crate) fn tab_language(tab: &Tab) -> Option<&str> {
-    let language = tab.language();
-    (!language.is_empty()).then_some(language)
-}
-
-/// Resolve a code tab's long-line behavior from its configured override or file type.
-pub(crate) fn effective_word_wrap(tab: &Tab, override_: Option<bool>) -> bool {
-    override_.unwrap_or_else(|| {
-        matches!(
-            &tab.kind,
-            TabKind::Code { path, .. }
-                if file_type_for_path(path).wrap_mode() == WrapMode::Wrap
-        )
-    })
-}
-
-fn loading_delay_remaining(since: Instant, now: Instant) -> Option<Duration> {
-    LOADING_REVEAL_DELAY.checked_sub(now.saturating_duration_since(since))
-}
-
-/// Recursively copy a file or directory tree.
-fn copy_path_recursive(from: &Path, to: &Path) -> io::Result<()> {
-    if from.is_dir() {
-        std::fs::create_dir_all(to)?;
-        for entry in std::fs::read_dir(from)? {
-            let entry = entry?;
-            copy_path_recursive(&entry.path(), &to.join(entry.file_name()))?;
-        }
-        Ok(())
-    } else {
-        if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::copy(from, to).map(|_| ())
-    }
-}
-
-/// Move a file or directory, falling back to copy-then-delete for cross-device moves.
-fn move_path(from: &Path, to: &Path) -> io::Result<()> {
-    match std::fs::rename(from, to) {
-        Ok(()) => Ok(()),
-        Err(rename_err) => {
-            copy_path_recursive(from, to)?;
-            let remove = if from.is_dir() {
-                std::fs::remove_dir_all(from)
-            } else {
-                std::fs::remove_file(from)
-            };
-            remove.map_err(|_| rename_err)
-        },
-    }
-}
-
-/// Whether two paths resolve to the same filesystem location.
-fn same_path(a: &Path, b: &Path) -> bool {
-    canonical(a) == canonical(b)
-}
-
-fn path_under(root: &Path, path: &Path) -> bool {
-    canonical(path).starts_with(canonical(root))
-}
-
-fn rebase_path(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
-    if !path_under(from, path) {
-        return None;
-    }
-    let suffix = path.strip_prefix(from).ok()?;
-    Some(to.join(suffix))
-}
-
-fn retarget_tab_path(tab: &mut Tab, path: &Path) {
-    let target = match &mut tab.kind {
-        TabKind::Code { path: p, .. }
-        | TabKind::Hex { path: p, .. }
-        | TabKind::Placeholder { path: p, .. }
-        | TabKind::Blame { path: p, .. } => Some(p),
-        #[cfg(feature = "images")]
-        TabKind::Image { path: p, .. } => Some(p),
-        #[cfg(feature = "pdf")]
-        TabKind::Document { path: p, .. } => Some(p),
-        _ => None,
-    };
-    if let Some(p) = target {
-        *p = path.to_path_buf();
-        if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-            tab.title = name.to_string();
-        }
-    }
-}
-
-/// Whether `child` resolves to `parent` or a path below it.
-fn path_contains_or_equals(parent: &Path, child: &Path) -> bool {
-    canonical(child).starts_with(canonical(parent))
-}
-
-/// A destination path under `dir`, suffixing when the source name already exists.
-fn unique_child_path(dir: &Path, source: &Path) -> PathBuf {
-    let name = source
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "item".to_string());
-    let first = dir.join(&name);
-    if !first.exists() {
-        return first;
-    }
-
-    for n in 1usize.. {
-        let candidate = dir.join(copy_name(source, &name, n));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-
-    unreachable!("unbounded suffix search should always return");
-}
-
-/// Build `name copy.ext`, `name copy 2.ext`, or `dir copy` style conflict names.
-fn copy_name(source: &Path, fallback: &str, n: usize) -> String {
-    let suffix = if n == 1 {
-        " copy".to_string()
-    } else {
-        format!(" copy {n}")
-    };
-    if source.is_dir() {
-        return format!("{fallback}{suffix}");
-    }
-    let stem = source
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .filter(|stem| !stem.is_empty())
-        .unwrap_or_else(|| fallback.to_string());
-    match source.extension().map(|ext| ext.to_string_lossy()) {
-        Some(ext) if !ext.is_empty() => format!("{stem}{suffix}.{ext}"),
-        _ => format!("{stem}{suffix}"),
-    }
-}
-
-/// The canonical form of `path` for tab de-duplication. For a missing leaf, resolve
-/// its nearest existing ancestor and append the unresolved suffix; this preserves
-/// macOS `/var` → `/private/var` normalization before a new file is created.
-fn canonical(path: &Path) -> PathBuf {
-    if let Ok(resolved) = std::fs::canonicalize(path) {
-        return resolved;
-    }
-    for ancestor in path.ancestors().skip(1) {
-        let Ok(resolved) = std::fs::canonicalize(ancestor) else {
-            continue;
-        };
-        let Ok(suffix) = path.strip_prefix(ancestor) else {
-            continue;
-        };
-        return resolved.join(suffix);
-    }
-    path.to_path_buf()
-}
-
-/// The (anchor, head) span of the word under `pos`, or the single character there
-/// when the cursor is not on a word character. Delegates to the widget's
-/// [`karet_editor::word_bounds`] so double-click and word motions agree.
-fn word_at(buffer: &TextBuffer, pos: LineCol) -> (LineCol, LineCol) {
-    karet_editor::word_bounds(buffer, pos)
-}
-
-/// Parse a revision-range spec typed into the go-to-commit input into
-/// `(base, head, merge_base)`, or `None` when it is a single revision.
-///
-/// A three-dot `a...b` selects the merge-base range; a two-dot `a..b` the raw tips. An
-/// omitted side defaults to `HEAD` (matching git: `..b`, `a..`). Whitespace is trimmed.
-fn parse_rev_range(input: &str) -> Option<(String, String, bool)> {
-    // Three-dot first: "..." also contains "..".
-    let (sep, merge_base) = if input.contains("...") {
-        ("...", true)
-    } else if input.contains("..") {
-        ("..", false)
-    } else {
-        return None;
-    };
-    let (base, head) = input.split_once(sep)?;
-    let side = |s: &str| {
-        let s = s.trim();
-        if s.is_empty() { "HEAD" } else { s }.to_string()
-    };
-    Some((side(base), side(head), merge_base))
-}
-
-/// The text within `range`, sliced from the tab's `source` using byte offsets
-/// derived from `buffer`. Returns `None` if the range cannot be resolved.
-fn selection_text(buffer: &TextBuffer, source: &str, range: Range) -> Option<String> {
-    let start = buffer.line_col_to_byte(range.start).ok()?.0;
-    let end = buffer.line_col_to_byte(range.end).ok()?.0;
-    source.get(start..end).map(str::to_string)
-}
-
-/// The (anchor, head) span covering all of `line`.
-fn line_span(buffer: &TextBuffer, line: u32) -> (LineCol, LineCol) {
-    let len = buffer
-        .line(line as usize)
-        .map_or(0, |s| s.chars().count() as u32);
-    (LineCol::new(line, 0), LineCol::new(line, len))
-}
-
-/// Pops the kitty keyboard-enhancement flags on drop, so they are cleared even if
-/// the event loop panics (ratatui's panic hook restores the rest of the terminal).
-struct KeyboardEnhancementGuard;
-
-impl Drop for KeyboardEnhancementGuard {
-    fn drop(&mut self) {
-        let _ = crossterm::execute!(io::stdout(), PopKeyboardEnhancementFlags);
-    }
-}
-
-/// Run the IDE shell: require the kitty keyboard protocol, set up the terminal,
-/// loop until quit, then restore it.
-///
-/// karet targets modern terminals, so a terminal without kitty keyboard support is
-/// a hard error rather than a degraded fallback.
-/// Resolve a `workbench.colorTheme` setting to a [`Theme`]: the built-in `"dark"`
-/// (also the empty string), or a path to a `.tmTheme` or VS Code `.json` theme file.
-/// Returns a human-readable message on a read/parse failure so the caller can warn
-/// and fall back to the default.
-fn load_theme(name: &str) -> Result<Theme, String> {
-    if name.is_empty() || name == "dark" {
-        return Ok(Theme::dark());
-    }
-    let path = Path::new(name);
-    let bytes = std::fs::read(path).map_err(|e| format!("theme `{name}`: {e}"))?;
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if ext == "json" {
-        let text = String::from_utf8(bytes).map_err(|e| format!("theme `{name}`: {e}"))?;
-        Theme::load_vscode(&text).map_err(|e| format!("theme `{name}`: {e}"))
-    } else {
-        Theme::load_tmtheme(&bytes).map_err(|e| format!("theme `{name}`: {e}"))
-    }
 }

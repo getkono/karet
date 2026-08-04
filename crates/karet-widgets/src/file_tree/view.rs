@@ -1,3 +1,5 @@
+use unicode_width::UnicodeWidthStr;
+
 use super::model::*;
 use super::*;
 
@@ -5,6 +7,7 @@ use super::*;
 pub struct FileTree<'a> {
     root: &'a Path,
     status: &'a [(PathBuf, Decoration)],
+    badges: &'a [(PathBuf, String)],
     visible: &'a [PathBuf],
     active: Option<&'a Path>,
     cut_paths: &'a [PathBuf],
@@ -21,6 +24,7 @@ impl<'a> FileTree<'a> {
         Self {
             root,
             status: &[],
+            badges: &[],
             visible: &[],
             active: None,
             cut_paths: &[],
@@ -52,7 +56,8 @@ impl<'a> FileTree<'a> {
 
     /// Supply the path of the focused editor pane's active tab, so its row gets the
     /// strongest highlight (a distinct background plus a bold accent) — the "you are
-    /// here" marker VS Code shows for the active file.
+    /// here" marker VS Code shows for the active file. When collapsed directories
+    /// hide the file row, the deepest visible directory ancestor is highlighted.
     #[must_use]
     pub fn active(mut self, active: Option<&'a Path>) -> Self {
         self.active = active;
@@ -80,6 +85,13 @@ impl<'a> FileTree<'a> {
     #[must_use]
     pub fn status(mut self, status: &'a [(PathBuf, Decoration)]) -> Self {
         self.status = status;
+        self
+    }
+
+    /// Supply muted, right-aligned badges keyed by directory path.
+    #[must_use]
+    pub fn badges(mut self, badges: &'a [(PathBuf, String)]) -> Self {
+        self.badges = badges;
         self
     }
 
@@ -118,6 +130,16 @@ fn category_role(category: Category) -> ThemeRole {
     }
 }
 
+/// Find the most specific visible row representing the active path.
+fn active_row_index(rows: &[FileTreeRow], active: Option<&Path>) -> Option<usize> {
+    let active = active?;
+    rows.iter()
+        .enumerate()
+        .filter(|(_, row)| row.path == active || row.is_dir && active.starts_with(&row.path))
+        .max_by_key(|(_, row)| row.path.components().count())
+        .map(|(index, _)| index)
+}
+
 impl StatefulWidget for FileTree<'_> {
     type State = FileTreeState;
 
@@ -148,6 +170,7 @@ impl StatefulWidget for FileTree<'_> {
         let guide = theme.role(ThemeRole::IndentGuide);
         let muted = theme.role(ThemeRole::Muted);
         let accent = theme.role(ThemeRole::LineNumberActive);
+        let active_row = active_row_index(&state.rows, self.active);
 
         for (i, row) in state
             .rows
@@ -159,7 +182,7 @@ impl StatefulWidget for FileTree<'_> {
             let y = area.y + u16::try_from(i - state.offset).unwrap_or(0);
             // Which editor(s) show this file drives the highlight: the focused pane's
             // active file is strongest, a file visible in another pane is weaker.
-            let is_active = self.active == Some(row.path.as_path());
+            let is_active = active_row == Some(i);
             let is_visible = self.visible.iter().any(|p| p == &row.path);
             let selected = state.selection.is_selected(i);
             let cut = self.cut_paths.iter().any(|p| p == &row.path);
@@ -200,7 +223,9 @@ impl StatefulWidget for FileTree<'_> {
             } else {
                 ' '
             };
-            let icon = if row.is_dir {
+            let icon = if row.is_symlink {
+                UiIcon::Symlink.glyph(self.icons)
+            } else if row.is_dir {
                 directory_icon(row.expanded, self.icons).unwrap_or(' ')
             } else {
                 icon_for_path(&row.path, self.icons)
@@ -231,7 +256,7 @@ impl StatefulWidget for FileTree<'_> {
             // recede to muted so the whole row dims together.
             let icon_color = if row.ignored || cut {
                 muted
-            } else if row.is_dir {
+            } else if row.is_dir || row.is_symlink {
                 row_fg
             } else {
                 theme.role(category_role(category_for_path(&row.path)))
@@ -276,6 +301,26 @@ impl StatefulWidget for FileTree<'_> {
             }
 
             buf.set_line(area.x, y, &Line::from(spans), area.width);
+            if let Some((_, badge)) = self.badges.iter().find(|(path, _)| path == &row.path) {
+                let badge_width = u16::try_from(badge.width()).unwrap_or(u16::MAX);
+                if badge_width > 0 && badge_width.saturating_add(1) < area.width {
+                    let x = area.right().saturating_sub(badge_width);
+                    buf.set_stringn(
+                        x.saturating_sub(1),
+                        y,
+                        " ",
+                        1,
+                        Style::default().fg(muted.to_ratatui()),
+                    );
+                    buf.set_stringn(
+                        x,
+                        y,
+                        badge,
+                        badge.width(),
+                        Style::default().fg(muted.to_ratatui()),
+                    );
+                }
+            }
         }
     }
 }

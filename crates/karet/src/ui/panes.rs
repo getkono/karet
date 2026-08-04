@@ -6,6 +6,9 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
     app.pane_frames.clear();
     app.image_area = None;
     app.editor_rect = Rect::default();
+    app.markdown_preview_rect = Rect::default();
+    app.blame_rect = None;
+    app.markdown_link_hits.clear();
     app.commit_badge_rect = None;
     let focused = app.focus_pane();
     let editor_focused = app.focus == Focus::Editor;
@@ -13,6 +16,11 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
     let graphical_cursor = app.graphical_cursor_enabled();
     for (pane, rect) in app.layout.layout(area) {
         let is_focused = pane == focused;
+        let stored_tab_width = (!is_focused)
+            .then(|| app.stored.get(&pane))
+            .flatten()
+            .and_then(|stored| stored.tabs.get(stored.active))
+            .map(|tab| app.tab_width_for(tab));
         let rendered = if is_focused {
             let resolved = app.tabs.get(app.active).map(|tab| {
                 app.settings
@@ -22,20 +30,39 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
             let word_wrap = resolved.map_or(app.settings.editor.word_wrap, |r| r.word_wrap());
             let sticky_scroll =
                 resolved.map_or(app.settings.editor.sticky_scroll, |r| r.sticky_scroll());
+            let tab_width = app
+                .tabs
+                .get(app.active)
+                .map_or(4, |tab| app.tab_width_for(tab));
+            let blame = app
+                .live_blame
+                .as_ref()
+                .and_then(crate::app::LiveBlame::decoration);
             let ctx = PaneCtx {
                 theme,
                 root: &app.root,
+                icon_style: app.icon_style,
                 graphics,
                 pane_focused: true,
                 editor_focused,
                 graphical_cursor,
                 word_wrap,
                 sticky_scroll,
+                tab_width,
+                diagnostics: &app.document_diagnostics,
                 find: app
                     .find_open
                     .then(|| app.tabs.get(app.active))
                     .flatten()
                     .and_then(|t| t.find.clone()),
+                blame,
+                blame_clickable: app
+                    .live_blame
+                    .as_ref()
+                    .and_then(crate::app::LiveBlame::commit_hash)
+                    .is_some(),
+                markdown_link_hover: app.markdown_link_hover,
+                pane_action_hover: app.pane_action_hover,
             };
             render_pane(f, &mut app.tabs, app.active, rect, &ctx)
         } else if let Some(stored) = app.stored.get_mut(&pane) {
@@ -47,34 +74,85 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
             let word_wrap = resolved.map_or(app.settings.editor.word_wrap, |r| r.word_wrap());
             let sticky_scroll =
                 resolved.map_or(app.settings.editor.sticky_scroll, |r| r.sticky_scroll());
+            let tab_width = stored_tab_width.unwrap_or(4);
             let ctx = PaneCtx {
                 theme,
                 root: &app.root,
+                icon_style: app.icon_style,
                 graphics,
                 pane_focused: false,
                 editor_focused: false,
                 graphical_cursor: false,
                 word_wrap,
                 sticky_scroll,
+                tab_width,
+                diagnostics: &app.document_diagnostics,
                 find: None,
+                blame: None,
+                blame_clickable: false,
+                markdown_link_hover: None,
+                pane_action_hover: app.pane_action_hover,
             };
             render_pane(f, &mut stored.tabs, stored.active, rect, &ctx)
         } else {
             continue;
         };
         if is_focused {
-            app.editor_rect = rendered.content_rect;
+            app.editor_rect = rendered.editor_rect;
+            app.markdown_preview_rect = rendered.markdown_preview_rect;
             app.image_area = rendered.image_area;
+            app.blame_rect = rendered.blame_rect;
+            app.markdown_link_hits = rendered.markdown_link_hits;
             app.commit_badge_rect = rendered.commit_badge_rect;
         }
         app.pane_frames.push(crate::app::PaneFrame {
             pane,
             tabstrip_rect: rendered.tabstrip_rect,
             tab_hits: rendered.tab_hits,
+            action_hits: rendered.action_hits,
             breadcrumb_rect: rendered.breadcrumb_rect,
             breadcrumb_hits: rendered.breadcrumb_hits,
             content_rect: rendered.content_rect,
+            commit_file_hits: rendered.commit_file_hits,
         });
+    }
+    app.pane_dividers = app.layout.dividers(area);
+    for divider in app.pane_dividers.iter().copied() {
+        let emphasized = app.pane_divider_hover == Some(divider)
+            || app.pane_resize.is_some_and(|resize| {
+                resize.divider.axis == divider.axis
+                    && resize.divider.before == divider.before
+                    && resize.divider.after == divider.after
+            });
+        let role = if emphasized {
+            ThemeRole::LineNumberActive
+        } else {
+            ThemeRole::IndentGuide
+        };
+        let style = Style::default().fg(theme.role(role).to_ratatui());
+        match divider.axis {
+            SplitAxis::Cols => {
+                for y in divider.start..divider.end {
+                    f.buffer_mut().set_string(divider.position, y, "│", style);
+                }
+            },
+            SplitAxis::Rows => {
+                let style = if emphasized {
+                    style.bg(theme.role(ThemeRole::HoverHighlight).to_ratatui())
+                } else {
+                    style.add_modifier(Modifier::UNDERLINED)
+                };
+                f.buffer_mut().set_style(
+                    Rect::new(
+                        divider.start,
+                        divider.position,
+                        divider.end.saturating_sub(divider.start),
+                        1,
+                    ),
+                    style,
+                );
+            },
+        }
     }
 }
 
@@ -95,17 +173,16 @@ pub(super) fn render_pane(
         Constraint::Min(0),     // content
     ])
     .split(area);
-    let (tabstrip_rect, tab_hits) = draw_pane_tabs(
-        f,
-        tabs,
-        active,
-        ctx.pane_focused,
-        ctx.theme,
-        ctx.root,
-        parts[0],
-    );
+    let (tabstrip_rect, tab_hits, action_hits) = draw_pane_tabs(f, tabs, active, ctx, parts[0]);
     let (breadcrumb_rect, breadcrumb_hits) = if bc == 1 {
-        let hits = draw_pane_breadcrumb(f, tabs.get(active), ctx.theme, ctx.root, parts[1]);
+        let hits = draw_pane_breadcrumb(
+            f,
+            tabs.get(active),
+            ctx.theme,
+            ctx.root,
+            ctx.icon_style,
+            parts[1],
+        );
         (parts[1], hits)
     } else {
         (Rect::default(), Vec::new())
@@ -130,11 +207,17 @@ pub(super) fn render_pane(
     RenderedPane {
         tabstrip_rect,
         tab_hits,
+        action_hits,
         breadcrumb_rect,
         breadcrumb_hits,
         content_rect: content,
+        editor_rect: painted.editor_rect,
+        markdown_preview_rect: painted.markdown_preview_rect,
         image_area: painted.image_area,
         commit_badge_rect: painted.badge_rect,
+        commit_file_hits: painted.file_hits,
+        blame_rect: painted.blame_rect,
+        markdown_link_hits: painted.markdown_link_hits,
     }
 }
 

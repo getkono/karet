@@ -480,6 +480,51 @@ fn source_control_bindings_are_panel_scoped() {
 }
 
 #[test]
+fn explorer_copy_path_bindings_are_scoped_and_advertised() {
+    let explorer = Context::focus(FocusTarget::Explorer);
+    let source_control = Context::focus(FocusTarget::SourceControl);
+    let absolute = KeyChord::from_event(key(
+        KeyCode::Char('C'),
+        KeyModifiers::SHIFT | KeyModifiers::ALT,
+    ));
+    let ctrl_k = KeyChord::from_event(key(KeyCode::Char('k'), KeyModifiers::CONTROL));
+    let ctrl_shift_c = KeyChord::from_event(key(
+        KeyCode::Char('C'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ));
+
+    assert_eq!(
+        resolve(explorer, &[absolute]),
+        Resolved::Command(Command::ExplorerCopyPath)
+    );
+    assert_eq!(resolve(explorer, &[ctrl_k]), Resolved::Pending);
+    assert_eq!(
+        resolve(explorer, &[ctrl_k, ctrl_shift_c]),
+        Resolved::Command(Command::ExplorerCopyRelativePath)
+    );
+    assert_eq!(resolve(source_control, &[absolute]), Resolved::None);
+    assert_eq!(
+        resolve(source_control, &[ctrl_k, ctrl_shift_c]),
+        Resolved::None
+    );
+
+    assert_eq!(
+        hint_for(Command::ExplorerCopyPath, ChordStyle::Verbose).as_deref(),
+        Some("Alt+Shift+C")
+    );
+    assert_eq!(
+        hint_for(Command::ExplorerCopyRelativePath, ChordStyle::Verbose).as_deref(),
+        Some("Ctrl+K Ctrl+Shift+C")
+    );
+    let hints = hints_for(explorer, ChordStyle::Caret);
+    let commands: Vec<Command> = hints.iter().map(|hint| hint.command).collect();
+    assert_eq!(
+        commands.get(..2),
+        Some([Command::ExplorerCopyPath, Command::ExplorerCopyRelativePath].as_slice())
+    );
+}
+
+#[test]
 fn search_modal_still_resolves_global_chords() {
     // The Search modals layer their own keys over Global, so Ctrl+B still toggles
     // the sidebar while a bare 'j' navigates the results rather than typing.
@@ -701,4 +746,34 @@ fn ctrl_k_then_v_opens_the_markdown_preview() {
     // `Ctrl+V` remains Paste: the preview binding must not shadow it.
     let ctrl_v = KeyChord::from_event(key(KeyCode::Char('v'), KeyModifiers::CONTROL));
     assert_eq!(resolve(ctx, &[ctrl_v]), Resolved::Command(Command::Paste));
+}
+
+#[test]
+fn ctrl_shift_i_formats_markdown_tables() {
+    let ctx = Context::focus(FocusTarget::Editor);
+    let chord = KeyChord::from_event(key(
+        KeyCode::Char('i'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ));
+    assert_eq!(
+        resolve(ctx, &[chord]),
+        Resolved::Command(Command::FormatMarkdownTables)
+    );
+}
+
+#[test]
+fn ctrl_alt_shift_arrows_resize_panes() {
+    let ctx = Context::focus(FocusTarget::Editor);
+    for (key_code, command) in [
+        (KeyCode::Left, Command::ResizePaneLeft),
+        (KeyCode::Right, Command::ResizePaneRight),
+        (KeyCode::Up, Command::ResizePaneUp),
+        (KeyCode::Down, Command::ResizePaneDown),
+    ] {
+        let chord = KeyChord::from_event(key(
+            key_code,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        ));
+        assert_eq!(resolve(ctx, &[chord]), Resolved::Command(command));
+    }
 }

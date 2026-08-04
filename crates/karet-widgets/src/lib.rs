@@ -36,6 +36,7 @@ pub use notify::Corner;
 pub use notify::ToastSlot;
 pub use notify::Toasts;
 pub use pane::DropZone;
+pub use pane::PaneDivider;
 pub use pane::PaneId;
 pub use pane::PaneLayout;
 pub use pane::SplitAxis;

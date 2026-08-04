@@ -5,6 +5,7 @@
 //! their own scroll inside the kind.
 
 use std::collections::BTreeSet;
+use std::ops::RangeInclusive;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -25,15 +26,9 @@ use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
 use karet_syntax::SemanticBlocks;
 use karet_text::TextBuffer;
+use ratatui::layout::Rect;
 
 use crate::render::FileView;
-
-/// The `source_view` sentinel for a [`Tab::document_preview`]: a markdown preview
-/// with no source tab. Real view ids are allocated upward from 1 (`ViewId(0)` is
-/// the pre-assignment placeholder), so `u64::MAX` can never collide with one and
-/// every source-pairing lookup (`previews_view`, scroll sync, reveal) misses it.
-#[cfg(feature = "docx")]
-pub(crate) const DETACHED_SOURCE_VIEW: ViewId = ViewId(u64::MAX);
 
 /// The find-in-file bar state: the query, the match cursor, and the replace field
 /// (mirroring the workspace Search panel's model for a consistent UI). Lives on
@@ -84,6 +79,17 @@ pub(crate) enum SearchField {
     Replace,
 }
 
+/// View-local state for a rendered Markdown preview beside a code editor.
+#[derive(Default)]
+pub(crate) struct MarkdownPreviewState {
+    /// The parsed and wrapped render model.
+    pub(crate) wrapped: WrappedDocument,
+    /// The `(document version, wrap width)` represented by [`Self::wrapped`].
+    pub(crate) rendered: Option<(u64, u16)>,
+    /// The first visible wrapped line.
+    pub(crate) scroll: u16,
+}
+
 /// How a diff tab is laid out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewMode {
@@ -91,6 +97,28 @@ pub enum ViewMode {
     Unified,
     /// Two columns: old on the left, new on the right.
     SideBySide,
+}
+
+/// The responsive arrangement last used to draw a commit-like view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CommitLayoutMode {
+    /// Metadata, file index, and diff cards form one vertical document.
+    Stacked,
+    /// Metadata precedes a pinned file rail beside the diff cards.
+    Wide,
+}
+
+/// View-local navigation state shared by commit and compare tabs.
+#[derive(Debug, Default)]
+pub(crate) struct CommitViewState {
+    /// Vertical offset in the current layout's virtual document.
+    pub(crate) scroll: u16,
+    /// The layout used by the previous frame, for resize-aware anchor remapping.
+    pub(crate) layout: Option<CommitLayoutMode>,
+    /// Per-file card-header offsets from the previous frame.
+    pub(crate) file_anchors: Vec<u16>,
+    /// First file shown in the wide layout's pinned rail.
+    pub(crate) rail_offset: usize,
 }
 
 /// The content of a tab and how to render it.
@@ -101,6 +129,8 @@ pub enum ViewMode {
 pub enum TabKind {
     /// The landing page shown when nothing is open.
     Welcome,
+    /// A GitHub repository dashboard, detail, or creation form.
+    Github(crate::app::github::GithubViewState),
     /// An editable code/text view.
     Code {
         /// The file path.
@@ -135,21 +165,12 @@ pub enum TabKind {
         /// snapshot. Gates the completion auto-trigger (issue #57).
         syntax_errors: Vec<(u32, u32)>,
     },
-    /// A rendered, read-only preview of a Markdown document, shown beside the
-    /// [`Code`](TabKind::Code) tab it mirrors.
-    ///
-    /// The source of truth is the session document, not this tab: `buffer` is refreshed
-    /// from every snapshot, and the render model behind it is rebuilt lazily at draw
-    /// time (see `rendered`).
+    /// A standalone, read-only rendered Markdown document (for example converted DOCX).
+    /// Editable Markdown previews are view-local state on [`Tab`], not tabs of this kind.
     MarkdownPreview {
         /// The file path.
         path: PathBuf,
-        /// The session document previewed, once the source tab has registered one.
-        doc: Option<DocumentId>,
-        /// The [`Tab::view`] of the source tab this previews. Scrolling is synchronized
-        /// with it while both are their pane's active tab.
-        source_view: ViewId,
-        /// The latest snapshot's buffer (a cheap rope-sharing clone).
+        /// The converted Markdown buffer.
         buffer: TextBuffer,
         /// The parsed + wrapped render model, rebuilt only when `rendered` goes stale.
         wrapped: WrappedDocument,
@@ -206,6 +227,15 @@ pub enum TabKind {
         /// The file length in bytes.
         len: u64,
     },
+    /// A LaTeX preview reserved immediately while its external compiler runs.
+    LatexPreview {
+        /// Editable TeX source that initiated the build.
+        source: PathBuf,
+        /// Start time used by the shared delayed-loading policy.
+        loading_since: Instant,
+        /// Compiler/startup failure, when the preview could not be produced.
+        error: Option<String>,
+    },
     /// A single-file diff (opened from the Source Control panel).
     Diff {
         /// The prepared file diff.
@@ -215,14 +245,13 @@ pub enum TabKind {
         /// Vertical scroll offset (display rows).
         scroll: u16,
     },
-    /// A read-only semantic-blame view (`blameline`): consecutive lines grouped by
-    /// the commit that introduced them, with full commit messages.
-    Blame {
-        /// The file the blame is for.
-        path: PathBuf,
-        /// The grouped blame entries, in line order.
-        groups: Vec<blameline::BlameGroup>,
-        /// Vertical scroll offset (display rows).
+    /// A read-only stash patch preview.
+    StashPreview {
+        /// Stable stash selector.
+        reference: String,
+        /// Unified patch and stat output.
+        patch: String,
+        /// Vertical scroll offset.
         scroll: u16,
     },
     /// A read-only code-visualization graph (dependency or usage), rendered as an
@@ -271,8 +300,8 @@ pub enum TabKind {
         /// When the signature badge was last double-clicked, if its explanatory
         /// tooltip is being revealed. The reveal auto-hides a few seconds later.
         explain_since: Option<Instant>,
-        /// Vertical scroll offset (display rows).
-        scroll: u16,
+        /// Responsive scrolling, anchor, and file-rail state.
+        view: CommitViewState,
     },
     /// A read-only "compare" view: the diff between two points (a range), with the same
     /// summary + table-of-contents + per-file cards as the commit view, but a range
@@ -287,8 +316,8 @@ pub enum TabKind {
         merge_base: bool,
         /// Each changed file between the two points, diffed and highlighted for display.
         files: Vec<FileView>,
-        /// Vertical scroll offset (display rows).
-        scroll: u16,
+        /// Responsive scrolling, anchor, and file-rail state.
+        view: CommitViewState,
     },
     /// The full-screen commit graph browser: a scrollable DAG commit log on the left
     /// and the selected commit's detail on the right.
@@ -357,12 +386,23 @@ pub struct Tab {
     /// tab. Cleared permanently on the first edit (clean→dirty transition) or by
     /// double-clicking the file in the tree.
     pub(crate) is_preview: bool,
+    /// Whether the path opened for this view was itself a filesystem symbolic link.
+    pub(crate) is_symlink: bool,
+    /// Cached merge-conflict decorations, keyed by the code buffer version.
+    pub(crate) conflict_decorations: Option<(u64, Vec<Decoration>)>,
+    /// Cached GFM table source-line ranges, keyed by the code buffer version.
+    pub(crate) markdown_table_lines: Option<(u64, Vec<RangeInclusive<u32>>)>,
+    /// A rendered Markdown preview shown inside this editor view, when enabled.
+    pub(crate) markdown_preview: Option<MarkdownPreviewState>,
 }
 
 impl Tab {
     /// Build a tab from a title and content.
     #[must_use]
     pub fn new(title: impl Into<String>, kind: TabKind) -> Self {
+        let is_symlink = tab_kind_path(&kind)
+            .and_then(|path| std::fs::symlink_metadata(path).ok())
+            .is_some_and(|metadata| metadata.file_type().is_symlink());
         Self {
             title: title.into(),
             kind,
@@ -372,6 +412,10 @@ impl Tab {
             saving_since: None,
             find: None,
             is_preview: false,
+            is_symlink,
+            conflict_decorations: None,
+            markdown_table_lines: None,
+            markdown_preview: None,
         }
     }
 
@@ -381,13 +425,143 @@ impl Tab {
         Self::new("Welcome", TabKind::Welcome)
     }
 
-    /// A rendered, read-only markdown view of a converted document (e.g. a Word
-    /// `.docx`) with **no source tab behind it**: `doc` stays `None` forever (no
-    /// session document is ever registered for it) and `source_view` is the
-    /// [`DETACHED_SOURCE_VIEW`] sentinel no real view id can take, so every code
-    /// path that pairs a preview with its source — scroll sync in both directions,
-    /// preview reveal, document binding, the close guard — finds no partner and
-    /// leaves this tab alone.
+    /// The singleton, permanently pinned GitHub repository dashboard.
+    #[must_use]
+    pub(crate) fn github_dashboard(
+        repository: karet_session::GithubRepository,
+        auth: karet_session::GithubAuth,
+    ) -> Self {
+        Self::new(
+            "GitHub",
+            TabKind::Github(crate::app::github::GithubViewState::dashboard(
+                repository, auth,
+            )),
+        )
+    }
+
+    /// A lazily loaded issue detail tab.
+    #[must_use]
+    pub(crate) fn github_issue(
+        repository: karet_session::GithubRepository,
+        number: u64,
+        pending: Option<karet_session::RequestId>,
+    ) -> Self {
+        Self::new(
+            format!("Issue #{number}"),
+            TabKind::Github(crate::app::github::GithubViewState::Issue {
+                repository,
+                number,
+                issue: None,
+                comments: karet_session::GithubPage {
+                    items: Vec::new(),
+                    page: 1,
+                    next_page: None,
+                    total_count: None,
+                },
+                pending,
+                loading_since: Instant::now(),
+                error: None,
+                scroll: 0,
+            }),
+        )
+    }
+
+    /// A pull-request detail tab seeded from its search result.
+    #[must_use]
+    pub(crate) fn github_pull_request(
+        repository: karet_session::GithubRepository,
+        pull_request: karet_session::GithubPullRequest,
+        can_write: bool,
+        pending: Option<karet_session::RequestId>,
+    ) -> Self {
+        Self::new(
+            format!("Pull Request #{}", pull_request.number),
+            TabKind::Github(crate::app::github::GithubViewState::PullRequest(
+                crate::app::github::GithubPullRequestView {
+                    repository,
+                    pull_request,
+                    comments: karet_session::GithubPage {
+                        items: Vec::new(),
+                        page: 1,
+                        next_page: None,
+                        total_count: None,
+                    },
+                    commits: Vec::new(),
+                    checks: Vec::new(),
+                    activity: Vec::new(),
+                    activity_error: None,
+                    can_write,
+                    section: crate::app::github::GithubPullRequestSection::Conversation,
+                    pending,
+                    loading_since: Instant::now(),
+                    error: None,
+                    scroll: 0,
+                    commit_cursor: 0,
+                    commit_offset: 0,
+                    body_edit: None,
+                    comment_edit: String::new(),
+                    editor: None,
+                    preview: false,
+                    section_hits: Vec::new(),
+                    body_rect: Rect::default(),
+                    comment_rect: Rect::default(),
+                    merge_rect: Rect::default(),
+                    draft_rect: Rect::default(),
+                    check_hits: Vec::new(),
+                    commits_rect: Rect::default(),
+                },
+            )),
+        )
+    }
+
+    /// A read-only GitHub Actions workflow-run detail tab.
+    #[must_use]
+    pub(crate) fn github_workflow_run(
+        repository: karet_session::GithubRepository,
+        workflow: Option<karet_session::GithubWorkflow>,
+        run: karet_session::GithubWorkflowRun,
+    ) -> Self {
+        Self::new(
+            format!("Actions #{}", run.run_number),
+            TabKind::Github(crate::app::github::GithubViewState::WorkflowRun {
+                repository,
+                workflow,
+                run,
+                scroll: 0,
+            }),
+        )
+    }
+
+    /// A new-issue form tab.
+    #[must_use]
+    pub(crate) fn github_new_issue(
+        repository: karet_session::GithubRepository,
+        metadata_pending: Option<karet_session::RequestId>,
+    ) -> Self {
+        let form = crate::app::github::GithubIssueForm {
+            metadata_pending,
+            ..crate::app::github::GithubIssueForm::default()
+        };
+        Self::new(
+            "New GitHub Issue",
+            TabKind::Github(crate::app::github::GithubViewState::NewIssue { repository, form }),
+        )
+    }
+
+    /// A new-pull-request form tab.
+    #[must_use]
+    pub(crate) fn github_new_pull_request(repository: karet_session::GithubRepository) -> Self {
+        Self::new(
+            "New Pull Request",
+            TabKind::Github(crate::app::github::GithubViewState::NewPullRequest {
+                repository,
+                form: crate::app::github::GithubPullRequestForm::default(),
+            }),
+        )
+    }
+
+    /// A rendered, read-only Markdown view of a converted document (e.g. a Word
+    /// `.docx`) with no editable source tab or session document behind it.
     #[cfg(feature = "docx")]
     #[must_use]
     pub fn document_preview(path: PathBuf, markdown: &str) -> Self {
@@ -399,35 +573,7 @@ impl Tab {
             title,
             TabKind::MarkdownPreview {
                 path,
-                doc: None,
-                source_view: DETACHED_SOURCE_VIEW,
                 buffer: TextBuffer::from_text(markdown),
-                wrapped: WrappedDocument::default(),
-                rendered: None,
-                scroll: 0,
-            },
-        )
-    }
-
-    /// A rendered preview of the Markdown document `source_view` holds.
-    ///
-    /// `buffer` is seeded from the source tab so the preview paints on its very first
-    /// frame, before any snapshot has arrived.
-    #[must_use]
-    pub fn markdown_preview(
-        path: PathBuf,
-        doc: Option<DocumentId>,
-        source_view: ViewId,
-        buffer: TextBuffer,
-    ) -> Self {
-        let title = preview_title(&path);
-        Self::new(
-            title,
-            TabKind::MarkdownPreview {
-                path,
-                doc,
-                source_view,
-                buffer,
                 wrapped: WrappedDocument::default(),
                 rendered: None,
                 scroll: 0,
@@ -458,6 +604,19 @@ impl Tab {
         )
     }
 
+    /// A read-only stash patch preview.
+    #[must_use]
+    pub fn stash_preview(reference: String, patch: String) -> Self {
+        Self::new(
+            format!("Stash {reference}"),
+            TabKind::StashPreview {
+                reference,
+                patch,
+                scroll: 0,
+            },
+        )
+    }
+
     /// A read-only commit view for `detail` and its changed `files`.
     #[must_use]
     pub fn commit(detail: Box<karet_vcs::CommitDetail>, files: Vec<FileView>) -> Self {
@@ -471,7 +630,7 @@ impl Tab {
                 files_error: None,
                 verification: None,
                 explain_since: None,
-                scroll: 0,
+                view: CommitViewState::default(),
             },
         )
     }
@@ -488,6 +647,23 @@ impl Tab {
                 loading_since: Instant::now(),
                 error: None,
                 scroll: 0,
+            },
+        )
+    }
+
+    /// A pending LaTeX PDF preview.
+    #[must_use]
+    pub fn latex_preview(source: PathBuf) -> Self {
+        let title = source.file_stem().map_or_else(
+            || "LaTeX Preview".to_owned(),
+            |stem| format!("{} (Preview)", stem.to_string_lossy()),
+        );
+        Self::new(
+            title,
+            TabKind::LatexPreview {
+                source,
+                loading_since: Instant::now(),
+                error: None,
             },
         )
     }
@@ -534,7 +710,7 @@ impl Tab {
                 head_label,
                 merge_base,
                 files,
-                scroll: 0,
+                view: CommitViewState::default(),
             },
         )
     }
@@ -546,20 +722,22 @@ impl Tab {
             TabKind::Code { path, .. }
             | TabKind::MarkdownPreview { path, .. }
             | TabKind::Hex { path, .. }
-            | TabKind::Placeholder { path, .. }
-            | TabKind::Blame { path, .. } => Some(path),
+            | TabKind::Placeholder { path, .. } => Some(path),
             #[cfg(feature = "images")]
             TabKind::Image { path, .. } => Some(path),
             #[cfg(feature = "pdf")]
             TabKind::Document { path, .. } => Some(path),
             TabKind::Diff { file, .. } => Some(&file.change.path),
             TabKind::Welcome
+            | TabKind::Github(_)
             | TabKind::Graph { .. }
             | TabKind::LoadedConfig { .. }
+            | TabKind::LatexPreview { .. }
             | TabKind::CommitLoading { .. }
             | TabKind::Commit { .. }
             | TabKind::Compare { .. }
             | TabKind::CommitGraph { .. } => None,
+            TabKind::StashPreview { .. } => None,
         }
     }
 
@@ -567,6 +745,12 @@ impl Tab {
     #[must_use]
     pub fn is_diff(&self) -> bool {
         matches!(self.kind, TabKind::Diff { .. })
+    }
+
+    /// Whether this is the uncloseable pinned GitHub dashboard.
+    #[must_use]
+    pub(crate) fn is_github_dashboard(&self) -> bool {
+        matches!(&self.kind, TabKind::Github(view) if view.is_pinned())
     }
 
     /// A short language/kind label for the status bar.
@@ -581,8 +765,9 @@ impl Tab {
             TabKind::Document { .. } => "pdf",
             TabKind::Hex { .. } => "binary",
             TabKind::Placeholder { .. } => "preview",
+            TabKind::LatexPreview { .. } => "latex preview",
             TabKind::Diff { file, .. } => file.language,
-            TabKind::Blame { .. } => "blame",
+            TabKind::StashPreview { .. } => "stash",
             TabKind::Graph { .. } => "graph",
             TabKind::LoadedConfig { .. } => "settings",
             TabKind::CommitLoading { .. } => "commit",
@@ -590,6 +775,7 @@ impl Tab {
             TabKind::Compare { .. } => "compare",
             TabKind::CommitGraph { .. } => "commits",
             TabKind::Welcome => "",
+            TabKind::Github(_) => "github",
         }
     }
 
@@ -610,19 +796,34 @@ impl Tab {
     }
 }
 
+fn tab_kind_path(kind: &TabKind) -> Option<&Path> {
+    match kind {
+        TabKind::Code { path, .. }
+        | TabKind::MarkdownPreview { path, .. }
+        | TabKind::Hex { path, .. }
+        | TabKind::Placeholder { path, .. } => Some(path),
+        #[cfg(feature = "images")]
+        TabKind::Image { path, .. } => Some(path),
+        #[cfg(feature = "pdf")]
+        TabKind::Document { path, .. } => Some(path),
+        TabKind::Diff { file, .. } => Some(&file.change.path),
+        TabKind::Welcome
+        | TabKind::Github(_)
+        | TabKind::StashPreview { .. }
+        | TabKind::Graph { .. }
+        | TabKind::LoadedConfig { .. }
+        | TabKind::LatexPreview { .. }
+        | TabKind::CommitLoading { .. }
+        | TabKind::Commit { .. }
+        | TabKind::Compare { .. }
+        | TabKind::CommitGraph { .. } => None,
+    }
+}
+
 /// Human-readable title for standalone commit tabs.
 #[must_use]
 pub(crate) fn commit_title(short: &str) -> String {
     format!("Commit {short}")
-}
-
-/// Human-readable title for a markdown preview tab.
-#[must_use]
-pub(crate) fn preview_title(path: &Path) -> String {
-    let name = path
-        .file_name()
-        .map_or_else(|| path.to_string_lossy(), std::ffi::OsStr::to_string_lossy);
-    format!("Preview {name}")
 }
 
 #[cfg(test)]

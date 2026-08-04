@@ -242,7 +242,7 @@ static REGISTRY: &[FileType] = &[
     ),
     wrap("reStructuredText", Markup, None, &["rst"], &[]),
     wrap("AsciiDoc", Markup, None, &["adoc", "asciidoc"], &[]),
-    overflow("TeX", Document, None, &["tex"], &[]),
+    overflow("TeX", Document, None, &["tex", "sty", "cls"], &[]),
     overflow("PDF", Document, Some('\u{f1c1}'), &["pdf"], &[]),
     wrap(
         "Word",

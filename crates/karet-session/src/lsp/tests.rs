@@ -30,7 +30,7 @@ type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 #[test]
 fn reconfigure_retires_updates_from_old_server_tasks() {
-    let (mut manager, _updates) = LspManager::new(LspSettings::default(), None);
+    let (mut manager, _updates) = LspManager::new(LspSettings::default(), None, None, None);
     let old = LspUpdate::Completions {
         generation: 0,
         request: RequestId(1),
@@ -50,6 +50,38 @@ fn reconfigure_retires_updates_from_old_server_tasks() {
         !manager.reconfigure(settings),
         "an identical snapshot is a no-op"
     );
+}
+
+#[tokio::test]
+async fn last_document_close_retires_the_server_slot() {
+    let (mut manager, _updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(test_connector(
+        Behavior::Normal,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let path = PathBuf::from("/tmp/owned.rs");
+    manager.document_opened(Some("rust"), &path, 1, || "fn main() {}".into());
+    assert!(manager.is_running(LanguageServerId::RustAnalyzer));
+    manager.document_closed(Some("rust"), &path);
+    assert!(!manager.is_running(LanguageServerId::RustAnalyzer));
+}
+
+#[tokio::test]
+async fn javascript_and_typescript_share_one_builtin_process() {
+    let (mut manager, _updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(test_connector(
+        Behavior::Normal,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    manager.document_opened(Some("javascript"), Path::new("/tmp/a.js"), 1, String::new);
+    manager.document_opened(Some("typescript"), Path::new("/tmp/b.ts"), 1, String::new);
+    assert_eq!(manager.servers.len(), 1);
+    manager.document_closed(Some("javascript"), Path::new("/tmp/a.js"));
+    assert!(manager.is_running(LanguageServerId::TypeScript));
+    manager.document_closed(Some("typescript"), Path::new("/tmp/b.ts"));
+    assert!(!manager.is_running(LanguageServerId::TypeScript));
 }
 
 // --- a minimal LSP wire for the fake server (framing + JSON) -----------
@@ -147,6 +179,24 @@ fn test_connector(
                             )
                             .await;
                         },
+                        Some("textDocument/documentSymbol") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [{
+                                    "name": "emoji_name",
+                                    "kind": 12,
+                                    "range": {
+                                        "start": {"line": 0, "character": 0},
+                                        "end": {"line": 0, "character": 4}
+                                    },
+                                    "selectionRange": {
+                                        "start": {"line": 0, "character": 2},
+                                        "end": {"line": 0, "character": 4}
+                                    }
+                                }]}),
+                            )
+                            .await;
+                        },
                         Some("shutdown") => {
                             write_msg(
                                 &mut server_write,
@@ -208,6 +258,17 @@ async fn await_completions(
         } = event
         {
             return Some((rid, doc, version, items));
+        }
+    }
+    None
+}
+
+async fn await_symbols(
+    events: &mut EventRx,
+) -> Option<(Option<RequestId>, DocumentId, Vec<Symbol>)> {
+    while let Some((request, event)) = next_event(events).await {
+        if let Event::Symbols { doc, symbols } = event {
+            return Some((request, doc, symbols));
         }
     }
     None
@@ -278,6 +339,33 @@ async fn completion_round_trips_with_utf16_conversion() -> TestResult {
         }
     }
     assert!(saw_utf16, "the completion request should reach the server");
+    Ok(())
+}
+
+#[tokio::test]
+async fn document_symbols_round_trip_with_utf16_conversion() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "😀ab\n").ok_or("write failed")?;
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events) =
+        session_with_connector(test_connector(Behavior::Normal, None, spawns));
+    let backend = local(session);
+    backend.send(
+        backend.next_id(),
+        Command::OpenDocument {
+            path,
+            language: None,
+        },
+    )?;
+    let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
+    let request = backend.next_id();
+    backend.send(request, Command::DocumentSymbols { doc })?;
+    let (answer, answer_doc, symbols) =
+        await_symbols(&mut events).await.ok_or("no Symbols event")?;
+    assert_eq!(answer, Some(request));
+    assert_eq!(answer_doc, doc);
+    assert_eq!(symbols[0].selection_range.start, LineCol::new(0, 1));
+    assert_eq!(symbols[0].selection_range.end, LineCol::new(0, 3));
     Ok(())
 }
 
@@ -551,23 +639,14 @@ async fn server_death_is_reported_and_completions_stay_answered() -> TestResult 
 // --- unit tests for the pure pieces --------------------------------------
 
 #[test]
-fn builtin_specs_cover_the_documented_languages() {
-    let rust = builtin_spec("rust");
-    assert_eq!(rust.map(|s| s.command), Some("rust-analyzer".to_owned()));
+fn builtin_registry_covers_the_documented_languages() {
+    assert_eq!(builtin_server("rust"), Some(LanguageServerId::RustAnalyzer));
     for lang in ["typescript", "javascript"] {
-        let spec = builtin_spec(lang);
-        assert_eq!(
-            spec.as_ref().map(|s| s.command.as_str()),
-            Some("typescript-language-server")
-        );
-        assert_eq!(spec.map(|s| s.args), Some(vec!["--stdio".to_owned()]));
+        assert_eq!(builtin_server(lang), Some(LanguageServerId::TypeScript));
     }
-    let py = builtin_spec("python");
-    assert_eq!(
-        py.map(|s| (s.command, s.args)),
-        Some(("pyright-langserver".to_owned(), vec!["--stdio".to_owned()]))
-    );
-    assert!(builtin_spec("cobol").is_none());
+    assert_eq!(builtin_server("python"), Some(LanguageServerId::Pyright));
+    assert_eq!(builtin_server("tex"), Some(LanguageServerId::Texlab));
+    assert!(builtin_server("cobol").is_none());
 }
 
 #[test]
@@ -588,20 +667,20 @@ fn user_config_overrides_builtins() {
             args: Vec::new(),
         },
     );
-    let (manager, _rx) = LspManager::new(settings, None);
+    let (manager, _rx) = LspManager::new(settings, None, None, None);
     let rust = manager.spec_for("rust");
     assert_eq!(
-        rust.map(|s| (s.command, s.args)),
+        rust.map(|(s, _)| (s.command, s.args)),
         Some(("my-ra".to_owned(), vec!["--custom".to_owned()]))
     );
     assert_eq!(
-        manager.spec_for("zig").map(|s| s.command),
+        manager.spec_for("zig").map(|(s, _)| s.command),
         Some("zls".to_owned())
     );
     // Untouched languages keep their builtin.
     assert_eq!(
-        manager.spec_for("python").map(|s| s.command),
-        Some("pyright-langserver".to_owned())
+        manager.spec_for("python").map(|(s, _)| s.command),
+        Some("pyright".to_owned())
     );
 }
 
