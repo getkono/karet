@@ -336,6 +336,17 @@
                 end: LineCol::new(0, 5),
             })
         );
+
+        // The same gesture selects backward when the click precedes the caret.
+        app.handle_editor_click(click(13, false));
+        app.handle_editor_click(click(6, true));
+        assert_eq!(
+            app.tabs[app.active].editor.selection_range(),
+            Some(Range {
+                start: LineCol::new(0, 3),
+                end: LineCol::new(0, 10),
+            })
+        );
     }
 
     #[test]

@@ -128,6 +128,12 @@ impl App {
             Command::DeleteForward => {
                 self.submit_edit_with_cause(EditCause::Delete, editing::delete_forward);
             },
+            Command::DeleteWordBackward => {
+                self.submit_edit_with_cause(EditCause::Delete, editing::delete_word_backward);
+            },
+            Command::DeleteWordForward => {
+                self.submit_edit_with_cause(EditCause::Delete, editing::delete_word_forward);
+            },
             Command::Indent => {
                 let indentation = self.active_indentation();
                 self.submit_edit(|caret, sel, _b, base| {
