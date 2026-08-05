@@ -1,5 +1,4 @@
 use super::*;
-use crate::app::CommitInput;
 
 pub(super) fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let header_rows = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(area);
@@ -339,22 +338,33 @@ pub(super) fn draw_commit_input(f: &mut Frame, app: &mut App, theme: &Theme, are
         return;
     }
 
-    let caret_row = commit_cursor_row(&app.commit_input.text, app.commit_input.cursor, inner.width);
+    let caret_row = commit_cursor_row(
+        &app.commit_input.text,
+        app.commit_input.edit.cursor(),
+        inner.width,
+    );
     let visible = inner.height;
     if caret_row < app.commit_input.scroll {
         app.commit_input.scroll = caret_row;
     } else if caret_row >= app.commit_input.scroll.saturating_add(visible) {
         app.commit_input.scroll = caret_row.saturating_sub(visible.saturating_sub(1));
     }
-    let display = commit_input_display(&app.commit_input);
-    let paragraph = if display.is_empty() {
+    let paragraph = if app.commit_input.text.is_empty() && !app.commit_input.focused {
         Paragraph::new("Type a commit message")
             .style(Style::default().fg(muted))
             .wrap(Wrap { trim: false })
     } else {
-        Paragraph::new(display)
-            .style(Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui()))
-            .wrap(Wrap { trim: false })
+        let foreground = theme.role(ThemeRole::Foreground).to_ratatui();
+        let selection = theme.role(ThemeRole::Selection).to_ratatui();
+        Paragraph::new(text_field_text(
+            &app.commit_input.text,
+            &app.commit_input.edit,
+            app.commit_input.focused,
+            Style::default().fg(foreground),
+            Style::default().fg(foreground).bg(selection),
+            Style::default().fg(accent),
+        ))
+        .wrap(Wrap { trim: false })
     };
     f.render_widget(paragraph.scroll((app.commit_input.scroll, 0)), inner);
 }
@@ -367,12 +377,4 @@ pub(super) fn commit_cursor_row(text: &str, cursor: usize, width: u16) -> u16 {
     }
     row = row.saturating_add(text[..cursor.min(text.len())].matches('\n').count());
     u16::try_from(row).unwrap_or(u16::MAX)
-}
-
-pub(super) fn commit_input_display(input: &CommitInput) -> String {
-    let mut display = input.text.clone();
-    if input.focused {
-        display.insert(input.cursor.min(display.len()), '\u{258f}');
-    }
-    display
 }

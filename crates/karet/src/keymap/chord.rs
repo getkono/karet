@@ -85,6 +85,10 @@ impl KeyChord {
                     ctrl = true;
                     KeyCode::End
                 },
+                KeyCode::Char('a' | 'c' | 'v' | 'x') => {
+                    ctrl = true;
+                    ev.code
+                },
                 _ => KeyCode::Null,
             }
         } else {
@@ -231,8 +235,10 @@ mod tests {
         );
         let document_end = chord(true, false, false, KeyCode::End);
         assert!(document_end.matches(ev(KeyCode::Down, KeyModifiers::SUPER)));
+        let cut = chord(true, false, false, KeyCode::Char('x'));
+        assert!(cut.matches(ev(KeyCode::Char('x'), KeyModifiers::SUPER)));
         assert_eq!(
-            KeyChord::from_event(ev(KeyCode::Char('x'), KeyModifiers::SUPER)).code,
+            KeyChord::from_event(ev(KeyCode::Char('z'), KeyModifiers::SUPER)).code,
             KeyCode::Null
         );
     }

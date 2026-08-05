@@ -93,7 +93,11 @@ impl App {
             Command::SelectDocEnd => self.caret_motion(true, EditorState::move_doc_end),
             Command::SelectPageUp => self.caret_motion(true, EditorState::page_up),
             Command::SelectPageDown => self.caret_motion(true, EditorState::page_down),
-            Command::EditorSelectAll => self.editor_select_all(),
+            Command::EditorSelectAll => {
+                if !self.select_all_modal_text() {
+                    self.editor_select_all();
+                }
+            },
             Command::AddCursorAbove => self.add_cursor_vertical(true),
             Command::AddCursorBelow => self.add_cursor_vertical(false),
             Command::AddCursorNextOccurrence => self.add_cursor_next_occurrence(),

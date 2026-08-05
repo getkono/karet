@@ -12,6 +12,17 @@ impl App {
     /// Copy the active code tab's selection, or its cursor line when nothing is
     /// selected (VS Code behavior).
     pub(super) fn copy_selection(&mut self) {
+        if matches!(
+            self.input_context().modal,
+            Some(Modal::SearchInput | Modal::CommitInput)
+        ) {
+            if let Some(text) = self.modal_selection_text() {
+                self.copy_to_clipboard(text, "selection");
+            } else {
+                self.status = Some("copy: no text selected".to_string());
+            }
+            return;
+        }
         if self.focus_target() == FocusTarget::Explorer {
             self.explorer_copy_files();
             return;

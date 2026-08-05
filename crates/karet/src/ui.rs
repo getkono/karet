@@ -71,6 +71,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use ratatui::text::Text;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Clear;
@@ -95,11 +96,50 @@ use crate::app::OperationBlocker;
 use crate::app::SIDEBAR_MIN_WIDTH;
 use crate::app::TabDrag;
 use crate::app::TabHit;
+use crate::app::TextFieldState;
 use crate::app::ToastHit;
 use crate::command::Command;
 use crate::keymap::ChordStyle;
 use crate::keymap::Context;
 use crate::keymap::Focus;
+
+/// Render text-field content with a highlighted selection and an insertion caret.
+pub(super) fn text_field_text(
+    text: &str,
+    edit: &TextFieldState,
+    focused: bool,
+    normal: Style,
+    selection: Style,
+    caret: Style,
+) -> Text<'static> {
+    let selected = edit.selection();
+    let cursor = edit.cursor();
+    let mut lines = Vec::new();
+    let mut spans = Vec::new();
+    for (index, character) in text.char_indices() {
+        if focused && index == cursor {
+            spans.push(Span::styled("▏", caret));
+        }
+        if character == '\n' {
+            lines.push(Line::from(std::mem::take(&mut spans)));
+            continue;
+        }
+        let style = if selected
+            .as_ref()
+            .is_some_and(|range| range.start <= index && index < range.end)
+        {
+            selection
+        } else {
+            normal
+        };
+        spans.push(Span::styled(character.to_string(), style));
+    }
+    if focused && cursor == text.len() {
+        spans.push(Span::styled("▏", caret));
+    }
+    lines.push(Line::from(spans));
+    Text::from(lines)
+}
 
 /// Render a two-axis scrollable paragraph and overlay indicators for axes whose
 /// content exceeds the viewport.

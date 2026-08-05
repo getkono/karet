@@ -1,5 +1,4 @@
 use super::scm::commit_cursor_row;
-use super::scm::commit_input_display;
 use super::*;
 use crate::app::CommitInput;
 
@@ -110,15 +109,44 @@ fn osc8_link_bytes_reach_the_crossterm_backend() -> Result<(), Box<dyn std::erro
 
 #[test]
 fn commit_input_display_preserves_lines_and_marks_the_caret() {
-    let input = CommitInput {
+    let mut input = CommitInput {
         text: "subject\nbody".to_string(),
-        cursor: 8,
         focused: true,
         ..CommitInput::default()
     };
-    assert_eq!(commit_input_display(&input), "subject\n▏body");
-    assert_eq!(commit_cursor_row(&input.text, input.cursor, 40), 1);
+    input.edit.set_cursor(&input.text, 8, false);
+    let display = text_field_text(
+        &input.text,
+        &input.edit,
+        true,
+        Style::default(),
+        Style::default(),
+        Style::default(),
+    );
+    assert_eq!(display.lines[0].to_string(), "subject");
+    assert_eq!(display.lines[1].to_string(), "▏body");
+    assert_eq!(commit_cursor_row(&input.text, input.edit.cursor(), 40), 1);
     assert_eq!(commit_cursor_row("abcdefghij", 10, 5), 2);
+}
+
+#[test]
+fn text_field_display_styles_the_selected_run() {
+    let mut edit = TextFieldState::default();
+    edit.set_cursor("abcd", 1, false);
+    edit.set_cursor("abcd", 3, true);
+    let display = text_field_text(
+        "abcd",
+        &edit,
+        true,
+        Style::default().fg(Color::White),
+        Style::default().fg(Color::White).bg(Color::Blue),
+        Style::default().fg(Color::Red),
+    );
+    let spans = &display.lines[0].spans;
+    assert_eq!(spans[0].style.bg, None);
+    assert_eq!(spans[1].style.bg, Some(Color::Blue));
+    assert_eq!(spans[2].style.bg, Some(Color::Blue));
+    assert_eq!(spans[3].content, "▏");
 }
 
 #[test]
