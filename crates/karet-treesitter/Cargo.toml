@@ -27,7 +27,7 @@ lang-cpp        = ["dep:tree-sitter-cpp"]
 lang-csharp     = ["dep:tree-sitter-c-sharp"]
 lang-java       = ["dep:tree-sitter-java"]
 lang-ruby       = ["dep:tree-sitter-ruby"]
-lang-php        = ["dep:tree-sitter-php"]
+lang-php        = ["dep:tree-sitter-php", "lang-html"]
 lang-bash       = ["dep:tree-sitter-bash"]
 lang-toml       = ["dep:tree-sitter-toml-ng"]
 lang-html       = ["dep:tree-sitter-html"]
@@ -66,6 +66,11 @@ lang-perl       = ["dep:tree-sitter-perl"]
 lang-clojure    = ["dep:tree-sitter-clojure-orchard"]
 lang-elisp      = ["dep:tree-sitter-elisp"]
 lang-vim        = ["dep:tree-sitter-vim"]
+lang-scss       = ["dep:tree-sitter-scss"]
+lang-sass       = []
+lang-less       = ["dep:tree-sitter-less"]
+lang-erb        = ["dep:tree-sitter-embedded-template", "lang-html", "lang-ruby"]
+lang-mdx        = ["lang-markdown", "lang-javascript"]
 # Convenience bundle: every grammar above. The `karet` app enables this.
 all-languages = [
     "lang-rust", "lang-python", "lang-javascript", "lang-typescript", "lang-json",
@@ -78,6 +83,7 @@ all-languages = [
     "lang-kotlin", "lang-swift", "lang-scala", "lang-lua", "lang-haskell",
     "lang-ocaml", "lang-elixir", "lang-erlang", "lang-dart", "lang-r",
     "lang-perl", "lang-clojure", "lang-elisp", "lang-vim",
+    "lang-scss", "lang-sass", "lang-less", "lang-erb", "lang-mdx",
 ]
 
 [dependencies]
@@ -135,6 +141,13 @@ tree-sitter-perl       = { workspace = true, optional = true }
 tree-sitter-clojure-orchard = { workspace = true, optional = true }
 tree-sitter-elisp      = { workspace = true, optional = true }
 tree-sitter-vim        = { workspace = true, optional = true }
+tree-sitter-scss       = { workspace = true, optional = true }
+tree-sitter-less       = { workspace = true, optional = true }
+tree-sitter-embedded-template = { workspace = true, optional = true }
+tree-sitter-language.workspace = true
+
+[build-dependencies]
+cc.workspace = true
 
 [lints]
 workspace = true

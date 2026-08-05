@@ -206,7 +206,7 @@ fn compute(
         highlights: Arc::new(highlights),
         folds: Arc::new(karet_syntax::fold(tree.root())),
         semantic_blocks: Arc::new(blocker.analyze(tree.root(), &request.text)),
-        symbols: Arc::new(outline.analyze(tree.root(), &request.text)),
+        symbols: Arc::new(outline.analyze_layers(tree, &request.text)),
         error_lines: Arc::new(tree.error_lines()),
     })
 }

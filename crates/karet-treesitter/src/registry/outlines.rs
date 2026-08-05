@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use crate::LanguageId;
 
 mod programming;
+mod web;
 
 #[cfg(feature = "lang-bash")]
 const BASH: &str = r#"
@@ -282,6 +283,9 @@ pub(crate) fn outline_query(_lang: LanguageId) -> Option<Cow<'static, str>> {
         return Some(Cow::Borrowed(BATCH));
     }
     if let Some(query) = programming::query(_lang) {
+        return Some(query);
+    }
+    if let Some(query) = web::query(_lang) {
         return Some(query);
     }
     None
