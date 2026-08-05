@@ -568,6 +568,14 @@ static REGISTRY: &[FileType] = &[
         &["CMakeLists.txt"],
         "cmake",
     ),
+    language_wrap(
+        "Markdown",
+        Markup,
+        Some('\u{e73e}'),
+        &[],
+        &["README"],
+        "markdown",
+    ),
     overflow(
         "Git config",
         Config,
@@ -580,7 +588,7 @@ static REGISTRY: &[FileType] = &[
         Document,
         Some('\u{f02d}'),
         &[],
-        &["LICENSE", "LICENCE", "COPYING", "README", "AUTHORS"],
+        &["LICENSE", "LICENCE", "COPYING", "AUTHORS"],
     ),
     overflow("EditorConfig", Config, None, &[], &[".editorconfig"]),
     overflow("Environment", Config, None, &[], &[".env"]),
@@ -744,6 +752,21 @@ mod tests {
             let file_type = file_type_for_path(Path::new(path));
             assert_eq!(file_type.grammar(), Some(expected), "{path}");
             assert_eq!(file_type.config_selector(), Some(expected), "{path}");
+        }
+    }
+
+    #[test]
+    fn extensionless_readme_uses_markdown_without_reclassifying_prose() {
+        let readme = file_type_for_path(Path::new("README"));
+        assert_eq!(readme.name(), "Markdown");
+        assert_eq!(readme.grammar(), Some("markdown"));
+        assert_eq!(readme.wrap_mode(), WrapMode::Wrap);
+
+        for path in ["LICENSE", "COPYING", "AUTHORS", "notes"] {
+            assert_ne!(
+                file_type_for_path(Path::new(path)).grammar(),
+                Some("markdown")
+            );
         }
     }
 

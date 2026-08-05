@@ -189,6 +189,25 @@ mod tests {
         );
     }
 
+    #[cfg(all(
+        feature = "lang-rst",
+        feature = "lang-asciidoc",
+        feature = "lang-latex"
+    ))]
+    #[test]
+    fn document_markup_paths_and_names_resolve_to_distinct_grammars() {
+        for (path, name, alias) in [
+            ("guide.rst", "reStructuredText", "rst"),
+            ("guide.adoc", "AsciiDoc", "asciidoc"),
+            ("paper.tex", "TeX", "latex"),
+        ] {
+            let path_id = language_id_from_path(Path::new(path));
+            assert_eq!(language_name_from_path(Path::new(path)), Some(name));
+            assert!(path_id.is_some(), "{path}");
+            assert_eq!(path_id, language_id_from_injection_name(alias), "{path}");
+        }
+    }
+
     #[test]
     fn extension_is_case_insensitive() {
         assert_eq!(extension(Path::new("X.MD")).as_deref(), Some("md"));

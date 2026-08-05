@@ -105,6 +105,32 @@ const CMAKE: &str = r#"
 (while_loop (while_command (argument_list) @name)) @definition.namespace
 "#;
 
+#[cfg(feature = "lang-rst")]
+const RST: &str = r#"
+(section (title) @name) @definition.heading
+"#;
+
+#[cfg(feature = "lang-asciidoc")]
+const ASCIIDOC: &str = r#"
+(document_title (line) @name) @definition.heading.1
+(section_block (title1 (line) @name)) @definition.heading.2
+(section_block (title2 (line) @name)) @definition.heading.3
+(section_block (title3 (line) @name)) @definition.heading.4
+(section_block (title4 (line) @name)) @definition.heading.5
+(section_block (title5 (line) @name)) @definition.heading.6
+"#;
+
+#[cfg(feature = "lang-latex")]
+const LATEX: &str = r#"
+(part text: (curly_group (text) @name)) @definition.heading.1
+(chapter text: (curly_group (text) @name)) @definition.heading.2
+(section text: (curly_group (text) @name)) @definition.heading.3
+(subsection text: (curly_group (text) @name)) @definition.heading.4
+(subsubsection text: (curly_group (text) @name)) @definition.heading.5
+(paragraph text: (curly_group (text) @name)) @definition.heading.6
+(subparagraph text: (curly_group (text) @name)) @definition.heading.7
+"#;
+
 pub(crate) fn outline_query(_lang: LanguageId) -> Option<Cow<'static, str>> {
     #[cfg(feature = "lang-rust")]
     if _lang == super::RUST {
@@ -201,6 +227,18 @@ pub(crate) fn outline_query(_lang: LanguageId) -> Option<Cow<'static, str>> {
     #[cfg(feature = "lang-cmake")]
     if _lang == super::CMAKE {
         return Some(Cow::Borrowed(CMAKE));
+    }
+    #[cfg(feature = "lang-rst")]
+    if _lang == super::RST {
+        return Some(Cow::Borrowed(RST));
+    }
+    #[cfg(feature = "lang-asciidoc")]
+    if _lang == super::ASCIIDOC {
+        return Some(Cow::Borrowed(ASCIIDOC));
+    }
+    #[cfg(feature = "lang-latex")]
+    if _lang == super::LATEX {
+        return Some(Cow::Borrowed(LATEX));
     }
     None
 }

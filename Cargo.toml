@@ -97,9 +97,9 @@ tempfile = "3.27"                      # atomic crash-safe file saves (karet-tex
 tree-sitter           = "0.26.9"
 tree-sitter-highlight = "0.26.9"
 # Tree-sitter grammars (generated ABI 14–15; tree-sitter 0.26.9 accepts ABI 13–15).
-# Grammar crates depend on `tree-sitter-language` and only dev-depend on
-# `tree-sitter`, so there is no runtime version clash. Third-party grammars are
-# pinned to MIT-licensed releases with generated ABI 14–15.
+# Grammar crates converge on either `tree-sitter-language` or the workspace's
+# compatible `tree-sitter`, so there is no runtime version clash. Third-party
+# grammars are pinned to permissively licensed releases with generated ABI 14–15.
 # Wired into `karet-treesitter` behind `lang-*` features (off by default).
 tree-sitter-rust       = "0.24.2"
 tree-sitter-python     = "0.25.0"
@@ -131,6 +131,8 @@ tree-sitter-proto      = "0.4.0"
 tree-sitter-containerfile = "0.9.2"
 tree-sitter-make       = "1.1.1"
 tree-sitter-cmake      = "0.7.4"
+tree-sitter-rst        = "0.2.0"
+tree-sitter-asciidoc   = "0.9.0"
 # Diff / markdown / image
 imara-diff    = "0.2.0"
 pulldown-cmark = "0.13.4"

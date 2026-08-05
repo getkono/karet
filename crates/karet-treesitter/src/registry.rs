@@ -338,6 +338,10 @@ pub(crate) const CONTAINERFILE: LanguageId = LanguageId(30);
 pub(crate) const MAKE: LanguageId = LanguageId(31);
 #[cfg(feature = "lang-cmake")]
 pub(crate) const CMAKE: LanguageId = LanguageId(32);
+#[cfg(feature = "lang-rst")]
+pub(crate) const RST: LanguageId = LanguageId(33);
+#[cfg(feature = "lang-asciidoc")]
+pub(crate) const ASCIIDOC: LanguageId = LanguageId(34);
 
 #[cfg(feature = "lang-graphql")]
 const GRAPHQL_HIGHLIGHTS: &str = r#"
@@ -383,6 +387,24 @@ const LATEX_HIGHLIGHTS: &str = r#"
 #[cfg(feature = "lang-latex")]
 const LATEX_SEMANTIC: &str = r#"
 [(part) (chapter) (section) (subsection) (subsubsection)] @semantic.scope
+"#;
+
+#[cfg(feature = "lang-rst")]
+const RST_HIGHLIGHTS: &str = r#"
+(title) @markup.heading
+[(emphasis) (strong)] @markup.strong
+[(literal) (literal_block)] @markup.raw
+[(link) (standalone_hyperlink)] @markup.link
+(comment) @comment
+"#;
+
+#[cfg(feature = "lang-asciidoc")]
+const ASCIIDOC_HIGHLIGHTS: &str = r#"
+[(document_title) (title1) (title2) (title3) (title4) (title5)] @markup.heading
+[(line_comment) (block_comment)] @comment
+(email) @markup.link.url
+(block_macro (target) @markup.link)
+[(listing_block) (literal_block) (ident_block)] @markup.raw.block
 "#;
 
 // tree-sitter-vue-next 0.1 publishes its queries under `queries/vue/`, while
@@ -796,6 +818,28 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             names: &["cmake"],
             language: || tree_sitter_cmake::LANGUAGE.into(),
             highlights: tree_sitter_cmake::HIGHLIGHTS_QUERY,
+            injections: None,
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-rst")]
+        v.push(GrammarInfo {
+            id: RST,
+            name: "reStructuredText",
+            extensions: &["rst"],
+            names: &["restructuredtext", "rst"],
+            language: || tree_sitter_rst::LANGUAGE.into(),
+            highlights: RST_HIGHLIGHTS,
+            injections: None,
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-asciidoc")]
+        v.push(GrammarInfo {
+            id: ASCIIDOC,
+            name: "AsciiDoc",
+            extensions: &["adoc", "asciidoc"],
+            names: &["asciidoc", "adoc"],
+            language: tree_sitter_asciidoc::language,
+            highlights: ASCIIDOC_HIGHLIGHTS,
             injections: None,
             injections_extra: None,
         });
