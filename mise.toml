@@ -69,3 +69,7 @@ run = [
 [tasks.install]
 description = "Install `karet` binary to user path."
 run = "cargo install --path crates/karet"
+
+[tasks.svg]
+description = "Regenerate the deterministic README hero SVG"
+run = "bash scripts/gen-svg.sh"

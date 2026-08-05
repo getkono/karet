@@ -1,5 +1,7 @@
 //! Cross-platform development tasks for the karet workspace.
 
+mod readme_svg;
+
 use std::env;
 use std::io;
 use std::process::Command;
@@ -36,6 +38,25 @@ struct TokeiOutput {
 struct Offender {
     name: String,
     code: usize,
+}
+
+fn generate_readme_svg() -> ExitCode {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("assets/karet.svg");
+    if let Some(parent) = path.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("error: failed to create {}: {error}", parent.display());
+        return ExitCode::from(2);
+    }
+    if let Err(error) = std::fs::write(&path, readme_svg::HERO) {
+        eprintln!("error: failed to write {}: {error}", path.display());
+        return ExitCode::from(2);
+    }
+    println!("Wrote {}", path.display());
+    ExitCode::SUCCESS
 }
 
 fn rust_file_offenders(reports: &[RustReport], limit: usize) -> Vec<Offender> {
@@ -104,8 +125,9 @@ fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
     match (args.next().as_deref(), args.next()) {
         (Some(command), None) if command == "file-lines" => check_rust_file_lines(),
+        (Some(command), None) if command == "readme-svg" => generate_readme_svg(),
         _ => {
-            eprintln!("usage: cargo run --package xtask -- file-lines");
+            eprintln!("usage: cargo run --package xtask -- <file-lines|readme-svg>");
             ExitCode::from(2)
         },
     }

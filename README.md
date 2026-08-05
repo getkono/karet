@@ -1,5 +1,9 @@
 # karet
 
+<p align="center">
+  <img src="assets/karet.svg" alt="Karet showing a side-by-side Rust diff" width="100%">
+</p>
+
 `karet` is a TUI for high-velocity, terminal-centric coding, focused on review
 and visualization tools. It is an application that should feel more like a GUI in
 the terminal: spatial, keyboard-first, and composed from reusable Rust libraries.
@@ -111,6 +115,7 @@ the log files that currently exist.
 | `mise run lint-fix` | Lint and auto-fix    |
 | `mise run coverage` | Report coverage      |
 | `mise run verify`   | Run the CI/pre-push quality gate |
+| `mise run svg`      | Regenerate the README hero SVG   |
 
 Tests live in-file (`#[cfg(test)] mod tests`); test every new public item. Headless
 engines carry the bulk of the coverage, widget crates render-test into a ratatui
