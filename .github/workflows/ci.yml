@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [master]
+  # Stacked pull requests target another feature branch until their parent merges.
+  # Run the same checks for those bases instead of waiting for a retarget to master.
   pull_request:
-    branches: [master]
 
 env:
   CARGO_TERM_COLOR: always
@@ -33,6 +34,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Install mise as the shared task runner, but keep tool provisioning in the
+      # explicit steps below so CI does not install hook-only development tools.
+      - uses: jdx/mise-action@v3
+        with:
+          version: 2026.7.4
+          install: false
       # Both toolchains are pinned in-repo, so CI and local dev compile with the
       # exact same rustc. Formatting runs on the nightly pinned in rust-nightly.txt
       # (rustfmt.toml uses unstable import options for merge resilience); build,
@@ -47,42 +54,9 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: tokei@12.1.2
-      - name: Rust file size
-        run: cargo run --quiet --package xtask -- file-lines
-      - name: Format check
-        run: cargo "+$(cat rust-nightly.txt)" fmt --all -- --check
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - name: Test
-        run: cargo test --workspace --all-features
-      # Guard the lean build (issue #23): the app and karet-fileview must keep
-      # compiling with the optional media/document dependencies (`hayro`, `image`,
-      # `zip`/`quick-xml`) removed, and each single feature must build on its own.
-      # `--all-features` (above) covers the everything-on side.
-      - name: Lean build (no heavy media deps)
-        run: |
-          cargo build -p karet --no-default-features
-          cargo build -p karet --no-default-features --features pdf
-          cargo build -p karet --no-default-features --features images
-          cargo build -p karet --no-default-features --features docx
-          cargo build -p karet-fileview --no-default-features
-          cargo build -p karet-fileview --no-default-features --features pdf
-          cargo build -p karet-fileview --no-default-features --features docx
-
-  coverage:
-    name: Coverage
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      # Pinned stable + llvm-tools-preview, both from rust-toolchain.toml.
-      - name: Install pinned toolchain
-        run: rustup toolchain install --profile minimal
-      - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - name: Generate coverage report
-        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
-      - name: Coverage summary
-        run: cargo llvm-cov report --summary-only
+      - name: Verify workspace
+        run: mise run verify
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:

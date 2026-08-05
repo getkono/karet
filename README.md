@@ -110,6 +110,7 @@ the log files that currently exist.
 | `mise run lint`     | Lint (deny warnings) |
 | `mise run lint-fix` | Lint and auto-fix    |
 | `mise run coverage` | Report coverage      |
+| `mise run verify`   | Run the CI/pre-push quality gate |
 
 Tests live in-file (`#[cfg(test)] mod tests`); test every new public item. Headless
 engines carry the bulk of the coverage, widget crates render-test into a ratatui
@@ -127,15 +128,17 @@ engines carry the bulk of the coverage, widget crates render-test into a ratatui
 ## Git Hooks
 
 This project uses [hk](https://hk.jdx.dev). The pre-commit hook auto-fixes formatting
-and lint on staged Rust files; the pre-push hook runs format checks, Clippy, the test
-suite, and a coverage report. The commit-msg hook validates the message against
+and lint on staged Rust files; the pre-push hook runs `mise run verify`, the same
+file-size, format, lint, test, lean-build, and coverage gate as CI. The commit-msg
+hook validates the message against
 [Conventional Commits](https://www.conventionalcommits.org) with
 [convco](https://convco.github.io) — merge/revert-in-progress commits are exempt.
 
 ## CI/CD
 
-GitHub Actions runs format checks, Clippy, and tests on pushes to `master` and pull
-requests, plus a coverage job that uploads an `lcov.info` artifact.
+GitHub Actions runs `mise run verify` on pushes to `master` and on pull requests,
+including stacked pull requests whose base is another feature branch. The job uploads
+the generated `lcov.info` coverage artifact.
 
 ## Code Coverage
 

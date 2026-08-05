@@ -49,8 +49,22 @@ run = [
 ]
 
 [tasks.coverage]
-description = "Report line coverage with cargo-llvm-cov"
-run = "cargo llvm-cov --workspace --all-features"
+description = "Generate the CI coverage artifact and print its summary"
+run = [
+  "cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info",
+  "cargo llvm-cov report --summary-only",
+]
+
+[tasks.verify]
+description = "Run the exact quality gate shared by pre-push and CI"
+run = [
+  "mise run file-lines",
+  "mise run format-check",
+  "mise run lint",
+  "mise run test",
+  "mise run build-lean",
+  "mise run coverage",
+]
 
 [tasks.install]
 description = "Install `karet` binary to user path."
