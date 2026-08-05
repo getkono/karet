@@ -451,9 +451,11 @@ pub(super) fn commit_list_items(
 /// path (and the old path for renames), and the `+a −b` stats; each diff line prefixed
 /// with a left rail; then a bottom rule. `width` sizes the rules (a small floor keeps a
 /// narrow pane from producing a degenerate box).
+pub(super) const FILE_CARD_MIN_WIDTH: u16 = 13;
+
 pub(super) fn file_card(theme: &Theme, file: &render::FileView, width: u16) -> Vec<Line<'static>> {
-    let mut out = vec![file_card_header(theme, file, width)];
-    if width < 11 {
+    let mut out = vec![file_card_header(theme, file, width, false)];
+    if width < FILE_CARD_MIN_WIDTH {
         return out;
     }
     // Body: each diff line behind a left rail.
@@ -466,6 +468,7 @@ pub(super) fn file_card_header(
     theme: &Theme,
     file: &render::FileView,
     width: u16,
+    collapsed: bool,
 ) -> Line<'static> {
     let border = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
     let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
@@ -473,6 +476,10 @@ pub(super) fn file_card_header(
     let rem_fg = Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui());
     let (glyph, role) = status_glyph(file.change.status);
     let glyph_style = Style::default().fg(theme.role(role).to_ratatui());
+    let toggle_style = Style::default()
+        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+        .add_modifier(Modifier::BOLD);
+    let toggle = if collapsed { "\u{25b8}" } else { "\u{25be}" };
     let (a, r) = file.line_stats();
 
     let w = usize::from(width);
@@ -482,11 +489,24 @@ pub(super) fn file_card_header(
     }
     let stats = format!("+{a} \u{2212}{r}");
 
-    if w < 11 {
-        return Line::styled(truncate_start(&path, w), fg.add_modifier(Modifier::BOLD));
+    if w < usize::from(FILE_CARD_MIN_WIDTH) {
+        let mut spans = Vec::new();
+        if w > 0 {
+            spans.push(Span::styled(toggle, toggle_style));
+        }
+        if w > 1 {
+            spans.push(Span::raw(" "));
+        }
+        if w > 2 {
+            spans.push(Span::styled(
+                truncate_start(&path, w - 2),
+                fg.add_modifier(Modifier::BOLD),
+            ));
+        }
+        return Line::from(spans);
     }
 
-    let prefix_width = 5usize; // "╭─ {g} "
+    let prefix_width = 7usize; // "╭─ {toggle} {g} "
     let stats_suffix = format!(" {stats} ─╮");
     let plain_suffix = " ─╮";
     let show_stats = prefix_width + 4 + 2 + UnicodeWidthStr::width(stats_suffix.as_str()) <= w;
@@ -505,6 +525,7 @@ pub(super) fn file_card_header(
 
     let mut top: Vec<Span<'static>> = vec![
         Span::styled("\u{256d}\u{2500} ", border),
+        Span::styled(format!("{toggle} "), toggle_style),
         Span::styled(format!("{glyph} "), glyph_style),
         Span::styled(path, fg.add_modifier(Modifier::BOLD)),
         Span::styled(format!(" {}", "\u{2500}".repeat(dashes)), border),

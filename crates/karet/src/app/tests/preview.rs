@@ -10,6 +10,7 @@
             breadcrumb_hits: Vec::new(),
             content_rect: rect,
             commit_file_hits: Vec::new(),
+            commit_collapse_hits: Vec::new(),
         }
     }
 

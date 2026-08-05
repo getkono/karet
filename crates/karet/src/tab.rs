@@ -121,8 +121,8 @@ pub(crate) struct CommitViewState {
     pub(crate) layout: Option<CommitLayoutMode>,
     /// Per-file card-header offsets from the previous frame.
     pub(crate) file_anchors: Vec<u16>,
-    /// First file shown in the wide layout's pinned rail.
-    pub(crate) rail_offset: usize,
+    /// File cards whose diff bodies are hidden in this view.
+    pub(crate) collapsed_files: BTreeSet<usize>,
 }
 
 /// A clickable operation in the language-server manager's action strip.

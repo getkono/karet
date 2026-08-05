@@ -500,7 +500,10 @@ fn narrow_file_card_headers_never_exceed_the_pane() {
             .next()
             .expect("a card header");
         let text: String = top.spans.iter().map(|span| span.content.as_ref()).collect();
-        assert!(UnicodeWidthStr::width(text.as_str()) <= usize::from(width));
+        assert!(
+            UnicodeWidthStr::width(text.as_str()) <= usize::from(width),
+            "header {text:?} exceeds width {width}"
+        );
     }
     assert_eq!(
         truncate_start("a/\u{65e5}\u{672c}\u{8a9e}/file.rs", 8),

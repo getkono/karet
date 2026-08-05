@@ -454,6 +454,15 @@ pub(crate) struct CommitFileHit {
     pub(crate) scroll: u16,
 }
 
+/// A clickable disclosure control in a commit or compare file-card header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CommitCollapseHit {
+    /// The rendered disclosure cell in screen coordinates.
+    pub(crate) rect: Rect,
+    /// The changed file's index in the tab.
+    pub(crate) file: usize,
+}
+
 /// A visible link run in the focused Markdown preview's last rendered frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MarkdownLinkHit {
@@ -498,6 +507,8 @@ pub(crate) struct PaneFrame {
     pub(crate) content_rect: Rect,
     /// Changed-file rows clickable within the pane's commit-like view.
     pub(crate) commit_file_hits: Vec<CommitFileHit>,
+    /// File-card disclosure controls clickable within the pane's commit-like view.
+    pub(crate) commit_collapse_hits: Vec<CommitCollapseHit>,
 }
 
 /// An in-progress tab drag: the pane it started from and the current drop target

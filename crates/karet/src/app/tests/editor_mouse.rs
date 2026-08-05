@@ -488,6 +488,7 @@
             breadcrumb_hits: Vec::new(),
             content_rect: Rect::default(),
             commit_file_hits: Vec::new(),
+            commit_collapse_hits: Vec::new(),
         }];
         app.active = 0;
         app.tab_drag = Some(TabDrag {
@@ -517,6 +518,7 @@
             breadcrumb_hits: Vec::new(),
             content_rect: Rect::default(),
             commit_file_hits: Vec::new(),
+            commit_collapse_hits: Vec::new(),
         }];
 
         app.handle_mouse(MouseEvent {

@@ -1,4 +1,7 @@
+use std::collections::BTreeSet;
+
 use super::*;
+use crate::app::CommitCollapseHit;
 use crate::app::CommitFileHit;
 use crate::tab::CommitLayoutMode;
 use crate::tab::CommitViewState;
@@ -13,6 +16,8 @@ pub(in crate::ui) struct CommitPaint {
     pub(in crate::ui) badge_rect: Option<Rect>,
     /// Visible file-index rows and their jump destinations.
     pub(in crate::ui) file_hits: Vec<CommitFileHit>,
+    /// Visible file-card disclosure controls.
+    pub(in crate::ui) collapse_hits: Vec<CommitCollapseHit>,
 }
 
 #[allow(clippy::too_many_arguments)] // metadata, progressive file state, and view state are independent
@@ -96,6 +101,7 @@ fn build_files(
     width: u16,
     stacked: bool,
     file_status: CommitFileStatus<'_>,
+    collapsed_files: &BTreeSet<usize>,
 ) -> FileDocument {
     let muted = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
     let label = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
@@ -139,10 +145,10 @@ fn build_files(
         return doc;
     }
     let mut rows = doc.prefix.len();
-    for file in files {
+    for (index, file) in files.iter().enumerate() {
         rows = rows.saturating_add(1);
         doc.anchors.push(u16::try_from(rows).unwrap_or(u16::MAX));
-        let card_rows = if width < 11 {
+        let card_rows = if width < FILE_CARD_MIN_WIDTH || collapsed_files.contains(&index) {
             1
         } else {
             render::unified_line_count(file, theme).saturating_add(2)
@@ -160,6 +166,7 @@ fn visible_file_lines(
     doc: &FileDocument,
     start: u16,
     height: u16,
+    collapsed_files: &BTreeSet<usize>,
 ) -> Vec<Line<'static>> {
     let start = usize::from(start);
     let end = start.saturating_add(usize::from(height));
@@ -169,7 +176,7 @@ fn visible_file_lines(
         lines.extend(doc.prefix[start..prefix_end].iter().cloned());
     }
     let mut row = doc.prefix.len();
-    for file in files.iter().take(doc.anchors.len()) {
+    for (index, file) in files.iter().take(doc.anchors.len()).enumerate() {
         if row >= end {
             break;
         }
@@ -177,19 +184,24 @@ fn visible_file_lines(
             lines.push(Line::raw(""));
         }
         row = row.saturating_add(1);
-        let body_rows = if width < 11 {
+        let collapsed = collapsed_files.contains(&index);
+        let body_rows = if width < FILE_CARD_MIN_WIDTH || collapsed {
             0
         } else {
             render::unified_line_count(file, theme)
         };
-        let card_rows = body_rows.saturating_add(if width < 11 { 1 } else { 2 });
+        let card_rows = if width < FILE_CARD_MIN_WIDTH || collapsed {
+            1
+        } else {
+            body_rows.saturating_add(2)
+        };
         let card_end = row.saturating_add(card_rows);
         if row < end && card_end > start {
             let local_start = start.saturating_sub(row);
             let local_end = end.min(card_end).saturating_sub(row);
             for local in local_start..local_end {
                 if local == 0 {
-                    lines.push(file_card_header(theme, file, width));
+                    lines.push(file_card_header(theme, file, width, collapsed));
                 } else if local <= body_rows {
                     lines.extend(file_card_body(theme, file, local - 1, 1, width));
                 } else {
@@ -214,7 +226,14 @@ fn draw_stacked(
     view: &mut CommitViewState,
 ) -> CommitPaint {
     let header_len = u16::try_from(header.len()).unwrap_or(u16::MAX);
-    let file_doc = build_files(theme, files, area.width, true, file_status);
+    let file_doc = build_files(
+        theme,
+        files,
+        area.width,
+        true,
+        file_status,
+        &view.collapsed_files,
+    );
     let file_start = header_len;
     let anchors = offset_rows(&file_doc.anchors, file_start);
     remap_layout(view, CommitLayoutMode::Stacked, &anchors, header_len);
@@ -237,7 +256,12 @@ fn draw_stacked(
     let body = if let Some(file) = sticky {
         let top = Rect { height: 1, ..area };
         f.render_widget(
-            Paragraph::new(file_card_header(theme, &files[file], area.width)),
+            Paragraph::new(file_card_header(
+                theme,
+                &files[file],
+                area.width,
+                view.collapsed_files.contains(&file),
+            )),
             top,
         );
         Rect {
@@ -266,6 +290,7 @@ fn draw_stacked(
             &file_doc,
             files_scroll,
             remaining,
+            &view.collapsed_files,
         ));
     }
     f.render_widget(Paragraph::new(visible), body);
@@ -288,12 +313,17 @@ fn draw_stacked(
             })
         })
         .collect();
+    let mut collapse_hits = visible_collapse_hits(area, &anchors, view.scroll, row_shift);
+    if let Some(hit) = sticky.and_then(|file| collapse_hit(area, file, area.y)) {
+        collapse_hits.push(hit);
+    }
     let badge_rect = visible_badge(area, badge, view.scroll, 0);
     view.file_anchors = anchors;
     view.layout = Some(CommitLayoutMode::Stacked);
     CommitPaint {
         badge_rect,
         file_hits,
+        collapse_hits,
     }
 }
 
@@ -311,11 +341,25 @@ fn draw_wide(
     let header_len = u16::try_from(header.len()).unwrap_or(u16::MAX);
     let rail_width = ((u32::from(area.width) * 30) / 100).clamp(31, 40) as u16;
     let diff_width = area.width.saturating_sub(rail_width.saturating_add(1));
-    let file_doc = build_files(theme, files, diff_width, false, file_status);
+    let file_doc = build_files(
+        theme,
+        files,
+        diff_width,
+        false,
+        file_status,
+        &view.collapsed_files,
+    );
     let anchors = offset_rows(&file_doc.anchors, header_len);
     remap_layout(view, CommitLayoutMode::Wide, &anchors, header_len);
     let total = header_len.saturating_add(file_doc.rows);
-    view.scroll = view.scroll.min(total.saturating_sub(area.height));
+    let normal_max = total.saturating_sub(area.height.max(1));
+    let sticky_max = total.saturating_sub(area.height.saturating_sub(1).max(1));
+    view.scroll = view.scroll.min(sticky_max);
+    let mut sticky = active_file(&anchors, view.scroll).filter(|i| view.scroll > anchors[*i]);
+    if sticky.is_none() || area.height <= 1 {
+        sticky = None;
+        view.scroll = view.scroll.min(normal_max);
+    }
 
     let header_visible = header_len.saturating_sub(view.scroll).min(area.height);
     if header_visible > 0 {
@@ -336,6 +380,28 @@ fn draw_wide(
         Constraint::Min(0),
     ])
     .split(lower);
+    let diff_body = if let Some(file) = sticky {
+        let top = Rect {
+            height: 1,
+            ..cols[2]
+        };
+        f.render_widget(
+            Paragraph::new(file_card_header(
+                theme,
+                &files[file],
+                diff_width,
+                view.collapsed_files.contains(&file),
+            )),
+            top,
+        );
+        Rect {
+            y: cols[2].y.saturating_add(1),
+            height: cols[2].height.saturating_sub(1),
+            ..cols[2]
+        }
+    } else {
+        cols[2]
+    };
     if lower.height > 0 {
         let local_scroll = view.scroll.saturating_sub(header_len);
         f.render_widget(
@@ -345,11 +411,19 @@ fn draw_wide(
                 diff_width,
                 &file_doc,
                 local_scroll,
-                lower.height,
+                diff_body.height,
+                &view.collapsed_files,
             )),
-            cols[2],
+            diff_body,
         );
         f.render_widget(Block::new().borders(Borders::LEFT), cols[1]);
+    }
+
+    let row_shift = u16::from(sticky.is_some());
+    let mut collapse_hits =
+        visible_collapse_hits(cols[2], &anchors, view.scroll.max(header_len), row_shift);
+    if let Some(hit) = sticky.and_then(|file| collapse_hit(cols[2], file, cols[2].y)) {
+        collapse_hits.push(hit);
     }
 
     let active = active_file(&anchors, view.scroll)
@@ -363,17 +437,12 @@ fn draw_wide(
         };
         f.render_widget(Paragraph::new(file_summary_line(theme, files)), summary);
         let list_height = lower.height.saturating_sub(1) as usize;
-        keep_rail_visible(&mut view.rail_offset, active, files.len(), list_height);
-        for (row, file) in files
-            .iter()
-            .enumerate()
-            .skip(view.rail_offset)
-            .take(list_height)
-        {
+        let rail_offset = rail_offset(active, files.len(), list_height);
+        for (row, file) in files.iter().enumerate().skip(rail_offset).take(list_height) {
             let y = lower
                 .y
                 .saturating_add(1)
-                .saturating_add(u16::try_from(row - view.rail_offset).unwrap_or(u16::MAX));
+                .saturating_add(u16::try_from(row - rail_offset).unwrap_or(u16::MAX));
             let rect = Rect {
                 y,
                 height: 1,
@@ -398,6 +467,7 @@ fn draw_wide(
     CommitPaint {
         badge_rect,
         file_hits,
+        collapse_hits,
     }
 }
 
@@ -431,17 +501,43 @@ fn offset_rows(rows: &[u16], offset: u16) -> Vec<u16> {
     rows.iter().map(|row| row.saturating_add(offset)).collect()
 }
 
-fn keep_rail_visible(offset: &mut usize, active: usize, len: usize, height: usize) {
+fn collapse_hit(area: Rect, file: usize, y: u16) -> Option<CommitCollapseHit> {
+    let column = if area.width < FILE_CARD_MIN_WIDTH {
+        0
+    } else {
+        3
+    };
+    (column < area.width).then_some(CommitCollapseHit {
+        rect: Rect::new(area.x.saturating_add(column), y, 1, 1),
+        file,
+    })
+}
+
+fn visible_collapse_hits(
+    area: Rect,
+    anchors: &[u16],
+    scroll: u16,
+    row_shift: u16,
+) -> Vec<CommitCollapseHit> {
+    anchors
+        .iter()
+        .enumerate()
+        .filter_map(|(file, anchor)| {
+            let screen = anchor.checked_sub(scroll)?.saturating_add(row_shift);
+            (screen < area.height)
+                .then(|| collapse_hit(area, file, area.y.saturating_add(screen)))
+                .flatten()
+        })
+        .collect()
+}
+
+fn rail_offset(active: usize, len: usize, height: usize) -> usize {
     if height == 0 || len == 0 {
-        *offset = 0;
-        return;
+        return 0;
     }
-    if active < *offset {
-        *offset = active;
-    } else if active >= offset.saturating_add(height) {
-        *offset = active + 1 - height;
-    }
-    *offset = (*offset).min(len.saturating_sub(height));
+    active
+        .saturating_sub(height.saturating_sub(1))
+        .min(len.saturating_sub(height))
 }
 
 fn visible_badge(area: Rect, badge: Option<BadgeHit>, scroll: u16, shift: u16) -> Option<Rect> {
@@ -592,7 +688,15 @@ mod tests {
             file("src/b.rs", "old\n", "new\nmore\n"),
         ];
         let width = 72;
-        let doc = build_files(&theme, &files, width, true, CommitFileStatus::Ready);
+        let collapsed = BTreeSet::new();
+        let doc = build_files(
+            &theme,
+            &files,
+            width,
+            true,
+            CommitFileStatus::Ready,
+            &collapsed,
+        );
         let mut complete = doc.prefix.clone();
         for file in &files {
             complete.push(Line::raw(""));
@@ -607,6 +711,7 @@ mod tests {
                 &doc,
                 u16::try_from(start).unwrap_or(u16::MAX),
                 4,
+                &collapsed,
             );
             let expected = complete
                 .iter()
@@ -616,5 +721,41 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected, "window starting at row {start}");
         }
+    }
+
+    #[test]
+    fn collapsed_file_document_keeps_only_its_disclosure_header() {
+        let theme = Theme::dark();
+        let files = vec![file("src/a.rs", "one\ntwo\n", "one\nchanged\n")];
+        let width = 72;
+        let expanded = build_files(
+            &theme,
+            &files,
+            width,
+            true,
+            CommitFileStatus::Ready,
+            &BTreeSet::new(),
+        );
+        let collapsed_files = BTreeSet::from([0]);
+        let collapsed = build_files(
+            &theme,
+            &files,
+            width,
+            true,
+            CommitFileStatus::Ready,
+            &collapsed_files,
+        );
+        assert!(collapsed.rows < expanded.rows);
+        let lines = visible_file_lines(
+            &theme,
+            &files,
+            width,
+            &collapsed,
+            collapsed.anchors[0],
+            2,
+            &collapsed_files,
+        );
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].to_string().contains("\u{25b8}"));
     }
 }

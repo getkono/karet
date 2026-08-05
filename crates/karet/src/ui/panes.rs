@@ -114,6 +114,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
             breadcrumb_hits: rendered.breadcrumb_hits,
             content_rect: rendered.content_rect,
             commit_file_hits: rendered.commit_file_hits,
+            commit_collapse_hits: rendered.commit_collapse_hits,
         });
     }
     app.pane_dividers = app.layout.dividers(area);
@@ -216,6 +217,7 @@ pub(super) fn render_pane(
         image_area: painted.image_area,
         commit_badge_rect: painted.badge_rect,
         commit_file_hits: painted.file_hits,
+        commit_collapse_hits: painted.collapse_hits,
         blame_rect: painted.blame_rect,
         markdown_link_hits: painted.markdown_link_hits,
     }
