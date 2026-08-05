@@ -56,6 +56,7 @@ impl OutlineExtractor {
             let mut name = None;
             let mut kind = SymbolKind::Variable;
             let mut heading_level = None;
+            let mut subroutine_name = false;
             for capture in matched.captures {
                 let Some(capture_name) = capture_names.get(capture.capture as usize) else {
                     continue;
@@ -65,6 +66,7 @@ impl OutlineExtractor {
                 } else if let Some(suffix) = capture_name.strip_prefix("definition.") {
                     definition = Some(capture.span);
                     kind = symbol_kind(suffix);
+                    subroutine_name = suffix == "subroutine";
                     heading_level = suffix
                         .strip_prefix("heading.")
                         .and_then(|level| level.parse().ok());
@@ -76,7 +78,11 @@ impl OutlineExtractor {
             let Some(raw_name) = text.get(name_span.start.0..name_span.end.0) else {
                 continue;
             };
-            let name = clean_name(raw_name);
+            let name = if subroutine_name {
+                clean_subroutine_name(raw_name)
+            } else {
+                clean_name(raw_name)
+            };
             if name.is_empty() {
                 continue;
             }
@@ -217,11 +223,20 @@ fn clean_name(raw: &str) -> String {
         .to_owned()
 }
 
+fn clean_subroutine_name(raw: &str) -> String {
+    raw.trim()
+        .trim_start_matches(':')
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
 fn symbol_kind(name: &str) -> SymbolKind {
     match name {
         "class" => SymbolKind::Class,
         "method" => SymbolKind::Method,
-        "function" | "macro" => SymbolKind::Function,
+        "function" | "macro" | "subroutine" => SymbolKind::Function,
         "interface" => SymbolKind::Interface,
         "module" | "namespace" => SymbolKind::Module,
         "constant" => SymbolKind::Constant,
@@ -452,6 +467,10 @@ mod tests {
             "guide.rst",
             "guide.adoc",
             "paper.tex",
+            "script.zsh",
+            "script.fish",
+            "profile.ps1",
+            "build.cmd",
         ] {
             assert!(symbols(path, "")?.is_empty(), "{path}");
         }
@@ -594,6 +613,48 @@ mod tests {
             part.children[0].children[0].container_name.as_deref(),
             Some("Setup")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn shell_languages_expose_named_declarations_without_control_flow() -> TestResult {
+        let zsh = symbols(
+            "script.zsh",
+            "# Café\nouter() {\n  echo ok\n}\ninner() {\n  echo ok\n}\nif true; then echo no; fi\n???\n",
+        )?;
+        let outer = zsh.first().ok_or("Zsh function")?;
+        assert_eq!(outer.name, "outer");
+        assert_eq!(names(&zsh), vec!["outer", "inner"]);
+
+        let fish = symbols(
+            "script.fish",
+            "function café\n  function inner\n    echo ok\n  end\nend\nif true\nend\n???\n",
+        )?;
+        let outer = fish.first().ok_or("Fish function")?;
+        assert_eq!(outer.name, "café");
+        assert_eq!(names(&outer.children), vec!["inner"]);
+
+        let powershell = symbols(
+            "profile.ps1",
+            "# Café\nclass Cafe { [string] Brew() { return 'ok' } }\nfunction Serve { function Inner { } }\nfilter Clean { }\nenum Roast { Light; Dark }\nif ($true) { }\n???\n",
+        )?;
+        let class = powershell.first().ok_or("PowerShell class")?;
+        assert_eq!(class.name, "Cafe");
+        assert_eq!(names(&class.children), vec!["Brew"]);
+        let serve = powershell
+            .iter()
+            .find(|symbol| symbol.name == "Serve")
+            .ok_or("PowerShell function")?;
+        assert_eq!(names(&serve.children), vec!["Inner"]);
+        assert!(names(&powershell).contains(&"Clean"));
+        assert!(names(&powershell).contains(&"Roast"));
+
+        let batch = symbols(
+            "build.cmd",
+            "@echo off\n:build café target\necho ok\ngoto :eof\n:package\necho done\n???\n",
+        )?;
+        assert_eq!(names(&batch), vec!["build", "package"]);
+        assert_eq!(batch[0].selection_range.start, LineCol::new(1, 0));
         Ok(())
     }
 }

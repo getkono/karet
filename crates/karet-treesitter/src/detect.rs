@@ -208,6 +208,30 @@ mod tests {
         }
     }
 
+    #[cfg(all(
+        feature = "lang-zsh",
+        feature = "lang-fish",
+        feature = "lang-powershell",
+        feature = "lang-batch"
+    ))]
+    #[test]
+    fn shell_language_paths_and_names_resolve_to_distinct_grammars() {
+        for (path, name, alias) in [
+            ("script.zsh", "Zsh", "zsh"),
+            ("script.fish", "Fish", "fish"),
+            ("profile.ps1", "PowerShell", "pwsh"),
+            ("module.psm1", "PowerShell", "powershell"),
+            ("build.cmd", "Batch", "cmd"),
+            ("build.bat", "Batch", "batch"),
+        ] {
+            let path_id = language_id_from_path(Path::new(path));
+            assert_eq!(language_name_from_path(Path::new(path)), Some(name));
+            assert!(path_id.is_some(), "{path}");
+            assert_eq!(path_id, language_id_from_injection_name(alias), "{path}");
+        }
+        assert_eq!(language_id_from_path(Path::new("script.ksh")), None);
+    }
+
     #[test]
     fn extension_is_case_insensitive() {
         assert_eq!(extension(Path::new("X.MD")).as_deref(), Some("md"));

@@ -399,7 +399,9 @@ static REGISTRY: &[FileType] = &[
     ),
     language_named("Zsh", Shell, Some('\u{f489}'), &["zsh"], &[], "zsh"),
     language_named("Fish", Shell, Some('\u{f489}'), &["fish"], &[], "fish"),
-    language_named("Ksh", Shell, Some('\u{f489}'), &["ksh"], &[], "ksh"),
+    // Ksh remains a labelled text format, but has no maintained, compatible
+    // grammar. Do not claim a Bash-compatible parser or protocol identity.
+    overflow("Ksh", Shell, Some('\u{f489}'), &["ksh"], &[]),
     language_named(
         "PowerShell",
         Shell,
@@ -746,13 +748,21 @@ mod tests {
             ("data.json5", "json5"),
             ("shell.zsh", "zsh"),
             ("shell.fish", "fish"),
-            ("shell.ksh", "ksh"),
             ("data.edn", "edn"),
         ] {
             let file_type = file_type_for_path(Path::new(path));
             assert_eq!(file_type.grammar(), Some(expected), "{path}");
             assert_eq!(file_type.config_selector(), Some(expected), "{path}");
         }
+    }
+
+    #[test]
+    fn unsupported_ksh_is_labelled_without_claiming_a_parser() {
+        let ksh = file_type_for_path(Path::new("script.ksh"));
+        assert_eq!(ksh.name(), "Ksh");
+        assert_eq!(ksh.grammar(), None);
+        assert_eq!(ksh.lsp_language_id(), None);
+        assert_eq!(ksh.config_selector(), None);
     }
 
     #[test]

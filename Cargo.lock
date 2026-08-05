@@ -3292,12 +3292,14 @@ dependencies = [
  "tree-sitter-asciidoc",
  "tree-sitter-astro-next",
  "tree-sitter-bash",
+ "tree-sitter-batch",
  "tree-sitter-c",
  "tree-sitter-c-sharp",
  "tree-sitter-cmake",
  "tree-sitter-containerfile",
  "tree-sitter-cpp",
  "tree-sitter-css",
+ "tree-sitter-fish",
  "tree-sitter-go",
  "tree-sitter-graphql",
  "tree-sitter-html",
@@ -3307,6 +3309,7 @@ dependencies = [
  "tree-sitter-make",
  "tree-sitter-md",
  "tree-sitter-php",
+ "tree-sitter-powershell",
  "tree-sitter-proto",
  "tree-sitter-python",
  "tree-sitter-rst",
@@ -3320,6 +3323,7 @@ dependencies = [
  "tree-sitter-xml",
  "tree-sitter-yaml",
  "tree-sitter-zig",
+ "tree-sitter-zsh",
 ]
 
 [[package]]
@@ -5857,6 +5861,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-batch"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46fea9ee100103c3d5fc3c8243da6e8f95163657486040503b8514c9952b79da"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-c"
 version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5914,6 +5928,16 @@ checksum = "a5cbc5e18f29a2c6d6435891f42569525cf95435a3e01c2f1947abcde178686f"
 dependencies = [
  "cc",
  "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-fish"
+version = "3.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "014e3b299f251e9c2e372e3b5e1b0323ef21196e9aa2e90a5bc1f6130cbe8b18"
+dependencies = [
+ "cc",
+ "tree-sitter",
 ]
 
 [[package]]
@@ -6007,6 +6031,16 @@ name = "tree-sitter-php"
 version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d8c17c3ab69052c5eeaa7ff5cd972dd1bc25d1b97ee779fec391ad3b5df5592"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-powershell"
+version = "0.26.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3faf304d44b9ddd4a7d97804bb8de7daf564336dd5a526dc6de5b39238243022"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -6137,6 +6171,16 @@ name = "tree-sitter-zig"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab11fc124851b0db4dd5e55983bbd9631192e93238389dcd44521715e5d53e28"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-zsh"
+version = "0.63.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "907f7ea76070507d7a6b054b38f1475caa7db085437911352ca0f361f08f142e"
 dependencies = [
  "cc",
  "tree-sitter-language",

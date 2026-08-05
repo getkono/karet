@@ -131,6 +131,29 @@ const LATEX: &str = r#"
 (subparagraph text: (curly_group (text) @name)) @definition.heading.7
 "#;
 
+#[cfg(feature = "lang-zsh")]
+const ZSH: &str = r#"
+(function_definition name: (word) @name) @definition.function
+"#;
+
+#[cfg(feature = "lang-fish")]
+const FISH: &str = r#"
+(function_definition name: (_) @name) @definition.function
+"#;
+
+#[cfg(feature = "lang-powershell")]
+const POWERSHELL: &str = r#"
+(function_statement (function_name) @name) @definition.function
+(class_statement . (simple_name) @name) @definition.class
+(class_method_definition (simple_name) @name) @definition.method
+(enum_statement . (simple_name) @name) @definition.class
+"#;
+
+#[cfg(feature = "lang-batch")]
+const BATCH: &str = r#"
+(label) @name @definition.subroutine
+"#;
+
 pub(crate) fn outline_query(_lang: LanguageId) -> Option<Cow<'static, str>> {
     #[cfg(feature = "lang-rust")]
     if _lang == super::RUST {
@@ -239,6 +262,22 @@ pub(crate) fn outline_query(_lang: LanguageId) -> Option<Cow<'static, str>> {
     #[cfg(feature = "lang-latex")]
     if _lang == super::LATEX {
         return Some(Cow::Borrowed(LATEX));
+    }
+    #[cfg(feature = "lang-zsh")]
+    if _lang == super::ZSH {
+        return Some(Cow::Borrowed(ZSH));
+    }
+    #[cfg(feature = "lang-fish")]
+    if _lang == super::FISH {
+        return Some(Cow::Borrowed(FISH));
+    }
+    #[cfg(feature = "lang-powershell")]
+    if _lang == super::POWERSHELL {
+        return Some(Cow::Borrowed(POWERSHELL));
+    }
+    #[cfg(feature = "lang-batch")]
+    if _lang == super::BATCH {
+        return Some(Cow::Borrowed(BATCH));
     }
     None
 }

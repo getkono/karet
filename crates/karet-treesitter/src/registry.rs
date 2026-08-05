@@ -10,6 +10,7 @@ use crate::LanguageId;
 
 mod outlines;
 pub(crate) use outlines::outline_query;
+mod shells;
 
 #[cfg(feature = "lang-rust")]
 const RUST_SEMANTIC: &str = r#"
@@ -342,6 +343,14 @@ pub(crate) const CMAKE: LanguageId = LanguageId(32);
 pub(crate) const RST: LanguageId = LanguageId(33);
 #[cfg(feature = "lang-asciidoc")]
 pub(crate) const ASCIIDOC: LanguageId = LanguageId(34);
+#[cfg(feature = "lang-zsh")]
+pub(crate) const ZSH: LanguageId = LanguageId(35);
+#[cfg(feature = "lang-fish")]
+pub(crate) const FISH: LanguageId = LanguageId(36);
+#[cfg(feature = "lang-powershell")]
+pub(crate) const POWERSHELL: LanguageId = LanguageId(37);
+#[cfg(feature = "lang-batch")]
+pub(crate) const BATCH: LanguageId = LanguageId(38);
 
 #[cfg(feature = "lang-graphql")]
 const GRAPHQL_HIGHLIGHTS: &str = r#"
@@ -843,6 +852,7 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             injections: None,
             injections_extra: None,
         });
+        shells::push(&mut v);
         #[cfg(feature = "lang-markdown")]
         v.push(GrammarInfo {
             id: MARKDOWN_INLINE,
