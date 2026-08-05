@@ -332,6 +332,12 @@ pub(crate) const SQL: LanguageId = LanguageId(27);
 pub(crate) const GRAPHQL: LanguageId = LanguageId(28);
 #[cfg(feature = "lang-protobuf")]
 pub(crate) const PROTOBUF: LanguageId = LanguageId(29);
+#[cfg(feature = "lang-containerfile")]
+pub(crate) const CONTAINERFILE: LanguageId = LanguageId(30);
+#[cfg(feature = "lang-make")]
+pub(crate) const MAKE: LanguageId = LanguageId(31);
+#[cfg(feature = "lang-cmake")]
+pub(crate) const CMAKE: LanguageId = LanguageId(32);
 
 #[cfg(feature = "lang-graphql")]
 const GRAPHQL_HIGHLIGHTS: &str = r#"
@@ -757,6 +763,39 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             names: &["protobuf", "proto"],
             language: || tree_sitter_proto::LANGUAGE.into(),
             highlights: PROTOBUF_HIGHLIGHTS,
+            injections: None,
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-containerfile")]
+        v.push(GrammarInfo {
+            id: CONTAINERFILE,
+            name: "Dockerfile",
+            extensions: &[],
+            names: &["dockerfile", "containerfile", "docker"],
+            language: || tree_sitter_containerfile::LANGUAGE.into(),
+            highlights: tree_sitter_containerfile::HIGHLIGHTS_QUERY,
+            injections: Some(tree_sitter_containerfile::INJECTIONS_QUERY),
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-make")]
+        v.push(GrammarInfo {
+            id: MAKE,
+            name: "Makefile",
+            extensions: &["mk"],
+            names: &["make", "makefile"],
+            language: || tree_sitter_make::LANGUAGE.into(),
+            highlights: tree_sitter_make::HIGHLIGHTS_QUERY,
+            injections: None,
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-cmake")]
+        v.push(GrammarInfo {
+            id: CMAKE,
+            name: "CMake",
+            extensions: &["cmake"],
+            names: &["cmake"],
+            language: || tree_sitter_cmake::LANGUAGE.into(),
+            highlights: tree_sitter_cmake::HIGHLIGHTS_QUERY,
             injections: None,
             injections_extra: None,
         });

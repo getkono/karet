@@ -43,6 +43,9 @@ lang-vue        = ["dep:tree-sitter-vue-next"]
 lang-sql        = ["dep:tree-sitter-sequel"]
 lang-graphql    = ["dep:tree-sitter-graphql"]
 lang-protobuf   = ["dep:tree-sitter-proto"]
+lang-containerfile = ["dep:tree-sitter-containerfile"]
+lang-make       = ["dep:tree-sitter-make"]
+lang-cmake      = ["dep:tree-sitter-cmake"]
 # Convenience bundle: every grammar above. The `karet` app enables this.
 all-languages = [
     "lang-rust", "lang-python", "lang-javascript", "lang-typescript", "lang-json",
@@ -50,6 +53,7 @@ all-languages = [
     "lang-php", "lang-bash", "lang-toml", "lang-html", "lang-css", "lang-yaml",
     "lang-markdown", "lang-latex", "lang-zig", "lang-xml", "lang-svelte",
     "lang-astro", "lang-vue", "lang-sql", "lang-graphql", "lang-protobuf",
+    "lang-containerfile", "lang-make", "lang-cmake",
 ]
 
 [dependencies]
@@ -84,6 +88,9 @@ tree-sitter-vue-next   = { workspace = true, optional = true }
 tree-sitter-sequel     = { workspace = true, optional = true }
 tree-sitter-graphql    = { workspace = true, optional = true }
 tree-sitter-proto      = { workspace = true, optional = true }
+tree-sitter-containerfile = { workspace = true, optional = true }
+tree-sitter-make       = { workspace = true, optional = true }
+tree-sitter-cmake      = { workspace = true, optional = true }
 
 [lints]
 workspace = true

@@ -322,6 +322,21 @@ mod tests {
                 "// Café service\nmessage Coffee { string roast = 1; } ???",
                 "Coffee",
             ),
+            (
+                "Dockerfile",
+                "# Café image\nFROM rust:latest AS builder\nRUN broken &&\n???",
+                "builder",
+            ),
+            (
+                "Makefile",
+                "# Café build\nbuild: dep\n\t@echo ok\n???",
+                "build",
+            ),
+            (
+                "CMakeLists.txt",
+                "# Café build\nfunction(café arg)\nendfunction()\n???",
+                "café",
+            ),
         ];
         for (path, source, expected) in cases {
             let extracted = symbols(path, source)?;
@@ -359,6 +374,13 @@ mod tests {
             "schema.sql",
             "schema.graphql",
             "schema.proto",
+            "Dockerfile",
+            "Containerfile",
+            "Makefile",
+            "GNUmakefile",
+            "rules.mk",
+            "CMakeLists.txt",
+            "module.cmake",
         ] {
             assert!(symbols(path, "")?.is_empty(), "{path}");
         }
@@ -422,6 +444,42 @@ mod tests {
             .find(|symbol| symbol.name == "Brewer")
             .ok_or("Protobuf service")?;
         assert!(names(&service.children).contains(&"Brew"), "{proto:#?}");
+        Ok(())
+    }
+
+    #[test]
+    fn build_languages_expose_stages_targets_and_nested_blocks() -> TestResult {
+        let container = symbols(
+            "Containerfile",
+            "# Café\nFROM rust AS builder\nRUN cargo build\nFROM alpine AS runtime\nCOPY --from=builder /app /app\n???",
+        )?;
+        assert_eq!(
+            names(&container),
+            vec!["builder", "runtime"],
+            "{container:#?}"
+        );
+
+        let make = symbols(
+            "GNUmakefile",
+            "# Café\nifdef DEBUG\nbuild: compile\n\t@echo done\nendif\ndefine banner\nhello\nendef\n???",
+        )?;
+        let condition = make
+            .iter()
+            .find(|symbol| symbol.name.contains("DEBUG"))
+            .ok_or("Make condition")?;
+        assert!(names(&condition.children).contains(&"build"), "{make:#?}");
+        assert!(names(&make).contains(&"banner"), "{make:#?}");
+
+        let cmake = symbols(
+            "CMakeLists.txt",
+            "# Café\nif(ENABLED)\n  function(café arg)\n  endfunction()\n  add_executable(app main.cpp)\nendif()\n???",
+        )?;
+        let condition = cmake
+            .iter()
+            .find(|symbol| symbol.name == "ENABLED")
+            .ok_or("CMake condition")?;
+        assert!(names(&condition.children).contains(&"café"), "{cmake:#?}");
+        assert!(names(&condition.children).contains(&"app"), "{cmake:#?}");
         Ok(())
     }
 }

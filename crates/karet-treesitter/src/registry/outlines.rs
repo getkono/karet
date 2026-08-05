@@ -77,6 +77,34 @@ const PROTOBUF: &str = r#"
 (rpc (rpc_name) @name) @definition.method
 "#;
 
+#[cfg(feature = "lang-containerfile")]
+const CONTAINERFILE: &str = r#"
+(from_instruction as: (image_alias) @name) @definition.class
+"#;
+
+#[cfg(feature = "lang-make")]
+const MAKE: &str = r#"
+(conditional condition: (_) @name) @definition.namespace
+(rule (targets) @name) @definition.class
+(variable_assignment name: (word) @name) @definition.constant
+(define_directive name: (word) @name) @definition.constant
+"#;
+
+#[cfg(feature = "lang-cmake")]
+const CMAKE: &str = r#"
+(function_def
+  (function_command (argument_list . (argument) @name))) @definition.function
+(macro_def
+  (macro_command (argument_list . (argument) @name))) @definition.macro
+((normal_command
+  (identifier) @_command
+  (argument_list . (argument) @name)) @definition.class
+ (#match? @_command "^(add_executable|add_library|add_custom_target)$"))
+(if_condition (if_command (argument_list) @name)) @definition.namespace
+(foreach_loop (foreach_command (argument_list) @name)) @definition.namespace
+(while_loop (while_command (argument_list) @name)) @definition.namespace
+"#;
+
 pub(crate) fn outline_query(_lang: LanguageId) -> Option<Cow<'static, str>> {
     #[cfg(feature = "lang-rust")]
     if _lang == super::RUST {
@@ -161,6 +189,18 @@ pub(crate) fn outline_query(_lang: LanguageId) -> Option<Cow<'static, str>> {
     #[cfg(feature = "lang-protobuf")]
     if _lang == super::PROTOBUF {
         return Some(Cow::Borrowed(PROTOBUF));
+    }
+    #[cfg(feature = "lang-containerfile")]
+    if _lang == super::CONTAINERFILE {
+        return Some(Cow::Borrowed(CONTAINERFILE));
+    }
+    #[cfg(feature = "lang-make")]
+    if _lang == super::MAKE {
+        return Some(Cow::Borrowed(MAKE));
+    }
+    #[cfg(feature = "lang-cmake")]
+    if _lang == super::CMAKE {
+        return Some(Cow::Borrowed(CMAKE));
     }
     None
 }
