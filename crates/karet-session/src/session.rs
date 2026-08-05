@@ -264,7 +264,12 @@ fn save_document(doc: &mut Document) -> Result<(), TextError> {
 /// One open document and its derived state.
 struct Document {
     path: PathBuf,
+    /// Human-readable label published to presentation clients.
     language: Option<&'static str>,
+    /// Stable legacy-compatible key used for editor settings and server selection.
+    language_selector: Option<&'static str>,
+    /// Protocol identifier sent in `textDocument/didOpen`.
+    lsp_language_id: Option<&'static str>,
     lang_id: Option<LanguageId>,
     buffer: TextBuffer,
     /// How the buffer is (de)serialized on disk.
@@ -862,7 +867,7 @@ fn update_syntax(
         semantic: {
             let semantic = settings
                 .editor
-                .for_language(doc.language)
+                .for_language(doc.language_selector)
                 .semantic_comments();
             semantic
                 .enabled()
@@ -933,6 +938,16 @@ fn language_name_for_path(path: &Path) -> Option<&'static str> {
         let name = file_type.name();
         (!matches!(name, "Plain Text" | "Unknown" | "Binary")).then_some(name)
     })
+}
+
+/// Resolve the stable per-language configuration/server selector for a path.
+fn language_selector_for_path(path: &Path) -> Option<&'static str> {
+    karet_filetype::file_type_for_path(path).config_selector()
+}
+
+/// Resolve the protocol language identifier for a path.
+fn lsp_language_id_for_path(path: &Path) -> Option<&'static str> {
+    karet_filetype::file_type_for_path(path).lsp_language_id()
 }
 
 fn unknown_document(doc: DocumentId) -> Event {

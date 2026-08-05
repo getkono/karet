@@ -292,7 +292,7 @@ impl Session {
             .filter(|document| {
                 only.as_ref().is_none_or(|server| {
                     document
-                        .language
+                        .language_selector
                         .and_then(crate::lsp::builtin_server)
                         .as_ref()
                         == Some(server)
@@ -300,15 +300,17 @@ impl Session {
             })
             .map(|document| {
                 (
-                    document.language,
+                    document.language_selector,
+                    document.lsp_language_id,
                     document.path.clone(),
                     document.buffer.version(),
                     document.buffer.text(),
                 )
             })
             .collect();
-        for (language, path, version, text) in documents {
-            self.lsp.document_opened(language, &path, version, || text);
+        for (selector, lsp_language_id, path, version, text) in documents {
+            self.lsp
+                .document_opened(selector, lsp_language_id, &path, version, || text);
         }
     }
 
@@ -347,9 +349,9 @@ impl Session {
         };
         let version = doc.buffer.version();
         let utf16 = LineCol::new(position.line, doc.buffer.line_col_to_utf16(position));
-        let forwarded = self
-            .lsp
-            .completion(doc.language, id, doc_id, version, &doc.path, utf16);
+        let forwarded =
+            self.lsp
+                .completion(doc.language_selector, id, doc_id, version, &doc.path, utf16);
         if !forwarded {
             self.emit(
                 Some(id),
@@ -369,9 +371,9 @@ impl Session {
             return;
         };
         let version = doc.buffer.version();
-        let forwarded = self
-            .lsp
-            .document_symbols(doc.language, id, doc_id, version, &doc.path);
+        let forwarded =
+            self.lsp
+                .document_symbols(doc.language_selector, id, doc_id, version, &doc.path);
         if !forwarded {
             self.emit(
                 Some(id),
@@ -392,7 +394,7 @@ impl Session {
         let utf16 = LineCol::new(position.line, doc.buffer.line_col_to_utf16(position));
         if !self
             .lsp
-            .hover(doc.language, id, doc_id, version, &doc.path, utf16)
+            .hover(doc.language_selector, id, doc_id, version, &doc.path, utf16)
         {
             self.emit(Some(id), Event::HoverResult { hover: None });
         }
@@ -407,7 +409,7 @@ impl Session {
         let utf16 = LineCol::new(position.line, doc.buffer.line_col_to_utf16(position));
         if !self
             .lsp
-            .definition(doc.language, id, doc_id, version, &doc.path, utf16)
+            .definition(doc.language_selector, id, doc_id, version, &doc.path, utf16)
         {
             self.emit(
                 Some(id),
@@ -443,7 +445,7 @@ impl Session {
         let utf16 = LineCol::new(position.line, doc.buffer.line_col_to_utf16(position));
         if !self
             .lsp
-            .rename(doc.language, id, &doc.path, utf16, new_name)
+            .rename(doc.language_selector, id, &doc.path, utf16, new_name)
         {
             self.emit(
                 Some(id),
@@ -459,10 +461,13 @@ impl Session {
             self.emit(Some(id), unknown_document(doc_id));
             return;
         };
-        if !self
-            .lsp
-            .formatting(doc.language, id, doc_id, doc.buffer.version(), &doc.path)
-        {
+        if !self.lsp.formatting(
+            doc.language_selector,
+            id,
+            doc_id,
+            doc.buffer.version(),
+            &doc.path,
+        ) {
             self.emit(
                 Some(id),
                 Event::FormattingEdits {
@@ -704,9 +709,13 @@ impl Session {
         if lsp_changed {
             let lsp = &mut self.lsp;
             for doc in self.store.docs.values() {
-                lsp.document_opened(doc.language, &doc.path, doc.buffer.version(), || {
-                    doc.buffer.text()
-                });
+                lsp.document_opened(
+                    doc.language_selector,
+                    doc.lsp_language_id,
+                    &doc.path,
+                    doc.buffer.version(),
+                    || doc.buffer.text(),
+                );
             }
         }
 
@@ -727,7 +736,7 @@ impl Session {
                 self.store
                     .docs
                     .get(doc_id)
-                    .map(|doc| (*doc_id, doc.path.clone(), doc.language))
+                    .map(|doc| (*doc_id, doc.path.clone(), doc.language_selector))
             })
             .collect();
         for (doc_id, path, language) in inputs {

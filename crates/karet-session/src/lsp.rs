@@ -563,19 +563,20 @@ impl LspManager {
     /// is only invoked when a server will actually receive it.
     pub(crate) fn document_opened(
         &mut self,
-        language: Option<&str>,
+        selector: Option<&str>,
+        lsp_language_id: Option<&str>,
         path: &Path,
         version: u64,
         text: impl FnOnce() -> String,
     ) {
         let path = absolute_path(path);
-        let language = language_key(language);
-        let Some((tx, key)) = self.ensure_server(language.as_deref(), &path) else {
+        let selector = language_key(selector);
+        let Some((tx, key)) = self.ensure_server(selector.as_deref(), &path) else {
             return;
         };
         let mut targets = vec![(tx.clone(), key)];
         let root = nearest_repository_root(&path, self.root.as_deref());
-        if let Some(language_key) = language.as_deref() {
+        if let Some(language_key) = selector.as_deref() {
             let configured_diagnostics = self
                 .settings
                 .languages
@@ -609,7 +610,9 @@ impl LspManager {
                 }
             }
         }
-        let document_language = language.unwrap_or_default();
+        let document_language = lsp_language_id
+            .map(str::to_owned)
+            .unwrap_or_else(|| selector.unwrap_or_default());
         let document_text = text();
         let mut seen_targets = HashSet::new();
         for (tx, key) in targets {

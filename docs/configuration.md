@@ -64,8 +64,8 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 #### Per-language editor settings
 
 Every `editor` key can be overridden for one language with a `[language]` selector in
-the same object. Selectors are matched case-insensitively against the language reported
-for the open document:
+the same object. Selectors are matched case-insensitively against the file type's stable
+configuration identity:
 
 ```jsonc
 {
@@ -92,6 +92,14 @@ value still beats a project-level global value for a Rust document. Within the s
 selector, the normal layer precedence still applies. Arrays such as `rulers` and
 `semanticComments.tags` replace rather than concatenate. Explicit `null` for
 `wordWrap` or `graphicalCursor` restores that setting's automatic behavior.
+
+Configuration selectors are deliberately independent from language-server protocol
+identifiers and remain compatible with existing settings. In particular, continue to
+use `[c++]`, `[c#]`, `[jsx]`, `[tsx]`, `[shell]`, and `[tex]`; karet translates those
+selectors to the protocol IDs `cpp`, `csharp`, `javascriptreact`, `typescriptreact`,
+`shellscript`, and `latex` when opening a document with a language server. JSONC keeps
+using `[json]`, while formats that require distinct parsing such as JSON5, MDX, ERB,
+Zsh, Fish, and EDN have their own selectors.
 
 ### `files`
 
