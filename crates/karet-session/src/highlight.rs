@@ -18,6 +18,7 @@ use std::sync::mpsc::Sender;
 use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
 use karet_syntax::LayeredHighlighter;
+use karet_syntax::OutlineExtractor;
 use karet_syntax::SemanticBlocker;
 use karet_syntax::SemanticBlocks;
 use karet_syntax::SemanticCommentConfig;
@@ -59,6 +60,8 @@ pub(crate) struct HighlightResult {
     pub highlights: Arc<Highlights>,
     pub folds: Arc<FoldRegions>,
     pub semantic_blocks: Arc<SemanticBlocks>,
+    /// Grammar-backed document symbols for the same version.
+    pub symbols: Arc<Vec<karet_core::Symbol>>,
     /// Line ranges covered by syntax errors (see `SyntaxTree::error_lines`).
     pub error_lines: Arc<Vec<(u32, u32)>>,
 }
@@ -92,6 +95,7 @@ fn run(jobs: &Receiver<HighlightJob>, results: &tokio_mpsc::UnboundedSender<High
     let mut parser = LayeredParser::new();
     let mut highlighter = LayeredHighlighter::new();
     let mut blocker = SemanticBlocker::new();
+    let mut outline = OutlineExtractor::new();
     let mut trees: HashMap<DocumentId, LayeredTree> = HashMap::new();
     let mut pending: HashMap<DocumentId, HighlightRequest> = HashMap::new();
 
@@ -109,6 +113,7 @@ fn run(jobs: &Receiver<HighlightJob>, results: &tokio_mpsc::UnboundedSender<High
                 &mut parser,
                 &mut highlighter,
                 &mut blocker,
+                &mut outline,
                 &mut trees,
                 request,
             ) && results.send(result).is_err()
@@ -164,6 +169,7 @@ fn compute(
     parser: &mut LayeredParser,
     highlighter: &mut LayeredHighlighter,
     blocker: &mut SemanticBlocker,
+    outline: &mut OutlineExtractor,
     trees: &mut HashMap<DocumentId, LayeredTree>,
     request: HighlightRequest,
 ) -> Option<HighlightResult> {
@@ -200,6 +206,7 @@ fn compute(
         highlights: Arc::new(highlights),
         folds: Arc::new(karet_syntax::fold(tree.root())),
         semantic_blocks: Arc::new(blocker.analyze(tree.root(), &request.text)),
+        symbols: Arc::new(outline.analyze(tree.root(), &request.text)),
         error_lines: Arc::new(tree.error_lines()),
     })
 }
@@ -297,6 +304,7 @@ mod tests {
         let mut parser = LayeredParser::new();
         let mut highlighter = LayeredHighlighter::new();
         let mut blocker = SemanticBlocker::new();
+        let mut outline = OutlineExtractor::new();
         let mut trees = HashMap::new();
         let request = HighlightRequest {
             doc: DocumentId(1),
@@ -310,6 +318,7 @@ mod tests {
             &mut parser,
             &mut highlighter,
             &mut blocker,
+            &mut outline,
             &mut trees,
             request,
         )?;

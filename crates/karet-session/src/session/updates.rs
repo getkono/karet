@@ -99,6 +99,9 @@ impl Session {
                     return;
                 }
                 convert_symbol_columns(&document.buffer, &mut symbols);
+                if symbols.is_empty() {
+                    symbols = document.syntax_symbols.as_ref().clone();
+                }
                 self.emit(Some(request), Event::Symbols { doc, symbols });
             },
             LspUpdate::Hover {
@@ -379,7 +382,7 @@ impl Session {
                 Some(id),
                 Event::Symbols {
                     doc: doc_id,
-                    symbols: Vec::new(),
+                    symbols: doc.syntax_symbols.as_ref().clone(),
                 },
             );
         }
@@ -494,6 +497,7 @@ impl Session {
         doc.highlights = result.highlights;
         doc.folds = result.folds;
         doc.semantic_blocks = result.semantic_blocks;
+        doc.syntax_symbols = result.symbols;
         doc.error_lines = result.error_lines;
         self.publish(result.doc, None);
         self.schedule_spell(result.doc);
