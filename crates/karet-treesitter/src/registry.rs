@@ -4,10 +4,12 @@
 //! grammars compiled in. [`LanguageId`] values are stable and must **never** be
 //! renumbered once shipped.
 
-use std::borrow::Cow;
 use std::sync::OnceLock;
 
 use crate::LanguageId;
+
+mod outlines;
+pub(crate) use outlines::outline_query;
 
 #[cfg(feature = "lang-rust")]
 const RUST_SEMANTIC: &str = r#"
@@ -244,119 +246,6 @@ pub(crate) fn semantic_query(_lang: LanguageId) -> Option<&'static str> {
     None
 }
 
-#[cfg(feature = "lang-bash")]
-const BASH_OUTLINE: &str = r#"
-(function_definition name: (word) @name) @definition.function
-"#;
-
-#[cfg(feature = "lang-json")]
-const JSON_OUTLINE: &str = r#"
-(pair key: (string) @name value: [(object) (array)]) @definition.object
-"#;
-
-#[cfg(feature = "lang-yaml")]
-const YAML_OUTLINE: &str = r#"
-(block_mapping_pair
-  key: (_) @name
-  value: (block_node [(block_mapping) (block_sequence)])) @definition.object
-"#;
-
-#[cfg(feature = "lang-toml")]
-const TOML_OUTLINE: &str = r#"
-(table [(bare_key) (dotted_key) (quoted_key)] @name) @definition.object
-(table_array_element [(bare_key) (dotted_key) (quoted_key)] @name) @definition.array
-"#;
-
-#[cfg(feature = "lang-html")]
-const HTML_OUTLINE: &str = r#"
-((element (start_tag (tag_name) @name)) @definition.object
- (#match? @name "^(main|nav|section|article|aside|header|footer|h[1-6])$"))
-"#;
-
-#[cfg(feature = "lang-css")]
-const CSS_OUTLINE: &str = r#"
-(rule_set (selectors) @name) @definition.class
-(media_statement) @name @definition.namespace
-(supports_statement) @name @definition.namespace
-(keyframes_statement (keyframes_name) @name) @definition.class
-"#;
-
-pub(crate) fn outline_query(_lang: LanguageId) -> Option<Cow<'static, str>> {
-    #[cfg(feature = "lang-rust")]
-    if _lang == RUST {
-        return Some(Cow::Borrowed(tree_sitter_rust::TAGS_QUERY));
-    }
-    #[cfg(feature = "lang-python")]
-    if _lang == PYTHON {
-        return Some(Cow::Borrowed(tree_sitter_python::TAGS_QUERY));
-    }
-    #[cfg(feature = "lang-javascript")]
-    if _lang == JAVASCRIPT {
-        return Some(Cow::Borrowed(tree_sitter_javascript::TAGS_QUERY));
-    }
-    #[cfg(feature = "lang-typescript")]
-    if _lang == TYPESCRIPT || _lang == TSX {
-        return Some(Cow::Owned(format!(
-            "{}\n{}",
-            tree_sitter_javascript::TAGS_QUERY,
-            tree_sitter_typescript::TAGS_QUERY
-        )));
-    }
-    #[cfg(feature = "lang-go")]
-    if _lang == GO {
-        return Some(Cow::Borrowed(tree_sitter_go::TAGS_QUERY));
-    }
-    #[cfg(feature = "lang-c")]
-    if _lang == C {
-        return Some(Cow::Borrowed(tree_sitter_c::TAGS_QUERY));
-    }
-    #[cfg(feature = "lang-cpp")]
-    if _lang == CPP {
-        return Some(Cow::Borrowed(tree_sitter_cpp::TAGS_QUERY));
-    }
-    #[cfg(feature = "lang-csharp")]
-    if _lang == CSHARP {
-        return Some(Cow::Borrowed(tree_sitter_c_sharp::TAGS_QUERY));
-    }
-    #[cfg(feature = "lang-java")]
-    if _lang == JAVA {
-        return Some(Cow::Borrowed(tree_sitter_java::TAGS_QUERY));
-    }
-    #[cfg(feature = "lang-ruby")]
-    if _lang == RUBY {
-        return Some(Cow::Borrowed(tree_sitter_ruby::TAGS_QUERY));
-    }
-    #[cfg(feature = "lang-php")]
-    if _lang == PHP {
-        return Some(Cow::Borrowed(tree_sitter_php::TAGS_QUERY));
-    }
-    #[cfg(feature = "lang-bash")]
-    if _lang == BASH {
-        return Some(Cow::Borrowed(BASH_OUTLINE));
-    }
-    #[cfg(feature = "lang-json")]
-    if _lang == JSON {
-        return Some(Cow::Borrowed(JSON_OUTLINE));
-    }
-    #[cfg(feature = "lang-yaml")]
-    if _lang == YAML {
-        return Some(Cow::Borrowed(YAML_OUTLINE));
-    }
-    #[cfg(feature = "lang-toml")]
-    if _lang == TOML {
-        return Some(Cow::Borrowed(TOML_OUTLINE));
-    }
-    #[cfg(feature = "lang-html")]
-    if _lang == HTML {
-        return Some(Cow::Borrowed(HTML_OUTLINE));
-    }
-    #[cfg(feature = "lang-css")]
-    if _lang == CSS {
-        return Some(Cow::Borrowed(CSS_OUTLINE));
-    }
-    None
-}
-
 /// Static metadata for one registered grammar.
 pub(crate) struct GrammarInfo {
     /// The grammar's stable identifier.
@@ -437,6 +326,39 @@ pub(crate) const SVELTE: LanguageId = LanguageId(24);
 pub(crate) const ASTRO: LanguageId = LanguageId(25);
 #[cfg(feature = "lang-vue")]
 pub(crate) const VUE: LanguageId = LanguageId(26);
+#[cfg(feature = "lang-sql")]
+pub(crate) const SQL: LanguageId = LanguageId(27);
+#[cfg(feature = "lang-graphql")]
+pub(crate) const GRAPHQL: LanguageId = LanguageId(28);
+#[cfg(feature = "lang-protobuf")]
+pub(crate) const PROTOBUF: LanguageId = LanguageId(29);
+
+#[cfg(feature = "lang-graphql")]
+const GRAPHQL_HIGHLIGHTS: &str = r#"
+(comment) @comment
+(string_value) @string
+[(int_value) (float_value)] @number
+[(boolean_value) (null_value)] @constant.builtin
+[(object_type_definition) (interface_type_definition) (enum_type_definition)
+ (input_object_type_definition) (union_type_definition) (scalar_type_definition)] @type
+(operation_type) @keyword
+[(field) (field_definition)] @property
+(directive) @attribute
+"#;
+
+#[cfg(feature = "lang-protobuf")]
+const PROTOBUF_HIGHLIGHTS: &str = r#"
+[
+  "syntax" "edition" "package" "option" "import" "service" "rpc" "returns"
+  "message" "enum" "oneof" "repeated" "reserved" "to"
+] @keyword
+[(key_type) (type) (message_name) (enum_name) (service_name) (rpc_name)] @type
+(string) @string
+[(int_lit) (float_lit)] @number
+[(true) (false)] @constant.builtin
+(comment) @comment
+["(" ")" "[" "]" "{" "}"] @punctuation.bracket
+"#;
 
 #[cfg(feature = "lang-latex")]
 const LATEX_HIGHLIGHTS: &str = r#"
@@ -803,6 +725,39 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             language: || tree_sitter_vue_next::LANGUAGE.into(),
             highlights: VUE_HIGHLIGHTS,
             injections: Some(VUE_INJECTIONS),
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-sql")]
+        v.push(GrammarInfo {
+            id: SQL,
+            name: "SQL",
+            extensions: &["sql"],
+            names: &["sql"],
+            language: || tree_sitter_sequel::LANGUAGE.into(),
+            highlights: tree_sitter_sequel::HIGHLIGHTS_QUERY,
+            injections: None,
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-graphql")]
+        v.push(GrammarInfo {
+            id: GRAPHQL,
+            name: "GraphQL",
+            extensions: &["graphql", "gql"],
+            names: &["graphql", "gql"],
+            language: || tree_sitter_graphql::LANGUAGE.into(),
+            highlights: GRAPHQL_HIGHLIGHTS,
+            injections: None,
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-protobuf")]
+        v.push(GrammarInfo {
+            id: PROTOBUF,
+            name: "Protobuf",
+            extensions: &["proto"],
+            names: &["protobuf", "proto"],
+            language: || tree_sitter_proto::LANGUAGE.into(),
+            highlights: PROTOBUF_HIGHLIGHTS,
+            injections: None,
             injections_extra: None,
         });
         #[cfg(feature = "lang-markdown")]

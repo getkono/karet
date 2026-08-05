@@ -16,6 +16,15 @@ fn unknown_language_has_no_highlights() {
     assert!(highlights_query(LanguageId(60000)).is_none());
     assert!(injections_query(LanguageId(60000)).is_none());
     assert!(semantic_query(LanguageId(60000)).is_none());
+    assert!(outline_query(LanguageId(60000)).is_none());
+}
+
+#[test]
+fn every_registered_highlight_query_compiles() -> Result<(), TsError> {
+    for grammar in registry::all() {
+        Query::compile(grammar.id, grammar.highlights)?;
+    }
+    Ok(())
 }
 
 #[test]

@@ -40,13 +40,16 @@ lang-xml        = ["dep:tree-sitter-xml"]
 lang-svelte     = ["dep:tree-sitter-svelte-next"]
 lang-astro      = ["dep:tree-sitter-astro-next"]
 lang-vue        = ["dep:tree-sitter-vue-next"]
+lang-sql        = ["dep:tree-sitter-sequel"]
+lang-graphql    = ["dep:tree-sitter-graphql"]
+lang-protobuf   = ["dep:tree-sitter-proto"]
 # Convenience bundle: every grammar above. The `karet` app enables this.
 all-languages = [
     "lang-rust", "lang-python", "lang-javascript", "lang-typescript", "lang-json",
     "lang-go", "lang-c", "lang-cpp", "lang-csharp", "lang-java", "lang-ruby",
     "lang-php", "lang-bash", "lang-toml", "lang-html", "lang-css", "lang-yaml",
     "lang-markdown", "lang-latex", "lang-zig", "lang-xml", "lang-svelte",
-    "lang-astro", "lang-vue",
+    "lang-astro", "lang-vue", "lang-sql", "lang-graphql", "lang-protobuf",
 ]
 
 [dependencies]
@@ -78,6 +81,9 @@ tree-sitter-xml        = { workspace = true, optional = true }
 tree-sitter-svelte-next = { workspace = true, optional = true }
 tree-sitter-astro-next = { workspace = true, optional = true }
 tree-sitter-vue-next   = { workspace = true, optional = true }
+tree-sitter-sequel     = { workspace = true, optional = true }
+tree-sitter-graphql    = { workspace = true, optional = true }
+tree-sitter-proto      = { workspace = true, optional = true }
 
 [lints]
 workspace = true
