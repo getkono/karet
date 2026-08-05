@@ -29,6 +29,7 @@ mod write;
 pub use branch::BranchTarget;
 pub use branch::CreateBranchOptions;
 pub use branch::UndoCommitOutcome;
+pub use changes::ConflictSides;
 pub use changes::FileChange;
 pub use detail::CommitDetail;
 pub use detail::CommitSignature;

@@ -85,6 +85,15 @@ impl App {
                 files_loading_since,
                 ..
             } => files_loading_since.and_then(|since| loading_delay_remaining(since, now)),
+            TabKind::Code { .. }
+                if tab.merge_conflict.as_ref().is_some_and(|conflict| {
+                    conflict.current.is_none() && conflict.error.is_none()
+                }) =>
+            {
+                tab.merge_conflict
+                    .as_ref()
+                    .and_then(|conflict| loading_delay_remaining(conflict.loading_since, now))
+            },
             TabKind::CommitGraph {
                 loading_since,
                 detail_loading_since,
@@ -425,6 +434,12 @@ impl App {
                 }
                 if let Some(req) = id {
                     self.fail_pending_commit_detail(req, &message);
+                    if let Some((view, _)) = self.pending_merge_conflicts.remove(&req)
+                        && let Some(tab) = self.all_tabs_mut().find(|tab| tab.view == view)
+                        && let Some(conflict) = tab.merge_conflict.as_mut()
+                    {
+                        conflict.error = Some(message.clone());
+                    }
                 }
                 for tab in self.all_tabs_mut() {
                     if let TabKind::LanguageServers(view) = &mut tab.kind
@@ -447,6 +462,21 @@ impl App {
                 self.pending_blame = None;
                 self.failed_blame = None;
                 self.apply_vcs_status(staged, working);
+            },
+            SessionEvent::MergeConflictReady {
+                path,
+                current,
+                incoming,
+            } => {
+                let destination =
+                    id.and_then(|request| self.pending_merge_conflicts.remove(&request));
+                if let Some((view, expected)) = destination
+                    && expected == path
+                    && let Some(tab) = self.all_tabs_mut().find(|tab| tab.view == view)
+                    && let Some(conflict) = tab.merge_conflict.as_mut()
+                {
+                    conflict.finish(current, incoming);
+                }
             },
             SessionEvent::RepositorySnapshot { snapshot } => {
                 self.scm.repository = Some(*snapshot);

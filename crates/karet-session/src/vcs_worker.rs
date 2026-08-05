@@ -23,6 +23,9 @@ use crate::api::VcsAction;
 use crate::api::VcsOutcome;
 use crate::cancellation::Cancellation;
 
+mod conflict;
+use conflict::run_merge_conflict;
+
 /// A unit of work sent by the session actor to its serialized VCS worker.
 pub(crate) enum VcsJob {
     /// Load the current repository snapshot.
@@ -78,6 +81,12 @@ pub(crate) enum VcsJob {
         path: PathBuf,
         skip: usize,
         limit: usize,
+        cancel: Cancellation,
+    },
+    /// Load the two committed sides of one unresolved conflict.
+    MergeConflict {
+        id: RequestId,
+        path: PathBuf,
         cancel: Cancellation,
     },
 }
@@ -255,6 +264,9 @@ fn run(
             limit,
             cancel,
         } => run_file_history(root, events, id, path, skip, limit, &cancel),
+        VcsJob::MergeConflict { id, path, cancel } => {
+            run_merge_conflict(root, events, id, path, &cancel);
+        },
     }
 }
 

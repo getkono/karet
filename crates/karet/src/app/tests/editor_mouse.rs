@@ -487,6 +487,7 @@
             breadcrumb_rect: Rect::default(),
             breadcrumb_hits: Vec::new(),
             content_rect: Rect::default(),
+            editor_rect: Rect::default(),
             commit_file_hits: Vec::new(),
             commit_collapse_hits: Vec::new(),
         }];
@@ -517,6 +518,7 @@
             breadcrumb_rect: Rect::default(),
             breadcrumb_hits: Vec::new(),
             content_rect: Rect::default(),
+            editor_rect: Rect::default(),
             commit_file_hits: Vec::new(),
             commit_collapse_hits: Vec::new(),
         }];

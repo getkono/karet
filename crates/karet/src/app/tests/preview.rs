@@ -9,6 +9,7 @@
             breadcrumb_rect: Rect::default(),
             breadcrumb_hits: Vec::new(),
             content_rect: rect,
+            editor_rect: rect,
             commit_file_hits: Vec::new(),
             commit_collapse_hits: Vec::new(),
         }

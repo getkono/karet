@@ -3,6 +3,7 @@
 //! the sidebar, and applies [`Command`]s resolved from key events.
 
 mod backend_events;
+mod change_view;
 mod commands;
 mod completion;
 mod editor;
@@ -195,6 +196,7 @@ use crate::render::Section;
 use crate::tab::CommitViewState;
 use crate::tab::FindState;
 use crate::tab::MarkdownPreviewState;
+use crate::tab::MergeConflictState;
 use crate::tab::SearchField;
 use crate::tab::Tab;
 use crate::tab::TabKind;
@@ -505,6 +507,8 @@ pub(crate) struct PaneFrame {
     pub(crate) breadcrumb_hits: Vec<BreadcrumbHit>,
     /// The pane's content (editor) area.
     pub(crate) content_rect: Rect,
+    /// The exact editable editor viewport within the content area.
+    pub(crate) editor_rect: Rect,
     /// Changed-file rows clickable within the pane's commit-like view.
     pub(crate) commit_file_hits: Vec<CommitFileHit>,
     /// File-card disclosure controls clickable within the pane's commit-like view.
@@ -1077,6 +1081,8 @@ pub struct App {
     pending_commit_preparation: HashMap<RequestId, PendingCommitPreparation>,
     /// Lazy forge-verification reads, owned by their exact commit view.
     pending_commit_verification: HashMap<RequestId, (ViewId, String)>,
+    /// Conflict-side reads owned by their exact editable view.
+    pending_merge_conflicts: HashMap<RequestId, (ViewId, PathBuf)>,
     /// Submission side of the app-local diff preparation worker.
     prepare_tx: std::sync::mpsc::Sender<prepare::PrepareJob>,
     /// Result side, taken by the runtime event loop while the TUI is running.

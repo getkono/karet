@@ -113,6 +113,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
             breadcrumb_rect: rendered.breadcrumb_rect,
             breadcrumb_hits: rendered.breadcrumb_hits,
             content_rect: rendered.content_rect,
+            editor_rect: rendered.editor_rect,
             commit_file_hits: rendered.commit_file_hits,
             commit_collapse_hits: rendered.commit_collapse_hits,
         });

@@ -251,6 +251,15 @@ pub enum Event {
         /// The working-tree changes (unstaged, untracked, conflicted).
         working: Vec<FileChange>,
     },
+    /// The read-only committed sides of an unresolved merge conflict.
+    MergeConflictReady {
+        /// The path requested by [`Command::MergeConflict`].
+        path: PathBuf,
+        /// The current branch's text (Git index stage 2).
+        current: String,
+        /// The incoming branch's text (Git index stage 3).
+        incoming: String,
+    },
     /// Branch, remote, operation, and stash state for Source Control.
     RepositorySnapshot {
         /// Complete snapshot captured after a read or successful action.

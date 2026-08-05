@@ -34,6 +34,13 @@ use ratatui::layout::Rect;
 
 use crate::render::FileView;
 
+mod commit;
+mod merge_conflict;
+pub(crate) use commit::CommitLayoutMode;
+pub(crate) use commit::CommitViewState;
+pub(crate) use commit::commit_title;
+pub(crate) use merge_conflict::MergeConflictState;
+
 /// The find-in-file bar state: the query, the match cursor, and the replace field
 /// (mirroring the workspace Search panel's model for a consistent UI). Lives on
 /// the [`Tab`] it was opened over, so closing the find bar (but not the tab)
@@ -101,28 +108,6 @@ pub enum ViewMode {
     Unified,
     /// Two columns: old on the left, new on the right.
     SideBySide,
-}
-
-/// The responsive arrangement last used to draw a commit-like view.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CommitLayoutMode {
-    /// Metadata, file index, and diff cards form one vertical document.
-    Stacked,
-    /// Metadata precedes a pinned file rail beside the diff cards.
-    Wide,
-}
-
-/// View-local navigation state shared by commit and compare tabs.
-#[derive(Debug, Default)]
-pub(crate) struct CommitViewState {
-    /// Vertical offset in the current layout's virtual document.
-    pub(crate) scroll: u16,
-    /// The layout used by the previous frame, for resize-aware anchor remapping.
-    pub(crate) layout: Option<CommitLayoutMode>,
-    /// Per-file card-header offsets from the previous frame.
-    pub(crate) file_anchors: Vec<u16>,
-    /// File cards whose diff bodies are hidden in this view.
-    pub(crate) collapsed_files: BTreeSet<usize>,
 }
 
 /// A clickable operation in the language-server manager's action strip.
@@ -538,6 +523,8 @@ pub struct Tab {
     pub(crate) markdown_table_lines: Option<(u64, Vec<RangeInclusive<u32>>)>,
     /// A rendered Markdown preview shown inside this editor view, when enabled.
     pub(crate) markdown_preview: Option<MarkdownPreviewState>,
+    /// Dedicated three-way conflict presentation for this editable code document.
+    pub(crate) merge_conflict: Option<MergeConflictState>,
 }
 
 impl Tab {
@@ -560,6 +547,7 @@ impl Tab {
             conflict_decorations: None,
             markdown_table_lines: None,
             markdown_preview: None,
+            merge_conflict: None,
         }
     }
 
@@ -974,12 +962,6 @@ fn tab_kind_path(kind: &TabKind) -> Option<&Path> {
         | TabKind::Compare { .. }
         | TabKind::CommitGraph { .. } => None,
     }
-}
-
-/// Human-readable title for standalone commit tabs.
-#[must_use]
-pub(crate) fn commit_title(short: &str) -> String {
-    format!("Commit {short}")
 }
 
 #[cfg(test)]

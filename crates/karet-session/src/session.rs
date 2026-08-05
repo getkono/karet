@@ -619,6 +619,12 @@ impl Session {
                     .vcs_worker
                     .send(crate::vcs_worker::VcsJob::RangeChanges { id, spec, cancel });
             },
+            Command::MergeConflict { path } => {
+                let cancel = self.vcs_cancellations.register(id);
+                let _ = self
+                    .vcs_worker
+                    .send(crate::vcs_worker::VcsJob::MergeConflict { id, path, cancel });
+            },
             Command::FileHistory { path, skip, limit } => {
                 let cancel = self.vcs_cancellations.register(id);
                 let _ = self
