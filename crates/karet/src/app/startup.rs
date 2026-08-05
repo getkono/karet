@@ -151,6 +151,7 @@ impl App {
             pending_completion: None,
             completion: None,
             completion_matcher: karet_fuzzy::Matcher::new(),
+            inline_macro_engine: karet_syntax::InlineMacroEngine::new(),
             pending_commit_detail: HashMap::new(),
             latex_previews: HashMap::new(),
             pending_commit_preparation: HashMap::new(),
