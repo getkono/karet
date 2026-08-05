@@ -152,6 +152,10 @@ the binary. This keeps the optional feature small. Install both the `.aff` and `
 files for the selected locale in your platform's Hunspell directory, set `DICPATH`, or
 copy them into karet's platform data directory under `dictionaries/`. The status bar
 shows `English (US)` or `English (UK)` beside the detected file language when active.
+Karet also enables a bundled software-terms supplement for every language selection,
+so common technical words such as `async` and `breakpoint` do not need to be added to
+each project. Its word data is derived from `@cspell/dict-software-terms` 5.2.4 under
+the MIT license recorded in `THIRD_PARTY_LICENSES/`.
 
 A repository can choose between the supported dictionaries without opting users in:
 
