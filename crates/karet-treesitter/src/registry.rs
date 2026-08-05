@@ -10,6 +10,7 @@ use crate::LanguageId;
 
 mod outlines;
 pub(crate) use outlines::outline_query;
+mod programming;
 mod shells;
 
 #[cfg(feature = "lang-rust")]
@@ -351,7 +352,6 @@ pub(crate) const FISH: LanguageId = LanguageId(36);
 pub(crate) const POWERSHELL: LanguageId = LanguageId(37);
 #[cfg(feature = "lang-batch")]
 pub(crate) const BATCH: LanguageId = LanguageId(38);
-
 #[cfg(feature = "lang-graphql")]
 const GRAPHQL_HIGHLIGHTS: &str = r#"
 (comment) @comment
@@ -853,6 +853,7 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             injections_extra: None,
         });
         shells::push(&mut v);
+        programming::push(&mut v);
         #[cfg(feature = "lang-markdown")]
         v.push(GrammarInfo {
             id: MARKDOWN_INLINE,

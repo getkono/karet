@@ -52,6 +52,20 @@ lang-zsh        = ["dep:tree-sitter-zsh"]
 lang-fish       = ["dep:tree-sitter-fish"]
 lang-powershell = ["dep:tree-sitter-powershell"]
 lang-batch      = ["dep:tree-sitter-batch"]
+lang-kotlin     = ["dep:tree-sitter-kotlin-ng"]
+lang-swift      = ["dep:tree-sitter-swift"]
+lang-scala      = ["dep:tree-sitter-scala"]
+lang-lua        = ["dep:tree-sitter-lua"]
+lang-haskell    = ["dep:tree-sitter-haskell"]
+lang-ocaml      = ["dep:tree-sitter-ocaml"]
+lang-elixir     = ["dep:tree-sitter-elixir"]
+lang-erlang     = ["dep:tree-sitter-erlang"]
+lang-dart       = ["dep:tree-sitter-dart"]
+lang-r          = ["dep:tree-sitter-r"]
+lang-perl       = ["dep:tree-sitter-perl"]
+lang-clojure    = ["dep:tree-sitter-clojure-orchard"]
+lang-elisp      = ["dep:tree-sitter-elisp"]
+lang-vim        = ["dep:tree-sitter-vim"]
 # Convenience bundle: every grammar above. The `karet` app enables this.
 all-languages = [
     "lang-rust", "lang-python", "lang-javascript", "lang-typescript", "lang-json",
@@ -61,6 +75,9 @@ all-languages = [
     "lang-astro", "lang-vue", "lang-sql", "lang-graphql", "lang-protobuf",
     "lang-containerfile", "lang-make", "lang-cmake", "lang-rst", "lang-asciidoc",
     "lang-zsh", "lang-fish", "lang-powershell", "lang-batch",
+    "lang-kotlin", "lang-swift", "lang-scala", "lang-lua", "lang-haskell",
+    "lang-ocaml", "lang-elixir", "lang-erlang", "lang-dart", "lang-r",
+    "lang-perl", "lang-clojure", "lang-elisp", "lang-vim",
 ]
 
 [dependencies]
@@ -104,6 +121,20 @@ tree-sitter-zsh        = { workspace = true, optional = true }
 tree-sitter-fish       = { workspace = true, optional = true }
 tree-sitter-powershell = { workspace = true, optional = true }
 tree-sitter-batch      = { workspace = true, optional = true }
+tree-sitter-kotlin-ng  = { workspace = true, optional = true }
+tree-sitter-swift      = { workspace = true, optional = true }
+tree-sitter-scala      = { workspace = true, optional = true }
+tree-sitter-lua        = { workspace = true, optional = true }
+tree-sitter-haskell    = { workspace = true, optional = true }
+tree-sitter-ocaml      = { workspace = true, optional = true }
+tree-sitter-elixir     = { workspace = true, optional = true }
+tree-sitter-erlang     = { workspace = true, optional = true }
+tree-sitter-dart       = { workspace = true, optional = true }
+tree-sitter-r          = { workspace = true, optional = true }
+tree-sitter-perl       = { workspace = true, optional = true }
+tree-sitter-clojure-orchard = { workspace = true, optional = true }
+tree-sitter-elisp      = { workspace = true, optional = true }
+tree-sitter-vim        = { workspace = true, optional = true }
 
 [lints]
 workspace = true
