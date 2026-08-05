@@ -1,3 +1,5 @@
+use karet_vcs::FileChange;
+
 use super::*;
 use crate::app::CommitInput;
 
@@ -181,32 +183,13 @@ pub(super) fn draw_scm_changes(f: &mut Frame, app: &mut App, theme: &Theme, area
         }
         for i in range {
             let change = &app.scm.changes[i];
-            let (glyph, role) = status_glyph(change.status);
-            // Filename front and centre; the parent directory trails in dim grey and
-            // is omitted entirely for files at the repo root.
-            let name = change.path.file_name().map_or_else(
-                || change.path.to_string_lossy().into_owned(),
-                |n| n.to_string_lossy().into_owned(),
-            );
-            let parent = change
-                .path
-                .parent()
-                .map(|p| p.to_string_lossy().into_owned())
-                .filter(|p| !p.is_empty());
-            let mut spans = vec![
-                Span::styled(
-                    format!(" {glyph} "),
-                    Style::default().fg(theme.role(role).to_ratatui()),
-                ),
-                Span::raw(name),
-            ];
-            if let Some(parent) = parent {
-                spans.push(Span::styled(
-                    format!("  {parent}"),
-                    Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
-                ));
-            }
-            let item = ListItem::new(Line::from(spans));
+            let stats = app
+                .scm
+                .change_line_stats
+                .get(i)
+                .copied()
+                .unwrap_or_default();
+            let item = ListItem::new(change_line(theme, change, stats));
             // Every selected row (a contiguous range or a scattered toggle-set) gets
             // the selection background; the cursor row additionally gets a bold
             // highlight. A hovered-but-unselected row gets the secondary hover accent.
@@ -234,6 +217,49 @@ pub(super) fn draw_scm_changes(f: &mut Frame, app: &mut App, theme: &Theme, area
     app.scm_row_map = row_map;
     app.scm_offset = state.offset();
     app.scm_total_rows = total;
+}
+
+pub(super) fn change_line(
+    theme: &Theme,
+    change: &FileChange,
+    (added, removed): (usize, usize),
+) -> Line<'static> {
+    let (glyph, role) = status_glyph(change.status);
+    // Filename front and centre; the parent directory trails in dim grey and
+    // is omitted entirely for files at the repo root.
+    let name = change.path.file_name().map_or_else(
+        || change.path.to_string_lossy().into_owned(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let parent = change
+        .path
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .filter(|p| !p.is_empty());
+    let mut spans = vec![
+        Span::styled(
+            format!(" {glyph} "),
+            Style::default().fg(theme.role(role).to_ratatui()),
+        ),
+        Span::raw(name),
+    ];
+    if let Some(parent) = parent {
+        spans.push(Span::styled(
+            format!("  {parent}"),
+            Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
+        ));
+    }
+    spans.extend([
+        Span::styled(
+            format!("   +{added}"),
+            Style::default().fg(theme.role(ThemeRole::DiagnosticHint).to_ratatui()),
+        ),
+        Span::styled(
+            format!(" \u{2212}{removed}"),
+            Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui()),
+        ),
+    ]);
+    Line::from(spans)
 }
 
 /// Draw the pinned commit-log region (header, lazily-loaded commits, "load more").

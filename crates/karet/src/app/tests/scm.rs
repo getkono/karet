@@ -388,6 +388,7 @@
         );
         assert_eq!(app.scm.staged_count, 1);
         assert_eq!(app.scm.changes.len(), 3);
+        assert_eq!(app.scm.change_line_stats, vec![(1, 0); 3]);
         assert_eq!(app.scm.changes[0].status, StatusKind::Added);
         assert_eq!(app.scm.selection.anchor(), None);
         assert_eq!(app.scm.selection.len(), 3);

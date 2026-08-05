@@ -13,6 +13,7 @@ impl App {
         let staged_count = staged.len();
         let mut changes = staged;
         changes.extend(working);
+        let change_line_stats = Scm::line_stats(&changes, staged_count);
         let graphics = image::detect_protocol();
         let (prepare_tx, prepare_rx) = prepare::spawn();
         Self {
@@ -38,6 +39,7 @@ impl App {
             scm: Scm {
                 selection: ListSelection::new(changes.len()),
                 changes,
+                change_line_stats,
                 staged_count,
                 log: Vec::new(),
                 log_has_more: false,
