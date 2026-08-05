@@ -40,6 +40,15 @@ unsafe extern "C" {
 #[cfg(feature = "lang-mdx")]
 const MDX_LANGUAGE: LanguageFn = unsafe { LanguageFn::from_raw(tree_sitter_mdx) };
 
+/// Parse non-PHP `text` ranges as one HTML layer. The upstream PHP query only
+/// covers doc comments and heredocs, despite the grammar accepting mixed files.
+#[cfg(feature = "lang-php")]
+pub(super) const PHP_HTML_INJECTION: &str = r#"
+((text) @injection.content
+ (#set! injection.language "html")
+ (#set! injection.combined))
+"#;
+
 #[allow(clippy::vec_init_then_push)]
 pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
     #[cfg(not(any(
