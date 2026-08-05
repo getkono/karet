@@ -141,7 +141,7 @@
     }
 
     #[test]
-    fn clicking_blame_opens_detail_without_editor_fallthrough() {
+    fn blame_requires_a_double_click_and_consumes_the_first_press() {
         let mut app = app();
         app.live_blame = Some(LiveBlame {
             doc: DocumentId(7),
@@ -154,12 +154,22 @@
             })),
         });
         app.blame_rect = Some(Rect::new(20, 5, 12, 1));
-        assert!(app.handle_blame_mouse(MouseEvent {
+        let click = MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 22,
             row: 5,
             modifiers: KeyModifiers::NONE,
+        };
+        let tabs = app.tabs.len();
+        assert!(app.handle_blame_mouse(click));
+        assert_eq!(app.tabs.len(), tabs, "a single click must not activate");
+        assert!(!app.handle_blame_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            ..click
         }));
+        assert_eq!(app.tabs.len(), tabs, "dragging must not activate");
+
+        assert!(app.handle_blame_mouse(click));
         assert!(matches!(
             &app.tabs[app.active].kind,
             TabKind::CommitLoading { rev, .. } if rev == "abc123"

@@ -153,7 +153,9 @@ impl App {
         true
     }
 
-    /// Open the attributed commit when the visible inline blame label is clicked.
+    /// Open the attributed commit when the visible inline blame label is
+    /// double-clicked. The first click is consumed so it cannot fall through to the
+    /// editor and count twice in the shared multi-click streak.
     pub(super) fn handle_blame_mouse(&mut self, mouse: MouseEvent) -> bool {
         if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             || !self
@@ -162,7 +164,9 @@ impl App {
         {
             return false;
         }
-        self.open_live_blame_detail();
+        if self.click_streak(mouse.column, mouse.row) >= 2 {
+            self.open_live_blame_detail();
+        }
         true
     }
 
