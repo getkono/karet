@@ -548,6 +548,15 @@ enum ExplorerFileOp {
     Cut,
 }
 
+/// The settings layer that should receive an accepted spelling word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DictionaryTarget {
+    /// The current repository's `.karet/setting.jsonc`.
+    Project,
+    /// The platform user configuration.
+    User,
+}
+
 /// The explorer's internal file clipboard. This is intentionally separate from the
 /// system text clipboard: terminal clipboards do not carry portable file lists.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -570,10 +579,12 @@ pub(crate) enum ContextMenuAction {
         /// The suggested replacement.
         replacement: String,
     },
-    /// Add a word to the project spell-check dictionary.
+    /// Add a word to one spell-check dictionary layer.
     AddSpellingToDictionary {
         /// The word accepted by the user.
         word: String,
+        /// The configuration layer to update.
+        target: DictionaryTarget,
     },
 }
 

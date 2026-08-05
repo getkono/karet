@@ -70,6 +70,7 @@
                 "Replace with “word”",
                 "Replace with “rod”",
                 "Add “wrod” to Project Dictionary",
+                "Add “wrod” to User Dictionary",
             ]
         );
         assert_eq!(
@@ -78,6 +79,25 @@
                 start: LineCol::new(0, 0),
                 end: LineCol::new(0, 4),
             })
+        );
+        let targets: Vec<DictionaryTarget> = app
+            .context_menu
+            .as_ref()
+            .map(|menu| {
+                menu.entries
+                    .iter()
+                    .filter_map(|entry| match entry.action {
+                        ContextMenuAction::AddSpellingToDictionary { target, .. } => Some(target),
+                        ContextMenuAction::Command(_) | ContextMenuAction::ReplaceSpelling { .. } => {
+                            None
+                        },
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            targets,
+            vec![DictionaryTarget::Project, DictionaryTarget::User]
         );
     }
 
@@ -96,6 +116,10 @@
         assert_eq!(
             menu.entries[1].label.as_deref(),
             Some("Add “wrod” to Project Dictionary")
+        );
+        assert_eq!(
+            menu.entries[2].label.as_deref(),
+            Some("Add “wrod” to User Dictionary")
         );
         let painted = screen(&mut app, 80, 12).join("\n");
         assert!(painted.contains("No similar words found"), "{painted}");

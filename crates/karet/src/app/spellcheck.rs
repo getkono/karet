@@ -97,13 +97,24 @@ impl App {
                 "No similar words found",
                 ContextMenuAction::AddSpellingToDictionary {
                     word: warning.word.clone(),
+                    target: DictionaryTarget::Project,
                 },
                 "The dictionary has no close matches",
             ));
         }
         entries.push(ContextMenuEntry::custom(
             format!("Add “{}” to Project Dictionary", warning.word),
-            ContextMenuAction::AddSpellingToDictionary { word: warning.word },
+            ContextMenuAction::AddSpellingToDictionary {
+                word: warning.word.clone(),
+                target: DictionaryTarget::Project,
+            },
+        ));
+        entries.push(ContextMenuEntry::custom(
+            format!("Add “{}” to User Dictionary", warning.word),
+            ContextMenuAction::AddSpellingToDictionary {
+                word: warning.word,
+                target: DictionaryTarget::User,
+            },
         ));
         self.context_menu = Some(ContextMenu::new(x, y, entries));
         true
@@ -199,7 +210,7 @@ impl App {
 
     /// Add a spelling word directly to an existing project file, or require typed
     /// confirmation before creating the missing `.karet/setting.jsonc` tree.
-    pub(super) fn add_spelling_to_dictionary(&mut self, word: String) {
+    pub(super) fn add_spelling_to_project_dictionary(&mut self, word: String) {
         match karet_session::config::add_project_dictionary_word(
             std::slice::from_ref(&self.root),
             &word,
@@ -214,6 +225,19 @@ impl App {
                     TextPurpose::ConfirmCreateProjectSettings { word, path },
                 ));
             },
+            Err(error) => self.notify(
+                Severity::Error,
+                NotificationKind::System,
+                format!("dictionary: {error}"),
+            ),
+        }
+    }
+
+    /// Add a spelling word to the platform user settings, creating that layer when
+    /// necessary.
+    pub(super) fn add_spelling_to_user_dictionary(&mut self, word: String) {
+        match karet_session::config::add_user_dictionary_word(&word) {
+            Ok(path) => self.dictionary_word_added(&word, &path),
             Err(error) => self.notify(
                 Severity::Error,
                 NotificationKind::System,

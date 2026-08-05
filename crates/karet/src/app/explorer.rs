@@ -605,8 +605,9 @@ impl App {
                 range,
                 replacement,
             } => self.replace_spelling(doc, range, replacement),
-            ContextMenuAction::AddSpellingToDictionary { word } => {
-                self.add_spelling_to_dictionary(word);
+            ContextMenuAction::AddSpellingToDictionary { word, target } => match target {
+                DictionaryTarget::Project => self.add_spelling_to_project_dictionary(word),
+                DictionaryTarget::User => self.add_spelling_to_user_dictionary(word),
             },
         }
     }

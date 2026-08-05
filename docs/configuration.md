@@ -177,7 +177,9 @@ a muted `No similar words found` row, while still offering the dictionary action
 layer. An existing `$GIT_ROOT/.karet/setting.jsonc` is updated in place while retaining
 its comments and unrelated settings. If that file does not exist, karet requires the
 user to type `create` before it creates the `.karet` settings tree; it never silently
-falls back to a user or system dictionary.
+falls back to another layer. `Add “…” to User Dictionary` instead updates the platform
+user `setting.jsonc`, creating it when needed, for words that should apply across
+projects.
 
 ### `latex`
 
