@@ -4,6 +4,40 @@ use super::*;
 use crate::app::CommitInput;
 
 #[test]
+fn scrollable_lines_clamp_both_axes_and_draw_horizontal_position()
+-> Result<(), std::convert::Infallible> {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let backend = TestBackend::new(6, 3);
+    let mut terminal = Terminal::new(backend)?;
+    let mut scroll = 9;
+    let mut column = 3;
+    terminal.draw(|frame| {
+        draw_scrollable_lines(
+            frame,
+            &Theme::dark(),
+            frame.area(),
+            vec![Line::raw("0123456789")],
+            &mut scroll,
+            &mut column,
+        );
+    })?;
+
+    assert_eq!(scroll, 0);
+    assert_eq!(column, 3);
+    let visible = (0..6)
+        .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+        .collect::<String>();
+    assert_eq!(visible, "345678");
+    assert!(
+        (0..6).any(|x| terminal.backend().buffer()[(x, 2)].symbol() != " "),
+        "overflow should paint a horizontal position indicator"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_markdown_preview_is_inset_from_its_pane_on_every_side() {
     let inner = markdown_preview_rect(Rect::new(10, 5, 40, 20));
     assert_eq!(inner, Rect::new(12, 6, 36, 18));

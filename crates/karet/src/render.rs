@@ -267,6 +267,17 @@ pub fn unified_line_count(file: &FileView, theme: &Theme) -> usize {
         .map_or(0, |(_, lines)| lines.len())
 }
 
+/// Return the widest unified diff row in terminal columns without cloning rows.
+pub fn unified_max_width(file: &FileView, theme: &Theme) -> usize {
+    ensure_unified(file, theme);
+    file.unified_cache
+        .borrow()
+        .as_ref()
+        .map_or(0, |(_, lines)| {
+            lines.iter().map(crate::ui::line_width).max().unwrap_or(0)
+        })
+}
+
 /// Clone only a requested window of the unified rendering.
 pub fn unified_lines_window(
     file: &FileView,
@@ -691,6 +702,22 @@ mod tests {
         assert!(text.contains("fn b() {}"));
         // The Rust grammar is compiled in, so syntax tokens were produced.
         assert!(fv.old_tokens.iter().any(|line| !line.is_empty()));
+    }
+
+    #[test]
+    fn unified_max_width_matches_the_rendered_rows() {
+        let fv = FileView::new(
+            change("notes.txt", "short\n", "a much longer replacement\n"),
+            Section::Working,
+            false,
+        );
+        let theme = Theme::dark();
+        let expected = unified_lines(&fv, &theme)
+            .iter()
+            .map(crate::ui::line_width)
+            .max()
+            .unwrap_or_default();
+        assert_eq!(unified_max_width(&fv, &theme), expected);
     }
 
     #[test]

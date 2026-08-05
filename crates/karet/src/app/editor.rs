@@ -270,28 +270,6 @@ impl App {
         tab.editor.scroll_line = u32::try_from(source.min(last)).unwrap_or(u32::MAX);
     }
 
-    /// Scroll the active overflow-mode code tab horizontally by `delta` columns.
-    pub(super) fn scroll_columns(&mut self, delta: i32) {
-        let word_wrap = self.tabs.get(self.active).is_some_and(|tab| {
-            effective_word_wrap(
-                tab,
-                self.settings
-                    .editor
-                    .for_language(tab_language(tab))
-                    .word_wrap(),
-            )
-        });
-        let Some(tab) = self.tabs.get_mut(self.active) else {
-            return;
-        };
-        if word_wrap {
-            return;
-        }
-        if let TabKind::Code { buffer, .. } = &tab.kind {
-            tab.editor.scroll_columns(buffer, delta);
-        }
-    }
-
     /// Jump to the top or bottom of the active tab.
     pub(super) fn scroll_edge(&mut self, top: bool) {
         let Some(tab) = self.tabs.get_mut(self.active) else {
@@ -455,6 +433,7 @@ impl App {
                 file: Box::new(file),
                 view,
                 scroll: 0,
+                column: 0,
             };
         }
     }

@@ -431,6 +431,7 @@ impl App {
                 file: Box::new(file),
                 view: self.diff_layout,
                 scroll: 0,
+                column: 0,
             },
         )
     }

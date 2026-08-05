@@ -20,6 +20,7 @@ mod prepare;
 mod remote_actions;
 mod runtime;
 mod scm;
+mod scroll;
 mod search;
 mod sidebar;
 mod snapshot_events;
