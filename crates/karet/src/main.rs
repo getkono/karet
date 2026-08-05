@@ -76,15 +76,7 @@ fn main() -> color_eyre::Result<()> {
     let syntax = !cli.no_syntax && std::env::var_os("NO_COLOR").is_none();
 
     // Resolve the workspace root and an optional initial file.
-    let (root, initial_file) = if path.is_file() {
-        let root = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-        (root, Some(path.clone()))
-    } else {
-        (path.clone(), None)
-    };
+    let (root, initial_file) = startup_target(path);
 
     // Load the layered JSONC configuration for this workspace (project/user/system,
     // over sane defaults). Diagnostics are handed to the app to surface as startup
@@ -200,6 +192,22 @@ fn resolve_under_root(root: &Path, path: &Path) -> PathBuf {
     }
 }
 
+fn startup_target(path: PathBuf) -> (PathBuf, Option<PathBuf>) {
+    if path.is_dir() || has_trailing_separator(&path) {
+        return (path, None);
+    }
+    let root = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    (root, Some(path))
+}
+
+fn has_trailing_separator(path: &Path) -> bool {
+    let last = path.as_os_str().as_encoded_bytes().last();
+    last == Some(&(std::path::MAIN_SEPARATOR as u8)) || (cfg!(windows) && last == Some(&b'/'))
+}
+
 fn startup_readme(root: &Path) -> Option<PathBuf> {
     if !root.join(".git").is_dir() {
         return None;
@@ -220,4 +228,41 @@ fn startup_readme(root: &Path) -> Option<PathBuf> {
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.to_ascii_lowercase().starts_with("readme."))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn positional_path_distinguishes_files_directories_and_missing_targets()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let existing = dir.path().join("README.md");
+        std::fs::write(&existing, "read me\n")?;
+
+        assert_eq!(
+            startup_target(existing.clone()),
+            (dir.path().to_path_buf(), Some(existing))
+        );
+        assert_eq!(
+            startup_target(dir.path().to_path_buf()),
+            (dir.path().to_path_buf(), None)
+        );
+        let missing = dir.path().join("NEW.md");
+        assert_eq!(
+            startup_target(missing.clone()),
+            (dir.path().to_path_buf(), Some(missing))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn trailing_separator_keeps_a_missing_path_as_a_workspace() {
+        let raw = format!("missing{}", std::path::MAIN_SEPARATOR);
+        assert_eq!(
+            startup_target(PathBuf::from(&raw)),
+            (PathBuf::from(raw), None)
+        );
+    }
 }

@@ -154,6 +154,14 @@ enum DocFormat {
     Cbor,
 }
 
+#[derive(Debug, thiserror::Error)]
+enum DocumentLoadError {
+    #[error("file does not exist")]
+    Missing,
+    #[error(transparent)]
+    Load(#[from] LoadError),
+}
+
 /// How many leading bytes to sample when classifying a document's on-disk format.
 const CLASSIFY_HEAD: usize = 8192;
 
@@ -162,8 +170,14 @@ const CLASSIFY_HEAD: usize = 8192;
 ///
 /// The buffer records the on-disk fingerprint of the *original* bytes so the
 /// file-watcher can still recognize the editor's own writes.
-fn load_document(path: &Path) -> Result<(TextBuffer, DocFormat), LoadError> {
-    let bytes = std::fs::read(path).map_err(|e| LoadError::Io(e.to_string()))?;
+fn load_document(path: &Path) -> Result<(TextBuffer, DocFormat), DocumentLoadError> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(DocumentLoadError::Missing);
+        },
+        Err(error) => return Err(LoadError::Io(error.to_string()).into()),
+    };
     let head = &bytes[..bytes.len().min(CLASSIFY_HEAD)];
     // Format detection ignores the size guard: once the session is asked to open a
     // document it must decode it correctly regardless of size (the guard is an
@@ -250,15 +264,24 @@ fn normalize_text_for_save(text: &str, settings: DocumentSettings) -> String {
 /// [`TextError::Conflict`] distinctly (rather than a generic IO error) so the
 /// caller can prompt the user instead of just reporting a failure.
 fn save_document(doc: &mut Document) -> Result<(), TextError> {
-    match doc.format {
-        DocFormat::Text => doc.buffer.save(&doc.path).map(|_| ()),
-        DocFormat::Cbor => {
+    let result = match (doc.format, doc.must_create) {
+        (DocFormat::Text, false) => doc.buffer.save(&doc.path).map(|_| ()),
+        (DocFormat::Text, true) => doc.buffer.save_new(&doc.path).map(|_| ()),
+        (DocFormat::Cbor, must_create) => {
             let text = doc.buffer.text();
             let bytes =
                 karet_cbor::encode_from_text(&text).map_err(|e| TextError::Io(e.to_string()))?;
-            doc.buffer.save_bytes(&doc.path, &bytes).map(|_| ())
+            if must_create {
+                doc.buffer.save_new_bytes(&doc.path, &bytes).map(|_| ())
+            } else {
+                doc.buffer.save_bytes(&doc.path, &bytes).map(|_| ())
+            }
         },
+    };
+    if result.is_ok() {
+        doc.must_create = false;
     }
+    result
 }
 
 /// One open document and its derived state.
@@ -269,6 +292,8 @@ struct Document {
     buffer: TextBuffer,
     /// How the buffer is (de)serialized on disk.
     format: DocFormat,
+    /// The path was absent on open, so its first save must use atomic no-clobber.
+    must_create: bool,
     /// Per-path behavior after application settings and EditorConfig resolution.
     settings: DocumentSettings,
     /// The last highlights the worker produced, translated across any edits applied

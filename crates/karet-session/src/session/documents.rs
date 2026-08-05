@@ -39,9 +39,10 @@ impl Session {
             }
             return;
         }
-        let (mut buffer, format) = match load_document(&path) {
-            Ok(loaded) => loaded,
-            Err(LoadError::NotUtf8 { .. }) => {
+        let (mut buffer, format, must_create) = match load_document(&path) {
+            Ok((buffer, format)) => (buffer, format, false),
+            Err(DocumentLoadError::Missing) => (TextBuffer::new(), DocFormat::Text, true),
+            Err(DocumentLoadError::Load(LoadError::NotUtf8 { .. })) => {
                 // Full non-UTF-8 editing isn't supported; tell the client so it can
                 // fall back to a read-only view instead of leaving this path's tab
                 // registered with no document forever.
@@ -85,6 +86,7 @@ impl Session {
             lang_id,
             buffer,
             format,
+            must_create,
             settings: document_settings,
             highlights: Arc::new(Highlights::default()),
             folds: Arc::new(FoldRegions::default()),
