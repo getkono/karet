@@ -195,6 +195,50 @@ fn home_end_move_to_line_edges_ctrl_to_document() {
 #[test]
 fn word_motion_and_select_all_bind_in_editor() {
     assert_eq!(
+        res(Focus::Editor, false, key(KeyCode::Left, KeyModifiers::ALT)),
+        Some(Command::CaretWordLeft)
+    );
+    assert_eq!(
+        res(
+            Focus::Editor,
+            false,
+            key(KeyCode::Right, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        ),
+        Some(Command::SelectWordRight)
+    );
+    assert_eq!(
+        res(
+            Focus::Editor,
+            false,
+            key(KeyCode::Left, KeyModifiers::SUPER)
+        ),
+        Some(Command::CaretLineStart)
+    );
+    assert_eq!(
+        res(
+            Focus::Editor,
+            false,
+            key(KeyCode::Down, KeyModifiers::SUPER | KeyModifiers::SHIFT)
+        ),
+        Some(Command::SelectDocEnd)
+    );
+    assert_eq!(
+        res(
+            Focus::Editor,
+            false,
+            key(KeyCode::Backspace, KeyModifiers::ALT)
+        ),
+        Some(Command::DeleteWordBackward)
+    );
+    assert_eq!(
+        res(
+            Focus::Editor,
+            false,
+            key(KeyCode::Delete, KeyModifiers::CONTROL)
+        ),
+        Some(Command::DeleteWordForward)
+    );
+    assert_eq!(
         res(
             Focus::Editor,
             false,

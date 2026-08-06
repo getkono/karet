@@ -9,6 +9,8 @@
 //! - a bare letter carries `Shift` in its character case (`g` vs `G`), so the
 //!   `Shift` flag is dropped;
 //! - `BackTab` normalizes to `Tab` + `Shift`.
+//! - Command/Super arrows normalize to the corresponding Home/End chords, keeping
+//!   the public chord model platform-independent.
 //!
 //! [`KeyChord::from_event`] canonicalizes a live event; the binding table is
 //! authored in the same canonical form (guarded by a test), so a binding matches a
@@ -69,10 +71,27 @@ impl KeyChord {
     /// The canonical chord for a live terminal key event.
     #[must_use]
     pub fn from_event(ev: KeyEvent) -> Self {
-        let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
+        let mut ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
         let alt = ev.modifiers.contains(KeyModifiers::ALT);
+        let code = if ev.modifiers.contains(KeyModifiers::SUPER) {
+            match ev.code {
+                KeyCode::Left => KeyCode::Home,
+                KeyCode::Right => KeyCode::End,
+                KeyCode::Up => {
+                    ctrl = true;
+                    KeyCode::Home
+                },
+                KeyCode::Down => {
+                    ctrl = true;
+                    KeyCode::End
+                },
+                _ => KeyCode::Null,
+            }
+        } else {
+            ev.code
+        };
         // Some terminals report Shift+Tab as `BackTab`; fold it back to Tab + Shift.
-        let (code, shift) = match ev.code {
+        let (code, shift) = match code {
             KeyCode::BackTab => (KeyCode::Tab, true),
             other => (other, ev.modifiers.contains(KeyModifiers::SHIFT)),
         };
@@ -200,6 +219,22 @@ mod tests {
         let shift_down = chord(false, true, false, KeyCode::Down);
         assert!(shift_down.matches(ev(KeyCode::Down, KeyModifiers::SHIFT)));
         assert!(!shift_down.matches(ev(KeyCode::Down, KeyModifiers::NONE)));
+    }
+
+    #[test]
+    fn command_arrows_normalize_to_platform_independent_edges() {
+        let line_start = chord(false, false, false, KeyCode::Home);
+        assert!(line_start.matches(ev(KeyCode::Left, KeyModifiers::SUPER)));
+        let select_line_start = chord(false, true, false, KeyCode::Home);
+        assert!(
+            select_line_start.matches(ev(KeyCode::Left, KeyModifiers::SUPER | KeyModifiers::SHIFT))
+        );
+        let document_end = chord(true, false, false, KeyCode::End);
+        assert!(document_end.matches(ev(KeyCode::Down, KeyModifiers::SUPER)));
+        assert_eq!(
+            KeyChord::from_event(ev(KeyCode::Char('x'), KeyModifiers::SUPER)).code,
+            KeyCode::Null
+        );
     }
 
     #[test]

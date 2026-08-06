@@ -120,7 +120,7 @@ impl App {
                     && self.active_code_doc().is_some()
                     && !key
                         .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
                     && let KeyCode::Char(c) = key.code
                 {
                     self.dispatch(Command::InsertChar(c));

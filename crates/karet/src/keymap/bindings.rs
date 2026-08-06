@@ -143,20 +143,25 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Editor, false, true,  false, Right,     Command::SelectRight),
     b(Editor, false, false, false, PageDown,  Command::PageDown),
     b(Editor, false, false, false, PageUp,    Command::PageUp),
-    // Word- and line-wise caret motion (VS Code parity). Home/End move to the line
-    // edges; Ctrl+Home/End jump the caret to the document edges (moving it, not just
-    // scrolling); Ctrl+Left/Right step by word.
+    // Platform-native edge motion: Home/End and Ctrl+Home/End serve Windows/Linux;
+    // Command+arrows serves macOS (and remains harmless when another platform's
+    // terminal reports Super). Alt/Option is the portable word modifier; the prior
+    // Ctrl aliases remain available.
     b(Editor, false, false, false, Home,      Command::CaretLineStart),
     b(Editor, false, false, false, End,       Command::CaretLineEnd),
     b(Editor, true,  false, false, Home,      Command::CaretDocStart),
     b(Editor, true,  false, false, End,       Command::CaretDocEnd),
+    b(Editor, false, false, true,  Left,      Command::CaretWordLeft),
+    b(Editor, false, false, true,  Right,     Command::CaretWordRight),
     b(Editor, true,  false, false, Left,      Command::CaretWordLeft),
     b(Editor, true,  false, false, Right,     Command::CaretWordRight),
-    // Selection: Shift extends each motion; Ctrl adds word/document granularity.
+    // Shift extends every corresponding motion.
     b(Editor, false, true,  false, Home,      Command::SelectLineStart),
     b(Editor, false, true,  false, End,       Command::SelectLineEnd),
     b(Editor, true,  true,  false, Home,      Command::SelectDocStart),
     b(Editor, true,  true,  false, End,       Command::SelectDocEnd),
+    b(Editor, false, true,  true,  Left,      Command::SelectWordLeft),
+    b(Editor, false, true,  true,  Right,     Command::SelectWordRight),
     b(Editor, true,  true,  false, Left,      Command::SelectWordLeft),
     b(Editor, true,  true,  false, Right,     Command::SelectWordRight),
     b(Editor, false, true,  false, PageDown,  Command::SelectPageDown),
@@ -174,6 +179,10 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Editor, false, false, false, Enter,     Command::InsertNewline),
     b(Editor, false, false, false, Backspace, Command::DeleteBackward),
     b(Editor, false, false, false, Delete,    Command::DeleteForward),
+    b(Editor, false, false, true,  Backspace, Command::DeleteWordBackward),
+    b(Editor, false, false, true,  Delete,    Command::DeleteWordForward),
+    b(Editor, true,  false, false, Backspace, Command::DeleteWordBackward),
+    b(Editor, true,  false, false, Delete,    Command::DeleteWordForward),
     b(Editor, true,  false, false, Char('s'), Command::Save),
     b(Editor, true,  false, false, Char('z'), Command::Undo),
     b(Editor, true,  false, false, Char('y'), Command::Redo),

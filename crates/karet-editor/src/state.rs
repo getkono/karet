@@ -387,7 +387,7 @@ impl EditorState {
 
     /// Move every caret to the start of the previous word (wrapping across lines).
     pub fn move_word_left(&mut self, buffer: &TextBuffer) {
-        self.map_heads(|h| prev_word_boundary(buffer, h));
+        self.map_heads(|h| previous_word_boundary(buffer, h));
     }
 
     /// Move every caret to the end of the next word (wrapping across lines).
