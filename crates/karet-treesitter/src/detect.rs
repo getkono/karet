@@ -146,6 +146,24 @@ mod tests {
         }
     }
 
+    #[cfg(all(
+        feature = "lang-sql",
+        feature = "lang-graphql",
+        feature = "lang-protobuf"
+    ))]
+    #[test]
+    fn query_and_schema_paths_resolve_to_their_grammars() {
+        for (path, expected) in [
+            ("schema.sql", "SQL"),
+            ("schema.graphql", "GraphQL"),
+            ("schema.gql", "GraphQL"),
+            ("schema.proto", "Protobuf"),
+        ] {
+            assert_eq!(language_name_from_path(Path::new(path)), Some(expected));
+            assert!(language_id_from_path(Path::new(path)).is_some(), "{path}");
+        }
+    }
+
     #[test]
     fn extension_is_case_insensitive() {
         assert_eq!(extension(Path::new("X.MD")).as_deref(), Some("md"));

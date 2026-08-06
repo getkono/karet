@@ -307,6 +307,21 @@ mod tests {
                 ".café { color: red; }\n@keyframes tourné { from {} }\n???",
                 ".café",
             ),
+            (
+                "schema.sql",
+                "CREATE SCHEMA café; CREATE TABLE café.thé (id int); ???",
+                "café",
+            ),
+            (
+                "schema.graphql",
+                "\"Café schema\" type Coffee { roast: String } ???",
+                "Coffee",
+            ),
+            (
+                "schema.proto",
+                "// Café service\nmessage Coffee { string roast = 1; } ???",
+                "Coffee",
+            ),
         ];
         for (path, source, expected) in cases {
             let extracted = symbols(path, source)?;
@@ -341,6 +356,9 @@ mod tests {
             "Cargo.toml",
             "page.html",
             "style.css",
+            "schema.sql",
+            "schema.graphql",
+            "schema.proto",
         ] {
             assert!(symbols(path, "")?.is_empty(), "{path}");
         }
@@ -364,6 +382,46 @@ mod tests {
         assert_eq!(child.container_name.as_deref(), Some("café"));
         assert!(child.range.start <= child.selection_range.start);
         assert!(child.selection_range.end <= child.range.end);
+        Ok(())
+    }
+
+    #[test]
+    fn query_and_schema_languages_keep_nested_declarations() -> TestResult {
+        let sql = symbols(
+            "schema.sql",
+            "CREATE VIEW café.orders AS WITH récent AS (SELECT 1) SELECT * FROM récent; ???",
+        )?;
+        let view = sql
+            .iter()
+            .find(|symbol| symbol.name == "café.orders")
+            .ok_or("SQL view")?;
+        assert!(names(&view.children).contains(&"récent"), "{sql:#?}");
+
+        let graphql = symbols(
+            "schema.graphql",
+            "\"Café\" type Coffee { roast: String } query Brew { coffee { roast } } ???",
+        )?;
+        let object = graphql
+            .iter()
+            .find(|symbol| symbol.name == "Coffee")
+            .ok_or("GraphQL type")?;
+        assert!(names(&object.children).contains(&"roast"), "{graphql:#?}");
+        assert!(names(&graphql).contains(&"Brew"), "{graphql:#?}");
+
+        let proto = symbols(
+            "schema.proto",
+            "// Café\nmessage Coffee { message Roast {} } service Brewer { rpc Brew (Coffee) returns (Coffee); } ???",
+        )?;
+        let message = proto
+            .iter()
+            .find(|symbol| symbol.name == "Coffee")
+            .ok_or("Protobuf message")?;
+        assert!(names(&message.children).contains(&"Roast"), "{proto:#?}");
+        let service = proto
+            .iter()
+            .find(|symbol| symbol.name == "Brewer")
+            .ok_or("Protobuf service")?;
+        assert!(names(&service.children).contains(&"Brew"), "{proto:#?}");
         Ok(())
     }
 }
