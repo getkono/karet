@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/getkono/karet/compare/karet-treesitter-v0.3.0...karet-treesitter-v0.4.0) - 2026-08-06
+
+### Added
+
+- *(editor)* add semantic inline macros
+- *(outline)* support structured data formats
+- *(outline)* add layered web languages
+- *(outline)* support programming languages
+- *(outline)* support shell languages
+- *(outline)* support document markup formats
+- *(outline)* support build languages
+- *(outline)* support query and schema languages
+- *(outline)* add tree-sitter symbol fallback
+- *(syntax)* add modern language grammars
+- *(treesitter)* add LaTeX syntax support
+
+### Other
+
+- *(language)* decouple file type identities
+
 ## [0.3.0](https://github.com/getkono/karet/compare/karet-treesitter-v0.2.2...karet-treesitter-v0.3.0) - 2026-07-19
 
 ### Added

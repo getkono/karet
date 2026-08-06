@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/getkono/karet/compare/karet-text-v0.3.0...karet-text-v0.4.0) - 2026-08-06
+
+### Added
+
+- *(karet)* explain manual language-server requirements
+- *(karet)* report existing application logs
+- *(karet)* persist application diagnostics
+- *(lsp)* manage shared language server toolchains
+- *(session)* resolve EditorConfig per document
+
+### Other
+
+- Merge pull request #178 from getkono/fix/open-cli-path-153
+- *(readme)* capture the hero image from the real app
+- *(readme)* add deterministic hero artwork
+- unify pre-push and workflow checks
+- *(lsp)* document server manager controls
+- document the external LaTeX workflow
+- explain optional spell checking
+
 ## [0.2.2](https://github.com/getkono/karet/compare/karet-text-v0.2.1...karet-text-v0.2.2) - 2026-07-10
 
 ### Other
