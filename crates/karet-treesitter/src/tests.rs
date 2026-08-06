@@ -37,6 +37,26 @@ fn every_registered_semantic_query_compiles() -> Result<(), TsError> {
     Ok(())
 }
 
+#[test]
+fn every_registered_outline_query_compiles() -> Result<(), TsError> {
+    for grammar in registry::all() {
+        let Some(source) = outline_query(grammar.id) else {
+            continue;
+        };
+        let query = Query::compile(grammar.id, &source)?;
+        assert!(
+            query
+                .capture_names()
+                .iter()
+                .any(|capture| capture.starts_with("definition.")),
+            "{} outline query has no definition captures",
+            grammar.name
+        );
+        assert!(query.capture_names().contains(&"name"));
+    }
+    Ok(())
+}
+
 #[cfg(feature = "lang-rust")]
 #[test]
 fn injections_query_compiles_for_grammars_that_ship_one() -> Result<(), TsError> {

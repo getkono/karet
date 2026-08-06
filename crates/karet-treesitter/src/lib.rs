@@ -79,6 +79,17 @@ pub fn semantic_query(lang: LanguageId) -> Option<&'static str> {
     registry::semantic_query(lang)
 }
 
+/// The declaration query used to build a document outline for `lang`.
+///
+/// Captures named `definition.*` cover the complete declaration and their
+/// accompanying `name` capture covers the navigation label. Languages whose
+/// upstream grammar ships a tags query reuse it; data and markup grammars use
+/// small karet-authored equivalents.
+#[must_use]
+pub fn outline_query(lang: LanguageId) -> Option<Cow<'static, str>> {
+    registry::outline_query(lang)
+}
+
 /// A pool of reusable tree-sitter parsers, keyed by [`LanguageId`].
 #[derive(Default)]
 pub struct ParserPool {

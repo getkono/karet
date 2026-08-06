@@ -4,6 +4,7 @@
 //! grammars compiled in. [`LanguageId`] values are stable and must **never** be
 //! renumbered once shipped.
 
+use std::borrow::Cow;
 use std::sync::OnceLock;
 
 use crate::LanguageId;
@@ -239,6 +240,119 @@ pub(crate) fn semantic_query(_lang: LanguageId) -> Option<&'static str> {
     #[cfg(feature = "lang-latex")]
     if _lang == LATEX {
         return Some(LATEX_SEMANTIC);
+    }
+    None
+}
+
+#[cfg(feature = "lang-bash")]
+const BASH_OUTLINE: &str = r#"
+(function_definition name: (word) @name) @definition.function
+"#;
+
+#[cfg(feature = "lang-json")]
+const JSON_OUTLINE: &str = r#"
+(pair key: (string) @name value: [(object) (array)]) @definition.object
+"#;
+
+#[cfg(feature = "lang-yaml")]
+const YAML_OUTLINE: &str = r#"
+(block_mapping_pair
+  key: (_) @name
+  value: (block_node [(block_mapping) (block_sequence)])) @definition.object
+"#;
+
+#[cfg(feature = "lang-toml")]
+const TOML_OUTLINE: &str = r#"
+(table [(bare_key) (dotted_key) (quoted_key)] @name) @definition.object
+(table_array_element [(bare_key) (dotted_key) (quoted_key)] @name) @definition.array
+"#;
+
+#[cfg(feature = "lang-html")]
+const HTML_OUTLINE: &str = r#"
+((element (start_tag (tag_name) @name)) @definition.object
+ (#match? @name "^(main|nav|section|article|aside|header|footer|h[1-6])$"))
+"#;
+
+#[cfg(feature = "lang-css")]
+const CSS_OUTLINE: &str = r#"
+(rule_set (selectors) @name) @definition.class
+(media_statement) @name @definition.namespace
+(supports_statement) @name @definition.namespace
+(keyframes_statement (keyframes_name) @name) @definition.class
+"#;
+
+pub(crate) fn outline_query(_lang: LanguageId) -> Option<Cow<'static, str>> {
+    #[cfg(feature = "lang-rust")]
+    if _lang == RUST {
+        return Some(Cow::Borrowed(tree_sitter_rust::TAGS_QUERY));
+    }
+    #[cfg(feature = "lang-python")]
+    if _lang == PYTHON {
+        return Some(Cow::Borrowed(tree_sitter_python::TAGS_QUERY));
+    }
+    #[cfg(feature = "lang-javascript")]
+    if _lang == JAVASCRIPT {
+        return Some(Cow::Borrowed(tree_sitter_javascript::TAGS_QUERY));
+    }
+    #[cfg(feature = "lang-typescript")]
+    if _lang == TYPESCRIPT || _lang == TSX {
+        return Some(Cow::Owned(format!(
+            "{}\n{}",
+            tree_sitter_javascript::TAGS_QUERY,
+            tree_sitter_typescript::TAGS_QUERY
+        )));
+    }
+    #[cfg(feature = "lang-go")]
+    if _lang == GO {
+        return Some(Cow::Borrowed(tree_sitter_go::TAGS_QUERY));
+    }
+    #[cfg(feature = "lang-c")]
+    if _lang == C {
+        return Some(Cow::Borrowed(tree_sitter_c::TAGS_QUERY));
+    }
+    #[cfg(feature = "lang-cpp")]
+    if _lang == CPP {
+        return Some(Cow::Borrowed(tree_sitter_cpp::TAGS_QUERY));
+    }
+    #[cfg(feature = "lang-csharp")]
+    if _lang == CSHARP {
+        return Some(Cow::Borrowed(tree_sitter_c_sharp::TAGS_QUERY));
+    }
+    #[cfg(feature = "lang-java")]
+    if _lang == JAVA {
+        return Some(Cow::Borrowed(tree_sitter_java::TAGS_QUERY));
+    }
+    #[cfg(feature = "lang-ruby")]
+    if _lang == RUBY {
+        return Some(Cow::Borrowed(tree_sitter_ruby::TAGS_QUERY));
+    }
+    #[cfg(feature = "lang-php")]
+    if _lang == PHP {
+        return Some(Cow::Borrowed(tree_sitter_php::TAGS_QUERY));
+    }
+    #[cfg(feature = "lang-bash")]
+    if _lang == BASH {
+        return Some(Cow::Borrowed(BASH_OUTLINE));
+    }
+    #[cfg(feature = "lang-json")]
+    if _lang == JSON {
+        return Some(Cow::Borrowed(JSON_OUTLINE));
+    }
+    #[cfg(feature = "lang-yaml")]
+    if _lang == YAML {
+        return Some(Cow::Borrowed(YAML_OUTLINE));
+    }
+    #[cfg(feature = "lang-toml")]
+    if _lang == TOML {
+        return Some(Cow::Borrowed(TOML_OUTLINE));
+    }
+    #[cfg(feature = "lang-html")]
+    if _lang == HTML {
+        return Some(Cow::Borrowed(HTML_OUTLINE));
+    }
+    #[cfg(feature = "lang-css")]
+    if _lang == CSS {
+        return Some(Cow::Borrowed(CSS_OUTLINE));
     }
     None
 }

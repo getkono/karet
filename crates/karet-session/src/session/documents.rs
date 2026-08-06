@@ -93,6 +93,7 @@ impl Session {
             highlights: Arc::new(Highlights::default()),
             folds: Arc::new(FoldRegions::default()),
             semantic_blocks: Arc::new(SemanticBlocks::default()),
+            syntax_symbols: Arc::default(),
             error_lines: Arc::default(),
             spell_diagnostics: Vec::new(),
             lsp_diagnostics: HashMap::new(),

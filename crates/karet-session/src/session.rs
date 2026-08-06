@@ -41,6 +41,7 @@ use karet_core::NotificationKind;
 use karet_core::Range;
 use karet_core::Selection;
 use karet_core::Severity;
+use karet_core::Symbol;
 use karet_core::TextEdit;
 use karet_filetype::FileKind;
 use karet_filetype::classify_ignoring_size;
@@ -282,6 +283,8 @@ struct Document {
     folds: Arc<FoldRegions>,
     /// Semantic block scopes produced by the syntax worker for this version.
     semantic_blocks: Arc<SemanticBlocks>,
+    /// Grammar-backed outline used when LSP supplies no symbols.
+    syntax_symbols: Arc<Vec<Symbol>>,
     /// Syntax-error line ranges from the worker's last parse (see
     /// [`DocSnapshot::syntax_error_lines`]).
     error_lines: Arc<Vec<(u32, u32)>>,
@@ -841,6 +844,7 @@ fn update_syntax(
         doc.highlights = Arc::new(Highlights::default());
         doc.folds = Arc::new(FoldRegions::default());
         doc.semantic_blocks = Arc::new(SemanticBlocks::default());
+        doc.syntax_symbols = Arc::default();
         return true;
     };
 
@@ -850,6 +854,7 @@ fn update_syntax(
         // Block scopes are line-based and cannot be translated safely across an
         // arbitrary edit. Hide them briefly rather than render stale source context.
         doc.semantic_blocks = Arc::new(SemanticBlocks::default());
+        doc.syntax_symbols = Arc::default();
         for ae in edits {
             doc.highlights = Arc::new(doc.highlights.translate(
                 BytePos(ae.start_byte),
