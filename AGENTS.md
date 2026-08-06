@@ -99,7 +99,7 @@ published to crates.io (everything else is `publish = false`).
 | `karet-session` | backend | — | headless editor backend: owns documents/workspace, orchestrates producers, applies `Command`s, emits `Event`s; runs layered highlighting on a background worker; holds format-on-save, spell-check, settings/session |
 | `karet-widgets` | widget | — | ratatui UI toolkit: file tree, picker/palette, outline+breadcrumbs, status bar, dialogs, dock, problems, pane layout, LSP completion/hover popups |
 | `karet-editor` | widget | ✓ | the editor widget: gutter, minimap, scroll, visual aids, snippets (modules); `read_only` pager mode |
-| `karet-fileview` | widget | ✓ | read-only "render any file" widget: dispatches `FileKind` → editor/hex/image/placeholder; hosts the hex view + terminal image (behind `raster`/`images`), PDF (behind `pdf`), and DOCX→markdown (behind `docx`); Markdown renders as source |
+| `karet-fileview` | widget | ✓ | read-only "render any file" widget: dispatches `FileKind` → editor/hex/image/placeholder; hosts the hex view + terminal image (behind `raster`/`images`) and PDF (behind `pdf`); Markdown renders as source |
 | `karet` | app | — | composition root / TUI client (local mode); merges the clipboard + input (keymap) modules; default-on `images`/`pdf`/`docx` features gate the optional media/document deps (`--no-default-features` → lean build, see `docs/binary-size.md`); `publish = false` |
 | `blameline` | standalone | ✓ | semantic git-blame (via `gix`): group lines by commit, tree-sitter function narrowing, serde/JSON output; headless, on its **own** SemVer line (see [Versioning](#versioning)) |
 
