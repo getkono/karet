@@ -1,6 +1,21 @@
 use super::*;
 
 impl App {
+    pub(super) fn toggle_commit_file(&mut self, file: usize) -> bool {
+        let Some(TabKind::Commit { view, .. } | TabKind::Compare { view, .. }) =
+            self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
+        else {
+            return false;
+        };
+        if !view.collapsed_files.remove(&file) {
+            view.collapsed_files.insert(file);
+        }
+        if let Some(anchor) = view.file_anchors.get(file) {
+            view.scroll = *anchor;
+        }
+        true
+    }
+
     /// The active tab's commit graph browser, if it is one.
     pub(super) fn active_commit_graph(&mut self) -> Option<&mut TabKind> {
         let tab = self.tabs.get_mut(self.active)?;

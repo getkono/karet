@@ -23,6 +23,7 @@ pub(super) fn draw_pane_content(
     let image_area: Option<Rect> = None;
     let mut badge_rect = None;
     let mut file_hits = Vec::new();
+    let mut collapse_hits = Vec::new();
     let mut blame_rect = None;
     let mut markdown_link_hits = Vec::new();
     let mut editor_rect = area;
@@ -239,6 +240,7 @@ pub(super) fn draw_pane_content(
             );
             badge_rect = painted.badge_rect;
             file_hits = painted.file_hits;
+            collapse_hits = painted.collapse_hits;
         },
         TabKind::CommitLoading {
             rev,
@@ -274,6 +276,7 @@ pub(super) fn draw_pane_content(
                 view,
             );
             file_hits = painted.file_hits;
+            collapse_hits = painted.collapse_hits;
         },
         TabKind::CommitGraph {
             history_path: _,
@@ -460,6 +463,7 @@ pub(super) fn draw_pane_content(
         image_area,
         badge_rect,
         file_hits,
+        collapse_hits,
         blame_rect,
         markdown_link_hits,
     }

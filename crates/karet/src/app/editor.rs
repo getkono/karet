@@ -576,7 +576,7 @@ impl App {
     pub(super) fn handle_editor_click(&mut self, mouse: MouseEvent) {
         let point = (mouse.column, mouse.row);
         // Route the click to the pane whose content it landed in, focusing it.
-        let Some((pane, area, file_hit)) = self
+        let Some((pane, area, file_hit, collapse_hit)) = self
             .pane_frames
             .iter()
             .find(|f| rect_contains(f.content_rect, point))
@@ -588,6 +588,10 @@ impl App {
                         .iter()
                         .find(|hit| rect_contains(hit.rect, point))
                         .copied(),
+                    f.commit_collapse_hits
+                        .iter()
+                        .find(|hit| rect_contains(hit.rect, point))
+                        .copied(),
                 )
             })
         else {
@@ -596,6 +600,10 @@ impl App {
         self.focus_pane_switch(pane);
         self.focus = Focus::Editor;
         if self.handle_language_server_click(mouse.column, mouse.row) {
+            self.editor_selecting = false;
+            return;
+        }
+        if collapse_hit.is_some_and(|hit| self.toggle_commit_file(hit.file)) {
             self.editor_selecting = false;
             return;
         }

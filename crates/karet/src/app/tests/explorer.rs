@@ -326,6 +326,7 @@
                 height: 10,
             },
             commit_file_hits: Vec::new(),
+            commit_collapse_hits: Vec::new(),
         }
     }
 

@@ -456,6 +456,7 @@ struct RenderedPane {
     image_area: Option<Rect>,
     commit_badge_rect: Option<Rect>,
     commit_file_hits: Vec<crate::app::CommitFileHit>,
+    commit_collapse_hits: Vec<crate::app::CommitCollapseHit>,
     blame_rect: Option<Rect>,
     markdown_link_hits: Vec<crate::app::MarkdownLinkHit>,
 }
@@ -469,6 +470,7 @@ struct PaneContent {
     image_area: Option<Rect>,
     badge_rect: Option<Rect>,
     file_hits: Vec<crate::app::CommitFileHit>,
+    collapse_hits: Vec<crate::app::CommitCollapseHit>,
     blame_rect: Option<Rect>,
     markdown_link_hits: Vec<crate::app::MarkdownLinkHit>,
 }
