@@ -41,6 +41,11 @@ hooks {
     ["pre-push"] {
         steps {
             ["workspace-verify"] {
+                // hk resolves the pushed range into a file list; the glob makes the
+                // step file-filtered so hk skips it when that range is empty (nothing
+                // to push, a branch deletion, or a ref that adds no changes). The
+                // command still verifies the whole workspace, not the matched files.
+                glob = "**/*"
                 check = "mise run verify"
             }
         }

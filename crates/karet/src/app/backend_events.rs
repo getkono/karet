@@ -623,7 +623,11 @@ impl App {
             },
             SessionEvent::CommitMessageGenerated { message } => {
                 self.commit_input.text = message;
-                self.commit_input.cursor = self.commit_input.text.len();
+                self.commit_input.edit.set_cursor(
+                    &self.commit_input.text,
+                    self.commit_input.text.len(),
+                    false,
+                );
                 self.commit_input.scroll = 0;
                 self.status = Some("commit message generated".to_string());
             },

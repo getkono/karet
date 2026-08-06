@@ -16,6 +16,15 @@ fn unknown_language_has_no_highlights() {
     assert!(highlights_query(LanguageId(60000)).is_none());
     assert!(injections_query(LanguageId(60000)).is_none());
     assert!(semantic_query(LanguageId(60000)).is_none());
+    assert!(outline_query(LanguageId(60000)).is_none());
+}
+
+#[test]
+fn every_registered_highlight_query_compiles() -> Result<(), TsError> {
+    for grammar in registry::all() {
+        Query::compile(grammar.id, grammar.highlights)?;
+    }
+    Ok(())
 }
 
 #[test]
@@ -33,6 +42,26 @@ fn every_registered_semantic_query_compiles() -> Result<(), TsError> {
             "{} semantic query has no semantic captures",
             grammar.name
         );
+    }
+    Ok(())
+}
+
+#[test]
+fn every_registered_outline_query_compiles() -> Result<(), TsError> {
+    for grammar in registry::all() {
+        let Some(source) = outline_query(grammar.id) else {
+            continue;
+        };
+        let query = Query::compile(grammar.id, &source)?;
+        assert!(
+            query
+                .capture_names()
+                .iter()
+                .any(|capture| capture.starts_with("definition.")),
+            "{} outline query has no definition captures",
+            grammar.name
+        );
+        assert!(query.capture_names().contains(&"name"));
     }
     Ok(())
 }
@@ -472,10 +501,106 @@ fn point_at_resolves_rows_and_columns() {
     );
 }
 
+#[test]
+fn named_ancestors_are_neutral_and_innermost_first() -> Result<(), TsError> {
+    let lang = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+    let source = "fn main() { let value = 1; }";
+    let mut pool = ParserPool::new();
+    let tree = SyntaxTree::parse(&mut pool, lang, source)?;
+    let byte = source.find("value").ok_or(TsError::ParseFailed)?;
+    let nodes = tree.named_ancestors_at(BytePos(byte));
+
+    assert_eq!(
+        nodes.first().map(|node| node.kind.as_str()),
+        Some("identifier")
+    );
+    assert!(nodes.iter().any(|node| node.kind == "block"));
+    assert_eq!(
+        nodes.last().map(|node| node.kind.as_str()),
+        Some("source_file")
+    );
+    assert!(nodes.windows(2).all(|pair| {
+        pair[1].span.start.0 <= pair[0].span.start.0 && pair[0].span.end.0 <= pair[1].span.end.0
+    }));
+    assert_eq!(
+        tree.named_ancestors_at(BytePos(source.len()))
+            .last()
+            .map(|node| node.kind.as_str()),
+        Some("source_file")
+    );
+    Ok(())
+}
+
 #[cfg(feature = "lang-rust")]
 #[test]
 fn detects_rust_by_extension_and_name() {
     let p = std::path::Path::new("src/lib.rs");
     assert!(language_id_from_path(p).is_some());
     assert_eq!(language_name_from_path(p), Some("Rust"));
+}
+
+#[cfg(all(
+    feature = "lang-scss",
+    feature = "lang-sass",
+    feature = "lang-less",
+    feature = "lang-erb",
+    feature = "lang-mdx",
+    feature = "lang-html"
+))]
+#[test]
+fn detects_web_and_template_grammars_by_shared_filetype_identity() {
+    for (path, expected_grammar) in [
+        ("style.scss", "scss"),
+        ("style.sass", "sass"),
+        ("style.less", "less"),
+        ("view.erb", "erb"),
+        ("guide.mdx", "mdx"),
+        ("page.xhtml", "html"),
+    ] {
+        let path = std::path::Path::new(path);
+        assert_eq!(
+            language_id_from_path(path),
+            language_id_from_injection_name(expected_grammar),
+            "{path:?}"
+        );
+    }
+}
+
+#[cfg(all(
+    feature = "lang-json5",
+    feature = "lang-ini",
+    feature = "lang-properties",
+    feature = "lang-edn",
+    feature = "lang-cbor",
+    feature = "lang-xml",
+    feature = "lang-json",
+    feature = "lang-yaml",
+    feature = "lang-toml",
+    feature = "lang-lockfile"
+))]
+#[test]
+fn detects_structured_formats_and_ecosystem_lockfiles() {
+    for (path, expected_grammar) in [
+        ("data.json5", "json5"),
+        ("settings.ini", "ini"),
+        ("messages.properties", "properties"),
+        ("data.edn", "edn"),
+        ("data.cbor", "cbor"),
+        ("catalog.xml", "xml"),
+        ("icon.svg", "xml"),
+        (".editorconfig", "ini"),
+        (".env", "properties"),
+        (".gitmodules", "ini"),
+        ("Cargo.lock", "toml"),
+        ("package-lock.json", "json"),
+        ("pnpm-lock.yaml", "yaml"),
+        ("yarn.lock", "lockfile"),
+    ] {
+        let path = std::path::Path::new(path);
+        assert_eq!(
+            language_id_from_path(path),
+            language_id_from_injection_name(expected_grammar),
+            "{path:?}"
+        );
+    }
 }

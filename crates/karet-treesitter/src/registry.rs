@@ -8,6 +8,13 @@ use std::sync::OnceLock;
 
 use crate::LanguageId;
 
+mod outlines;
+pub(crate) use outlines::outline_query;
+mod programming;
+mod shells;
+mod structured;
+mod web;
+
 #[cfg(feature = "lang-rust")]
 const RUST_SEMANTIC: &str = r#"
 (function_item (block) @semantic.body) @semantic.scope
@@ -323,6 +330,56 @@ pub(crate) const SVELTE: LanguageId = LanguageId(24);
 pub(crate) const ASTRO: LanguageId = LanguageId(25);
 #[cfg(feature = "lang-vue")]
 pub(crate) const VUE: LanguageId = LanguageId(26);
+#[cfg(feature = "lang-sql")]
+pub(crate) const SQL: LanguageId = LanguageId(27);
+#[cfg(feature = "lang-graphql")]
+pub(crate) const GRAPHQL: LanguageId = LanguageId(28);
+#[cfg(feature = "lang-protobuf")]
+pub(crate) const PROTOBUF: LanguageId = LanguageId(29);
+#[cfg(feature = "lang-containerfile")]
+pub(crate) const CONTAINERFILE: LanguageId = LanguageId(30);
+#[cfg(feature = "lang-make")]
+pub(crate) const MAKE: LanguageId = LanguageId(31);
+#[cfg(feature = "lang-cmake")]
+pub(crate) const CMAKE: LanguageId = LanguageId(32);
+#[cfg(feature = "lang-rst")]
+pub(crate) const RST: LanguageId = LanguageId(33);
+#[cfg(feature = "lang-asciidoc")]
+pub(crate) const ASCIIDOC: LanguageId = LanguageId(34);
+#[cfg(feature = "lang-zsh")]
+pub(crate) const ZSH: LanguageId = LanguageId(35);
+#[cfg(feature = "lang-fish")]
+pub(crate) const FISH: LanguageId = LanguageId(36);
+#[cfg(feature = "lang-powershell")]
+pub(crate) const POWERSHELL: LanguageId = LanguageId(37);
+#[cfg(feature = "lang-batch")]
+pub(crate) const BATCH: LanguageId = LanguageId(38);
+#[cfg(feature = "lang-graphql")]
+const GRAPHQL_HIGHLIGHTS: &str = r#"
+(comment) @comment
+(string_value) @string
+[(int_value) (float_value)] @number
+[(boolean_value) (null_value)] @constant.builtin
+[(object_type_definition) (interface_type_definition) (enum_type_definition)
+ (input_object_type_definition) (union_type_definition) (scalar_type_definition)] @type
+(operation_type) @keyword
+[(field) (field_definition)] @property
+(directive) @attribute
+"#;
+
+#[cfg(feature = "lang-protobuf")]
+const PROTOBUF_HIGHLIGHTS: &str = r#"
+[
+  "syntax" "edition" "package" "option" "import" "service" "rpc" "returns"
+  "message" "enum" "oneof" "repeated" "reserved" "to"
+] @keyword
+[(key_type) (type) (message_name) (enum_name) (service_name) (rpc_name)] @type
+(string) @string
+[(int_lit) (float_lit)] @number
+[(true) (false)] @constant.builtin
+(comment) @comment
+["(" ")" "[" "]" "{" "}"] @punctuation.bracket
+"#;
 
 #[cfg(feature = "lang-latex")]
 const LATEX_HIGHLIGHTS: &str = r#"
@@ -341,6 +398,24 @@ const LATEX_HIGHLIGHTS: &str = r#"
 #[cfg(feature = "lang-latex")]
 const LATEX_SEMANTIC: &str = r#"
 [(part) (chapter) (section) (subsection) (subsubsection)] @semantic.scope
+"#;
+
+#[cfg(feature = "lang-rst")]
+const RST_HIGHLIGHTS: &str = r#"
+(title) @markup.heading
+[(emphasis) (strong)] @markup.strong
+[(literal) (literal_block)] @markup.raw
+[(link) (standalone_hyperlink)] @markup.link
+(comment) @comment
+"#;
+
+#[cfg(feature = "lang-asciidoc")]
+const ASCIIDOC_HIGHLIGHTS: &str = r#"
+[(document_title) (title1) (title2) (title3) (title4) (title5)] @markup.heading
+[(line_comment) (block_comment)] @comment
+(email) @markup.link.url
+(block_macro (target) @markup.link)
+[(listing_block) (literal_block) (ident_block)] @markup.raw.block
 "#;
 
 // tree-sitter-vue-next 0.1 publishes its queries under `queries/vue/`, while
@@ -553,7 +628,7 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             language: || tree_sitter_php::LANGUAGE_PHP.into(),
             highlights: tree_sitter_php::HIGHLIGHTS_QUERY,
             injections: Some(tree_sitter_php::INJECTIONS_QUERY),
-            injections_extra: None,
+            injections_extra: Some(web::PHP_HTML_INJECTION),
         });
         #[cfg(feature = "lang-bash")]
         v.push(GrammarInfo {
@@ -691,6 +766,98 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             injections: Some(VUE_INJECTIONS),
             injections_extra: None,
         });
+        #[cfg(feature = "lang-sql")]
+        v.push(GrammarInfo {
+            id: SQL,
+            name: "SQL",
+            extensions: &["sql"],
+            names: &["sql"],
+            language: || tree_sitter_sequel::LANGUAGE.into(),
+            highlights: tree_sitter_sequel::HIGHLIGHTS_QUERY,
+            injections: None,
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-graphql")]
+        v.push(GrammarInfo {
+            id: GRAPHQL,
+            name: "GraphQL",
+            extensions: &["graphql", "gql"],
+            names: &["graphql", "gql"],
+            language: || tree_sitter_graphql::LANGUAGE.into(),
+            highlights: GRAPHQL_HIGHLIGHTS,
+            injections: None,
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-protobuf")]
+        v.push(GrammarInfo {
+            id: PROTOBUF,
+            name: "Protobuf",
+            extensions: &["proto"],
+            names: &["protobuf", "proto"],
+            language: || tree_sitter_proto::LANGUAGE.into(),
+            highlights: PROTOBUF_HIGHLIGHTS,
+            injections: None,
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-containerfile")]
+        v.push(GrammarInfo {
+            id: CONTAINERFILE,
+            name: "Dockerfile",
+            extensions: &[],
+            names: &["dockerfile", "containerfile", "docker"],
+            language: || tree_sitter_containerfile::LANGUAGE.into(),
+            highlights: tree_sitter_containerfile::HIGHLIGHTS_QUERY,
+            injections: Some(tree_sitter_containerfile::INJECTIONS_QUERY),
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-make")]
+        v.push(GrammarInfo {
+            id: MAKE,
+            name: "Makefile",
+            extensions: &["mk"],
+            names: &["make", "makefile"],
+            language: || tree_sitter_make::LANGUAGE.into(),
+            highlights: tree_sitter_make::HIGHLIGHTS_QUERY,
+            injections: None,
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-cmake")]
+        v.push(GrammarInfo {
+            id: CMAKE,
+            name: "CMake",
+            extensions: &["cmake"],
+            names: &["cmake"],
+            language: || tree_sitter_cmake::LANGUAGE.into(),
+            highlights: tree_sitter_cmake::HIGHLIGHTS_QUERY,
+            injections: None,
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-rst")]
+        v.push(GrammarInfo {
+            id: RST,
+            name: "reStructuredText",
+            extensions: &["rst"],
+            names: &["restructuredtext", "rst"],
+            language: || tree_sitter_rst::LANGUAGE.into(),
+            highlights: RST_HIGHLIGHTS,
+            injections: None,
+            injections_extra: None,
+        });
+        #[cfg(feature = "lang-asciidoc")]
+        v.push(GrammarInfo {
+            id: ASCIIDOC,
+            name: "AsciiDoc",
+            extensions: &["adoc", "asciidoc"],
+            names: &["asciidoc", "adoc"],
+            language: tree_sitter_asciidoc::language,
+            highlights: ASCIIDOC_HIGHLIGHTS,
+            injections: None,
+            injections_extra: None,
+        });
+        shells::push(&mut v);
+        programming::push(&mut v);
+        structured::push(&mut v);
+        web::push(&mut v);
         #[cfg(feature = "lang-markdown")]
         v.push(GrammarInfo {
             id: MARKDOWN_INLINE,

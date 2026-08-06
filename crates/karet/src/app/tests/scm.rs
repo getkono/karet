@@ -446,7 +446,11 @@
         app.dispatch(Command::ScmCommit);
         assert!(app.commit_input.focused);
         app.commit_input.text = "draft".to_string();
-        app.commit_input.cursor = app.commit_input.text.len();
+        app.commit_input.edit.set_cursor(
+            &app.commit_input.text,
+            app.commit_input.text.len(),
+            false,
+        );
         app.commit_submit();
         assert!(app.status.is_some());
         assert_eq!(app.commit_input.text, "draft");
@@ -512,6 +516,42 @@
         );
         assert!(app.commit_input.text.is_empty());
         assert_eq!(app.commit_input.pending, None);
+    }
+
+    #[test]
+    fn commit_editor_selection_replaces_and_deletes_words() {
+        let mut app = app();
+        app.commit_input.focused = true;
+        app.commit_input.text = "subject line\nbody text".to_string();
+        app.commit_input.edit.set_cursor(
+            &app.commit_input.text,
+            app.commit_input.text.len(),
+            false,
+        );
+
+        app.commit_edit(KeyEvent::new(
+            KeyCode::Left,
+            KeyModifiers::ALT | KeyModifiers::SHIFT,
+        ));
+        assert_eq!(
+            app.commit_input
+                .edit
+                .selected_text(&app.commit_input.text),
+            Some("text")
+        );
+        app.commit_edit(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE));
+        assert_eq!(app.commit_input.text, "subject line\nbody !");
+        app.commit_edit(KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT));
+        assert_eq!(app.commit_input.text, "subject line\nbody ");
+
+        app.commit_input.place_cursor(3, 0, 20, false);
+        app.commit_input.place_cursor(7, 1, 20, true);
+        assert_eq!(
+            app.commit_input
+                .edit
+                .selected_text(&app.commit_input.text),
+            Some("ject line\nbody ")
+        );
     }
 
     #[test]

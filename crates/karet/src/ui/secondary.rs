@@ -7,6 +7,7 @@ pub(super) fn draw_loaded_config(
     area: Rect,
     report: &LoadedConfig,
     scroll: &mut u16,
+    column: &mut u16,
 ) {
     let header = Style::default()
         .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
@@ -78,10 +79,7 @@ pub(super) fn draw_loaded_config(
         _ => lines.push(Line::styled("  settings could not be serialized", warning)),
     }
 
-    let height = area.height as usize;
-    let max_scroll = lines.len().saturating_sub(height);
-    *scroll = (*scroll).min(max_scroll as u16);
-    f.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), area);
+    draw_scrollable_lines(f, theme, area, lines, scroll, column);
 }
 
 #[allow(clippy::too_many_arguments)]

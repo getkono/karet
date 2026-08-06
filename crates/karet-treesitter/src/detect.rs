@@ -1,4 +1,4 @@
-//! File-extension → language detection.
+//! File-type identity → language detection.
 //!
 //! Two layers so a viewer can label a file even when its grammar isn't built in:
 //! [`language_id_from_path`] resolves only grammars compiled into this build, while
@@ -10,33 +10,37 @@ use std::path::Path;
 use crate::LanguageId;
 use crate::registry;
 
-/// The [`LanguageId`] of a bundled grammar for `path`'s extension, if one is
+/// The [`LanguageId`] of a bundled grammar for `path`'s file type, if one is
 /// compiled in. `None` means the caller should render plaintext.
 #[must_use]
 pub fn language_id_from_path(path: &Path) -> Option<LanguageId> {
-    let ext = extension(path)?;
+    let file_type = karet_filetype::file_type_for_path(path);
+    if let Some(grammar) = file_type.grammar() {
+        return language_id_from_injection_name(grammar);
+    }
+    let extension = extension(path)?;
     registry::all()
         .iter()
-        .find(|g| g.extensions.contains(&ext.as_str()))
-        .map(|g| g.id)
+        .find(|grammar| grammar.extensions.contains(&extension.as_str()))
+        .map(|grammar| grammar.id)
 }
 
 /// A human-readable language name for `path`, for UI labels.
 ///
-/// Prefers a bundled grammar's name; otherwise defers to the shared
-/// [`karet_filetype`] catalogue (so the display-name table lives in one place).
+/// Defers to the shared [`karet_filetype`] catalogue, keeping display identity
+/// independent from whichever grammar happens to parse the file.
 /// `None` for unrecognized files (the caller should show "plaintext").
 #[must_use]
 pub fn language_name_from_path(path: &Path) -> Option<&'static str> {
-    if let Some(ext) = extension(path)
-        && let Some(g) = registry::all()
-            .iter()
-            .find(|g| g.extensions.contains(&ext.as_str()))
-    {
-        return Some(g.name);
-    }
     let ft = karet_filetype::file_type_for_path(path);
-    ft.is_recognized().then_some(ft.name())
+    if ft.is_recognized() {
+        return Some(ft.name());
+    }
+    let extension = extension(path)?;
+    registry::all()
+        .iter()
+        .find(|grammar| grammar.extensions.contains(&extension.as_str()))
+        .map(|grammar| grammar.name)
 }
 
 /// The [`LanguageId`] a grammar-injection language name refers to, if that grammar is
@@ -74,9 +78,10 @@ mod tests {
         assert_eq!(language_name_from_path(p), None);
     }
 
+    #[cfg(not(feature = "lang-kotlin"))]
     #[test]
     fn non_compiled_language_still_named() {
-        // Kotlin has no bundled grammar but is still recognized for labelling.
+        // Optional grammars remain recognized for labelling when omitted.
         let p = Path::new("Main.kt");
         assert_eq!(language_id_from_path(p), None);
         assert_eq!(language_name_from_path(p), Some("Kotlin"));
@@ -124,7 +129,7 @@ mod tests {
         for (path, expected) in [
             ("main.zig", "Zig"),
             ("document.xml", "XML"),
-            ("vector.svg", "XML"),
+            ("vector.svg", "SVG"),
             ("workflow.yaml", "YAML"),
             ("page.astro", "Astro"),
             ("component.svelte", "Svelte"),
@@ -135,6 +140,141 @@ mod tests {
                 Some(expected),
                 "{path}"
             );
+            assert!(
+                language_id_from_path(std::path::Path::new(path)).is_some(),
+                "{path}"
+            );
+        }
+    }
+
+    #[cfg(all(
+        feature = "lang-sql",
+        feature = "lang-graphql",
+        feature = "lang-protobuf"
+    ))]
+    #[test]
+    fn query_and_schema_paths_resolve_to_their_grammars() {
+        for (path, expected) in [
+            ("schema.sql", "SQL"),
+            ("schema.graphql", "GraphQL"),
+            ("schema.gql", "GraphQL"),
+            ("schema.proto", "Protobuf"),
+        ] {
+            assert_eq!(language_name_from_path(Path::new(path)), Some(expected));
+            assert!(language_id_from_path(Path::new(path)).is_some(), "{path}");
+        }
+    }
+
+    #[cfg(all(
+        feature = "lang-containerfile",
+        feature = "lang-make",
+        feature = "lang-cmake"
+    ))]
+    #[test]
+    fn build_language_names_and_paths_resolve_to_distinct_grammars() {
+        for (path, expected) in [
+            ("Dockerfile", "Dockerfile"),
+            ("Containerfile", "Dockerfile"),
+            ("Makefile", "Makefile"),
+            ("GNUmakefile", "Makefile"),
+            ("rules.mk", "Makefile"),
+            ("CMakeLists.txt", "CMake"),
+            ("module.cmake", "CMake"),
+        ] {
+            assert_eq!(language_name_from_path(Path::new(path)), Some(expected));
+            assert!(language_id_from_path(Path::new(path)).is_some(), "{path}");
+        }
+        assert_ne!(
+            language_id_from_path(Path::new("CMakeLists.txt")),
+            language_id_from_path(Path::new("Makefile"))
+        );
+    }
+
+    #[cfg(all(
+        feature = "lang-rst",
+        feature = "lang-asciidoc",
+        feature = "lang-latex"
+    ))]
+    #[test]
+    fn document_markup_paths_and_names_resolve_to_distinct_grammars() {
+        for (path, name, alias) in [
+            ("guide.rst", "reStructuredText", "rst"),
+            ("guide.adoc", "AsciiDoc", "asciidoc"),
+            ("paper.tex", "TeX", "latex"),
+        ] {
+            let path_id = language_id_from_path(Path::new(path));
+            assert_eq!(language_name_from_path(Path::new(path)), Some(name));
+            assert!(path_id.is_some(), "{path}");
+            assert_eq!(path_id, language_id_from_injection_name(alias), "{path}");
+        }
+    }
+
+    #[cfg(all(
+        feature = "lang-zsh",
+        feature = "lang-fish",
+        feature = "lang-powershell",
+        feature = "lang-batch"
+    ))]
+    #[test]
+    fn shell_language_paths_and_names_resolve_to_distinct_grammars() {
+        for (path, name, alias) in [
+            ("script.zsh", "Zsh", "zsh"),
+            ("script.fish", "Fish", "fish"),
+            ("profile.ps1", "PowerShell", "pwsh"),
+            ("module.psm1", "PowerShell", "powershell"),
+            ("build.cmd", "Batch", "cmd"),
+            ("build.bat", "Batch", "batch"),
+        ] {
+            let path_id = language_id_from_path(Path::new(path));
+            assert_eq!(language_name_from_path(Path::new(path)), Some(name));
+            assert!(path_id.is_some(), "{path}");
+            assert_eq!(path_id, language_id_from_injection_name(alias), "{path}");
+        }
+        assert_eq!(language_id_from_path(Path::new("script.ksh")), None);
+    }
+
+    #[cfg(all(
+        feature = "lang-kotlin",
+        feature = "lang-swift",
+        feature = "lang-scala",
+        feature = "lang-lua",
+        feature = "lang-haskell",
+        feature = "lang-ocaml",
+        feature = "lang-elixir",
+        feature = "lang-erlang",
+        feature = "lang-dart",
+        feature = "lang-r",
+        feature = "lang-zig",
+        feature = "lang-perl",
+        feature = "lang-clojure",
+        feature = "lang-elisp",
+        feature = "lang-vim"
+    ))]
+    #[test]
+    fn additional_programming_languages_resolve_paths_and_fence_names() {
+        for (path, name, alias) in [
+            ("Main.kt", "Kotlin", "kotlin"),
+            ("Main.swift", "Swift", "swift"),
+            ("build.sbt", "Scala", "sbt"),
+            ("init.lua", "Lua", "lua"),
+            ("Main.hs", "Haskell", "haskell"),
+            ("Main.lhs", "Haskell", "hs"),
+            ("main.ml", "OCaml", "ocaml"),
+            ("main.mli", "OCaml", "mli"),
+            ("app.ex", "Elixir", "elixir"),
+            ("app.erl", "Erlang", "erlang"),
+            ("main.dart", "Dart", "dart"),
+            ("analysis.r", "R", "r"),
+            ("main.zig", "Zig", "zig"),
+            ("tool.pl", "Perl", "perl"),
+            ("core.cljc", "Clojure", "clojure"),
+            ("init.el", "Emacs Lisp", "elisp"),
+            ("plugin.vim", "Vim script", "vimscript"),
+        ] {
+            let path_id = language_id_from_path(Path::new(path));
+            assert_eq!(language_name_from_path(Path::new(path)), Some(name));
+            assert!(path_id.is_some(), "{path}");
+            assert_eq!(path_id, language_id_from_injection_name(alias), "{path}");
         }
     }
 

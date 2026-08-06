@@ -79,6 +79,17 @@ pub fn semantic_query(lang: LanguageId) -> Option<&'static str> {
     registry::semantic_query(lang)
 }
 
+/// The declaration query used to build a document outline for `lang`.
+///
+/// Captures named `definition.*` cover the complete declaration and their
+/// accompanying `name` capture covers the navigation label. Languages whose
+/// upstream grammar ships a tags query reuse it; data and markup grammars use
+/// small karet-authored equivalents.
+#[must_use]
+pub fn outline_query(lang: LanguageId) -> Option<Cow<'static, str>> {
+    registry::outline_query(lang)
+}
+
 /// A pool of reusable tree-sitter parsers, keyed by [`LanguageId`].
 #[derive(Default)]
 pub struct ParserPool {
@@ -164,6 +175,35 @@ impl SyntaxTree {
             start: BytePos(root.start_byte()),
             end: BytePos(root.end_byte()),
         }
+    }
+
+    /// The named node at `byte` followed by its named ancestors, innermost first.
+    ///
+    /// The returned descriptors contain only stable, neutral data; no tree-sitter
+    /// node handles escape this crate. A point at end-of-file resolves against the
+    /// root/last node so editor features can inspect an insertion caret there.
+    #[must_use]
+    pub fn named_ancestors_at(&self, byte: BytePos) -> Vec<SyntaxNode> {
+        let root = self.tree.root_node();
+        let point = byte.0.min(root.end_byte());
+        let mut node = root.descendant_for_byte_range(point, point).unwrap_or(root);
+        let mut nodes = Vec::new();
+        loop {
+            if node.is_named() {
+                nodes.push(SyntaxNode {
+                    kind: node.kind().to_owned(),
+                    span: Span {
+                        start: BytePos(node.start_byte()),
+                        end: BytePos(node.end_byte()),
+                    },
+                });
+            }
+            let Some(parent) = node.parent() else {
+                break;
+            };
+            node = parent;
+        }
+        nodes
     }
 
     /// The inclusive line ranges (0-based rows) covered by syntax errors: the
@@ -437,6 +477,15 @@ impl SyntaxTree {
         }
         out
     }
+}
+
+/// A neutral descriptor for one named syntax node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyntaxNode {
+    /// Grammar-defined node kind (for example `function_item` or `paragraph`).
+    pub kind: String,
+    /// Byte range occupied by the node in the source document.
+    pub span: Span,
 }
 
 /// A named syntax node that spans more than one line — the raw input to fold-region

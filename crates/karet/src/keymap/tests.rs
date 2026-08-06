@@ -195,6 +195,50 @@ fn home_end_move_to_line_edges_ctrl_to_document() {
 #[test]
 fn word_motion_and_select_all_bind_in_editor() {
     assert_eq!(
+        res(Focus::Editor, false, key(KeyCode::Left, KeyModifiers::ALT)),
+        Some(Command::CaretWordLeft)
+    );
+    assert_eq!(
+        res(
+            Focus::Editor,
+            false,
+            key(KeyCode::Right, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        ),
+        Some(Command::SelectWordRight)
+    );
+    assert_eq!(
+        res(
+            Focus::Editor,
+            false,
+            key(KeyCode::Left, KeyModifiers::SUPER)
+        ),
+        Some(Command::CaretLineStart)
+    );
+    assert_eq!(
+        res(
+            Focus::Editor,
+            false,
+            key(KeyCode::Down, KeyModifiers::SUPER | KeyModifiers::SHIFT)
+        ),
+        Some(Command::SelectDocEnd)
+    );
+    assert_eq!(
+        res(
+            Focus::Editor,
+            false,
+            key(KeyCode::Backspace, KeyModifiers::ALT)
+        ),
+        Some(Command::DeleteWordBackward)
+    );
+    assert_eq!(
+        res(
+            Focus::Editor,
+            false,
+            key(KeyCode::Delete, KeyModifiers::CONTROL)
+        ),
+        Some(Command::DeleteWordForward)
+    );
+    assert_eq!(
         res(
             Focus::Editor,
             false,
@@ -538,6 +582,28 @@ fn search_modal_still_resolves_global_chords() {
             ))]
         ),
         Resolved::Command(Command::ToggleSidebar)
+    );
+    let input = Context::modal(Modal::SearchInput, FocusTarget::Search);
+    assert_eq!(
+        resolve(
+            input,
+            &[KeyChord::from_event(key(
+                KeyCode::Char('x'),
+                KeyModifiers::CONTROL
+            ))]
+        ),
+        Resolved::Command(Command::Cut)
+    );
+    let commit = Context::modal(Modal::CommitInput, FocusTarget::SourceControl);
+    assert_eq!(
+        resolve(
+            commit,
+            &[KeyChord::from_event(key(
+                KeyCode::Char('a'),
+                KeyModifiers::SUPER
+            ))]
+        ),
+        Resolved::Command(Command::EditorSelectAll)
     );
     // A plain overlay is exclusive: Ctrl+B does not leak through to Global.
     let overlay = Context::modal(Modal::Overlay, FocusTarget::Editor);

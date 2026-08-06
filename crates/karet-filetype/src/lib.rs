@@ -3,9 +3,9 @@
 //!
 //! It unifies three concerns that were previously scattered across the workspace:
 //!
-//! - **Identity** — [`file_type_for_path`] resolves a path to a [`FileType`]
-//!   (display [`name`](FileType::name) + [`Category`]), matching well-known
-//!   filenames first, then extension.
+//! - **Identity** — [`file_type_for_path`] resolves display, tree-sitter grammar,
+//!   LSP `languageId`, configuration selector, and [`Category`] independently,
+//!   matching well-known filenames first, then extension.
 //! - **Presentation** — [`icon_for_path`] / [`FileType::icon`], [`directory_icon`],
 //!   and [`chevron`] return glyphs for an [`IconStyle`] (`NerdFont` / `Unicode` /
 //!   `Ascii`).

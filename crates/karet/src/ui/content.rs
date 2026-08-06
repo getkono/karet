@@ -186,23 +186,36 @@ pub(super) fn draw_pane_content(
                 },
             );
         },
-        TabKind::Diff { file, view, scroll } => draw_diff(f, theme, area, file, *view, scroll),
-        TabKind::StashPreview { patch, scroll, .. } => {
+        TabKind::Diff {
+            file,
+            view,
+            scroll,
+            column,
+        } => draw_diff(f, theme, area, file, *view, scroll, column),
+        TabKind::StashPreview {
+            patch,
+            scroll,
+            column,
+            ..
+        } => {
             let lines: Vec<Line> = patch
                 .lines()
                 .map(|line| Line::raw(line.to_string()))
                 .collect();
-            let max = lines.len().saturating_sub(area.height as usize);
-            *scroll = (*scroll).min(u16::try_from(max).unwrap_or(u16::MAX));
-            f.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), area);
+            draw_scrollable_lines(f, theme, area, lines, scroll, column);
         },
         TabKind::Graph {
             title,
             view,
             scroll,
-        } => draw_graph(f, theme, area, title, view, scroll),
-        TabKind::LoadedConfig { report, scroll } => {
-            draw_loaded_config(f, theme, area, report, scroll);
+            column,
+        } => draw_graph(f, theme, area, title, view, scroll, column),
+        TabKind::LoadedConfig {
+            report,
+            scroll,
+            column,
+        } => {
+            draw_loaded_config(f, theme, area, report, scroll, column);
         },
         TabKind::Commit {
             detail,
@@ -232,6 +245,7 @@ pub(super) fn draw_pane_content(
             loading_since,
             error,
             scroll,
+            column,
         } => draw_commit_loading(
             f,
             theme,
@@ -240,6 +254,7 @@ pub(super) fn draw_pane_content(
             *loading_since,
             error.as_deref(),
             scroll,
+            column,
         ),
         TabKind::Compare {
             base_label,
@@ -275,6 +290,7 @@ pub(super) fn draw_pane_content(
             verification,
             compare_base: _,
             list_offset,
+            detail_column,
         } => draw_commit_graph(
             f,
             theme,
@@ -290,6 +306,7 @@ pub(super) fn draw_pane_content(
             file_load_status(*files_loading_since, files_error.as_deref()),
             verification.as_ref(),
             list_offset,
+            detail_column,
         ),
         TabKind::Hex { bytes, scroll, .. } => {
             let rows = bytes.len().div_ceil(16);
@@ -455,16 +472,13 @@ pub(super) fn draw_diff(
     file: &render::FileView,
     view: ViewMode,
     scroll: &mut u16,
+    column: &mut u16,
 ) {
     match view {
         ViewMode::Unified => {
             let mut lines = render::unified_lines(file, theme);
             render::pad_diff_lines(&mut lines, area.width);
-            let max = u16::try_from(lines.len())
-                .unwrap_or(u16::MAX)
-                .saturating_sub(area.height);
-            *scroll = (*scroll).min(max);
-            f.render_widget(Paragraph::new(lines).scroll((*scroll, 0)), area);
+            draw_scrollable_lines(f, theme, area, lines, scroll, column);
         },
         ViewMode::SideBySide => {
             let (mut left, mut right) = render::side_by_side_lines(file, theme);
@@ -479,11 +493,19 @@ pub(super) fn draw_diff(
                 Constraint::Min(0),
             ])
             .split(area);
+            let left_width = left.iter().map(line_width).max().unwrap_or_default();
+            let right_width = right.iter().map(line_width).max().unwrap_or_default();
+            let content_width = left_width.max(right_width);
+            let pane_width = panes[0].width.min(panes[2].width);
+            let max_column = content_width.saturating_sub(usize::from(pane_width));
+            *column = (*column).min(u16::try_from(max_column).unwrap_or(u16::MAX));
             render::pad_diff_lines(&mut left, panes[0].width);
             render::pad_diff_lines(&mut right, panes[2].width);
-            f.render_widget(Paragraph::new(left).scroll((*scroll, 0)), panes[0]);
+            f.render_widget(Paragraph::new(left).scroll((*scroll, *column)), panes[0]);
             f.render_widget(Block::new().borders(Borders::LEFT), panes[1]);
-            f.render_widget(Paragraph::new(right).scroll((*scroll, 0)), panes[2]);
+            f.render_widget(Paragraph::new(right).scroll((*scroll, *column)), panes[2]);
+            draw_scroll_indicators(f, theme, panes[0], height, left_width, *scroll, *column);
+            draw_scroll_indicators(f, theme, panes[2], height, right_width, *scroll, *column);
         },
     }
 }

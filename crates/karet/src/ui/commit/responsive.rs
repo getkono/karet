@@ -88,6 +88,7 @@ struct FileDocument {
     anchors: Vec<u16>,
     toc_rows: Vec<u16>,
     rows: u16,
+    columns: usize,
 }
 
 fn build_files(
@@ -107,6 +108,7 @@ fn build_files(
                     .push(Line::styled(" loading changed files\u{2026}", muted));
             }
             doc.rows = u16::try_from(doc.prefix.len()).unwrap_or(u16::MAX);
+            doc.columns = doc.prefix.iter().map(line_width).max().unwrap_or_default();
             return doc;
         },
         CommitFileStatus::Failed(error) => {
@@ -116,6 +118,7 @@ fn build_files(
                 Span::styled(error.to_string(), muted),
             ]));
             doc.rows = u16::try_from(doc.prefix.len()).unwrap_or(u16::MAX);
+            doc.columns = doc.prefix.iter().map(line_width).max().unwrap_or_default();
             return doc;
         },
         CommitFileStatus::Ready => {},
@@ -136,10 +139,21 @@ fn build_files(
             doc.prefix.push(Line::styled(" No file changes", muted));
         }
         doc.rows = u16::try_from(doc.prefix.len()).unwrap_or(u16::MAX);
+        doc.columns = doc.prefix.iter().map(line_width).max().unwrap_or_default();
         return doc;
     }
+    doc.columns = doc
+        .prefix
+        .iter()
+        .map(line_width)
+        .max()
+        .unwrap_or_default()
+        .max(usize::from(width));
     let mut rows = doc.prefix.len();
     for file in files {
+        doc.columns = doc
+            .columns
+            .max(render::unified_max_width(file, theme).saturating_add(2));
         rows = rows.saturating_add(1);
         doc.anchors.push(u16::try_from(rows).unwrap_or(u16::MAX));
         let card_rows = if width < 11 {
@@ -215,6 +229,13 @@ fn draw_stacked(
 ) -> CommitPaint {
     let header_len = u16::try_from(header.len()).unwrap_or(u16::MAX);
     let file_doc = build_files(theme, files, area.width, true, file_status);
+    let content_width = file_doc
+        .columns
+        .max(header.iter().map(line_width).max().unwrap_or_default());
+    let max_column = content_width.saturating_sub(usize::from(area.width));
+    view.column = view
+        .column
+        .min(u16::try_from(max_column).unwrap_or(u16::MAX));
     let file_start = header_len;
     let anchors = offset_rows(&file_doc.anchors, file_start);
     remap_layout(view, CommitLayoutMode::Stacked, &anchors, header_len);
@@ -237,7 +258,8 @@ fn draw_stacked(
     let body = if let Some(file) = sticky {
         let top = Rect { height: 1, ..area };
         f.render_widget(
-            Paragraph::new(file_card_header(theme, &files[file], area.width)),
+            Paragraph::new(file_card_header(theme, &files[file], area.width))
+                .scroll((0, view.column)),
             top,
         );
         Rect {
@@ -268,7 +290,16 @@ fn draw_stacked(
             remaining,
         ));
     }
-    f.render_widget(Paragraph::new(visible), body);
+    f.render_widget(Paragraph::new(visible).scroll((0, view.column)), body);
+    draw_scroll_indicators(
+        f,
+        theme,
+        area,
+        usize::from(total),
+        content_width,
+        view.scroll,
+        view.column,
+    );
 
     let row_shift = u16::from(sticky.is_some());
     let toc_rows = offset_rows(&file_doc.toc_rows, file_start);
@@ -288,7 +319,7 @@ fn draw_stacked(
             })
         })
         .collect();
-    let badge_rect = visible_badge(area, badge, view.scroll, 0);
+    let badge_rect = visible_badge(area, badge, view.scroll, 0, view.column);
     view.file_anchors = anchors;
     view.layout = Some(CommitLayoutMode::Stacked);
     CommitPaint {
@@ -312,6 +343,10 @@ fn draw_wide(
     let rail_width = ((u32::from(area.width) * 30) / 100).clamp(31, 40) as u16;
     let diff_width = area.width.saturating_sub(rail_width.saturating_add(1));
     let file_doc = build_files(theme, files, diff_width, false, file_status);
+    let max_column = file_doc.columns.saturating_sub(usize::from(diff_width));
+    view.column = view
+        .column
+        .min(u16::try_from(max_column).unwrap_or(u16::MAX));
     let anchors = offset_rows(&file_doc.anchors, header_len);
     remap_layout(view, CommitLayoutMode::Wide, &anchors, header_len);
     let total = header_len.saturating_add(file_doc.rows);
@@ -346,10 +381,20 @@ fn draw_wide(
                 &file_doc,
                 local_scroll,
                 lower.height,
-            )),
+            ))
+            .scroll((0, view.column)),
             cols[2],
         );
         f.render_widget(Block::new().borders(Borders::LEFT), cols[1]);
+        draw_scroll_indicators(
+            f,
+            theme,
+            cols[2],
+            usize::from(file_doc.rows),
+            file_doc.columns,
+            local_scroll,
+            view.column,
+        );
     }
 
     let active = active_file(&anchors, view.scroll)
@@ -391,7 +436,7 @@ fn draw_wide(
         }
     }
 
-    let badge_rect = visible_badge(area, badge, view.scroll, 0)
+    let badge_rect = visible_badge(area, badge, view.scroll, 0, 0)
         .filter(|rect| rect.y < lower.y || header_visible == area.height);
     view.file_anchors = anchors;
     view.layout = Some(CommitLayoutMode::Wide);
@@ -444,13 +489,20 @@ fn keep_rail_visible(offset: &mut usize, active: usize, len: usize, height: usiz
     *offset = (*offset).min(len.saturating_sub(height));
 }
 
-fn visible_badge(area: Rect, badge: Option<BadgeHit>, scroll: u16, shift: u16) -> Option<Rect> {
+fn visible_badge(
+    area: Rect,
+    badge: Option<BadgeHit>,
+    scroll: u16,
+    shift: u16,
+    column: u16,
+) -> Option<Rect> {
     badge.and_then(|hit| {
         let row = hit.line.checked_sub(scroll)?.saturating_add(shift);
-        (row < area.height).then_some(Rect {
-            x: area.x.saturating_add(hit.col),
+        let col = hit.col.checked_sub(column)?;
+        (row < area.height && col < area.width).then_some(Rect {
+            x: area.x.saturating_add(col),
             y: area.y.saturating_add(row),
-            width: hit.width.min(area.width.saturating_sub(hit.col)),
+            width: hit.width.min(area.width.saturating_sub(col)),
             height: 1,
         })
     })

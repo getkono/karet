@@ -58,7 +58,8 @@ pub(super) fn find_next(hay: &str, needle: &str, from: usize) -> Option<usize> {
 
 /// The start of the word before `pos`, wrapping to the previous line's end when at
 /// column 0. Skips trailing whitespace, then a single word/punctuation run.
-pub(super) fn prev_word_boundary(buffer: &TextBuffer, pos: LineCol) -> LineCol {
+#[must_use]
+pub fn previous_word_boundary(buffer: &TextBuffer, pos: LineCol) -> LineCol {
     if pos.col == 0 {
         return if pos.line > 0 {
             let line = pos.line - 1;
@@ -87,7 +88,8 @@ pub(super) fn prev_word_boundary(buffer: &TextBuffer, pos: LineCol) -> LineCol {
 
 /// The end of the word after `pos`, wrapping to the next line's start at end of line.
 /// Skips leading whitespace, then a single word/punctuation run.
-pub(super) fn next_word_boundary(buffer: &TextBuffer, pos: LineCol) -> LineCol {
+#[must_use]
+pub fn next_word_boundary(buffer: &TextBuffer, pos: LineCol) -> LineCol {
     let chars: Vec<char> = buffer
         .line(pos.line as usize)
         .unwrap_or_default()
