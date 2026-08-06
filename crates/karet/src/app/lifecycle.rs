@@ -209,6 +209,15 @@ impl App {
             self.pending_commit_verification.remove(&request);
             requests.push(request);
         }
+        let conflicts: Vec<RequestId> = self
+            .pending_merge_conflicts
+            .iter()
+            .filter_map(|(request, (view, _))| views.contains(view).then_some(*request))
+            .collect();
+        for request in conflicts {
+            self.pending_merge_conflicts.remove(&request);
+            requests.push(request);
+        }
         if let Some((request, view)) = self.graph_log_req
             && views.contains(&view)
         {

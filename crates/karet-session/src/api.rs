@@ -730,6 +730,11 @@ pub enum Command {
     GenerateCommitMessage,
     /// Recompute and re-emit the source-control status.
     RefreshVcs,
+    /// Load the current and incoming index stages for an unresolved merge conflict.
+    MergeConflict {
+        /// Repository-relative or absolute path to the conflicted file.
+        path: PathBuf,
+    },
     /// Load branch, remote, operation, and stash state for Source Control.
     RepositorySnapshot,
     /// Compute compact status for a nested repository shown in the explorer.

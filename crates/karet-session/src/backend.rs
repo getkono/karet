@@ -183,6 +183,9 @@ async fn recv_lsp(rx: &mut Option<mpsc::UnboundedReceiver<LspUpdate>>) -> Option
 }
 
 #[cfg(test)]
+mod merge_conflict_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -325,6 +325,7 @@
                 width: 40,
                 height: 10,
             },
+            editor_rect: Rect::default(),
             commit_file_hits: Vec::new(),
             commit_collapse_hits: Vec::new(),
         }

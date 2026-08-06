@@ -34,7 +34,64 @@ pub struct FileChange {
     pub new: String,
 }
 
+/// The two committed sides of an unresolved index conflict.
+///
+/// `current` is Git index stage 2 (ours) and `incoming` is stage 3 (theirs).
+/// A side is empty when that side deleted the path. The editable worktree file is
+/// deliberately not duplicated here: callers can read it normally, including any
+/// conflict markers produced by Git's merge machinery.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConflictSides {
+    /// The current branch's bytes, or empty when the current side deleted the path.
+    pub current: Vec<u8>,
+    /// The incoming branch's bytes, or empty when the incoming side deleted the path.
+    pub incoming: Vec<u8>,
+}
+
 impl Repository {
+    /// Read the current and incoming index stages for one unresolved conflict.
+    ///
+    /// `path` may be repository-relative or absolute within the worktree. Returns
+    /// `Ok(None)` when it lies outside the worktree or has no unmerged index entries.
+    ///
+    /// # Errors
+    /// Returns [`VcsError::Git`] when the index or one of its blobs cannot be read.
+    pub fn conflict_sides(&self, path: &Path) -> Result<Option<ConflictSides>, VcsError> {
+        use gix::index::entry::Stage;
+
+        let relative = if path.is_absolute() {
+            let Some(relative) = repo_relative(&self.inner, path) else {
+                return Ok(None);
+            };
+            relative
+        } else {
+            path.to_path_buf()
+        };
+        let index = self.inner.index_or_empty().map_err(to_git)?;
+        let relative = gix::path::into_bstr(relative);
+        let has_conflict = [Stage::Base, Stage::Ours, Stage::Theirs]
+            .into_iter()
+            .any(|stage| {
+                index
+                    .entry_by_path_and_stage(relative.as_ref(), stage)
+                    .is_some()
+            });
+        if !has_conflict {
+            return Ok(None);
+        }
+        let read_stage = |stage| -> Result<Vec<u8>, VcsError> {
+            let Some(entry) = index.entry_by_path_and_stage(relative.as_ref(), stage) else {
+                return Ok(Vec::new());
+            };
+            let object = self.inner.find_object(entry.id).map_err(to_git)?;
+            Ok(object.data.clone())
+        };
+        Ok(Some(ConflictSides {
+            current: read_stage(Stage::Ours)?,
+            incoming: read_stage(Stage::Theirs)?,
+        }))
+    }
+
     /// Collect one [`FileChange`] per changed file for `selection`, each carrying the
     /// full before/after text so the caller can diff it.
     ///

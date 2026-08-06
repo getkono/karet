@@ -583,7 +583,7 @@ impl App {
             .map(|f| {
                 (
                     f.pane,
-                    f.content_rect,
+                    f.editor_rect,
                     f.commit_file_hits
                         .iter()
                         .find(|hit| rect_contains(hit.rect, point))
@@ -612,6 +612,10 @@ impl App {
                 self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
         {
             view.scroll = hit.scroll;
+            self.editor_selecting = false;
+            return;
+        }
+        if !rect_contains(area, point) {
             self.editor_selecting = false;
             return;
         }

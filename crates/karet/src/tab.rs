@@ -33,12 +33,17 @@ use karet_syntax::Highlights;
 use karet_syntax::SemanticBlocks;
 use karet_text::TextBuffer;
 use ratatui::layout::Rect;
-pub(crate) use view_state::CommitLayoutMode;
-pub(crate) use view_state::CommitViewState;
 pub(crate) use view_state::MarkdownPreviewState;
 pub use view_state::ViewMode;
 
 use crate::render::FileView;
+
+mod commit;
+mod merge_conflict;
+pub(crate) use commit::CommitLayoutMode;
+pub(crate) use commit::CommitViewState;
+pub(crate) use commit::commit_title;
+pub(crate) use merge_conflict::MergeConflictState;
 
 /// The find-in-file bar state: the query, the match cursor, and the replace field
 /// (mirroring the workspace Search panel's model for a consistent UI). Lives on
@@ -514,6 +519,8 @@ pub struct Tab {
     pub(crate) markdown_table_lines: Option<(u64, Vec<RangeInclusive<u32>>)>,
     /// A rendered Markdown preview shown inside this editor view, when enabled.
     pub(crate) markdown_preview: Option<MarkdownPreviewState>,
+    /// Dedicated three-way conflict presentation for this editable code document.
+    pub(crate) merge_conflict: Option<MergeConflictState>,
 }
 
 impl Tab {
@@ -536,6 +543,7 @@ impl Tab {
             conflict_decorations: None,
             markdown_table_lines: None,
             markdown_preview: None,
+            merge_conflict: None,
         }
     }
 
@@ -958,12 +966,6 @@ fn tab_kind_path(kind: &TabKind) -> Option<&Path> {
         | TabKind::Compare { .. }
         | TabKind::CommitGraph { .. } => None,
     }
-}
-
-/// Human-readable title for standalone commit tabs.
-#[must_use]
-pub(crate) fn commit_title(short: &str) -> String {
-    format!("Commit {short}")
 }
 
 #[cfg(test)]

@@ -159,6 +159,7 @@ impl App {
             latex_previews: HashMap::new(),
             pending_commit_preparation: HashMap::new(),
             pending_commit_verification: HashMap::new(),
+            pending_merge_conflicts: HashMap::new(),
             prepare_tx,
             prepare_rx: Some(prepare_rx),
             graph_log_req: None,

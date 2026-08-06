@@ -841,3 +841,76 @@
             }
         ));
     }
+
+    #[test]
+    fn conflicted_change_opens_editable_merged_view_with_read_only_sides() {
+        let dir = test_dir("merge-conflict-view");
+        write_file(
+            &dir,
+            "a.rs",
+            b"<<<<<<< HEAD\nfn current() {}\n=======\nfn incoming() {}\n>>>>>>> incoming\n",
+        );
+        let conflicted = FileChange {
+            path: PathBuf::from("a.rs"),
+            old_path: None,
+            status: StatusKind::Conflicted,
+            is_binary: false,
+            old: String::new(),
+            new: String::new(),
+        };
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = App::new(dir.clone(), Vec::new(), vec![conflicted], false);
+        app.backend = Some(backend.clone());
+        app.open_path(&dir.join("a.rs"));
+        let original_view = app.tabs[app.active].view;
+        app.sidebar_panel = SidebarPanel::SourceControl;
+
+        app.preview_selected_diff();
+        assert_eq!(app.tabs.len(), 1, "the existing editor is upgraded in place");
+        assert_eq!(app.tabs[app.active].view, original_view);
+        assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
+        assert!(app.tabs[app.active].merge_conflict.is_some());
+        let request = backend.sent.lock().ok().and_then(|sent| {
+            sent.iter().find_map(|(request, command)| {
+                matches!(command, SessionCommand::MergeConflict { path } if path == Path::new("a.rs"))
+                    .then_some(*request)
+            })
+        });
+        assert!(
+            request.is_some(),
+            "the conflict sides are loaded through the backend"
+        );
+        let Some(request) = request else { return };
+        app.on_backend_event(
+            Some(request),
+            SessionEvent::MergeConflictReady {
+                path: PathBuf::from("a.rs"),
+                current: "fn current() {}\n".to_string(),
+                incoming: "fn incoming() {}\n".to_string(),
+            },
+        );
+
+        let painted = screen(&mut app, 120, 12).join("\n");
+        assert!(painted.contains("CURRENT · read-only"));
+        assert!(painted.contains("MERGED · editable"));
+        assert!(painted.contains("INCOMING · read-only"));
+        assert!(painted.contains("fn current() {}"));
+        assert!(painted.contains("<<<<<<< HEAD"));
+        assert!(painted.contains("fn incoming() {}"));
+        assert!(app.editor_rect.x > app.pane_frames[0].content_rect.x);
+        assert!(app.editor_rect.right() < app.pane_frames[0].content_rect.right());
+        let caret = app.tabs[app.active].editor.cursor();
+        app.handle_editor_click(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: app.pane_frames[0].content_rect.x.saturating_add(2),
+            row: app.editor_rect.y.saturating_add(2),
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(
+            app.tabs[app.active].editor.cursor(),
+            caret,
+            "clicking the read-only current side must not move the merged caret"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }

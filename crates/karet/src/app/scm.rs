@@ -358,84 +358,6 @@ impl App {
         self.status = Some(format!("inline blame: {label}"));
     }
 
-    /// Open the Source-Control cursor's change as a materialized (permanent) diff
-    /// view and move keyboard focus into it — the explicit Enter / double-click
-    /// "take me into the view" action. Browsing (arrow moves, single click) goes
-    /// through [`preview_selected_diff`](Self::preview_selected_diff) instead,
-    /// which keeps focus on the panel so the staging keys stay live.
-    pub(super) fn open_selected_diff(&mut self) {
-        let cursor = self.scm.selection.cursor();
-        let Some(change) = self.scm.changes.get(cursor).cloned() else {
-            return;
-        };
-        let section = self.scm.section(cursor);
-        // Never duplicate: an existing diff tab for the same change — the preview
-        // slot or a permanent one — is materialized and focused instead.
-        if let Some(idx) = self.find_diff_tab(&change.path, section) {
-            if let Some(tab) = self.tabs.get_mut(idx) {
-                tab.is_preview = false;
-            }
-            self.select_tab(idx);
-            return;
-        }
-        let tab = self.build_diff_tab(change, section);
-        self.push_tab(tab);
-    }
-
-    /// Show the Source-Control cursor's change in the pane's shared preview slot
-    /// *without* stealing keyboard focus (selection-follows-preview): browsing the
-    /// change list with the arrows (or a single click) shows each diff while the
-    /// panel keeps focus, so stage/unstage/discard/commit and the selection keys
-    /// keep working. An existing diff tab for the same change is just shown;
-    /// otherwise the preview slot is replaced in place — never one new tab per
-    /// visited change.
-    pub(super) fn preview_selected_diff(&mut self) {
-        let cursor = self.scm.selection.cursor();
-        let Some(change) = self.scm.changes.get(cursor).cloned() else {
-            return;
-        };
-        let section = self.scm.section(cursor);
-        if let Some(idx) = self.find_diff_tab(&change.path, section) {
-            self.active = idx;
-            self.find_open = false;
-            return;
-        }
-        let mut tab = self.build_diff_tab(change, section);
-        tab.is_preview = true;
-        self.install_preview_tab(tab, false);
-    }
-
-    /// The index of this pane's existing diff tab for `path` in `section`, if any
-    /// (preview or permanent) — the dedup lookup for the Source-Control open paths.
-    pub(super) fn find_diff_tab(&self, path: &Path, section: Section) -> Option<usize> {
-        self.tabs.iter().position(|t| {
-            matches!(&t.kind, TabKind::Diff { file, .. }
-                if file.change.path == *path && file.section == section)
-        })
-    }
-
-    /// Diff and highlight `change` into a fresh [`TabKind::Diff`] tab using the
-    /// remembered layout. The caller decides how the tab enters the pane (preview
-    /// slot vs permanent) and where focus lands.
-    pub(super) fn build_diff_tab(&self, change: FileChange, section: Section) -> Tab {
-        let title = change
-            .path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("diff")
-            .to_string();
-        let file = FileView::new(change, section, self.syntax);
-        Tab::new(
-            title,
-            TabKind::Diff {
-                file: Box::new(file),
-                view: self.diff_layout,
-                scroll: 0,
-                column: 0,
-            },
-        )
-    }
-
     // --- source control ---------------------------------------------------
 
     /// Request one page of the commit log starting at `skip`, unless one is already
@@ -790,6 +712,17 @@ impl App {
     /// Replace the Source-Control panel state from a fresh backend status,
     /// reconciling the existing selection against the new row count.
     pub(super) fn apply_vcs_status(&mut self, staged: Vec<FileChange>, working: Vec<FileChange>) {
+        let conflicted: HashSet<PathBuf> = working
+            .iter()
+            .filter(|change| change.status == karet_vcs::StatusKind::Conflicted)
+            .map(|change| {
+                if change.path.is_absolute() {
+                    canonical(&change.path)
+                } else {
+                    canonical(&self.root.join(&change.path))
+                }
+            })
+            .collect();
         let staged_count = staged.len();
         let mut changes = staged;
         changes.extend(working);
@@ -798,6 +731,18 @@ impl App {
         self.scm.change_line_stats = change_line_stats;
         self.scm.staged_count = staged_count;
         self.scm.selection.set_len(self.scm.changes.len());
+        for tab in self.all_tabs_mut() {
+            let resolved = tab.merge_conflict.is_some()
+                && tab
+                    .path()
+                    .is_none_or(|path| !conflicted.contains(&canonical(path)));
+            if resolved {
+                tab.merge_conflict = None;
+                if let Some(title) = tab.title.strip_prefix("⚠ ") {
+                    tab.title = title.to_string();
+                }
+            }
+        }
     }
 
     /// Apply a fetched commit-log page: the first page (`skip == 0`) replaces the

@@ -387,6 +387,34 @@ fn conflicted_file_is_reported() -> Result<(), VcsError> {
     Ok(())
 }
 
+#[test]
+fn conflict_sides_reads_ours_and_theirs_from_the_index() -> Result<(), VcsError> {
+    let repo = init_repo()?;
+    write(&repo.path, "a.txt", b"base\n")?;
+    git(&repo.path, &["add", "a.txt"])?;
+    git(&repo.path, &["commit", "-q", "-m", "base"])?;
+    git(&repo.path, &["checkout", "-q", "-b", "incoming"])?;
+    write(&repo.path, "a.txt", b"incoming\n")?;
+    git(&repo.path, &["commit", "-q", "-am", "incoming"])?;
+    git(&repo.path, &["checkout", "-q", "-"])?;
+    write(&repo.path, "a.txt", b"current\n")?;
+    git(&repo.path, &["commit", "-q", "-am", "current"])?;
+    let _ = git(&repo.path, &["merge", "--no-edit", "incoming"]);
+    let repository = Repository::discover(&repo.path)?;
+
+    let sides = repository
+        .conflict_sides(Path::new("a.txt"))?
+        .ok_or_else(|| VcsError::Git("conflict stages not reported".into()))?;
+    assert_eq!(sides.current, b"current\n");
+    assert_eq!(sides.incoming, b"incoming\n");
+    assert!(
+        repository
+            .conflict_sides(Path::new("missing.txt"))?
+            .is_none()
+    );
+    Ok(())
+}
+
 /// A repo whose `main` forks into `feature`, with `main` also advancing afterwards.
 /// Returns the repo so callers can diff `main` against `feature` two ways.
 fn forked_repo() -> Result<TempRepo, VcsError> {
