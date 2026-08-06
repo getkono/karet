@@ -213,6 +213,8 @@ use crate::workspace;
 pub(crate) struct Scm {
     /// Changed files: the staged group first, then the working group.
     pub(crate) changes: Vec<FileChange>,
+    /// Added/removed line counts aligned with `changes`.
+    pub(crate) change_line_stats: Vec<(usize, usize)>,
     /// The number of staged files at the front of `changes`.
     pub(crate) staged_count: usize,
     /// The cursor and multi-file selection over `changes`.
@@ -284,6 +286,21 @@ impl LiveBlame {
 }
 
 impl Scm {
+    fn line_stats(changes: &[FileChange], staged_count: usize) -> Vec<(usize, usize)> {
+        changes
+            .iter()
+            .enumerate()
+            .map(|(index, change)| {
+                let section = if index < staged_count {
+                    Section::Staged
+                } else {
+                    Section::Working
+                };
+                FileView::new(change.clone(), section, false).line_stats()
+            })
+            .collect()
+    }
+
     /// The Source-Control [`Section`] for the entry at `index`.
     fn section(&self, index: usize) -> Section {
         if index < self.staged_count {

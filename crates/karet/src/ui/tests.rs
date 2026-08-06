@@ -1,6 +1,50 @@
+use super::scm::change_line;
 use super::scm::commit_cursor_row;
 use super::*;
 use crate::app::CommitInput;
+
+#[test]
+fn scm_change_rows_show_colored_added_and_removed_counts() {
+    use karet_vcs::FileChange;
+    use karet_vcs::StatusKind;
+    use ratatui::buffer::Buffer;
+    use ratatui::widgets::Widget;
+
+    let theme = Theme::dark();
+    let line = change_line(
+        &theme,
+        &FileChange {
+            path: PathBuf::from("src/lib.rs"),
+            old_path: None,
+            status: StatusKind::Modified,
+            is_binary: false,
+            old: String::new(),
+            new: String::new(),
+        },
+        (12, 3),
+    );
+    let text: String = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    let added = text.find("+12").unwrap_or_default();
+    let removed = text.find("\u{2212}3").unwrap_or_default();
+    assert!(added > 0);
+    assert!(removed > added);
+
+    let area = Rect::new(0, 0, 40, 1);
+    let mut buffer = Buffer::empty(area);
+    Paragraph::new(line).render(area, &mut buffer);
+    assert_eq!(
+        buffer[(u16::try_from(added).unwrap_or_default(), 0)].fg,
+        theme.role(ThemeRole::DiagnosticHint).to_ratatui()
+    );
+    assert_eq!(
+        buffer[(u16::try_from(removed).unwrap_or_default(), 0)].fg,
+        theme.role(ThemeRole::DiagnosticError).to_ratatui()
+    );
+}
 
 #[test]
 fn scrollable_lines_clamp_both_axes_and_draw_horizontal_position()

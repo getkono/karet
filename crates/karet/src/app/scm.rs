@@ -793,7 +793,9 @@ impl App {
         let staged_count = staged.len();
         let mut changes = staged;
         changes.extend(working);
+        let change_line_stats = Scm::line_stats(&changes, staged_count);
         self.scm.changes = changes;
+        self.scm.change_line_stats = change_line_stats;
         self.scm.staged_count = staged_count;
         self.scm.selection.set_len(self.scm.changes.len());
     }
