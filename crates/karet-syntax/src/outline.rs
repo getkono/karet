@@ -8,11 +8,15 @@ use karet_core::Span;
 use karet_core::Symbol;
 use karet_core::SymbolKind;
 use karet_treesitter::LanguageId;
+use karet_treesitter::LayeredTree;
 use karet_treesitter::Query;
 use karet_treesitter::SyntaxTree;
+use karet_treesitter::language_id_from_injection_name;
 use karet_treesitter::outline_query;
 
 mod names;
+#[cfg(test)]
+mod web_tests;
 
 use names::clean_name;
 use names::clean_subroutine_name;
@@ -46,6 +50,40 @@ impl OutlineExtractor {
     /// declarations tree-sitter can still identify.
     #[must_use]
     pub fn analyze(&mut self, tree: &SyntaxTree, text: &str) -> Vec<Symbol> {
+        finish(self.candidates(tree, text))
+    }
+
+    /// Extract one ordered outline from a root tree and its injected languages.
+    ///
+    /// Host and injected declarations share document coordinates, so component
+    /// scripts naturally nest under host sections. Markdown and MDX are deliberate
+    /// exceptions: fenced examples are illustrative code, not document symbols.
+    /// MDX keeps its heading tree and merges its own declarations at the top level.
+    #[must_use]
+    pub fn analyze_layers(&mut self, tree: &LayeredTree, text: &str) -> Vec<Symbol> {
+        let root_candidates = self.candidates(tree.root(), text);
+        let root_language = tree.root().language();
+        if language_id_from_injection_name("markdown") == Some(root_language) {
+            return finish(root_candidates);
+        }
+        if language_id_from_injection_name("mdx") == Some(root_language) {
+            let (headings, declarations) = root_candidates
+                .into_iter()
+                .partition(|candidate| candidate.heading_level.is_some());
+            let mut symbols = finish(headings);
+            symbols.extend(finish(declarations));
+            symbols.sort_by_key(|symbol| symbol.range.start);
+            return symbols;
+        }
+
+        let mut candidates = root_candidates;
+        for layer in tree.children() {
+            candidates.extend(self.candidates(layer, text));
+        }
+        finish(candidates)
+    }
+
+    fn candidates(&mut self, tree: &SyntaxTree, text: &str) -> Vec<Candidate> {
         let lang = tree.language();
         self.queries.entry(lang).or_insert_with(|| {
             outline_query(lang).and_then(|source| Query::compile(lang, &source).ok())
@@ -110,25 +148,28 @@ impl OutlineExtractor {
                 },
             });
         }
-        candidates.sort_by_key(|candidate| {
-            (
-                candidate.span.start.0,
-                usize::MAX - candidate.span.end.0,
-                kind_rank(candidate.symbol.kind),
-            )
-        });
-        candidates.dedup_by(|left, right| {
-            left.span == right.span && left.symbol.name == right.symbol.name
-        });
-        let mut index = 0;
-        if candidates
-            .iter()
-            .all(|candidate| candidate.heading_level.is_some())
-        {
-            nest_headings(&mut candidates, &mut index, None, None)
-        } else {
-            nest(&mut candidates, &mut index, None, None)
-        }
+        candidates
+    }
+}
+
+fn finish(mut candidates: Vec<Candidate>) -> Vec<Symbol> {
+    candidates.sort_by_key(|candidate| {
+        (
+            candidate.span.start.0,
+            usize::MAX - candidate.span.end.0,
+            kind_rank(candidate.symbol.kind),
+        )
+    });
+    candidates
+        .dedup_by(|left, right| left.span == right.span && left.symbol.name == right.symbol.name);
+    let mut index = 0;
+    if candidates
+        .iter()
+        .all(|candidate| candidate.heading_level.is_some())
+    {
+        nest_headings(&mut candidates, &mut index, None, None)
+    } else {
+        nest(&mut candidates, &mut index, None, None)
     }
 }
 

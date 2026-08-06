@@ -508,3 +508,30 @@ fn detects_rust_by_extension_and_name() {
     assert!(language_id_from_path(p).is_some());
     assert_eq!(language_name_from_path(p), Some("Rust"));
 }
+
+#[cfg(all(
+    feature = "lang-scss",
+    feature = "lang-sass",
+    feature = "lang-less",
+    feature = "lang-erb",
+    feature = "lang-mdx",
+    feature = "lang-html"
+))]
+#[test]
+fn detects_web_and_template_grammars_by_shared_filetype_identity() {
+    for (path, expected_grammar) in [
+        ("style.scss", "scss"),
+        ("style.sass", "sass"),
+        ("style.less", "less"),
+        ("view.erb", "erb"),
+        ("guide.mdx", "mdx"),
+        ("page.xhtml", "html"),
+    ] {
+        let path = std::path::Path::new(path);
+        assert_eq!(
+            language_id_from_path(path),
+            language_id_from_injection_name(expected_grammar),
+            "{path:?}"
+        );
+    }
+}
