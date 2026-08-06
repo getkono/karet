@@ -5,6 +5,7 @@ mod readme_svg;
 use std::env;
 use std::io;
 use std::io::Read;
+use std::path::PathBuf;
 use std::process::Command;
 use std::process::ExitCode;
 
@@ -33,6 +34,40 @@ struct Language {
 struct TokeiOutput {
     #[serde(rename = "Rust")]
     rust: Option<Language>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoMetadata {
+    packages: Vec<MetadataPackage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetadataPackage {
+    name: String,
+    manifest_path: PathBuf,
+    publish: Option<Vec<String>>,
+    dependencies: Vec<MetadataDependency>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetadataDependency {
+    name: String,
+    path: Option<PathBuf>,
+    req: String,
+    kind: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum PublishViolationKind {
+    MissingVersion,
+    UnpublishedDependency,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct PublishViolation {
+    package: String,
+    dependency: String,
+    kind: PublishViolationKind,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -153,13 +188,109 @@ fn check_rust_file_lines() -> ExitCode {
     ExitCode::FAILURE
 }
 
+fn is_publishable(package: &MetadataPackage) -> bool {
+    package
+        .publish
+        .as_ref()
+        .is_none_or(|registries| !registries.is_empty())
+}
+
+fn publish_violations(packages: &[MetadataPackage]) -> Vec<PublishViolation> {
+    let mut violations = Vec::new();
+    for package in packages.iter().filter(|package| is_publishable(package)) {
+        for dependency in package
+            .dependencies
+            .iter()
+            .filter(|dependency| dependency.kind.as_deref() != Some("dev"))
+        {
+            let Some(path) = dependency.path.as_deref() else {
+                continue;
+            };
+            let Some(target) = packages
+                .iter()
+                .find(|candidate| candidate.manifest_path.parent() == Some(path))
+            else {
+                continue;
+            };
+            if dependency.req == "*" {
+                violations.push(PublishViolation {
+                    package: package.name.clone(),
+                    dependency: dependency.name.clone(),
+                    kind: PublishViolationKind::MissingVersion,
+                });
+            }
+            if !is_publishable(target) {
+                violations.push(PublishViolation {
+                    package: package.name.clone(),
+                    dependency: dependency.name.clone(),
+                    kind: PublishViolationKind::UnpublishedDependency,
+                });
+            }
+        }
+    }
+    violations.sort_by(|left, right| {
+        (&left.package, &left.dependency, left.kind).cmp(&(
+            &right.package,
+            &right.dependency,
+            right.kind,
+        ))
+    });
+    violations
+}
+
+fn cargo_metadata() -> Result<CargoMetadata, String> {
+    let output = Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .output()
+        .map_err(|error| format!("failed to run cargo metadata: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo metadata failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("failed to parse cargo metadata: {error}"))
+}
+
+fn check_publish_closure() -> ExitCode {
+    let metadata = match cargo_metadata() {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::from(2);
+        },
+    };
+    let violations = publish_violations(&metadata.packages);
+    if violations.is_empty() {
+        println!("Every publishable crate has a publishable, versioned dependency closure.");
+        return ExitCode::SUCCESS;
+    }
+
+    eprintln!("Invalid dependencies in publishable workspace crates:");
+    for violation in violations {
+        let reason = match violation.kind {
+            PublishViolationKind::MissingVersion => "has no version requirement",
+            PublishViolationKind::UnpublishedDependency => "is marked publish = false",
+        };
+        eprintln!(
+            "{} -> {}: {reason}",
+            violation.package, violation.dependency
+        );
+    }
+    ExitCode::FAILURE
+}
+
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
     match (args.next().as_deref(), args.next()) {
         (Some(command), None) if command == "file-lines" => check_rust_file_lines(),
+        (Some(command), None) if command == "publish-closure" => check_publish_closure(),
         (Some(command), None) if command == "readme-svg" => generate_readme_svg(),
         _ => {
-            eprintln!("usage: cargo run --package xtask -- <file-lines|readme-svg>");
+            eprintln!(
+                "usage: cargo run --package xtask -- <file-lines|publish-closure|readme-svg>"
+            );
             ExitCode::from(2)
         },
     }
@@ -173,6 +304,15 @@ mod tests {
         RustReport {
             name: name.to_owned(),
             stats: CodeStats { code },
+        }
+    }
+
+    fn package(name: &str, publish: Option<Vec<String>>) -> MetadataPackage {
+        MetadataPackage {
+            name: name.to_owned(),
+            manifest_path: PathBuf::from(format!("/workspace/crates/{name}/Cargo.toml")),
+            publish,
+            dependencies: Vec::new(),
         }
     }
 
@@ -199,6 +339,46 @@ mod tests {
                 Offender {
                     name: "b.rs".into(),
                     code: 801,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn publish_closure_rejects_unversioned_and_unpublished_workspace_dependencies() {
+        let mut consumer = package("consumer", None);
+        consumer.dependencies = vec![
+            MetadataDependency {
+                name: "internal".into(),
+                path: Some(PathBuf::from("/workspace/crates/internal")),
+                req: "*".into(),
+                kind: None,
+            },
+            MetadataDependency {
+                name: "published".into(),
+                path: Some(PathBuf::from("/workspace/crates/published")),
+                req: "^1.0".into(),
+                kind: None,
+            },
+        ];
+        let packages = vec![
+            consumer,
+            package("internal", Some(Vec::new())),
+            package("published", None),
+        ];
+
+        assert_eq!(
+            publish_violations(&packages),
+            vec![
+                PublishViolation {
+                    package: "consumer".into(),
+                    dependency: "internal".into(),
+                    kind: PublishViolationKind::MissingVersion,
+                },
+                PublishViolation {
+                    package: "consumer".into(),
+                    dependency: "internal".into(),
+                    kind: PublishViolationKind::UnpublishedDependency,
                 },
             ]
         );

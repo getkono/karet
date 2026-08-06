@@ -9,9 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0](https://github.com/getkono/karet/compare/karet-fileview-v0.2.2...karet-fileview-v0.3.0) - 2026-07-19
 
-### Added
+### Fixed
 
-- *(karet-fileview)* route .docx through the docx engine
+- keep the unpublished DOCX engine out of the published dependency closure
 
 ## [0.2.2](https://github.com/getkono/karet/compare/karet-fileview-v0.2.1...karet-fileview-v0.2.2) - 2026-07-10
 
