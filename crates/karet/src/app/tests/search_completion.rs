@@ -159,6 +159,53 @@
     }
 
     #[test]
+    fn search_fields_support_keyboard_and_mouse_selection() {
+        let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+        app.sidebar_panel = SidebarPanel::Search;
+        app.search.input = true;
+        app.search.query = "alpha beta".to_string();
+        app.search
+            .query_edit
+            .set_cursor(&app.search.query, app.search.query.len(), false);
+
+        app.search_edit(KeyEvent::new(
+            KeyCode::Left,
+            KeyModifiers::ALT | KeyModifiers::SHIFT,
+        ));
+        assert_eq!(
+            app.search.query_edit.selected_text(&app.search.query),
+            Some("beta")
+        );
+        app.search_edit(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(app.search.query, "alpha x");
+
+        app.search_query_rect = Rect {
+            x: 4,
+            y: 3,
+            width: 12,
+            height: 1,
+        };
+        app.handle_sidebar_click(6, 3, KeyModifiers::NONE);
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 10,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(
+            app.search.query_edit.selected_text(&app.search.query),
+            Some("pha ")
+        );
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 10,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(app.text_field_drag.is_none());
+    }
+
+    #[test]
     fn search_replace_all_rewrites_matching_files() {
         let dir = std::env::temp_dir().join(format!("karet-replace-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);

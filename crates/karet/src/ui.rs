@@ -71,6 +71,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use ratatui::text::Text;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Clear;
@@ -78,11 +79,8 @@ use ratatui::widgets::List;
 use ratatui::widgets::ListItem;
 use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
-#[cfg(feature = "pdf")]
 use ratatui::widgets::Scrollbar;
-#[cfg(feature = "pdf")]
 use ratatui::widgets::ScrollbarOrientation;
-#[cfg(feature = "pdf")]
 use ratatui::widgets::ScrollbarState;
 use ratatui::widgets::Wrap;
 use scm::draw_scm;
@@ -98,11 +96,158 @@ use crate::app::OperationBlocker;
 use crate::app::SIDEBAR_MIN_WIDTH;
 use crate::app::TabDrag;
 use crate::app::TabHit;
+use crate::app::TextFieldState;
 use crate::app::ToastHit;
 use crate::command::Command;
 use crate::keymap::ChordStyle;
 use crate::keymap::Context;
 use crate::keymap::Focus;
+
+/// Render text-field content with a highlighted selection and an insertion caret.
+pub(super) fn text_field_text(
+    text: &str,
+    edit: &TextFieldState,
+    focused: bool,
+    normal: Style,
+    selection: Style,
+    caret: Style,
+) -> Text<'static> {
+    let selected = edit.selection();
+    let cursor = edit.cursor();
+    let mut lines = Vec::new();
+    let mut spans = Vec::new();
+    for (index, character) in text.char_indices() {
+        if focused && index == cursor {
+            spans.push(Span::styled("▏", caret));
+        }
+        if character == '\n' {
+            lines.push(Line::from(std::mem::take(&mut spans)));
+            continue;
+        }
+        let style = if selected
+            .as_ref()
+            .is_some_and(|range| range.start <= index && index < range.end)
+        {
+            selection
+        } else {
+            normal
+        };
+        spans.push(Span::styled(character.to_string(), style));
+    }
+    if focused && cursor == text.len() {
+        spans.push(Span::styled("▏", caret));
+    }
+    lines.push(Line::from(spans));
+    Text::from(lines)
+}
+
+/// Render a two-axis scrollable paragraph and overlay indicators for axes whose
+/// content exceeds the viewport.
+pub(super) fn draw_scrollable_lines(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    lines: Vec<Line<'static>>,
+    scroll: &mut u16,
+    column: &mut u16,
+) {
+    let content_height = lines.len();
+    let content_width = lines.iter().map(line_width).max().unwrap_or_default();
+    clamp_viewport(area, content_height, content_width, scroll, column);
+    f.render_widget(Paragraph::new(lines).scroll((*scroll, *column)), area);
+    draw_scroll_indicators(
+        f,
+        theme,
+        area,
+        content_height,
+        content_width,
+        *scroll,
+        *column,
+    );
+}
+
+/// Render content whose vertical wheel is reserved for surrounding navigation,
+/// while still exposing horizontal overflow.
+pub(super) fn draw_horizontally_scrollable_lines(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    lines: Vec<Line<'static>>,
+    column: &mut u16,
+) {
+    let content_width = lines.iter().map(line_width).max().unwrap_or_default();
+    let max_column = content_width.saturating_sub(usize::from(area.width));
+    *column = (*column).min(u16::try_from(max_column).unwrap_or(u16::MAX));
+    f.render_widget(Paragraph::new(lines).scroll((0, *column)), area);
+    draw_scroll_indicators(
+        f,
+        theme,
+        area,
+        usize::from(area.height),
+        content_width,
+        0,
+        *column,
+    );
+}
+
+pub(super) fn line_width(line: &Line<'_>) -> usize {
+    line.spans.iter().map(Span::width).sum()
+}
+
+pub(super) fn clamp_viewport(
+    area: Rect,
+    content_height: usize,
+    content_width: usize,
+    scroll: &mut u16,
+    column: &mut u16,
+) {
+    let max_scroll = content_height.saturating_sub(usize::from(area.height));
+    let max_column = content_width.saturating_sub(usize::from(area.width));
+    *scroll = (*scroll).min(u16::try_from(max_scroll).unwrap_or(u16::MAX));
+    *column = (*column).min(u16::try_from(max_column).unwrap_or(u16::MAX));
+}
+
+#[allow(clippy::too_many_arguments)] // content extents and both offsets are independent render inputs
+pub(super) fn draw_scroll_indicators(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    content_height: usize,
+    content_width: usize,
+    scroll: u16,
+    column: u16,
+) {
+    let track = Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui());
+    let thumb = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
+    if content_height > usize::from(area.height) && area.height > 2 {
+        let mut state = ScrollbarState::new(content_height)
+            .position(usize::from(scroll))
+            .viewport_content_length(usize::from(area.height));
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_style(track)
+                .thumb_style(thumb),
+            area,
+            &mut state,
+        );
+    }
+    if content_width > usize::from(area.width) && area.width > 2 {
+        let mut state = ScrollbarState::new(content_width)
+            .position(usize::from(column))
+            .viewport_content_length(usize::from(area.width));
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::HorizontalBottom)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_style(track)
+                .thumb_style(thumb),
+            area,
+            &mut state,
+        );
+    }
+}
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
 use crate::overlay::Overlay;

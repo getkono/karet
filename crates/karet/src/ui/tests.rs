@@ -1,6 +1,5 @@
 use super::scm::change_line;
 use super::scm::commit_cursor_row;
-use super::scm::commit_input_display;
 use super::*;
 use crate::app::CommitInput;
 
@@ -45,6 +44,40 @@ fn scm_change_rows_show_colored_added_and_removed_counts() {
         buffer[(u16::try_from(removed).unwrap_or_default(), 0)].fg,
         theme.role(ThemeRole::DiagnosticError).to_ratatui()
     );
+}
+
+#[test]
+fn scrollable_lines_clamp_both_axes_and_draw_horizontal_position()
+-> Result<(), std::convert::Infallible> {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let backend = TestBackend::new(6, 3);
+    let mut terminal = Terminal::new(backend)?;
+    let mut scroll = 9;
+    let mut column = 3;
+    terminal.draw(|frame| {
+        draw_scrollable_lines(
+            frame,
+            &Theme::dark(),
+            frame.area(),
+            vec![Line::raw("0123456789")],
+            &mut scroll,
+            &mut column,
+        );
+    })?;
+
+    assert_eq!(scroll, 0);
+    assert_eq!(column, 3);
+    let visible = (0..6)
+        .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+        .collect::<String>();
+    assert_eq!(visible, "345678");
+    assert!(
+        (0..6).any(|x| terminal.backend().buffer()[(x, 2)].symbol() != " "),
+        "overflow should paint a horizontal position indicator"
+    );
+    Ok(())
 }
 
 #[test]
@@ -120,15 +153,44 @@ fn osc8_link_bytes_reach_the_crossterm_backend() -> Result<(), Box<dyn std::erro
 
 #[test]
 fn commit_input_display_preserves_lines_and_marks_the_caret() {
-    let input = CommitInput {
+    let mut input = CommitInput {
         text: "subject\nbody".to_string(),
-        cursor: 8,
         focused: true,
         ..CommitInput::default()
     };
-    assert_eq!(commit_input_display(&input), "subject\n▏body");
-    assert_eq!(commit_cursor_row(&input.text, input.cursor, 40), 1);
+    input.edit.set_cursor(&input.text, 8, false);
+    let display = text_field_text(
+        &input.text,
+        &input.edit,
+        true,
+        Style::default(),
+        Style::default(),
+        Style::default(),
+    );
+    assert_eq!(display.lines[0].to_string(), "subject");
+    assert_eq!(display.lines[1].to_string(), "▏body");
+    assert_eq!(commit_cursor_row(&input.text, input.edit.cursor(), 40), 1);
     assert_eq!(commit_cursor_row("abcdefghij", 10, 5), 2);
+}
+
+#[test]
+fn text_field_display_styles_the_selected_run() {
+    let mut edit = TextFieldState::default();
+    edit.set_cursor("abcd", 1, false);
+    edit.set_cursor("abcd", 3, true);
+    let display = text_field_text(
+        "abcd",
+        &edit,
+        true,
+        Style::default().fg(Color::White),
+        Style::default().fg(Color::White).bg(Color::Blue),
+        Style::default().fg(Color::Red),
+    );
+    let spans = &display.lines[0].spans;
+    assert_eq!(spans[0].style.bg, None);
+    assert_eq!(spans[1].style.bg, Some(Color::Blue));
+    assert_eq!(spans[2].style.bg, Some(Color::Blue));
+    assert_eq!(spans[3].content, "▏");
 }
 
 #[test]

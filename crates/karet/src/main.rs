@@ -97,6 +97,20 @@ fn main() -> color_eyre::Result<()> {
         std::process::exit(doctor::run(&loaded_config.settings));
     }
 
+    // Resolve `--capture*` up front for the same fail-fast reason as `--command`
+    // below: a malformed grid must not silently capture a size nobody asked for.
+    let capture = if cli.capture {
+        match cli.capture_spec() {
+            Ok(spec) => Some(spec),
+            Err(error) => {
+                eprintln!("karet: --capture-size: {error}");
+                std::process::exit(2);
+            },
+        }
+    } else {
+        None
+    };
+
     // Resolve every `--command` name up front, so a typo fails fast on stderr with
     // a non-zero exit — an automation run must never enter (and wedge) the TUI on a
     // command that can never dispatch.
@@ -171,8 +185,13 @@ fn main() -> color_eyre::Result<()> {
     if !cli.split.is_empty() {
         // The editor rectangle is only computed on the first draw; seed it with the
         // terminal size so the split-room guard has a real budget now. The draw loop
-        // recomputes the exact rectangle every frame, so an approximation is fine.
-        if let Ok((w, h)) = crossterm::terminal::size() {
+        // recomputes the exact rectangle every frame, so an approximation is fine. A
+        // capture has no terminal to measure (`crossterm::terminal::size` fails
+        // without a tty), so its requested grid is the budget instead.
+        if let Some((w, h)) = capture
+            .map(|spec| (spec.cols, spec.rows))
+            .or_else(|| crossterm::terminal::size().ok())
+        {
             app.main_rect = ratatui::layout::Rect::new(0, 0, w, h);
         }
         for file in &cli.split {
@@ -189,7 +208,12 @@ fn main() -> color_eyre::Result<()> {
     for command in startup_commands {
         app.apply_startup_command(command);
     }
-    app::run(app)
+    // `--capture` acts like the other automation flags: render the shell off-screen,
+    // write the frame to stdout, and return — never enter the alternate screen.
+    match capture {
+        Some(spec) => app::capture(app, spec),
+        None => app::run(app),
+    }
 }
 
 fn resolve_under_root(root: &Path, path: &Path) -> PathBuf {

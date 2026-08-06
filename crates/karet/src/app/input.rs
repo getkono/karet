@@ -1,6 +1,55 @@
 use super::*;
 
 impl App {
+    /// Selected text owned by the active Search or commit-message field.
+    pub(super) fn modal_selection_text(&self) -> Option<String> {
+        match self.input_context().modal? {
+            Modal::CommitInput => self
+                .commit_input
+                .edit
+                .selected_text(&self.commit_input.text)
+                .map(str::to_string),
+            Modal::SearchInput => match self.search.field {
+                SearchField::Find => self
+                    .search
+                    .query_edit
+                    .selected_text(&self.search.query)
+                    .map(str::to_string),
+                SearchField::Replace => self
+                    .search
+                    .replace_edit
+                    .selected_text(&self.search.replace)
+                    .map(str::to_string),
+            },
+            _ => None,
+        }
+    }
+
+    /// Remove and return the active lightweight field's selected text.
+    pub(super) fn cut_modal_selection(&mut self) -> Option<String> {
+        match self.input_context().modal? {
+            Modal::CommitInput => self.commit_input.edit.cut(&mut self.commit_input.text),
+            Modal::SearchInput => match self.search.field {
+                SearchField::Find => self.search.query_edit.cut(&mut self.search.query),
+                SearchField::Replace => self.search.replace_edit.cut(&mut self.search.replace),
+            },
+            _ => None,
+        }
+    }
+
+    /// Select the entire active lightweight field, returning whether one owned focus.
+    pub(super) fn select_all_modal_text(&mut self) -> bool {
+        match self.input_context().modal {
+            Some(Modal::CommitInput) => self.commit_input.edit.select_all(&self.commit_input.text),
+            Some(Modal::SearchInput) => match self.search.field {
+                SearchField::Find => self.search.query_edit.select_all(&self.search.query),
+                SearchField::Replace => self.search.replace_edit.select_all(&self.search.replace),
+            },
+            _ => return false,
+        }
+        true
+    }
+
     /// Handle a key press: resolve it against the layered keymap for the current
     /// [input context](Self::input_context) and dispatch, or fall through to the
     /// active modal's text input when nothing is bound.
@@ -120,7 +169,7 @@ impl App {
                     && self.active_code_doc().is_some()
                     && !key
                         .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
                     && let KeyCode::Char(c) = key.code
                 {
                     self.dispatch(Command::InsertChar(c));
@@ -192,11 +241,13 @@ impl App {
             },
             Modal::ExplorerEdit => self.explorer.edit_paste(text),
             Modal::SearchInput => {
-                let target = match self.search.field {
-                    SearchField::Find => &mut self.search.query,
-                    SearchField::Replace => &mut self.search.replace,
+                let (target, edit) = match self.search.field {
+                    SearchField::Find => (&mut self.search.query, &mut self.search.query_edit),
+                    SearchField::Replace => {
+                        (&mut self.search.replace, &mut self.search.replace_edit)
+                    },
                 };
-                target.push_str(text);
+                edit.insert(target, text);
             },
             Modal::SearchList
             | Modal::DiscardConfirm

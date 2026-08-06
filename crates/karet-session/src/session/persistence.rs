@@ -200,9 +200,12 @@ impl Session {
             // `None` edits force it to start over.
             let spell_without_syntax = update_syntax(settings, highlight_tx, doc_id, doc, None);
             // The on-disk content is the new truth; keep the server in sync.
-            lsp.document_changed(doc.language, &doc.path, doc.buffer.version(), || {
-                doc.buffer.text()
-            });
+            lsp.document_changed(
+                doc.language_selector,
+                &doc.path,
+                doc.buffer.version(),
+                || doc.buffer.text(),
+            );
             (doc.buffer.version(), spell_without_syntax)
         };
         self.emit(

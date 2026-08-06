@@ -181,6 +181,38 @@ pub fn delete_forward(
     None
 }
 
+/// Delete backward to the previous word boundary, or delete the selection when one
+/// is active. Whitespace adjoining the previous word is removed with it.
+#[must_use]
+pub fn delete_word_backward(
+    caret: LineCol,
+    selection: Option<Range>,
+    buffer: &TextBuffer,
+    base: u64,
+) -> Option<Edit> {
+    if let Some(range) = non_empty(selection) {
+        return Some(delete_between(range.start, range.end, base));
+    }
+    let start = karet_editor::previous_word_boundary(buffer, caret);
+    (start != caret).then(|| delete_between(start, caret, base))
+}
+
+/// Delete forward to the next word boundary, or delete the selection when one is
+/// active. Whitespace adjoining the next word is removed with it.
+#[must_use]
+pub fn delete_word_forward(
+    caret: LineCol,
+    selection: Option<Range>,
+    buffer: &TextBuffer,
+    base: u64,
+) -> Option<Edit> {
+    if let Some(range) = non_empty(selection) {
+        return Some(delete_between(range.start, range.end, base));
+    }
+    let end = karet_editor::next_word_boundary(buffer, caret);
+    (end != caret).then(|| delete_between(caret, end, base))
+}
+
 /// Delete `[start, end)`, leaving the caret at `start`.
 fn delete_between(start: LineCol, end: LineCol, base: u64) -> Edit {
     Edit {
@@ -371,6 +403,37 @@ mod tests {
         let e = backspace(at(0, 4), sel((0, 1), (0, 4)), &buffer, 0).expect("edit");
         assert_eq!(e.change.edits[0].range.start, at(0, 1));
         assert_eq!(e.caret, at(0, 1));
+    }
+
+    #[test]
+    fn word_deletion_uses_shared_boundaries_and_prefers_selection() {
+        let buffer = TextBuffer::from_text("one  two.three\nnext");
+        let backward = delete_word_backward(at(0, 14), None, &buffer, 0);
+        assert_eq!(
+            backward.as_ref().map(|edit| edit.change.edits[0].range),
+            Some(Range {
+                start: at(0, 9),
+                end: at(0, 14),
+            })
+        );
+        let forward = delete_word_forward(at(0, 3), None, &buffer, 0);
+        assert_eq!(
+            forward.as_ref().map(|edit| edit.change.edits[0].range),
+            Some(Range {
+                start: at(0, 3),
+                end: at(0, 8),
+            })
+        );
+        let selected = delete_word_backward(at(0, 7), sel((0, 1), (0, 7)), &buffer, 0);
+        assert_eq!(
+            selected.as_ref().map(|edit| edit.change.edits[0].range),
+            Some(Range {
+                start: at(0, 1),
+                end: at(0, 7),
+            })
+        );
+        assert!(delete_word_backward(at(0, 0), None, &buffer, 0).is_none());
+        assert!(delete_word_forward(at(1, 4), None, &buffer, 0).is_none());
     }
 
     #[test]
