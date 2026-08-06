@@ -424,6 +424,18 @@ impl App {
             }
             return;
         }
+        // Lightweight Search/commit fields capture selection drags independently of
+        // the main editor's text-selection state.
+        if let Some(target) = self.text_field_drag {
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    self.place_text_field_cursor(target, mouse.column, mouse.row, true);
+                },
+                MouseEventKind::Up(MouseButton::Left) => self.text_field_drag = None,
+                _ => {},
+            }
+            return;
+        }
         // An in-progress text selection captures motion until the button is released.
         if self.editor_selecting {
             match mouse.kind {
@@ -602,7 +614,9 @@ impl App {
                 col.saturating_sub(self.scm_commit_rect.x),
                 row_y.saturating_sub(self.scm_commit_rect.y),
                 self.scm_commit_rect.width,
+                modifiers.contains(KeyModifiers::SHIFT),
             );
+            self.text_field_drag = Some(TextFieldTarget::Commit);
             return;
         }
         self.commit_input.focused = false;
@@ -716,15 +730,22 @@ impl App {
                     return;
                 }
                 // Click a field to edit it.
-                if row_y == self.search_query_row {
+                if rect_contains(self.search_query_rect, (col, row_y)) {
                     self.search.field = SearchField::Find;
                     self.search.input = true;
+                    self.place_text_field_cursor(TextFieldTarget::SearchFind, col, row_y, shift);
+                    self.text_field_drag = Some(TextFieldTarget::SearchFind);
                     return;
                 }
-                if Some(row_y) == self.search_replace_row {
+                if self
+                    .search_replace_rect
+                    .is_some_and(|rect| rect_contains(rect, (col, row_y)))
+                {
                     self.search.field = SearchField::Replace;
                     self.search.replace_visible = true;
                     self.search.input = true;
+                    self.place_text_field_cursor(TextFieldTarget::SearchReplace, col, row_y, shift);
+                    self.text_field_drag = Some(TextFieldTarget::SearchReplace);
                     return;
                 }
                 if !rect_contains(self.search_results_rect, (col, row_y)) {
@@ -735,6 +756,48 @@ impl App {
                     self.search.selected = idx;
                     self.open_selected_result();
                 }
+            },
+        }
+    }
+
+    fn place_text_field_cursor(
+        &mut self,
+        target: TextFieldTarget,
+        column: u16,
+        row: u16,
+        extend: bool,
+    ) {
+        match target {
+            TextFieldTarget::Commit => self.commit_input.place_cursor(
+                column.saturating_sub(self.scm_commit_rect.x),
+                row.saturating_sub(self.scm_commit_rect.y),
+                self.scm_commit_rect.width,
+                extend,
+            ),
+            TextFieldTarget::SearchFind => {
+                let cell = usize::from(
+                    column
+                        .saturating_sub(self.search_query_rect.x)
+                        .saturating_add(self.search.query_edit.scroll),
+                );
+                let cursor = text_field::byte_at_cell(&self.search.query, cell);
+                self.search
+                    .query_edit
+                    .set_cursor(&self.search.query, cursor, extend);
+            },
+            TextFieldTarget::SearchReplace => {
+                let Some(rect) = self.search_replace_rect else {
+                    return;
+                };
+                let cell = usize::from(
+                    column
+                        .saturating_sub(rect.x)
+                        .saturating_add(self.search.replace_edit.scroll),
+                );
+                let cursor = text_field::byte_at_cell(&self.search.replace, cell);
+                self.search
+                    .replace_edit
+                    .set_cursor(&self.search.replace, cursor, extend);
             },
         }
     }

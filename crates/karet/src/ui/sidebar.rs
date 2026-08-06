@@ -440,8 +440,6 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
     .split(area);
     app.search_results_rect = rows[2];
     app.search_offset = 0;
-    app.search_query_row = rows[0].y;
-    app.search_replace_row = replace_visible.then_some(rows[1].y);
     app.search_action_hits = Vec::new();
 
     let accent = theme.role(ThemeRole::LineNumberActive).to_ratatui();
@@ -458,13 +456,32 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
     } else {
         Style::default().fg(fg)
     };
-    let find_cursor = if editing_find { "_" } else { "" };
+    let find_prefix = Rect {
+        width: find_cols[0].width.min(3),
+        ..find_cols[0]
+    };
+    let find_field = Rect {
+        x: find_prefix.right(),
+        width: find_cols[0].width.saturating_sub(find_prefix.width),
+        ..find_cols[0]
+    };
+    app.search_query_rect = find_field;
+    app.search
+        .query_edit
+        .ensure_cursor_visible(&app.search.query, find_field.width);
+    f.render_widget(Paragraph::new(Line::styled(" › ", find_style)), find_prefix);
+    let selection = theme.role(ThemeRole::Selection).to_ratatui();
     f.render_widget(
-        Paragraph::new(Line::styled(
-            format!(" › {}{find_cursor}", app.search.query),
+        Paragraph::new(text_field_text(
+            &app.search.query,
+            &app.search.query_edit,
+            editing_find,
             find_style,
-        )),
-        find_cols[0],
+            find_style.bg(selection),
+            Style::default().fg(accent),
+        ))
+        .scroll((0, app.search.query_edit.scroll)),
+        find_field,
     );
     let toggles = [
         (".*", app.search.regex, Command::SearchToggleRegex),
@@ -494,13 +511,31 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
         } else {
             Style::default().fg(fg)
         };
-        let rep_cursor = if editing_replace { "_" } else { "" };
+        let rep_prefix = Rect {
+            width: rep_cols[0].width.min(3),
+            ..rep_cols[0]
+        };
+        let rep_field = Rect {
+            x: rep_prefix.right(),
+            width: rep_cols[0].width.saturating_sub(rep_prefix.width),
+            ..rep_cols[0]
+        };
+        app.search_replace_rect = Some(rep_field);
+        app.search
+            .replace_edit
+            .ensure_cursor_visible(&app.search.replace, rep_field.width);
+        f.render_widget(Paragraph::new(Line::styled(" ⇄ ", rep_style)), rep_prefix);
         f.render_widget(
-            Paragraph::new(Line::styled(
-                format!(" ⇄ {}{rep_cursor}", app.search.replace),
+            Paragraph::new(text_field_text(
+                &app.search.replace,
+                &app.search.replace_edit,
+                editing_replace,
                 rep_style,
-            )),
-            rep_cols[0],
+                rep_style.bg(selection),
+                Style::default().fg(accent),
+            ))
+            .scroll((0, app.search.replace_edit.scroll)),
+            rep_field,
         );
         // "replace all" button, active only when there are results to replace.
         let has_results = !app.search.results.is_empty();
@@ -519,6 +554,8 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
             Paragraph::new(Line::styled(" ⟳ all", btn_style)),
             rep_cols[1],
         );
+    } else {
+        app.search_replace_rect = None;
     }
 
     let search = &app.search;

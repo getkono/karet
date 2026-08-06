@@ -583,6 +583,28 @@ fn search_modal_still_resolves_global_chords() {
         ),
         Resolved::Command(Command::ToggleSidebar)
     );
+    let input = Context::modal(Modal::SearchInput, FocusTarget::Search);
+    assert_eq!(
+        resolve(
+            input,
+            &[KeyChord::from_event(key(
+                KeyCode::Char('x'),
+                KeyModifiers::CONTROL
+            ))]
+        ),
+        Resolved::Command(Command::Cut)
+    );
+    let commit = Context::modal(Modal::CommitInput, FocusTarget::SourceControl);
+    assert_eq!(
+        resolve(
+            commit,
+            &[KeyChord::from_event(key(
+                KeyCode::Char('a'),
+                KeyModifiers::SUPER
+            ))]
+        ),
+        Resolved::Command(Command::EditorSelectAll)
+    );
     // A plain overlay is exclusive: Ctrl+B does not leak through to Global.
     let overlay = Context::modal(Modal::Overlay, FocusTarget::Editor);
     assert_eq!(

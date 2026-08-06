@@ -478,6 +478,16 @@ impl App {
 
     /// Cut the current selection (copy then delete); a no-op without a selection.
     pub(super) fn cut(&mut self) {
+        if matches!(
+            self.input_context().modal,
+            Some(Modal::SearchInput | Modal::CommitInput)
+        ) {
+            let Some(text) = self.cut_modal_selection() else {
+                return;
+            };
+            self.copy_to_clipboard(text, "selection");
+            return;
+        }
         if self.focus_target() == FocusTarget::Explorer {
             self.explorer_cut_files();
             return;

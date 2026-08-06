@@ -729,16 +729,29 @@ impl App {
             self.commit_submit();
             return;
         }
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let command = key.modifiers.contains(KeyModifiers::SUPER);
         match key.code {
-            KeyCode::Backspace => self.commit_input.backspace(),
-            KeyCode::Delete => self.commit_input.delete(),
-            KeyCode::Left => self.commit_input.move_left(),
-            KeyCode::Right => self.commit_input.move_right(),
-            KeyCode::Home => self.commit_input.move_home(),
-            KeyCode::End => self.commit_input.move_end(),
-            KeyCode::Up => self.commit_input.move_vertical(-1),
-            KeyCode::Down => self.commit_input.move_vertical(1),
+            KeyCode::Backspace => self.commit_input.backspace(alt || ctrl),
+            KeyCode::Delete => self.commit_input.delete(alt || ctrl),
+            KeyCode::Left if command => self.commit_input.move_home(shift),
+            KeyCode::Right if command => self.commit_input.move_end(shift),
+            KeyCode::Up if command => self.commit_input.move_document_start(shift),
+            KeyCode::Down if command => self.commit_input.move_document_end(shift),
+            KeyCode::Left if alt || ctrl => self.commit_input.move_word_left(shift),
+            KeyCode::Right if alt || ctrl => self.commit_input.move_word_right(shift),
+            KeyCode::Left => self.commit_input.move_left(shift),
+            KeyCode::Right => self.commit_input.move_right(shift),
+            KeyCode::Home if ctrl => self.commit_input.move_document_start(shift),
+            KeyCode::End if ctrl => self.commit_input.move_document_end(shift),
+            KeyCode::Home => self.commit_input.move_home(shift),
+            KeyCode::End => self.commit_input.move_end(shift),
+            KeyCode::Up => self.commit_input.move_vertical(-1, shift),
+            KeyCode::Down => self.commit_input.move_vertical(1, shift),
             KeyCode::Enter => self.commit_input.insert_char('\n'),
+            KeyCode::Char('a' | 'A') if ctrl || command => self.commit_input.select_all(),
             KeyCode::Char(c)
                 if !key.modifiers.intersects(
                     KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
@@ -824,67 +837,59 @@ impl App {
 
 impl CommitInput {
     fn insert_char(&mut self, character: char) {
-        self.text.insert(self.cursor, character);
-        self.cursor += character.len_utf8();
+        self.edit.insert(&mut self.text, &character.to_string());
     }
 
     fn insert_text(&mut self, text: &str) {
-        self.text.insert_str(self.cursor, text);
-        self.cursor += text.len();
+        self.edit.insert(&mut self.text, text);
     }
 
-    fn backspace(&mut self) {
-        let Some(previous) = self.text[..self.cursor]
-            .char_indices()
-            .next_back()
-            .map(|(index, _)| index)
-        else {
-            return;
-        };
-        self.text.drain(previous..self.cursor);
-        self.cursor = previous;
+    fn backspace(&mut self, word: bool) {
+        self.edit.backspace(&mut self.text, word);
     }
 
-    fn delete(&mut self) {
-        let Some(width) = self.text[self.cursor..].chars().next().map(char::len_utf8) else {
-            return;
-        };
-        self.text.drain(self.cursor..self.cursor + width);
+    fn delete(&mut self, word: bool) {
+        self.edit.delete(&mut self.text, word);
     }
 
-    fn move_left(&mut self) {
-        if let Some(previous) = self.text[..self.cursor]
-            .char_indices()
-            .next_back()
-            .map(|(index, _)| index)
-        {
-            self.cursor = previous;
-        }
+    fn move_left(&mut self, extend: bool) {
+        self.edit.move_left(&self.text, extend);
     }
 
-    fn move_right(&mut self) {
-        if let Some(width) = self.text[self.cursor..].chars().next().map(char::len_utf8) {
-            self.cursor += width;
-        }
+    fn move_right(&mut self, extend: bool) {
+        self.edit.move_right(&self.text, extend);
     }
 
-    fn move_home(&mut self) {
-        self.cursor = self.text[..self.cursor]
+    fn move_word_left(&mut self, extend: bool) {
+        self.edit.move_word_left(&self.text, extend);
+    }
+
+    fn move_word_right(&mut self, extend: bool) {
+        self.edit.move_word_right(&self.text, extend);
+    }
+
+    fn move_home(&mut self, extend: bool) {
+        self.edit.move_start(&self.text, false, extend);
+    }
+
+    fn move_end(&mut self, extend: bool) {
+        self.edit.move_end(&self.text, false, extend);
+    }
+
+    fn move_document_start(&mut self, extend: bool) {
+        self.edit.move_start(&self.text, true, extend);
+    }
+
+    fn move_document_end(&mut self, extend: bool) {
+        self.edit.move_end(&self.text, true, extend);
+    }
+
+    fn move_vertical(&mut self, delta: i8, extend: bool) {
+        let cursor = self.edit.cursor();
+        let start = self.text[..cursor]
             .rfind('\n')
             .map_or(0, |newline| newline + 1);
-    }
-
-    fn move_end(&mut self) {
-        self.cursor = self.text[self.cursor..]
-            .find('\n')
-            .map_or(self.text.len(), |newline| self.cursor + newline);
-    }
-
-    fn move_vertical(&mut self, delta: i8) {
-        let start = self.text[..self.cursor]
-            .rfind('\n')
-            .map_or(0, |newline| newline + 1);
-        let column = self.text[start..self.cursor].chars().count();
+        let column = self.text[start..cursor].chars().count();
         let target_start = if delta < 0 {
             let Some(previous_end) = start.checked_sub(1) else {
                 return;
@@ -893,21 +898,26 @@ impl CommitInput {
                 .rfind('\n')
                 .map_or(0, |newline| newline + 1)
         } else {
-            let Some(next) = self.text[self.cursor..].find('\n') else {
+            let Some(next) = self.text[cursor..].find('\n') else {
                 return;
             };
-            self.cursor + next + 1
+            cursor + next + 1
         };
         let target_end = self.text[target_start..]
             .find('\n')
             .map_or(self.text.len(), |newline| target_start + newline);
-        self.cursor = self.text[target_start..target_end]
+        let target = self.text[target_start..target_end]
             .char_indices()
             .nth(column)
             .map_or(target_end, |(offset, _)| target_start + offset);
+        self.edit.set_cursor(&self.text, target, extend);
     }
 
-    pub(super) fn place_cursor(&mut self, column: u16, row: u16, width: u16) {
+    fn select_all(&mut self) {
+        self.edit.select_all(&self.text);
+    }
+
+    pub(super) fn place_cursor(&mut self, column: u16, row: u16, width: u16, extend: bool) {
         let target_row = usize::from(row.saturating_add(self.scroll));
         let target_col = usize::from(column);
         let width = usize::from(width.max(1));
@@ -917,7 +927,7 @@ impl CommitInput {
         for (index, character) in self.text.char_indices() {
             if character == '\n' {
                 if display_row == target_row {
-                    self.cursor = candidate;
+                    self.edit.set_cursor(&self.text, candidate, extend);
                     return;
                 }
                 display_row += 1;
@@ -933,12 +943,12 @@ impl CommitInput {
             if display_row > target_row
                 || display_row == target_row && target_col < display_col + char_width
             {
-                self.cursor = index;
+                self.edit.set_cursor(&self.text, index, extend);
                 return;
             }
             display_col += char_width;
             candidate = index + character.len_utf8();
         }
-        self.cursor = candidate;
+        self.edit.set_cursor(&self.text, candidate, extend);
     }
 }
