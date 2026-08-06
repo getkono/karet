@@ -1,4 +1,4 @@
-//! File-extension → language detection.
+//! File-type identity → language detection.
 //!
 //! Two layers so a viewer can label a file even when its grammar isn't built in:
 //! [`language_id_from_path`] resolves only grammars compiled into this build, while
@@ -10,33 +10,37 @@ use std::path::Path;
 use crate::LanguageId;
 use crate::registry;
 
-/// The [`LanguageId`] of a bundled grammar for `path`'s extension, if one is
+/// The [`LanguageId`] of a bundled grammar for `path`'s file type, if one is
 /// compiled in. `None` means the caller should render plaintext.
 #[must_use]
 pub fn language_id_from_path(path: &Path) -> Option<LanguageId> {
-    let ext = extension(path)?;
+    let file_type = karet_filetype::file_type_for_path(path);
+    if let Some(grammar) = file_type.grammar() {
+        return language_id_from_injection_name(grammar);
+    }
+    let extension = extension(path)?;
     registry::all()
         .iter()
-        .find(|g| g.extensions.contains(&ext.as_str()))
-        .map(|g| g.id)
+        .find(|grammar| grammar.extensions.contains(&extension.as_str()))
+        .map(|grammar| grammar.id)
 }
 
 /// A human-readable language name for `path`, for UI labels.
 ///
-/// Prefers a bundled grammar's name; otherwise defers to the shared
-/// [`karet_filetype`] catalogue (so the display-name table lives in one place).
+/// Defers to the shared [`karet_filetype`] catalogue, keeping display identity
+/// independent from whichever grammar happens to parse the file.
 /// `None` for unrecognized files (the caller should show "plaintext").
 #[must_use]
 pub fn language_name_from_path(path: &Path) -> Option<&'static str> {
-    if let Some(ext) = extension(path)
-        && let Some(g) = registry::all()
-            .iter()
-            .find(|g| g.extensions.contains(&ext.as_str()))
-    {
-        return Some(g.name);
-    }
     let ft = karet_filetype::file_type_for_path(path);
-    ft.is_recognized().then_some(ft.name())
+    if ft.is_recognized() {
+        return Some(ft.name());
+    }
+    let extension = extension(path)?;
+    registry::all()
+        .iter()
+        .find(|grammar| grammar.extensions.contains(&extension.as_str()))
+        .map(|grammar| grammar.name)
 }
 
 /// The [`LanguageId`] a grammar-injection language name refers to, if that grammar is
@@ -124,7 +128,7 @@ mod tests {
         for (path, expected) in [
             ("main.zig", "Zig"),
             ("document.xml", "XML"),
-            ("vector.svg", "XML"),
+            ("vector.svg", "SVG"),
             ("workflow.yaml", "YAML"),
             ("page.astro", "Astro"),
             ("component.svelte", "Svelte"),
@@ -133,6 +137,10 @@ mod tests {
             assert_eq!(
                 language_name_from_path(std::path::Path::new(path)),
                 Some(expected),
+                "{path}"
+            );
+            assert!(
+                language_id_from_path(std::path::Path::new(path)).is_some(),
                 "{path}"
             );
         }

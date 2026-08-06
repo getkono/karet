@@ -5,8 +5,9 @@ crate, [`karet-filetype`](../crates/karet-filetype), which every other crate
 consumes:
 
 - **Identity & icons** — `karet-filetype` resolves any path to a `FileType`
-  (display name, `Category`, and an icon per `IconStyle`). The explorer and
-  activity bar render those glyphs.
+  with independent display, grammar, LSP, and configuration identities plus a
+  `Category` and icon per `IconStyle`. The explorer and activity bar render the
+  presentation metadata; parsers and servers consume only their own identity.
 - **Renderer routing** — `karet-filetype::classify` returns a `FileKind` that
   decides which widget opens a file (editor / image / hex / placeholder).
 - **Syntax highlighting** — tree-sitter grammars live in
@@ -37,7 +38,7 @@ These extensions highlight via a compiled-in grammar (the `karet` app enables th
 | Language | Extensions |
 |---|---|
 | Rust | `rs` |
-| Python | `py`, `pyi` |
+| Python | `py`, `pyi`, `pyw` |
 | JavaScript | `js`, `mjs`, `cjs`, `jsx` |
 | TypeScript / TSX | `ts`, `mts`, `cts`, `tsx` |
 | JSON | `json`, `jsonc` |
@@ -50,7 +51,7 @@ These extensions highlight via a compiled-in grammar (the `karet` app enables th
 | PHP | `php` |
 | Bash | `sh`, `bash` |
 | TOML | `toml` |
-| HTML | `html`, `htm` |
+| HTML / XHTML | `html`, `htm`, `xhtml` |
 | CSS | `css` |
 | YAML | `yml`, `yaml` |
 | Markdown | `md`, `markdown`, `mdown`, `mkd` — layered block + inline grammar, including fenced-language injection |
@@ -66,7 +67,7 @@ These get an icon, a display name, and renderer routing, but open as plain
   PowerShell, Batch.
 - **Config / data:** **Pkl** (no published Rust tree-sitter binding yet — see
   below), INI/cfg/conf, `.properties`, XML, SVG, CSV/TSV, lockfiles,
-  `Dockerfile`/`Containerfile`, `Makefile`/`GNUmakefile`/`CMakeLists.txt`, git
+  `Dockerfile`/`Containerfile`, `Makefile`/`GNUmakefile`, `CMakeLists.txt`, git
   config dotfiles, `.editorconfig`, `.env`.
 - **Web:** Less, Vue, Svelte.
 - **Prose / docs:** reStructuredText, AsciiDoc, plain text, `LICENSE` /

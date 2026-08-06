@@ -63,7 +63,9 @@ async fn last_document_close_retires_the_server_slot() {
         Arc::new(AtomicUsize::new(0)),
     ));
     let path = PathBuf::from("/tmp/owned.rs");
-    manager.document_opened(Some("rust"), &path, 1, || "fn main() {}".into());
+    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+        "fn main() {}".into()
+    });
     assert!(manager.is_running(&LanguageServerId::RustAnalyzer));
     manager.document_closed(Some("rust"), &path);
     assert!(!manager.is_running(&LanguageServerId::RustAnalyzer));
@@ -77,13 +79,58 @@ async fn javascript_and_typescript_share_one_builtin_process() {
         None,
         Arc::new(AtomicUsize::new(0)),
     ));
-    manager.document_opened(Some("javascript"), Path::new("/tmp/a.js"), 1, String::new);
-    manager.document_opened(Some("typescript"), Path::new("/tmp/b.ts"), 1, String::new);
+    manager.document_opened(
+        Some("javascript"),
+        Some("javascript"),
+        Path::new("/tmp/a.js"),
+        1,
+        String::new,
+    );
+    manager.document_opened(
+        Some("typescript"),
+        Some("typescript"),
+        Path::new("/tmp/b.ts"),
+        1,
+        String::new,
+    );
     assert_eq!(manager.servers.len(), 1);
     manager.document_closed(Some("javascript"), Path::new("/tmp/a.js"));
     assert!(manager.is_running(&LanguageServerId::TypeScript));
     manager.document_closed(Some("typescript"), Path::new("/tmp/b.ts"));
     assert!(!manager.is_running(&LanguageServerId::TypeScript));
+}
+
+#[tokio::test]
+async fn tsx_routes_to_typescript_with_protocol_specific_language_id() -> TestResult {
+    let (observed_tx, mut observed_rx) = mpsc::unbounded_channel();
+    let (mut manager, _updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(test_connector(
+        Behavior::Normal,
+        Some(observed_tx),
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    manager.document_opened(
+        Some("tsx"),
+        Some("typescriptreact"),
+        Path::new("/tmp/component.tsx"),
+        1,
+        || "export const Component = () => <main />;".into(),
+    );
+
+    assert!(manager.is_running(&LanguageServerId::TypeScript));
+    loop {
+        let message = tokio::time::timeout(Duration::from_secs(2), observed_rx.recv())
+            .await?
+            .ok_or("language server did not receive TSX didOpen")?;
+        if message["method"] == "textDocument/didOpen" {
+            assert_eq!(
+                message["params"]["textDocument"]["languageId"],
+                json!("typescriptreact")
+            );
+            break;
+        }
+    }
+    Ok(())
 }
 
 #[tokio::test]
@@ -98,7 +145,9 @@ async fn relative_root_and_document_paths_reach_lsp_as_absolute_uris() -> TestRe
         Arc::new(AtomicUsize::new(0)),
     ));
 
-    manager.document_opened(Some("rust"), &path, 1, || "fn main() {}".into());
+    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+        "fn main() {}".into()
+    });
     manager.document_changed(Some("rust"), &path, 2, || "fn changed() {}".into());
     manager.document_saved(Some("rust"), &path, || "fn changed() {}".into());
     manager.document_closed(Some("rust"), &path);

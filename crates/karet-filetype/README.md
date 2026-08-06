@@ -7,7 +7,8 @@ Given a path (and optionally its leading bytes), it answers three questions that
 were previously scattered across the workspace:
 
 - **What is it?** — [`file_type_for_path`] resolves a path to a [`FileType`]
-  (display name + [`Category`]), matching well-known filenames first
+  with separate display, tree-sitter grammar, LSP `languageId`, configuration
+  selector, and [`Category`] identities, matching well-known filenames first
   (`Dockerfile`, `Makefile`, `Cargo.toml`, …) then extension.
 - **How should it look?** — [`icon_for_path`], [`directory_icon`], and
   [`chevron`] return glyphs for an [`IconStyle`] (`NerdFont` / `Unicode` /

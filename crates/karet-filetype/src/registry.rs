@@ -31,6 +31,9 @@ pub enum WrapMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FileType {
     name: &'static str,
+    grammar: Option<&'static str>,
+    lsp_language_id: Option<&'static str>,
+    config_selector: Option<&'static str>,
     category: Category,
     nerd: Option<char>,
     extensions: &'static [&'static str],
@@ -43,6 +46,29 @@ impl FileType {
     #[must_use]
     pub fn name(&self) -> &'static str {
         self.name
+    }
+
+    /// The tree-sitter grammar identity for this file type, when syntax parsing
+    /// is meaningful. This is independent from the display name and does not
+    /// imply that the grammar was compiled into a consumer's feature set.
+    #[must_use]
+    pub fn grammar(&self) -> Option<&'static str> {
+        self.grammar
+    }
+
+    /// The protocol `languageId` sent to language servers for this file type.
+    #[must_use]
+    pub fn lsp_language_id(&self) -> Option<&'static str> {
+        self.lsp_language_id
+    }
+
+    /// The stable selector used by per-language configuration and server routing.
+    ///
+    /// Selectors intentionally preserve the keys accepted before language
+    /// identities were separated (for example, `"c++"`, `"c#"`, and `"tsx"`).
+    #[must_use]
+    pub fn config_selector(&self) -> Option<&'static str> {
+        self.config_selector
     }
 
     /// The coarse [`Category`] of this file type.
@@ -78,6 +104,9 @@ impl FileType {
 /// The fallback for an unrecognized file.
 const UNKNOWN: FileType = FileType {
     name: "File",
+    grammar: None,
+    lsp_language_id: None,
+    config_selector: None,
     category: Category::Unknown,
     nerd: None,
     extensions: &[],
@@ -95,12 +124,71 @@ const fn overflow(
 ) -> FileType {
     FileType {
         name,
+        grammar: None,
+        lsp_language_id: None,
+        config_selector: None,
         category,
         nerd,
         extensions,
         filenames,
         wrap_mode: WrapMode::Overflow,
     }
+}
+
+/// Compact constructor for a source/config format with explicit identities.
+const fn language(
+    name: &'static str,
+    category: Category,
+    nerd: Option<char>,
+    extensions: &'static [&'static str],
+    filenames: &'static [&'static str],
+    identities: (Option<&'static str>, &'static str, &'static str),
+) -> FileType {
+    let (grammar, lsp_language_id, config_selector) = identities;
+    FileType {
+        name,
+        grammar,
+        lsp_language_id: Some(lsp_language_id),
+        config_selector: Some(config_selector),
+        category,
+        nerd,
+        extensions,
+        filenames,
+        wrap_mode: WrapMode::Overflow,
+    }
+}
+
+/// Compact constructor when grammar, protocol, and configuration identities match.
+const fn language_named(
+    name: &'static str,
+    category: Category,
+    nerd: Option<char>,
+    extensions: &'static [&'static str],
+    filenames: &'static [&'static str],
+    identity: &'static str,
+) -> FileType {
+    language(
+        name,
+        category,
+        nerd,
+        extensions,
+        filenames,
+        (Some(identity), identity, identity),
+    )
+}
+
+/// Compact constructor for a soft-wrapping language with one shared identity.
+const fn language_wrap(
+    name: &'static str,
+    category: Category,
+    nerd: Option<char>,
+    extensions: &'static [&'static str],
+    filenames: &'static [&'static str],
+    identity: &'static str,
+) -> FileType {
+    let mut file_type = language_named(name, category, nerd, extensions, filenames, identity);
+    file_type.wrap_mode = WrapMode::Wrap;
+    file_type
 }
 
 /// Compact constructor for a soft-wrapping registry entry.
@@ -113,6 +201,9 @@ const fn wrap(
 ) -> FileType {
     FileType {
         name,
+        grammar: None,
+        lsp_language_id: None,
+        config_selector: None,
         category,
         nerd,
         extensions,
@@ -135,105 +226,212 @@ use Category::Shell;
 /// keep entries unambiguous (no two entries should claim the same extension).
 static REGISTRY: &[FileType] = &[
     // --- programming languages ---
-    overflow("Rust", Code, Some('\u{e7a8}'), &["rs"], &[]),
-    overflow("Python", Code, Some('\u{e606}'), &["py", "pyi", "pyw"], &[]),
-    overflow("C", Code, Some('\u{e61e}'), &["c", "h"], &[]),
-    overflow(
+    language_named("Rust", Code, Some('\u{e7a8}'), &["rs"], &[], "rust"),
+    language_named(
+        "Python",
+        Code,
+        Some('\u{e606}'),
+        &["py", "pyi", "pyw"],
+        &[],
+        "python",
+    ),
+    language_named("C", Code, Some('\u{e61e}'), &["c", "h"], &[], "c"),
+    language(
         "C++",
         Code,
         Some('\u{e61d}'),
         &["cc", "cpp", "cxx", "hpp", "hh", "hxx"],
         &[],
+        (Some("cpp"), "cpp", "c++"),
     ),
-    overflow("C#", Code, None, &["cs"], &[]),
-    overflow("Java", Code, Some('\u{e738}'), &["java"], &[]),
-    overflow("Kotlin", Code, None, &["kt", "kts"], &[]),
-    overflow("Go", Code, Some('\u{e627}'), &["go"], &[]),
-    overflow("Ruby", Code, Some('\u{e739}'), &["rb", "erb"], &[]),
-    overflow("PHP", Code, Some('\u{e73d}'), &["php"], &[]),
-    overflow("Swift", Code, None, &["swift"], &[]),
-    overflow("Scala", Code, None, &["scala", "sbt", "sc"], &[]),
-    overflow("Lua", Code, Some('\u{e620}'), &["lua"], &[]),
-    overflow("Haskell", Code, None, &["hs", "lhs"], &[]),
-    overflow("OCaml", Code, None, &["ml", "mli"], &[]),
-    overflow("Elixir", Code, None, &["ex", "exs"], &[]),
-    overflow("Erlang", Code, None, &["erl", "hrl"], &[]),
-    overflow("Dart", Code, None, &["dart"], &[]),
-    overflow("R", Code, None, &["r"], &[]),
-    overflow("Zig", Code, None, &["zig"], &[]),
-    overflow("Perl", Code, None, &["pl", "pm"], &[]),
-    overflow("Clojure", Code, None, &["clj", "cljs", "cljc", "edn"], &[]),
-    overflow("Emacs Lisp", Code, None, &["el"], &[]),
-    overflow("Vim script", Code, None, &["vim"], &[]),
+    language(
+        "C#",
+        Code,
+        None,
+        &["cs"],
+        &[],
+        (Some("c_sharp"), "csharp", "c#"),
+    ),
+    language_named("Java", Code, Some('\u{e738}'), &["java"], &[], "java"),
+    language_named("Kotlin", Code, None, &["kt", "kts"], &[], "kotlin"),
+    language_named("Go", Code, Some('\u{e627}'), &["go"], &[], "go"),
+    language_named("Ruby", Code, Some('\u{e739}'), &["rb"], &[], "ruby"),
+    language_named("PHP", Code, Some('\u{e73d}'), &["php"], &[], "php"),
+    language_named("Swift", Code, None, &["swift"], &[], "swift"),
+    language_named("Scala", Code, None, &["scala", "sbt", "sc"], &[], "scala"),
+    language_named("Lua", Code, Some('\u{e620}'), &["lua"], &[], "lua"),
+    language_named("Haskell", Code, None, &["hs", "lhs"], &[], "haskell"),
+    language_named("OCaml", Code, None, &["ml", "mli"], &[], "ocaml"),
+    language_named("Elixir", Code, None, &["ex", "exs"], &[], "elixir"),
+    language_named("Erlang", Code, None, &["erl", "hrl"], &[], "erlang"),
+    language_named("Dart", Code, None, &["dart"], &[], "dart"),
+    language_named("R", Code, None, &["r"], &[], "r"),
+    language_named("Zig", Code, None, &["zig"], &[], "zig"),
+    language_named("Perl", Code, None, &["pl", "pm"], &[], "perl"),
+    language_named(
+        "Clojure",
+        Code,
+        None,
+        &["clj", "cljs", "cljc"],
+        &[],
+        "clojure",
+    ),
+    language_named("EDN", Data, None, &["edn"], &[], "edn"),
+    language_named("Emacs Lisp", Code, None, &["el"], &[], "elisp"),
+    language_named("Vim script", Code, None, &["vim"], &[], "vim"),
     // --- web ---
-    overflow(
+    language_named(
         "JavaScript",
         Code,
         Some('\u{e74e}'),
         &["js", "mjs", "cjs"],
         &[],
+        "javascript",
     ),
-    overflow("JSX", Code, Some('\u{e7ba}'), &["jsx"], &[]),
-    overflow(
+    language(
+        "JSX",
+        Code,
+        Some('\u{e7ba}'),
+        &["jsx"],
+        &[],
+        (Some("javascript"), "javascriptreact", "jsx"),
+    ),
+    language_named(
         "TypeScript",
         Code,
         Some('\u{e628}'),
         &["ts", "mts", "cts"],
         &[],
+        "typescript",
     ),
-    overflow("TSX", Code, Some('\u{e7ba}'), &["tsx"], &[]),
-    overflow(
+    language(
+        "TSX",
+        Code,
+        Some('\u{e7ba}'),
+        &["tsx"],
+        &[],
+        (Some("tsx"), "typescriptreact", "tsx"),
+    ),
+    language_named(
         "HTML",
         Markup,
         Some('\u{e736}'),
-        &["html", "htm", "xhtml"],
+        &["html", "htm"],
         &[],
+        "html",
     ),
-    overflow("CSS", Markup, Some('\u{e749}'), &["css"], &[]),
-    overflow("Sass", Markup, Some('\u{e74b}'), &["scss", "sass"], &[]),
-    overflow("Less", Markup, None, &["less"], &[]),
-    overflow("Vue", Markup, None, &["vue"], &[]),
-    overflow("Svelte", Markup, None, &["svelte"], &[]),
-    overflow("Astro", Markup, None, &["astro"], &[]),
+    language(
+        "HTML",
+        Markup,
+        Some('\u{e736}'),
+        &["xhtml"],
+        &[],
+        (Some("html"), "html", "html"),
+    ),
+    language_named("CSS", Markup, Some('\u{e749}'), &["css"], &[], "css"),
+    language(
+        "Sass",
+        Markup,
+        Some('\u{e74b}'),
+        &["scss"],
+        &[],
+        (Some("scss"), "scss", "sass"),
+    ),
+    language(
+        "Sass",
+        Markup,
+        Some('\u{e74b}'),
+        &["sass"],
+        &[],
+        (Some("sass"), "sass", "sass"),
+    ),
+    language_named("Less", Markup, None, &["less"], &[], "less"),
+    language_named("Vue", Markup, None, &["vue"], &[], "vue"),
+    language_named("Svelte", Markup, None, &["svelte"], &[], "svelte"),
+    language_named("Astro", Markup, None, &["astro"], &[], "astro"),
+    language_named("ERB", Markup, Some('\u{e739}'), &["erb"], &[], "erb"),
     // --- data / config ---
-    overflow(
+    language_named("JSON", Data, Some('\u{e60b}'), &["json"], &[], "json"),
+    language(
         "JSON",
         Data,
         Some('\u{e60b}'),
-        &["json", "jsonc", "json5"],
+        &["jsonc"],
         &[],
+        (Some("json"), "jsonc", "json"),
     ),
-    overflow("YAML", Config, None, &["yml", "yaml"], &[]),
-    overflow("TOML", Config, None, &["toml"], &[]),
-    overflow("INI", Config, None, &["ini", "cfg", "conf"], &[]),
-    overflow("Properties", Config, None, &["properties"], &[]),
-    overflow("Pkl", Config, None, &["pkl"], &[]),
-    overflow("XML", Markup, None, &["xml"], &[]),
-    overflow("SVG", Markup, None, &["svg"], &[]),
+    language_named("JSON5", Data, Some('\u{e60b}'), &["json5"], &[], "json5"),
+    language_named("YAML", Config, None, &["yml", "yaml"], &[], "yaml"),
+    language_named("TOML", Config, None, &["toml"], &[], "toml"),
+    language_named("INI", Config, None, &["ini", "cfg", "conf"], &[], "ini"),
+    language_named(
+        "Properties",
+        Config,
+        None,
+        &["properties"],
+        &[],
+        "properties",
+    ),
+    language_named("Pkl", Config, None, &["pkl"], &[], "pkl"),
+    language_named("XML", Markup, None, &["xml"], &[], "xml"),
+    language(
+        "SVG",
+        Markup,
+        None,
+        &["svg"],
+        &[],
+        (Some("xml"), "xml", "svg"),
+    ),
     overflow("CSV", Data, None, &["csv", "tsv"], &[]),
-    overflow("SQL", Data, Some('\u{f1c0}'), &["sql"], &[]),
-    overflow("GraphQL", Data, None, &["graphql", "gql"], &[]),
-    overflow("Protobuf", Data, None, &["proto"], &[]),
-    overflow("CBOR", Data, None, &["cbor"], &[]),
+    language_named("SQL", Data, Some('\u{f1c0}'), &["sql"], &[], "sql"),
+    language_named("GraphQL", Data, None, &["graphql", "gql"], &[], "graphql"),
+    language_named("Protobuf", Data, None, &["proto"], &[], "protobuf"),
+    language_named("CBOR", Data, None, &["cbor"], &[], "cbor"),
     overflow("Lockfile", Config, Some('\u{f023}'), &["lock"], &[]),
     // --- shell ---
-    overflow(
+    language(
         "Shell",
         Shell,
         Some('\u{f489}'),
-        &["sh", "bash", "zsh", "fish", "ksh"],
+        &["sh", "bash"],
         &[],
+        (Some("bash"), "shellscript", "shell"),
     ),
-    overflow("PowerShell", Shell, None, &["ps1", "psm1"], &[]),
-    overflow("Batch", Shell, None, &["bat", "cmd"], &[]),
+    language_named("Zsh", Shell, Some('\u{f489}'), &["zsh"], &[], "zsh"),
+    language_named("Fish", Shell, Some('\u{f489}'), &["fish"], &[], "fish"),
+    language_named("Ksh", Shell, Some('\u{f489}'), &["ksh"], &[], "ksh"),
+    language_named(
+        "PowerShell",
+        Shell,
+        None,
+        &["ps1", "psm1"],
+        &[],
+        "powershell",
+    ),
+    language_named("Batch", Shell, None, &["bat", "cmd"], &[], "batch"),
     // --- docs / prose ---
-    wrap(
-        "Markdown",
-        Markup,
-        Some('\u{e73e}'),
-        &["md", "markdown", "mdown", "mkd", "mdx"],
-        &[],
-    ),
+    FileType {
+        name: "Markdown",
+        grammar: Some("markdown"),
+        lsp_language_id: Some("markdown"),
+        config_selector: Some("markdown"),
+        category: Markup,
+        nerd: Some('\u{e73e}'),
+        extensions: &["md", "markdown", "mdown", "mkd"],
+        filenames: &[],
+        wrap_mode: WrapMode::Wrap,
+    },
+    FileType {
+        name: "MDX",
+        grammar: Some("mdx"),
+        lsp_language_id: Some("mdx"),
+        config_selector: Some("mdx"),
+        category: Markup,
+        nerd: Some('\u{e73e}'),
+        extensions: &["mdx"],
+        filenames: &[],
+        wrap_mode: WrapMode::Wrap,
+    },
     wrap(
         "Plain Text",
         Document,
@@ -241,9 +439,30 @@ static REGISTRY: &[FileType] = &[
         &["txt", "text"],
         &[],
     ),
-    wrap("reStructuredText", Markup, None, &["rst"], &[]),
-    wrap("AsciiDoc", Markup, None, &["adoc", "asciidoc"], &[]),
-    overflow("TeX", Document, None, &["tex", "sty", "cls"], &[]),
+    language_wrap(
+        "reStructuredText",
+        Markup,
+        None,
+        &["rst"],
+        &[],
+        "restructuredtext",
+    ),
+    language_wrap(
+        "AsciiDoc",
+        Markup,
+        None,
+        &["adoc", "asciidoc"],
+        &[],
+        "asciidoc",
+    ),
+    language(
+        "TeX",
+        Document,
+        None,
+        &["tex", "sty", "cls"],
+        &[],
+        (Some("latex"), "latex", "tex"),
+    ),
     overflow("PDF", Document, Some('\u{f1c1}'), &["pdf"], &[]),
     wrap(
         "Word",
@@ -325,19 +544,29 @@ static REGISTRY: &[FileType] = &[
         &[],
     ),
     // --- special filenames (matched before extensions) ---
-    overflow(
+    language_named(
         "Dockerfile",
         Config,
         Some('\u{e7b0}'),
         &[],
         &["Dockerfile", "Containerfile"],
+        "dockerfile",
     ),
-    overflow(
+    language_named(
         "Makefile",
         Config,
         None,
         &["mk"],
-        &["Makefile", "GNUmakefile", "makefile", "CMakeLists.txt"],
+        &["Makefile", "GNUmakefile", "makefile"],
+        "make",
+    ),
+    language_named(
+        "CMake",
+        Config,
+        None,
+        &["cmake"],
+        &["CMakeLists.txt"],
+        "cmake",
     ),
     overflow(
         "Git config",
@@ -434,8 +663,88 @@ mod tests {
         // CMakeLists.txt is a filename rule even though `.txt` exists.
         assert_eq!(
             file_type_for_path(Path::new("CMakeLists.txt")).name(),
-            "Makefile"
+            "CMake"
         );
+    }
+
+    #[test]
+    fn language_identity_axes_are_independent() {
+        let cases = [
+            (
+                "widget.tsx",
+                "TSX",
+                Some("tsx"),
+                Some("typescriptreact"),
+                Some("tsx"),
+            ),
+            (
+                "widget.jsx",
+                "JSX",
+                Some("javascript"),
+                Some("javascriptreact"),
+                Some("jsx"),
+            ),
+            ("main.cpp", "C++", Some("cpp"), Some("cpp"), Some("c++")),
+            (
+                "Program.cs",
+                "C#",
+                Some("c_sharp"),
+                Some("csharp"),
+                Some("c#"),
+            ),
+            (
+                "tool.sh",
+                "Shell",
+                Some("bash"),
+                Some("shellscript"),
+                Some("shell"),
+            ),
+            (
+                "page.xhtml",
+                "HTML",
+                Some("html"),
+                Some("html"),
+                Some("html"),
+            ),
+            (
+                "settings.jsonc",
+                "JSON",
+                Some("json"),
+                Some("jsonc"),
+                Some("json"),
+            ),
+            (
+                "CMakeLists.txt",
+                "CMake",
+                Some("cmake"),
+                Some("cmake"),
+                Some("cmake"),
+            ),
+        ];
+        for (path, name, grammar, lsp, selector) in cases {
+            let file_type = file_type_for_path(Path::new(path));
+            assert_eq!(file_type.name(), name, "{path}");
+            assert_eq!(file_type.grammar(), grammar, "{path}");
+            assert_eq!(file_type.lsp_language_id(), lsp, "{path}");
+            assert_eq!(file_type.config_selector(), selector, "{path}");
+        }
+    }
+
+    #[test]
+    fn formats_that_need_distinct_parsers_keep_distinct_identities() {
+        for (path, expected) in [
+            ("component.mdx", "mdx"),
+            ("view.erb", "erb"),
+            ("data.json5", "json5"),
+            ("shell.zsh", "zsh"),
+            ("shell.fish", "fish"),
+            ("shell.ksh", "ksh"),
+            ("data.edn", "edn"),
+        ] {
+            let file_type = file_type_for_path(Path::new(path));
+            assert_eq!(file_type.grammar(), Some(expected), "{path}");
+            assert_eq!(file_type.config_selector(), Some(expected), "{path}");
+        }
     }
 
     #[test]
