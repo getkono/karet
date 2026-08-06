@@ -3,6 +3,7 @@
 //! the sidebar, and applies [`Command`]s resolved from key events.
 
 mod backend_events;
+mod capture;
 mod commands;
 mod completion;
 mod editor;
@@ -43,6 +44,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use std::time::Instant;
 
+pub(crate) use capture::capture;
 use color_eyre::eyre::eyre;
 use crossterm::event::DisableBracketedPaste;
 use crossterm::event::DisableFocusChange;

@@ -1,6 +1,7 @@
 //! Command-line interface.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use clap::Parser;
 use clap::ValueEnum;
@@ -116,6 +117,37 @@ pub struct Cli {
     #[arg(long = "command", value_name = "NAME")]
     pub command: Vec<String>,
 
+    /// Render the shell into an off-screen grid and write it to stdout as truecolor
+    /// ANSI, then exit — never enter the alternate screen and never read the
+    /// terminal. Every other startup flag still applies, so the captured frame is
+    /// whatever `--goto` / `--open` / `--diff` / `--command` would have shown. The
+    /// session backend runs normally, so the frame carries real syntax highlighting
+    /// and Source Control state; karet draws until those settle (see
+    /// `--capture-settle`) and exits.
+    ///
+    /// Unstable automation surface: intended for scripting and view capture, this
+    /// flag's behaviour and output format may change between major versions without
+    /// notice.
+    #[arg(long)]
+    pub capture: bool,
+
+    /// Grid to render `--capture` into, as `COLSxROWS` (default `120x34`). Both
+    /// dimensions must be positive; karet clamps them to what its layout can use.
+    #[arg(long, value_name = "COLSxROWS", requires = "capture")]
+    pub capture_size: Option<String>,
+
+    /// How long `--capture` waits for the backend to fall quiet before taking the
+    /// final frame, in milliseconds (default 400). Each highlight or Source Control
+    /// update restarts the wait, so a slower workspace still captures a settled UI.
+    #[arg(long, value_name = "MS", requires = "capture")]
+    pub capture_settle: Option<u64>,
+
+    /// Hard ceiling on the whole `--capture` run, in milliseconds (default 10000).
+    /// The frame is written and the exit code stays 0 even when the deadline hits
+    /// first, so a never-quiet workspace still produces output.
+    #[arg(long, value_name = "MS", requires = "capture")]
+    pub capture_timeout: Option<u64>,
+
     /// Print terminal-capability diagnostics and exit instead of starting the
     /// editor. Probes the same features karet checks at startup (kitty keyboard
     /// protocol, kitty graphics protocol, OSC 22 pointer shapes) and reports one
@@ -207,6 +239,61 @@ pub fn parse_goto_spec(spec: &str) -> GotoSpec {
     }
 }
 
+/// Default `--capture` grid width in columns.
+pub const CAPTURE_DEFAULT_COLS: u16 = 120;
+/// Default `--capture` grid height in rows.
+pub const CAPTURE_DEFAULT_ROWS: u16 = 34;
+/// Default quiet period, in milliseconds, before `--capture` takes its final frame.
+pub const CAPTURE_DEFAULT_SETTLE_MS: u64 = 400;
+/// Default hard ceiling, in milliseconds, on a whole `--capture` run.
+pub const CAPTURE_DEFAULT_TIMEOUT_MS: u64 = 10_000;
+/// Smallest grid the shell's layout renders meaningfully into.
+const CAPTURE_MIN_COLS: u16 = 20;
+/// Smallest grid the shell's layout renders meaningfully into.
+const CAPTURE_MIN_ROWS: u16 = 8;
+
+/// A resolved `--capture` run: the grid to draw into and the two time bounds.
+///
+/// Produced by [`Cli::capture_spec`], which applies the `CAPTURE_DEFAULT_*`
+/// constants to whatever the flags left unset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureSpec {
+    /// Grid width in terminal columns.
+    pub cols: u16,
+    /// Grid height in terminal rows.
+    pub rows: u16,
+    /// Quiet period the backend must hold before the final frame is taken.
+    pub settle: Duration,
+    /// Ceiling on the whole run, after which the frame is written regardless.
+    pub timeout: Duration,
+}
+
+/// Parse a `--capture-size` argument of the form `COLSxROWS` into a grid.
+///
+/// The separator is `x` or `X`. Both dimensions must be a run of ASCII digits in
+/// `u16` range and non-zero; anything else is an error described for stderr. A grid
+/// smaller than the shell can lay out is clamped up rather than rejected, so a
+/// too-small request still renders something.
+pub fn parse_capture_size(spec: &str) -> Result<(u16, u16), String> {
+    let (cols, rows) = spec
+        .split_once(['x', 'X'])
+        .ok_or_else(|| format!("expected COLSxROWS, got {spec:?}"))?;
+    let dimension = |value: &str, name: &str| -> Result<u16, String> {
+        if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(format!("{name} must be a number, got {value:?}"));
+        }
+        match value.parse::<u16>() {
+            Ok(0) => Err(format!("{name} must be greater than zero")),
+            Ok(parsed) => Ok(parsed),
+            Err(_) => Err(format!("{name} is out of range: {value}")),
+        }
+    };
+    Ok((
+        dimension(cols, "columns")?.max(CAPTURE_MIN_COLS),
+        dimension(rows, "rows")?.max(CAPTURE_MIN_ROWS),
+    ))
+}
+
 /// The `--icons` choices, mirroring [`IconStyle`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum IconChoice {
@@ -265,6 +352,27 @@ impl Cli {
     /// The explicitly-requested icon style, if any: an `--icons` flag wins, then the
     /// `KARET_ICONS` env var. `None` when neither is set, so the configured
     /// `workbench.iconStyle` (else the Nerd Font default) is left in place.
+    /// Resolve the `--capture*` flags into a [`CaptureSpec`], filling every unset
+    /// flag from the `CAPTURE_DEFAULT_*` constants.
+    ///
+    /// Returns the parse error from [`parse_capture_size`] when `--capture-size` is
+    /// malformed, so the caller can fail fast on stderr instead of capturing a grid
+    /// the user did not ask for.
+    pub fn capture_spec(&self) -> Result<CaptureSpec, String> {
+        let (cols, rows) = match self.capture_size.as_deref() {
+            Some(size) => parse_capture_size(size)?,
+            None => (CAPTURE_DEFAULT_COLS, CAPTURE_DEFAULT_ROWS),
+        };
+        Ok(CaptureSpec {
+            cols,
+            rows,
+            settle: Duration::from_millis(self.capture_settle.unwrap_or(CAPTURE_DEFAULT_SETTLE_MS)),
+            timeout: Duration::from_millis(
+                self.capture_timeout.unwrap_or(CAPTURE_DEFAULT_TIMEOUT_MS),
+            ),
+        })
+    }
+
     #[must_use]
     pub fn explicit_icon_style(&self) -> Option<IconStyle> {
         self.icons.map(IconStyle::from).or_else(|| {
@@ -408,6 +516,100 @@ mod tests {
         assert_eq!(cli.diff.len(), 4);
         assert_eq!(cli.diff[2], PathBuf::from("c"));
         Ok(())
+    }
+
+    #[test]
+    fn capture_flag_parses_and_defaults_to_off() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from(["karet", "--capture"])?;
+        assert!(cli.capture);
+        assert!(!Cli::try_parse_from(["karet"])?.capture);
+        Ok(())
+    }
+
+    #[test]
+    fn capture_tuning_flags_require_capture() {
+        // The tuning flags are meaningless on their own; clap rejects them so a
+        // scripted typo fails loudly instead of silently starting the TUI.
+        for flag in ["--capture-size", "--capture-settle", "--capture-timeout"] {
+            assert!(
+                Cli::try_parse_from(["karet", flag, "10"]).is_err(),
+                "{flag} must require --capture"
+            );
+        }
+    }
+
+    #[test]
+    fn capture_spec_uses_defaults_when_unset() -> Result<(), clap::Error> {
+        let spec = Cli::try_parse_from(["karet", "--capture"])?
+            .capture_spec()
+            .map_err(|e| clap::Error::raw(clap::error::ErrorKind::InvalidValue, e))?;
+        assert_eq!(
+            (spec.cols, spec.rows),
+            (super::CAPTURE_DEFAULT_COLS, super::CAPTURE_DEFAULT_ROWS)
+        );
+        assert_eq!(
+            spec.settle.as_millis(),
+            u128::from(super::CAPTURE_DEFAULT_SETTLE_MS)
+        );
+        assert_eq!(
+            spec.timeout.as_millis(),
+            u128::from(super::CAPTURE_DEFAULT_TIMEOUT_MS)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn capture_spec_reads_every_flag() -> Result<(), clap::Error> {
+        let spec = Cli::try_parse_from([
+            "karet",
+            "--capture",
+            "--capture-size",
+            "100x30",
+            "--capture-settle",
+            "50",
+            "--capture-timeout",
+            "900",
+        ])?
+        .capture_spec()
+        .map_err(|e| clap::Error::raw(clap::error::ErrorKind::InvalidValue, e))?;
+        assert_eq!((spec.cols, spec.rows), (100, 30));
+        assert_eq!(spec.settle.as_millis(), 50);
+        assert_eq!(spec.timeout.as_millis(), 900);
+        Ok(())
+    }
+
+    #[test]
+    fn capture_spec_surfaces_a_bad_size() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from(["karet", "--capture", "--capture-size", "wide"])?;
+        assert!(cli.capture_spec().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn parse_capture_size_accepts_both_separators() {
+        assert_eq!(super::parse_capture_size("120x34"), Ok((120, 34)));
+        assert_eq!(super::parse_capture_size("120X34"), Ok((120, 34)));
+    }
+
+    #[test]
+    fn parse_capture_size_clamps_up_to_the_layout_minimum() {
+        // Too small to lay out is clamped, not rejected: a tiny request still renders.
+        assert_eq!(
+            super::parse_capture_size("1x1"),
+            Ok((super::CAPTURE_MIN_COLS, super::CAPTURE_MIN_ROWS))
+        );
+    }
+
+    #[test]
+    fn parse_capture_size_rejects_malformed_input() {
+        for spec in ["120", "x34", "120x", "0x34", "120x0", "-1x5", "12.5x30", ""] {
+            assert!(
+                super::parse_capture_size(spec).is_err(),
+                "{spec:?} must be rejected"
+            );
+        }
+        // Out of u16 range is an error, not a wrap-around.
+        assert!(super::parse_capture_size("70000x30").is_err());
     }
 
     #[test]
