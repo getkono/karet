@@ -71,6 +71,12 @@ lang-sass       = []
 lang-less       = ["dep:tree-sitter-less"]
 lang-erb        = ["dep:tree-sitter-embedded-template", "lang-html", "lang-ruby"]
 lang-mdx        = ["lang-markdown", "lang-javascript"]
+lang-json5      = ["lang-json"]
+lang-ini        = ["dep:tree-sitter-ini"]
+lang-properties = ["dep:tree-sitter-properties"]
+lang-edn        = ["dep:tree-sitter-clojure-orchard"]
+lang-cbor       = ["lang-json"]
+lang-lockfile   = ["lang-yaml"]
 # Convenience bundle: every grammar above. The `karet` app enables this.
 all-languages = [
     "lang-rust", "lang-python", "lang-javascript", "lang-typescript", "lang-json",
@@ -84,6 +90,8 @@ all-languages = [
     "lang-ocaml", "lang-elixir", "lang-erlang", "lang-dart", "lang-r",
     "lang-perl", "lang-clojure", "lang-elisp", "lang-vim",
     "lang-scss", "lang-sass", "lang-less", "lang-erb", "lang-mdx",
+    "lang-json5", "lang-ini", "lang-properties", "lang-edn", "lang-cbor",
+    "lang-lockfile",
 ]
 
 [dependencies]
@@ -145,6 +153,8 @@ tree-sitter-scss       = { workspace = true, optional = true }
 tree-sitter-less       = { workspace = true, optional = true }
 tree-sitter-embedded-template = { workspace = true, optional = true }
 tree-sitter-language.workspace = true
+tree-sitter-ini        = { workspace = true, optional = true }
+tree-sitter-properties = { workspace = true, optional = true }
 
 [build-dependencies]
 cc.workspace = true

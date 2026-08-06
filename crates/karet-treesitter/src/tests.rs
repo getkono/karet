@@ -535,3 +535,42 @@ fn detects_web_and_template_grammars_by_shared_filetype_identity() {
         );
     }
 }
+
+#[cfg(all(
+    feature = "lang-json5",
+    feature = "lang-ini",
+    feature = "lang-properties",
+    feature = "lang-edn",
+    feature = "lang-cbor",
+    feature = "lang-xml",
+    feature = "lang-json",
+    feature = "lang-yaml",
+    feature = "lang-toml",
+    feature = "lang-lockfile"
+))]
+#[test]
+fn detects_structured_formats_and_ecosystem_lockfiles() {
+    for (path, expected_grammar) in [
+        ("data.json5", "json5"),
+        ("settings.ini", "ini"),
+        ("messages.properties", "properties"),
+        ("data.edn", "edn"),
+        ("data.cbor", "cbor"),
+        ("catalog.xml", "xml"),
+        ("icon.svg", "xml"),
+        (".editorconfig", "ini"),
+        (".env", "properties"),
+        (".gitmodules", "ini"),
+        ("Cargo.lock", "toml"),
+        ("package-lock.json", "json"),
+        ("pnpm-lock.yaml", "yaml"),
+        ("yarn.lock", "lockfile"),
+    ] {
+        let path = std::path::Path::new(path);
+        assert_eq!(
+            language_id_from_path(path),
+            language_id_from_injection_name(expected_grammar),
+            "{path:?}"
+        );
+    }
+}

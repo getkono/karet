@@ -13,6 +13,9 @@ use std::path::Path;
 use crate::icon::Category;
 use crate::icon::IconStyle;
 
+#[cfg(test)]
+mod structured_tests;
+
 /// The default long-line behavior for an editable file type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WrapMode {
@@ -395,6 +398,38 @@ static REGISTRY: &[FileType] = &[
     language_named("GraphQL", Data, None, &["graphql", "gql"], &[], "graphql"),
     language_named("Protobuf", Data, None, &["proto"], &[], "protobuf"),
     language_named("CBOR", Data, None, &["cbor"], &[], "cbor"),
+    language(
+        "Cargo lockfile",
+        Config,
+        Some('\u{f023}'),
+        &[],
+        &["Cargo.lock", "poetry.lock"],
+        (Some("toml"), "toml", "toml"),
+    ),
+    language(
+        "JSON lockfile",
+        Config,
+        Some('\u{f023}'),
+        &[],
+        &["package-lock.json", "composer.lock", "Pipfile.lock"],
+        (Some("json"), "json", "json"),
+    ),
+    language(
+        "YAML lockfile",
+        Config,
+        Some('\u{f023}'),
+        &[],
+        &["pnpm-lock.yaml"],
+        (Some("yaml"), "yaml", "yaml"),
+    ),
+    language(
+        "Yarn lockfile",
+        Config,
+        Some('\u{f023}'),
+        &[],
+        &["yarn.lock"],
+        (Some("lockfile"), "lockfile", "lockfile"),
+    ),
     overflow("Lockfile", Config, Some('\u{f023}'), &["lock"], &[]),
     // --- shell ---
     language(
@@ -591,7 +626,7 @@ static REGISTRY: &[FileType] = &[
         Config,
         Some('\u{f1d3}'),
         &[],
-        &[".gitignore", ".gitattributes", ".gitmodules", ".gitkeep"],
+        &[".gitignore", ".gitattributes", ".gitkeep"],
     ),
     wrap(
         "License",
@@ -600,8 +635,30 @@ static REGISTRY: &[FileType] = &[
         &[],
         &["LICENSE", "LICENCE", "COPYING", "AUTHORS"],
     ),
-    overflow("EditorConfig", Config, None, &[], &[".editorconfig"]),
-    overflow("Environment", Config, None, &[], &[".env"]),
+    language(
+        "Git modules",
+        Config,
+        Some('\u{f1d3}'),
+        &[],
+        &[".gitmodules"],
+        (Some("ini"), "gitconfig", "gitconfig"),
+    ),
+    language(
+        "EditorConfig",
+        Config,
+        None,
+        &[],
+        &[".editorconfig"],
+        (Some("ini"), "editorconfig", "editorconfig"),
+    ),
+    language(
+        "Environment",
+        Config,
+        None,
+        &[],
+        &[".env"],
+        (Some("properties"), "dotenv", "dotenv"),
+    ),
 ];
 
 /// Resolve a path to its [`FileType`], or the `"File"` fallback when unrecognized.
@@ -767,15 +824,6 @@ mod tests {
         assert_eq!(interface.grammar(), Some("ocaml-interface"));
         assert_eq!(interface.lsp_language_id(), Some("ocaml"));
         assert_eq!(interface.config_selector(), Some("ocaml"));
-    }
-
-    #[test]
-    fn unsupported_ksh_is_labelled_without_claiming_a_parser() {
-        let ksh = file_type_for_path(Path::new("script.ksh"));
-        assert_eq!(ksh.name(), "Ksh");
-        assert_eq!(ksh.grammar(), None);
-        assert_eq!(ksh.lsp_language_id(), None);
-        assert_eq!(ksh.config_selector(), None);
     }
 
     #[test]

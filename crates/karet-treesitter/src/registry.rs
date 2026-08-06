@@ -12,6 +12,7 @@ mod outlines;
 pub(crate) use outlines::outline_query;
 mod programming;
 mod shells;
+mod structured;
 mod web;
 
 #[cfg(feature = "lang-rust")]
@@ -117,16 +118,6 @@ const PHP_SEMANTIC: &str = r#"
 (trait_declaration body: (declaration_list) @semantic.body) @semantic.scope
 (function_definition body: (compound_statement) @semantic.body) @semantic.scope
 (method_declaration body: (compound_statement) @semantic.body) @semantic.scope
-"#;
-
-/// tree-sitter-php parses non-PHP source as `text` but its upstream injections
-/// query only covers doc comments and heredocs. Parse those host ranges as one
-/// HTML layer so mixed PHP templates expose both markup and PHP declarations.
-#[cfg(feature = "lang-php")]
-const PHP_HTML_INJECTION: &str = r#"
-((text) @injection.content
- (#set! injection.language "html")
- (#set! injection.combined))
 "#;
 
 #[cfg(feature = "lang-bash")]
@@ -637,7 +628,7 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             language: || tree_sitter_php::LANGUAGE_PHP.into(),
             highlights: tree_sitter_php::HIGHLIGHTS_QUERY,
             injections: Some(tree_sitter_php::INJECTIONS_QUERY),
-            injections_extra: Some(PHP_HTML_INJECTION),
+            injections_extra: Some(web::PHP_HTML_INJECTION),
         });
         #[cfg(feature = "lang-bash")]
         v.push(GrammarInfo {
@@ -865,6 +856,7 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
         });
         shells::push(&mut v);
         programming::push(&mut v);
+        structured::push(&mut v);
         web::push(&mut v);
         #[cfg(feature = "lang-markdown")]
         v.push(GrammarInfo {

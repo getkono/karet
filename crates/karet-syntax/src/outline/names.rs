@@ -4,13 +4,20 @@ use karet_core::SymbolKind;
 
 pub(super) fn clean_name(raw: &str) -> String {
     let trimmed = raw.split_once('{').map_or(raw, |(head, _)| head).trim();
-    let unquoted = trimmed
+    let unquoted_identifier = trimmed
         .strip_prefix("@\"")
         .and_then(|name| name.strip_suffix('"'))
         .unwrap_or(trimmed);
-    unquoted
-        .trim_matches(['"', '\'', '[', ']'])
-        .trim()
+    let unbracketed = unquoted_identifier.trim_matches(['[', ']']).trim();
+    unbracketed
+        .strip_prefix('"')
+        .and_then(|name| name.strip_suffix('"'))
+        .or_else(|| {
+            unbracketed
+                .strip_prefix('\'')
+                .and_then(|name| name.strip_suffix('\''))
+        })
+        .unwrap_or(unbracketed)
         .to_owned()
 }
 

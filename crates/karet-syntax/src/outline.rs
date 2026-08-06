@@ -15,6 +15,7 @@ use karet_treesitter::language_id_from_injection_name;
 use karet_treesitter::outline_query;
 
 mod names;
+mod structured;
 #[cfg(test)]
 mod web_tests;
 
@@ -50,7 +51,8 @@ impl OutlineExtractor {
     /// declarations tree-sitter can still identify.
     #[must_use]
     pub fn analyze(&mut self, tree: &SyntaxTree, text: &str) -> Vec<Symbol> {
-        finish(self.candidates(tree, text))
+        structured::analyze(tree.language(), text)
+            .unwrap_or_else(|| finish(self.candidates(tree, text)))
     }
 
     /// Extract one ordered outline from a root tree and its injected languages.
@@ -61,12 +63,14 @@ impl OutlineExtractor {
     /// MDX keeps its heading tree and merges its own declarations at the top level.
     #[must_use]
     pub fn analyze_layers(&mut self, tree: &LayeredTree, text: &str) -> Vec<Symbol> {
+        if let Some(symbols) = structured::analyze(tree.root().language(), text) {
+            return symbols;
+        }
         let root_candidates = self.candidates(tree.root(), text);
-        let root_language = tree.root().language();
-        if language_id_from_injection_name("markdown") == Some(root_language) {
+        if language_id_from_injection_name("markdown") == Some(tree.root().language()) {
             return finish(root_candidates);
         }
-        if language_id_from_injection_name("mdx") == Some(root_language) {
+        if language_id_from_injection_name("mdx") == Some(tree.root().language()) {
             let (headings, declarations) = root_candidates
                 .into_iter()
                 .partition(|candidate| candidate.heading_level.is_some());
