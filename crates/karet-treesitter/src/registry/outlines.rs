@@ -4,6 +4,8 @@ use std::borrow::Cow;
 
 use crate::LanguageId;
 
+mod programming;
+
 #[cfg(feature = "lang-bash")]
 const BASH: &str = r#"
 (function_definition name: (word) @name) @definition.function
@@ -278,6 +280,9 @@ pub(crate) fn outline_query(_lang: LanguageId) -> Option<Cow<'static, str>> {
     #[cfg(feature = "lang-batch")]
     if _lang == super::BATCH {
         return Some(Cow::Borrowed(BATCH));
+    }
+    if let Some(query) = programming::query(_lang) {
+        return Some(query);
     }
     None
 }

@@ -78,9 +78,10 @@ mod tests {
         assert_eq!(language_name_from_path(p), None);
     }
 
+    #[cfg(not(feature = "lang-kotlin"))]
     #[test]
     fn non_compiled_language_still_named() {
-        // Kotlin has no bundled grammar but is still recognized for labelling.
+        // Optional grammars remain recognized for labelling when omitted.
         let p = Path::new("Main.kt");
         assert_eq!(language_id_from_path(p), None);
         assert_eq!(language_name_from_path(p), Some("Kotlin"));
@@ -230,6 +231,51 @@ mod tests {
             assert_eq!(path_id, language_id_from_injection_name(alias), "{path}");
         }
         assert_eq!(language_id_from_path(Path::new("script.ksh")), None);
+    }
+
+    #[cfg(all(
+        feature = "lang-kotlin",
+        feature = "lang-swift",
+        feature = "lang-scala",
+        feature = "lang-lua",
+        feature = "lang-haskell",
+        feature = "lang-ocaml",
+        feature = "lang-elixir",
+        feature = "lang-erlang",
+        feature = "lang-dart",
+        feature = "lang-r",
+        feature = "lang-zig",
+        feature = "lang-perl",
+        feature = "lang-clojure",
+        feature = "lang-elisp",
+        feature = "lang-vim"
+    ))]
+    #[test]
+    fn additional_programming_languages_resolve_paths_and_fence_names() {
+        for (path, name, alias) in [
+            ("Main.kt", "Kotlin", "kotlin"),
+            ("Main.swift", "Swift", "swift"),
+            ("build.sbt", "Scala", "sbt"),
+            ("init.lua", "Lua", "lua"),
+            ("Main.hs", "Haskell", "haskell"),
+            ("Main.lhs", "Haskell", "hs"),
+            ("main.ml", "OCaml", "ocaml"),
+            ("main.mli", "OCaml", "mli"),
+            ("app.ex", "Elixir", "elixir"),
+            ("app.erl", "Erlang", "erlang"),
+            ("main.dart", "Dart", "dart"),
+            ("analysis.r", "R", "r"),
+            ("main.zig", "Zig", "zig"),
+            ("tool.pl", "Perl", "perl"),
+            ("core.cljc", "Clojure", "clojure"),
+            ("init.el", "Emacs Lisp", "elisp"),
+            ("plugin.vim", "Vim script", "vimscript"),
+        ] {
+            let path_id = language_id_from_path(Path::new(path));
+            assert_eq!(language_name_from_path(Path::new(path)), Some(name));
+            assert!(path_id.is_some(), "{path}");
+            assert_eq!(path_id, language_id_from_injection_name(alias), "{path}");
+        }
     }
 
     #[test]

@@ -261,7 +261,15 @@ static REGISTRY: &[FileType] = &[
     language_named("Scala", Code, None, &["scala", "sbt", "sc"], &[], "scala"),
     language_named("Lua", Code, Some('\u{e620}'), &["lua"], &[], "lua"),
     language_named("Haskell", Code, None, &["hs", "lhs"], &[], "haskell"),
-    language_named("OCaml", Code, None, &["ml", "mli"], &[], "ocaml"),
+    language_named("OCaml", Code, None, &["ml"], &[], "ocaml"),
+    language(
+        "OCaml",
+        Code,
+        None,
+        &["mli"],
+        &[],
+        (Some("ocaml-interface"), "ocaml", "ocaml"),
+    ),
     language_named("Elixir", Code, None, &["ex", "exs"], &[], "elixir"),
     language_named("Erlang", Code, None, &["erl", "hrl"], &[], "erlang"),
     language_named("Dart", Code, None, &["dart"], &[], "dart"),
@@ -754,6 +762,11 @@ mod tests {
             assert_eq!(file_type.grammar(), Some(expected), "{path}");
             assert_eq!(file_type.config_selector(), Some(expected), "{path}");
         }
+
+        let interface = file_type_for_path(Path::new("library.mli"));
+        assert_eq!(interface.grammar(), Some("ocaml-interface"));
+        assert_eq!(interface.lsp_language_id(), Some("ocaml"));
+        assert_eq!(interface.config_selector(), Some("ocaml"));
     }
 
     #[test]

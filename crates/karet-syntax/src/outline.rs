@@ -12,6 +12,13 @@ use karet_treesitter::Query;
 use karet_treesitter::SyntaxTree;
 use karet_treesitter::outline_query;
 
+mod names;
+
+use names::clean_name;
+use names::clean_subroutine_name;
+use names::kind_rank;
+use names::symbol_kind;
+
 #[derive(Debug)]
 struct Candidate {
     span: Span,
@@ -214,49 +221,6 @@ fn empty_symbol() -> Symbol {
     }
 }
 
-fn clean_name(raw: &str) -> String {
-    raw.split_once('{')
-        .map_or(raw, |(head, _)| head)
-        .trim()
-        .trim_matches(['"', '\'', '[', ']'])
-        .trim()
-        .to_owned()
-}
-
-fn clean_subroutine_name(raw: &str) -> String {
-    raw.trim()
-        .trim_start_matches(':')
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_owned()
-}
-
-fn symbol_kind(name: &str) -> SymbolKind {
-    match name {
-        "class" => SymbolKind::Class,
-        "method" => SymbolKind::Method,
-        "function" | "macro" | "subroutine" => SymbolKind::Function,
-        "interface" => SymbolKind::Interface,
-        "module" | "namespace" => SymbolKind::Module,
-        "constant" => SymbolKind::Constant,
-        "field" => SymbolKind::Field,
-        "type" => SymbolKind::Struct,
-        "array" => SymbolKind::Array,
-        "object" => SymbolKind::Object,
-        name if name == "heading" || name.starts_with("heading.") => SymbolKind::Namespace,
-        _ => SymbolKind::Variable,
-    }
-}
-
-fn kind_rank(kind: SymbolKind) -> u8 {
-    match kind {
-        SymbolKind::Method => 0,
-        SymbolKind::Function => 1,
-        _ => 2,
-    }
-}
-
 fn line_starts(text: &str) -> Vec<usize> {
     std::iter::once(0)
         .chain(text.match_indices('\n').map(|(index, _)| index + 1))
@@ -310,6 +274,41 @@ mod tests {
         let mut output = Vec::new();
         collect(symbols, &mut output);
         output
+    }
+
+    fn assert_outline_names(
+        path: &str,
+        source: &str,
+        expected: &[&str],
+    ) -> TestResult<Vec<Symbol>> {
+        let extracted = symbols(path, source)?;
+        let actual = names(&extracted);
+        for name in expected {
+            assert!(
+                actual.contains(name),
+                "{path}: missing {name:?}: {extracted:#?}"
+            );
+        }
+        Ok(extracted)
+    }
+
+    fn assert_symbol_container(symbols: &[Symbol], child: &str, parent: &str) {
+        fn find<'a>(symbols: &'a [Symbol], name: &str) -> Option<&'a Symbol> {
+            symbols
+                .iter()
+                .find(|symbol| symbol.name == name)
+                .or_else(|| {
+                    symbols
+                        .iter()
+                        .find_map(|symbol| find(&symbol.children, name))
+                })
+        }
+        let symbol = find(symbols, child);
+        assert_eq!(
+            symbol.and_then(|symbol| symbol.container_name.as_deref()),
+            Some(parent),
+            "{child:?} should be nested under {parent:?}: {symbols:#?}"
+        );
     }
 
     #[test]
@@ -471,6 +470,25 @@ mod tests {
             "script.fish",
             "profile.ps1",
             "build.cmd",
+            "Main.kt",
+            "Main.swift",
+            "build.sbt",
+            "init.lua",
+            "Main.hs",
+            "Main.lhs",
+            "main.ml",
+            "main.mli",
+            "app.ex",
+            "app.erl",
+            "main.dart",
+            "analysis.r",
+            "main.zig",
+            "tool.pl",
+            "core.clj",
+            "core.cljs",
+            "core.cljc",
+            "init.el",
+            "plugin.vim",
         ] {
             assert!(symbols(path, "")?.is_empty(), "{path}");
         }
@@ -655,6 +673,144 @@ mod tests {
         )?;
         assert_eq!(names(&batch), vec!["build", "package"]);
         assert_eq!(batch[0].selection_range.start, LineCol::new(1, 0));
+        Ok(())
+    }
+
+    #[test]
+    fn jvm_native_and_functional_languages_extract_recoverable_unicode() -> TestResult {
+        for (path, source, expected, nested) in [
+            (
+                "Main.kt",
+                "package café\nclass Cafe()\nfun brew() { fun inner() {} }\n???\n",
+                &["café", "Cafe", "brew", "inner"][..],
+                Some(("inner", "brew")),
+            ),
+            (
+                "Main.swift",
+                "class Café { func brew() { func inner() {} } }\n???\n",
+                &["Café", "brew", "inner"],
+                Some(("inner", "brew")),
+            ),
+            (
+                "build.sbt",
+                "package café\nclass Thé { def brew = { def inner = 1 } }\n???\n",
+                &["café", "Thé", "brew", "inner"],
+                Some(("inner", "brew")),
+            ),
+            (
+                "init.lua",
+                "function café() local function inner() end end\n???\n",
+                &["café", "inner"],
+                Some(("inner", "café")),
+            ),
+            (
+                "Main.hs",
+                "module Café where\ndata Thé = Thé\nbrew x = let inner y = y in inner x\n???\n",
+                &["Café", "Thé", "brew", "inner"],
+                Some(("inner", "brew")),
+            ),
+            (
+                "Main.lhs",
+                "> module Café where\n> café x = x\n\nrecoverable prose ???\n",
+                &["Café", "café"],
+                None,
+            ),
+        ] {
+            let extracted = assert_outline_names(path, source, expected)?;
+            if let Some((child, parent)) = nested {
+                assert_symbol_container(&extracted, child, parent);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn beam_ml_and_dart_languages_extract_recoverable_unicode() -> TestResult {
+        for (path, source, expected, nested) in [
+            (
+                "main.ml",
+                "module Café = struct let brew x = let inner y = y in inner x end\n???\n",
+                &["Café", "brew", "inner"][..],
+                Some(("inner", "brew")),
+            ),
+            (
+                "main.mli",
+                "module Café : sig val brew : unit -> unit end\n???\n",
+                &["Café"],
+                None,
+            ),
+            (
+                "app.ex",
+                "defmodule Cafe do\n  def café do\n    defp inner, do: :ok\n  end\nend\n???\n",
+                &["Cafe", "café", "inner"],
+                Some(("inner", "café")),
+            ),
+            (
+                "app.erl",
+                "-module('café').\nbrew() -> inner().\ninner() -> ok.\n???\n",
+                &["café", "brew", "inner"],
+                None,
+            ),
+            (
+                "main.dart",
+                "// Café\nclass Cafe { void brew() {} }\nvoid serve() { void inner() {} }\n???\n",
+                &["Cafe", "brew", "serve"],
+                Some(("brew", "Cafe")),
+            ),
+        ] {
+            let extracted = assert_outline_names(path, source, expected)?;
+            if let Some((child, parent)) = nested {
+                assert_symbol_container(&extracted, child, parent);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn scripting_and_lisp_languages_extract_recoverable_unicode() -> TestResult {
+        for (path, source, expected, nested) in [
+            (
+                "analysis.r",
+                "café <- function() { inner <- function() {} }\n???\n",
+                &["café", "inner"][..],
+                Some(("inner", "café")),
+            ),
+            (
+                "main.zig",
+                "const @\"café\" = struct { fn brew() void {} };\n???\n",
+                &["café", "brew"],
+                Some(("brew", "café")),
+            ),
+            (
+                "tool.pl",
+                "# Café\npackage Cafe; sub brew { sub inner {} }\n???\n",
+                &["Cafe", "brew", "inner"],
+                Some(("inner", "brew")),
+            ),
+            (
+                "core.cljc",
+                "(ns café.core)\n(defrecord Thé [kind])\n(defn brew [] (defn inner [] nil))\n???\n",
+                &["café.core", "Thé", "brew", "inner"],
+                Some(("inner", "brew")),
+            ),
+            (
+                "init.el",
+                "(defun café () (defun inner () nil))\n???\n",
+                &["café", "inner"],
+                Some(("inner", "café")),
+            ),
+            (
+                "plugin.vim",
+                "\" Café\nfunction! cafe#brew()\n  function! s:inner()\n  endfunction\nendfunction\n???\n",
+                &["cafe#brew", "s:inner"],
+                Some(("s:inner", "cafe#brew")),
+            ),
+        ] {
+            let extracted = assert_outline_names(path, source, expected)?;
+            if let Some((child, parent)) = nested {
+                assert_symbol_container(&extracted, child, parent);
+            }
+        }
         Ok(())
     }
 }
