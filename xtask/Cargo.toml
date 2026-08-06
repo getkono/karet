@@ -5,8 +5,11 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+flate2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tar.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

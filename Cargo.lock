@@ -7037,8 +7037,11 @@ dependencies = [
 name = "xtask"
 version = "0.0.0"
 dependencies = [
+ "flate2",
  "serde",
  "serde_json",
+ "tar",
+ "tempfile",
 ]
 
 [[package]]
