@@ -25,6 +25,9 @@ use crate::api::DocumentId;
 use crate::api::SpellingLanguage;
 use crate::config::schema::Spellcheck;
 
+mod context;
+use context::is_non_prose_string;
+
 const SOFTWARE_TERMS: &str = include_str!("../assets/software-terms.txt");
 
 /// One immutable document version queued for checking.
@@ -372,7 +375,10 @@ fn spell_scope(job: &SpellJob, start: usize, document: bool) -> Option<SpellScop
     {
         return Some(SpellScope::Prose);
     }
-    if job.settings.strings && token == Some(TokenId::STRING) {
+    if job.settings.strings
+        && token == Some(TokenId::STRING)
+        && !is_non_prose_string(&job.text, job.language, job.highlights.as_ref(), start)
+    {
         return Some(SpellScope::Prose);
     }
     (job.settings.identifiers
@@ -559,10 +565,12 @@ mod tests {
             enabled: true,
             ..Spellcheck::default()
         };
-        let path = if language == "Markdown" {
-            Path::new("notes.md")
-        } else {
-            Path::new("source.rs")
+        let path = match language {
+            "Markdown" => Path::new("notes.md"),
+            "JavaScript" => Path::new("source.js"),
+            "TypeScript" => Path::new("source.ts"),
+            "Go" => Path::new("source.go"),
+            _ => Path::new("source.rs"),
         };
         let highlights = language_id_from_path(path)
             .and_then(|language| {
@@ -643,6 +651,21 @@ mod tests {
             check_text(&request, &dictionary).is_empty(),
             "identifier linting pauses while syntax is invalid"
         );
+    }
+
+    #[test]
+    fn rust_attribute_strings_are_skipped_but_user_facing_strings_are_checked() {
+        let Some(dictionary) = dictionary() else {
+            return;
+        };
+        let text = "#[cfg(feature = \"serrde\")]\nfn f() { println!(\"wrld\"); }\n";
+        let mut request = job(text, "Rust");
+        request.settings.strings = true;
+
+        let diagnostics = check_text(&request, &dictionary);
+
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].message.contains("wrld"));
     }
 
     #[test]

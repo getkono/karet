@@ -178,6 +178,9 @@ enable spellcheck. It is applied only when `spellcheck.enabled` is `true` in a
 `setting.jsonc` layer.
 URLs, email-like text, numeric/qualified identifiers, code spans, links, and likely
 proper names are ignored. Warnings are token-ranged and preserve syntax colours.
+When source string checking is enabled, structural literals such as Rust attributes,
+module imports, include/env macros, and language annotations remain excluded; ordinary
+user-facing strings in formatting, logging, and application code are still checked.
 
 When a misspelling has close dictionary matches, they appear in the completion popup
 after the debounced warning reaches a stationary caret; `Ctrl+Space` also opens them
