@@ -257,26 +257,41 @@ impl App {
         self.sidebar_visible = true;
         self.focus = Focus::Sidebar;
         self.search.input = true;
+        self.search
+            .query_edit
+            .set_cursor(&self.search.query, self.search.query.len(), false);
     }
 
-    /// Edit the Search query with an unbound key (backspace / printable) while the
-    /// `SearchInput` modal is active. Navigation and mode keys resolve via the
-    /// keymap's `SearchInput` / `SearchList` layers instead.
+    /// Edit the active Search field with GUI-style cursor and selection behavior.
     pub(super) fn search_edit(&mut self, key: KeyEvent) {
-        let target = match self.search.field {
-            SearchField::Find => &mut self.search.query,
-            SearchField::Replace => &mut self.search.replace,
+        let (target, edit) = match self.search.field {
+            SearchField::Find => (&mut self.search.query, &mut self.search.query_edit),
+            SearchField::Replace => (&mut self.search.replace, &mut self.search.replace_edit),
         };
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let command = key.modifiers.contains(KeyModifiers::SUPER);
         match key.code {
-            KeyCode::Backspace => {
-                target.pop();
-            },
+            KeyCode::Backspace => edit.backspace(target, alt || ctrl),
+            KeyCode::Delete => edit.delete(target, alt || ctrl),
+            KeyCode::Left if command => edit.move_start(target, false, shift),
+            KeyCode::Right if command => edit.move_end(target, false, shift),
+            KeyCode::Up if command => edit.move_start(target, true, shift),
+            KeyCode::Down if command => edit.move_end(target, true, shift),
+            KeyCode::Left if alt || ctrl => edit.move_word_left(target, shift),
+            KeyCode::Right if alt || ctrl => edit.move_word_right(target, shift),
+            KeyCode::Left => edit.move_left(target, shift),
+            KeyCode::Right => edit.move_right(target, shift),
+            KeyCode::Home => edit.move_start(target, ctrl, shift),
+            KeyCode::End => edit.move_end(target, ctrl, shift),
+            KeyCode::Char('a' | 'A') if ctrl || command => edit.select_all(target),
             KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                if !key.modifiers.intersects(
+                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                ) =>
             {
-                target.push(c);
+                edit.insert(target, &c.to_string());
             },
             _ => {},
         }
@@ -325,6 +340,11 @@ impl App {
             },
             SearchField::Replace => SearchField::Find,
         };
+        let (text, edit) = match self.search.field {
+            SearchField::Find => (&self.search.query, &mut self.search.query_edit),
+            SearchField::Replace => (&self.search.replace, &mut self.search.replace_edit),
+        };
+        edit.set_cursor(text, text.len(), false);
     }
 
     /// Apply the replacement across every match in the workspace, then refresh the

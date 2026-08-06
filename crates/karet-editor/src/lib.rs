@@ -48,5 +48,7 @@ use ratatui::text::Span;
 use ratatui::widgets::StatefulWidget;
 pub use state::EditorState;
 pub use state::Fold;
+pub use text::next_word_boundary;
+pub use text::previous_word_boundary;
 pub use text::word_bounds;
 pub use view::Editor;

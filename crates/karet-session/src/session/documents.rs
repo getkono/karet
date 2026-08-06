@@ -64,8 +64,10 @@ impl Session {
         let language = language
             .and_then(name_for_language)
             .or_else(|| language_name_for_path(&path));
+        let language_selector = language_selector_for_path(&path);
+        let lsp_language_id = lsp_language_id_for_path(&path);
         let (document_settings, editorconfig_error) =
-            resolve_document_settings(&path, language, &self.config.settings);
+            resolve_document_settings(&path, language_selector, &self.config.settings);
         apply_serialization_settings(&mut buffer, document_settings);
         if let Some(message) = editorconfig_error {
             self.emit(
@@ -82,6 +84,8 @@ impl Session {
         let mut doc = Document {
             path: path.clone(),
             language,
+            language_selector,
+            lsp_language_id,
             lang_id,
             buffer,
             format,
@@ -89,6 +93,7 @@ impl Session {
             highlights: Arc::new(Highlights::default()),
             folds: Arc::new(FoldRegions::default()),
             semantic_blocks: Arc::new(SemanticBlocks::default()),
+            syntax_symbols: Arc::default(),
             error_lines: Arc::default(),
             spell_diagnostics: Vec::new(),
             lsp_diagnostics: HashMap::new(),
@@ -106,8 +111,13 @@ impl Session {
         );
         let version = doc.buffer.version();
         // Lazily start (or address) this language's server and announce the open.
-        self.lsp
-            .document_opened(doc.language, &doc.path, version, || doc.buffer.text());
+        self.lsp.document_opened(
+            doc.language_selector,
+            doc.lsp_language_id,
+            &doc.path,
+            version,
+            || doc.buffer.text(),
+        );
         self.store.by_path.insert(path, doc_id);
         self.store.docs.insert(doc_id, doc);
         self.emit(
@@ -161,7 +171,7 @@ impl Session {
                     // The single LSP apply site: forward the new full text
                     // (debounced by the server task). A no-op while no server is
                     // attached for this language.
-                    lsp.document_changed(doc.language, &doc.path, applied.version, || {
+                    lsp.document_changed(doc.language_selector, &doc.path, applied.version, || {
                         doc.buffer.text()
                     });
                     Some(applied.version)
@@ -214,7 +224,7 @@ impl Session {
             // Undoing back to the save point clears dirtiness (and any pending backup).
             doc.sync_dirty_since(tick);
             // The buffer changed like any other edit: keep the server in sync.
-            lsp.document_changed(doc.language, &doc.path, applied.version, || {
+            lsp.document_changed(doc.language_selector, &doc.path, applied.version, || {
                 doc.buffer.text()
             });
             // Jump the caret to the change: undo restores the exact pre-edit cursor;
@@ -261,7 +271,7 @@ impl Session {
                         store.remove(&path);
                     }
                     self.lsp
-                        .document_saved(doc.language, &doc.path, || doc.buffer.text());
+                        .document_saved(doc.language_selector, &doc.path, || doc.buffer.text());
                 }
                 self.publish(doc_id, None);
                 self.emit(Some(id), Event::Saved { doc: doc_id });
@@ -377,7 +387,7 @@ impl Session {
         let spell_without_syntax =
             update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
         doc.sync_dirty_since(tick);
-        lsp.document_changed(doc.language, &doc.path, applied.version, || {
+        lsp.document_changed(doc.language_selector, &doc.path, applied.version, || {
             doc.buffer.text()
         });
         if spell_without_syntax {
@@ -392,21 +402,26 @@ impl Session {
             return;
         };
         let old = doc.path.clone();
-        let old_language = doc.language;
+        let old_language = doc.language_selector;
         self.store.by_path.remove(&old);
         doc.path = path.clone();
         doc.lang_id = language_id_from_path(&path);
         doc.language = language_name_for_path(&path);
+        doc.language_selector = language_selector_for_path(&path);
+        doc.lsp_language_id = lsp_language_id_for_path(&path);
         // The language may have changed with the extension; re-highlight from scratch.
         let spell_without_syntax =
             update_syntax(&self.config.settings, &self.highlight_tx, doc_id, doc, None);
         // The old URI is gone; the (possibly different) new language's server
         // adopts the new one.
         self.lsp.document_closed(old_language, &old);
-        self.lsp
-            .document_opened(doc.language, &doc.path, doc.buffer.version(), || {
-                doc.buffer.text()
-            });
+        self.lsp.document_opened(
+            doc.language_selector,
+            doc.lsp_language_id,
+            &doc.path,
+            doc.buffer.version(),
+            || doc.buffer.text(),
+        );
         self.store.by_path.insert(path.clone(), doc_id);
         self.emit(Some(id), Event::Retargeted { doc: doc_id, path });
         self.refresh_document_settings(&[doc_id]);
@@ -427,7 +442,7 @@ impl Session {
         if removed {
             if let Some(doc) = self.store.docs.remove(&doc_id) {
                 self.store.by_path.remove(&doc.path);
-                self.lsp.document_closed(doc.language, &doc.path);
+                self.lsp.document_closed(doc.language_selector, &doc.path);
                 // Release the worker's retained trees for this document.
                 self.highlight_tx.send(HighlightJob::Drop(doc_id)).ok();
                 self.spell_errors.remove(&doc_id);

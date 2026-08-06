@@ -27,7 +27,7 @@ lang-cpp        = ["dep:tree-sitter-cpp"]
 lang-csharp     = ["dep:tree-sitter-c-sharp"]
 lang-java       = ["dep:tree-sitter-java"]
 lang-ruby       = ["dep:tree-sitter-ruby"]
-lang-php        = ["dep:tree-sitter-php"]
+lang-php        = ["dep:tree-sitter-php", "lang-html"]
 lang-bash       = ["dep:tree-sitter-bash"]
 lang-toml       = ["dep:tree-sitter-toml-ng"]
 lang-html       = ["dep:tree-sitter-html"]
@@ -40,13 +40,58 @@ lang-xml        = ["dep:tree-sitter-xml"]
 lang-svelte     = ["dep:tree-sitter-svelte-next"]
 lang-astro      = ["dep:tree-sitter-astro-next"]
 lang-vue        = ["dep:tree-sitter-vue-next"]
+lang-sql        = ["dep:tree-sitter-sequel"]
+lang-graphql    = ["dep:tree-sitter-graphql"]
+lang-protobuf   = ["dep:tree-sitter-proto"]
+lang-containerfile = ["dep:tree-sitter-containerfile"]
+lang-make       = ["dep:tree-sitter-make"]
+lang-cmake      = ["dep:tree-sitter-cmake"]
+lang-rst        = ["dep:tree-sitter-rst"]
+lang-asciidoc   = ["dep:tree-sitter-asciidoc"]
+lang-zsh        = ["dep:tree-sitter-zsh"]
+lang-fish       = ["dep:tree-sitter-fish"]
+lang-powershell = ["dep:tree-sitter-powershell"]
+lang-batch      = ["dep:tree-sitter-batch"]
+lang-kotlin     = ["dep:tree-sitter-kotlin-ng"]
+lang-swift      = ["dep:tree-sitter-swift"]
+lang-scala      = ["dep:tree-sitter-scala"]
+lang-lua        = ["dep:tree-sitter-lua"]
+lang-haskell    = ["dep:tree-sitter-haskell"]
+lang-ocaml      = ["dep:tree-sitter-ocaml"]
+lang-elixir     = ["dep:tree-sitter-elixir"]
+lang-erlang     = ["dep:tree-sitter-erlang"]
+lang-dart       = ["dep:tree-sitter-dart"]
+lang-r          = ["dep:tree-sitter-r"]
+lang-perl       = ["dep:tree-sitter-perl"]
+lang-clojure    = ["dep:tree-sitter-clojure-orchard"]
+lang-elisp      = ["dep:tree-sitter-elisp"]
+lang-vim        = ["dep:tree-sitter-vim"]
+lang-scss       = ["dep:tree-sitter-scss"]
+lang-sass       = []
+lang-less       = ["dep:tree-sitter-less"]
+lang-erb        = ["dep:tree-sitter-embedded-template", "lang-html", "lang-ruby"]
+lang-mdx        = ["lang-markdown", "lang-javascript"]
+lang-json5      = ["lang-json"]
+lang-ini        = ["dep:tree-sitter-ini"]
+lang-properties = ["dep:tree-sitter-properties"]
+lang-edn        = ["dep:tree-sitter-clojure-orchard"]
+lang-cbor       = ["lang-json"]
+lang-lockfile   = ["lang-yaml"]
 # Convenience bundle: every grammar above. The `karet` app enables this.
 all-languages = [
     "lang-rust", "lang-python", "lang-javascript", "lang-typescript", "lang-json",
     "lang-go", "lang-c", "lang-cpp", "lang-csharp", "lang-java", "lang-ruby",
     "lang-php", "lang-bash", "lang-toml", "lang-html", "lang-css", "lang-yaml",
     "lang-markdown", "lang-latex", "lang-zig", "lang-xml", "lang-svelte",
-    "lang-astro", "lang-vue",
+    "lang-astro", "lang-vue", "lang-sql", "lang-graphql", "lang-protobuf",
+    "lang-containerfile", "lang-make", "lang-cmake", "lang-rst", "lang-asciidoc",
+    "lang-zsh", "lang-fish", "lang-powershell", "lang-batch",
+    "lang-kotlin", "lang-swift", "lang-scala", "lang-lua", "lang-haskell",
+    "lang-ocaml", "lang-elixir", "lang-erlang", "lang-dart", "lang-r",
+    "lang-perl", "lang-clojure", "lang-elisp", "lang-vim",
+    "lang-scss", "lang-sass", "lang-less", "lang-erb", "lang-mdx",
+    "lang-json5", "lang-ini", "lang-properties", "lang-edn", "lang-cbor",
+    "lang-lockfile",
 ]
 
 [dependencies]
@@ -78,6 +123,41 @@ tree-sitter-xml        = { workspace = true, optional = true }
 tree-sitter-svelte-next = { workspace = true, optional = true }
 tree-sitter-astro-next = { workspace = true, optional = true }
 tree-sitter-vue-next   = { workspace = true, optional = true }
+tree-sitter-sequel     = { workspace = true, optional = true }
+tree-sitter-graphql    = { workspace = true, optional = true }
+tree-sitter-proto      = { workspace = true, optional = true }
+tree-sitter-containerfile = { workspace = true, optional = true }
+tree-sitter-make       = { workspace = true, optional = true }
+tree-sitter-cmake      = { workspace = true, optional = true }
+tree-sitter-rst        = { workspace = true, optional = true }
+tree-sitter-asciidoc   = { workspace = true, optional = true }
+tree-sitter-zsh        = { workspace = true, optional = true }
+tree-sitter-fish       = { workspace = true, optional = true }
+tree-sitter-powershell = { workspace = true, optional = true }
+tree-sitter-batch      = { workspace = true, optional = true }
+tree-sitter-kotlin-ng  = { workspace = true, optional = true }
+tree-sitter-swift      = { workspace = true, optional = true }
+tree-sitter-scala      = { workspace = true, optional = true }
+tree-sitter-lua        = { workspace = true, optional = true }
+tree-sitter-haskell    = { workspace = true, optional = true }
+tree-sitter-ocaml      = { workspace = true, optional = true }
+tree-sitter-elixir     = { workspace = true, optional = true }
+tree-sitter-erlang     = { workspace = true, optional = true }
+tree-sitter-dart       = { workspace = true, optional = true }
+tree-sitter-r          = { workspace = true, optional = true }
+tree-sitter-perl       = { workspace = true, optional = true }
+tree-sitter-clojure-orchard = { workspace = true, optional = true }
+tree-sitter-elisp      = { workspace = true, optional = true }
+tree-sitter-vim        = { workspace = true, optional = true }
+tree-sitter-scss       = { workspace = true, optional = true }
+tree-sitter-less       = { workspace = true, optional = true }
+tree-sitter-embedded-template = { workspace = true, optional = true }
+tree-sitter-language.workspace = true
+tree-sitter-ini        = { workspace = true, optional = true }
+tree-sitter-properties = { workspace = true, optional = true }
+
+[build-dependencies]
+cc.workspace = true
 
 [lints]
 workspace = true
