@@ -16,6 +16,7 @@ use karet_treesitter::outline_query;
 struct Candidate {
     span: Span,
     symbol: Symbol,
+    heading_level: Option<u8>,
 }
 
 /// Cached query runner that extracts hierarchical document symbols.
@@ -46,12 +47,15 @@ impl OutlineExtractor {
             return Vec::new();
         };
         let capture_names = query.capture_names();
+        let dynamic_headings = capture_names.contains(&"definition.heading");
         let starts = line_starts(text);
         let mut candidates = Vec::new();
+        let mut heading_styles = Vec::new();
         for matched in tree.matches(query, text) {
             let mut definition = None;
             let mut name = None;
             let mut kind = SymbolKind::Variable;
+            let mut heading_level = None;
             for capture in matched.captures {
                 let Some(capture_name) = capture_names.get(capture.capture as usize) else {
                     continue;
@@ -61,6 +65,9 @@ impl OutlineExtractor {
                 } else if let Some(suffix) = capture_name.strip_prefix("definition.") {
                     definition = Some(capture.span);
                     kind = symbol_kind(suffix);
+                    heading_level = suffix
+                        .strip_prefix("heading.")
+                        .and_then(|level| level.parse().ok());
                 }
             }
             let (Some(definition), Some(name_span)) = (definition, name) else {
@@ -73,8 +80,12 @@ impl OutlineExtractor {
             if name.is_empty() {
                 continue;
             }
+            if heading_level.is_none() && dynamic_headings {
+                heading_level = dynamic_heading_level(text, definition, &mut heading_styles);
+            }
             candidates.push(Candidate {
                 span: definition,
+                heading_level,
                 symbol: Symbol {
                     name,
                     kind,
@@ -97,8 +108,64 @@ impl OutlineExtractor {
             left.span == right.span && left.symbol.name == right.symbol.name
         });
         let mut index = 0;
-        nest(&mut candidates, &mut index, None, None)
+        if candidates
+            .iter()
+            .all(|candidate| candidate.heading_level.is_some())
+        {
+            nest_headings(&mut candidates, &mut index, None, None)
+        } else {
+            nest(&mut candidates, &mut index, None, None)
+        }
     }
+}
+
+fn dynamic_heading_level(text: &str, span: Span, styles: &mut Vec<String>) -> Option<u8> {
+    let source = text.get(span.start.0..span.end.0)?;
+    let markers: Vec<char> = source
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            let mut chars = trimmed.chars();
+            let first = chars.next()?;
+            (trimmed.len() >= 2 && first.is_ascii_punctuation() && chars.all(|ch| ch == first))
+                .then_some(first)
+        })
+        .collect();
+    let marker = *markers.first()?;
+    let style = format!(
+        "{}:{marker}",
+        if markers.len() > 1 { "over" } else { "under" }
+    );
+    let index = styles
+        .iter()
+        .position(|candidate| *candidate == style)
+        .unwrap_or_else(|| {
+            styles.push(style);
+            styles.len() - 1
+        });
+    u8::try_from(index + 1).ok()
+}
+
+fn nest_headings(
+    candidates: &mut [Candidate],
+    index: &mut usize,
+    parent_level: Option<u8>,
+    container: Option<&str>,
+) -> Vec<Symbol> {
+    let mut symbols = Vec::new();
+    while *index < candidates.len() {
+        let level = candidates[*index].heading_level.unwrap_or(1);
+        if parent_level.is_some_and(|parent| level <= parent) {
+            break;
+        }
+        let mut symbol = std::mem::replace(&mut candidates[*index].symbol, empty_symbol());
+        *index += 1;
+        symbol.container_name = container.map(str::to_owned);
+        let name = symbol.name.clone();
+        symbol.children = nest_headings(candidates, index, Some(level), Some(&name));
+        symbols.push(symbol);
+    }
+    symbols
 }
 
 fn nest(
@@ -162,6 +229,7 @@ fn symbol_kind(name: &str) -> SymbolKind {
         "type" => SymbolKind::Struct,
         "array" => SymbolKind::Array,
         "object" => SymbolKind::Object,
+        name if name == "heading" || name.starts_with("heading.") => SymbolKind::Namespace,
         _ => SymbolKind::Variable,
     }
 }
@@ -381,6 +449,9 @@ mod tests {
             "rules.mk",
             "CMakeLists.txt",
             "module.cmake",
+            "guide.rst",
+            "guide.adoc",
+            "paper.tex",
         ] {
             assert!(symbols(path, "")?.is_empty(), "{path}");
         }
@@ -480,6 +551,49 @@ mod tests {
             .ok_or("CMake condition")?;
         assert!(names(&condition.children).contains(&"café"), "{cmake:#?}");
         assert!(names(&condition.children).contains(&"app"), "{cmake:#?}");
+        Ok(())
+    }
+
+    #[test]
+    fn document_markup_headings_preserve_hierarchy_and_unicode_ranges() -> TestResult {
+        let rst = symbols(
+            "guide.rst",
+            "==========\nCafé guide\n==========\n\nSetup\n==========\n\nThé\n~~~\n\nUsage\n==========\n\n???\n",
+        )?;
+        let guide = rst.first().ok_or("reStructuredText title")?;
+        assert_eq!(guide.name, "Café guide");
+        assert_eq!(guide.selection_range.end.col, 10);
+        assert_eq!(names(&guide.children), vec!["Setup", "Thé", "Usage"]);
+        assert_eq!(
+            guide.children[0].children[0].container_name.as_deref(),
+            Some("Setup")
+        );
+
+        let asciidoc = symbols(
+            "guide.adoc",
+            "= Café guide\n\n== Setup\n\n=== Thé\n\n== Usage\n\n???\n",
+        )?;
+        let guide = asciidoc.first().ok_or("AsciiDoc title")?;
+        assert_eq!(guide.name, "Café guide");
+        assert_eq!(names(&guide.children), vec!["Setup", "Thé", "Usage"]);
+        assert_eq!(
+            guide.children[0].children[0].container_name.as_deref(),
+            Some("Setup")
+        );
+
+        let latex = symbols(
+            "paper.tex",
+            "\\part{Café}\n\\chapter{Setup}\n\\section{Thé}\n\\subsection{Brew}\n\\chapter{Usage}\n???\n",
+        )?;
+        let part = latex.first().ok_or("LaTeX part")?;
+        assert_eq!(
+            names(std::slice::from_ref(part)),
+            vec!["Café", "Setup", "Thé", "Brew", "Usage"]
+        );
+        assert_eq!(
+            part.children[0].children[0].container_name.as_deref(),
+            Some("Setup")
+        );
         Ok(())
     }
 }
