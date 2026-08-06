@@ -44,6 +44,19 @@ impl TextBuffer {
         self.save_bytes(path, &bytes)
     }
 
+    /// Save a buffer whose destination did not exist when editing began.
+    ///
+    /// The destination is created atomically and is never overwritten. This is the
+    /// safe first-save path for a new document opened by name.
+    ///
+    /// # Errors
+    /// Returns [`TextError::Conflict`] if `path` already exists, or [`TextError::Io`]
+    /// if the file cannot be written.
+    pub fn save_new(&mut self, path: &Path) -> Result<SavedState, TextError> {
+        let bytes = self.serialize();
+        self.save_new_bytes(path, &bytes)
+    }
+
     /// Save already-serialized `bytes` to `path` atomically, recording the on-disk
     /// fingerprint and clearing the dirty flag on success.
     ///
@@ -65,11 +78,27 @@ impl TextBuffer {
         // Resolve symlinks so we replace the real file's directory entry, not the
         // link. `canonicalize` fails for a not-yet-existing file; then use the path.
         let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        let dir = target
-            .parent()
-            .ok_or_else(|| TextError::Io("save path has no parent directory".to_string()))?;
+        let dir = save_parent(&target)?;
         write_atomic(dir, &target, bytes)?;
-        let meta = std::fs::metadata(&target).map_err(|e| TextError::Io(e.to_string()))?;
+        self.record_saved_bytes(&target, bytes)
+    }
+
+    /// Save already-serialized bytes to a destination that must not exist.
+    ///
+    /// This is the no-clobber counterpart to [`save_bytes`](Self::save_bytes) for
+    /// decoded document formats whose edit text differs from their disk bytes.
+    ///
+    /// # Errors
+    /// Returns [`TextError::Conflict`] if `path` already exists, or [`TextError::Io`]
+    /// if the file cannot be written.
+    pub fn save_new_bytes(&mut self, path: &Path, bytes: &[u8]) -> Result<SavedState, TextError> {
+        let dir = save_parent(path)?;
+        write_atomic_noclobber(dir, path, bytes)?;
+        self.record_saved_bytes(path, bytes)
+    }
+
+    fn record_saved_bytes(&mut self, target: &Path, bytes: &[u8]) -> Result<SavedState, TextError> {
+        let meta = std::fs::metadata(target).map_err(|e| TextError::Io(e.to_string()))?;
         let state = SavedState {
             mtime: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
             size: meta.len(),
@@ -160,6 +189,34 @@ fn write_atomic(dir: &Path, target: &Path, bytes: &[u8]) -> Result<(), TextError
     }
 }
 
+fn save_parent(path: &Path) -> Result<&Path, TextError> {
+    match path.parent() {
+        Some(parent) if parent.as_os_str().is_empty() => Ok(Path::new(".")),
+        Some(parent) => Ok(parent),
+        None => Err(TextError::Io(
+            "save path has no parent directory".to_string(),
+        )),
+    }
+}
+
+/// Write to an absent target without a check-then-rename race. `persist_noclobber`
+/// uses the platform's atomic no-replace primitive, so another creator always wins
+/// cleanly and its bytes remain untouched.
+fn write_atomic_noclobber(dir: &Path, target: &Path, bytes: &[u8]) -> Result<(), TextError> {
+    let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(|e| TextError::Io(e.to_string()))?;
+    tmp.write_all(bytes)
+        .and_then(|()| tmp.flush())
+        .and_then(|()| tmp.as_file().sync_all())
+        .map_err(|e| TextError::Io(e.to_string()))?;
+    tmp.persist_noclobber(target).map(|_| ()).map_err(|error| {
+        if error.error.kind() == std::io::ErrorKind::AlreadyExists {
+            TextError::Conflict
+        } else {
+            TextError::Io(error.error.to_string())
+        }
+    })
+}
+
 /// A fast, non-cryptographic fingerprint of `bytes` (no extra dependency). This is
 /// the exact function backing [`SavedState::hash`], exposed as
 /// [`crate::content_fingerprint`] so callers can recompute a file's fingerprint and
@@ -235,6 +292,41 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap_or_default(), vec![0xf6]);
         assert!(buf.saved_state().is_some());
         assert!(!buf.is_dirty());
+    }
+
+    #[test]
+    fn save_new_creates_once_without_overwriting() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("new.txt");
+        let mut buffer = TextBuffer::from_text("mine\n");
+
+        assert!(buffer.save_new(&path).is_ok());
+        assert_eq!(
+            std::fs::read_to_string(&path).ok().as_deref(),
+            Some("mine\n")
+        );
+        assert_eq!(buffer.save_new(&path), Err(TextError::Conflict));
+    }
+
+    #[test]
+    fn save_new_bytes_refuses_an_existing_destination() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("new.bin");
+        assert!(std::fs::write(&path, b"external").is_ok());
+        let mut buffer = TextBuffer::from_text("mine");
+
+        assert_eq!(
+            buffer.save_new_bytes(&path, b"mine"),
+            Err(TextError::Conflict)
+        );
+        assert_eq!(
+            std::fs::read(&path).ok().as_deref(),
+            Some(b"external".as_slice())
+        );
     }
 
     #[test]

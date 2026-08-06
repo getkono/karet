@@ -293,6 +293,18 @@ mod tests {
         assert!(matches!(tab.kind, TabKind::Code { .. }));
     }
 
+    #[test]
+    fn missing_text_path_opens_as_an_empty_code_tab() {
+        let dir = temp_dir();
+        let file = dir.path.join("NEW.md");
+
+        let tab = open_file(&file);
+
+        assert_eq!(tab.path(), Some(file.as_path()));
+        assert!(matches!(tab.kind, TabKind::Code { ref text, .. } if text.is_empty()));
+        assert!(!file.exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn opening_a_symlink_keeps_its_filesystem_identity() -> std::io::Result<()> {
