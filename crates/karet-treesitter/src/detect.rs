@@ -164,6 +164,31 @@ mod tests {
         }
     }
 
+    #[cfg(all(
+        feature = "lang-containerfile",
+        feature = "lang-make",
+        feature = "lang-cmake"
+    ))]
+    #[test]
+    fn build_language_names_and_paths_resolve_to_distinct_grammars() {
+        for (path, expected) in [
+            ("Dockerfile", "Dockerfile"),
+            ("Containerfile", "Dockerfile"),
+            ("Makefile", "Makefile"),
+            ("GNUmakefile", "Makefile"),
+            ("rules.mk", "Makefile"),
+            ("CMakeLists.txt", "CMake"),
+            ("module.cmake", "CMake"),
+        ] {
+            assert_eq!(language_name_from_path(Path::new(path)), Some(expected));
+            assert!(language_id_from_path(Path::new(path)).is_some(), "{path}");
+        }
+        assert_ne!(
+            language_id_from_path(Path::new("CMakeLists.txt")),
+            language_id_from_path(Path::new("Makefile"))
+        );
+    }
+
     #[test]
     fn extension_is_case_insensitive() {
         assert_eq!(extension(Path::new("X.MD")).as_deref(), Some("md"));
