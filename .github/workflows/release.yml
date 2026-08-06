@@ -60,6 +60,14 @@ jobs:
       # Resolves the exact stable toolchain pinned in rust-toolchain.toml.
       - name: Install pinned toolchain
         run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: publish-ready
+      # Build the normalized .crate archives against the exact mix of published
+      # and local versions that Cargo will resolve below. This must pass before
+      # release-plz receives credentials or uploads an immutable crate version.
+      - name: Verify release packages
+        run: cargo run --quiet --package xtask -- publish-ready
       - id: release-plz
         uses: release-plz/action@v0.5
         with:

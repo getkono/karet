@@ -36,6 +36,10 @@ run = "cargo run --quiet --package xtask -- file-lines"
 description = "Verify publishable crates depend only on versioned, publishable workspace crates"
 run = "cargo run --quiet --package xtask -- publish-closure"
 
+[tasks.publish-ready]
+description = "Build unpublished .crate archives against their release-time dependency sources"
+run = "cargo run --quiet --package xtask -- publish-ready"
+
 [tasks.test]
 description = "Run the test suite"
 run = "cargo test --workspace --all-features"
@@ -63,6 +67,7 @@ description = "Run the exact quality gate shared by pre-push and CI"
 run = [
   "mise run file-lines",
   "mise run publish-closure",
+  "mise run publish-ready",
   "mise run format-check",
   "mise run lint",
   "mise run test",

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/getkono/karet/compare/karet-core-v0.3.0...karet-core-v0.4.0) - 2026-08-06
+
+### Added
+
+- *(lsp)* implement document symbol requests
+- *(vcs)* switch inline blame to line-only click-to-detail model
+- *(session)* add async repository and blame contracts
+
 ## [0.3.0](https://github.com/getkono/karet/compare/karet-core-v0.2.2...karet-core-v0.3.0) - 2026-07-19
 
 ### Added

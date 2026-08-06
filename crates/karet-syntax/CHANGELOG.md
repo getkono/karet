@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/getkono/karet/compare/karet-syntax-v0.3.0...karet-syntax-v0.4.0) - 2026-08-06
+
+### Added
+
+- *(karet)* explain manual language-server requirements
+- *(karet)* report existing application logs
+- *(karet)* persist application diagnostics
+- *(lsp)* manage shared language server toolchains
+- *(treesitter)* add LaTeX syntax support
+
+### Other
+
+- Merge pull request #166 from getkono/feat/inline-macros-152
+- Merge pull request #165 from getkono/feat/config-language-outlines-137
+- Merge pull request #164 from getkono/feat/layered-web-outlines-133
+- Merge pull request #163 from getkono/feat/programming-language-outlines-132
+- Merge pull request #162 from getkono/feat/shell-language-outlines-135
+- Merge pull request #161 from getkono/feat/document-markup-outlines-138
+- Merge pull request #160 from getkono/feat/build-language-outlines-136
+- Merge pull request #159 from getkono/feat/query-schema-outlines-134
+- Merge pull request #158 from getkono/feat/treesitter-outline-fallback-131
+- *(readme)* capture the hero image from the real app
+- *(readme)* add deterministic hero artwork
+- unify pre-push and workflow checks
+- *(lsp)* document server manager controls
+- document the external LaTeX workflow
+- explain optional spell checking
+
 ## [0.3.0](https://github.com/getkono/karet/compare/karet-syntax-v0.2.2...karet-syntax-v0.3.0) - 2026-07-19
 
 ### Added

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/getkono/karet/compare/karet-editor-v0.3.0...karet-editor-v0.4.0) - 2026-08-06
+
+### Added
+
+- *(karet)* explain manual language-server requirements
+- *(karet)* report existing application logs
+- *(karet)* persist application diagnostics
+- *(lsp)* manage shared language server toolchains
+- *(editor)* render diagnostic underlines
+- *(editor)* exempt structural lines from soft wrapping
+- *(karet)* honor resolved indentation and tab widths
+- *(editor)* model merge conflict decorations
+- *(vcs)* switch inline blame to line-only click-to-detail model
+- *(app)* add git workflows and live blame
+
+### Other
+
+- Merge pull request #168 from getkono/feat/text-selection-ergonomics-141
+- *(readme)* capture the hero image from the real app
+- *(readme)* add deterministic hero artwork
+- unify pre-push and workflow checks
+- *(lsp)* document server manager controls
+- document the external LaTeX workflow
+- explain optional spell checking
+
 ## [0.3.0](https://github.com/getkono/karet/compare/karet-editor-v0.2.2...karet-editor-v0.3.0) - 2026-07-19
 
 ### Added
