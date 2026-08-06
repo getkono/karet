@@ -48,6 +48,10 @@ lang-make       = ["dep:tree-sitter-make"]
 lang-cmake      = ["dep:tree-sitter-cmake"]
 lang-rst        = ["dep:tree-sitter-rst"]
 lang-asciidoc   = ["dep:tree-sitter-asciidoc"]
+lang-zsh        = ["dep:tree-sitter-zsh"]
+lang-fish       = ["dep:tree-sitter-fish"]
+lang-powershell = ["dep:tree-sitter-powershell"]
+lang-batch      = ["dep:tree-sitter-batch"]
 # Convenience bundle: every grammar above. The `karet` app enables this.
 all-languages = [
     "lang-rust", "lang-python", "lang-javascript", "lang-typescript", "lang-json",
@@ -56,6 +60,7 @@ all-languages = [
     "lang-markdown", "lang-latex", "lang-zig", "lang-xml", "lang-svelte",
     "lang-astro", "lang-vue", "lang-sql", "lang-graphql", "lang-protobuf",
     "lang-containerfile", "lang-make", "lang-cmake", "lang-rst", "lang-asciidoc",
+    "lang-zsh", "lang-fish", "lang-powershell", "lang-batch",
 ]
 
 [dependencies]
@@ -95,6 +100,10 @@ tree-sitter-make       = { workspace = true, optional = true }
 tree-sitter-cmake      = { workspace = true, optional = true }
 tree-sitter-rst        = { workspace = true, optional = true }
 tree-sitter-asciidoc   = { workspace = true, optional = true }
+tree-sitter-zsh        = { workspace = true, optional = true }
+tree-sitter-fish       = { workspace = true, optional = true }
+tree-sitter-powershell = { workspace = true, optional = true }
+tree-sitter-batch      = { workspace = true, optional = true }
 
 [lints]
 workspace = true
