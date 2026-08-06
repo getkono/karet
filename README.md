@@ -1,7 +1,7 @@
 # karet
 
 <p align="center">
-  <img src="assets/karet.svg" alt="Karet showing a side-by-side Rust diff" width="100%">
+  <img src="assets/karet.svg" alt="A karet window: the file explorer on the left, a Rust source file with syntax highlighting in the editor, and the status bar along the bottom" width="100%">
 </p>
 
 `karet` is a TUI for high-velocity, terminal-centric coding, focused on review
@@ -115,7 +115,13 @@ the log files that currently exist.
 | `mise run lint-fix` | Lint and auto-fix    |
 | `mise run coverage` | Report coverage      |
 | `mise run verify`   | Run the CI/pre-push quality gate |
-| `mise run svg`      | Regenerate the README hero SVG   |
+| `mise run svg`      | Recapture the README hero SVG    |
+
+The hero image is a real frame, not a drawing: `mise run svg` builds `karet`, runs it
+with `--capture` against a throwaway demo repository, and converts the ANSI grid it
+prints into `assets/karet.svg`. Because the demo repository is generated with pinned
+content, branch, and commit dates — and the capture runs with an empty environment
+and a throwaway `HOME` — re-running it is byte-identical. See `scripts/gen-svg.sh`.
 
 Tests live in-file (`#[cfg(test)] mod tests`); test every new public item. Headless
 engines carry the bulk of the coverage, widget crates render-test into a ratatui

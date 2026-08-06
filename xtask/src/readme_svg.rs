@@ -1,117 +1,432 @@
-//! Deterministic README hero artwork.
+//! Turn a `karet --capture` ANSI grid into the README hero SVG.
+//!
+//! The artwork is a real frame: every colour, glyph, and column here comes from the
+//! app's own render, so the hero cannot drift from the product without the drift
+//! being visible. Nothing in this module reads a clock, a font, or the host, so the
+//! same capture always produces byte-identical SVG.
+//!
+//! Columns are pinned rather than flowed: each text run declares `textLength` with
+//! `lengthAdjust="spacingAndGlyphs"`, so the grid stays aligned in a viewer whose
+//! monospace font has different metrics from the one that produced the capture.
 
-pub(crate) const HERO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640" role="img" aria-labelledby="title description">
-  <title id="title">Karet terminal code editor</title>
-  <desc id="description">A stylized Karet window showing a project explorer and a side-by-side Rust diff.</desc>
-  <defs>
-    <linearGradient id="shell" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#111827"/>
-      <stop offset="1" stop-color="#0b1020"/>
-    </linearGradient>
-    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
-      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#020617" flood-opacity=".55"/>
-    </filter>
-    <clipPath id="window-clip"><rect x="45" y="45" width="1110" height="550" rx="18"/></clipPath>
-    <style>
-      .ui { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-      .muted { fill: #64748b; }
-      .text { fill: #cbd5e1; }
-      .bright { fill: #f8fafc; }
-      .blue { fill: #7dd3fc; }
-      .purple { fill: #c4b5fd; }
-      .green { fill: #86efac; }
-      .red { fill: #fda4af; }
-      .amber { fill: #fde68a; }
-    </style>
-  </defs>
-  <rect width="1200" height="640" fill="#070b16"/>
-  <circle cx="1050" cy="80" r="250" fill="#172554" opacity=".28"/>
-  <circle cx="140" cy="610" r="300" fill="#312e81" opacity=".18"/>
-  <g filter="url(#shadow)">
-    <rect x="45" y="45" width="1110" height="550" rx="18" fill="url(#shell)" stroke="#334155"/>
-  </g>
-  <g clip-path="url(#window-clip)" class="ui">
-    <rect x="45" y="45" width="1110" height="43" fill="#1e293b"/>
-    <circle cx="70" cy="67" r="6" fill="#fb7185"/><circle cx="90" cy="67" r="6" fill="#facc15"/><circle cx="110" cy="67" r="6" fill="#4ade80"/>
-    <text x="600" y="72" text-anchor="middle" font-size="14" class="text">karet — review · src/editor.rs</text>
+mod ansi;
 
-    <rect x="45" y="88" width="228" height="477" fill="#0f172a"/>
-    <rect x="273" y="88" width="1" height="477" fill="#334155"/>
-    <text x="66" y="120" font-size="12" font-weight="700" letter-spacing="1.5" class="muted">EXPLORER</text>
-    <text x="66" y="151" font-size="14" class="bright">⌄  karet</text>
-    <text x="84" y="179" font-size="14" class="text">⌄  crates</text>
-    <text x="102" y="207" font-size="14" class="text">⌄  karet-editor</text>
-    <rect x="55" y="219" width="208" height="30" rx="5" fill="#1e3a5f"/>
-    <text x="120" y="240" font-size="14" class="blue">◆  editor.rs</text>
-    <text x="102" y="272" font-size="14" class="text">◆  lib.rs</text>
-    <text x="84" y="300" font-size="14" class="text">›  karet-core</text>
-    <text x="84" y="328" font-size="14" class="text">›  karet-diff</text>
-    <text x="84" y="356" font-size="14" class="text">›  karet-syntax</text>
-    <text x="84" y="384" font-size="14" class="text">›  karet-theme</text>
-    <text x="84" y="412" font-size="14" class="text">›  karet-vcs</text>
-    <text x="66" y="454" font-size="14" class="muted">◇  Cargo.toml</text>
-    <text x="66" y="482" font-size="14" class="muted">◇  README.md</text>
-    <text x="66" y="510" font-size="14" class="muted">◇  AGENTS.md</text>
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
-    <rect x="274" y="88" width="881" height="38" fill="#111827"/>
-    <rect x="274" y="124" width="440" height="2" fill="#38bdf8"/>
-    <text x="298" y="112" font-size="13" class="bright">editor.rs</text>
-    <text x="704" y="112" text-anchor="end" font-size="12" class="muted">WORKTREE</text>
-    <text x="738" y="112" font-size="13" class="bright">editor.rs</text>
-    <text x="1130" y="112" text-anchor="end" font-size="12" class="muted">INDEX</text>
+use ansi::Cell;
+use ansi::Grid;
+use ansi::Rgb;
+use ansi::Style;
 
-    <rect x="714" y="126" width="1" height="439" fill="#334155"/>
-    <rect x="274" y="126" width="440" height="439" fill="#0b1220"/>
-    <rect x="715" y="126" width="440" height="439" fill="#0b1220"/>
+/// Width of one terminal column, in SVG user units.
+const ADVANCE: usize = 9;
+/// Height of one terminal row, in SVG user units.
+const LINE_HEIGHT: usize = 20;
+/// Glyph size; slightly under [`LINE_HEIGHT`] so rows do not collide.
+const FONT_SIZE: usize = 15;
+/// Baseline offset within a row box.
+const BASELINE: usize = 15;
+/// Padding between the window edge and the grid.
+const PADDING: usize = 18;
+/// Height of the window's title bar.
+const TITLE_BAR: usize = 34;
+/// Margin between the window and the SVG edge, leaving room for the drop shadow.
+const MARGIN: usize = 20;
+/// Corner radius of the window.
+const RADIUS: usize = 10;
 
-    <g font-size="13">
-      <text x="290" y="158" class="muted">34</text><text x="327" y="158" class="purple">pub fn</text><text x="383" y="158" class="blue">move_cursor</text><text x="472" y="158" class="text">(&amp;mut self, key: Key) {</text>
-      <text x="290" y="185" class="muted">35</text><text x="327" y="185" class="text">  match key {</text>
-      <rect x="274" y="198" width="440" height="28" fill="#4c1d2a" opacity=".65"/>
-      <text x="290" y="217" class="red">36</text><text x="314" y="217" class="red">−</text><text x="337" y="217" class="text">Key::Home =&gt; self.line_start(),</text>
-      <rect x="274" y="226" width="440" height="28" fill="#4c1d2a" opacity=".65"/>
-      <text x="290" y="245" class="red">37</text><text x="314" y="245" class="red">−</text><text x="337" y="245" class="text">Key::End =&gt; self.line_end(),</text>
-      <text x="290" y="278" class="muted">38</text><text x="327" y="278" class="text">  }</text>
-      <text x="290" y="305" class="muted">39</text><text x="327" y="305" class="text">}</text>
-      <text x="290" y="353" class="muted">40</text><text x="327" y="353" class="muted">// platform-neutral editor model</text>
-      <text x="290" y="380" class="muted">41</text><text x="327" y="380" class="purple">fn</text><text x="352" y="380" class="blue">line_end</text><text x="416" y="380" class="text">(&amp;mut self) {</text>
-      <text x="290" y="407" class="muted">42</text><text x="327" y="407" class="text">  self.caret.column = self.width();</text>
-      <text x="290" y="434" class="muted">43</text><text x="327" y="434" class="text">}</text>
+/// The window chrome's colours, chosen to frame a dark terminal capture.
+const CHROME_BAR: &str = "#1b1e2b";
+/// Hairline around the window.
+const CHROME_EDGE: &str = "#2f3347";
+/// The page behind the window.
+const PAGE: &str = "#0b0d16";
 
-      <text x="731" y="158" class="muted">34</text><text x="768" y="158" class="purple">pub fn</text><text x="824" y="158" class="blue">move_cursor</text><text x="913" y="158" class="text">(&amp;mut self, key: Key) {</text>
-      <text x="731" y="185" class="muted">35</text><text x="768" y="185" class="text">  match key {</text>
-      <rect x="715" y="198" width="440" height="28" fill="#123524" opacity=".8"/>
-      <text x="731" y="217" class="green">36</text><text x="755" y="217" class="green">+</text><text x="778" y="217" class="text">Key::Home =&gt; self.visual_start(),</text>
-      <rect x="715" y="226" width="440" height="28" fill="#123524" opacity=".8"/>
-      <text x="731" y="245" class="green">37</text><text x="755" y="245" class="green">+</text><text x="778" y="245" class="text">Key::End =&gt; self.visual_end(),</text>
-      <text x="731" y="278" class="muted">38</text><text x="768" y="278" class="text">  }</text>
-      <text x="731" y="305" class="muted">39</text><text x="768" y="305" class="text">}</text>
-      <text x="731" y="353" class="muted">40</text><text x="768" y="353" class="muted">// platform-neutral editor model</text>
-      <text x="731" y="380" class="muted">41</text><text x="768" y="380" class="purple">fn</text><text x="793" y="380" class="blue">visual_end</text><text x="873" y="380" class="text">(&amp;mut self) {</text>
-      <text x="731" y="407" class="muted">42</text><text x="768" y="407" class="text">  self.caret.column = self.width();</text>
-      <text x="731" y="434" class="muted">43</text><text x="768" y="434" class="text">}</text>
-    </g>
+/// Escape the five characters that cannot appear literally in SVG text content.
+fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
 
-    <rect x="274" y="516" width="881" height="49" fill="#111827"/>
-    <text x="296" y="546" font-size="13" class="green">✓ 2 files changed</text>
-    <text x="1130" y="546" text-anchor="end" font-size="13" class="muted">Rust  Ln 36, Col 18  UTF-8</text>
-    <rect x="45" y="565" width="1110" height="30" fill="#0369a1"/>
-    <text x="64" y="585" font-size="13" class="bright"> feature/editor-motion</text>
-    <text x="1136" y="585" text-anchor="end" font-size="13" class="bright">NORMAL  karet</text>
-  </g>
-</svg>
-"##;
+/// Format a colour as a lowercase `#rrggbb` literal.
+fn hex(rgb: Rgb) -> String {
+    format!("#{:02x}{:02x}{:02x}", rgb.0, rgb.1, rgb.2)
+}
+
+/// The background colour covering the most cells, used as the window fill so the
+/// common case needs no `<rect>` at all.
+///
+/// Ties break toward the numerically smallest colour (a `BTreeMap` walk), so the
+/// choice does not depend on iteration order.
+fn dominant_background(grid: &Grid) -> Rgb {
+    let mut counts: BTreeMap<Rgb, usize> = BTreeMap::new();
+    for row in &grid.rows {
+        for cell in row {
+            *counts.entry(cell.style.bg).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by_key(|&(colour, count)| (count, std::cmp::Reverse(colour)))
+        .map_or((0, 0, 0), |(colour, _)| colour)
+}
+
+/// Split a row into maximal runs of identical style, as `(start_column, cells)`.
+fn style_runs(row: &[Cell]) -> Vec<(usize, Vec<&Cell>)> {
+    let mut runs: Vec<(usize, Vec<&Cell>)> = Vec::new();
+    for (column, cell) in row.iter().enumerate() {
+        match runs.last_mut() {
+            Some((start, cells))
+                if cells.last().is_some_and(|last| last.style == cell.style)
+                    && *start + cells.len() == column =>
+            {
+                cells.push(cell);
+            },
+            _ => runs.push((column, vec![cell])),
+        }
+    }
+    runs
+}
+
+/// Emit the background rectangles for one row, skipping runs that already match the
+/// window fill.
+fn write_backgrounds(out: &mut String, row: &[Cell], y: usize, fill: Rgb) -> std::fmt::Result {
+    for (column, cells) in style_runs(row) {
+        let style = match cells.first() {
+            Some(cell) => cell.style,
+            None => continue,
+        };
+        if style.bg == fill {
+            continue;
+        }
+        write!(
+            out,
+            "\n    <rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{LINE_HEIGHT}\" fill=\"{}\"/>",
+            column * ADVANCE,
+            y,
+            cells.len() * ADVANCE,
+            hex(style.bg)
+        )?;
+    }
+    Ok(())
+}
+
+/// The SVG attributes a style contributes beyond its fill.
+fn emphasis_attributes(style: Style) -> String {
+    let mut attributes = String::new();
+    if style.bold {
+        attributes.push_str(" font-weight=\"700\"");
+    }
+    if style.italic {
+        attributes.push_str(" font-style=\"italic\"");
+    }
+    match (style.underlined, style.crossed_out) {
+        (true, true) => attributes.push_str(" text-decoration=\"underline line-through\""),
+        (true, false) => attributes.push_str(" text-decoration=\"underline\""),
+        (false, true) => attributes.push_str(" text-decoration=\"line-through\""),
+        (false, false) => {},
+    }
+    attributes
+}
+
+/// Emit the text runs for one row.
+///
+/// Leading and trailing blanks are trimmed off each run and the run's `x` and
+/// `textLength` adjusted to match, so whitespace costs nothing but every glyph keeps
+/// its exact column.
+fn write_text(out: &mut String, row: &[Cell], y: usize) -> std::fmt::Result {
+    for (column, cells) in style_runs(row) {
+        let Some(first) = cells.first() else {
+            continue;
+        };
+        let style = first.style;
+        let visible_cell = |cell: &&Cell| !cell.text.trim().is_empty();
+        let Some(start) = cells.iter().position(visible_cell) else {
+            continue;
+        };
+        let Some(end) = cells.iter().rposition(visible_cell) else {
+            continue;
+        };
+        let visible = &cells[start..=end];
+        let text: String = visible.iter().map(|cell| cell.text.as_str()).collect();
+        write!(
+            out,
+            "\n    <text x=\"{}\" y=\"{}\" fill=\"{}\" textLength=\"{}\" \
+             lengthAdjust=\"spacingAndGlyphs\"{}>{}</text>",
+            (column + start) * ADVANCE,
+            y + BASELINE,
+            hex(style.fg),
+            visible.len() * ADVANCE,
+            emphasis_attributes(style),
+            escape(&text)
+        )?;
+    }
+    Ok(())
+}
+
+/// Render a parsed capture as a standalone, self-describing SVG document.
+///
+/// `title` and `description` become the `<title>`/`<desc>` the `aria-labelledby`
+/// points at, so the artwork carries its own accessible name in the README.
+pub(crate) fn render(grid: &Grid, title: &str, description: &str) -> Result<String, String> {
+    if grid.cols == 0 || grid.rows.is_empty() {
+        return Err("the capture is empty — nothing to render".to_owned());
+    }
+    let fill = dominant_background(grid);
+    let grid_w = grid.cols * ADVANCE;
+    let grid_h = grid.rows.len() * LINE_HEIGHT;
+    let window_w = grid_w + PADDING * 2;
+    let window_h = grid_h + PADDING * 2 + TITLE_BAR;
+    let width = window_w + MARGIN * 2;
+    let height = window_h + MARGIN * 2;
+
+    let mut out = String::new();
+    let write = |out: &mut String, args: std::fmt::Arguments| -> Result<(), String> {
+        out.write_fmt(args).map_err(|e| e.to_string())
+    };
+
+    write(
+        &mut out,
+        format_args!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" \
+         viewBox=\"0 0 {width} {height}\" role=\"img\" aria-labelledby=\"title description\">\n  \
+         <title id=\"title\">{}</title>\n  <desc id=\"description\">{}</desc>\n  <defs>\n    \
+         <filter id=\"shadow\" x=\"-10%\" y=\"-10%\" width=\"120%\" height=\"130%\">\n      \
+         <feDropShadow dx=\"0\" dy=\"8\" stdDeviation=\"10\" flood-color=\"#01030a\" \
+         flood-opacity=\".5\"/>\n    </filter>\n    <clipPath id=\"grid-clip\">\n      \
+         <rect x=\"0\" y=\"0\" width=\"{grid_w}\" height=\"{grid_h}\"/>\n    </clipPath>\n  \
+         </defs>\n  <rect width=\"{width}\" height=\"{height}\" fill=\"{PAGE}\"/>\n",
+            escape(title),
+            escape(description),
+        ),
+    )?;
+
+    // Window chrome: a rounded shell, a title bar, and the three controls.
+    write(
+        &mut out,
+        format_args!(
+            "  <g filter=\"url(#shadow)\">\n    <rect x=\"{MARGIN}\" y=\"{MARGIN}\" \
+         width=\"{window_w}\" height=\"{window_h}\" rx=\"{RADIUS}\" fill=\"{}\" \
+         stroke=\"{CHROME_EDGE}\"/>\n  </g>\n  <path d=\"M{MARGIN} {} v-{} a{RADIUS} {RADIUS} 0 0 1 \
+         {RADIUS} -{RADIUS} h{} a{RADIUS} {RADIUS} 0 0 1 {RADIUS} {RADIUS} v{} z\" \
+         fill=\"{CHROME_BAR}\"/>\n",
+            hex(fill),
+            MARGIN + TITLE_BAR,
+            TITLE_BAR - RADIUS,
+            window_w - RADIUS * 2,
+            TITLE_BAR - RADIUS,
+        ),
+    )?;
+    for (index, colour) in ["#ff5f57", "#febc2e", "#28c840"].iter().enumerate() {
+        write(
+            &mut out,
+            format_args!(
+                "  <circle cx=\"{}\" cy=\"{}\" r=\"6\" fill=\"{colour}\"/>\n",
+                MARGIN + 20 + index * 20,
+                MARGIN + TITLE_BAR / 2,
+            ),
+        )?;
+    }
+
+    // The captured grid itself.
+    write(
+        &mut out,
+        format_args!(
+            "  <g clip-path=\"url(#grid-clip)\" transform=\"translate({} {})\" \
+         font-family=\"ui-monospace, SFMono-Regular, Menlo, Consolas, &quot;DejaVu Sans Mono&quot;, \
+         monospace\" font-size=\"{FONT_SIZE}\" xml:space=\"preserve\">",
+            MARGIN + PADDING,
+            MARGIN + TITLE_BAR + PADDING,
+        ),
+    )?;
+    for (index, row) in grid.rows.iter().enumerate() {
+        let y = index * LINE_HEIGHT;
+        write_backgrounds(&mut out, row, y, fill).map_err(|e| e.to_string())?;
+        write_text(&mut out, row, y).map_err(|e| e.to_string())?;
+    }
+    out.push_str("\n  </g>\n</svg>\n");
+    Ok(out)
+}
+
+/// Parse a capture and render it, in one step.
+pub(crate) fn from_capture(
+    capture: &str,
+    title: &str,
+    description: &str,
+) -> Result<String, String> {
+    render(&ansi::parse(capture)?, title, description)
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A two-row capture in the exact shape `karet --capture` emits.
+    const CAPTURE: &str = concat!(
+        "\x1b[0;38;2;192;202;245;48;2;26;27;38mfn main\x1b[0m\n",
+        "\x1b[0;1;38;2;158;206;106;48;2;26;27;38m  ok   \x1b[0m\n",
+    );
+
+    fn hero() -> Result<String, String> {
+        from_capture(CAPTURE, "karet", "A karet window.")
+    }
+
     #[test]
-    fn hero_is_accessible_standalone_svg() {
-        assert!(HERO.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""));
-        assert!(HERO.contains("<title id=\"title\">"));
-        assert!(HERO.contains("<desc id=\"description\">"));
-        assert!(HERO.ends_with("</svg>\n"));
-        assert!(!HERO.contains("timestamp"));
+    fn renders_a_standalone_accessible_document() -> Result<(), String> {
+        let svg = hero()?;
+        assert!(svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""));
+        assert!(svg.contains("role=\"img\""));
+        assert!(svg.contains("aria-labelledby=\"title description\""));
+        assert!(svg.contains("<title id=\"title\">karet</title>"));
+        assert!(svg.contains("<desc id=\"description\">A karet window.</desc>"));
+        assert!(svg.ends_with("</svg>\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn the_capture_drives_the_geometry() -> Result<(), String> {
+        let svg = hero()?;
+        // 7 columns x 2 rows, plus padding, title bar, and margins.
+        let width = 7 * ADVANCE + PADDING * 2 + MARGIN * 2;
+        let height = 2 * LINE_HEIGHT + PADDING * 2 + TITLE_BAR + MARGIN * 2;
+        assert!(
+            svg.contains(&format!("width=\"{width}\" height=\"{height}\"")),
+            "geometry follows the grid: {svg}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_grid_clip_is_in_the_transformed_coordinate_system() -> Result<(), String> {
+        // The clip lives on the same element as the `translate`, so its rectangle is
+        // in grid-local space. Giving it page coordinates double-offsets the clip and
+        // silently shears the top and left off the artwork.
+        let svg = hero()?;
+        assert!(
+            svg.contains(&format!(
+                "<rect x=\"0\" y=\"0\" width=\"{}\" height=\"{}\"/>",
+                7 * ADVANCE,
+                2 * LINE_HEIGHT
+            )),
+            "got {svg}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn captured_colors_reach_the_output() -> Result<(), String> {
+        let svg = hero()?;
+        // The Tokyo-Night foreground and the green of the second row.
+        assert!(svg.contains("fill=\"#c0caf5\""));
+        assert!(svg.contains("fill=\"#9ece6a\""));
+        // The shared background became the window fill rather than per-cell rects:
+        // it appears once, on the window shell, and never as a background run.
+        assert_eq!(svg.matches("fill=\"#1a1b26\"").count(), 1);
+        assert!(!svg.contains(&format!("height=\"{LINE_HEIGHT}\" fill=\"#1a1b26\"")));
+        Ok(())
+    }
+
+    #[test]
+    fn text_runs_pin_their_columns() -> Result<(), String> {
+        let svg = hero()?;
+        // "fn main" is 7 columns wide and starts at column 0.
+        assert!(
+            svg.contains(&format!(
+                "<text x=\"0\" y=\"{BASELINE}\" fill=\"#c0caf5\" textLength=\"{}\" \
+                 lengthAdjust=\"spacingAndGlyphs\">fn main</text>",
+                7 * ADVANCE
+            )),
+            "got {svg}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn blanks_are_trimmed_but_columns_are_kept() -> Result<(), String> {
+        let svg = hero()?;
+        // Row two is "  ok   ": the run starts at column 2 and is 2 columns wide.
+        assert!(
+            svg.contains(&format!(
+                "<text x=\"{}\" y=\"{}\" fill=\"#9ece6a\" textLength=\"{}\"",
+                2 * ADVANCE,
+                LINE_HEIGHT + BASELINE,
+                2 * ADVANCE
+            )),
+            "got {svg}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn emphasis_becomes_svg_attributes() -> Result<(), String> {
+        assert!(hero()?.contains("font-weight=\"700\""));
+        let styled = from_capture("\x1b[0;3;4;9;38;2;1;2;3;48;2;0;0;0mx\x1b[0m\n", "t", "d")?;
+        assert!(styled.contains("font-style=\"italic\""));
+        assert!(styled.contains("text-decoration=\"underline line-through\""));
+        Ok(())
+    }
+
+    #[test]
+    fn a_differing_background_becomes_a_rect() -> Result<(), String> {
+        // Two rows, one with a distinct background: the minority colour is painted.
+        let svg = from_capture(
+            "\x1b[0;38;2;1;1;1;48;2;0;0;0maaaa\x1b[0m\n\
+             \x1b[0;38;2;1;1;1;48;2;0;0;0maa\x1b[0;38;2;1;1;1;48;2;9;9;9mbb\x1b[0m\n",
+            "t",
+            "d",
+        )?;
+        assert!(
+            svg.contains(&format!(
+                "<rect x=\"{}\" y=\"{LINE_HEIGHT}\" width=\"{}\" height=\"{LINE_HEIGHT}\" \
+                 fill=\"#090909\"/>",
+                2 * ADVANCE,
+                2 * ADVANCE
+            )),
+            "got {svg}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn xml_special_characters_are_escaped() -> Result<(), String> {
+        let svg = from_capture(
+            "\x1b[0;38;2;1;1;1;48;2;0;0;0m&<>\x1b[0m\n",
+            "a & b",
+            "x < y",
+        )?;
+        assert!(svg.contains("&amp;&lt;&gt;</text>"));
+        assert!(svg.contains("<title id=\"title\">a &amp; b</title>"));
+        assert!(svg.contains("<desc id=\"description\">x &lt; y</desc>"));
+        Ok(())
+    }
+
+    #[test]
+    fn rendering_is_deterministic() -> Result<(), String> {
+        assert_eq!(hero()?, hero()?);
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_capture_is_an_error() {
+        // Better a loud failure than a blank hero silently overwriting the asset.
+        assert!(from_capture("", "t", "d").is_err());
+    }
+
+    #[test]
+    fn dominant_background_breaks_ties_deterministically() -> Result<(), String> {
+        let grid =
+            ansi::parse("\x1b[0;38;2;1;1;1;48;2;9;9;9ma\x1b[0;38;2;1;1;1;48;2;0;0;0mb\x1b[0m\n")?;
+        // One cell each: the smaller colour wins, on every run.
+        assert_eq!(dominant_background(&grid), (0, 0, 0));
+        Ok(())
     }
 }

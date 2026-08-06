@@ -4,6 +4,7 @@ mod readme_svg;
 
 use std::env;
 use std::io;
+use std::io::Read;
 use std::process::Command;
 use std::process::ExitCode;
 
@@ -40,7 +41,38 @@ struct Offender {
     code: usize,
 }
 
+/// Accessible name for the README hero, describing what the capture shows.
+const HERO_TITLE: &str = "karet, a terminal code editor";
+/// Accessible description for the README hero.
+const HERO_DESCRIPTION: &str = "A karet window: the file explorer on the left, a Rust source \
+                                file with syntax highlighting in the editor, and the status bar \
+                                along the bottom.";
+
+/// Convert a `karet --capture` grid on stdin into `assets/karet.svg`.
+///
+/// Reading the capture from a pipe (rather than a path) keeps the whole pipeline in
+/// one command and leaves no intermediate file to go stale — see `scripts/gen-svg.sh`.
 fn generate_readme_svg() -> ExitCode {
+    let mut capture = String::new();
+    if let Err(error) = io::stdin().read_to_string(&mut capture) {
+        eprintln!("error: failed to read the capture from stdin: {error}");
+        return ExitCode::from(2);
+    }
+    if capture.trim().is_empty() {
+        eprintln!(
+            "error: no capture on stdin\n       \
+             usage: karet --capture … | cargo run --package xtask -- readme-svg"
+        );
+        return ExitCode::from(2);
+    }
+    let svg = match readme_svg::from_capture(&capture, HERO_TITLE, HERO_DESCRIPTION) {
+        Ok(svg) => svg,
+        Err(error) => {
+            eprintln!("error: failed to render the capture: {error}");
+            return ExitCode::from(2);
+        },
+    };
+
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
@@ -51,11 +83,11 @@ fn generate_readme_svg() -> ExitCode {
         eprintln!("error: failed to create {}: {error}", parent.display());
         return ExitCode::from(2);
     }
-    if let Err(error) = std::fs::write(&path, readme_svg::HERO) {
+    if let Err(error) = std::fs::write(&path, &svg) {
         eprintln!("error: failed to write {}: {error}", path.display());
         return ExitCode::from(2);
     }
-    println!("Wrote {}", path.display());
+    println!("Wrote {} ({} bytes)", path.display(), svg.len());
     ExitCode::SUCCESS
 }
 
