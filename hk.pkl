@@ -36,25 +36,12 @@ hooks {
             }
         }
     }
-    // pre-push is the final gate: check-only formatting/lint plus the full test
-    // suite and a coverage report before code reaches the remote.
+    // pre-push and CI deliberately share one mise task so their commands cannot
+    // drift. Keep the individual commands in mise.toml, not duplicated here.
     ["pre-push"] {
         steps {
-            ["cargo-fmt-check"] {
-                glob = "**/*.rs"
-                // Delegates to mise so the pinned nightly (rust-nightly.txt) stays in
-                // one place; rustfmt.toml enables unstable import options.
-                check = "mise run format-check"
-            }
-            ["cargo-clippy-check"] {
-                glob = "**/*.rs"
-                check = "cargo clippy --all-targets -- -D warnings"
-            }
-            ["cargo-test"] {
-                check = "cargo test"
-            }
-            ["coverage"] {
-                check = "mise run coverage"
+            ["workspace-verify"] {
+                check = "mise run verify"
             }
         }
     }
