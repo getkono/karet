@@ -66,6 +66,22 @@ pub fn set_user_blame(enabled: bool) -> Result<PathBuf, ConfigWriteError> {
     Ok(path)
 }
 
+/// Add `word` to the user-layer spell-check dictionary while preserving JSONC
+/// comments and unrelated settings. A missing user settings file is created.
+///
+/// # Errors
+/// Returns [`ConfigWriteError`] when the user path is unavailable, the existing file
+/// has an incompatible JSON shape, or the atomic write fails.
+pub fn add_user_dictionary_word(word: &str) -> Result<PathBuf, ConfigWriteError> {
+    if word.trim().is_empty() {
+        return Err(ConfigWriteError::Parse(
+            "dictionary word cannot be empty".to_string(),
+        ));
+    }
+    let path = load::user_config_path().ok_or(ConfigWriteError::NoUserDirectory)?;
+    add_dictionary_word_at(&path, word)
+}
+
 /// Add `word` to the project-layer spell-check dictionary while preserving JSONC
 /// comments and unrelated settings.
 ///
@@ -91,9 +107,23 @@ pub fn add_project_dictionary_word(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => "{}\n".to_string(),
         Err(error) => return Err(ConfigWriteError::Io(error.to_string())),
     };
-    let updated = update_dictionary_jsonc(&current, word)?;
-    atomic_write(&path, updated.as_bytes())?;
+    write_dictionary_word(&path, &current, word)?;
     Ok(path)
+}
+
+fn add_dictionary_word_at(path: &Path, word: &str) -> Result<PathBuf, ConfigWriteError> {
+    let current = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "{}\n".to_string(),
+        Err(error) => return Err(ConfigWriteError::Io(error.to_string())),
+    };
+    write_dictionary_word(path, &current, word)?;
+    Ok(path.to_path_buf())
+}
+
+fn write_dictionary_word(path: &Path, current: &str, word: &str) -> Result<(), ConfigWriteError> {
+    let updated = update_dictionary_jsonc(current, word)?;
+    atomic_write(path, updated.as_bytes())
 }
 
 fn update_blame_jsonc(text: &str, enabled: bool) -> Result<String, ConfigWriteError> {
@@ -245,6 +275,35 @@ mod tests {
         assert_eq!(updated.matches("\"Karet\"").count(), 1);
         assert!(!updated.contains("\"karet\""));
         Ok(())
+    }
+
+    #[test]
+    fn user_dictionary_update_creates_a_layer_and_preserves_jsonc()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("karet/setting.jsonc");
+        std::fs::create_dir_all(path.parent().unwrap_or(dir.path()))?;
+        std::fs::write(
+            &path,
+            "{\n  // personal words\n  \"editor\": { \"tabSize\": 2 }\n}\n",
+        )?;
+
+        let written = add_dictionary_word_at(&path, "Karet")?;
+        let text = std::fs::read_to_string(&path)?;
+
+        assert_eq!(written, path);
+        assert!(text.contains("// personal words"));
+        assert!(text.contains("\"tabSize\": 2"));
+        assert!(text.contains("\"Karet\""));
+        Ok(())
+    }
+
+    #[test]
+    fn public_user_dictionary_writer_rejects_empty_words_before_path_discovery() {
+        assert!(matches!(
+            add_user_dictionary_word("  "),
+            Err(ConfigWriteError::Parse(message)) if message == "dictionary word cannot be empty"
+        ));
     }
 
     /// Guards the checked-in schema against drift: regenerate with
