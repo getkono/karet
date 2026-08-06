@@ -11,6 +11,7 @@ mod explorer;
 pub(crate) mod github;
 mod graphics;
 mod history;
+mod inline_macros;
 mod input;
 mod language_servers;
 mod lifecycle;
@@ -1042,6 +1043,8 @@ pub struct App {
     pub(crate) completion: Option<crate::completion::CompletionUi>,
     /// The reusable fuzzy matcher backing the completion popup's filtering.
     pub(crate) completion_matcher: karet_fuzzy::Matcher,
+    /// Parser-backed resolver for the seeded inline-macro catalog.
+    inline_macro_engine: karet_syntax::InlineMacroEngine,
     /// In-flight commit-detail requests, mapping request id → where its result goes
     /// (a new standalone commit tab, or the graph browser's detail pane).
     pending_commit_detail: HashMap<RequestId, CommitDest>,

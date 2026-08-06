@@ -501,6 +501,36 @@ fn point_at_resolves_rows_and_columns() {
     );
 }
 
+#[test]
+fn named_ancestors_are_neutral_and_innermost_first() -> Result<(), TsError> {
+    let lang = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+    let source = "fn main() { let value = 1; }";
+    let mut pool = ParserPool::new();
+    let tree = SyntaxTree::parse(&mut pool, lang, source)?;
+    let byte = source.find("value").ok_or(TsError::ParseFailed)?;
+    let nodes = tree.named_ancestors_at(BytePos(byte));
+
+    assert_eq!(
+        nodes.first().map(|node| node.kind.as_str()),
+        Some("identifier")
+    );
+    assert!(nodes.iter().any(|node| node.kind == "block"));
+    assert_eq!(
+        nodes.last().map(|node| node.kind.as_str()),
+        Some("source_file")
+    );
+    assert!(nodes.windows(2).all(|pair| {
+        pair[1].span.start.0 <= pair[0].span.start.0 && pair[0].span.end.0 <= pair[1].span.end.0
+    }));
+    assert_eq!(
+        tree.named_ancestors_at(BytePos(source.len()))
+            .last()
+            .map(|node| node.kind.as_str()),
+        Some("source_file")
+    );
+    Ok(())
+}
+
 #[cfg(feature = "lang-rust")]
 #[test]
 fn detects_rust_by_extension_and_name() {

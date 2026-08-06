@@ -23,6 +23,7 @@ use karet_treesitter::SyntaxTree;
 
 mod blocks;
 mod highlight;
+mod inline_macro;
 mod map;
 mod outline;
 mod semantic;
@@ -32,6 +33,9 @@ pub use blocks::SemanticBlocker;
 pub use blocks::SemanticBlocks;
 pub use highlight::Highlighter;
 pub use highlight::LayeredHighlighter;
+pub use inline_macro::InlineMacroEngine;
+pub use inline_macro::InlineMacroExpansion;
+pub use inline_macro::InlineMacroTrigger;
 pub use outline::OutlineExtractor;
 pub use semantic::SemanticCommentConfig;
 pub use semantic::mark_semantic_comments;

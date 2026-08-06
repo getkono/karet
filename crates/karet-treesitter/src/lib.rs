@@ -177,6 +177,35 @@ impl SyntaxTree {
         }
     }
 
+    /// The named node at `byte` followed by its named ancestors, innermost first.
+    ///
+    /// The returned descriptors contain only stable, neutral data; no tree-sitter
+    /// node handles escape this crate. A point at end-of-file resolves against the
+    /// root/last node so editor features can inspect an insertion caret there.
+    #[must_use]
+    pub fn named_ancestors_at(&self, byte: BytePos) -> Vec<SyntaxNode> {
+        let root = self.tree.root_node();
+        let point = byte.0.min(root.end_byte());
+        let mut node = root.descendant_for_byte_range(point, point).unwrap_or(root);
+        let mut nodes = Vec::new();
+        loop {
+            if node.is_named() {
+                nodes.push(SyntaxNode {
+                    kind: node.kind().to_owned(),
+                    span: Span {
+                        start: BytePos(node.start_byte()),
+                        end: BytePos(node.end_byte()),
+                    },
+                });
+            }
+            let Some(parent) = node.parent() else {
+                break;
+            };
+            node = parent;
+        }
+        nodes
+    }
+
     /// The inclusive line ranges (0-based rows) covered by syntax errors: the
     /// outermost `ERROR` nodes plus zero-width *missing* nodes the parser
     /// inserted to recover (a missing `;` is as much an error as a stray one).
@@ -448,6 +477,15 @@ impl SyntaxTree {
         }
         out
     }
+}
+
+/// A neutral descriptor for one named syntax node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyntaxNode {
+    /// Grammar-defined node kind (for example `function_item` or `paragraph`).
+    pub kind: String,
+    /// Byte range occupied by the node in the source document.
+    pub span: Span,
 }
 
 /// A named syntax node that spans more than one line — the raw input to fold-region

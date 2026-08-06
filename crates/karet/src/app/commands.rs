@@ -111,11 +111,13 @@ impl App {
             Command::OpenDiffFile => self.open_diff_file(),
             Command::TriggerCompletion => self.trigger_completion(true),
             Command::InsertChar(c) => {
-                let s = c.to_string();
-                self.submit_edit_with_cause(EditCause::Type, move |caret, sel, _b, base| {
-                    Some(editing::insert(caret, sel, base, &s))
-                });
-                self.maybe_auto_complete(c);
+                if !self.try_inline_macro(karet_syntax::InlineMacroTrigger::Character(c)) {
+                    let s = c.to_string();
+                    self.submit_edit_with_cause(EditCause::Type, move |caret, sel, _b, base| {
+                        Some(editing::insert(caret, sel, base, &s))
+                    });
+                    self.maybe_auto_complete(c);
+                }
             },
             Command::InsertNewline => {
                 self.submit_edit_with_cause(EditCause::Newline, |caret, sel, buf, base| {
@@ -129,10 +131,12 @@ impl App {
                 self.submit_edit_with_cause(EditCause::Delete, editing::delete_forward);
             },
             Command::Indent => {
-                let indentation = self.active_indentation();
-                self.submit_edit(|caret, sel, _b, base| {
-                    editing::indent(caret, sel, base, &indentation)
-                });
+                if !self.try_inline_macro(karet_syntax::InlineMacroTrigger::Tab) {
+                    let indentation = self.active_indentation();
+                    self.submit_edit(|caret, sel, _b, base| {
+                        editing::indent(caret, sel, base, &indentation)
+                    });
+                }
             },
             Command::Dedent => {
                 let indentation = self.active_indentation();
