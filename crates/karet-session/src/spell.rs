@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::Sender;
@@ -23,6 +24,8 @@ use tokio::sync::mpsc as tokio_mpsc;
 use crate::api::DocumentId;
 use crate::api::SpellingLanguage;
 use crate::config::schema::Spellcheck;
+
+const SOFTWARE_TERMS: &str = include_str!("../assets/software-terms.txt");
 
 /// One immutable document version queued for checking.
 pub(crate) struct SpellJob {
@@ -269,8 +272,10 @@ fn check_text(job: &SpellJob, dictionary: &Dictionary) -> Vec<Diagnostic> {
             vec![(start, end, word)]
         };
         for (start, end, word) in candidates {
+            let normalized = word.to_lowercase();
             if (scope != SpellScope::Identifier && should_skip_context(&job.text, start, end))
-                || custom.contains(&word.to_lowercase())
+                || custom.contains(&normalized)
+                || software_terms().contains(normalized.as_str())
                 || dictionary.check(word)
                 || (scope != SpellScope::Identifier && should_skip_proper_name(word))
             {
@@ -288,6 +293,17 @@ fn check_text(job: &SpellJob, dictionary: &Dictionary) -> Vec<Diagnostic> {
         }
     }
     diagnostics
+}
+
+fn software_terms() -> &'static HashSet<&'static str> {
+    static TERMS: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    TERMS.get_or_init(|| {
+        SOFTWARE_TERMS
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect()
+    })
 }
 
 fn push_diagnostic(
@@ -588,6 +604,18 @@ mod tests {
         let mut request = job(text, "Rust");
         request.settings.words.push("commment".to_owned());
         assert!(check_text(&request, &dictionary).is_empty());
+    }
+
+    #[test]
+    fn bundled_software_terms_apply_independently_of_language_dictionary() {
+        let Some(dictionary) = dictionary() else {
+            return;
+        };
+        let diagnostics = check_text(&job("async breakpoint commment\n", "Markdown"), &dictionary);
+
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.contains("commment"));
+        assert!(software_terms().contains("rust"));
     }
 
     #[test]
