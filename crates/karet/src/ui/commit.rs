@@ -459,7 +459,7 @@ pub(super) fn file_card(theme: &Theme, file: &render::FileView, width: u16) -> V
         return out;
     }
     // Body: each diff line behind a left rail.
-    out.extend(file_card_body(theme, file, 0, usize::MAX));
+    out.extend(file_card_body(theme, file, 0, usize::MAX, width));
     out.push(file_card_footer(theme, width));
     out
 }
@@ -529,14 +529,19 @@ pub(super) fn file_card_body(
     file: &render::FileView,
     start: usize,
     count: usize,
+    width: u16,
 ) -> Vec<Line<'static>> {
     let border = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
     let mut out = Vec::new();
     for line in render::unified_lines_window(file, theme, start, count) {
+        let style = line.style;
         let mut spans = vec![Span::styled("\u{2502} ", border)];
         spans.extend(line.spans);
-        out.push(Line::from(spans));
+        let mut line = Line::from(spans);
+        line.style = style;
+        out.push(line);
     }
+    render::pad_diff_lines(&mut out, width);
     out
 }
 

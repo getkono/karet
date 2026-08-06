@@ -33,6 +33,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use unicode_width::UnicodeWidthStr;
 
 /// Which Source-Control group a changed file belongs to, mirroring VS Code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -426,6 +427,7 @@ fn diff_line(
         LineKind::Context => ' ',
     };
     let tokens = file.tokens_for(dl.kind, dl.old_lineno, dl.new_lineno);
+    let base = base_bg(dl.kind, theme);
     let mut spans = vec![
         gutter_span(dl.old_lineno, theme),
         gutter_span(dl.new_lineno, theme),
@@ -434,14 +436,8 @@ fn diff_line(
             color(marker_glyph_color(dl.kind, theme)),
         ),
     ];
-    spans.extend(merge_line_spans(
-        &dl.content,
-        tokens,
-        theme,
-        base_bg(dl.kind, theme),
-        segments,
-    ));
-    Line::from(spans)
+    spans.extend(merge_line_spans(&dl.content, tokens, theme, base, segments));
+    diff_background_line(spans, base)
 }
 
 fn cell_line(
@@ -458,15 +454,48 @@ fn cell_line(
         _ => (Some(cell.lineno), None),
     };
     let tokens = file.tokens_for(cell.kind, old_lineno, new_lineno);
+    let base = base_bg(cell.kind, theme);
     let mut spans = vec![gutter_span(Some(cell.lineno), theme)];
     spans.extend(merge_line_spans(
         &cell.content,
         tokens,
         theme,
-        base_bg(cell.kind, theme),
+        base,
         segments,
     ));
-    Line::from(spans)
+    diff_background_line(spans, base)
+}
+
+/// Put the add/remove color on the line itself so render boundaries can extend it
+/// through their viewport. More specific span backgrounds still win.
+fn diff_background_line(spans: Vec<Span<'static>>, base: Option<Rgba>) -> Line<'static> {
+    let mut line = Line::from(spans);
+    if let Some(base) = base {
+        line.style = Style::default().bg(base.to_ratatui());
+    }
+    line
+}
+
+/// Pad changed rows through `width` terminal cells with their add/remove background.
+/// Context/header rows are left untouched.
+pub(crate) fn pad_diff_lines(lines: &mut [Line<'static>], width: u16) {
+    let width = usize::from(width);
+    for line in lines {
+        let Some(background) = line.style.bg else {
+            continue;
+        };
+        let used = line
+            .spans
+            .iter()
+            .map(|span| span.content.width())
+            .sum::<usize>();
+        if used < width {
+            line.spans.push(Span::styled(
+                " ".repeat(width - used),
+                Style::default().bg(background),
+            ));
+        }
+    }
 }
 
 /// Merge syntax foreground + diff background + intra-line emphasis for one line.

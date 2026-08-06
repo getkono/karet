@@ -379,7 +379,8 @@ fn file_cards_are_boxed_and_width_sized() {
         false,
     )];
     let width = 60u16;
-    let lines = changed_files_lines(&Theme::dark(), &files, width);
+    let theme = Theme::dark();
+    let lines = changed_files_lines(&theme, &files, width);
     let text: Vec<String> = lines
         .iter()
         .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
@@ -407,6 +408,90 @@ fn file_cards_are_boxed_and_width_sized() {
         text.iter().any(|t| t.starts_with("\u{2502} ")),
         "diff lines are railed"
     );
+    let changed = lines.iter().find(|line| line.style.bg.is_some());
+    assert!(changed.is_some(), "the card contains a changed diff line");
+    if let Some(changed) = changed {
+        let changed_text: String = changed
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(
+            unicode_width::UnicodeWidthStr::width(changed_text.as_str()),
+            usize::from(width),
+            "the add/remove background reaches the card edge"
+        );
+        assert_eq!(
+            changed.spans.last().and_then(|span| span.style.bg),
+            changed.style.bg
+        );
+    }
+}
+
+#[test]
+fn pane_diff_backgrounds_fill_unified_and_split_widths() {
+    use karet_vcs::FileChange;
+    use karet_vcs::StatusKind;
+    use ratatui::buffer::Buffer;
+    use ratatui::widgets::Widget;
+
+    let theme = Theme::dark();
+    let file = render::FileView::new(
+        FileChange {
+            path: PathBuf::from("notes.txt"),
+            old_path: None,
+            status: StatusKind::Modified,
+            is_binary: false,
+            old: "old\n".to_string(),
+            new: "new\n".to_string(),
+        },
+        render::Section::Working,
+        false,
+    );
+    let mut lines = render::unified_lines(&file, &theme);
+    render::pad_diff_lines(&mut lines, 40);
+    let removed = lines
+        .iter()
+        .position(|line| line.style.bg == Some(theme.role(ThemeRole::DiffRemoved).to_ratatui()))
+        .unwrap_or_default();
+    let added = lines
+        .iter()
+        .position(|line| line.style.bg == Some(theme.role(ThemeRole::DiffAdded).to_ratatui()))
+        .unwrap_or_default();
+    assert_ne!(removed, added);
+
+    let area = Rect::new(0, 0, 40, u16::try_from(lines.len()).unwrap_or(u16::MAX));
+    let mut buffer = Buffer::empty(area);
+    Paragraph::new(lines).render(area, &mut buffer);
+    assert_eq!(
+        buffer[(39, u16::try_from(removed).unwrap_or_default())].bg,
+        theme.role(ThemeRole::DiffRemoved).to_ratatui()
+    );
+    assert_eq!(
+        buffer[(39, u16::try_from(added).unwrap_or_default())].bg,
+        theme.role(ThemeRole::DiffAdded).to_ratatui()
+    );
+
+    let (mut left, mut right) = render::side_by_side_lines(&file, &theme);
+    render::pad_diff_lines(&mut left, 20);
+    render::pad_diff_lines(&mut right, 20);
+    let changed: Vec<_> = [left, right]
+        .into_iter()
+        .filter_map(|lines| lines.into_iter().find(|line| line.style.bg.is_some()))
+        .collect();
+    assert_eq!(changed.len(), 2);
+    for changed in changed {
+        let width = changed
+            .spans
+            .iter()
+            .map(|span| unicode_width::UnicodeWidthStr::width(span.content.as_ref()))
+            .sum::<usize>();
+        assert_eq!(width, 20);
+        assert_eq!(
+            changed.spans.last().and_then(|span| span.style.bg),
+            changed.style.bg
+        );
+    }
 }
 
 #[test]

@@ -476,11 +476,12 @@ pub(super) fn draw_diff(
 ) {
     match view {
         ViewMode::Unified => {
-            let lines = render::unified_lines(file, theme);
+            let mut lines = render::unified_lines(file, theme);
+            render::pad_diff_lines(&mut lines, area.width);
             draw_scrollable_lines(f, theme, area, lines, scroll, column);
         },
         ViewMode::SideBySide => {
-            let (left, right) = render::side_by_side_lines(file, theme);
+            let (mut left, mut right) = render::side_by_side_lines(file, theme);
             let height = left.len().max(right.len());
             let max = u16::try_from(height)
                 .unwrap_or(u16::MAX)
@@ -498,6 +499,8 @@ pub(super) fn draw_diff(
             let pane_width = panes[0].width.min(panes[2].width);
             let max_column = content_width.saturating_sub(usize::from(pane_width));
             *column = (*column).min(u16::try_from(max_column).unwrap_or(u16::MAX));
+            render::pad_diff_lines(&mut left, panes[0].width);
+            render::pad_diff_lines(&mut right, panes[2].width);
             f.render_widget(Paragraph::new(left).scroll((*scroll, *column)), panes[0]);
             f.render_widget(Block::new().borders(Borders::LEFT), panes[1]);
             f.render_widget(Paragraph::new(right).scroll((*scroll, *column)), panes[2]);

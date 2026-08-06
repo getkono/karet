@@ -205,7 +205,7 @@ fn visible_file_lines(
                 if local == 0 {
                     lines.push(file_card_header(theme, file, width));
                 } else if local <= body_rows {
-                    lines.extend(file_card_body(theme, file, local - 1, 1));
+                    lines.extend(file_card_body(theme, file, local - 1, 1, width));
                 } else {
                     lines.push(file_card_footer(theme, width));
                 }
