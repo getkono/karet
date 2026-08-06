@@ -4,6 +4,8 @@
 //! [`EditorState`] used by code tabs for scroll/cursor. Diff and hex tabs keep
 //! their own scroll inside the kind.
 
+mod view_state;
+
 use std::collections::BTreeSet;
 use std::ops::RangeInclusive;
 use std::path::Path;
@@ -31,6 +33,8 @@ use karet_syntax::Highlights;
 use karet_syntax::SemanticBlocks;
 use karet_text::TextBuffer;
 use ratatui::layout::Rect;
+pub(crate) use view_state::MarkdownPreviewState;
+pub use view_state::ViewMode;
 
 use crate::render::FileView;
 
@@ -88,26 +92,6 @@ pub(crate) enum SearchField {
     Find,
     /// The replacement text.
     Replace,
-}
-
-/// View-local state for a rendered Markdown preview beside a code editor.
-#[derive(Default)]
-pub(crate) struct MarkdownPreviewState {
-    /// The parsed and wrapped render model.
-    pub(crate) wrapped: WrappedDocument,
-    /// The `(document version, wrap width)` represented by [`Self::wrapped`].
-    pub(crate) rendered: Option<(u64, u16)>,
-    /// The first visible wrapped line.
-    pub(crate) scroll: u16,
-}
-
-/// How a diff tab is laid out.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ViewMode {
-    /// One column: removals then additions.
-    Unified,
-    /// Two columns: old on the left, new on the right.
-    SideBySide,
 }
 
 /// A clickable operation in the language-server manager's action strip.
@@ -373,6 +357,8 @@ pub enum TabKind {
         view: ViewMode,
         /// Vertical scroll offset (display rows).
         scroll: u16,
+        /// Horizontal scroll offset (display columns).
+        column: u16,
     },
     /// A read-only stash patch preview.
     StashPreview {
@@ -382,6 +368,8 @@ pub enum TabKind {
         patch: String,
         /// Vertical scroll offset.
         scroll: u16,
+        /// Horizontal scroll offset.
+        column: u16,
     },
     /// A read-only code-visualization graph (dependency or usage), rendered as an
     /// indented tree.
@@ -392,6 +380,8 @@ pub enum TabKind {
         view: karet_core::GraphView,
         /// Vertical scroll offset (display rows).
         scroll: u16,
+        /// Horizontal scroll offset (display columns).
+        column: u16,
     },
     /// A read-only view of the loaded settings and their provenance.
     LoadedConfig {
@@ -399,6 +389,8 @@ pub enum TabKind {
         report: LoadedConfig,
         /// Vertical scroll offset (display rows).
         scroll: u16,
+        /// Horizontal scroll offset (display columns).
+        column: u16,
     },
     /// A read-only, GitHub-parity commit view: the message, author/committer, parents,
     /// signature badge, changed-file list, and per-file semantic diffs.
@@ -411,6 +403,8 @@ pub enum TabKind {
         error: Option<String>,
         /// Vertical scroll offset (reserved so the loading tab stays in the pager layer).
         scroll: u16,
+        /// Horizontal scroll offset for a long error message.
+        column: u16,
     },
     /// A read-only, GitHub-parity commit view: the message, author/committer, parents,
     /// signature badge, changed-file list, and per-file semantic diffs.
@@ -482,6 +476,8 @@ pub enum TabKind {
         compare_base: Option<String>,
         /// The commit-list scroll offset (first visible row).
         list_offset: u16,
+        /// Horizontal offset for long lines in the selected commit detail.
+        detail_column: u16,
     },
 }
 
@@ -732,6 +728,7 @@ impl Tab {
                 title,
                 view,
                 scroll: 0,
+                column: 0,
             },
         )
     }
@@ -741,7 +738,11 @@ impl Tab {
     pub fn loaded_config(report: LoadedConfig) -> Self {
         Self::new(
             "Loaded Settings",
-            TabKind::LoadedConfig { report, scroll: 0 },
+            TabKind::LoadedConfig {
+                report,
+                scroll: 0,
+                column: 0,
+            },
         )
     }
 
@@ -754,6 +755,7 @@ impl Tab {
                 reference,
                 patch,
                 scroll: 0,
+                column: 0,
             },
         )
     }
@@ -788,6 +790,7 @@ impl Tab {
                 loading_since: Instant::now(),
                 error: None,
                 scroll: 0,
+                column: 0,
             },
         )
     }
@@ -830,6 +833,7 @@ impl Tab {
                 verification: None,
                 compare_base: None,
                 list_offset: 0,
+                detail_column: 0,
             },
         )
     }

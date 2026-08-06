@@ -13,10 +13,10 @@ names, an HTML `<script>` as JavaScript, and a Rust doc comment as markdown (who
 source with `set_included_ranges`, so every node already carries document byte offsets and a
 consumer can merge their queries with no coordinate translation.
 
-The grammar registry also exposes semantic-structure queries for code, Markdown, markup,
-shell, and structured-data grammars. Grouped query matches keep a scope, header, and body
-associated so higher-level engines can derive navigation and sticky-scroll models from the
-same retained parse.
+The grammar registry also exposes semantic-structure and outline queries for code,
+Markdown, markup, shell, structured-data, query, and schema grammars. Grouped query
+matches keep declarations, names, scopes, headers, and bodies associated so higher-level
+engines can derive navigation and sticky-scroll models from the same retained parse.
 
 Part of the [karet](https://github.com/getkono/karet) workspace.
 

@@ -1,7 +1,10 @@
 //! Cross-platform development tasks for the karet workspace.
 
+mod readme_svg;
+
 use std::env;
 use std::io;
+use std::io::Read;
 use std::process::Command;
 use std::process::ExitCode;
 
@@ -36,6 +39,56 @@ struct TokeiOutput {
 struct Offender {
     name: String,
     code: usize,
+}
+
+/// Accessible name for the README hero, describing what the capture shows.
+const HERO_TITLE: &str = "karet, a terminal code editor";
+/// Accessible description for the README hero.
+const HERO_DESCRIPTION: &str = "A karet window: the file explorer on the left, a Rust source \
+                                file with syntax highlighting in the editor, and the status bar \
+                                along the bottom.";
+
+/// Convert a `karet --capture` grid on stdin into `assets/karet.svg`.
+///
+/// Reading the capture from a pipe (rather than a path) keeps the whole pipeline in
+/// one command and leaves no intermediate file to go stale — see `scripts/gen-svg.sh`.
+fn generate_readme_svg() -> ExitCode {
+    let mut capture = String::new();
+    if let Err(error) = io::stdin().read_to_string(&mut capture) {
+        eprintln!("error: failed to read the capture from stdin: {error}");
+        return ExitCode::from(2);
+    }
+    if capture.trim().is_empty() {
+        eprintln!(
+            "error: no capture on stdin\n       \
+             usage: karet --capture … | cargo run --package xtask -- readme-svg"
+        );
+        return ExitCode::from(2);
+    }
+    let svg = match readme_svg::from_capture(&capture, HERO_TITLE, HERO_DESCRIPTION) {
+        Ok(svg) => svg,
+        Err(error) => {
+            eprintln!("error: failed to render the capture: {error}");
+            return ExitCode::from(2);
+        },
+    };
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("assets/karet.svg");
+    if let Some(parent) = path.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("error: failed to create {}: {error}", parent.display());
+        return ExitCode::from(2);
+    }
+    if let Err(error) = std::fs::write(&path, &svg) {
+        eprintln!("error: failed to write {}: {error}", path.display());
+        return ExitCode::from(2);
+    }
+    println!("Wrote {} ({} bytes)", path.display(), svg.len());
+    ExitCode::SUCCESS
 }
 
 fn rust_file_offenders(reports: &[RustReport], limit: usize) -> Vec<Offender> {
@@ -104,8 +157,9 @@ fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
     match (args.next().as_deref(), args.next()) {
         (Some(command), None) if command == "file-lines" => check_rust_file_lines(),
+        (Some(command), None) if command == "readme-svg" => generate_readme_svg(),
         _ => {
-            eprintln!("usage: cargo run --package xtask -- file-lines");
+            eprintln!("usage: cargo run --package xtask -- <file-lines|readme-svg>");
             ExitCode::from(2)
         },
     }

@@ -634,6 +634,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn document_symbols_fall_back_to_the_syntax_worker() {
+        use karet_core::StandardToken;
+
+        use crate::api::Event;
+        use crate::session::Session;
+        use crate::session::SessionConfig;
+
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("outline.rs");
+        if std::fs::write(&path, "mod café { pub struct Thé; }\n").is_err() {
+            return;
+        }
+
+        let (session, mut events, mut snaps) = Session::new(SessionConfig::default());
+        let backend = local(session);
+        let open = backend.next_id();
+        assert!(
+            backend
+                .send(
+                    open,
+                    Command::OpenDocument {
+                        path,
+                        language: None,
+                    },
+                )
+                .is_ok()
+        );
+        let doc = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some((id, event)) = events.recv().await {
+                if id == Some(open)
+                    && let Event::Opened { doc, .. } = event
+                {
+                    return Some(doc);
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some(doc) = doc else { return };
+        assert!(
+            await_snapshot(&mut snaps, |snapshot| snapshot
+                .highlights
+                .all()
+                .iter()
+                .any(|span| span.token == StandardToken::Keyword.id()))
+            .await
+        );
+
+        let request = backend.next_id();
+        assert!(
+            backend
+                .send(request, Command::DocumentSymbols { doc })
+                .is_ok()
+        );
+        let symbols = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some((id, event)) = events.recv().await {
+                if id == Some(request)
+                    && let Event::Symbols { symbols, .. } = event
+                {
+                    return symbols;
+                }
+            }
+            Vec::new()
+        })
+        .await
+        .unwrap_or_default();
+        assert_eq!(symbols[0].name, "café");
+        assert_eq!(symbols[0].children[0].name, "Thé");
+    }
+
+    #[tokio::test]
     async fn todo_comments_are_marked_in_a_real_rust_buffer() {
         use karet_core::StandardToken;
 

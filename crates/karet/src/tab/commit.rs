@@ -14,6 +14,8 @@ pub(crate) enum CommitLayoutMode {
 pub(crate) struct CommitViewState {
     /// Vertical offset in the current layout's virtual document.
     pub(crate) scroll: u16,
+    /// Horizontal offset for diff lines wider than the visible pane.
+    pub(crate) column: u16,
     /// The layout used by the previous frame, for resize-aware anchor remapping.
     pub(crate) layout: Option<CommitLayoutMode>,
     /// Per-file card-header offsets from the previous frame.

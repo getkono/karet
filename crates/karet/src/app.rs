@@ -3,6 +3,7 @@
 //! the sidebar, and applies [`Command`]s resolved from key events.
 
 mod backend_events;
+mod capture;
 mod change_view;
 mod commands;
 mod completion;
@@ -11,6 +12,7 @@ mod explorer;
 pub(crate) mod github;
 mod graphics;
 mod history;
+mod inline_macros;
 mod input;
 mod language_servers;
 mod lifecycle;
@@ -21,12 +23,14 @@ mod prepare;
 mod remote_actions;
 mod runtime;
 mod scm;
+mod scroll;
 mod search;
 mod sidebar;
 mod snapshot_events;
 mod spellcheck;
 mod startup;
 mod tabs;
+mod text_field;
 mod util;
 
 #[cfg(test)]
@@ -44,6 +48,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use std::time::Instant;
 
+pub(crate) use capture::capture;
 use color_eyre::eyre::eyre;
 use crossterm::event::DisableBracketedPaste;
 use crossterm::event::DisableFocusChange;
@@ -143,6 +148,7 @@ use karet_widgets::drop_zone;
 pub(crate) use language_servers::LanguageServerBadge;
 use ratatui::layout::Rect;
 pub(crate) use runtime::run;
+pub(crate) use text_field::TextFieldState;
 use tokio::sync::mpsc;
 use util::KeyboardEnhancementGuard;
 use util::canonical;
@@ -343,8 +349,12 @@ pub(crate) enum SearchOption {
 pub(crate) struct SearchPanel {
     /// The query being typed/run.
     pub(crate) query: String,
+    /// Cursor and selection state for the query field.
+    pub(crate) query_edit: TextFieldState,
     /// The replacement text.
     pub(crate) replace: String,
+    /// Cursor and selection state for the replacement field.
+    pub(crate) replace_edit: TextFieldState,
     /// The streamed results (one entry per matching file).
     pub(crate) results: Vec<FileHit>,
     /// The selected result.
@@ -367,7 +377,9 @@ impl Default for SearchPanel {
     fn default() -> Self {
         Self {
             query: String::new(),
+            query_edit: TextFieldState::default(),
             replace: String::new(),
+            replace_edit: TextFieldState::default(),
             results: Vec::new(),
             selected: 0,
             input: false,
@@ -479,14 +491,22 @@ pub(crate) struct MarkdownLinkHit {
 pub(crate) struct CommitInput {
     /// Draft message, retained while the field is blurred and while a commit runs.
     pub(crate) text: String,
-    /// Byte offset of the insertion caret (always a UTF-8 boundary).
-    pub(crate) cursor: usize,
+    /// Cursor and selection state within the draft.
+    pub(crate) edit: TextFieldState,
     /// First wrapped display row visible inside the field.
     pub(crate) scroll: u16,
     /// Whether keyboard input is currently routed into the field.
     pub(crate) focused: bool,
     /// Commit request in flight; prevents accidental duplicate submissions.
     pub(crate) pending: Option<RequestId>,
+}
+
+/// Lightweight field currently owning a mouse selection drag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TextFieldTarget {
+    SearchFind,
+    SearchReplace,
+    Commit,
 }
 
 /// A rendered pane's clickable regions, recorded during the last frame for mouse
@@ -977,6 +997,8 @@ pub struct App {
     pub(crate) scm_changes_rect: Rect,
     /// The editable inner rect of the permanent Source-Control commit field.
     pub(crate) scm_commit_rect: Rect,
+    /// Text field currently being extended by a left-button drag.
+    pub(crate) text_field_drag: Option<TextFieldTarget>,
     /// The total number of changes display rows from the last frame.
     pub(crate) scm_total_rows: usize,
     /// The commit-log region scroll offset (bottom pinned region; wheel + autoload).
@@ -997,10 +1019,10 @@ pub struct App {
     pub(crate) search_results_rect: Rect,
     /// The search-results list scroll offset from the last frame.
     pub(crate) search_offset: usize,
-    /// The Search panel's find-field row y from the last frame (click to edit).
-    pub(crate) search_query_row: u16,
-    /// The Search panel's replace-field row y from the last frame, if shown.
-    pub(crate) search_replace_row: Option<u16>,
+    /// Editable Search query rect from the last frame.
+    pub(crate) search_query_rect: Rect,
+    /// Editable Search replacement rect from the last frame, if shown.
+    pub(crate) search_replace_rect: Option<Rect>,
     /// The Search panel's clickable header buttons `(start, end, row, command)` from
     /// the last frame (option toggles and replace-all).
     pub(crate) search_action_hits: Vec<(u16, u16, u16, Command)>,
@@ -1072,6 +1094,8 @@ pub struct App {
     pub(crate) completion: Option<crate::completion::CompletionUi>,
     /// The reusable fuzzy matcher backing the completion popup's filtering.
     pub(crate) completion_matcher: karet_fuzzy::Matcher,
+    /// Parser-backed resolver for the seeded inline-macro catalog.
+    inline_macro_engine: karet_syntax::InlineMacroEngine,
     /// In-flight commit-detail requests, mapping request id → where its result goes
     /// (a new standalone commit tab, or the graph browser's detail pane).
     pending_commit_detail: HashMap<RequestId, CommitDest>,

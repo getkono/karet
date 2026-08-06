@@ -132,7 +132,7 @@
     }
 
     #[test]
-    fn horizontal_mouse_events_scroll_only_overflow_views() {
+    fn horizontal_mouse_events_scroll_code_and_pager_overflow() {
         let mut app = app();
         app.sidebar_visible = false;
         app.push_tab(text_tab(
@@ -162,6 +162,54 @@
         let _ = screen(&mut app, 24, 8);
         app.handle_mouse(mouse(MouseEventKind::ScrollRight, KeyModifiers::NONE));
         assert_eq!(app.tabs[app.active].editor.scroll_col, 0);
+
+        app.tabs[app.active] = Tab::stash_preview(
+            "stash@{0}".to_string(),
+            "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\nsecond\nthird\nfourth"
+                .to_string(),
+        );
+        let _ = screen(&mut app, 24, 8);
+        app.handle_mouse(mouse(MouseEventKind::ScrollRight, KeyModifiers::NONE));
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::StashPreview { column: 3, .. }
+        ));
+        app.handle_mouse(mouse(MouseEventKind::ScrollUp, KeyModifiers::SHIFT));
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::StashPreview { column: 0, .. }
+        ));
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, KeyModifiers::NONE));
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::StashPreview { scroll: 3, .. }
+        ));
+
+        app.tabs[app.active] = Tab::new(
+            "compare",
+            TabKind::Compare {
+                base_label: "main".to_string(),
+                head_label: "feature".to_string(),
+                merge_base: true,
+                files: Vec::new(),
+                view: CommitViewState::default(),
+            },
+        );
+        app.handle_mouse(mouse(MouseEventKind::ScrollRight, KeyModifiers::NONE));
+        assert!(matches!(
+            &app.tabs[app.active].kind,
+            TabKind::Compare { view, .. } if view.column == 3
+        ));
+
+        app.tabs[app.active] = Tab::commit_graph(None, "commits");
+        app.handle_mouse(mouse(MouseEventKind::ScrollRight, KeyModifiers::NONE));
+        assert!(matches!(
+            app.tabs[app.active].kind,
+            TabKind::CommitGraph {
+                detail_column: 3,
+                ..
+            }
+        ));
     }
 
     /// An app with one Markdown code tab, in a pane wide enough to split.

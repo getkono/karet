@@ -7,6 +7,7 @@ mod responsive;
 pub(super) use responsive::draw_commit;
 pub(super) use responsive::draw_compare;
 
+#[allow(clippy::too_many_arguments)] // render inputs and two-axis view state are independent
 pub(super) fn draw_commit_loading(
     f: &mut Frame,
     theme: &Theme,
@@ -15,6 +16,7 @@ pub(super) fn draw_commit_loading(
     loading_since: Instant,
     error: Option<&str>,
     scroll: &mut u16,
+    column: &mut u16,
 ) {
     *scroll = 0;
     if error.is_none() && !loading_visible(loading_since) {
@@ -52,7 +54,7 @@ pub(super) fn draw_commit_loading(
             ]),
         ]
     };
-    f.render_widget(Paragraph::new(lines), area);
+    draw_scrollable_lines(f, theme, area, lines, scroll, column);
 }
 
 /// Where the signature badge sits within the commit view's line list, so a click can
@@ -619,6 +621,7 @@ pub(super) fn draw_commit_graph(
     file_status: CommitFileStatus<'_>,
     verification: Option<&karet_session::GithubVerification>,
     list_offset: &mut u16,
+    detail_column: &mut u16,
 ) {
     let cols = Layout::horizontal([
         Constraint::Percentage(42),
@@ -667,20 +670,21 @@ pub(super) fn draw_commit_graph(
     let sel_hash = commits.get(selected).map(|c| c.hash.as_str());
     match detail {
         Some(d) if Some(d.hash.as_str()) == sel_hash => {
-            f.render_widget(
-                Paragraph::new(
-                    commit_detail_lines(
-                        theme,
-                        d,
-                        files,
-                        file_status,
-                        verification,
-                        false,
-                        detail_area.width,
-                    )
-                    .0,
-                ),
+            draw_horizontally_scrollable_lines(
+                f,
+                theme,
                 detail_area,
+                commit_detail_lines(
+                    theme,
+                    d,
+                    files,
+                    file_status,
+                    verification,
+                    false,
+                    detail_area.width,
+                )
+                .0,
+                detail_column,
             );
         },
         _ => {
@@ -724,6 +728,7 @@ pub(super) fn draw_graph(
     title: &str,
     view: &karet_core::GraphView,
     scroll: &mut u16,
+    column: &mut u16,
 ) {
     use karet_core::GraphEdgeKind;
 
@@ -774,9 +779,5 @@ pub(super) fn draw_graph(
         }
     }
 
-    let height = area.height as usize;
-    let max_scroll = rows.len().saturating_sub(height);
-    *scroll = (*scroll).min(max_scroll as u16);
-    let para = Paragraph::new(rows).scroll((*scroll, 0));
-    f.render_widget(para, area);
+    draw_scrollable_lines(f, theme, area, rows, scroll, column);
 }
