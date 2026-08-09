@@ -218,9 +218,18 @@ fn title(path: &Path) -> String {
 #[must_use]
 pub fn list_files(root: &Path, limit: usize) -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
+    // Aligned with the workspace-search walk: symlinks are never followed and
+    // the heavyweight dirs are pruned even without an ignore file.
     for entry in ignore::WalkBuilder::new(root)
         .standard_filters(true)
         .require_git(false)
+        .follow_links(false)
+        .filter_entry(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_none_or(|name| !karet_search::IGNORED_DIRS.contains(&name))
+        })
         .build()
         .flatten()
     {

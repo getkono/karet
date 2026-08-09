@@ -18,6 +18,12 @@ use std::path::PathBuf;
 use regex::Regex;
 use regex::RegexBuilder;
 
+/// Directory names every workspace walk prunes outright, on top of the
+/// gitignore/hidden filters (kept in parity with `karet-watch`'s watcher
+/// enumeration): VCS metadata and the classic heavyweight build/dependency
+/// trees, which drown results even when a workspace has no `.gitignore`.
+pub const IGNORED_DIRS: &[&str] = &[".git", "target", "node_modules"];
+
 /// Errors produced by search/replace.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -347,6 +353,15 @@ fn build_walk(root: &Path, query: &SearchQuery) -> Result<ignore::Walk, SearchEr
     // Honor `.gitignore` even outside a git repository (matches editor expectations
     // and keeps non-repo workspaces filtered).
     builder.require_git(false);
+    // Never follow symlinks (a cycle must not stall the walk) and always prune
+    // the heavyweight dirs, even when no ignore file mentions them.
+    builder.follow_links(false);
+    builder.filter_entry(|entry| {
+        entry
+            .file_name()
+            .to_str()
+            .is_none_or(|name| !IGNORED_DIRS.contains(&name))
+    });
     if !query.includes.is_empty() || !query.excludes.is_empty() {
         let mut overrides = ignore::overrides::OverrideBuilder::new(root);
         for inc in &query.includes {
@@ -605,6 +620,19 @@ mod tests {
         write(&dir.path, ".gitignore", b"ignored.txt\n");
         write(&dir.path, "kept.txt", b"needle\n");
         write(&dir.path, "ignored.txt", b"needle\n");
+
+        let hits = collect(&dir.path, &literal("needle"));
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].path.ends_with("kept.txt"));
+    }
+
+    #[test]
+    fn workspace_search_prunes_ignored_dirs_without_a_gitignore() {
+        let dir = temp_dir();
+        write(&dir.path, "kept.txt", b"needle\n");
+        // No .gitignore anywhere: pruning must come from IGNORED_DIRS itself.
+        write(&dir.path, "target/debug/build.log", b"needle\n");
+        write(&dir.path, "node_modules/pkg/index.js", b"needle\n");
 
         let hits = collect(&dir.path, &literal("needle"));
         assert_eq!(hits.len(), 1);

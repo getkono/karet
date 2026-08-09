@@ -55,6 +55,8 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Directory names whose contents are never surfaced or watched (build output / VCS
 /// metadata). Git dirs are watched separately and narrowly — see [`watch_git_dir`].
+/// Kept in parity with `karet_search::IGNORED_DIRS` so watching, searching, and
+/// quick-open agree on what a workspace walk covers.
 const IGNORED_DIRS: &[&str] = &[".git", "target", "node_modules"];
 
 /// What kind of change a [`FsEvent`] reports.
