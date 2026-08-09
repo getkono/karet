@@ -30,7 +30,6 @@ mod snapshot_events;
 mod spellcheck;
 mod startup;
 mod tabs;
-mod text_field;
 mod util;
 
 #[cfg(test)]
@@ -147,10 +146,10 @@ use karet_widgets::PendingEdit;
 use karet_widgets::SplitAxis;
 use karet_widgets::SplitDir;
 use karet_widgets::drop_zone;
+pub(crate) use karet_widgets::textfield::TextFieldState;
 pub(crate) use language_servers::LanguageServerBadge;
 use ratatui::layout::Rect;
 pub(crate) use runtime::run;
-pub(crate) use text_field::TextFieldState;
 use tokio::sync::mpsc;
 use util::KeyboardEnhancementGuard;
 use util::canonical;

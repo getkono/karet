@@ -5,9 +5,9 @@ pub(super) fn in_any(selections: &[Range], l: u32, col: u32) -> bool {
     selections.iter().any(|r| col_in_range(l, col, *r))
 }
 
-/// Whether `c` is part of a word (alphanumeric or underscore), for word motions.
+/// Whether `c` is part of a word, on the shared [`karet_core::word_class`] model.
 pub(super) fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
+    karet_core::is_word_char(c)
 }
 
 /// The `(start, end)` of the word (alphanumeric + `_`) around `pos` on its line, or a

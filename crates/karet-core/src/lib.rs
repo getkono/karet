@@ -39,6 +39,7 @@ mod model;
 mod notify;
 mod provider;
 mod token;
+mod word;
 
 pub use blame::BlameAttribution;
 pub use blame::BlameCommit;
@@ -95,3 +96,6 @@ pub use token::Emphasis;
 pub use token::StandardToken;
 pub use token::ThemeRole;
 pub use token::TokenId;
+pub use word::WordClass;
+pub use word::is_word_char;
+pub use word::word_class;

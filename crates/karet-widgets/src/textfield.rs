@@ -1,37 +1,54 @@
-//! Shared cursor and selection mechanics for the shell's lightweight text fields.
+//! Shared cursor and selection mechanics for lightweight single-line text
+//! fields (search boxes, rename inputs, command palettes).
+//!
+//! One state type gives every field the same motions: byte-accurate cursor and
+//! selection, word jumps on the shared [`karet_core::word_class`] model, and a
+//! horizontal viewport that follows the cursor.
 
 use std::ops::Range;
 
+use karet_core::WordClass;
+use karet_core::word_class;
 use unicode_width::UnicodeWidthChar;
 
-/// Cursor, selection anchor, and horizontal viewport for an app-owned text field.
+/// Cursor, selection anchor, and horizontal viewport for a single-line field.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct TextFieldState {
+pub struct TextFieldState {
     cursor: usize,
     anchor: Option<usize>,
-    pub(crate) scroll: u16,
+    /// The horizontal viewport offset (cells scrolled off the left edge).
+    pub scroll: u16,
 }
 
 impl TextFieldState {
-    pub(crate) fn cursor(&self) -> usize {
+    /// The cursor's byte offset into the field text.
+    #[must_use]
+    pub fn cursor(&self) -> usize {
         self.cursor
     }
 
-    pub(crate) fn selection(&self) -> Option<Range<usize>> {
+    /// The selected byte range, if a non-empty selection is active.
+    #[must_use]
+    pub fn selection(&self) -> Option<Range<usize>> {
         let anchor = self.anchor?;
         (anchor != self.cursor).then(|| anchor.min(self.cursor)..anchor.max(self.cursor))
     }
 
-    pub(crate) fn selected_text<'a>(&self, text: &'a str) -> Option<&'a str> {
+    /// The selected slice of `text`, if a non-empty selection is active.
+    #[must_use]
+    pub fn selected_text<'a>(&self, text: &'a str) -> Option<&'a str> {
         self.selection().map(|range| &text[range])
     }
 
-    pub(crate) fn select_all(&mut self, text: &str) {
+    /// Select the whole of `text`, cursor at the end.
+    pub fn select_all(&mut self, text: &str) {
         self.anchor = (!text.is_empty()).then_some(0);
         self.cursor = text.len();
     }
 
-    pub(crate) fn set_cursor(&mut self, text: &str, cursor: usize, extend: bool) {
+    /// Place the cursor at byte `cursor` (clamped to a char boundary),
+    /// extending the selection when `extend`.
+    pub fn set_cursor(&mut self, text: &str, cursor: usize, extend: bool) {
         let cursor = floor_boundary(text, cursor.min(text.len()));
         if extend {
             self.anchor.get_or_insert(self.cursor);
@@ -41,7 +58,8 @@ impl TextFieldState {
         self.cursor = cursor;
     }
 
-    pub(crate) fn move_left(&mut self, text: &str, extend: bool) {
+    /// Move one character left (collapsing or extending the selection).
+    pub fn move_left(&mut self, text: &str, extend: bool) {
         if !extend && let Some(selection) = self.selection() {
             self.set_cursor(text, selection.start, false);
             return;
@@ -53,7 +71,8 @@ impl TextFieldState {
         self.set_cursor(text, target, extend);
     }
 
-    pub(crate) fn move_right(&mut self, text: &str, extend: bool) {
+    /// Move one character right (collapsing or extending the selection).
+    pub fn move_right(&mut self, text: &str, extend: bool) {
         if !extend && let Some(selection) = self.selection() {
             self.set_cursor(text, selection.end, false);
             return;
@@ -65,15 +84,19 @@ impl TextFieldState {
         self.set_cursor(text, target, extend);
     }
 
-    pub(crate) fn move_word_left(&mut self, text: &str, extend: bool) {
+    /// Jump to the previous word boundary.
+    pub fn move_word_left(&mut self, text: &str, extend: bool) {
         self.set_cursor(text, previous_word_boundary(text, self.cursor), extend);
     }
 
-    pub(crate) fn move_word_right(&mut self, text: &str, extend: bool) {
+    /// Jump to the next word boundary.
+    pub fn move_word_right(&mut self, text: &str, extend: bool) {
         self.set_cursor(text, next_word_boundary(text, self.cursor), extend);
     }
 
-    pub(crate) fn move_start(&mut self, text: &str, document: bool, extend: bool) {
+    /// Move to the start of the field (`document` is accepted for parity with
+    /// multi-line editors; a single-line field treats both the same).
+    pub fn move_start(&mut self, text: &str, document: bool, extend: bool) {
         let target = if document {
             0
         } else {
@@ -82,7 +105,8 @@ impl TextFieldState {
         self.set_cursor(text, target, extend);
     }
 
-    pub(crate) fn move_end(&mut self, text: &str, document: bool, extend: bool) {
+    /// Move to the end of the field (see [`Self::move_start`] on `document`).
+    pub fn move_end(&mut self, text: &str, document: bool, extend: bool) {
         let target = if document {
             text.len()
         } else {
@@ -93,13 +117,15 @@ impl TextFieldState {
         self.set_cursor(text, target, extend);
     }
 
-    pub(crate) fn insert(&mut self, text: &mut String, inserted: &str) {
+    /// Insert `inserted` at the cursor, replacing any selection.
+    pub fn insert(&mut self, text: &mut String, inserted: &str) {
         self.delete_selection(text);
         text.insert_str(self.cursor, inserted);
         self.cursor += inserted.len();
     }
 
-    pub(crate) fn backspace(&mut self, text: &mut String, word: bool) {
+    /// Delete backward: the selection if any, else one char (or one word).
+    pub fn backspace(&mut self, text: &mut String, word: bool) {
         if self.delete_selection(text) {
             return;
         }
@@ -115,7 +141,8 @@ impl TextFieldState {
         self.cursor = start;
     }
 
-    pub(crate) fn delete(&mut self, text: &mut String, word: bool) {
+    /// Delete forward: the selection if any, else one char (or one word).
+    pub fn delete(&mut self, text: &mut String, word: bool) {
         if self.delete_selection(text) {
             return;
         }
@@ -130,7 +157,8 @@ impl TextFieldState {
         text.drain(self.cursor..end);
     }
 
-    pub(crate) fn cut(&mut self, text: &mut String) -> Option<String> {
+    /// Remove and return the selected text, if a selection is active.
+    pub fn cut(&mut self, text: &mut String) -> Option<String> {
         let range = self.selection()?;
         let selected = text[range.clone()].to_string();
         text.drain(range.clone());
@@ -139,7 +167,8 @@ impl TextFieldState {
         Some(selected)
     }
 
-    pub(crate) fn ensure_cursor_visible(&mut self, text: &str, width: u16) {
+    /// Scroll the horizontal viewport so the cursor stays within `width` cells.
+    pub fn ensure_cursor_visible(&mut self, text: &str, width: u16) {
         let cursor_col = text[..self.cursor]
             .chars()
             .map(|character| character.width().unwrap_or(0).max(1))
@@ -169,7 +198,10 @@ impl TextFieldState {
     }
 }
 
-pub(crate) fn byte_at_cell(text: &str, target: usize) -> usize {
+/// The byte offset of the character shown at display cell `target`
+/// (wide-char aware); `text.len()` when past the end.
+#[must_use]
+pub fn byte_at_cell(text: &str, target: usize) -> usize {
     let mut cell = 0usize;
     for (index, character) in text.char_indices() {
         let width = character.width().unwrap_or(0).max(1);
@@ -192,7 +224,7 @@ fn previous_word_boundary(text: &str, cursor: usize) -> usize {
     let mut chars = text[..cursor].char_indices().rev().peekable();
     while chars
         .peek()
-        .is_some_and(|(_, character)| character.is_whitespace())
+        .is_some_and(|(_, character)| word_class(*character) == WordClass::Whitespace)
     {
         chars.next();
     }
@@ -218,7 +250,7 @@ fn next_word_boundary(text: &str, cursor: usize) -> usize {
         .peekable();
     while chars
         .peek()
-        .is_some_and(|(_, character)| character.is_whitespace())
+        .is_some_and(|(_, character)| word_class(*character) == WordClass::Whitespace)
     {
         chars.next();
     }
@@ -235,16 +267,6 @@ fn next_word_boundary(text: &str, cursor: usize) -> usize {
         chars.next();
     }
     end
-}
-
-fn word_class(character: char) -> u8 {
-    if character.is_whitespace() {
-        0
-    } else if character.is_alphanumeric() || character == '_' {
-        1
-    } else {
-        2
-    }
 }
 
 #[cfg(test)]

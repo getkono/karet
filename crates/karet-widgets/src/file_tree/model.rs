@@ -28,18 +28,6 @@ pub(super) fn rename_selection(path: &Path, buffer: &str) -> Option<(usize, usiz
         .or(Some((0, buffer.len())))
 }
 
-pub(super) fn prev_boundary(s: &str, idx: usize) -> usize {
-    let mut i = idx.min(s.len());
-    if i == 0 {
-        return 0;
-    }
-    i -= 1;
-    while !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
 pub(super) fn next_boundary(s: &str, idx: usize) -> usize {
     let mut i = idx.min(s.len());
     if i >= s.len() {
@@ -53,19 +41,10 @@ pub(super) fn next_boundary(s: &str, idx: usize) -> usize {
 }
 
 pub(super) fn edit_selection(edit: &EditState) -> Option<(usize, usize)> {
-    edit.selection
-        .map(|(a, b)| (a.min(b), a.max(b)))
-        .filter(|(a, b)| a < b && *b <= edit.buffer.len())
-}
-
-pub(super) fn replace_edit_selection(edit: &mut EditState, text: &str) -> bool {
-    let Some((start, end)) = edit_selection(edit) else {
-        return false;
-    };
-    edit.buffer.replace_range(start..end, text);
-    edit.cursor = start + text.len();
-    edit.selection = None;
-    true
+    edit.field
+        .selection()
+        .filter(|range| range.end <= edit.buffer.len())
+        .map(|range| (range.start, range.end))
 }
 
 pub(super) fn push_editing_spans(
@@ -95,7 +74,7 @@ pub(super) fn push_editing_spans(
         }
         return;
     }
-    let cursor = edit.cursor.min(edit.buffer.len());
+    let cursor = edit.field.cursor().min(edit.buffer.len());
     if cursor > 0 {
         spans.push(Span::styled(edit.buffer[..cursor].to_string(), normal));
     }

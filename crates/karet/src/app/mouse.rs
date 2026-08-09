@@ -784,7 +784,7 @@ impl App {
                         .saturating_sub(self.search_query_rect.x)
                         .saturating_add(self.search.query_edit.scroll),
                 );
-                let cursor = text_field::byte_at_cell(&self.search.query, cell);
+                let cursor = karet_widgets::textfield::byte_at_cell(&self.search.query, cell);
                 self.search
                     .query_edit
                     .set_cursor(&self.search.query, cursor, extend);
@@ -798,7 +798,7 @@ impl App {
                         .saturating_sub(rect.x)
                         .saturating_add(self.search.replace_edit.scroll),
                 );
-                let cursor = text_field::byte_at_cell(&self.search.replace, cell);
+                let cursor = karet_widgets::textfield::byte_at_cell(&self.search.replace, cell);
                 self.search
                     .replace_edit
                     .set_cursor(&self.search.replace, cursor, extend);

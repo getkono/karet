@@ -19,6 +19,7 @@ pub mod scroll;
 pub mod select;
 pub mod status;
 pub mod text;
+pub mod textfield;
 
 pub use completion::CompletionPopup;
 pub use completion::CompletionState;
