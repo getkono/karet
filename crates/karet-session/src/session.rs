@@ -165,6 +165,10 @@ enum DocFormat {
 enum DocumentLoadError {
     #[error("file does not exist")]
     Missing,
+    /// A known binary format whose decode-to-text failed (corrupt CBOR): the
+    /// client should fall back to a read-only byte view, like non-UTF-8 text.
+    #[error("file is not decodable to text")]
+    Undecodable,
     #[error(transparent)]
     Load(#[from] LoadError),
 }
@@ -194,7 +198,7 @@ fn load_document(path: &Path) -> Result<(TextBuffer, DocFormat), DocumentLoadErr
         let head = &bytes[..bytes.len().min(CLASSIFY_HEAD)];
         if classify_ignoring_size(path, head) == FileKind::Cbor {
             let text =
-                karet_cbor::decode_to_text(&bytes).map_err(|e| LoadError::Io(e.to_string()))?;
+                karet_cbor::decode_to_text(&bytes).map_err(|_| DocumentLoadError::Undecodable)?;
             let mut buffer = TextBuffer::from_text(&text);
             buffer.record_disk_state(path, &bytes);
             return Ok((buffer, DocFormat::Cbor));
@@ -664,6 +668,7 @@ impl Session {
                     cancel,
                 });
             },
+            Command::ConvertDocument { path } => self.convert_document(id, path),
             Command::PrepareDiff { path, old, new } => {
                 let syntax = self.diff_syntax;
                 self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::PrepareTexts {

@@ -61,10 +61,13 @@ impl Session {
         let (mut buffer, format, must_create) = match load_document(&path) {
             Ok((buffer, format)) => (buffer, format, false),
             Err(DocumentLoadError::Missing) => (TextBuffer::new(), DocFormat::Text, true),
-            Err(DocumentLoadError::Load(LoadError::NotUtf8 { .. })) => {
-                // Full non-UTF-8 editing isn't supported; tell the client so it can
-                // fall back to a read-only view instead of leaving this path's tab
-                // registered with no document forever.
+            Err(
+                DocumentLoadError::Load(LoadError::NotUtf8 { .. }) | DocumentLoadError::Undecodable,
+            ) => {
+                // Full non-UTF-8 editing isn't supported (and a corrupt CBOR has no
+                // text form); tell the client so it can fall back to a read-only
+                // view instead of leaving this path's tab registered with no
+                // document forever.
                 self.emit(Some(id), Event::NotUtf8 { path });
                 return;
             },
@@ -475,5 +478,37 @@ impl Session {
             }
             self.emit(Some(id), Event::Closed { doc: doc_id });
         }
+    }
+
+    /// Convert a binary document (DOCX) to markdown for a read-only preview.
+    /// Parsing runs off the actor thread; the answer arrives as
+    /// [`Event::DocumentConverted`].
+    #[cfg(feature = "docx")]
+    pub(super) fn convert_document(&mut self, id: RequestId, path: PathBuf) {
+        let events = self.events.clone();
+        std::thread::spawn(move || {
+            let markdown = std::fs::read(&path)
+                .map_err(|error| format!("could not read {}: {error}", path.display()))
+                .and_then(|bytes| {
+                    karet_docx::parse(&bytes)
+                        .map(|document| karet_docx::to_markdown(&document))
+                        .map_err(|error| format!("could not convert {}: {error}", path.display()))
+                });
+            let _ = events.send((Some(id), Event::DocumentConverted { path, markdown }));
+        });
+    }
+
+    /// Without the `docx` feature, document conversion is unavailable — report it.
+    #[cfg(not(feature = "docx"))]
+    pub(super) fn convert_document(&mut self, id: RequestId, path: PathBuf) {
+        self.emit(
+            Some(id),
+            Event::DocumentConverted {
+                path,
+                markdown: Err(
+                    "this backend was built without DOCX support (`docx` feature)".to_string(),
+                ),
+            },
+        );
     }
 }

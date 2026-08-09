@@ -27,6 +27,8 @@ aicommit = ["dep:aicommit-core"]
 # Open/save `.cbor` documents as editable diagnostic-notation text. On by
 # default; a lean embedder can drop the format plugin.
 cbor = ["dep:karet-cbor"]
+# Convert `.docx` documents to markdown for read-only previews (via `karet-docx`).
+docx = ["dep:karet-docx"]
 # The Cargo.lock package-dependency graph lens. On by default.
 viz = ["dep:dependable-core"]
 # Generate the settings JSON Schema (build/tooling concern — the
@@ -38,6 +40,7 @@ karet-core = { workspace = true, features = ["serde"] }   # serde-ready seam mod
 karet-text = { workspace = true, features = ["serde"] }
 karet-filetype = { workspace = true, features = ["serde"] } # classify + serde-ready vocabulary
 karet-cbor = { workspace = true, optional = true } # decode/encode CBOR ↔ editable diagnostic text (feature `cbor`)
+karet-docx = { workspace = true, optional = true } # DOCX → markdown for read-only previews (feature `docx`)
 karet-treesitter.workspace = true
 karet-syntax.workspace = true
 karet-diff = { workspace = true, features = ["serde"] } # displayable diffs prepared on the VCS worker

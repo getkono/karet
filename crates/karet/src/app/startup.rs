@@ -159,6 +159,7 @@ impl App {
             pending_commit_detail: HashMap::new(),
             latex_previews: HashMap::new(),
             pending_prepared_diffs: HashMap::new(),
+            pending_conversions: HashMap::new(),
             pending_startup_diffs: Vec::new(),
             pending_commit_verification: HashMap::new(),
             pending_merge_conflicts: HashMap::new(),

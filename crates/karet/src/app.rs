@@ -1120,6 +1120,9 @@ pub struct App {
     /// In-flight ad-hoc diff preparations (revision/two-file diffs), owned by the
     /// reserved diff tab's view.
     pending_prepared_diffs: HashMap<RequestId, ViewId>,
+    /// In-flight document conversions (DOCX → markdown), owned by the reserved
+    /// preview tab's view.
+    pending_conversions: HashMap<RequestId, ViewId>,
     /// Two-file diffs from the `--diff` flag, opened as loading tabs before the
     /// backend attaches; their `PrepareDiff` commands are sent on attach.
     pending_startup_diffs: Vec<(ViewId, PathBuf, String, String)>,

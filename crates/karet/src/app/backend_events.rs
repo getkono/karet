@@ -771,6 +771,9 @@ impl App {
                 result,
             } => self.apply_change_prepared(&path, staged, result),
             SessionEvent::DiffPrepared { result, .. } => self.apply_diff_prepared(id, result),
+            SessionEvent::DocumentConverted { path, markdown } => {
+                self.apply_document_converted(id, &path, markdown);
+            },
             SessionEvent::DictionaryWordAdded { word, path } => {
                 self.dictionary_word_added(&word, &path);
             },

@@ -533,6 +533,12 @@ pub enum Command {
         /// `true` for the staged entry, `false` for the working-tree entry.
         staged: bool,
     },
+    /// Convert a binary document (DOCX) to markdown for a read-only preview;
+    /// answered with [`Event::DocumentConverted`].
+    ConvertDocument {
+        /// The document to convert.
+        path: PathBuf,
+    },
     /// Prepare an ad-hoc diff of two provided texts for display (e.g. the
     /// client's two-file diff mode); answered with [`Event::DiffPrepared`].
     PrepareDiff {

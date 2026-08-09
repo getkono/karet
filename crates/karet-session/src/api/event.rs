@@ -249,6 +249,13 @@ pub enum Event {
         /// the entry no longer exists in that section).
         result: Result<Box<PreparedChange>, String>,
     },
+    /// A document converted to markdown, answering [`Command::ConvertDocument`].
+    DocumentConverted {
+        /// The converted document's path, as requested.
+        path: PathBuf,
+        /// The markdown text, or a user-facing reason conversion failed.
+        markdown: Result<String, String>,
+    },
     /// An ad-hoc prepared diff, answering [`Command::PrepareDiff`] or
     /// [`Command::DiffWithRev`].
     DiffPrepared {

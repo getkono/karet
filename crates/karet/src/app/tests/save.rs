@@ -400,9 +400,8 @@
         let dir = std::env::temp_dir().join(format!("karet-anyway-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let file = dir.join("big.cbor");
-        let value = karet_cbor::CborValue::Array(vec![karet_cbor::CborValue::Integer(1)]);
-        let bytes = karet_cbor::encode(&value).unwrap_or_default();
-        let _ = std::fs::write(&file, &bytes);
+        // 0x81 0x01: the CBOR array [1].
+        let _ = std::fs::write(&file, [0x81u8, 0x01]);
 
         let mut app = app();
         let len = karet_fileview::viewer::SIZE_GUARD + 1;

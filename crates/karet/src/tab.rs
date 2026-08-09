@@ -155,6 +155,9 @@ pub enum TabKind {
         /// The `(document version, wrap width)` `wrapped` was built at, or `None` when it
         /// has never been built. A change in either rebuilds it on the next draw.
         rendered: Option<(u64, u16)>,
+        /// When the backend conversion producing this preview's markdown began
+        /// (a reserved DOCX preview), or `None` for an ordinary source preview.
+        pending_since: Option<Instant>,
         /// The first visible wrapped line.
         scroll: u16,
     },
@@ -565,8 +568,9 @@ impl Tab {
     }
 
     /// A rendered, read-only Markdown view of a converted document (e.g. a Word
-    /// `.docx`) with no editable source tab or session document behind it.
-    #[cfg(feature = "docx")]
+    /// `.docx`) with no editable source tab or session document behind it. The
+    /// conversion itself happens in the backend, so this is plain tab plumbing
+    /// (compiled regardless of the `docx` feature).
     #[must_use]
     pub fn document_preview(path: PathBuf, markdown: &str) -> Self {
         let title = path
@@ -580,9 +584,21 @@ impl Tab {
                 buffer: TextBuffer::from_text(markdown),
                 wrapped: WrappedDocument::default(),
                 rendered: None,
+                pending_since: None,
                 scroll: 0,
             },
         )
+    }
+
+    /// A standalone markdown preview reserved while the backend converts the
+    /// document (DOCX) to markdown; [`Self::document_preview`]'s loading state.
+    #[must_use]
+    pub fn document_converting(path: PathBuf) -> Self {
+        let mut tab = Self::document_preview(path, "");
+        if let TabKind::MarkdownPreview { pending_since, .. } = &mut tab.kind {
+            *pending_since = Some(Instant::now());
+        }
+        tab
     }
 
     /// A read-only visualization tab rendering `view` as an indented tree.

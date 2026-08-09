@@ -462,13 +462,33 @@
         let dir = test_dir("docx-dedup");
         let file = dir.join("report.docx");
         std::fs::write(&file, tiny_docx()).expect("write the docx");
+        let backend = Arc::new(RecordingBackend::new());
         let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend.clone());
 
         app.open_path(&file);
         assert!(matches!(
             app.tabs[app.active].kind,
-            TabKind::MarkdownPreview { .. }
+            TabKind::MarkdownPreview {
+                pending_since: Some(_),
+                ..
+            }
         ));
+        // The backend answers the recorded ConvertDocument request; the preview
+        // fills and its outline reflects the converted markdown.
+        let request = backend.sent.lock().ok().and_then(|sent| {
+            sent.iter().find_map(|(request, command)| {
+                matches!(command, SessionCommand::ConvertDocument { .. }).then_some(*request)
+            })
+        });
+        assert!(request.is_some(), "the conversion request was sent");
+        app.on_backend_event(
+            request,
+            SessionEvent::DocumentConverted {
+                path: file.clone(),
+                markdown: Ok("# Report".to_string()),
+            },
+        );
         assert_eq!(
             app.active_outline_rows()
                 .first()

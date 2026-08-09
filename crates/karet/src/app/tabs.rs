@@ -461,4 +461,53 @@ impl App {
             }
         }
     }
+
+    /// Fill the reserved DOCX preview owned by the answering conversion request
+    /// with its markdown, or degrade it to a placeholder on failure. A closed
+    /// tab drops the answer.
+    pub(super) fn apply_document_converted(
+        &mut self,
+        id: Option<RequestId>,
+        path: &Path,
+        markdown: Result<String, String>,
+    ) {
+        let Some(view) = id.and_then(|id| self.pending_conversions.remove(&id)) else {
+            return;
+        };
+        let mut failure = None;
+        for tab in self.all_tabs_mut() {
+            if tab.view != view {
+                continue;
+            }
+            let pending = matches!(
+                tab.kind,
+                TabKind::MarkdownPreview {
+                    pending_since: Some(_),
+                    ..
+                }
+            );
+            if !pending {
+                break;
+            }
+            match &markdown {
+                Ok(text) => {
+                    tab.kind = Tab::document_preview(path.to_path_buf(), text).kind;
+                },
+                Err(message) => {
+                    let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                    tab.kind = TabKind::Placeholder {
+                        path: path.to_path_buf(),
+                        kind: FileKind::Docx,
+                        dims: None,
+                        len,
+                    };
+                    failure = Some(message.clone());
+                },
+            }
+            break;
+        }
+        if let Some(message) = failure {
+            self.notify(Severity::Error, NotificationKind::Io, message);
+        }
+    }
 }
