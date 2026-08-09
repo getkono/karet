@@ -15,6 +15,7 @@ pub mod glyph;
 pub mod menu;
 pub mod notify;
 pub mod pane;
+pub mod picker;
 pub mod scroll;
 pub mod select;
 pub mod status;

@@ -82,6 +82,33 @@ impl Matcher {
         scored.sort_by_key(|s| std::cmp::Reverse(s.score)); // stable: ties keep order
         scored
     }
+
+    /// Rank `items` against `pattern` and return the **original indices** of the
+    /// matches, best first (ties keep input order). The index-preserving twin of
+    /// [`rank`](Self::rank), for consumers that key rows by position (pickers).
+    /// An empty pattern keeps every index in input order.
+    pub fn rank_indices<T: AsRef<str>>(&mut self, pattern: &str, items: &[T]) -> Vec<usize> {
+        if pattern.is_empty() {
+            return (0..items.len()).collect();
+        }
+        let pattern = nucleo::pattern::Pattern::parse(
+            pattern,
+            nucleo::pattern::CaseMatching::Smart,
+            nucleo::pattern::Normalization::Smart,
+        );
+        let mut haystack_buf = Vec::new();
+        let mut scored: Vec<(usize, u32)> = items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                let haystack = nucleo::Utf32Str::new(item.as_ref(), &mut haystack_buf);
+                let score = pattern.score(haystack, &mut self.inner)?;
+                Some((index, score))
+            })
+            .collect();
+        scored.sort_by_key(|(_, score)| std::cmp::Reverse(*score)); // stable: ties keep order
+        scored.into_iter().map(|(index, _)| index).collect()
+    }
 }
 
 #[cfg(test)]
