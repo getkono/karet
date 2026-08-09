@@ -96,6 +96,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::App;
 use crate::app::MIN_SCM_REGION;
 use crate::app::OperationBlocker;
+use crate::app::Pending;
 use crate::app::SIDEBAR_MIN_WIDTH;
 use crate::app::TabDrag;
 use crate::app::TabHit;

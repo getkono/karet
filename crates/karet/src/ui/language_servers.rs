@@ -4,7 +4,6 @@ use karet_session::LanguageServerSource;
 use karet_session::LanguageServerStatus;
 
 use super::*;
-use crate::app::LOADING_REVEAL_DELAY;
 use crate::tab::LanguageServerAction;
 use crate::tab::LanguageServerActionHit;
 use crate::tab::LanguageServerPendingKind;
@@ -125,7 +124,7 @@ fn draw_inventory(f: &mut Frame, theme: &Theme, area: Rect, view: &mut LanguageS
         let message = if view.servers.is_empty() {
             view.error.as_deref().or_else(|| {
                 view.loading_since
-                    .filter(|since| since.elapsed() >= LOADING_REVEAL_DELAY)
+                    .filter(|since| since.visible())
                     .map(|_| "Loading language servers…")
             })
         } else {

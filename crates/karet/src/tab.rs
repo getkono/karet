@@ -38,6 +38,7 @@ use ratatui::layout::Rect;
 pub(crate) use view_state::MarkdownPreviewState;
 pub use view_state::ViewMode;
 
+use crate::app::Pending;
 use crate::render::FileView;
 use crate::render::Section;
 
@@ -155,9 +156,9 @@ pub enum TabKind {
         /// The `(document version, wrap width)` `wrapped` was built at, or `None` when it
         /// has never been built. A change in either rebuilds it on the next draw.
         rendered: Option<(u64, u16)>,
-        /// When the backend conversion producing this preview's markdown began
+        /// The backend conversion producing this preview's markdown
         /// (a reserved DOCX preview), or `None` for an ordinary source preview.
-        pending_since: Option<Instant>,
+        pending_since: Option<Pending>,
         /// The first visible wrapped line.
         scroll: u16,
     },
@@ -212,8 +213,8 @@ pub enum TabKind {
     LatexPreview {
         /// Editable TeX source that initiated the build.
         source: PathBuf,
-        /// Start time used by the shared delayed-loading policy.
-        loading_since: Instant,
+        /// The in-flight build, driving the shared delayed-loading policy.
+        loading_since: Pending,
         /// Compiler/startup failure, when the preview could not be produced.
         error: Option<String>,
     },
@@ -228,8 +229,8 @@ pub enum TabKind {
         section: Section,
         /// The prepared file diff, once the backend has answered.
         file: Option<Box<FileView>>,
-        /// When the preparation request began, if one is in flight.
-        loading_since: Option<Instant>,
+        /// The in-flight preparation request, if any.
+        loading_since: Option<Pending>,
         /// A load error, when the diff could not be prepared.
         error: Option<String>,
         /// The current layout.
@@ -274,8 +275,8 @@ pub enum TabKind {
     CommitLoading {
         /// The revision/hash being resolved.
         rev: String,
-        /// When the detail request began; drives the delayed loading placeholder.
-        loading_since: Instant,
+        /// The in-flight detail request; drives the delayed loading placeholder.
+        loading_since: Pending,
         /// A load error for the revision, when metadata could not be resolved.
         error: Option<String>,
         /// Vertical scroll offset (reserved so the loading tab stays in the pager layer).
@@ -290,8 +291,9 @@ pub enum TabKind {
         detail: Box<karet_vcs::CommitDetail>,
         /// Each changed file (vs the first parent), diffed and highlighted for display.
         files: Vec<FileView>,
-        /// When changed-file extraction began, if metadata is visible but files are not.
-        files_loading_since: Option<Instant>,
+        /// The in-flight changed-file extraction, if metadata is visible but files
+        /// are not.
+        files_loading_since: Option<Pending>,
         /// A load error for the changed-file block, when metadata resolved but diffs did
         /// not.
         files_error: Option<String>,
@@ -331,18 +333,19 @@ pub enum TabKind {
         has_more: bool,
         /// Whether a history page is currently in flight.
         loading: bool,
-        /// When the history-page request began, if one is in flight.
-        loading_since: Option<Instant>,
+        /// The in-flight history-page request, if any.
+        loading_since: Option<Pending>,
         /// The selected commit's index into `commits`.
         selected: usize,
-        /// When the selected commit's detail request began, if one is in flight.
-        detail_loading_since: Option<Instant>,
+        /// The selected commit's in-flight detail request, if any.
+        detail_loading_since: Option<Pending>,
         /// The selected commit's loaded detail, if the fetch has answered.
         detail: Option<Box<karet_vcs::CommitDetail>>,
         /// The selected commit's changed files, diffed for the detail pane.
         files: Vec<FileView>,
-        /// When changed-file extraction began, if metadata is visible but files are not.
-        files_loading_since: Option<Instant>,
+        /// The in-flight changed-file extraction, if metadata is visible but files
+        /// are not.
+        files_loading_since: Option<Pending>,
         /// A load error for the changed-file block, when metadata resolved but diffs did
         /// not.
         files_error: Option<String>,
@@ -468,7 +471,7 @@ impl Tab {
                     total_count: None,
                 },
                 pending,
-                loading_since: Instant::now(),
+                loading_since: Pending::start(),
                 error: None,
                 scroll: 0,
             }),
@@ -500,7 +503,7 @@ impl Tab {
                     can_write,
                     section: crate::app::github::GithubPullRequestSection::Conversation,
                     pending,
-                    loading_since: Instant::now(),
+                    loading_since: Pending::start(),
                     error: None,
                     scroll: 0,
                     commit_cursor: 0,
@@ -596,7 +599,7 @@ impl Tab {
     pub fn document_converting(path: PathBuf) -> Self {
         let mut tab = Self::document_preview(path, "");
         if let TabKind::MarkdownPreview { pending_since, .. } = &mut tab.kind {
-            *pending_since = Some(Instant::now());
+            *pending_since = Some(Pending::start());
         }
         tab
     }
@@ -653,7 +656,7 @@ impl Tab {
         file: Option<Box<FileView>>,
         view: ViewMode,
     ) -> Self {
-        let loading_since = file.is_none().then(Instant::now);
+        let loading_since = file.is_none().then(Pending::start);
         Self::new(
             title,
             TabKind::Diff {
@@ -696,7 +699,7 @@ impl Tab {
             title,
             TabKind::CommitLoading {
                 rev,
-                loading_since: Instant::now(),
+                loading_since: Pending::start(),
                 error: None,
                 scroll: 0,
                 column: 0,
@@ -715,7 +718,7 @@ impl Tab {
             title,
             TabKind::LatexPreview {
                 source,
-                loading_since: Instant::now(),
+                loading_since: Pending::start(),
                 error: None,
             },
         )
@@ -732,7 +735,7 @@ impl Tab {
                 commits: Vec::new(),
                 has_more: false,
                 loading: true,
-                loading_since: Some(Instant::now()),
+                loading_since: Some(Pending::start()),
                 selected: 0,
                 detail_loading_since: None,
                 detail: None,

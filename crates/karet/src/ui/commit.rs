@@ -13,13 +13,13 @@ pub(super) fn draw_commit_loading(
     theme: &Theme,
     area: Rect,
     rev: &str,
-    loading_since: Instant,
+    loading_since: Pending,
     error: Option<&str>,
     scroll: &mut u16,
     column: &mut u16,
 ) {
     *scroll = 0;
-    if error.is_none() && !loading_visible(loading_since) {
+    if error.is_none() && !loading_since.visible() {
         f.render_widget(
             Block::default()
                 .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui())),
@@ -138,12 +138,12 @@ pub(super) fn format_datetime(secs: i64, offset: i32) -> String {
 #[derive(Clone, Copy)]
 pub(super) enum CommitFileStatus<'a> {
     Ready,
-    Loading(Instant),
+    Loading(Pending),
     Failed(&'a str),
 }
 
 pub(super) fn file_load_status(
-    loading_since: Option<Instant>,
+    loading_since: Option<Pending>,
     error: Option<&str>,
 ) -> CommitFileStatus<'_> {
     if let Some(error) = error {
@@ -304,7 +304,7 @@ pub(super) fn commit_detail_lines(
         CommitFileStatus::Ready => lines.extend(changed_files_lines(theme, files, width)),
         CommitFileStatus::Loading(since) => {
             lines.push(Line::raw(""));
-            if loading_visible(since) {
+            if since.visible() {
                 lines.push(Line::styled(" loading changed files\u{2026}", muted));
             }
         },
@@ -588,9 +588,9 @@ pub(super) fn draw_commit_graph(
     commits: &[karet_vcs::Commit],
     has_more: bool,
     loading: bool,
-    loading_since: Option<Instant>,
+    loading_since: Option<Pending>,
     selected: usize,
-    detail_loading_since: Option<Instant>,
+    detail_loading_since: Option<Pending>,
     detail: Option<&karet_vcs::CommitDetail>,
     files: &[render::FileView],
     file_status: CommitFileStatus<'_>,
@@ -621,7 +621,7 @@ pub(super) fn draw_commit_graph(
         })
         .collect();
     let mut items = commit_list_items(theme, &entries, Some(selected), true);
-    if loading && commits.is_empty() && loading_since.is_some_and(loading_visible) {
+    if loading && commits.is_empty() && loading_since.is_some_and(Pending::visible) {
         items.push(ListItem::new(Line::styled(" loading\u{2026}", dim)));
     } else if has_more {
         items.push(ListItem::new(Line::styled(" \u{22ef} more", dim)));
@@ -668,7 +668,7 @@ pub(super) fn draw_commit_graph(
             } else {
                 detail_loading_since
             };
-            if pending_since.is_some_and(loading_visible) {
+            if pending_since.is_some_and(Pending::visible) {
                 let msg = if commits.is_empty() {
                     "loading commits\u{2026}"
                 } else {
@@ -687,10 +687,6 @@ pub(super) fn draw_commit_graph(
             }
         },
     }
-}
-
-pub(super) fn loading_visible(since: Instant) -> bool {
-    since.elapsed() >= crate::app::LOADING_REVEAL_DELAY
 }
 
 /// Draw a code-visualization graph as a scrollable indented tree: a DFS from the

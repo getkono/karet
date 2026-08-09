@@ -17,10 +17,11 @@ impl App {
             .map(|deadline| deadline.saturating_duration_since(now))
             .min();
         let caret = self.graphics_caret_next_wake(now);
-        let loading = self.loading_reveal_wake(now);
-        let outline = self
-            .active_outline_loading_since()
-            .and_then(|since| loading_delay_remaining(since, now));
+        let loading = self
+            .pendings()
+            .into_iter()
+            .filter_map(|pending| pending.wake(now))
+            .min();
         let nested_repositories = self.nested_repository_next_wake(now);
         let operation = self
             .operation_blocker
@@ -40,7 +41,6 @@ impl App {
             auto_save,
             caret,
             loading,
-            outline,
             nested_repositories,
             operation,
             reveal,
@@ -48,98 +48,6 @@ impl App {
         .into_iter()
         .flatten()
         .min()
-    }
-
-    pub(super) fn loading_reveal_wake(&self, now: Instant) -> Option<Duration> {
-        let sidebar = (self.sidebar_visible && self.sidebar_panel == SidebarPanel::SourceControl)
-            .then_some(self.scm.log_loading_since)
-            .flatten()
-            .and_then(|since| loading_delay_remaining(since, now));
-        let repository = (self.sidebar_visible
-            && self.sidebar_panel == SidebarPanel::SourceControl
-            && self.scm.repository.is_none())
-        .then_some(self.scm.repository_loading_since)
-        .flatten()
-        .and_then(|since| loading_delay_remaining(since, now));
-        let tabs = self.all_tabs().filter_map(|tab| match &tab.kind {
-            TabKind::LanguageServers(view) => view
-                .loading_since
-                .and_then(|since| loading_delay_remaining(since, now)),
-            TabKind::CommitLoading {
-                loading_since,
-                error,
-                ..
-            } => error
-                .is_none()
-                .then(|| loading_delay_remaining(*loading_since, now))
-                .flatten(),
-            TabKind::LatexPreview {
-                loading_since,
-                error,
-                ..
-            } => error
-                .is_none()
-                .then(|| loading_delay_remaining(*loading_since, now))
-                .flatten(),
-            TabKind::Commit {
-                files_loading_since,
-                ..
-            } => files_loading_since.and_then(|since| loading_delay_remaining(since, now)),
-            TabKind::Diff {
-                file: None,
-                loading_since,
-                error: None,
-                ..
-            } => loading_since.and_then(|since| loading_delay_remaining(since, now)),
-            TabKind::Code { .. }
-                if tab.merge_conflict.as_ref().is_some_and(|conflict| {
-                    conflict.current.is_none() && conflict.error.is_none()
-                }) =>
-            {
-                tab.merge_conflict
-                    .as_ref()
-                    .and_then(|conflict| loading_delay_remaining(conflict.loading_since, now))
-            },
-            TabKind::CommitGraph {
-                loading_since,
-                detail_loading_since,
-                files_loading_since,
-                ..
-            } => [
-                loading_since.and_then(|since| loading_delay_remaining(since, now)),
-                detail_loading_since.and_then(|since| loading_delay_remaining(since, now)),
-                files_loading_since.and_then(|since| loading_delay_remaining(since, now)),
-            ]
-            .into_iter()
-            .flatten()
-            .min(),
-            TabKind::Github(crate::app::github::GithubViewState::Dashboard(dashboard)) => dashboard
-                .loading_since
-                .and_then(|since| loading_delay_remaining(since, now)),
-            TabKind::Github(crate::app::github::GithubViewState::Issue {
-                pending: Some(_),
-                loading_since,
-                error,
-                ..
-            }) => error
-                .is_none()
-                .then(|| loading_delay_remaining(*loading_since, now))
-                .flatten(),
-            TabKind::Github(crate::app::github::GithubViewState::PullRequest(view))
-                if view.pending.is_some() =>
-            {
-                view.error
-                    .is_none()
-                    .then(|| loading_delay_remaining(view.loading_since, now))
-                    .flatten()
-            },
-            _ => None,
-        });
-        [sidebar, repository]
-            .into_iter()
-            .flatten()
-            .chain(tabs)
-            .min()
     }
 
     /// Handle a backend event: correlate opens to tabs, surface save/progress status.

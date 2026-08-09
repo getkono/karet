@@ -155,7 +155,7 @@ impl App {
             self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
         {
             view.pending = request;
-            view.loading_since = Instant::now();
+            view.loading_since = Pending::start();
             view.error = None;
         }
     }
@@ -214,7 +214,7 @@ impl App {
             self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
         {
             view.pending = request;
-            view.loading_since = Instant::now();
+            view.loading_since = Pending::start();
             view.error = None;
         }
     }

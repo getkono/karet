@@ -8,7 +8,7 @@ impl App {
         if self.scm.repository_loading_since.is_some() {
             return;
         }
-        self.scm.repository_loading_since = Some(Instant::now());
+        self.scm.repository_loading_since = Some(Pending::start());
         self.scm.repository_request = self.send(SessionCommand::RepositorySnapshot);
     }
 
@@ -362,7 +362,7 @@ impl App {
             return;
         }
         self.scm.log_loading = true;
-        self.scm.log_loading_since = Some(Instant::now());
+        self.scm.log_loading_since = Some(Pending::start());
         self.send_command(SessionCommand::VcsLog {
             skip,
             limit: SCM_LOG_PAGE,

@@ -199,7 +199,7 @@ impl App {
                 path: change.path.clone(),
                 section,
                 file: None,
-                loading_since: Some(Instant::now()),
+                loading_since: Some(Pending::start()),
                 error: None,
                 view,
                 scroll: 0,

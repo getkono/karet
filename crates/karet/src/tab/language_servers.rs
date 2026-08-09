@@ -2,13 +2,13 @@
 //!
 //! Split from `tab.rs` to keep it under the file-size ceiling.
 
-use std::time::Instant;
-
 use karet_session::LanguageServerChange;
 use karet_session::LanguageServerId;
 use karet_session::LanguageServerPlanId;
 use karet_session::LanguageServerStatus;
 use ratatui::layout::Rect;
+
+use crate::app::Pending;
 
 /// A clickable operation in the language-server manager's action strip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,7 +55,7 @@ pub(crate) struct LanguageServersViewState {
     pub(crate) selected: usize,
     pub(crate) offset: usize,
     pub(crate) filter: String,
-    pub(crate) loading_since: Option<Instant>,
+    pub(crate) loading_since: Option<Pending>,
     pub(crate) inventory_request: Option<karet_session::RequestId>,
     pub(crate) pending: Vec<LanguageServerPending>,
     pub(crate) plan: Option<LanguageServerPlanId>,
@@ -75,7 +75,7 @@ impl LanguageServersViewState {
             selected: 0,
             offset: 0,
             filter: String::new(),
-            loading_since: Some(Instant::now()),
+            loading_since: Some(Pending::start()),
             inventory_request,
             pending: Vec::new(),
             plan: None,

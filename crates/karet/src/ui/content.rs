@@ -1,5 +1,4 @@
 use super::*;
-use crate::app::LOADING_REVEAL_DELAY;
 
 /// Draw one pane's active tab into `area`. Returns the rect to reserve for a Kitty
 /// image, if the active tab is an image on a Kitty terminal.
@@ -245,7 +244,7 @@ pub(super) fn draw_pane_content(
             // The diff is still being prepared: a stable, muted placeholder after
             // the shared reveal delay; nothing before it (fast paths never flash).
             (None, None) => {
-                if loading_since.is_some_and(|since| since.elapsed() >= LOADING_REVEAL_DELAY) {
+                if loading_since.is_some_and(Pending::visible) {
                     f.render_widget(
                         Paragraph::new("Loading diff…").style(theme.style(ThemeRole::Muted)),
                         area,
@@ -494,10 +493,9 @@ pub(super) fn draw_pane_content(
             loading_since,
             error,
         } => {
-            let message = error.as_deref().or_else(|| {
-                (loading_since.elapsed() >= LOADING_REVEAL_DELAY)
-                    .then_some("Building LaTeX preview…")
-            });
+            let message = error
+                .as_deref()
+                .or_else(|| loading_since.visible().then_some("Building LaTeX preview…"));
             if let Some(message) = message {
                 let detail = source.file_name().map_or_else(
                     || source.display().to_string(),
@@ -637,7 +635,7 @@ fn draw_conflict_side(
     area: Rect,
     buffer: Option<&TextBuffer>,
     editor: &mut EditorState,
-    loading_since: Instant,
+    loading_since: Pending,
     error: Option<&str>,
     word_wrap: bool,
     ctx: &PaneCtx,
@@ -658,7 +656,7 @@ fn draw_conflict_side(
             Paragraph::new(error).style(theme.style(ThemeRole::DiagnosticError)),
             area,
         );
-    } else if loading_since.elapsed() >= LOADING_REVEAL_DELAY {
+    } else if loading_since.visible() {
         f.render_widget(
             Paragraph::new("Loading conflict side…").style(theme.style(ThemeRole::Muted)),
             area,

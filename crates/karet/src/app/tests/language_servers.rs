@@ -175,7 +175,7 @@ fn language_server_manager_delays_its_loading_placeholder() {
     assert!(!screen(&mut app, 100, 18).join("\n").contains("Loading"));
 
     if let TabKind::LanguageServers(view) = &mut app.tabs[app.active].kind {
-        view.loading_since = Some(Instant::now() - LOADING_REVEAL_DELAY);
+        view.loading_since = Some(Pending::revealed());
     }
     assert!(
         screen(&mut app, 100, 18)

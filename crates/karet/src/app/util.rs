@@ -51,10 +51,6 @@ pub(crate) fn effective_word_wrap(tab: &Tab, override_: Option<bool>) -> bool {
     })
 }
 
-pub(super) fn loading_delay_remaining(since: Instant, now: Instant) -> Option<Duration> {
-    LOADING_REVEAL_DELAY.checked_sub(now.saturating_duration_since(since))
-}
-
 /// Recursively copy a file or directory tree.
 pub(super) fn copy_path_recursive(from: &Path, to: &Path) -> io::Result<()> {
     if from.is_dir() {

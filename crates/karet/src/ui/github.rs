@@ -58,8 +58,7 @@ pub(super) fn draw_github(f: &mut Frame, theme: &Theme, area: Rect, view: &mut G
                     area,
                     &format!("Issue #{number}"),
                     error.as_deref(),
-                    pending.is_some()
-                        && loading_since.elapsed() >= crate::app::LOADING_REVEAL_DELAY,
+                    pending.is_some() && loading_since.visible(),
                 );
             }
         },
@@ -261,7 +260,7 @@ fn draw_dashboard_rows(f: &mut Frame, theme: &Theme, area: Rect, state: &mut Git
     if state.row_count() == 0 {
         let line = if state
             .loading_since
-            .is_some_and(|since| since.elapsed() >= crate::app::LOADING_REVEAL_DELAY)
+            .is_some_and(crate::app::Pending::visible)
         {
             "Loading GitHub data…"
         } else if state.loading_since.is_some() {

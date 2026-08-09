@@ -57,7 +57,7 @@ pub(super) fn draw_repository_header(f: &mut Frame, app: &mut App, theme: &Theme
         None if app
             .scm
             .repository_loading_since
-            .is_some_and(loading_visible) =>
+            .is_some_and(Pending::visible) =>
         {
             "Loading repository…"
         },
@@ -272,7 +272,7 @@ pub(super) fn draw_scm_commits(f: &mut Frame, app: &mut App, theme: &Theme, area
     if app.scm.log_has_more {
         // The "load more" display row is relative to the commit region's top.
         app.scm_more_row = Some(items.len());
-        let label = if app.scm.log_loading_since.is_some_and(loading_visible) {
+        let label = if app.scm.log_loading_since.is_some_and(Pending::visible) {
             " loading…"
         } else {
             " ⋯ load more"

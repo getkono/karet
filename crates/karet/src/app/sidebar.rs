@@ -87,12 +87,13 @@ impl App {
             return;
         }
         if self.send(SessionCommand::DocumentSymbols { doc }).is_some() {
-            self.outline_loading.insert(doc, (version, Instant::now()));
+            self.outline_loading
+                .insert(doc, (version, Pending::start()));
         }
     }
 
-    /// Start time of the active document's pending outline request.
-    pub(crate) fn active_outline_loading_since(&self) -> Option<Instant> {
+    /// The active document's in-flight outline request, if any.
+    pub(crate) fn active_outline_loading(&self) -> Option<Pending> {
         let doc = self.tabs.get(self.active).and_then(Self::tab_doc)?;
         self.outline_loading.get(&doc).map(|(_, since)| *since)
     }

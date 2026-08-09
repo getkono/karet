@@ -24,7 +24,7 @@ impl App {
                 self.send(SessionCommand::NestedRepositoryStatus { path: path.clone() })
             {
                 self.nested_repository_pending
-                    .insert(request, (path, Instant::now()));
+                    .insert(request, (path, Pending::start()));
             }
         }
     }
@@ -46,11 +46,11 @@ impl App {
         badges.extend(
             self.nested_repository_pending
                 .values()
-                .filter(|(_, since)| now.saturating_duration_since(*since) >= LOADING_REVEAL_DELAY)
+                .filter(|(_, since)| since.visible())
                 .map(|(path, since)| {
                     (
                         path.clone(),
-                        repository_spinner(now.saturating_duration_since(*since), self.icon_style),
+                        repository_spinner(since.elapsed_since(now), self.icon_style),
                     )
                 }),
         );
@@ -65,11 +65,7 @@ impl App {
         }
         self.nested_repository_pending
             .values()
-            .map(|(_, since)| {
-                LOADING_REVEAL_DELAY
-                    .checked_sub(now.saturating_duration_since(*since))
-                    .unwrap_or(Duration::from_millis(100))
-            })
+            .map(|(_, since)| since.wake(now).unwrap_or(Duration::from_millis(100)))
             .min()
     }
 

@@ -26,15 +26,14 @@ pub(super) fn draw_outline(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
     let entries = app.active_outline_rows();
     app.outline_sel.set_len(entries.len());
     if entries.is_empty() {
-        let pending = app.active_outline_loading_since();
-        let label =
-            if pending.is_some_and(|since| since.elapsed() >= crate::app::LOADING_REVEAL_DELAY) {
-                " Loading…"
-            } else if pending.is_some() {
-                ""
-            } else {
-                " No outline"
-            };
+        let pending = app.active_outline_loading();
+        let label = if pending.is_some_and(crate::app::Pending::visible) {
+            " Loading…"
+        } else if pending.is_some() {
+            ""
+        } else {
+            " No outline"
+        };
         f.render_widget(
             Paragraph::new(label).style(theme.style(ThemeRole::Muted)),
             content,

@@ -646,8 +646,9 @@
             RequestId(7),
             (
                 nested.clone(),
-                now - crate::app::LOADING_REVEAL_DELAY
-                    + Duration::from_millis(1),
+                Pending::at(
+                    now - crate::app::LOADING_REVEAL_DELAY + Duration::from_millis(1),
+                ),
             ),
         );
 
@@ -661,8 +662,9 @@
             RequestId(7),
             (
                 nested.clone(),
-                now - crate::app::LOADING_REVEAL_DELAY
-                    - Duration::from_millis(50),
+                Pending::at(
+                    now - crate::app::LOADING_REVEAL_DELAY - Duration::from_millis(50),
+                ),
             ),
         );
         assert_eq!(app.nested_repository_badges(now).len(), 1);

@@ -126,7 +126,7 @@ pub(crate) struct GithubDashboard {
     pub(crate) runs: GithubPage<GithubWorkflowRun>,
     pub(crate) cursor: usize,
     pub(crate) selected: BTreeSet<usize>,
-    pub(crate) loading_since: Option<Instant>,
+    pub(crate) loading_since: Option<Pending>,
     pub(crate) pending: Option<RequestId>,
     pub(crate) error: Option<String>,
     pub(crate) login_editing: bool,
@@ -203,7 +203,7 @@ pub(crate) enum GithubViewState {
         issue: Option<GithubIssue>,
         comments: GithubPage<GithubComment>,
         pending: Option<RequestId>,
-        loading_since: Instant,
+        loading_since: Pending,
         error: Option<String>,
         scroll: u16,
     },
@@ -313,7 +313,7 @@ impl App {
 
     fn request_github_section(&mut self) {
         let Some((section, query)) = self.active_dashboard_mut().map(|dashboard| {
-            dashboard.loading_since = Some(Instant::now());
+            dashboard.loading_since = Some(Pending::start());
             dashboard.error = None;
             (dashboard.section, dashboard.query.clone())
         }) else {
@@ -519,7 +519,6 @@ impl App {
             Refresh::IssueMetadata => SessionCommand::GithubIssueMetadata,
         };
         let request = self.send(command);
-        let now = Instant::now();
         if let Some(TabKind::Github(view)) = self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
         {
             match view {
@@ -530,12 +529,12 @@ impl App {
                     ..
                 } => {
                     *pending = request;
-                    *loading_since = now;
+                    *loading_since = Pending::start();
                     *error = None;
                 },
                 GithubViewState::PullRequest(view) => {
                     view.pending = request;
-                    view.loading_since = now;
+                    view.loading_since = Pending::start();
                     view.error = None;
                 },
                 GithubViewState::NewIssue { form, .. } => {

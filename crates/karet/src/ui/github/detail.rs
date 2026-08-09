@@ -421,10 +421,7 @@ fn draw_pull_request_conversation(
     draw_pull_request_status(f, theme, status_area, view);
     draw_pull_request_comment(f, theme, comment_area, view);
 
-    if view.pending.is_some()
-        && view.error.is_none()
-        && view.loading_since.elapsed() >= crate::app::LOADING_REVEAL_DELAY
-    {
+    if view.pending.is_some() && view.error.is_none() && view.loading_since.visible() {
         let loading = Rect::new(status_area.x, status_area.y, status_area.width.min(14), 1);
         f.render_widget(Paragraph::new(muted_line("Refreshing…", theme)), loading);
     }

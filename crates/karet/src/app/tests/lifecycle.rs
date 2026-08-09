@@ -489,7 +489,7 @@
         let immediate = screen(&mut app, 90, 10).join("\n");
         assert!(!immediate.contains("Building LaTeX preview"));
         if let TabKind::LatexPreview { loading_since, .. } = &mut app.tabs[app.active].kind {
-            *loading_since = Instant::now() - LOADING_REVEAL_DELAY;
+            *loading_since = Pending::revealed();
         }
         let delayed = screen(&mut app, 90, 10).join("\n");
         assert!(delayed.contains("Building LaTeX preview"));

@@ -20,6 +20,7 @@ mod lifecycle;
 mod mouse;
 mod notifications;
 mod panes;
+mod pending;
 mod remote_actions;
 mod runtime;
 mod scm;
@@ -148,6 +149,7 @@ use karet_widgets::SplitDir;
 use karet_widgets::drop_zone;
 pub(crate) use karet_widgets::textfield::TextFieldState;
 pub(crate) use language_servers::LanguageServerBadge;
+pub(crate) use pending::Pending;
 use ratatui::layout::Rect;
 pub(crate) use runtime::run;
 use tokio::sync::mpsc;
@@ -157,7 +159,6 @@ use util::close_prompt_message;
 use util::copy_path_recursive;
 pub(crate) use util::effective_word_wrap;
 use util::load_theme;
-use util::loading_delay_remaining;
 use util::move_path;
 use util::parse_rev_range;
 use util::path_contains_or_equals;
@@ -224,11 +225,11 @@ pub(crate) struct Scm {
     /// Whether a log page request is currently in flight.
     pub(crate) log_loading: bool,
     /// When the current log-page request began, if one is in flight.
-    pub(crate) log_loading_since: Option<Instant>,
+    pub(crate) log_loading_since: Option<Pending>,
     /// Latest branch, remote, recovery, and stash snapshot.
     pub(crate) repository: Option<RepositorySnapshot>,
     /// Whether a repository snapshot is being loaded.
-    pub(crate) repository_loading_since: Option<Instant>,
+    pub(crate) repository_loading_since: Option<Pending>,
     /// Request currently loading the repository snapshot.
     pub(crate) repository_request: Option<RequestId>,
     /// The repository action currently running, if any.
@@ -888,7 +889,7 @@ pub struct App {
     /// Last completed compact status for nested repositories in the explorer.
     nested_repository_status: HashMap<PathBuf, RepositorySummary>,
     /// In-flight nested-repository requests keyed by request id.
-    nested_repository_pending: HashMap<RequestId, (PathBuf, Instant)>,
+    nested_repository_pending: HashMap<RequestId, (PathBuf, Pending)>,
     /// The changes-region scroll offset (top region; wheel + selection-follow).
     pub(crate) scm_offset: usize,
     /// The changes-region viewport rect from the last frame (hit-testing/hover).
@@ -983,7 +984,7 @@ pub struct App {
     /// Buffer version represented by each cached symbol tree.
     outline_versions: HashMap<DocumentId, u64>,
     /// In-flight symbol request version and start time per document.
-    outline_loading: HashMap<DocumentId, (u64, Instant)>,
+    outline_loading: HashMap<DocumentId, (u64, Pending)>,
     /// Dirty document versions waiting for the configured automatic-save trigger.
     auto_save_pending: HashMap<DocumentId, PendingAutoSave>,
     /// The in-flight completion request, if any (see [`crate::completion`]).

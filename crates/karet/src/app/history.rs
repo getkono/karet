@@ -58,7 +58,7 @@ impl App {
             }) = self.active_commit_graph()
             {
                 *loading = true;
-                *loading_since = Some(Instant::now());
+                *loading_since = Some(Pending::start());
             }
             let command = match path {
                 Some(path) => SessionCommand::FileHistory {
@@ -121,7 +121,7 @@ impl App {
             *files_loading_since = None;
             *files_error = None;
             *verification = None;
-            *detail_loading_since = Some(Instant::now());
+            *detail_loading_since = Some(Pending::start());
         }
         if let Some(id) = self.send(SessionCommand::CommitDetail { rev: hash.clone() }) {
             self.pending_commit_detail
@@ -222,7 +222,7 @@ impl App {
                 }
                 *slot = Some(detail.clone());
                 files.clear();
-                *files_loading_since = Some(Instant::now());
+                *files_loading_since = Some(Pending::start());
                 *files_error = None;
                 *verification = None;
                 *detail_loading_since = None;
@@ -339,7 +339,7 @@ impl App {
             ..
         } = &mut self.tabs[self.active].kind
         {
-            *files_loading_since = Some(Instant::now());
+            *files_loading_since = Some(Pending::start());
         }
         let view = self.tabs[self.active].view;
         self.request_commit_verification(view, hash);
@@ -366,7 +366,7 @@ impl App {
                 tab.kind = TabKind::Commit {
                     detail,
                     files: Vec::new(),
-                    files_loading_since: Some(Instant::now()),
+                    files_loading_since: Some(Pending::start()),
                     files_error: None,
                     verification: None,
                     explain_since: None,

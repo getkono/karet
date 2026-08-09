@@ -114,7 +114,7 @@ impl App {
                     issue: Some(issue.clone()),
                     comments: comments.clone(),
                     pending: None,
-                    loading_since: Instant::now(),
+                    loading_since: Pending::start(),
                     error: None,
                     scroll: 0,
                 });
@@ -166,7 +166,7 @@ impl App {
                     can_write: true,
                     section: GithubPullRequestSection::Conversation,
                     pending: None,
-                    loading_since: Instant::now(),
+                    loading_since: Pending::start(),
                     error: None,
                     scroll: 0,
                     commit_cursor: 0,

@@ -251,7 +251,7 @@ impl App {
         let request = self.send(SessionCommand::LanguageServerStatus);
         if let Some(view) = self.language_servers_mut() {
             view.inventory_request = request;
-            view.loading_since = Some(Instant::now());
+            view.loading_since = Some(Pending::start());
             view.error = None;
         }
     }

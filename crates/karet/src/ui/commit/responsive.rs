@@ -109,7 +109,7 @@ fn build_files(
     let mut doc = FileDocument::default();
     match file_status {
         CommitFileStatus::Loading(since) => {
-            if loading_visible(since) {
+            if since.visible() {
                 doc.prefix
                     .push(Line::styled(" loading changed files\u{2026}", muted));
             }
