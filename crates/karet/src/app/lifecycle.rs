@@ -153,55 +153,35 @@ impl App {
             self.pending_open.remove(&request);
             self.abandoned_open.insert(request);
         }
-        let mut requests: Vec<RequestId> = self
-            .pending_commit_detail
-            .iter()
-            .filter_map(|(request, destination)| {
-                let view = match destination {
-                    CommitDest::Tab { view } | CommitDest::Browser { view, .. } => view,
-                };
-                views.contains(view).then_some(*request)
-            })
-            .collect();
-        for request in &requests {
-            self.pending_commit_detail.remove(request);
-        }
-        let latex_requests: Vec<RequestId> = self
-            .latex_previews
-            .iter()
-            .filter_map(|(request, view)| views.contains(view).then_some(*request))
-            .collect();
-        for request in latex_requests {
-            self.latex_previews.remove(&request);
-            requests.push(request);
-        }
-        let prepared_diffs: Vec<RequestId> = self
-            .pending_prepared_diffs
-            .iter()
-            .filter_map(|(request, view)| views.contains(view).then_some(*request))
-            .collect();
-        for request in prepared_diffs {
-            self.pending_prepared_diffs.remove(&request);
-            requests.push(request);
-        }
-        let verifications: Vec<RequestId> = self
-            .pending_commit_verification
-            .iter()
-            .filter_map(|(request, (view, _))| views.contains(view).then_some(*request))
-            .collect();
-        for request in verifications {
-            self.pending_commit_verification.remove(&request);
-            requests.push(request);
-        }
-        let conflicts: Vec<RequestId> = self
-            .pending_merge_conflicts
-            .iter()
-            .filter_map(|(request, (view, _))| views.contains(view).then_some(*request))
-            .collect();
-        for request in conflicts {
-            self.pending_merge_conflicts.remove(&request);
-            requests.push(request);
-        }
+        let mut requests = Vec::new();
+        drain_view_requests(
+            &mut self.pending_commit_detail,
+            views,
+            &mut requests,
+            |d| match d {
+                CommitDest::Tab { view } | CommitDest::Browser { view, .. } => *view,
+            },
+        );
+        drain_view_requests(&mut self.latex_previews, views, &mut requests, |view| *view);
+        drain_view_requests(
+            &mut self.pending_prepared_diffs,
+            views,
+            &mut requests,
+            |v| *v,
+        );
+        drain_view_requests(&mut self.pending_conversions, views, &mut requests, |v| *v);
+        drain_view_requests(
+            &mut self.pending_commit_verification,
+            views,
+            &mut requests,
+            |(view, _)| *view,
+        );
+        drain_view_requests(
+            &mut self.pending_merge_conflicts,
+            views,
+            &mut requests,
+            |(view, _)| *view,
+        );
         if let Some((request, view)) = self.graph_log_req
             && views.contains(&view)
         {
@@ -525,5 +505,26 @@ impl App {
         self.submit_edit_with_cause(EditCause::Paste, move |caret, sel, _b, base| {
             Some(editing::insert(caret, sel, base, &normalized))
         });
+    }
+}
+
+/// Remove from `pending` every request owned by one of `views` (read through
+/// `view_of`), recording the removed ids in `cancelled`. The one shape behind
+/// [`App::cancel_loading_for_views`]: each request-registry map stores its own
+/// payload, but all of them are keyed by [`RequestId`] and owned by exactly one
+/// view.
+fn drain_view_requests<T>(
+    pending: &mut HashMap<RequestId, T>,
+    views: &HashSet<ViewId>,
+    cancelled: &mut Vec<RequestId>,
+    view_of: impl Fn(&T) -> ViewId,
+) {
+    let matching: Vec<RequestId> = pending
+        .iter()
+        .filter_map(|(request, value)| views.contains(&view_of(value)).then_some(*request))
+        .collect();
+    for request in matching {
+        pending.remove(&request);
+        cancelled.push(request);
     }
 }

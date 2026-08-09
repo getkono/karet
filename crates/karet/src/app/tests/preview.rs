@@ -458,6 +458,46 @@
 
     #[cfg(feature = "docx")]
     #[test]
+    #[cfg(feature = "docx")]
+    fn closing_a_converting_docx_preview_cancels_the_conversion() {
+        let dir = test_dir("docx-cancel");
+        let file = dir.join("report.docx");
+        std::fs::write(&file, tiny_docx()).expect("write the docx");
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend.clone());
+
+        app.open_path(&file);
+        let request = backend.sent.lock().ok().and_then(|sent| {
+            sent.iter().find_map(|(request, command)| {
+                matches!(command, SessionCommand::ConvertDocument { .. }).then_some(*request)
+            })
+        });
+        assert!(request.is_some(), "the conversion request was sent");
+
+        app.dispatch(Command::CloseTab);
+        let cancelled = backend.sent.lock().is_ok_and(|sent| {
+            sent.iter().any(|(_, command)| {
+                matches!(command, SessionCommand::Cancel { request: cancelled } if Some(*cancelled) == request)
+            })
+        });
+        assert!(cancelled, "closing the pending preview cancels its request");
+        // A late answer for the cancelled request cannot resurrect the tab.
+        app.on_backend_event(
+            request,
+            SessionEvent::DocumentConverted {
+                path: file.clone(),
+                markdown: Ok("# Report".to_string()),
+            },
+        );
+        assert!(
+            app.all_tabs()
+                .all(|tab| !matches!(tab.kind, TabKind::MarkdownPreview { .. })),
+            "the closed preview stays closed"
+        );
+    }
+
+    #[test]
     fn reopening_the_same_docx_focuses_the_existing_tab() {
         let dir = test_dir("docx-dedup");
         let file = dir.join("report.docx");
