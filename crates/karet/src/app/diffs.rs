@@ -22,7 +22,7 @@ impl App {
     pub(super) fn request_change_diff(&mut self, path: PathBuf, section: Section) {
         let staged = section == Section::Staged;
         if self
-            .send_command_id(SessionCommand::PrepareChange { path, staged })
+            .send(SessionCommand::PrepareChange { path, staged })
             .is_none()
         {
             self.status = Some("diff backend is unavailable".to_string());

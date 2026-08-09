@@ -86,10 +86,7 @@ impl App {
         {
             return;
         }
-        if self
-            .send_command_id(SessionCommand::DocumentSymbols { doc })
-            .is_some()
-        {
+        if self.send(SessionCommand::DocumentSymbols { doc }).is_some() {
             self.outline_loading.insert(doc, (version, Instant::now()));
         }
     }

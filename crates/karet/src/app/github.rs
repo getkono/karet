@@ -326,7 +326,7 @@ impl App {
             },
             GithubSection::Actions => SessionCommand::GithubActions { page: 1 },
         };
-        let request = self.send_command_id(command);
+        let request = self.send(command);
         if let Some(dashboard) = self.active_dashboard_mut() {
             dashboard.pending = request;
         }
@@ -518,7 +518,7 @@ impl App {
             Refresh::Actions => SessionCommand::GithubActions { page: 1 },
             Refresh::IssueMetadata => SessionCommand::GithubIssueMetadata,
         };
-        let request = self.send_command_id(command);
+        let request = self.send(command);
         let now = Instant::now();
         if let Some(TabKind::Github(view)) = self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
         {
@@ -560,7 +560,7 @@ impl App {
             }
             return;
         }
-        let request = self.send_command_id(SessionCommand::GithubLogin {
+        let request = self.send(SessionCommand::GithubLogin {
             token: karet_session::GithubToken::new(token),
         });
         if let Some(dashboard) = self.active_dashboard_mut() {
@@ -631,11 +631,11 @@ impl App {
         };
         match selection {
             Selection::Issue(_repository, number) => {
-                let request = self.send_command_id(SessionCommand::GithubIssue { number });
+                let request = self.send(SessionCommand::GithubIssue { number });
                 self.push_tab(Tab::github_issue(number, request));
             },
             Selection::PullRequest(_repository, pull_request, can_write) => {
-                let request = self.send_command_id(SessionCommand::GithubPullRequest {
+                let request = self.send(SessionCommand::GithubPullRequest {
                     number: pull_request.number,
                 });
                 self.push_tab(Tab::github_pull_request(pull_request, can_write, request));
@@ -659,7 +659,7 @@ impl App {
         }
         match section {
             GithubSection::Issues => {
-                let pending = self.send_command_id(SessionCommand::GithubIssueMetadata);
+                let pending = self.send(SessionCommand::GithubIssueMetadata);
                 self.push_tab(Tab::github_new_issue(repository, pending));
             },
             GithubSection::PullRequests => self.push_tab(Tab::github_new_pull_request(repository)),
@@ -739,7 +739,7 @@ impl App {
                 SessionCommand::GithubCreatePullRequest { pull_request }
             },
         };
-        let request = self.send_command_id(command);
+        let request = self.send(command);
         if let Some(TabKind::Github(view)) = self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
         {
             match view {

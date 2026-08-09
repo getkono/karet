@@ -72,7 +72,7 @@ impl App {
                 },
             };
             let view = self.tabs[self.active].view;
-            self.graph_log_req = self.send_command_id(command).map(|id| (id, view));
+            self.graph_log_req = self.send(command).map(|id| (id, view));
         }
     }
 
@@ -123,7 +123,7 @@ impl App {
             *verification = None;
             *detail_loading_since = Some(Instant::now());
         }
-        if let Some(id) = self.send_command_id(SessionCommand::CommitDetail { rev: hash.clone() }) {
+        if let Some(id) = self.send(SessionCommand::CommitDetail { rev: hash.clone() }) {
             self.pending_commit_detail
                 .insert(id, CommitDest::Browser { view, hash });
         }
@@ -448,7 +448,7 @@ impl App {
             return;
         }
         if let Some(request) =
-            self.send_command_id(SessionCommand::FetchCommitVerification { hash: hash.clone() })
+            self.send(SessionCommand::FetchCommitVerification { hash: hash.clone() })
         {
             self.pending_commit_verification
                 .insert(request, (view, hash));

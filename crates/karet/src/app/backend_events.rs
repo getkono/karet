@@ -601,12 +601,11 @@ impl App {
                     self.pending_pull_requests = None;
                     self.pull_request_items.extend(items);
                     if let Some(page) = next_page {
-                        self.pending_pull_requests =
-                            self.send_command_id(SessionCommand::PullRequests {
-                                remote,
-                                page,
-                                per_page: 100,
-                            });
+                        self.pending_pull_requests = self.send(SessionCommand::PullRequests {
+                            remote,
+                            page,
+                            per_page: 100,
+                        });
                     } else if self.pull_request_items.is_empty() {
                         self.pull_request_remote = None;
                         self.status = Some(format!("{remote}: no open pull requests"));

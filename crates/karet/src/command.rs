@@ -10,7 +10,7 @@
 //! The trailing group of *modal-scoped* commands (overlay / find / search / commit
 //! / discard navigation) is resolved only while the matching
 //! [`crate::keymap::Modal`] context is active and is excluded from the palette
-//! (see [`Command::in_palette`]).
+//! (the ordered list in `resolve::palette` is the single palette authority).
 
 mod resolve;
 
@@ -918,106 +918,5 @@ impl Command {
             | Self::LanguageServerUp
             | Self::LanguageServerDown => return None,
         })
-    }
-
-    /// Whether this command appears in the command palette.
-    #[must_use]
-    pub fn in_palette(self) -> bool {
-        matches!(
-            self,
-            Self::Quit
-                | Self::ToggleSidebar
-                | Self::ToggleOutline
-                | Self::ToggleFocus
-                | Self::SelectPanel(_)
-                | Self::OpenQuickOpen
-                | Self::OpenFind
-                | Self::OpenGlobalSearch
-                | Self::TriggerCompletion
-                | Self::CloseTab
-                | Self::NextTab
-                | Self::PrevTab
-                | Self::MoveTabLeft
-                | Self::MoveTabRight
-                | Self::CloseOtherTabs
-                | Self::CloseTabsToRight
-                | Self::CloseAllTabs
-                | Self::ReopenClosedTab
-                | Self::Copy
-                | Self::CopyPath
-                | Self::CopyRelativePath
-                | Self::RevealActiveInExplorer
-                | Self::CopyRemoteFileUrl
-                | Self::CopyGithubPermalink
-                | Self::CopyGithubHeadLink
-                | Self::OpenChangesWithPrevious
-                | Self::OpenChangesWithRevision
-                | Self::OpenChangesWithBranch
-                | Self::ToggleDiffLayout
-                | Self::ToggleFold
-                | Self::AddCursorAbove
-                | Self::AddCursorBelow
-                | Self::AddCursorNextOccurrence
-                | Self::Undo
-                | Self::Redo
-                | Self::Save
-                | Self::Cut
-                | Self::Paste
-                | Self::ScmStageAll
-                | Self::ScmUnstageAll
-                | Self::ScmCommit
-                | Self::ScmRefresh
-                | Self::ScmSync
-                | Self::ScmMenu
-                | Self::ScmSwitchBranch
-                | Self::ScmCreateBranch
-                | Self::ScmPickPullRequest
-                | Self::ScmUndoCommit
-                | Self::ScmStash
-                | Self::ScmManageStashes
-                | Self::ScmPublish
-                | Self::ScmRenameBranch
-                | Self::ScmDeleteBranch
-                | Self::ScmDeleteRemoteBranch
-                | Self::ScmContinue
-                | Self::ScmAbort
-                | Self::ScmSkip
-                | Self::ToggleInlineBlame
-                | Self::OpenBlameDetail
-                | Self::ShowLoadedConfig
-                | Self::ManageLanguageServers
-                | Self::CheckLanguageServerUpdates
-                | Self::ExplorerNewFile
-                | Self::ExplorerNewFolder
-                | Self::ExplorerRename
-                | Self::ExplorerRefresh
-                | Self::ExplorerCollapseAll
-                | Self::ExplorerCopy
-                | Self::ExplorerCut
-                | Self::ExplorerPaste
-                | Self::ExplorerDuplicate
-                | Self::ExplorerDelete
-                | Self::ExplorerCopyPath
-                | Self::ExplorerCopyRelativePath
-                | Self::DismissNotification
-                | Self::DismissAllNotifications
-                | Self::MarkdownPreviewSide
-                | Self::FormatMarkdownTables
-                | Self::LatexBuildPreview
-                | Self::SplitRight
-                | Self::SplitDown
-                | Self::FocusNextPane
-                | Self::FocusPrevPane
-                | Self::ResizePaneLeft
-                | Self::ResizePaneRight
-                | Self::ResizePaneUp
-                | Self::ResizePaneDown
-                | Self::ShowDependencyGraph
-                | Self::ShowCommitGraph
-                | Self::OpenCommitByHash
-                | Self::ShowFileHistory
-                | Self::DiffUnpushed
-                | Self::DiffSinceBase
-        )
     }
 }

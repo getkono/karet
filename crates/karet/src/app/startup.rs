@@ -374,7 +374,7 @@ impl App {
     /// right after the backend attaches (the tabs were reserved at CLI time).
     pub(super) fn request_pending_startup_diffs(&mut self) {
         for (view, path, old, new) in std::mem::take(&mut self.pending_startup_diffs) {
-            match self.send_command_id(SessionCommand::PrepareDiff { path, old, new }) {
+            match self.send(SessionCommand::PrepareDiff { path, old, new }) {
                 Some(request) => {
                     self.pending_prepared_diffs.insert(request, view);
                 },

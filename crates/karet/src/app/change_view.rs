@@ -130,9 +130,7 @@ impl App {
 
     fn request_merge_conflict(&mut self, path: PathBuf) {
         let view = self.tabs[self.active].view;
-        if let Some(request) =
-            self.send_command_id(SessionCommand::MergeConflict { path: path.clone() })
-        {
+        if let Some(request) = self.send(SessionCommand::MergeConflict { path: path.clone() }) {
             self.pending_merge_conflicts.insert(request, (view, path));
         } else if let Some(conflict) = self.tabs[self.active].merge_conflict.as_mut() {
             conflict.error = Some("merge-conflict backend is unavailable".to_string());

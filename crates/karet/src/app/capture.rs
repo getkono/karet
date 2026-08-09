@@ -33,18 +33,9 @@ pub(crate) fn capture(mut app: App, spec: CaptureSpec) -> color_eyre::Result<()>
     app.pointer_shapes_supported = false;
 
     let runtime = tokio::runtime::Runtime::new().map_err(|e| eyre!("tokio runtime: {e}"))?;
-    let config = SessionConfig {
-        roots: vec![app.root.clone()],
-        diff_syntax: app.syntax,
-        settings: app.settings.clone(),
-        loaded_config: app.loaded_config.clone(),
-        // A capture is a throwaway read-only session: never write crash-recovery
-        // swaps into the user's data directory.
-        swap_dir: None,
-        process_supervisor: std::env::current_exe().ok(),
-        lsp_registry_dir: directories::ProjectDirs::from("", "getkono", "karet")
-            .map(|dirs| dirs.data_local_dir().join("language-servers")),
-    };
+    // A capture is a throwaway read-only session: never write crash-recovery
+    // swaps into the user's data directory.
+    let config = super::runtime::session_config(&app, None);
 
     let mut terminal = Terminal::new(TestBackend::new(spec.cols, spec.rows))
         .map_err(|e| eyre!("capture terminal: {e}"))?;
@@ -72,21 +63,7 @@ async fn drive(
     config: SessionConfig,
     spec: CaptureSpec,
 ) -> color_eyre::Result<()> {
-    let (local_backend, snaps) = local(config);
-    let backend: Arc<dyn Backend> = Arc::new(local_backend);
-    let Some(events) = backend.take_events() else {
-        return Err(eyre!("backend event stream is unavailable"));
-    };
-    app.backend = Some(backend);
-    app.register_open_tabs();
-    app.request_pending_startup_diffs();
-    for diag in std::mem::take(&mut app.config_diagnostics) {
-        app.notify(
-            diag.severity,
-            NotificationKind::System,
-            format!("config: {}", diag.message),
-        );
-    }
+    let (events, snaps) = super::runtime::attach_backend(app, config)?;
     settle(terminal, app, events, snaps, spec).await
 }
 

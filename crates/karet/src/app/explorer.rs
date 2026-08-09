@@ -21,7 +21,7 @@ impl App {
                 continue;
             }
             if let Some(request) =
-                self.send_command_id(SessionCommand::NestedRepositoryStatus { path: path.clone() })
+                self.send(SessionCommand::NestedRepositoryStatus { path: path.clone() })
             {
                 self.nested_repository_pending
                     .insert(request, (path, Instant::now()));

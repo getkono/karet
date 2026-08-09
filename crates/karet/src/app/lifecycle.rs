@@ -23,17 +23,10 @@ impl App {
         self.tabs.get_mut(self.active)?.find.as_mut()
     }
 
-    /// Send a document command for the active code tab, if any.
+    /// Submit a backend command against the active code tab's document, if any.
     pub(super) fn send_doc_command(&mut self, make: impl FnOnce(DocumentId) -> SessionCommand) {
-        let Some(doc) = self.active_code_doc() else {
-            return;
-        };
-        let result = self.backend.as_ref().map(|backend| {
-            let id = backend.next_id();
-            backend.send(id, make(doc))
-        });
-        if let Some(Err(e)) = result {
-            self.notify_backend_error(e);
+        if let Some(doc) = self.active_code_doc() {
+            let _ = self.send(make(doc));
         }
     }
 

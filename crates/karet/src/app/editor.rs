@@ -23,7 +23,7 @@ impl App {
 
         self.push_tab(Tab::latex_preview(source));
         let view = self.tabs[self.active].view;
-        if let Some(request) = self.send_command_id(SessionCommand::BuildLatex { doc }) {
+        if let Some(request) = self.send(SessionCommand::BuildLatex { doc }) {
             self.latex_previews.insert(request, view);
         } else if let TabKind::LatexPreview { error, .. } = &mut self.tabs[self.active].kind {
             *error = Some("LaTeX backend is unavailable".to_owned());
@@ -696,9 +696,7 @@ impl App {
                 {
                     return; // already requested (attach re-walks every tab)
                 }
-                if let Some(request) =
-                    self.send_command_id(SessionCommand::ConvertDocument { path })
-                {
+                if let Some(request) = self.send(SessionCommand::ConvertDocument { path }) {
                     self.pending_conversions.insert(request, view);
                 }
                 return;

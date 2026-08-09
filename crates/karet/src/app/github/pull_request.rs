@@ -150,7 +150,7 @@ impl App {
                 SessionCommand::GithubCommentPullRequest { number, body }
             },
         };
-        let request = self.send_command_id(command);
+        let request = self.send(command);
         if let Some(TabKind::Github(GithubViewState::PullRequest(view))) =
             self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
         {
@@ -177,8 +177,7 @@ impl App {
             self.status = Some("this pull request is not ready to merge".to_string());
             return;
         };
-        let request =
-            self.send_command_id(SessionCommand::GithubMergePullRequest { number, head_sha });
+        let request = self.send(SessionCommand::GithubMergePullRequest { number, head_sha });
         self.set_pull_request_pending(request);
     }
 
@@ -202,7 +201,7 @@ impl App {
             self.status = Some("pull request readiness cannot be changed".to_string());
             return;
         };
-        let request = self.send_command_id(SessionCommand::GithubSetPullRequestDraft {
+        let request = self.send(SessionCommand::GithubSetPullRequestDraft {
             node_id,
             number,
             draft,

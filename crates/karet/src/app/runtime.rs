@@ -1,5 +1,54 @@
 use super::*;
 
+/// The session configuration for `app` — shared by the interactive runtime and
+/// the capture harness so the two attach identically. `swap_dir` differs: the
+/// real app persists crash-recovery swaps; a throwaway capture must not.
+pub(super) fn session_config(app: &App, swap_dir: Option<std::path::PathBuf>) -> SessionConfig {
+    SessionConfig {
+        roots: vec![app.root.clone()],
+        diff_syntax: app.syntax,
+        settings: app.settings.clone(),
+        loaded_config: app.loaded_config.clone(),
+        swap_dir,
+        // Every external process is owned by a hidden copy of this executable.
+        process_supervisor: std::env::current_exe().ok(),
+        // Immutable installations are shared by every local karet instance.
+        lsp_registry_dir: directories::ProjectDirs::from("", "getkono", "karet")
+            .map(|dirs| dirs.data_local_dir().join("language-servers")),
+    }
+}
+
+/// Build the local backend from `config`, attach it to `app`, and run the
+/// shared post-attach steps (tab registration, deferred startup requests, and
+/// config-load notifications). Returns the event and snapshot streams the
+/// caller's loop selects over.
+pub(super) fn attach_backend(
+    app: &mut App,
+    config: SessionConfig,
+) -> color_eyre::Result<(EventRx, SnapshotRx)> {
+    let (local_backend, snaps) = local(config);
+    // The composition root only ever sees the `Backend` seam: the local
+    // implementation is constructed here, and the event stream comes off the
+    // trait — the exact shape a remote backend will slot into.
+    let backend: Arc<dyn Backend> = Arc::new(local_backend);
+    let Some(events) = backend.take_events() else {
+        return Err(eyre!("backend event stream is unavailable"));
+    };
+    app.backend = Some(backend);
+    app.register_open_tabs();
+    app.request_pending_startup_diffs();
+    // Surface any configuration-load problems as startup notifications, now that
+    // the notification center will render on the first frame.
+    for diag in std::mem::take(&mut app.config_diagnostics) {
+        app.notify(
+            diag.severity,
+            NotificationKind::System,
+            format!("config: {}", diag.message),
+        );
+    }
+    Ok((events, snaps))
+}
+
 pub fn run(mut app: App) -> color_eyre::Result<()> {
     let kitty_keyboard_supported = crate::term_caps::supports_kitty_keyboard();
     if !kitty_keyboard_supported {
@@ -13,20 +62,9 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     // The session backend runs on its own Tokio runtime; the UI task selects over
     // terminal input, backend events, and document snapshots so it never blocks.
     let runtime = tokio::runtime::Runtime::new().map_err(|e| eyre!("tokio runtime: {e}"))?;
-    let config = SessionConfig {
-        roots: vec![app.root.clone()],
-        diff_syntax: app.syntax,
-        settings: app.settings.clone(),
-        loaded_config: app.loaded_config.clone(),
-        // The real app persists crash-recovery swaps to the user data directory;
-        // headless/test sessions leave this unset and keep no backups.
-        swap_dir: karet_session::backup::default_swap_dir(),
-        // Every external process is owned by a hidden copy of this executable.
-        process_supervisor: std::env::current_exe().ok(),
-        // Immutable installations are shared by every local karet instance.
-        lsp_registry_dir: directories::ProjectDirs::from("", "getkono", "karet")
-            .map(|dirs| dirs.data_local_dir().join("language-servers")),
-    };
+    // The real app persists crash-recovery swaps to the user data directory;
+    // headless/test sessions leave this unset and keep no backups.
+    let config = session_config(&app, karet_session::backup::default_swap_dir());
 
     let mut terminal = ratatui::init();
     let _ = crossterm::execute!(
@@ -67,26 +105,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     }
 
     let result = runtime.block_on(async move {
-        // The composition root only ever sees the `Backend` seam: the local
-        // implementation is constructed here, and the event stream comes off the
-        // trait — the exact shape a remote backend will slot into.
-        let (local_backend, snaps) = local(config);
-        let backend: Arc<dyn Backend> = Arc::new(local_backend);
-        let Some(events) = backend.take_events() else {
-            return Err(eyre!("backend event stream is unavailable"));
-        };
-        app.backend = Some(backend);
-        app.register_open_tabs();
-        app.request_pending_startup_diffs();
-        // Surface any configuration-load problems as startup notifications, now that
-        // the notification center will render on the first frame.
-        for diag in std::mem::take(&mut app.config_diagnostics) {
-            app.notify(
-                diag.severity,
-                NotificationKind::System,
-                format!("config: {}", diag.message),
-            );
-        }
+        let (events, snaps) = attach_backend(&mut app, config)?;
         let graphical_cursor_requested = app.tabs.get(app.active).is_some_and(|tab| {
             app.settings
                 .editor

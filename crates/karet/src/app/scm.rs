@@ -9,13 +9,13 @@ impl App {
             return;
         }
         self.scm.repository_loading_since = Some(Instant::now());
-        self.scm.repository_request = self.send_command_id(SessionCommand::RepositorySnapshot);
+        self.scm.repository_request = self.send(SessionCommand::RepositorySnapshot);
     }
 
     /// Submit one ordered repository action.
     pub(super) fn run_vcs_action(&mut self, action: VcsAction) {
         if self
-            .send_command_id(SessionCommand::VcsAction {
+            .send(SessionCommand::VcsAction {
                 action: action.clone(),
             })
             .is_some()
@@ -161,7 +161,7 @@ impl App {
         self.status = Some(format!("loading open pull requests from {remote}"));
         self.pull_request_items.clear();
         self.pull_request_remote = Some(remote.clone());
-        self.pending_pull_requests = self.send_command_id(SessionCommand::PullRequests {
+        self.pending_pull_requests = self.send(SessionCommand::PullRequests {
             remote,
             page: 1,
             per_page: 100,
@@ -317,7 +317,7 @@ impl App {
         if self.pending_blame.is_some() {
             return;
         }
-        if let Some(id) = self.send_command_id(SessionCommand::Blame { doc, version, line }) {
+        if let Some(id) = self.send(SessionCommand::Blame { doc, version, line }) {
             self.pending_blame = Some((id, doc, version, line));
         }
     }
@@ -383,7 +383,7 @@ impl App {
     pub(super) fn open_commit(&mut self, rev: String) {
         self.push_tab(Tab::commit_loading(rev.clone()));
         let view = self.tabs[self.active].view;
-        if let Some(id) = self.send_command_id(SessionCommand::CommitDetail { rev }) {
+        if let Some(id) = self.send(SessionCommand::CommitDetail { rev }) {
             self.pending_commit_detail
                 .insert(id, CommitDest::Tab { view });
         }
@@ -394,7 +394,7 @@ impl App {
         self.push_tab(Tab::commit_graph(None, "Commits"));
         let view = self.tabs[self.active].view;
         self.graph_log_req = self
-            .send_command_id(SessionCommand::VcsLog {
+            .send(SessionCommand::VcsLog {
                 skip: 0,
                 limit: SCM_LOG_PAGE,
             })
@@ -420,7 +420,7 @@ impl App {
         self.push_tab(Tab::commit_graph(Some(path.clone()), format!("⌥ {name}")));
         let view = self.tabs[self.active].view;
         self.graph_log_req = self
-            .send_command_id(SessionCommand::FileHistory {
+            .send(SessionCommand::FileHistory {
                 path,
                 skip: 0,
                 limit: SCM_LOG_PAGE,
@@ -481,21 +481,10 @@ impl App {
         }
     }
     /// Submit a fire-and-forget backend command (the answering event, if any, is
-    /// handled generically), surfacing a dropped-backend error as a notification.
-    pub(super) fn send_command(&mut self, command: SessionCommand) {
-        let result = self.backend.as_ref().map(|backend| {
-            let id = backend.next_id();
-            backend.send(id, command)
-        });
-        if let Some(Err(e)) = result {
-            self.notify_backend_error(e);
-        }
-    }
-
-    /// Submit a backend command and return its [`RequestId`], so the answering event
-    /// can be correlated (e.g. to route a commit detail to the right destination).
-    /// Returns `None` when there is no backend or the submission failed.
-    pub(super) fn send_command_id(&mut self, command: SessionCommand) -> Option<RequestId> {
+    /// Submit a backend command and return its [`RequestId`], so the answering
+    /// event can be correlated — the one submission primitive (a failed or
+    /// backend-less submission notifies and returns `None`).
+    pub(super) fn send(&mut self, command: SessionCommand) -> Option<RequestId> {
         let (id, result) = {
             let backend = self.backend.as_ref()?;
             let id = backend.next_id();
@@ -508,6 +497,11 @@ impl App {
                 None
             },
         }
+    }
+
+    /// Submit a backend command whose answer needs no correlation.
+    pub(super) fn send_command(&mut self, command: SessionCommand) {
+        let _ = self.send(command);
     }
 
     /// Send a path-scoped Source-Control command for the current selection.
@@ -620,7 +614,7 @@ impl App {
             self.status = Some("commit: message required".to_string());
             return;
         }
-        if let Some(id) = self.send_command_id(SessionCommand::Commit { message }) {
+        if let Some(id) = self.send(SessionCommand::Commit { message }) {
             self.commit_input.pending = Some(id);
             self.status = Some("committing…".to_string());
         }

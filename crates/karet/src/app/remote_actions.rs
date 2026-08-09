@@ -256,7 +256,7 @@ impl App {
             self.diff_layout,
         ));
         let view = self.tabs[self.active].view;
-        match self.send_command_id(SessionCommand::DiffWithRev {
+        match self.send(SessionCommand::DiffWithRev {
             path: abs,
             rev: rev.to_string(),
             live,
@@ -280,7 +280,7 @@ impl App {
             return;
         };
         let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
-        self.pending_history_picker = self.send_command_id(SessionCommand::FileHistory {
+        self.pending_history_picker = self.send(SessionCommand::FileHistory {
             path: abs,
             skip: 0,
             limit: Self::OPEN_CHANGES_HISTORY_CAP,
