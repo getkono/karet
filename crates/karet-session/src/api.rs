@@ -504,6 +504,21 @@ pub struct LanguageServerStatus {
     pub instances: Vec<LanguageServerInstanceStatus>,
 }
 
+/// Repository/remote facts for one file, answering [`Command::RemoteFacts`].
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RemoteFacts {
+    /// The `origin` remote's fetch URL.
+    pub origin_url: String,
+    /// `HEAD`'s commit hash, absent on an unborn branch.
+    pub head: Option<String>,
+    /// The current branch name, absent when detached.
+    pub branch: Option<String>,
+    /// The file's path relative to the repository worktree root.
+    pub rel_path: PathBuf,
+    /// Whether the file is tracked at `HEAD`.
+    pub tracked: bool,
+}
+
 /// The spell-check dictionary settings layer a word is written to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DictionaryScope {
@@ -710,6 +725,21 @@ pub enum Command {
     SetBlameEnabled {
         /// Whether inline blame is enabled.
         enabled: bool,
+    },
+    /// Resolve the repository/remote facts for one file on the VCS worker
+    /// (discovery starts from the file's own directory, so nested repositories
+    /// resolve correctly); answered with [`Event::RemoteFacts`].
+    RemoteFacts {
+        /// The file whose repository context is wanted.
+        path: PathBuf,
+    },
+    /// Read one file's content at a revision on the VCS worker; answered with
+    /// [`Event::FileAtRev`].
+    FileAtRev {
+        /// The file to read (absolute or workspace-relative).
+        path: PathBuf,
+        /// The revision to read it at (e.g. `HEAD`, a branch, a hash).
+        rev: String,
     },
     /// Report the client's cursor/selection state for a view.
     SetCursor {

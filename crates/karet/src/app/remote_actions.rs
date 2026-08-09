@@ -77,36 +77,71 @@ impl App {
         self.reveal_in_explorer(&path);
     }
 
-    /// Gather the repository/remote facts for `path`, synchronously (fast local
-    /// reads on a short-lived repository handle, like blame). The `Err` side is a
-    /// user-facing reason, doubling as a context-menu disabled note.
-    pub(super) fn remote_facts(&self, path: &Path) -> Result<RemoteFacts, String> {
-        // Absolutize first so discovery starts from the file's own directory (a
-        // file may live in a different repository than the workspace root).
+    /// The cached repository/remote facts for `path`. A miss fires one backend
+    /// request (the reads run on the VCS worker, never this thread) and returns
+    /// `None` — menus show a resolving note and parked actions complete when
+    /// [`SessionEvent::RemoteFacts`] answers.
+    pub(super) fn cached_remote_facts(
+        &mut self,
+        path: &Path,
+    ) -> Option<&Result<RemoteFacts, String>> {
         let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-        let start = abs.parent().unwrap_or(&abs);
-        let repo = karet_vcs::Repository::discover(start)
-            .map_err(|_| "not in a git repository".to_string())?;
-        let origin = repo
-            .origin_url()
-            .ok_or_else(|| "no origin remote configured".to_string())?;
-        let remote = remote::parse_remote(&origin)
-            .ok_or_else(|| format!("unrecognized origin remote URL: {origin}"))?;
-        let rel_path = repo
-            .path_in_worktree(&abs)
-            .ok_or_else(|| "file is outside the repository worktree".to_string())?;
-        // An unborn branch has no HEAD hash; file_at_rev then errors, reading as
-        // untracked — both surface as accurate notes further down.
-        let head = repo.head_hash().ok().flatten();
-        let branch = repo.current_branch().ok().flatten();
-        let tracked = repo.file_at_rev(&abs, "HEAD").ok().flatten().is_some();
-        Ok(RemoteFacts {
-            remote,
-            head,
-            branch,
-            rel_path,
-            tracked,
-        })
+        if !self.remote_facts.contains_key(&abs) {
+            self.request_remote_facts(&abs);
+            return None;
+        }
+        self.remote_facts.get(&abs)
+    }
+
+    /// Ask the backend for `abs`'s repository facts unless a request is already
+    /// in flight.
+    pub(super) fn request_remote_facts(&mut self, abs: &Path) {
+        if self.remote_facts_pending.contains(abs) {
+            return;
+        }
+        self.remote_facts_pending.insert(abs.to_path_buf());
+        self.send_command(SessionCommand::RemoteFacts {
+            path: abs.to_path_buf(),
+        });
+    }
+
+    /// Adopt a backend facts answer: cache it (parsing the origin URL into the
+    /// presentation-side remote model) and complete any parked actions for the
+    /// path.
+    pub(super) fn apply_remote_facts(
+        &mut self,
+        path: PathBuf,
+        facts: Result<karet_session::RemoteFacts, String>,
+    ) {
+        self.remote_facts_pending.remove(&path);
+        let adopted = facts.and_then(|facts| {
+            let remote = remote::parse_remote(&facts.origin_url)
+                .ok_or_else(|| format!("unrecognized origin remote URL: {}", facts.origin_url))?;
+            Ok(RemoteFacts {
+                remote,
+                head: facts.head,
+                branch: facts.branch,
+                rel_path: facts.rel_path,
+                tracked: facts.tracked,
+            })
+        });
+        self.remote_facts.insert(path.clone(), adopted);
+        let parked: Vec<PendingRemoteAction> = {
+            let (ready, rest) = std::mem::take(&mut self.pending_remote_actions)
+                .into_iter()
+                .partition(|action| match action {
+                    PendingRemoteAction::CopyLink { path: p, .. } => *p == path,
+                });
+            self.pending_remote_actions = rest;
+            ready
+        };
+        for action in parked {
+            match action {
+                PendingRemoteAction::CopyLink { kind, path, line } => {
+                    self.copy_remote_link_for(kind, &path, line);
+                },
+            }
+        }
     }
 
     /// Copy the `kind` web link for the active file, or surface why it cannot be
@@ -131,10 +166,33 @@ impl App {
             },
             _ => None,
         };
-        let facts = match self.remote_facts(&path) {
+        self.copy_remote_link_for(kind, &path, line);
+    }
+
+    /// Build and copy `kind` for `path` from cached facts, or park the action on
+    /// the facts request so one keystroke still completes it when the backend
+    /// answers.
+    pub(super) fn copy_remote_link_for(
+        &mut self,
+        kind: remote::LinkKind,
+        path: &Path,
+        line: Option<u32>,
+    ) {
+        let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        let Some(facts) = self.cached_remote_facts(&abs) else {
+            self.pending_remote_actions
+                .push(PendingRemoteAction::CopyLink {
+                    kind,
+                    path: abs,
+                    line,
+                });
+            self.status = Some("resolving repository remote…".to_string());
+            return;
+        };
+        let facts = match facts {
             Ok(facts) => facts,
             Err(reason) => {
-                self.status = Some(reason);
+                self.status = Some(reason.clone());
                 return;
             },
         };
@@ -147,7 +205,7 @@ impl App {
                 };
                 self.copy_to_clipboard(url, what);
             },
-            Err(reason) => self.status = Some(reason),
+            Err(reason) => self.status = Some(reason.clone()),
         }
     }
 
@@ -163,68 +221,76 @@ impl App {
     }
 
     /// Why the Open Changes actions do not apply to `path` — outside a repository,
-    /// or untracked at `HEAD` (which also covers an unborn branch) — or `None` when
-    /// they do. Doubles as the pane menu's disabled note.
-    pub(super) fn open_changes_note(&self, path: &Path) -> Option<String> {
-        let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-        let start = abs.parent().unwrap_or(&abs);
-        let Ok(repo) = karet_vcs::Repository::discover(start) else {
-            return Some("not in a git repository".to_string());
-        };
-        if repo.file_at_rev(&abs, "HEAD").ok().flatten().is_none() {
-            return Some("file is not tracked at HEAD".to_string());
+    /// untracked at `HEAD` (which also covers an unborn branch), or the facts are
+    /// still resolving — or `None` when they do. Doubles as the pane menu's
+    /// disabled note, read from the same per-path facts cache as the link rows.
+    pub(super) fn open_changes_note(&mut self, path: &Path) -> Option<String> {
+        match self.cached_remote_facts(path)? {
+            Err(reason) if reason == "no origin remote configured" => None,
+            Err(reason) => Some(reason.clone()),
+            Ok(facts) if !facts.tracked => Some("file is not tracked at HEAD".to_string()),
+            Ok(_) => None,
         }
-        None
     }
 
-    /// Open a diff tab for the active file: old = its content at `rev`, new = the
-    /// working text (the live buffer for a code tab, the file on disk otherwise).
-    /// `label` names the old side in the tab title: `name (label ↔ working)`.
+    /// Ask the backend for the active file's content at `rev`; the answering
+    /// [`SessionEvent::FileAtRev`] opens the diff tab (old = content at `rev`,
+    /// new = the working text captured now — the live buffer for a code tab, the
+    /// file on disk otherwise). `label` names the old side in the tab title.
     pub(super) fn open_changes_with(&mut self, rev: &str, label: &str) {
         let Some((path, live)) = self.active_file_and_text() else {
             self.status = Some("open changes: no file".to_string());
             return;
         };
         let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
-        let start = abs.parent().unwrap_or(&abs);
-        let repo = match karet_vcs::Repository::discover(start) {
-            Ok(repo) => repo,
-            Err(_) => {
-                self.status = Some("open changes: not in a git repository".to_string());
-                return;
-            },
+        self.pending_open_changes
+            .insert((abs.clone(), rev.to_string()), (label.to_string(), live));
+        self.send_command(SessionCommand::FileAtRev {
+            path: abs,
+            rev: rev.to_string(),
+        });
+    }
+
+    /// Complete a parked Open Changes request with the backend's answer.
+    pub(super) fn apply_file_at_rev(
+        &mut self,
+        path: PathBuf,
+        rev: String,
+        content: Result<Option<String>, String>,
+    ) {
+        let Some((label, live)) = self.pending_open_changes.remove(&(path.clone(), rev)) else {
+            return; // stale: the request's tab intent is gone
         };
-        let old_bytes = match repo.file_at_rev(&abs, rev) {
-            Ok(Some(bytes)) => bytes,
+        let old_text = match content {
+            Ok(Some(text)) => Some(text),
             Ok(None) => {
                 self.status = Some(format!("open changes: file does not exist at {label}"));
                 return;
             },
-            Err(e) => {
+            Err(reason) => {
                 self.notify(
                     Severity::Error,
                     NotificationKind::Vcs,
-                    format!("open changes: {e}"),
+                    format!("open changes: {reason}"),
                 );
                 return;
             },
         };
         let new_text = live.or_else(|| {
-            std::fs::read(&abs)
+            std::fs::read(&path)
                 .ok()
                 .and_then(|b| String::from_utf8(b).ok())
         });
-        let old_text = String::from_utf8(old_bytes).ok();
         // Either side non-text marks the change binary (both texts then empty),
         // matching the FileChange::is_binary contract.
         let is_binary = old_text.is_none() || new_text.is_none();
-        let name = abs
+        let name = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("file")
             .to_string();
         let change = FileChange {
-            path: abs,
+            path,
             old_path: None,
             status: StatusKind::Modified,
             is_binary,
@@ -256,6 +322,11 @@ impl App {
 
     /// Open the diff-target picker over the active file's commit history
     /// (newest first, capped), for "Open Changes: With Revision…".
+    ///
+    /// NOTE: the two picker flows below still read the repository directly —
+    /// short, capped reads behind an explicit picker action. They are the last
+    /// direct `karet-vcs` reads in the app and migrate behind the seam with the
+    /// diff-preparation move.
     pub(super) fn open_changes_pick_revision(&mut self) {
         let Some((path, _)) = self.active_file_and_text() else {
             self.status = Some("open changes: no file".to_string());

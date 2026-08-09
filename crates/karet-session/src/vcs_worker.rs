@@ -56,6 +56,19 @@ pub(crate) enum VcsJob {
         line: u32,
         cancel: Cancellation,
     },
+    /// Resolve repository/remote facts for one file (per-file discovery).
+    RemoteFacts {
+        id: RequestId,
+        path: PathBuf,
+        cancel: Cancellation,
+    },
+    /// Read one file's content at a revision.
+    FileAtRev {
+        id: RequestId,
+        path: PathBuf,
+        rev: String,
+        cancel: Cancellation,
+    },
     /// Fetch a page of repository history.
     Log {
         id: RequestId,
@@ -244,6 +257,19 @@ fn run(
             Err(message) => {
                 notify_cancellable(events, id, &cancel, format!("blame: {message}"));
             },
+        },
+        VcsJob::RemoteFacts { id, path, cancel } => {
+            let facts = remote_facts(&path);
+            emit_cancellable(events, id, &cancel, Event::RemoteFacts { path, facts });
+        },
+        VcsJob::FileAtRev {
+            id,
+            path,
+            rev,
+            cancel,
+        } => {
+            let content = file_at_rev(&path, &rev);
+            emit_cancellable(events, id, &cancel, Event::FileAtRev { path, rev, content });
         },
         VcsJob::Log {
             id,
@@ -755,6 +781,48 @@ fn notify_cancellable(
     if !cancel.is_cancelled() {
         notify(events, id, message);
     }
+}
+
+/// Gather the repository/remote facts for `path`, discovering the repository
+/// from the file's own directory (a file may live in a nested repository). The
+/// `Err` side is a user-facing reason, doubling as a menu disabled-note.
+fn remote_facts(path: &Path) -> Result<crate::api::RemoteFacts, String> {
+    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let start = abs.parent().unwrap_or(&abs);
+    let repo = karet_vcs::Repository::discover(start)
+        .map_err(|_| "not in a git repository".to_string())?;
+    let origin_url = repo
+        .origin_url()
+        .ok_or_else(|| "no origin remote configured".to_string())?;
+    let rel_path = repo
+        .path_in_worktree(&abs)
+        .ok_or_else(|| "file is outside the repository worktree".to_string())?;
+    // An unborn branch has no HEAD hash; file_at_rev then errors, reading as
+    // untracked — both surface as accurate notes downstream.
+    let head = repo.head_hash().ok().flatten();
+    let branch = repo.current_branch().ok().flatten();
+    let tracked = repo.file_at_rev(&abs, "HEAD").ok().flatten().is_some();
+    Ok(crate::api::RemoteFacts {
+        origin_url,
+        head,
+        branch,
+        rel_path,
+        tracked,
+    })
+}
+
+/// Read `path`'s content at `rev` via per-file repository discovery.
+fn file_at_rev(path: &Path, rev: &str) -> Result<Option<String>, String> {
+    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let start = abs.parent().unwrap_or(&abs);
+    let repo = karet_vcs::Repository::discover(start)
+        .map_err(|_| "not in a git repository".to_string())?;
+    let bytes = repo
+        .file_at_rev(&abs, rev)
+        .map_err(|error| error.to_string())?;
+    // Bytes that are not UTF-8 read as absent: the caller renders such files as
+    // binary changes rather than text diffs.
+    Ok(bytes.and_then(|bytes| String::from_utf8(bytes).ok()))
 }
 
 #[cfg(test)]

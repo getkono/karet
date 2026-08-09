@@ -768,9 +768,24 @@ impl ContextMenu {
     }
 }
 
-/// The repository/remote facts behind the pane menu's link actions, gathered
-/// synchronously from a short-lived repository handle (see [`App::remote_facts`]).
-struct RemoteFacts {
+/// A remote action parked until the backend answers the facts request that
+/// enables it (see [`App::copy_remote_link`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PendingRemoteAction {
+    /// Copy a web link once the facts for `path` arrive.
+    CopyLink {
+        /// Which link flavor to build.
+        kind: remote::LinkKind,
+        /// The file the link points at.
+        path: PathBuf,
+        /// The 1-based line anchoring a permalink, when any.
+        line: Option<u32>,
+    },
+}
+
+/// The repository/remote facts behind the pane menu's link actions, resolved on
+/// the backend's VCS worker and cached per path (see [`App::cached_remote_facts`]).
+pub(crate) struct RemoteFacts {
     /// The parsed origin remote.
     remote: remote::Remote,
     /// The full `HEAD` commit hash, or `None` on an unborn branch.
@@ -881,6 +896,18 @@ pub struct App {
     pub(crate) scm: Scm,
     /// Most recent stale-checked live blame result.
     pub(crate) live_blame: Option<LiveBlame>,
+    /// Per-path repository/remote facts resolved by the backend, or the
+    /// user-facing reason they are unavailable. Cleared on every VCS status
+    /// refresh (commits and branch switches change the facts).
+    pub(crate) remote_facts: HashMap<PathBuf, Result<RemoteFacts, String>>,
+    /// Paths whose facts request is in flight (suppresses duplicate requests).
+    pub(crate) remote_facts_pending: HashSet<PathBuf>,
+    /// Actions parked on a facts answer.
+    pub(crate) pending_remote_actions: Vec<PendingRemoteAction>,
+    /// Open-changes requests awaiting their FileAtRev answer, keyed by
+    /// `(path, rev)`: the tab title label and the live buffer text at request
+    /// time.
+    pub(crate) pending_open_changes: HashMap<(PathBuf, String), (String, Option<String>)>,
     /// Request currently computing live blame.
     pub(crate) pending_blame: Option<(RequestId, DocumentId, u64, u32)>,
     /// Failed blame anchor, suppressed until its inputs change.

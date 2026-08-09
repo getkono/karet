@@ -72,6 +72,7 @@ pub use api::LanguageServerSource;
 pub use api::LanguageServerStatus;
 pub use api::PullRequestSummary;
 pub use api::RangeSpec;
+pub use api::RemoteFacts;
 pub use api::RepositorySnapshot;
 pub use api::RequestId;
 pub use api::SpellingLanguage;

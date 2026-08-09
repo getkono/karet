@@ -231,6 +231,24 @@ pub enum Event {
         /// The settings file that would be created.
         path: PathBuf,
     },
+    /// Repository/remote facts answering [`Command::RemoteFacts`].
+    RemoteFacts {
+        /// The file the facts describe.
+        path: PathBuf,
+        /// The facts, or a user-facing reason they are unavailable (outside a
+        /// repository, no origin remote, outside the worktree).
+        facts: Result<RemoteFacts, String>,
+    },
+    /// A file's content at a revision, answering [`Command::FileAtRev`].
+    FileAtRev {
+        /// The file that was read.
+        path: PathBuf,
+        /// The revision it was read at.
+        rev: String,
+        /// The content, `Ok(None)` when the file does not exist at that
+        /// revision (or is not valid UTF-8), or a user-facing error.
+        content: Result<Option<String>, String>,
+    },
     /// Progress on a long-running operation.
     Progress {
         /// A human-readable status message.

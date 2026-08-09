@@ -531,24 +531,32 @@ impl App {
     /// always work; the link items are enabled exactly when [`remote::link`] can
     /// build them (the same call their dispatch runs), with its refusal reason as
     /// the disabled note.
-    pub(super) fn pane_context_entries(&self, path: &Path) -> Vec<ContextMenuEntry> {
+    pub(super) fn pane_context_entries(&mut self, path: &Path) -> Vec<ContextMenuEntry> {
         let mut entries = vec![
             ContextMenuEntry::enabled(Command::CopyPath),
             ContextMenuEntry::enabled(Command::CopyRelativePath),
             ContextMenuEntry::enabled(Command::RevealActiveInExplorer),
         ];
-        let facts = self.remote_facts(path);
-        let link_entry = |command, kind| match &facts {
-            Ok(facts) => match remote::link(&facts.link_target(), kind, None) {
-                Ok(_) => ContextMenuEntry::enabled(command),
-                Err(note) => ContextMenuEntry::disabled(command, note),
-            },
-            Err(note) => ContextMenuEntry::disabled(command, note.clone()),
+        // Owned disabled-notes computed up front, so the facts borrow does not
+        // overlap the &mut calls below. `None` = enabled.
+        let link_notes: [Option<String>; 3] = {
+            let facts = self.cached_remote_facts(path);
+            let note = |kind| match facts {
+                Some(Ok(facts)) => remote::link(&facts.link_target(), kind, None).err(),
+                Some(Err(note)) => Some(note.clone()),
+                None => Some("resolving repository remote…".to_string()),
+            };
+            [
+                note(remote::LinkKind::RemoteFile),
+                note(remote::LinkKind::GithubPermalink),
+                note(remote::LinkKind::GithubHeadLink),
+            ]
         };
-        entries.push(link_entry(
-            Command::CopyRemoteFileUrl,
-            remote::LinkKind::RemoteFile,
-        ));
+        let link_entry = |command, note: &Option<String>| match note {
+            None => ContextMenuEntry::enabled(command),
+            Some(note) => ContextMenuEntry::disabled(command, note.clone()),
+        };
+        entries.push(link_entry(Command::CopyRemoteFileUrl, &link_notes[0]));
         // The Open Changes actions need a repository and a tracked file, but no
         // remote — their enablement is checked separately from the link rows.
         let changes_note = self.open_changes_note(path);
@@ -562,14 +570,8 @@ impl App {
                 Some(note) => ContextMenuEntry::disabled(command, note.clone()),
             });
         }
-        entries.push(link_entry(
-            Command::CopyGithubPermalink,
-            remote::LinkKind::GithubPermalink,
-        ));
-        entries.push(link_entry(
-            Command::CopyGithubHeadLink,
-            remote::LinkKind::GithubHeadLink,
-        ));
+        entries.push(link_entry(Command::CopyGithubPermalink, &link_notes[1]));
+        entries.push(link_entry(Command::CopyGithubHeadLink, &link_notes[2]));
         entries
     }
 

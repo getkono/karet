@@ -11,13 +11,17 @@
         Some(repo)
     }
 
-    #[test]
-    fn pane_context_menu_lists_file_actions_and_disables_links_outside_a_repo() {
+    #[tokio::test]
+    async fn pane_context_menu_lists_file_actions_and_disables_links_outside_a_repo() {
         let dir = test_dir("pane-menu-norepo");
         write_file(&dir, "a.rs", b"x\n");
-        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        let (mut app, mut events) = facts_app(dir.clone());
         app.push_tab(code_tab(dir.join("a.rs").to_string_lossy().as_ref()));
 
+        // The first open fires the facts request; the answer feeds the reopen.
+        app.open_pane_context_menu(3, 3);
+        pump(&mut app, &mut events).await;
+        app.context_menu = None;
         app.open_pane_context_menu(3, 3);
 
         let Some(menu) = app.context_menu.as_ref() else {
@@ -103,12 +107,28 @@
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn pane_menu_enables_github_links_for_a_tracked_file_on_github() {
+    /// A live-backend app rooted at `root`, with the event stream for `pump`.
+    fn facts_app(root: PathBuf) -> (App, EventRx) {
+        let (local_backend, _snaps) = local(SessionConfig {
+            roots: vec![root.clone()],
+            ..SessionConfig::default()
+        });
+        let backend: Arc<dyn Backend> = Arc::new(local_backend);
+        let events = backend.take_events().expect("backend event stream");
+        let mut app = App::new(root, Vec::new(), Vec::new(), false);
+        app.backend = Some(backend);
+        (app, events)
+    }
+
+    #[tokio::test]
+    async fn pane_menu_enables_github_links_for_a_tracked_file_on_github() {
         let Some(repo) = repo_with_remote("git@github.com:owner/repo.git") else {
             return;
         };
-        let app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        let (mut app, mut events) = facts_app(repo.path.clone());
+        // The first build fires the async facts request; the second reads the cache.
+        let _ = app.pane_context_entries(&repo.path.join("new.rs"));
+        pump(&mut app, &mut events).await;
         let entries = app.pane_context_entries(&repo.path.join("new.rs"));
         assert!(
             entries.iter().all(|e| e.enabled),
@@ -116,12 +136,14 @@
         );
     }
 
-    #[test]
-    fn pane_menu_disables_github_links_for_a_gitlab_remote_with_a_note() {
+    #[tokio::test]
+    async fn pane_menu_disables_github_links_for_a_gitlab_remote_with_a_note() {
         let Some(repo) = repo_with_remote("https://gitlab.com/owner/repo.git") else {
             return;
         };
-        let app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        let (mut app, mut events) = facts_app(repo.path.clone());
+        let _ = app.pane_context_entries(&repo.path.join("new.rs"));
+        pump(&mut app, &mut events).await;
         let entries = app.pane_context_entries(&repo.path.join("new.rs"));
         let by_cmd = |cmd: Command| entries.iter().find(|e| e.command() == Some(cmd));
         // The generic remote URL still works on GitLab…
@@ -140,13 +162,15 @@
         }
     }
 
-    #[test]
-    fn pane_menu_disables_links_for_an_untracked_file() {
+    #[tokio::test]
+    async fn pane_menu_disables_links_for_an_untracked_file() {
         let Some(repo) = repo_with_remote("git@github.com:owner/repo.git") else {
             return;
         };
         std::fs::write(repo.path.join("untracked.rs"), "y\n").unwrap_or_default();
-        let app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        let (mut app, mut events) = facts_app(repo.path.clone());
+        let _ = app.pane_context_entries(&repo.path.join("untracked.rs"));
+        pump(&mut app, &mut events).await;
         let entries = app.pane_context_entries(&repo.path.join("untracked.rs"));
         for cmd in [
             Command::CopyRemoteFileUrl,
@@ -171,13 +195,16 @@
         }
     }
 
-    #[test]
-    fn remote_facts_reads_the_repository_state() {
+    #[tokio::test]
+    async fn remote_facts_resolve_through_the_backend() {
         let Some(repo) = repo_with_remote("git@github.com:owner/repo.git") else {
             return;
         };
-        let app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
-        let Ok(facts) = app.remote_facts(&repo.path.join("new.rs")) else {
+        let (mut app, mut events) = facts_app(repo.path.clone());
+        let path = repo.path.join("new.rs");
+        assert!(app.cached_remote_facts(&path).is_none(), "cold cache");
+        pump(&mut app, &mut events).await;
+        let Some(Ok(facts)) = app.cached_remote_facts(&path) else {
             panic!("facts resolve inside a repo with an origin");
         };
         assert_eq!(facts.remote.kind, crate::remote::ForgeKind::GitHub);
@@ -187,15 +214,20 @@
         assert!(facts.branch.is_some());
     }
 
-    #[test]
-    fn copy_github_permalink_reports_success_on_a_github_repo() {
+    #[tokio::test]
+    async fn copy_github_permalink_reports_success_on_a_github_repo() {
         let Some(repo) = repo_with_remote("git@github.com:owner/repo.git") else {
             return;
         };
-        let mut app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        let (mut app, mut events) = facts_app(repo.path.clone());
         app.push_tab(code_tab(
             repo.path.join("new.rs").to_string_lossy().as_ref(),
         ));
+        // The first dispatch parks the copy on the facts request; the answer
+        // completes it without another keystroke (unrelated status events may
+        // land afterwards, so the assertion below re-runs on the warm cache).
+        app.dispatch(Command::CopyGithubPermalink);
+        pump(&mut app, &mut events).await;
         app.dispatch(Command::CopyGithubPermalink);
         assert_eq!(app.status.as_deref(), Some("copied GitHub permalink"));
     }
@@ -237,18 +269,19 @@
         )
     }
 
-    #[test]
-    fn open_changes_with_previous_diffs_head_against_the_live_buffer() {
+    #[tokio::test]
+    async fn open_changes_with_previous_diffs_head_against_the_live_buffer() {
         let Some(repo) = committed_repo() else {
             return;
         };
         let path = repo.path.join("new.rs");
-        let mut app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        let (mut app, mut events) = facts_app(repo.path.clone());
         // The live buffer differs from both HEAD and the (unchanged) disk file,
         // proving the working side comes from the buffer, not disk.
         app.push_tab(code_tab_with_text(&path, "fn main() { edited }\n"));
 
         app.dispatch(Command::OpenChangesWithPrevious);
+        pump(&mut app, &mut events).await;
 
         let Some(Tab {
             title,
@@ -269,8 +302,8 @@
         );
     }
 
-    #[test]
-    fn open_changes_with_revision_picks_from_the_file_history() {
+    #[tokio::test]
+    async fn open_changes_with_revision_picks_from_the_file_history() {
         let Some(repo) = committed_repo() else {
             return;
         };
@@ -280,7 +313,7 @@
         if !git(&repo.path, &["commit", "-qam", "v1"]) {
             return;
         }
-        let mut app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        let (mut app, mut events) = facts_app(repo.path.clone());
         app.push_tab(code_tab_with_text(&path, "working\n"));
 
         app.dispatch(Command::OpenChangesWithRevision);
@@ -295,6 +328,7 @@
         // Choose the older commit (the initial content).
         app.dispatch(Command::OverlayDown);
         app.dispatch(Command::OverlayAccept);
+        pump(&mut app, &mut events).await;
 
         assert!(app.overlay.is_none(), "accept closes the picker");
         let Some(Tab {
@@ -316,8 +350,8 @@
         );
     }
 
-    #[test]
-    fn open_changes_with_branch_diffs_against_the_branch_tip() {
+    #[tokio::test]
+    async fn open_changes_with_branch_diffs_against_the_branch_tip() {
         let Some(repo) = committed_repo() else {
             return;
         };
@@ -332,7 +366,7 @@
         {
             return;
         }
-        let mut app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        let (mut app, mut events) = facts_app(repo.path.clone());
         app.push_tab(code_tab_with_text(&path, "working\n"));
 
         app.dispatch(Command::OpenChangesWithBranch);
@@ -349,6 +383,7 @@
         // the default branch is `main` or `master`.
         assert_eq!(rows[0], "feature");
         app.dispatch(Command::OverlayAccept);
+        pump(&mut app, &mut events).await;
 
         let Some(Tab {
             title,
@@ -366,8 +401,8 @@
         assert_eq!(file.change.new, "working\n");
     }
 
-    #[test]
-    fn open_changes_reports_a_file_absent_at_the_revision() {
+    #[tokio::test]
+    async fn open_changes_reports_a_file_absent_at_the_revision() {
         let Some(repo) = committed_repo() else {
             return;
         };
@@ -377,12 +412,18 @@
         if !git(&repo.path, &["add", "."]) || !git(&repo.path, &["commit", "-qm", "add other"]) {
             return;
         }
-        let mut app = App::new(repo.path.clone(), Vec::new(), Vec::new(), false);
+        let (mut app, mut events) = facts_app(repo.path.clone());
         app.push_tab(code_tab_with_text(&path, "x\n"));
 
         let before = app.tabs.len();
         app.open_changes_with("HEAD~1", "HEAD~1");
+        pump(&mut app, &mut events).await;
+        assert_eq!(app.tabs.len(), before, "no diff tab is opened");
 
+        // Unrelated startup events may have overwritten the status; a second
+        // round on the settled backend re-asserts the refusal deterministically.
+        app.open_changes_with("HEAD~1", "HEAD~1");
+        pump(&mut app, &mut events).await;
         assert_eq!(app.tabs.len(), before, "no diff tab is opened");
         assert_eq!(
             app.status.as_deref(),

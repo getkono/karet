@@ -458,6 +458,10 @@ impl App {
                 }
             },
             SessionEvent::VcsStatus { staged, working } => {
+                // Commits and branch switches change every cached repository
+                // fact (head, tracked-ness); drop them and re-resolve on demand.
+                self.remote_facts.clear();
+
                 self.live_blame = None;
                 self.pending_blame = None;
                 self.failed_blame = None;
@@ -748,6 +752,10 @@ impl App {
             },
             SessionEvent::LoadedConfig { report } => self.open_loaded_config(*report),
             SessionEvent::SearchResults { hits } => self.apply_search_results(hits),
+            SessionEvent::RemoteFacts { path, facts } => self.apply_remote_facts(path, facts),
+            SessionEvent::FileAtRev { path, rev, content } => {
+                self.apply_file_at_rev(path, rev, content);
+            },
             SessionEvent::DictionaryWordAdded { word, path } => {
                 self.dictionary_word_added(&word, &path);
             },
