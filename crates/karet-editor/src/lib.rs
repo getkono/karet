@@ -11,6 +11,7 @@
 //! separately.
 
 mod conflict;
+pub mod editing;
 mod state;
 mod text;
 mod view;

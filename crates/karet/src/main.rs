@@ -18,7 +18,6 @@ mod compat;
 mod completion;
 mod desktop;
 mod doctor;
-mod editing;
 mod keymap;
 mod links;
 mod logging;
