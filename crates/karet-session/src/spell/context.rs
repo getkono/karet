@@ -43,7 +43,7 @@ const NON_PROSE_LABELS: &[&str] = &[
 
 pub(super) fn is_non_prose_string(
     text: &str,
-    language: Option<&str>,
+    selector: Option<&str>,
     highlights: &Highlights,
     byte: usize,
 ) -> bool {
@@ -54,11 +54,11 @@ pub(super) fn is_non_prose_string(
     let Some(prefix) = text.get(line_start..start) else {
         return false;
     };
-    let language = language.unwrap_or_default().to_ascii_lowercase();
-    structural_line(prefix, &language)
+    let selector = selector.unwrap_or_default();
+    structural_line(prefix, selector)
         || context_identifier(prefix, '=').is_some_and(|name| NON_PROSE_LABELS.contains(&name))
         || unmatched_call(prefix).is_some_and(|name| NON_PROSE_CALLS.contains(&name))
-        || (language == "go" && inside_go_import(text, start))
+        || (selector == "go" && inside_go_import(text, start))
 }
 
 fn string_start(highlights: &Highlights, byte: usize) -> Option<usize> {
@@ -86,19 +86,22 @@ fn string_start(highlights: &Highlights, byte: usize) -> Option<usize> {
     None
 }
 
-fn structural_line(prefix: &str, language: &str) -> bool {
+/// Keyed on the per-language settings *selector* (`karet-filetype`'s
+/// `config_selector`) — a stable machine vocabulary — never on display names,
+/// whose spelling this module must not depend on.
+fn structural_line(prefix: &str, selector: &str) -> bool {
     let trimmed = prefix.trim_start();
-    match language {
+    match selector {
         "rust" => {
             let attribute = prefix.rfind("#[").or_else(|| prefix.rfind("#!["));
             attribute.is_some_and(|start| !prefix[start..].contains(']'))
         },
-        "javascript" | "typescript" | "typescriptreact" | "javascriptreact" => {
+        "javascript" | "jsx" | "typescript" | "tsx" => {
             trimmed.starts_with("import ")
                 || (trimmed.starts_with("export ") && trimmed.contains(" from "))
         },
         "c" | "c++" => trimmed.starts_with("#include"),
-        "bash" => trimmed.starts_with("source "),
+        "shell" | "zsh" => trimmed.starts_with("source "),
         "java" | "kotlin" => trimmed.starts_with('@'),
         "c#" => trimmed.starts_with('[') && trimmed.contains('('),
         _ => false,

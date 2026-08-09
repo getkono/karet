@@ -23,7 +23,7 @@ use crate::api::Event;
 use crate::api::LanguageServerInstanceStatus;
 use crate::api::LanguageServerStatus;
 use crate::backend::Backend;
-use crate::backend::local;
+use crate::backend::local_session;
 use crate::session::EventRx;
 use crate::session::Session;
 use crate::session::SessionConfig;
@@ -400,7 +400,7 @@ async fn completion_round_trips_with_utf16_conversion() -> TestResult {
     let spawns = Arc::new(AtomicUsize::new(0));
     let (session, mut events) =
         session_with_connector(test_connector(Behavior::Normal, Some(observed_tx), spawns));
-    let backend = local(session);
+    let backend = local_session(session, None);
 
     backend.send(
         backend.next_id(),
@@ -458,7 +458,7 @@ async fn document_symbols_round_trip_with_utf16_conversion() -> TestResult {
     let spawns = Arc::new(AtomicUsize::new(0));
     let (session, mut events) =
         session_with_connector(test_connector(Behavior::Normal, None, spawns));
-    let backend = local(session);
+    let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
         Command::OpenDocument {
@@ -486,7 +486,7 @@ async fn open_and_debounced_changes_reach_the_server() -> TestResult {
     let spawns = Arc::new(AtomicUsize::new(0));
     let (session, mut events) =
         session_with_connector(test_connector(Behavior::Normal, Some(observed_tx), spawns));
-    let backend = local(session);
+    let backend = local_session(session, None);
 
     backend.send(
         backend.next_id(),
@@ -573,7 +573,7 @@ async fn unsupported_language_answers_empty_immediately() -> TestResult {
     let spawns = Arc::new(AtomicUsize::new(0));
     let (session, mut events) =
         session_with_connector(test_connector(Behavior::Normal, None, Arc::clone(&spawns)));
-    let backend = local(session);
+    let backend = local_session(session, None);
 
     backend.send(
         backend.next_id(),
@@ -608,7 +608,7 @@ async fn disabled_setting_spawns_nothing() -> TestResult {
     config.settings.lsp.enabled = false;
     let (mut session, mut events, _snaps) = Session::new(config);
     session.set_lsp_connector(test_connector(Behavior::Normal, None, Arc::clone(&spawns)));
-    let backend = local(session);
+    let backend = local_session(session, None);
 
     backend.send(
         backend.next_id(),
@@ -640,7 +640,7 @@ async fn missing_binary_warns_once_and_answers_empty() -> TestResult {
     let second = rust_file(&dir, "b.rs", "fn b() {}\n").ok_or("write failed")?;
     let spawns = Arc::new(AtomicUsize::new(0));
     let (session, mut events) = session_with_connector(failing_connector(Arc::clone(&spawns)));
-    let backend = local(session);
+    let backend = local_session(session, None);
 
     // Two documents of the same language: one spawn attempt, one warning.
     for path in [first, second] {
@@ -696,7 +696,7 @@ async fn server_death_is_reported_and_completions_stay_answered() -> TestResult 
         None,
         Arc::clone(&spawns),
     ));
-    let backend = local(session);
+    let backend = local_session(session, None);
 
     backend.send(
         backend.next_id(),
@@ -756,7 +756,7 @@ async fn crashed_server_restarts_and_replays_open_documents() -> TestResult {
         Some(observed_tx),
         Arc::clone(&spawns),
     ));
-    let backend = local(session);
+    let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
         Command::OpenDocument {

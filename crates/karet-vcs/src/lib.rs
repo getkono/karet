@@ -63,6 +63,7 @@ pub enum VcsError {
 /// The change state of a file in the working tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum StatusKind {
     /// A newly added (tracked) file.
     Added,
@@ -82,6 +83,7 @@ pub enum StatusKind {
 /// commit-message generator (`git diff --cached`, without a `git` subprocess).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StagedDiff {
     /// The unified-diff text of every staged change.
     pub patch: String,
@@ -93,6 +95,7 @@ pub struct StagedDiff {
 
 /// A git branch.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Branch {
     /// The branch name.
     pub name: String,

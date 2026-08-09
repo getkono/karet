@@ -13,6 +13,7 @@ pub const SIZE_GUARD: u64 = 10 * 1024 * 1024;
 /// The renderer a file should be opened with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FileKind {
     /// UTF-8 text — code or plain prose (the application resolves the grammar).
     Text,

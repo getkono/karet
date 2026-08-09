@@ -220,9 +220,10 @@ mod tests {
             start_byte: start,
             old_end_byte: old_end,
             new_end_byte: new_end,
-            start_point: (0, start),
-            old_end_point: (0, old_end),
-            new_end_point: (0, new_end),
+            start_point: karet_core::BytePoint::new(0, start),
+            old_end_point: karet_core::BytePoint::new(0, old_end),
+            new_end_point: karet_core::BytePoint::new(0, new_end),
+            replaced: String::new(),
         }
     }
 

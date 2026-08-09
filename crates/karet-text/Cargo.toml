@@ -14,9 +14,13 @@ categories.workspace   = true
 
 [features]
 default = []
+# Serialize/Deserialize on the value types that cross the backend seam
+# (Eol, Encoding). Off by default; enables karet-core's serde too.
+serde = ["dep:serde", "karet-core/serde"]
 
 [dependencies]
 karet-core.workspace = true
+serde = { workspace = true, optional = true }
 ropey.workspace = true
 memchr.workspace = true                # fast line-ending scanning (load/save, EOL detection)
 tempfile.workspace = true              # atomic crash-safe save (temp + fsync + rename)

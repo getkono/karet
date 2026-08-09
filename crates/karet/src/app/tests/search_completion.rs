@@ -307,11 +307,12 @@
 
     /// Build an app wired to a real session + local backend, focused on the SCM pane.
     fn scm_app(root: PathBuf) -> (App, EventRx) {
-        let (session, events, _snaps) = Session::new(SessionConfig {
+        let (local_backend, _snaps) = local(SessionConfig {
             roots: vec![root.clone()],
             ..SessionConfig::default()
         });
-        let backend: Arc<dyn Backend> = Arc::new(local(session));
+        let backend: Arc<dyn Backend> = Arc::new(local_backend);
+        let events = backend.take_events().expect("backend event stream");
         let mut app = App::new(root, Vec::new(), Vec::new(), false);
         app.backend = Some(backend);
         app.sidebar_panel = SidebarPanel::SourceControl;
@@ -340,11 +341,12 @@
         let path = dir.join("a.txt");
         std::fs::write(&path, "ab").expect("write temp file");
 
-        let (session, mut events, _snaps) = Session::new(SessionConfig {
+        let (local_backend, _snaps) = local(SessionConfig {
             roots: vec![dir.clone()],
             ..SessionConfig::default()
         });
-        let backend: Arc<dyn Backend> = Arc::new(local(session));
+        let backend: Arc<dyn Backend> = Arc::new(local_backend);
+        let mut events = backend.take_events().expect("backend event stream");
         let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
         app.backend = Some(backend);
         app.open_path(&path);
@@ -381,11 +383,12 @@
         let path = dir.join("a.txt");
         std::fs::write(&path, "hello world").expect("write temp file");
 
-        let (session, mut events, _snaps) = Session::new(SessionConfig {
+        let (local_backend, _snaps) = local(SessionConfig {
             roots: vec![dir.clone()],
             ..SessionConfig::default()
         });
-        let backend: Arc<dyn Backend> = Arc::new(local(session));
+        let backend: Arc<dyn Backend> = Arc::new(local_backend);
+        let mut events = backend.take_events().expect("backend event stream");
         let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
         app.backend = Some(backend);
         app.open_path(&path);
@@ -425,11 +428,12 @@
         bytes.push(0xff);
         std::fs::write(&path, &bytes).expect("write invalid-utf8 file");
 
-        let (session, mut events, _snaps) = Session::new(SessionConfig {
+        let (local_backend, _snaps) = local(SessionConfig {
             roots: vec![dir.clone()],
             ..SessionConfig::default()
         });
-        let backend: Arc<dyn Backend> = Arc::new(local(session));
+        let backend: Arc<dyn Backend> = Arc::new(local_backend);
+        let mut events = backend.take_events().expect("backend event stream");
         let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
         app.backend = Some(backend);
         app.open_path(&path);

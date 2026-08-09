@@ -26,7 +26,7 @@ use super::schema::Settings;
 
 /// One problem found while loading configuration. Neutral so the app can render it
 /// as a notification without knowing the config internals.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ConfigDiagnostic {
     /// The configuration file the problem was found in.
     pub path: PathBuf,
@@ -38,7 +38,9 @@ pub struct ConfigDiagnostic {
 }
 
 /// A configuration layer in the settings cascade.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum ConfigLayer {
     /// `<system config dir>/karet/setting.jsonc`.
     System,
@@ -61,7 +63,7 @@ impl ConfigLayer {
 }
 
 /// Whether a discovered configuration layer contributed to the loaded settings.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ConfigLayerStatus {
     /// The file existed, parsed as JSONC, and had an object at the top level.
     Loaded,
@@ -72,7 +74,7 @@ pub enum ConfigLayerStatus {
 }
 
 /// One layer considered while loading configuration.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ConfigLayerReport {
     /// Which layer this row describes.
     pub layer: ConfigLayer,
@@ -83,7 +85,7 @@ pub struct ConfigLayerReport {
 }
 
 /// The loaded settings plus enough provenance for a UI to explain them.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LoadedConfig {
     /// The final validated settings in effect for this session.
     pub settings: Settings,
@@ -94,6 +96,8 @@ pub struct LoadedConfig {
     /// Effective setting key paths that were explicitly set by a valid layer.
     pub explicit: BTreeMap<String, ConfigLayer>,
     /// Parsed per-layer values used to seed live reload without rereading files.
+    /// Loader machinery, not report data: never crosses the seam.
+    #[serde(skip)]
     sources: Option<Vec<CachedLayer>>,
 }
 

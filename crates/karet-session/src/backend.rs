@@ -15,8 +15,11 @@ const BACKUP_TICK: Duration = Duration::from_secs(2);
 use crate::api::Command;
 use crate::api::RequestId;
 use crate::highlight::HighlightResult;
+use crate::local::SnapshotRx;
 use crate::lsp::LspUpdate;
+use crate::session::EventRx;
 use crate::session::Session;
+use crate::session::SessionConfig;
 use crate::spell::SpellResult;
 
 /// Errors produced when submitting to a [`Backend`].
@@ -47,6 +50,15 @@ pub trait Backend: Send + Sync {
     /// The next monotonic [`RequestId`] for this connection.
     #[must_use]
     fn next_id(&self) -> RequestId;
+
+    /// Take this connection's [`Event`] stream.
+    ///
+    /// The stream is single-consumer: the first call yields `Some`, every later
+    /// call `None`. Having the stream on the trait — not on a concrete
+    /// constructor — is what lets a remote implementation slot in without the
+    /// composition root changing.
+    #[must_use]
+    fn take_events(&self) -> Option<EventRx>;
 }
 
 /// An in-process backend that drives a [`Session`] on a background task.
@@ -58,6 +70,7 @@ pub trait Backend: Send + Sync {
 pub struct LocalBackend {
     commands: mpsc::UnboundedSender<(RequestId, Command)>,
     next: AtomicU64,
+    events: std::sync::Mutex<Option<EventRx>>,
 }
 
 impl Backend for LocalBackend {
@@ -70,19 +83,33 @@ impl Backend for LocalBackend {
     fn next_id(&self) -> RequestId {
         RequestId(self.next.fetch_add(1, Ordering::Relaxed))
     }
+
+    fn take_events(&self) -> Option<EventRx> {
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
 }
 
-/// Drive `session` in-process on a spawned task, returning a [`LocalBackend`] to
-/// submit commands to.
+/// Build a [`Session`] from `config` and drive it in-process on a spawned task,
+/// returning the [`LocalBackend`] to submit commands to plus the local-only
+/// [`SnapshotRx`] render stream.
 ///
 /// Must be called within a Tokio runtime context (the app enters one before
-/// constructing the backend). The session's [`EventRx`](crate::session::EventRx)
-/// and [`SnapshotRx`](crate::local::SnapshotRx) (from [`Session::new`]) are the
-/// matching output streams; the actor ends when the returned backend is dropped.
-///
-/// [`Session::new`]: crate::session::Session::new
+/// constructing the backend). The [`Event`](crate::api::Event) stream is obtained
+/// from the backend itself ([`Backend::take_events`]); the snapshot stream is
+/// returned directly because it is deliberately in-process-only. The actor ends
+/// when the returned backend is dropped.
 #[must_use]
-pub fn local(mut session: Session) -> LocalBackend {
+pub fn local(config: SessionConfig) -> (LocalBackend, SnapshotRx) {
+    let (session, events, snaps) = Session::new(config);
+    (local_session(session, Some(events)), snaps)
+}
+
+/// Drive an already-constructed `session` (whose event/snapshot streams the
+/// caller holds) — the lower-level seam used by in-crate tests.
+pub(crate) fn local_session(mut session: Session, events: Option<EventRx>) -> LocalBackend {
     let (commands, mut rx) = mpsc::unbounded_channel::<(RequestId, Command)>();
     let (watcher, mut fs_rx) = session.take_watch();
     let mut highlights = session.take_highlights();
@@ -135,6 +162,7 @@ pub fn local(mut session: Session) -> LocalBackend {
     LocalBackend {
         commands,
         next: AtomicU64::new(1),
+        events: std::sync::Mutex::new(events),
     }
 }
 
@@ -212,7 +240,7 @@ mod tests {
         }
 
         let (session, mut events, _snaps) = Session::new(SessionConfig::default());
-        let backend = local(session);
+        let backend = local_session(session, None);
         let id = backend.next_id();
         assert!(
             backend
@@ -280,7 +308,7 @@ mod tests {
             roots: vec![dir.path().to_path_buf()],
             ..SessionConfig::default()
         });
-        let backend = local(session);
+        let backend = local_session(session, None);
         let id = backend.next_id();
         assert!(
             backend
@@ -349,7 +377,7 @@ mod tests {
             roots: vec![root.clone()],
             ..SessionConfig::default()
         });
-        let backend = local(session);
+        let backend = local_session(session, None);
         let open_id = backend.next_id();
         assert!(
             backend
@@ -534,7 +562,7 @@ mod tests {
         }
 
         let (session, _events, mut snaps) = Session::new(SessionConfig::default());
-        let backend = local(session);
+        let backend = local_session(session, None);
         let id = backend.next_id();
         assert!(
             backend
@@ -577,7 +605,7 @@ mod tests {
         }
 
         let (session, _events, mut snaps) = Session::new(SessionConfig::default());
-        let backend = local(session);
+        let backend = local_session(session, None);
         assert!(
             backend
                 .send(
@@ -613,7 +641,7 @@ mod tests {
         }
 
         let (session, _events, mut snaps) = Session::new(SessionConfig::default());
-        let backend = local(session);
+        let backend = local_session(session, None);
         assert!(
             backend
                 .send(
@@ -653,7 +681,7 @@ mod tests {
         }
 
         let (session, mut events, mut snaps) = Session::new(SessionConfig::default());
-        let backend = local(session);
+        let backend = local_session(session, None);
         let open = backend.next_id();
         assert!(
             backend
@@ -728,7 +756,7 @@ mod tests {
 
         // Default settings: `editor.semanticComments` is on.
         let (session, _events, mut snaps) = Session::new(SessionConfig::default());
-        let backend = local(session);
+        let backend = local_session(session, None);
         assert!(
             backend
                 .send(
@@ -771,7 +799,7 @@ mod tests {
         let mut config = SessionConfig::default();
         config.settings.editor.semantic_comments.enabled = false;
         let (session, _events, mut snaps) = Session::new(config);
-        let backend = local(session);
+        let backend = local_session(session, None);
         assert!(
             backend
                 .send(
@@ -832,7 +860,7 @@ mod tests {
         }
 
         let (session, mut events, mut snaps) = Session::new(SessionConfig::default());
-        let backend = local(session);
+        let backend = local_session(session, None);
         let id = backend.next_id();
         if backend
             .send(

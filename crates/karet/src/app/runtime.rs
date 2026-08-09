@@ -13,7 +13,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     // The session backend runs on its own Tokio runtime; the UI task selects over
     // terminal input, backend events, and document snapshots so it never blocks.
     let runtime = tokio::runtime::Runtime::new().map_err(|e| eyre!("tokio runtime: {e}"))?;
-    let (session, events, snaps) = Session::new(SessionConfig {
+    let config = SessionConfig {
         roots: vec![app.root.clone()],
         settings: app.settings.clone(),
         loaded_config: app.loaded_config.clone(),
@@ -25,7 +25,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
         // Immutable installations are shared by every local karet instance.
         lsp_registry_dir: directories::ProjectDirs::from("", "getkono", "karet")
             .map(|dirs| dirs.data_local_dir().join("language-servers")),
-    });
+    };
 
     let mut terminal = ratatui::init();
     let _ = crossterm::execute!(
@@ -66,7 +66,14 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     }
 
     let result = runtime.block_on(async move {
-        let backend: Arc<dyn Backend> = Arc::new(local(session));
+        // The composition root only ever sees the `Backend` seam: the local
+        // implementation is constructed here, and the event stream comes off the
+        // trait — the exact shape a remote backend will slot into.
+        let (local_backend, snaps) = local(config);
+        let backend: Arc<dyn Backend> = Arc::new(local_backend);
+        let Some(events) = backend.take_events() else {
+            return Err(eyre!("backend event stream is unavailable"));
+        };
         app.backend = Some(backend);
         app.register_open_tabs();
         // Surface any configuration-load problems as startup notifications, now that

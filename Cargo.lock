@@ -3018,6 +3018,9 @@ dependencies = [
 [[package]]
 name = "karet-filetype"
 version = "0.4.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "karet-fileview"
@@ -3161,6 +3164,7 @@ dependencies = [
  "karet-core",
  "memchr",
  "ropey",
+ "serde",
  "tempfile",
  "thiserror 2.0.19",
 ]
@@ -3251,6 +3255,7 @@ dependencies = [
  "gix",
  "imara-diff",
  "karet-core",
+ "serde",
  "ssh-key",
  "thiserror 2.0.19",
 ]

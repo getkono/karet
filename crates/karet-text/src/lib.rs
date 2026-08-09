@@ -26,10 +26,10 @@ mod load;
 mod save;
 
 pub use apply::Applied;
-pub use apply::AppliedEdit;
-pub use history::EditCause;
 pub use history::EditContext;
 use history::History;
+pub use karet_core::AppliedEdit;
+pub use karet_core::EditCause;
 pub use load::Encoding;
 pub use load::Eol;
 pub use load::LoadError;
@@ -353,11 +353,11 @@ impl TextBuffer {
     /// Tree-sitter columns are byte offsets from the line start — **not** the
     /// `char` columns of [`LineCol`] — so this is the conversion the parse edit
     /// path must use.
-    pub(crate) fn byte_to_point(&self, byte: usize) -> (usize, usize) {
+    pub(crate) fn byte_to_point(&self, byte: usize) -> karet_core::BytePoint {
         let b = byte.min(self.rope.len_bytes());
         let row = self.rope.byte_to_line(b);
         let line_start = self.rope.line_to_byte(row);
-        (row, b - line_start)
+        karet_core::BytePoint::new(row, b - line_start)
     }
 }
 
@@ -502,8 +502,11 @@ mod tests {
     fn byte_to_point_uses_byte_columns() {
         // 'é' is two bytes, so the byte column after it is 2 even though it is one char.
         let b = TextBuffer::from_text("é=1\nx");
-        assert_eq!(b.byte_to_point(0), (0, 0));
-        assert_eq!(b.byte_to_point(2), (0, 2)); // after 'é' — byte column 2, char column 1
-        assert_eq!(b.byte_to_point(5), (1, 0)); // start of line 1 ("é=1\n" = 5 bytes)
+        use karet_core::BytePoint;
+        assert_eq!(b.byte_to_point(0), BytePoint::new(0, 0));
+        // After 'é' — byte column 2, char column 1.
+        assert_eq!(b.byte_to_point(2), BytePoint::new(0, 2));
+        // Start of line 1 ("é=1\n" = 5 bytes).
+        assert_eq!(b.byte_to_point(5), BytePoint::new(1, 0));
     }
 }

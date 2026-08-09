@@ -184,9 +184,10 @@ fn incremental_reparse_matches_full() -> Result<(), TsError> {
         start_byte: 11,
         old_end_byte: 11,
         new_end_byte: 19,
-        start_point: (0, 11),
-        old_end_point: (0, 11),
-        new_end_point: (0, 19),
+        start_point: karet_core::BytePoint::new(0, 11),
+        old_end_point: karet_core::BytePoint::new(0, 11),
+        new_end_point: karet_core::BytePoint::new(0, 19),
+        replaced: String::new(),
     });
     tree.reparse_with(&mut pool, |byte| new.as_bytes().get(byte..).unwrap_or(&[]))?;
 
@@ -223,11 +224,11 @@ fn parses_markdown_and_compiles_block_query() -> Result<(), TsError> {
 
 /// The `(row, byte-column)` of `byte` in `text` — for building test edits.
 #[cfg(feature = "lang-markdown")]
-fn point_of(text: &str, byte: usize) -> (usize, usize) {
+fn point_of(text: &str, byte: usize) -> karet_core::BytePoint {
     let before = text.get(..byte).unwrap_or("");
     let row = before.matches('\n').count();
     let col = before.rfind('\n').map_or(byte, |i| byte - i - 1);
-    (row, col)
+    karet_core::BytePoint::new(row, col)
 }
 
 #[cfg(feature = "lang-markdown")]
@@ -331,6 +332,7 @@ fn reparse_discovers_a_newly_typed_code_fence() -> Result<(), TsError> {
         start_point: point_of(old, old.len()),
         old_end_point: point_of(old, old.len()),
         new_end_point: point_of(new, new.len()),
+        replaced: String::new(),
     };
     parser.reparse(&mut tree, &[edit], new)?;
 
@@ -366,9 +368,10 @@ fn deleting_a_fence_drops_its_layer() -> Result<(), TsError> {
             start_byte: 0,
             old_end_byte: old.len(),
             new_end_byte: 0,
-            start_point: (0, 0),
+            start_point: karet_core::BytePoint::new(0, 0),
             old_end_point: point_of(old, old.len()),
-            new_end_point: (0, 0),
+            new_end_point: karet_core::BytePoint::new(0, 0),
+            replaced: String::new(),
         }],
         new,
     )?;
@@ -484,8 +487,8 @@ fn parse_ranges_rejects_an_empty_range_list() {
 #[test]
 fn point_at_resolves_rows_and_columns() {
     let text = "ab\ncd\n";
-    let starts = line_starts(text);
-    assert_eq!(starts, vec![0, 3, 6]);
+    let starts = karet_core::LineIndex::new(text);
+    assert_eq!(starts.line_count(), 3);
     assert_eq!(
         point_at(&starts, 0),
         tree_sitter::Point { row: 0, column: 0 }

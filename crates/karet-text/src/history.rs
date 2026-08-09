@@ -19,26 +19,7 @@ use karet_core::LineCol;
 /// Coalesce consecutive typing within this many milliseconds into one undo step.
 const COALESCE_WINDOW_MS: u64 = 200;
 
-/// Why an edit happened. Drives undo coalescing: only [`EditCause::Type`] is
-/// eligible to merge with the preceding edit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum EditCause {
-    /// A single typed character.
-    Type,
-    /// A newline (always starts a fresh undo group).
-    Newline,
-    /// A backward/forward deletion.
-    Delete,
-    /// A clipboard paste (one group, however large).
-    Paste,
-    /// A cut (delete of a selection).
-    Cut,
-    /// A programmatic or multi-edit replacement.
-    Replace,
-    /// An edit originating from outside the editor (e.g. a reload).
-    External,
-}
+pub use karet_core::EditCause;
 
 /// Context supplied alongside a [`Change`] when applying it: the monotonic
 /// coalescing clock (millis), why the edit happened, and the cursor *before* it

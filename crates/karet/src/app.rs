@@ -116,7 +116,6 @@ use karet_session::PullRequestSummary;
 use karet_session::RangeSpec;
 use karet_session::RepositorySnapshot;
 use karet_session::RequestId;
-use karet_session::Session;
 use karet_session::SessionConfig;
 use karet_session::Settings;
 use karet_session::SnapshotRx;

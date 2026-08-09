@@ -200,7 +200,6 @@ impl App {
     /// Apply a configuration snapshot. Live reload deliberately leaves the startup
     /// panel alone; it is a startup action rather than persistent UI state.
     pub(super) fn apply_loaded_config(&mut self, loaded: LoadedConfig, apply_startup_panel: bool) {
-        use karet_session::config::schema::IconStyleSetting;
         use karet_session::config::schema::StartupPanel;
 
         let settings = loaded.settings.clone();
@@ -218,11 +217,7 @@ impl App {
         }
 
         if self.icon_override.is_none() {
-            self.icon_style = match settings.workbench.icon_style {
-                IconStyleSetting::NerdFont => IconStyle::NerdFont,
-                IconStyleSetting::Unicode => IconStyle::Unicode,
-                IconStyleSetting::Ascii => IconStyle::Ascii,
-            };
+            self.icon_style = settings.workbench.icon_style.into();
         }
 
         if apply_startup_panel {

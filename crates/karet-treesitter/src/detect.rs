@@ -12,17 +12,14 @@ use crate::registry;
 
 /// The [`LanguageId`] of a bundled grammar for `path`'s file type, if one is
 /// compiled in. `None` means the caller should render plaintext.
+///
+/// `karet-filetype` is the single path→language authority; its grammar identity
+/// resolves through the same alias table as injection names. A declared identity
+/// that doesn't resolve (a registry typo, or a grammar not compiled into this
+/// build) degrades to `None` — plaintext — rather than silently shadowing.
 #[must_use]
 pub fn language_id_from_path(path: &Path) -> Option<LanguageId> {
-    let file_type = karet_filetype::file_type_for_path(path);
-    if let Some(grammar) = file_type.grammar() {
-        return language_id_from_injection_name(grammar);
-    }
-    let extension = extension(path)?;
-    registry::all()
-        .iter()
-        .find(|grammar| grammar.extensions.contains(&extension.as_str()))
-        .map(|grammar| grammar.id)
+    language_id_from_injection_name(karet_filetype::file_type_for_path(path).grammar()?)
 }
 
 /// A human-readable language name for `path`, for UI labels.
@@ -33,14 +30,7 @@ pub fn language_id_from_path(path: &Path) -> Option<LanguageId> {
 #[must_use]
 pub fn language_name_from_path(path: &Path) -> Option<&'static str> {
     let ft = karet_filetype::file_type_for_path(path);
-    if ft.is_recognized() {
-        return Some(ft.name());
-    }
-    let extension = extension(path)?;
-    registry::all()
-        .iter()
-        .find(|grammar| grammar.extensions.contains(&extension.as_str()))
-        .map(|grammar| grammar.name)
+    ft.is_recognized().then(|| ft.name())
 }
 
 /// The [`LanguageId`] a grammar-injection language name refers to, if that grammar is
@@ -62,7 +52,8 @@ pub fn language_id_from_injection_name(name: &str) -> Option<LanguageId> {
         .map(|g| g.id)
 }
 
-/// Lowercased extension of `path`, without the dot.
+/// Lowercased extension of `path`, without the dot (test helper).
+#[cfg(test)]
 fn extension(path: &Path) -> Option<String> {
     path.extension()?.to_str().map(str::to_ascii_lowercase)
 }
@@ -276,6 +267,54 @@ mod tests {
             assert!(path_id.is_some(), "{path}");
             assert_eq!(path_id, language_id_from_injection_name(alias), "{path}");
         }
+    }
+
+    /// The cross-registry guard rail: with every grammar compiled in, every
+    /// grammar identity `karet-filetype` declares must resolve to a bundled
+    /// grammar through the injection-name table, and every grammar's file
+    /// extensions must be routed by `karet-filetype` — the single path→language
+    /// authority — to that same grammar. A typo on either side fails here
+    /// instead of silently rendering plaintext.
+    #[cfg(feature = "all-languages")]
+    #[test]
+    fn filetype_grammar_identities_and_grammar_extensions_agree() {
+        let mut problems: Vec<String> = Vec::new();
+        for ft in karet_filetype::all_file_types() {
+            if let Some(grammar) = ft.grammar()
+                && language_id_from_injection_name(grammar).is_none()
+            {
+                problems.push(format!(
+                    "file type {:?} declares grammar {grammar:?}, which no bundled grammar answers",
+                    ft.name()
+                ));
+            }
+        }
+        for grammar in registry::all() {
+            for ext in grammar.extensions {
+                let path_string = format!("probe.{ext}");
+                let routed = language_id_from_path(Path::new(&path_string));
+                if routed != Some(grammar.id) {
+                    problems.push(format!(
+                        "extension .{ext} (grammar {:?}) routes to {routed:?} via karet-filetype",
+                        grammar.name
+                    ));
+                }
+            }
+        }
+        // Alias uniqueness: a name owned by two grammars resolves by table order,
+        // which is exactly the silent-precedence bug this test exists to prevent.
+        let mut seen: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        for grammar in registry::all() {
+            for name in grammar.names {
+                if let Some(previous) = seen.insert(name, grammar.name) {
+                    problems.push(format!(
+                        "injection name {name:?} is claimed by both {previous:?} and {:?}",
+                        grammar.name
+                    ));
+                }
+            }
+        }
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
     }
 
     #[test]

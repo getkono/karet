@@ -18,6 +18,7 @@ mod structured_tests;
 
 /// The default long-line behavior for an editable file type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum WrapMode {
     /// Soft-wrap long lines to the editor viewport.
     Wrap,
@@ -383,7 +384,9 @@ static REGISTRY: &[FileType] = &[
         &[],
         "properties",
     ),
-    language_named("Pkl", Config, None, &["pkl"], &[], "pkl"),
+    // No tree-sitter grammar for Pkl is bundled: recognized (name, LSP id,
+    // config selector) but explicitly grammar-less until one exists.
+    language("Pkl", Config, None, &["pkl"], &[], (None, "pkl", "pkl")),
     language_named("XML", Markup, None, &["xml"], &[], "xml"),
     language(
         "SVG",
@@ -683,6 +686,16 @@ pub fn file_type_for_path(path: &Path) -> FileType {
         }
     }
     UNKNOWN
+}
+
+/// Every registered [`FileType`], in registry order.
+///
+/// This is the whole catalogue — for consumers that audit or enumerate the
+/// vocabulary (e.g. the cross-registry consistency test in `karet-treesitter`)
+/// rather than resolve a single path.
+#[must_use]
+pub fn all_file_types() -> &'static [FileType] {
+    REGISTRY
 }
 
 /// The icon glyph for a path in the given [`IconStyle`] — a convenience wrapper

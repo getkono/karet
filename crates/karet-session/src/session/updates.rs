@@ -517,6 +517,7 @@ impl Session {
             doc: doc_id,
             version: doc.buffer.version(),
             language: doc.language,
+            language_selector: doc.language_selector,
             spelling_language,
             text: doc.buffer.text(),
             highlights: doc.highlights.clone(),

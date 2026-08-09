@@ -136,4 +136,9 @@
         fn next_id(&self) -> RequestId {
             RequestId(self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
         }
+
+        fn take_events(&self) -> Option<karet_session::EventRx> {
+            // The recording backend answers nothing; tests feed events manually.
+            None
+        }
     }

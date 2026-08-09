@@ -90,49 +90,28 @@ impl Rgba {
     }
 }
 
-/// The text emphasis a theme requests for a token class, independent of any
-/// renderer. Markup tokens carry weight/slant as much as color — a markdown
-/// heading reads as a heading because it is **bold**, not merely blue.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Emphasis {
-    /// Render bold.
-    pub bold: bool,
-    /// Render italic.
-    pub italic: bool,
-    /// Render struck through.
-    pub strikethrough: bool,
+pub use karet_core::Emphasis;
+
+/// Ratatui conversion for the neutral [`Emphasis`] flags (which live in
+/// `karet-core`; this view-only extension keeps ratatui out of the vocabulary).
+#[cfg(feature = "view")]
+pub trait EmphasisExt {
+    /// Convert to a ratatui modifier set (empty when no flag is set).
+    fn to_ratatui(self) -> ratatui::style::Modifier;
 }
 
-impl Emphasis {
-    /// Bold, and nothing else.
-    pub(crate) const BOLD: Self = Self {
-        bold: true,
-        italic: false,
-        strikethrough: false,
-    };
-    /// Italic, and nothing else.
-    pub(crate) const ITALIC: Self = Self {
-        bold: false,
-        italic: true,
-        strikethrough: false,
-    };
-    /// Struck through, and nothing else.
-    pub(crate) const STRIKETHROUGH: Self = Self {
-        bold: false,
-        italic: false,
-        strikethrough: true,
-    };
-
-    /// Convert to a ratatui modifier set (empty when neither flag is set).
-    #[cfg(feature = "view")]
-    #[must_use]
-    pub fn to_ratatui(self) -> ratatui::style::Modifier {
+#[cfg(feature = "view")]
+impl EmphasisExt for Emphasis {
+    fn to_ratatui(self) -> ratatui::style::Modifier {
         let mut m = ratatui::style::Modifier::empty();
         if self.bold {
             m |= ratatui::style::Modifier::BOLD;
         }
         if self.italic {
             m |= ratatui::style::Modifier::ITALIC;
+        }
+        if self.underline {
+            m |= ratatui::style::Modifier::UNDERLINED;
         }
         if self.strikethrough {
             m |= ratatui::style::Modifier::CROSSED_OUT;

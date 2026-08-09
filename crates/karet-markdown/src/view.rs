@@ -7,6 +7,7 @@
 //! [`MarkdownView`] paints those lines into a scrollable viewport; callers that want the
 //! lines themselves (to lay out a popup, say) use [`to_ratatui`] directly.
 
+use karet_theme::EmphasisExt;
 use karet_theme::Theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;

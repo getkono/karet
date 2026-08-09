@@ -90,7 +90,7 @@ impl SemanticBlocker {
             return SemanticBlocks::default();
         };
 
-        let starts = line_starts(text);
+        let starts = karet_core::LineIndex::new(text);
         let names = query.capture_names();
         let mut blocks = Vec::new();
         let mut headings = Vec::new();
@@ -143,7 +143,7 @@ impl SemanticBlocker {
         }
 
         headings.sort_unstable_by_key(|&(start, _, level)| (start, level));
-        let last_line = u32::try_from(starts.len().saturating_sub(1)).unwrap_or(u32::MAX);
+        let last_line = u32::try_from(starts.line_count().saturating_sub(1)).unwrap_or(u32::MAX);
         for (index, &(header_start, header_end, level)) in headings.iter().enumerate() {
             let scope_end = headings[index + 1..]
                 .iter()
@@ -164,27 +164,11 @@ impl SemanticBlocker {
     }
 }
 
-fn line_starts(text: &str) -> Vec<usize> {
-    let mut starts = vec![0];
-    starts.extend(
-        text.bytes()
-            .enumerate()
-            .filter(|(_, byte)| *byte == b'\n')
-            .map(|(index, _)| index + 1),
-    );
-    starts
+fn row_at(starts: &karet_core::LineIndex, byte: usize) -> u32 {
+    starts.row_at(karet_core::BytePos(byte))
 }
 
-fn row_at(starts: &[usize], byte: usize) -> u32 {
-    u32::try_from(
-        starts
-            .partition_point(|&start| start <= byte)
-            .saturating_sub(1),
-    )
-    .unwrap_or(u32::MAX)
-}
-
-fn occupied_end_row(starts: &[usize], text: &str, end: usize) -> u32 {
+fn occupied_end_row(starts: &karet_core::LineIndex, text: &str, end: usize) -> u32 {
     let adjusted = if end > 0 && text.as_bytes().get(end - 1) == Some(&b'\n') {
         end - 1
     } else {

@@ -118,6 +118,73 @@ impl Range {
     }
 }
 
+/// A precomputed line-start index over one immutable text snapshot, for cheap
+/// byte-offset → row / line-column lookups.
+///
+/// Engines that work over a borrowed `&str` (highlighters, outline extractors,
+/// blame narrowing) all need "which row is this byte on?"; this is that one
+/// shared implementation. Buffers that *own* mutable text keep using
+/// `karet_text::TextBuffer`'s conversions instead.
+#[derive(Clone, Debug)]
+pub struct LineIndex {
+    /// Byte offset of the start of each row; `starts[0] == 0`.
+    starts: Vec<usize>,
+}
+
+impl LineIndex {
+    /// Index `text`'s line starts (one `O(n)` scan).
+    #[must_use]
+    pub fn new(text: &str) -> Self {
+        let mut starts = vec![0];
+        starts.extend(
+            text.bytes()
+                .enumerate()
+                .filter_map(|(i, b)| (b == b'\n').then_some(i + 1)),
+        );
+        Self { starts }
+    }
+
+    /// The number of rows in the indexed text (always at least 1).
+    #[must_use]
+    pub fn line_count(&self) -> usize {
+        self.starts.len()
+    }
+
+    /// The 0-based row containing byte offset `pos` (clamped to the last row).
+    #[must_use]
+    pub fn row_at(&self, pos: BytePos) -> u32 {
+        let row = self.starts.partition_point(|&s| s <= pos.0) - 1;
+        u32::try_from(row).unwrap_or(u32::MAX)
+    }
+
+    /// The byte offset of the start of `row`, or `None` past the last row.
+    #[must_use]
+    pub fn start_of(&self, row: u32) -> Option<BytePos> {
+        self.starts.get(row as usize).map(|&s| BytePos(s))
+    }
+
+    /// The `(row, byte-column)` grid point of byte offset `pos`.
+    #[must_use]
+    pub fn point_at(&self, pos: BytePos) -> (u32, usize) {
+        let row = self.row_at(pos);
+        let start = self.starts.get(row as usize).copied().unwrap_or(0);
+        (row, pos.0.saturating_sub(start))
+    }
+
+    /// The [`LineCol`] (char-counted column) of byte offset `pos` within `text`.
+    ///
+    /// `text` must be the same snapshot the index was built from.
+    #[must_use]
+    pub fn line_col(&self, text: &str, pos: BytePos) -> LineCol {
+        let (row, byte_col) = self.point_at(pos);
+        let start = self.starts.get(row as usize).copied().unwrap_or(0);
+        let col = text
+            .get(start..start + byte_col)
+            .map_or(0, |s| s.chars().count());
+        LineCol::new(row, u32::try_from(col).unwrap_or(u32::MAX))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,5 +220,24 @@ mod tests {
             Range::new(LineCol::new(3, 0), LineCol::new(1, 0)),
             Err(CoreError::InvalidRange)
         );
+    }
+
+    #[test]
+    fn line_index_rows_points_and_columns() {
+        let text = "ab\ncdé\n\nx";
+        let idx = LineIndex::new(text);
+        assert_eq!(idx.row_at(BytePos(0)), 0);
+        assert_eq!(idx.row_at(BytePos(2)), 0); // the newline belongs to row 0
+        assert_eq!(idx.row_at(BytePos(3)), 1);
+        assert_eq!(idx.row_at(BytePos(9)), 3);
+        assert_eq!(idx.row_at(BytePos(999)), 3); // clamped
+        assert_eq!(idx.start_of(1), Some(BytePos(3)));
+        assert_eq!(idx.start_of(9), None);
+        // 'é' is 2 bytes: its start (byte 5) is byte-column 2 = char-column 2 on
+        // row 1; the position after it (byte 7) is char column 3.
+        assert_eq!(idx.point_at(BytePos(5)), (1, 2));
+        assert_eq!(idx.line_col(text, BytePos(7)), LineCol::new(1, 3));
+        // An empty text still has one row.
+        assert_eq!(LineIndex::new("").row_at(BytePos(0)), 0);
     }
 }

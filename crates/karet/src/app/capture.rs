@@ -33,7 +33,7 @@ pub(crate) fn capture(mut app: App, spec: CaptureSpec) -> color_eyre::Result<()>
     app.pointer_shapes_supported = false;
 
     let runtime = tokio::runtime::Runtime::new().map_err(|e| eyre!("tokio runtime: {e}"))?;
-    let (session, events, snaps) = Session::new(SessionConfig {
+    let config = SessionConfig {
         roots: vec![app.root.clone()],
         settings: app.settings.clone(),
         loaded_config: app.loaded_config.clone(),
@@ -43,14 +43,14 @@ pub(crate) fn capture(mut app: App, spec: CaptureSpec) -> color_eyre::Result<()>
         process_supervisor: std::env::current_exe().ok(),
         lsp_registry_dir: directories::ProjectDirs::from("", "getkono", "karet")
             .map(|dirs| dirs.data_local_dir().join("language-servers")),
-    });
+    };
 
     let mut terminal = Terminal::new(TestBackend::new(spec.cols, spec.rows))
         .map_err(|e| eyre!("capture terminal: {e}"))?;
 
     // Borrow rather than move, so the settled buffer and the theme are still here to
     // serialize once the runtime returns.
-    runtime.block_on(drive(&mut terminal, &mut app, session, events, snaps, spec))?;
+    runtime.block_on(drive(&mut terminal, &mut app, config, spec))?;
 
     let ansi = buffer_to_ansi(terminal.backend().buffer(), &app.theme);
     let mut out = io::stdout().lock();
@@ -68,12 +68,14 @@ pub(crate) fn capture(mut app: App, spec: CaptureSpec) -> color_eyre::Result<()>
 async fn drive(
     terminal: &mut Terminal<TestBackend>,
     app: &mut App,
-    session: Session,
-    events: EventRx,
-    snaps: SnapshotRx,
+    config: SessionConfig,
     spec: CaptureSpec,
 ) -> color_eyre::Result<()> {
-    let backend: Arc<dyn Backend> = Arc::new(local(session));
+    let (local_backend, snaps) = local(config);
+    let backend: Arc<dyn Backend> = Arc::new(local_backend);
+    let Some(events) = backend.take_events() else {
+        return Err(eyre!("backend event stream is unavailable"));
+    };
     app.backend = Some(backend);
     app.register_open_tabs();
     for diag in std::mem::take(&mut app.config_diagnostics) {

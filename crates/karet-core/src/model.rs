@@ -27,6 +27,9 @@ pub enum Severity {
     Information,
     /// A hint (often rendered subtly).
     Hint,
+    /// Forward-compatibility fallback: an unrecognized value from a newer peer.
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 /// A rendering hint attached to a [`Diagnostic`].
@@ -38,6 +41,9 @@ pub enum DiagnosticTag {
     Unnecessary,
     /// Deprecated code (often struck through).
     Deprecated,
+    /// Forward-compatibility fallback: an unrecognized value from a newer peer.
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 /// A secondary location related to a [`Diagnostic`] (e.g. "first defined here").
@@ -165,6 +171,9 @@ pub enum SymbolKind {
     Operator,
     /// A type parameter.
     TypeParameter,
+    /// Forward-compatibility fallback: an unrecognized value from a newer peer.
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 /// A document or workspace symbol, possibly with nested children.
@@ -196,6 +205,9 @@ pub enum InlayHintKind {
     Type,
     /// A parameter name.
     Parameter,
+    /// Forward-compatibility fallback: an unrecognized value from a newer peer.
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 /// An inline hint rendered between characters (inferred types, parameter names).
@@ -262,6 +274,9 @@ pub enum CompletionKind {
     Struct,
     /// An enum.
     Enum,
+    /// Forward-compatibility fallback: an unrecognized value from a newer peer.
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 /// A completion candidate.
@@ -294,6 +309,9 @@ pub enum MarkupKind {
     PlainText,
     /// CommonMark markdown (rendered by `karet-markdown` at the edge).
     Markdown,
+    /// Forward-compatibility fallback: an unrecognized value from a newer peer.
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 /// A documentation payload carried verbatim; rendered by the presentation layer.
@@ -406,5 +424,102 @@ mod tests {
         ];
         assert_eq!(kinds.len(), 9);
         assert!(kinds.contains(&SymbolKind::Object));
+    }
+
+    /// The wire payloads the backend seam actually carries must round-trip; this
+    /// is the compile- and run-time guarantee behind the "serde-ready" claim.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn wire_payloads_round_trip_through_serde() -> Result<(), serde_json::Error> {
+        fn rt<T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
+            value: &T,
+        ) -> Result<(), serde_json::Error> {
+            let json = serde_json::to_string(value)?;
+            assert_eq!(&serde_json::from_str::<T>(&json)?, value);
+            Ok(())
+        }
+
+        rt(&Diagnostic {
+            range: Range::default(),
+            severity: Severity::Warning,
+            message: "m".into(),
+            source: None,
+            code: Some("E0001".into()),
+            tags: vec![DiagnosticTag::Unnecessary],
+            related: vec![RelatedInfo {
+                location: Location {
+                    path: PathBuf::from("a.rs"),
+                    range: Range::default(),
+                },
+                message: "here".into(),
+            }],
+        })?;
+        rt(&Decoration {
+            range: Range::default(),
+            kind: DecorationKind::InlineText {
+                text: "blame".into(),
+                before: false,
+            },
+            role: Some(ThemeRole::Muted),
+        })?;
+        rt(&Symbol {
+            name: "f".into(),
+            kind: SymbolKind::Function,
+            detail: None,
+            range: Range::default(),
+            selection_range: Range::default(),
+            container_name: None,
+            children: Vec::new(),
+        })?;
+        rt(&CompletionItem {
+            label: "push".into(),
+            kind: CompletionKind::Method,
+            detail: None,
+            documentation: None,
+            insert_text: "push".into(),
+            edit: None,
+            sort_text: None,
+            deprecated: false,
+        })?;
+        rt(&Hover {
+            contents: Markup {
+                kind: MarkupKind::Markdown,
+                value: "# t".into(),
+            },
+            range: None,
+        })?;
+        rt(&SignatureHelp {
+            signatures: vec![Signature {
+                label: "f(x)".into(),
+                documentation: None,
+                parameters: vec![ParamInfo {
+                    label: "x".into(),
+                    documentation: None,
+                }],
+            }],
+            active_signature: 0,
+            active_parameter: 0,
+        })?;
+        Ok(())
+    }
+
+    /// A newer peer's unknown enum value deserializes to the `Unknown` fallback
+    /// instead of failing the whole payload.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn unknown_enum_values_degrade_instead_of_failing() -> Result<(), serde_json::Error> {
+        assert_eq!(
+            serde_json::from_str::<Severity>("\"Catastrophic\"")?,
+            Severity::Unknown
+        );
+        assert_eq!(
+            serde_json::from_str::<SymbolKind>("\"Quasar\"")?,
+            SymbolKind::Unknown
+        );
+        assert_eq!(
+            serde_json::from_str::<CompletionKind>("\"Novel\"")?,
+            CompletionKind::Unknown
+        );
+        Ok(())
     }
 }

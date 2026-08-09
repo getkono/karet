@@ -162,11 +162,12 @@
         let path = dir.join("a.txt");
         std::fs::write(&path, "ab").expect("write temp file");
 
-        let (session, mut events, mut snaps) = Session::new(SessionConfig {
+        let (local_backend, mut snaps) = local(SessionConfig {
             roots: vec![dir.clone()],
             ..SessionConfig::default()
         });
-        let backend: Arc<dyn Backend> = Arc::new(local(session));
+        let backend: Arc<dyn Backend> = Arc::new(local_backend);
+        let mut events = backend.take_events().expect("backend event stream");
         let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
         app.backend = Some(backend);
         app.open_path_preview(&path, true);
@@ -202,11 +203,12 @@
         std::fs::write(&a, "ab").expect("write a");
         std::fs::write(&b, "cd").expect("write b");
 
-        let (session, mut events, mut snaps) = Session::new(SessionConfig {
+        let (local_backend, mut snaps) = local(SessionConfig {
             roots: vec![dir.clone()],
             ..SessionConfig::default()
         });
-        let backend: Arc<dyn Backend> = Arc::new(local(session));
+        let backend: Arc<dyn Backend> = Arc::new(local_backend);
+        let mut events = backend.take_events().expect("backend event stream");
         let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
         app.backend = Some(backend);
 

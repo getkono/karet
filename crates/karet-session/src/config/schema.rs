@@ -619,7 +619,12 @@ impl Default for Workbench {
     }
 }
 
-/// Icon glyph set (mirrors `karet_filetype::IconStyle`).
+/// Icon glyph set — the camelCase settings-file spelling of
+/// [`karet_filetype::IconStyle`].
+///
+/// This wire enum exists for the config format alone (camelCase JSONC values +
+/// the generated JSON Schema, which `karet-filetype`'s dependency-free charter
+/// cannot provide); the [`From`] conversion below is the single translation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum IconStyleSetting {
@@ -630,6 +635,16 @@ pub enum IconStyleSetting {
     Unicode,
     /// Plain ASCII (maximally portable).
     Ascii,
+}
+
+impl From<IconStyleSetting> for karet_filetype::IconStyle {
+    fn from(setting: IconStyleSetting) -> Self {
+        match setting {
+            IconStyleSetting::NerdFont => Self::NerdFont,
+            IconStyleSetting::Unicode => Self::Unicode,
+            IconStyleSetting::Ascii => Self::Ascii,
+        }
+    }
 }
 
 /// Which sidebar panel is shown at startup.

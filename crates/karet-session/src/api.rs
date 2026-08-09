@@ -43,7 +43,7 @@ pub use github::*;
 
 /// Per-document editing and serialization behavior after application settings and
 /// matching EditorConfig files have been resolved.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DocumentSettings {
     /// Whether indentation commands insert spaces (`true`) or hard tabs (`false`).
     pub insert_spaces: bool,
@@ -82,7 +82,7 @@ impl Default for DocumentSettings {
 ///
 /// The dictionary files themselves are discovered at runtime so the application
 /// package stays small; this enum deliberately keeps the supported locale set narrow.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SpellingLanguage {
     /// American English (`en_US`).
     EnglishUnitedStates,
@@ -121,25 +121,18 @@ impl SpellingLanguage {
 }
 
 /// A text line-ending style supported by editable karet documents.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DocumentLineEnding {
-    /// Line feed (`\n`).
-    Lf,
-    /// Carriage return followed by line feed (`\r\n`).
-    Crlf,
-}
+///
+/// This *is* `karet-text`'s [`Eol`](karet_text::Eol) — the buffer's own
+/// vocabulary, serde-ready, carried across the seam without a mirror type.
+pub type DocumentLineEnding = karet_text::Eol;
 
 /// A text encoding supported by editable karet documents.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DocumentEncoding {
-    /// UTF-8 without a byte-order mark.
-    Utf8,
-    /// UTF-8 with a byte-order mark.
-    Utf8Bom,
-}
+///
+/// This *is* `karet-text`'s [`Encoding`](karet_text::Encoding).
+pub type DocumentEncoding = karet_text::Encoding;
 
 /// A complete repository snapshot for Source Control controls and pickers.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RepositorySnapshot {
     /// Current branch, upstream divergence, and recovery state.
     pub state: RepositoryState,
@@ -154,7 +147,7 @@ pub struct RepositorySnapshot {
 }
 
 /// A forge-neutral open pull request suitable for the branch picker.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PullRequestSummary {
     /// Repository-local pull request number.
     pub number: u64,
@@ -181,6 +174,7 @@ pub struct PullRequestSummary {
 /// One serialized repository mutation. The backend runs these off the actor thread.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum VcsAction {
     /// Create, optionally switch to, and optionally publish a branch.
     CreateBranch(CreateBranchOptions),
@@ -273,6 +267,7 @@ pub enum VcsAction {
 /// Structured result from a repository action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum VcsOutcome {
     /// The action completed without a more specific result.
     Completed,
@@ -306,15 +301,19 @@ pub enum VcsOutcome {
 use crate::config::LoadedConfig;
 
 /// Identifies an open document within a session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct DocumentId(pub u64);
 
 /// Identifies a view (editor pane) within a session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ViewId(pub u64);
 
 /// Correlates a [`Command`] with the [`Event`] that answers it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct RequestId(pub u64);
 
 /// Stable, opaque identity for a language-server provider.
@@ -510,6 +509,7 @@ pub struct LanguageServerStatus {
 /// ref resolution stays with the repo, and answers with [`Event::RangeReady`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum RangeSpec {
     /// The current branch's unpushed work: `@{upstream}...HEAD` (three-dot) — what the
     /// local commits change since they diverged from the tracking branch.
@@ -535,6 +535,7 @@ pub enum RangeSpec {
 /// A request submitted by the presentation layer to the backend.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum Command {
     /// Cancel a safely-droppable background request.
     ///
@@ -872,6 +873,7 @@ pub enum Command {
 /// Which visualization a [`Event::GraphReady`] carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum GraphKind {
     /// The package-dependency graph of the workspace.
     Dependency,
@@ -880,7 +882,7 @@ pub enum GraphKind {
 }
 
 /// A crash-recovery swap offered to the UI on startup (see [`Event::SwapsFound`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SwapInfo {
     /// The document the swap backs up.
     pub original: PathBuf,
@@ -894,6 +896,71 @@ pub struct SwapInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The seam's serde-ready claim, enforced: representative [`Command`]s and
+    /// [`Event`]s must round-trip through JSON. Every type a variant carries is
+    /// pulled into this guarantee by the derive, so a leak that breaks
+    /// serializability fails to compile and a behavioral regression fails here.
+    #[test]
+    fn commands_and_events_round_trip_through_serde() -> Result<(), serde_json::Error> {
+        fn rt<T: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug>(
+            value: &T,
+        ) -> Result<String, serde_json::Error> {
+            let json = serde_json::to_string(value)?;
+            let back: T = serde_json::from_str(&json)?;
+            serde_json::to_string(&back)
+        }
+
+        let open = Command::OpenDocument {
+            path: PathBuf::from("src/main.rs"),
+            language: None,
+        };
+        assert_eq!(rt(&open)?, serde_json::to_string(&open)?);
+
+        let apply = Command::ApplyChange {
+            doc: DocumentId(3),
+            change: Change::new(
+                7,
+                vec![TextEdit {
+                    range: karet_core::Range::default(),
+                    new_text: "x".into(),
+                }],
+            ),
+            cause: EditCause::Type,
+        };
+        assert_eq!(rt(&apply)?, serde_json::to_string(&apply)?);
+
+        let vcs = Command::VcsAction {
+            action: VcsAction::SwitchBranch(BranchTarget::Local("main".into())),
+        };
+        assert_eq!(rt(&vcs)?, serde_json::to_string(&vcs)?);
+
+        let diag = Event::DiagnosticsPublished {
+            doc: DocumentId(3),
+            diagnostics: vec![Diagnostic {
+                range: karet_core::Range::default(),
+                severity: Severity::Warning,
+                message: "m".into(),
+                source: None,
+                code: None,
+                tags: Vec::new(),
+                related: Vec::new(),
+            }],
+        };
+        assert_eq!(rt(&diag)?, serde_json::to_string(&diag)?);
+        Ok(())
+    }
+
+    /// The one secret in the vocabulary must refuse to serialize: a transport can
+    /// never move a GitHub token, by construction.
+    #[test]
+    fn github_token_refuses_to_serialize() {
+        let command = Command::GithubLogin {
+            token: GithubToken::new("github_pat_secret".into()),
+        };
+        let result = serde_json::to_string(&command);
+        assert!(result.is_err(), "a credential must not cross the seam");
+    }
 
     #[test]
     fn ids_and_payloads_construct() {

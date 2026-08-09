@@ -9,6 +9,7 @@ use crate::repo::to_git;
 /// Which diff to show, mirroring VS Code's default behaviour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Selection {
     /// `HEAD` vs the index: the staged changes.
     Staged,

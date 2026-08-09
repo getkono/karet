@@ -2,7 +2,7 @@ use super::*;
 
 /// A message emitted by the backend to the presentation layer. When it answers a
 /// [`Command`], it is delivered with that command's [`RequestId`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum Event {
     /// A document was opened at the given version.

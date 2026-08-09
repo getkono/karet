@@ -38,6 +38,55 @@ impl TokenId {
     }
 }
 
+/// The text emphasis requested for a run of text, independent of any renderer.
+///
+/// The one neutral attribute vocabulary shared by themes (per-token emphasis),
+/// document models (DOCX runs), and markup rendering — markup tokens carry
+/// weight/slant as much as color: a markdown heading reads as a heading because
+/// it is **bold**, not merely blue.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Emphasis {
+    /// Render bold.
+    pub bold: bool,
+    /// Render italic.
+    pub italic: bool,
+    /// Render underlined.
+    pub underline: bool,
+    /// Render struck through.
+    pub strikethrough: bool,
+}
+
+impl Emphasis {
+    /// No emphasis.
+    pub const NONE: Self = Self {
+        bold: false,
+        italic: false,
+        underline: false,
+        strikethrough: false,
+    };
+    /// Bold, and nothing else.
+    pub const BOLD: Self = Self {
+        bold: true,
+        ..Self::NONE
+    };
+    /// Italic, and nothing else.
+    pub const ITALIC: Self = Self {
+        italic: true,
+        ..Self::NONE
+    };
+    /// Underlined, and nothing else.
+    pub const UNDERLINE: Self = Self {
+        underline: true,
+        ..Self::NONE
+    };
+    /// Struck through, and nothing else.
+    pub const STRIKETHROUGH: Self = Self {
+        strikethrough: true,
+        ..Self::NONE
+    };
+}
+
 /// The canonical set of tree-sitter highlight capture classes karet recognizes.
 ///
 /// Each maps to a stable [`TokenId`] and a tree-sitter capture name; unknown

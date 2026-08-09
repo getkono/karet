@@ -2,6 +2,7 @@
 
 /// Errors produced when constructing or validating core vocabulary types.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum CoreError {
     /// A [`Range`](crate::coord::Range)'s start was ordered after its end.

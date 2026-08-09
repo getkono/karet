@@ -766,7 +766,9 @@ fn update_syntax(
                     tags: semantic.tags().to_vec(),
                 })
         },
-        edits: edits.map(|es| es.iter().map(to_edit).collect()),
+        // `karet-text`'s applied edits *are* the parse host's edit type (both are
+        // `karet_core::AppliedEdit`), so they pass through unconverted.
+        edits: edits.map(<[AppliedEdit]>::to_vec),
     };
     // A dead worker only means no highlights; editing carries on.
     highlight_tx.send(HighlightJob::Update(request)).ok();
@@ -797,18 +799,6 @@ fn edit_context(tick_ms: u64, cause: EditCause, change: &Change) -> EditContext 
         tick_ms,
         cause,
         cursor_before,
-    }
-}
-
-/// Convert a `karet-text` applied edit into the parse host's neutral edit.
-fn to_edit(ae: &AppliedEdit) -> karet_treesitter::Edit {
-    karet_treesitter::Edit {
-        start_byte: ae.start_byte,
-        old_end_byte: ae.old_end_byte,
-        new_end_byte: ae.new_end_byte,
-        start_point: ae.start_point,
-        old_end_point: ae.old_end_point,
-        new_end_point: ae.new_end_point,
     }
 }
 

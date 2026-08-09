@@ -19,9 +19,14 @@ default = ["signature"]
 # signatures then report only their kind, not the signer. Extraction only — this crate
 # never *verifies* a signature (see `CommitSignature`).
 signature = ["dep:ssh-key"]
+# Serialize/Deserialize on the public git-facts models (Branch, Commit,
+# CommitDetail, FileChange, RepositoryState, …) so the backend seam that carries
+# them stays wire-ready. Off by default.
+serde = ["dep:serde", "karet-core/serde"]
 
 [dependencies]
 karet-core.workspace = true
+serde = { workspace = true, optional = true }
 gix.workspace = true
 imara-diff.workspace = true
 thiserror.workspace = true

@@ -77,7 +77,8 @@ pub mod hover {
                     let doc = karet_markdown::parse(&self.markup.value).wrap(width);
                     karet_markdown::view::to_ratatui(&doc, self.theme)
                 },
-                MarkupKind::PlainText => self
+                // An unrecognized kind (a newer peer) degrades to plain text.
+                _ => self
                     .markup
                     .value
                     .lines()

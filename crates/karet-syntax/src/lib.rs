@@ -15,9 +15,6 @@
 
 use std::collections::BTreeMap;
 
-use karet_core::BytePos;
-use karet_core::Span;
-use karet_core::TokenId;
 use karet_treesitter::SyntaxTree;
 
 mod blocks;
@@ -51,117 +48,13 @@ pub enum SyntaxError {
     Query(String),
 }
 
-/// A highlighted region: a byte [`Span`] tagged with a semantic [`TokenId`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HighlightSpan {
-    /// The byte range covered.
-    pub span: Span,
-    /// The semantic token class.
-    pub token: TokenId,
-}
-
-/// An ordered, non-overlapping set of [`HighlightSpan`]s for a buffer.
-#[derive(Clone, Debug, Default)]
-pub struct Highlights {
-    spans: Vec<HighlightSpan>,
-}
-
-impl Highlights {
-    /// All highlight spans, in document (byte) order.
-    #[must_use]
-    pub fn all(&self) -> &[HighlightSpan] {
-        &self.spans
-    }
-
-    /// The highlight spans overlapping `range`, in order.
-    #[must_use]
-    pub fn spans_in(&self, range: Span) -> &[HighlightSpan] {
-        // `spans` is sorted by start and non-overlapping, so both predicates are
-        // monotonic and `partition_point` gives the overlapping window.
-        let start = self
-            .spans
-            .partition_point(|s| s.span.end.0 <= range.start.0);
-        let end = self.spans.partition_point(|s| s.span.start.0 < range.end.0);
-        &self.spans[start..end.max(start)]
-    }
-
-    /// Wrap an already-sorted, non-overlapping span list (from the highlighter).
-    pub(crate) fn from_sorted_spans(spans: Vec<HighlightSpan>) -> Self {
-        Self { spans }
-    }
-
-    /// Shift these spans to stay aligned with a buffer edited in `[start, old_end)` →
-    /// `[start, new_end)`.
-    ///
-    /// When re-highlighting is asynchronous the buffer changes before fresh spans
-    /// arrive. Rendering the old spans verbatim would smear color across the shifted
-    /// text; translating them keeps everything after the edit correctly aligned for the
-    /// frame or two before the highlighter answers.
-    ///
-    /// Spans wholly before the edit are untouched, spans wholly after are shifted, and
-    /// a span the edit actually cut through is dropped — its extent is no longer known,
-    /// so the affected text renders unhighlighted rather than wrong.
-    #[must_use]
-    pub fn translate(&self, start: BytePos, old_end: BytePos, new_end: BytePos) -> Self {
-        let spans = self
-            .spans
-            .iter()
-            .filter_map(|s| {
-                if s.span.end.0 <= start.0 {
-                    return Some(*s);
-                }
-                if s.span.start.0 >= old_end.0 {
-                    return Some(HighlightSpan {
-                        span: Span {
-                            start: BytePos(shift_pos(s.span.start.0, old_end.0, new_end.0)),
-                            end: BytePos(shift_pos(s.span.end.0, old_end.0, new_end.0)),
-                        },
-                        token: s.token,
-                    });
-                }
-                // The edit cut through this span.
-                None
-            })
-            .collect();
-        Self { spans }
-    }
-}
-
-/// Move `pos` (which lies at or after `old_end`) by the edit's signed length delta.
-fn shift_pos(pos: usize, old_end: usize, new_end: usize) -> usize {
-    if new_end >= old_end {
-        pos + (new_end - old_end)
-    } else {
-        pos.saturating_sub(old_end - new_end)
-    }
-}
-
-/// A foldable region as an inclusive line range `[start, end]` (0-based lines). The
-/// `start` line is the header that stays visible when collapsed; lines
-/// `start + 1 ..= end` are the ones that hide. Line ranges (not byte spans) because
-/// folding is inherently a line operation for every consumer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FoldRegion {
-    /// The 0-based header line (stays visible when collapsed).
-    pub start: u32,
-    /// The 0-based last line of the region, inclusive.
-    pub end: u32,
-}
-
-/// The foldable regions of a buffer, in document order (outermost first), with at
-/// most one region per start line.
-#[derive(Clone, Debug, Default)]
-pub struct FoldRegions {
-    regions: Vec<FoldRegion>,
-}
-
-impl FoldRegions {
-    /// The fold regions, outermost first.
-    #[must_use]
-    pub fn regions(&self) -> &[FoldRegion] {
-        &self.regions
-    }
-}
+// The highlight/fold *data* shapes live in `karet-core` (so renderers can name
+// them without pulling this crate's tree-sitter stack); this crate is the engine
+// that computes them. Re-exported here so existing imports keep working.
+pub use karet_core::FoldRegion;
+pub use karet_core::FoldRegions;
+pub use karet_core::HighlightSpan;
+pub use karet_core::Highlights;
 
 /// Compute fold regions from a parsed tree.
 ///
@@ -191,18 +84,20 @@ pub fn fold(tree: &SyntaxTree) -> FoldRegions {
     }
     // BTreeMap iterates by ascending start line, i.e. document order (outermost
     // first), which is exactly the contract of `FoldRegions::regions`.
-    FoldRegions {
-        regions: by_start
+    FoldRegions::from_sorted_regions(
+        by_start
             .into_iter()
             .map(|(start, end)| FoldRegion { start, end })
             .collect(),
-    }
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use karet_core::BytePos;
+    use karet_core::Span;
     use karet_core::StandardToken;
+    use karet_core::TokenId;
 
     use super::*;
 
@@ -540,9 +435,10 @@ pub fn add_one() {}
                 start_byte: old.len(),
                 old_end_byte: old.len(),
                 new_end_byte: new.len(),
-                start_point: (1, 0),
-                old_end_point: (1, 0),
-                new_end_point: (5, 0),
+                start_point: karet_core::BytePoint::new(1, 0),
+                old_end_point: karet_core::BytePoint::new(1, 0),
+                new_end_point: karet_core::BytePoint::new(5, 0),
+                replaced: String::new(),
             }],
             new,
         )?;
