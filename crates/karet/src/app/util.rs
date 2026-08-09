@@ -1,17 +1,5 @@
 use super::*;
 
-pub(crate) fn resolve_folds(folds: &FoldRegions, folded: &BTreeSet<u32>) -> Vec<Fold> {
-    folds
-        .regions()
-        .iter()
-        .map(|r| Fold {
-            start: r.start,
-            end: r.end,
-            collapsed: folded.contains(&r.start),
-        })
-        .collect()
-}
-
 /// Whether the screen point `(x, y)` lies inside `r`.
 pub(super) fn rect_contains(r: Rect, (x, y): (u16, u16)) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
@@ -232,22 +220,6 @@ pub(super) fn parse_rev_range(input: &str) -> Option<(String, String, bool)> {
         if s.is_empty() { "HEAD" } else { s }.to_string()
     };
     Some((side(base), side(head), merge_base))
-}
-
-/// The text within `range`, sliced from the tab's `source` using byte offsets
-/// derived from `buffer`. Returns `None` if the range cannot be resolved.
-pub(super) fn selection_text(buffer: &TextBuffer, source: &str, range: Range) -> Option<String> {
-    let start = buffer.line_col_to_byte(range.start).ok()?.0;
-    let end = buffer.line_col_to_byte(range.end).ok()?.0;
-    source.get(start..end).map(str::to_string)
-}
-
-/// The (anchor, head) span covering all of `line`.
-pub(super) fn line_span(buffer: &TextBuffer, line: u32) -> (LineCol, LineCol) {
-    let len = buffer
-        .line(line as usize)
-        .map_or(0, |s| s.chars().count() as u32);
-    (LineCol::new(line, 0), LineCol::new(line, len))
 }
 
 /// Pops the kitty keyboard-enhancement flags on drop, so they are cleared even if

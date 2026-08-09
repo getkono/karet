@@ -9,7 +9,6 @@
 //! math, the syntax-error gate) so they are unit-testable without an `App`.
 
 use karet_core::LineCol;
-use karet_core::Range;
 use karet_session::DocumentId;
 use karet_session::RequestId;
 use karet_widgets::CompletionState;
@@ -76,37 +75,14 @@ pub(crate) fn line_has_syntax_error(errors: &[(u32, u32)], line: u32) -> bool {
         .any(|&(start, end)| start <= line && line <= end)
 }
 
-/// The caret position after inserting `text` at `start` (multi-line aware).
-pub(crate) fn caret_after_insert(start: LineCol, text: &str) -> LineCol {
-    let newlines = u32::try_from(text.matches('\n').count()).unwrap_or(u32::MAX);
-    let tail = text.rsplit('\n').next().unwrap_or("");
-    let tail_cols = u32::try_from(tail.chars().count()).unwrap_or(u32::MAX);
-    if newlines == 0 {
-        LineCol::new(start.line, start.col.saturating_add(tail_cols))
-    } else {
-        LineCol::new(start.line.saturating_add(newlines), tail_cols)
-    }
-}
-
-/// The span an accept replaces: from the popup's `anchor` to the current
-/// `caret` (the typed prefix). `None` when the caret has wandered somewhere an
-/// accept no longer makes sense (other line, or before the anchor).
-pub(crate) fn accept_range(anchor: LineCol, caret: LineCol) -> Option<Range> {
-    (caret.line == anchor.line && caret.col >= anchor.col).then_some(Range {
-        start: anchor,
-        end: caret,
-    })
-}
-
-/// Whether the popup/pending request is still valid for `caret` — same
-/// document line as the anchor and not before it. Any other movement
-/// dismisses.
-pub(crate) fn caret_still_anchored(anchor: LineCol, caret: LineCol) -> bool {
-    caret.line == anchor.line && caret.col >= anchor.col
-}
+pub(crate) use karet_editor::editing::caret_after_insert;
+pub(crate) use karet_widgets::completion::accept_range;
+pub(crate) use karet_widgets::completion::caret_still_anchored;
 
 #[cfg(test)]
 mod tests {
+    use karet_core::Range;
+
     use super::*;
 
     #[test]

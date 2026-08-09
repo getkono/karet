@@ -285,6 +285,27 @@ impl StatefulWidget for CompletionPopup<'_> {
     }
 }
 
+/// The span an accept replaces: from the popup's `anchor` to the current
+/// `caret` (the typed prefix). `None` when the caret has wandered somewhere an
+/// accept no longer makes sense (another line, or before the anchor).
+#[must_use]
+pub fn accept_range(
+    anchor: karet_core::LineCol,
+    caret: karet_core::LineCol,
+) -> Option<karet_core::Range> {
+    caret_still_anchored(anchor, caret).then_some(karet_core::Range {
+        start: anchor,
+        end: caret,
+    })
+}
+
+/// Whether the popup (or its pending request) is still valid for `caret` —
+/// the same line as the anchor and not before it. Any other movement dismisses.
+#[must_use]
+pub fn caret_still_anchored(anchor: karet_core::LineCol, caret: karet_core::LineCol) -> bool {
+    caret.line == anchor.line && caret.col >= anchor.col
+}
+
 #[cfg(test)]
 mod tests {
     use karet_core::Markup;

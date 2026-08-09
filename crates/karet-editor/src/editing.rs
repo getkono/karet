@@ -20,8 +20,10 @@ pub struct Edit {
     pub caret: LineCol,
 }
 
-/// The caret position after inserting `text` starting at `start`.
-fn advance(start: LineCol, text: &str) -> LineCol {
+/// The caret position after inserting `text` starting at `start`
+/// (multi-line aware). Shared by edit construction and completion accepts.
+#[must_use]
+pub fn caret_after_insert(start: LineCol, text: &str) -> LineCol {
     let mut pos = start;
     for ch in text.chars() {
         if ch == '\n' {
@@ -45,7 +47,7 @@ pub fn reflow_caret(local: LineCol, earlier: &[TextEdit]) -> LineCol {
     let (mut line, mut col) = (i64::from(local.line), i64::from(local.col));
     for ed in earlier {
         let end = ed.range.end;
-        let new_end = advance(ed.range.start, &ed.new_text);
+        let new_end = caret_after_insert(ed.range.start, &ed.new_text);
         let net_lines = i64::from(new_end.line) - i64::from(end.line);
         if end.line < local.line {
             line += net_lines;
@@ -77,7 +79,7 @@ fn one_edit(range: Range, new_text: String, base: u64) -> Change {
 
 /// Replace `range` with `text`.
 fn replace(range: Range, text: String, base: u64) -> Edit {
-    let caret = advance(range.start, &text);
+    let caret = caret_after_insert(range.start, &text);
     Edit {
         change: one_edit(range, text, base),
         caret,

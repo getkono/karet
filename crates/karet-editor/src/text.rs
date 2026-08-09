@@ -183,3 +183,21 @@ pub(super) fn token_style(
         None => Style::default().fg(default_fg.to_ratatui()),
     }
 }
+
+/// The text within `range`, sliced from `source` (the buffer's full text) using
+/// byte offsets derived from `buffer`. `None` if the range cannot be resolved.
+#[must_use]
+pub fn selection_text(buffer: &TextBuffer, source: &str, range: Range) -> Option<String> {
+    let start = buffer.line_col_to_byte(range.start).ok()?.0;
+    let end = buffer.line_col_to_byte(range.end).ok()?.0;
+    source.get(start..end).map(str::to_string)
+}
+
+/// The `(anchor, head)` span covering all of `line`.
+#[must_use]
+pub fn line_span(buffer: &TextBuffer, line: u32) -> (LineCol, LineCol) {
+    let len = buffer
+        .line(line as usize)
+        .map_or(0, |s| s.chars().count() as u32);
+    (LineCol::new(line, 0), LineCol::new(line, len))
+}
