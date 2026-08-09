@@ -1,3 +1,5 @@
+use karet_widgets::breadcrumbs::breadcrumb_segment_spans;
+
 use super::scm::change_line;
 use super::scm::commit_cursor_row;
 use super::*;

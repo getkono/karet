@@ -122,10 +122,8 @@ pub(super) fn draw_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, are
     let Some(menu) = app.context_menu.as_mut() else {
         return;
     };
-    if menu.entries.is_empty() {
-        menu.rect = Rect::default();
-        return;
-    }
+    // Resolve the app-specific row texts (default command labels + key hints);
+    // the shared widget owns placement, clamping, and painting.
     let hints: Vec<Option<String>> = menu
         .entries
         .iter()
@@ -148,68 +146,7 @@ pub(super) fn draw_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, are
             })
         })
         .collect();
-    let label_w = labels
-        .iter()
-        .map(|label| cell_width(label))
-        .max()
-        .unwrap_or(0);
-    let hint_w = hints
-        .iter()
-        .flatten()
-        .map(|hint| cell_width(hint))
-        .max()
-        .unwrap_or(0);
-    let width = (label_w + hint_w + 6).clamp(18, 46).min(area.width.max(1));
-    let height = (menu.entries.len() as u16 + 2).min(area.height.max(1));
-    let x = menu.x.min(area.right().saturating_sub(width));
-    let y = menu.y.min(area.bottom().saturating_sub(height));
-    let rect = Rect {
-        x,
-        y,
-        width,
-        height,
-    };
-    menu.rect = rect;
-    f.render_widget(Clear, rect);
-    let style = Style::default()
-        .bg(theme.role(ThemeRole::Background).to_ratatui())
-        .fg(theme.role(ThemeRole::Foreground).to_ratatui());
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .style(style)
-        .border_style(theme.style(ThemeRole::IndentGuide));
-    let inner = block.inner(rect);
-    f.render_widget(block, rect);
-    let dim = theme.style(ThemeRole::LineNumber);
-    let items: Vec<ListItem> = labels
-        .iter()
-        .zip(hints.iter())
-        .zip(menu.entries.iter())
-        .map(|((label, hint), entry)| {
-            // Disabled rows render fully dimmed (label and hint alike).
-            let label_style = if entry.enabled { Style::default() } else { dim };
-            match hint {
-                Some(hint) => {
-                    let used = cell_width(label) + cell_width(hint);
-                    let pad = inner.width.saturating_sub(used).max(1);
-                    ListItem::new(Line::from(vec![
-                        Span::styled(label.clone(), label_style),
-                        Span::raw(" ".repeat(pad as usize)),
-                        Span::styled(hint.clone(), dim),
-                    ]))
-                },
-                None => ListItem::new(Line::from(Span::styled(label.clone(), label_style))),
-            }
-        })
-        .collect();
-    let mut state = ListState::default();
-    state.select(Some(menu.selected));
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .bg(theme.role(ThemeRole::Selection).to_ratatui())
-            .add_modifier(Modifier::BOLD),
-    );
-    f.render_stateful_widget(list, inner, &mut state);
+    menu.draw(f, theme, area, &labels, &hints);
 }
 
 pub(super) fn context_menu_label(command: Command) -> &'static str {

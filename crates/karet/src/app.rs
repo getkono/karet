@@ -426,18 +426,7 @@ pub(crate) struct TabHit {
     pub(crate) close: u16,
 }
 
-/// A clickable breadcrumb segment recorded during the last frame: its column span
-/// on the breadcrumb row and the path prefix it resolves to (always within the
-/// workspace root — segments above the root are never recorded).
-#[derive(Clone)]
-pub(crate) struct BreadcrumbHit {
-    /// First column of the segment (inclusive).
-    pub(crate) start: u16,
-    /// One past the last column of the segment (exclusive).
-    pub(crate) end: u16,
-    /// The absolute path up to (and including) this segment's component.
-    pub(crate) path: PathBuf,
-}
+pub(crate) use karet_widgets::breadcrumbs::BreadcrumbHit;
 
 /// A clickable changed-file row from a commit or compare view's last frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -615,133 +604,31 @@ pub(crate) enum ContextMenuAction {
     },
 }
 
-/// One row of a positioned context menu: its action, whether it can run right now,
-/// and an optional note explaining why not.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ContextMenuEntry {
-    /// The action this row dispatches when accepted.
-    pub(crate) action: ContextMenuAction,
-    /// An action-specific label. Ordinary commands use their standard menu label.
-    pub(crate) label: Option<String>,
-    /// Whether the row can be activated. A disabled row renders dimmed, is skipped
-    /// by keyboard navigation, and refuses Accept.
-    pub(crate) enabled: bool,
-    /// Why the row is disabled, surfaced as a status message when the user tries to
-    /// activate it anyway (e.g. by clicking it).
-    pub(crate) note: Option<String>,
+/// One row of the app's context menu (the shared widget over
+/// [`ContextMenuAction`]).
+pub(crate) type ContextMenuEntry = karet_widgets::menu::ContextMenuEntry<ContextMenuAction>;
+/// The app's positioned context menu (opened from the explorer or over a pane).
+pub(crate) type ContextMenu = karet_widgets::menu::ContextMenu<ContextMenuAction>;
+
+impl From<Command> for ContextMenuAction {
+    fn from(command: Command) -> Self {
+        Self::Command(command)
+    }
 }
 
-impl ContextMenuEntry {
-    /// An enabled entry dispatching `command`.
-    fn enabled(command: Command) -> Self {
-        Self {
-            action: ContextMenuAction::Command(command),
-            label: None,
-            enabled: true,
-            note: None,
-        }
-    }
-
-    /// A disabled entry for `command`, greyed out with an explanatory `note`.
-    fn disabled(command: Command, note: impl Into<String>) -> Self {
-        Self {
-            action: ContextMenuAction::Command(command),
-            label: None,
-            enabled: false,
-            note: Some(note.into()),
-        }
-    }
-
-    /// An enabled contextual action with a label supplied by its producer.
-    fn custom(label: impl Into<String>, action: ContextMenuAction) -> Self {
-        Self {
-            action,
-            label: Some(label.into()),
-            enabled: true,
-            note: None,
-        }
-    }
-
-    /// A disabled contextual row carrying an explanatory note.
-    fn disabled_custom(
-        label: impl Into<String>,
-        action: ContextMenuAction,
-        note: impl Into<String>,
-    ) -> Self {
-        Self {
-            action,
-            label: Some(label.into()),
-            enabled: false,
-            note: Some(note.into()),
-        }
-    }
-
+/// App-side accessors over the shared menu entry.
+pub(crate) trait ContextMenuEntryExt {
     /// The named command behind this row, when it is a regular command action.
-    pub(crate) fn command(&self) -> Option<Command> {
+    fn command(&self) -> Option<Command>;
+}
+
+impl ContextMenuEntryExt for ContextMenuEntry {
+    fn command(&self) -> Option<Command> {
         match &self.action {
             ContextMenuAction::Command(command) => Some(*command),
             ContextMenuAction::ReplaceSpelling { .. }
             | ContextMenuAction::AddSpellingToDictionary { .. } => None,
         }
-    }
-}
-
-/// A positioned context menu (opened from the explorer or over a pane).
-pub(crate) struct ContextMenu {
-    /// The column where the menu should be anchored.
-    pub(crate) x: u16,
-    /// The row where the menu should be anchored.
-    pub(crate) y: u16,
-    /// The rows shown in the menu, in display order.
-    pub(crate) entries: Vec<ContextMenuEntry>,
-    /// The selected row index.
-    pub(crate) selected: usize,
-    /// The menu rect from the last render.
-    pub(crate) rect: Rect,
-}
-
-impl ContextMenu {
-    fn new(x: u16, y: u16, entries: Vec<ContextMenuEntry>) -> Self {
-        // Land the initial selection on the first activatable row.
-        let selected = entries.iter().position(|e| e.enabled).unwrap_or(0);
-        Self {
-            x,
-            y,
-            entries,
-            selected,
-            rect: Rect::default(),
-        }
-    }
-
-    /// Move the selection by `delta` rows, skipping disabled entries. When fewer
-    /// enabled rows exist in that direction, the selection lands on the last one
-    /// found (or stays put).
-    fn select_by(&mut self, delta: i32) {
-        if self.entries.is_empty() || delta == 0 {
-            return;
-        }
-        let step: i64 = if delta > 0 { 1 } else { -1 };
-        let mut remaining = i64::from(delta).abs();
-        let mut idx = self.selected as i64;
-        let mut landed = self.selected as i64;
-        loop {
-            idx += step;
-            if idx < 0 || idx >= self.entries.len() as i64 {
-                break;
-            }
-            if self.entries[idx as usize].enabled {
-                landed = idx;
-                remaining -= 1;
-                if remaining == 0 {
-                    break;
-                }
-            }
-        }
-        self.selected = landed as usize;
-    }
-
-    fn selected_entry(&self) -> Option<&ContextMenuEntry> {
-        self.entries.get(self.selected)
     }
 }
 

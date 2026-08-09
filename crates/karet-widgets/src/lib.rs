@@ -8,12 +8,16 @@
 //! backend's event stream. The read-only file-view primitives (hex dump,
 //! terminal image, placeholder) live in `karet-fileview`.
 
+pub mod breadcrumbs;
 pub mod completion;
 pub mod file_tree;
 pub mod glyph;
+pub mod menu;
 pub mod notify;
 pub mod pane;
+pub mod scroll;
 pub mod select;
+pub mod status;
 pub mod text;
 
 pub use completion::CompletionPopup;

@@ -144,113 +144,12 @@ pub(super) fn text_field_text(
     Text::from(lines)
 }
 
-/// Render a two-axis scrollable paragraph and overlay indicators for axes whose
-/// content exceeds the viewport.
-pub(super) fn draw_scrollable_lines(
-    f: &mut Frame,
-    theme: &Theme,
-    area: Rect,
-    lines: Vec<Line<'static>>,
-    scroll: &mut u16,
-    column: &mut u16,
-) {
-    let content_height = lines.len();
-    let content_width = lines.iter().map(line_width).max().unwrap_or_default();
-    clamp_viewport(area, content_height, content_width, scroll, column);
-    f.render_widget(Paragraph::new(lines).scroll((*scroll, *column)), area);
-    draw_scroll_indicators(
-        f,
-        theme,
-        area,
-        content_height,
-        content_width,
-        *scroll,
-        *column,
-    );
-}
+pub(crate) use karet_widgets::scroll::draw_horizontally_scrollable_lines;
+pub(crate) use karet_widgets::scroll::draw_scroll_indicators;
+pub(crate) use karet_widgets::scroll::draw_scrollable_lines;
+pub(crate) use karet_widgets::scroll::line_width;
 
-/// Render content whose vertical wheel is reserved for surrounding navigation,
-/// while still exposing horizontal overflow.
-pub(super) fn draw_horizontally_scrollable_lines(
-    f: &mut Frame,
-    theme: &Theme,
-    area: Rect,
-    lines: Vec<Line<'static>>,
-    column: &mut u16,
-) {
-    let content_width = lines.iter().map(line_width).max().unwrap_or_default();
-    let max_column = content_width.saturating_sub(usize::from(area.width));
-    *column = (*column).min(u16::try_from(max_column).unwrap_or(u16::MAX));
-    f.render_widget(Paragraph::new(lines).scroll((0, *column)), area);
-    draw_scroll_indicators(
-        f,
-        theme,
-        area,
-        usize::from(area.height),
-        content_width,
-        0,
-        *column,
-    );
-}
-
-pub(super) fn line_width(line: &Line<'_>) -> usize {
-    line.spans.iter().map(Span::width).sum()
-}
-
-pub(super) fn clamp_viewport(
-    area: Rect,
-    content_height: usize,
-    content_width: usize,
-    scroll: &mut u16,
-    column: &mut u16,
-) {
-    let max_scroll = content_height.saturating_sub(usize::from(area.height));
-    let max_column = content_width.saturating_sub(usize::from(area.width));
-    *scroll = (*scroll).min(u16::try_from(max_scroll).unwrap_or(u16::MAX));
-    *column = (*column).min(u16::try_from(max_column).unwrap_or(u16::MAX));
-}
-
-#[allow(clippy::too_many_arguments)] // content extents and both offsets are independent render inputs
-pub(super) fn draw_scroll_indicators(
-    f: &mut Frame,
-    theme: &Theme,
-    area: Rect,
-    content_height: usize,
-    content_width: usize,
-    scroll: u16,
-    column: u16,
-) {
-    let track = theme.style(ThemeRole::IndentGuide);
-    let thumb = theme.style(ThemeRole::Foreground);
-    if content_height > usize::from(area.height) && area.height > 2 {
-        let mut state = ScrollbarState::new(content_height)
-            .position(usize::from(scroll))
-            .viewport_content_length(usize::from(area.height));
-        f.render_stateful_widget(
-            Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None)
-                .track_style(track)
-                .thumb_style(thumb),
-            area,
-            &mut state,
-        );
-    }
-    if content_width > usize::from(area.width) && area.width > 2 {
-        let mut state = ScrollbarState::new(content_width)
-            .position(usize::from(column))
-            .viewport_content_length(usize::from(area.width));
-        f.render_stateful_widget(
-            Scrollbar::new(ScrollbarOrientation::HorizontalBottom)
-                .begin_symbol(None)
-                .end_symbol(None)
-                .track_style(track)
-                .thumb_style(thumb),
-            area,
-            &mut state,
-        );
-    }
-}
+use crate::app::ContextMenuEntryExt;
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
 use crate::overlay::Overlay;
@@ -710,32 +609,8 @@ fn save_mark(tab: &Tab) -> char {
     if tab.dirty { '\u{25cf}' } else { ' ' }
 }
 
-/// The separator drawn between breadcrumb segments.
-const BREADCRUMB_SEP: &str = "  \u{203a}  ";
-
-/// The column span (start inclusive, end exclusive) of each of `components` when
-/// joined by [`BREADCRUMB_SEP`], relative to the breadcrumb's left edge. Uses
-/// terminal display width (wide-char aware), matching how the joined line paints.
-/// Separator gaps belong to no segment. Pure, so it is unit-tested.
-fn breadcrumb_segment_spans(components: &[String]) -> Vec<(u16, u16)> {
-    let sep = cell_width(BREADCRUMB_SEP);
-    let mut spans = Vec::with_capacity(components.len());
-    let mut x = 0u16;
-    for (i, comp) in components.iter().enumerate() {
-        if i > 0 {
-            x = x.saturating_add(sep);
-        }
-        let end = x.saturating_add(cell_width(comp));
-        spans.push((x, end));
-        x = end;
-    }
-    spans
-}
-
-/// Draw the pane's breadcrumb (the active tab's path components joined by `›`) and
-/// return the clickable segment regions: each segment's on-screen column span with
-/// the path prefix it resolves to. Segments above the workspace `root` are inert
-/// (not recorded); segments past the pane's right edge are clipped.
+/// Draw the pane's breadcrumb (the active tab's path components joined by `›`)
+/// via the shared widget, and return the clickable segment regions.
 fn draw_pane_breadcrumb(
     f: &mut Frame,
     tab: Option<&Tab>,
@@ -747,36 +622,11 @@ fn draw_pane_breadcrumb(
     let Some(path) = tab.and_then(Tab::path) else {
         return Vec::new();
     };
-    let mut components: Vec<String> = path
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect();
-    if tab.is_some_and(|tab| tab.is_symlink)
-        && let Some(last) = components.last_mut()
-    {
-        last.push(' ');
-        last.push(UiIcon::Symlink.glyph(icon_style));
+    karet_widgets::breadcrumbs::Breadcrumbs {
+        path,
+        root,
+        is_symlink: tab.is_some_and(|tab| tab.is_symlink),
+        icon_style,
     }
-    let crumbs = components.join(BREADCRUMB_SEP);
-    let style = theme.style(ThemeRole::LineNumberActive);
-    f.render_widget(Paragraph::new(Line::styled(crumbs, style)), area);
-
-    let mut hits = Vec::new();
-    let mut prefix = PathBuf::new();
-    for (comp, (start, end)) in path.components().zip(breadcrumb_segment_spans(&components)) {
-        prefix.push(comp);
-        if start >= area.width {
-            break;
-        }
-        let end = end.min(area.width);
-        // A segment resolving above the workspace root cannot be revealed: skip it.
-        if end > start && prefix.starts_with(root) {
-            hits.push(crate::app::BreadcrumbHit {
-                start: area.x.saturating_add(start),
-                end: area.x.saturating_add(end),
-                path: prefix.clone(),
-            });
-        }
-    }
-    hits
+    .draw(f, theme, area)
 }
