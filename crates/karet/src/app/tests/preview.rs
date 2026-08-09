@@ -172,17 +172,26 @@
         app.handle_mouse(mouse(MouseEventKind::ScrollRight, KeyModifiers::NONE));
         assert!(matches!(
             app.tabs[app.active].kind,
-            TabKind::StashPreview { column: 3, .. }
+            TabKind::StashPreview {
+                pager: PagerState { column: 3, .. },
+                ..
+            }
         ));
         app.handle_mouse(mouse(MouseEventKind::ScrollUp, KeyModifiers::SHIFT));
         assert!(matches!(
             app.tabs[app.active].kind,
-            TabKind::StashPreview { column: 0, .. }
+            TabKind::StashPreview {
+                pager: PagerState { column: 0, .. },
+                ..
+            }
         ));
         app.handle_mouse(mouse(MouseEventKind::ScrollDown, KeyModifiers::NONE));
         assert!(matches!(
             app.tabs[app.active].kind,
-            TabKind::StashPreview { scroll: 3, .. }
+            TabKind::StashPreview {
+                pager: PagerState { scroll: 3, .. },
+                ..
+            }
         ));
 
         app.tabs[app.active] = Tab::new(
@@ -191,7 +200,7 @@
                 base_label: "main".to_string(),
                 head_label: "feature".to_string(),
                 merge_base: true,
-                files: Vec::new(),
+                files: CommitFiles::default(),
                 view: CommitViewState::default(),
             },
         );

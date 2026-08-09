@@ -139,13 +139,13 @@ impl App {
     /// Toggle the active diff tab between unified and side-by-side.
     pub(super) fn toggle_diff_layout(&mut self) {
         if let Some(tab) = self.tabs.get_mut(self.active)
-            && let TabKind::Diff { view, scroll, .. } = &mut tab.kind
+            && let TabKind::Diff { view, pager, .. } = &mut tab.kind
         {
             *view = match *view {
                 ViewMode::Unified => ViewMode::SideBySide,
                 ViewMode::SideBySide => ViewMode::Unified,
             };
-            *scroll = 0;
+            pager.scroll = 0;
             // Remember the choice so subsequently-opened diffs adopt it.
             self.diff_layout = *view;
         }
@@ -156,7 +156,7 @@ impl App {
         if let Some(TabKind::Commit { files, view, .. } | TabKind::Compare { files, view, .. }) =
             self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
         {
-            if files.is_empty() || view.file_anchors.is_empty() {
+            if files.files.is_empty() || view.file_anchors.is_empty() {
                 return;
             }
             let current = view
@@ -202,8 +202,7 @@ impl App {
                 loading_since: Some(Pending::start()),
                 error: None,
                 view,
-                scroll: 0,
-                column: 0,
+                pager: PagerState::default(),
             };
             self.request_change_diff(change.path, section);
         }

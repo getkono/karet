@@ -142,13 +142,10 @@ pub(super) enum CommitFileStatus<'a> {
     Failed(&'a str),
 }
 
-pub(super) fn file_load_status(
-    loading_since: Option<Pending>,
-    error: Option<&str>,
-) -> CommitFileStatus<'_> {
-    if let Some(error) = error {
+pub(super) fn file_load_status(files: &CommitFiles) -> CommitFileStatus<'_> {
+    if let Some(error) = &files.error {
         CommitFileStatus::Failed(error)
-    } else if let Some(since) = loading_since {
+    } else if let Some(since) = files.loading_since {
         CommitFileStatus::Loading(since)
     } else {
         CommitFileStatus::Ready
@@ -291,17 +288,17 @@ pub(super) fn commit_metadata_lines(
 pub(super) fn commit_detail_lines(
     theme: &Theme,
     detail: &karet_vcs::CommitDetail,
-    files: &[render::FileView],
-    file_status: CommitFileStatus<'_>,
-    verification: Option<&karet_session::GithubVerification>,
+    files: &CommitFiles,
     reveal: bool,
     width: u16,
 ) -> (Vec<Line<'static>>, Option<BadgeHit>) {
-    let (mut lines, badge) = commit_metadata_lines(theme, detail, verification, reveal);
+    let (mut lines, badge) =
+        commit_metadata_lines(theme, detail, files.verification.as_ref(), reveal);
+    let file_status = file_load_status(files);
     let muted = theme.style(ThemeRole::Muted);
     let label = theme.style(ThemeRole::LineNumberActive);
     match file_status {
-        CommitFileStatus::Ready => lines.extend(changed_files_lines(theme, files, width)),
+        CommitFileStatus::Ready => lines.extend(changed_files_lines(theme, &files.files, width)),
         CommitFileStatus::Loading(since) => {
             lines.push(Line::raw(""));
             if since.visible() {
@@ -592,9 +589,7 @@ pub(super) fn draw_commit_graph(
     selected: usize,
     detail_loading_since: Option<Pending>,
     detail: Option<&karet_vcs::CommitDetail>,
-    files: &[render::FileView],
-    file_status: CommitFileStatus<'_>,
-    verification: Option<&karet_session::GithubVerification>,
+    files: &CommitFiles,
     list_offset: &mut u16,
     detail_column: &mut u16,
 ) {
@@ -649,16 +644,7 @@ pub(super) fn draw_commit_graph(
                 f,
                 theme,
                 detail_area,
-                commit_detail_lines(
-                    theme,
-                    d,
-                    files,
-                    file_status,
-                    verification,
-                    false,
-                    detail_area.width,
-                )
-                .0,
+                commit_detail_lines(theme, d, files, false, detail_area.width).0,
                 detail_column,
             );
         },

@@ -569,7 +569,7 @@
                 assert_eq!(base_label, "main");
                 assert_eq!(head_label, "HEAD");
                 assert!(*merge_base);
-                assert_eq!(files.len(), 1);
+                assert_eq!(files.files.len(), 1);
                 assert_eq!(view.scroll, 0);
             },
             _ => panic!("expected a compare tab"),
@@ -649,7 +649,7 @@
             signature: None,
         };
         let files = vec![FileView::new(prepared_change("a.rs", StatusKind::Modified))];
-        app.push_tab(Tab::commit(Box::new(detail), files));
+        app.push_tab(Tab::commit(Box::new(detail), CommitFiles::ready(files)));
         assert!(matches!(
             &app.tabs[app.active].kind,
             TabKind::Commit { view, .. } if view.scroll == 0
@@ -696,7 +696,7 @@
             signature: None,
         };
         let files = vec![FileView::new(prepared_change("a.rs", StatusKind::Modified))];
-        app.push_tab(Tab::commit(Box::new(detail), files));
+        app.push_tab(Tab::commit(Box::new(detail), CommitFiles::ready(files)));
         let area = Rect {
             x: 0,
             y: 0,

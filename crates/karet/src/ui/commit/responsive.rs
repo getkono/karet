@@ -26,15 +26,22 @@ pub(in crate::ui) fn draw_commit(
     theme: &Theme,
     area: Rect,
     detail: &karet_vcs::CommitDetail,
-    files: &[render::FileView],
-    file_status: CommitFileStatus<'_>,
-    verification: Option<&karet_session::GithubVerification>,
+    files: &CommitFiles,
     explain_since: Option<Instant>,
     view: &mut CommitViewState,
 ) -> CommitPaint {
     let reveal = explain_since.is_some_and(|t| t.elapsed() < crate::app::COMMIT_REVEAL);
-    let (header, badge) = commit_metadata_lines(theme, detail, verification, reveal);
-    draw_responsive(f, theme, area, header, badge, files, file_status, view)
+    let (header, badge) = commit_metadata_lines(theme, detail, files.verification.as_ref(), reveal);
+    draw_responsive(
+        f,
+        theme,
+        area,
+        header,
+        badge,
+        &files.files,
+        file_load_status(files),
+        view,
+    )
 }
 
 #[allow(clippy::too_many_arguments)] // range labels and layout state are independent
@@ -45,7 +52,7 @@ pub(in crate::ui) fn draw_compare(
     base_label: &str,
     head_label: &str,
     merge_base: bool,
-    files: &[render::FileView],
+    files: &CommitFiles,
     view: &mut CommitViewState,
 ) -> CommitPaint {
     let header = compare_header_lines(theme, base_label, head_label, merge_base);
@@ -55,8 +62,8 @@ pub(in crate::ui) fn draw_compare(
         area,
         header,
         None,
-        files,
-        CommitFileStatus::Ready,
+        &files.files,
+        file_load_status(files),
         view,
     )
 }

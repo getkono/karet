@@ -108,10 +108,9 @@ impl App {
                 TabKind::MarkdownPreview { pending_since, .. } => {
                     pendings.extend(*pending_since);
                 },
-                TabKind::Commit {
-                    files_loading_since,
-                    ..
-                } => pendings.extend(*files_loading_since),
+                TabKind::Commit { files, .. } | TabKind::Compare { files, .. } => {
+                    pendings.extend(files.loading_since);
+                },
                 TabKind::Diff {
                     file: None,
                     loading_since,
@@ -121,10 +120,10 @@ impl App {
                 TabKind::CommitGraph {
                     loading_since,
                     detail_loading_since,
-                    files_loading_since,
+                    files,
                     ..
                 } => pendings.extend(
-                    [*loading_since, *detail_loading_since, *files_loading_since]
+                    [*loading_since, *detail_loading_since, files.loading_since]
                         .into_iter()
                         .flatten(),
                 ),

@@ -224,7 +224,7 @@
         match &app.tabs[app.active].kind {
             TabKind::Commit { detail, files, .. } => {
                 assert_eq!(detail.hash, "aaaaaaa111");
-                assert_eq!(files.len(), 1);
+                assert_eq!(files.files.len(), 1);
             },
             _ => panic!("pending tab should become a loaded commit view"),
         }
@@ -250,15 +250,10 @@
         assert_eq!(app.tabs[app.active].title, "Commit aaaaaaa");
         assert!(!app.tabs[app.active].dirty);
         match &app.tabs[app.active].kind {
-            TabKind::Commit {
-                detail,
-                files,
-                files_loading_since,
-                ..
-            } => {
+            TabKind::Commit { detail, files, .. } => {
                 assert_eq!(detail.hash, "aaaaaaa111");
-                assert!(files.is_empty());
-                assert!(files_loading_since.is_some());
+                assert!(files.files.is_empty());
+                assert!(files.loading_since.is_some());
             },
             _ => panic!("pending tab should show commit metadata while files load"),
         }
@@ -281,15 +276,10 @@
         );
 
         match &app.tabs[app.active].kind {
-            TabKind::Commit {
-                files,
-                files_loading_since,
-                verification,
-                ..
-            } => {
-                assert_eq!(files.len(), 1);
-                assert!(files_loading_since.is_none());
-                assert!(verification.as_ref().is_some_and(|v| v.verified));
+            TabKind::Commit { files, .. } => {
+                assert_eq!(files.files.len(), 1);
+                assert!(files.loading_since.is_none());
+                assert!(files.verification.as_ref().is_some_and(|v| v.verified));
             },
             _ => panic!("metadata tab should become a complete commit view"),
         }

@@ -567,20 +567,12 @@ fn badge_hit_spans_the_badge_and_reveal_explains_it() {
             raw: String::new(),
         }),
     };
-    let files: Vec<render::FileView> = Vec::new();
+    let files = CommitFiles::default();
     let flat = |l: &Line| -> String { l.spans.iter().map(|s| s.content.as_ref()).collect() };
 
     // Without a forge verdict, a signed commit reads "Signed"; the reported hit
     // must land exactly on that badge text within its line.
-    let (lines, hit) = commit_detail_lines(
-        &Theme::dark(),
-        &detail,
-        &files,
-        CommitFileStatus::Ready,
-        None,
-        false,
-        80,
-    );
+    let (lines, hit) = commit_detail_lines(&Theme::dark(), &detail, &files, false, 80);
     let hit = hit.expect("a signed commit has a badge");
     let chars: Vec<char> = flat(&lines[hit.line as usize]).chars().collect();
     let span: String = chars[hit.col as usize..(hit.col + hit.width) as usize]
@@ -598,15 +590,7 @@ fn badge_hit_spans_the_badge_and_reveal_explains_it() {
     );
 
     // Revealing inserts the badge's plain-language meaning.
-    let (revealed, _) = commit_detail_lines(
-        &Theme::dark(),
-        &detail,
-        &files,
-        CommitFileStatus::Ready,
-        None,
-        true,
-        80,
-    );
+    let (revealed, _) = commit_detail_lines(&Theme::dark(), &detail, &files, true, 80);
     assert!(
         revealed
             .iter()

@@ -98,6 +98,59 @@ pub(crate) enum SearchField {
     Replace,
 }
 
+/// Two-axis scroll state shared by every read-only pager tab (diff, stash
+/// patch, graph, settings inspector, loading commit).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PagerState {
+    /// Vertical scroll offset (display rows).
+    pub scroll: u16,
+    /// Horizontal scroll offset (display columns).
+    pub column: u16,
+}
+
+/// The lazily-loaded changed-file block shared by the commit-family views
+/// (standalone commit tab, compare tab, and the graph browser's detail pane):
+/// the prepared per-file diffs plus their delayed-loading/error state and the
+/// forge's lazily-fetched signature verdict.
+#[derive(Default)]
+pub struct CommitFiles {
+    /// Each changed file, diffed and highlighted for display.
+    pub files: Vec<FileView>,
+    /// The in-flight changed-file extraction, if metadata is visible but the
+    /// files are not yet.
+    pub loading_since: Option<Pending>,
+    /// A load error for the changed-file block, when metadata resolved but the
+    /// diffs did not.
+    pub error: Option<String>,
+    /// The forge's "Verified" verdict, once fetched (lazily, over the network).
+    pub verification: Option<karet_session::GithubVerification>,
+}
+
+impl CommitFiles {
+    /// A fully loaded block.
+    #[must_use]
+    pub fn ready(files: Vec<FileView>) -> Self {
+        Self {
+            files,
+            ..Self::default()
+        }
+    }
+
+    /// An empty block whose extraction is in flight.
+    #[must_use]
+    pub fn loading() -> Self {
+        Self {
+            loading_since: Some(Pending::start()),
+            ..Self::default()
+        }
+    }
+
+    /// Reset to an in-flight state (a reselection cleared the shown files).
+    pub fn reset_loading(&mut self) {
+        *self = Self::loading();
+    }
+}
+
 /// The content of a tab and how to render it.
 // The `Code` variant is intentionally the heavy one (it carries the buffer and its
 // derived render state); there are only ever a handful of tabs, so boxing every
@@ -235,19 +288,15 @@ pub enum TabKind {
         error: Option<String>,
         /// The current layout.
         view: ViewMode,
-        /// Vertical scroll offset (display rows).
-        scroll: u16,
-        /// Horizontal scroll offset (display columns).
-        column: u16,
+        /// Two-axis scroll state.
+        pager: PagerState,
     },
     /// A read-only stash patch preview.
     StashPreview {
         /// Unified patch and stat output.
         patch: String,
-        /// Vertical scroll offset.
-        scroll: u16,
-        /// Horizontal scroll offset.
-        column: u16,
+        /// Two-axis scroll state.
+        pager: PagerState,
     },
     /// A read-only code-visualization graph (dependency or usage), rendered as an
     /// indented tree.
@@ -256,19 +305,15 @@ pub enum TabKind {
         title: String,
         /// The neutral graph to render.
         view: karet_core::GraphView,
-        /// Vertical scroll offset (display rows).
-        scroll: u16,
-        /// Horizontal scroll offset (display columns).
-        column: u16,
+        /// Two-axis scroll state.
+        pager: PagerState,
     },
     /// A read-only view of the loaded settings and their provenance.
     LoadedConfig {
         /// The loaded configuration report.
         report: LoadedConfig,
-        /// Vertical scroll offset (display rows).
-        scroll: u16,
-        /// Horizontal scroll offset (display columns).
-        column: u16,
+        /// Two-axis scroll state.
+        pager: PagerState,
     },
     /// A read-only, GitHub-parity commit view: the message, author/committer, parents,
     /// signature badge, changed-file list, and per-file semantic diffs.
@@ -279,26 +324,17 @@ pub enum TabKind {
         loading_since: Pending,
         /// A load error for the revision, when metadata could not be resolved.
         error: Option<String>,
-        /// Vertical scroll offset (reserved so the loading tab stays in the pager layer).
-        scroll: u16,
-        /// Horizontal scroll offset for a long error message.
-        column: u16,
+        /// Two-axis scroll state (reserved so the loading tab stays in the pager
+        /// layer even while empty).
+        pager: PagerState,
     },
     /// A read-only, GitHub-parity commit view: the message, author/committer, parents,
     /// signature badge, changed-file list, and per-file semantic diffs.
     Commit {
         /// The commit metadata (message, author/committer, parents, signature).
         detail: Box<karet_vcs::CommitDetail>,
-        /// Each changed file (vs the first parent), diffed and highlighted for display.
-        files: Vec<FileView>,
-        /// The in-flight changed-file extraction, if metadata is visible but files
-        /// are not.
-        files_loading_since: Option<Pending>,
-        /// A load error for the changed-file block, when metadata resolved but diffs did
-        /// not.
-        files_error: Option<String>,
-        /// The forge's "Verified" verdict, once fetched (lazily, over the network).
-        verification: Option<karet_session::GithubVerification>,
+        /// The changed files (vs the first parent) and their load state.
+        files: CommitFiles,
         /// When the signature badge was last double-clicked, if its explanatory
         /// tooltip is being revealed. The reveal auto-hides a few seconds later.
         explain_since: Option<Instant>,
@@ -316,8 +352,8 @@ pub enum TabKind {
         /// Whether the diff was taken from the merge base (three-dot, `base...head`)
         /// rather than the two tips (two-dot, `base..head`).
         merge_base: bool,
-        /// Each changed file between the two points, diffed and highlighted for display.
-        files: Vec<FileView>,
+        /// The changed files between the two points and their load state.
+        files: CommitFiles,
         /// Responsive scrolling, anchor, and file-rail state.
         view: CommitViewState,
     },
@@ -341,16 +377,8 @@ pub enum TabKind {
         detail_loading_since: Option<Pending>,
         /// The selected commit's loaded detail, if the fetch has answered.
         detail: Option<Box<karet_vcs::CommitDetail>>,
-        /// The selected commit's changed files, diffed for the detail pane.
-        files: Vec<FileView>,
-        /// The in-flight changed-file extraction, if metadata is visible but files
-        /// are not.
-        files_loading_since: Option<Pending>,
-        /// A load error for the changed-file block, when metadata resolved but diffs did
-        /// not.
-        files_error: Option<String>,
-        /// The forge's verdict for the selected commit, once fetched.
-        verification: Option<karet_session::GithubVerification>,
+        /// The selected commit's changed files and their load state.
+        files: CommitFiles,
         /// A commit hash marked as the base for a two-commit comparison, if any. Set by
         /// "mark base"; the next "compare" diffs it against the current selection.
         compare_base: Option<String>,
@@ -613,8 +641,7 @@ impl Tab {
             TabKind::Graph {
                 title,
                 view,
-                scroll: 0,
-                column: 0,
+                pager: PagerState::default(),
             },
         )
     }
@@ -626,8 +653,7 @@ impl Tab {
             "Loaded Settings",
             TabKind::LoadedConfig {
                 report,
-                scroll: 0,
-                column: 0,
+                pager: PagerState::default(),
             },
         )
     }
@@ -639,8 +665,7 @@ impl Tab {
             format!("Stash {reference}"),
             TabKind::StashPreview {
                 patch,
-                scroll: 0,
-                column: 0,
+                pager: PagerState::default(),
             },
         )
     }
@@ -666,24 +691,20 @@ impl Tab {
                 loading_since,
                 error: None,
                 view,
-                scroll: 0,
-                column: 0,
+                pager: PagerState::default(),
             },
         )
     }
 
     /// A read-only commit view for `detail` and its changed `files`.
     #[must_use]
-    pub fn commit(detail: Box<karet_vcs::CommitDetail>, files: Vec<FileView>) -> Self {
+    pub fn commit(detail: Box<karet_vcs::CommitDetail>, files: CommitFiles) -> Self {
         let title = commit_title(&detail.short_hash);
         Self::new(
             title,
             TabKind::Commit {
                 detail,
                 files,
-                files_loading_since: None,
-                files_error: None,
-                verification: None,
                 explain_since: None,
                 view: CommitViewState::default(),
             },
@@ -701,8 +722,7 @@ impl Tab {
                 rev,
                 loading_since: Pending::start(),
                 error: None,
-                scroll: 0,
-                column: 0,
+                pager: PagerState::default(),
             },
         )
     }
@@ -739,10 +759,7 @@ impl Tab {
                 selected: 0,
                 detail_loading_since: None,
                 detail: None,
-                files: Vec::new(),
-                files_loading_since: None,
-                files_error: None,
-                verification: None,
+                files: CommitFiles::default(),
                 compare_base: None,
                 list_offset: 0,
                 detail_column: 0,
@@ -756,7 +773,7 @@ impl Tab {
         base_label: String,
         head_label: String,
         merge_base: bool,
-        files: Vec<FileView>,
+        files: CommitFiles,
     ) -> Self {
         let sep = if merge_base { "\u{2026}" } else { ".." };
         let title = format!("\u{21c4} {base_label}{sep}{head_label}");
@@ -959,7 +976,7 @@ mod tests {
             signature: None,
         };
 
-        let loaded = Tab::commit(Box::new(detail), Vec::new());
+        let loaded = Tab::commit(Box::new(detail), CommitFiles::default());
         let loading = Tab::commit_loading("bbbbbbb111");
 
         assert_eq!(loaded.title, "Commit aaaaaaa");

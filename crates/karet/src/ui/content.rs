@@ -232,11 +232,18 @@ pub(super) fn draw_pane_content(
             loading_since,
             error,
             view,
-            scroll,
-            column,
+            pager,
             ..
         } => match (file, &*error) {
-            (Some(file), _) => draw_diff(f, theme, area, file, *view, scroll, column),
+            (Some(file), _) => draw_diff(
+                f,
+                theme,
+                area,
+                file,
+                *view,
+                &mut pager.scroll,
+                &mut pager.column,
+            ),
             (None, Some(error)) => f.render_widget(
                 Paragraph::new(error.as_str()).style(theme.style(ThemeRole::DiagnosticError)),
                 area,
@@ -252,51 +259,32 @@ pub(super) fn draw_pane_content(
                 }
             },
         },
-        TabKind::StashPreview {
-            patch,
-            scroll,
-            column,
-            ..
-        } => {
+        TabKind::StashPreview { patch, pager, .. } => {
             let lines: Vec<Line> = patch
                 .lines()
                 .map(|line| Line::raw(line.to_string()))
                 .collect();
-            draw_scrollable_lines(f, theme, area, lines, scroll, column);
+            draw_scrollable_lines(f, theme, area, lines, &mut pager.scroll, &mut pager.column);
         },
-        TabKind::Graph {
+        TabKind::Graph { title, view, pager } => draw_graph(
+            f,
+            theme,
+            area,
             title,
             view,
-            scroll,
-            column,
-        } => draw_graph(f, theme, area, title, view, scroll, column),
-        TabKind::LoadedConfig {
-            report,
-            scroll,
-            column,
-        } => {
-            draw_loaded_config(f, theme, area, report, scroll, column);
+            &mut pager.scroll,
+            &mut pager.column,
+        ),
+        TabKind::LoadedConfig { report, pager } => {
+            draw_loaded_config(f, theme, area, report, &mut pager.scroll, &mut pager.column);
         },
         TabKind::Commit {
             detail,
             files,
-            files_loading_since,
-            files_error,
-            verification,
             explain_since,
             view,
         } => {
-            let painted = draw_commit(
-                f,
-                theme,
-                area,
-                detail,
-                files,
-                file_load_status(*files_loading_since, files_error.as_deref()),
-                verification.as_ref(),
-                *explain_since,
-                view,
-            );
+            let painted = draw_commit(f, theme, area, detail, files, *explain_since, view);
             badge_rect = painted.badge_rect;
             file_hits = painted.file_hits;
             collapse_hits = painted.collapse_hits;
@@ -305,8 +293,7 @@ pub(super) fn draw_pane_content(
             rev,
             loading_since,
             error,
-            scroll,
-            column,
+            pager,
         } => draw_commit_loading(
             f,
             theme,
@@ -314,8 +301,8 @@ pub(super) fn draw_pane_content(
             rev,
             *loading_since,
             error.as_deref(),
-            scroll,
-            column,
+            &mut pager.scroll,
+            &mut pager.column,
         ),
         TabKind::Compare {
             base_label,
@@ -347,9 +334,6 @@ pub(super) fn draw_pane_content(
             detail_loading_since,
             detail,
             files,
-            files_loading_since,
-            files_error,
-            verification,
             compare_base: _,
             list_offset,
             detail_column,
@@ -365,8 +349,6 @@ pub(super) fn draw_pane_content(
             *detail_loading_since,
             detail.as_deref(),
             files,
-            file_load_status(*files_loading_since, files_error.as_deref()),
-            verification.as_ref(),
             list_offset,
             detail_column,
         ),

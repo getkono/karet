@@ -106,6 +106,7 @@ use crate::command::Command;
 use crate::keymap::ChordStyle;
 use crate::keymap::Context;
 use crate::keymap::Focus;
+use crate::tab::CommitFiles;
 
 /// Render text-field content with a highlighted selection and an insertion caret.
 pub(super) fn text_field_text(
