@@ -94,7 +94,6 @@ use karet_fileview::image::GraphicsProtocol;
 use karet_fileview::image::{self};
 use karet_search::FileHit;
 use karet_search::SearchQuery;
-use karet_search::WorkspaceSearch;
 use karet_search::search_in_file;
 use karet_session::Backend;
 use karet_session::BackendError;

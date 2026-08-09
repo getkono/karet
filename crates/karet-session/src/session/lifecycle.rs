@@ -38,6 +38,7 @@ impl Session {
         #[cfg(feature = "github")]
         let github_repository = github::eligible_repository(&config.roots, vcs.as_ref());
         let vcs_worker = crate::vcs_worker::spawn(config.roots.first().cloned(), events.clone());
+        let search_worker = crate::search_worker::spawn(events.clone());
         let latex_worker = crate::latex::spawn(events.clone());
         // Open this session's swap store and scan for swaps a previous run left behind
         // (a crash, or a save that failed). They are offered to the UI for recovery.
@@ -89,6 +90,7 @@ impl Session {
             fs_rx,
             vcs,
             vcs_worker,
+            search_worker,
             vcs_cancellations,
             latex_worker,
             last_vcs: None,

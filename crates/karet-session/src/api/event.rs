@@ -204,6 +204,33 @@ pub enum Event {
         /// Non-overlapping edits in buffer coordinates.
         edits: Vec<TextEdit>,
     },
+    /// Workspace search results answering a [`Command::Search`].
+    SearchResults {
+        /// The per-file hits, capped at the request's limit.
+        hits: Vec<karet_search::FileHit>,
+    },
+    /// A workspace replace-all finished, answering [`Command::SearchReplaceAll`].
+    SearchReplaced {
+        /// The number of files written.
+        files_changed: usize,
+        /// The total number of replacements applied.
+        replacements: usize,
+    },
+    /// A dictionary word was persisted, answering [`Command::AddDictionaryWord`].
+    DictionaryWordAdded {
+        /// The accepted word.
+        word: String,
+        /// The settings file that received it.
+        path: PathBuf,
+    },
+    /// Adding a project dictionary word needs explicit confirmation because the
+    /// project settings tree does not exist yet.
+    ProjectSettingsCreationRequired {
+        /// The word awaiting the confirmed write.
+        word: String,
+        /// The settings file that would be created.
+        path: PathBuf,
+    },
     /// Progress on a long-running operation.
     Progress {
         /// A human-readable status message.

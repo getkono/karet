@@ -342,14 +342,9 @@ impl App {
     fn apply_blame_setting(&mut self, enabled: bool) {
         self.settings.git.blame = enabled;
         self.loaded_config.settings.git.blame = enabled;
-        #[cfg(not(test))]
-        if let Err(error) = karet_session::config::set_user_blame(enabled) {
-            self.notify(
-                Severity::Error,
-                NotificationKind::System,
-                format!("settings: {error}"),
-            );
-        }
+        // The persistent write runs on the backend; a failure comes back as an
+        // ordinary notification event.
+        self.send_command(SessionCommand::SetBlameEnabled { enabled });
         self.pending_blame = None;
         self.failed_blame = None;
         self.live_blame = None;

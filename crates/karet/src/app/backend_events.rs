@@ -747,6 +747,29 @@ impl App {
                 self.status = Some(format!("dependency graph: {count} package(s)"));
             },
             SessionEvent::LoadedConfig { report } => self.open_loaded_config(*report),
+            SessionEvent::SearchResults { hits } => self.apply_search_results(hits),
+            SessionEvent::DictionaryWordAdded { word, path } => {
+                self.dictionary_word_added(&word, &path);
+            },
+            SessionEvent::ProjectSettingsCreationRequired { word, path } => {
+                self.overlay = Some(Overlay::text(
+                    format!("Type create to add “{word}” and create {}", path.display()),
+                    TextPurpose::ConfirmCreateProjectSettings { word, path },
+                ));
+            },
+            SessionEvent::SearchReplaced {
+                files_changed,
+                replacements,
+            } => {
+                self.notify(
+                    Severity::Information,
+                    NotificationKind::System,
+                    format!("replaced {replacements} occurrence(s) in {files_changed} file(s)"),
+                );
+                // Refresh so the (now empty, unless the replacement re-matches)
+                // results reflect the edited files.
+                self.run_global_search();
+            },
             // Events answering commands this client never sends (hover, definition,
             // workspace symbols, rename, format-on-save) fall through here until the
             // corresponding UI exists.

@@ -422,8 +422,8 @@
         }
     }
 
-    #[test]
-    fn global_search_collects_matching_files() {
+    #[tokio::test]
+    async fn global_search_collects_matching_files() {
         let n = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "karet-app-{}-{}",
@@ -434,9 +434,19 @@
         let _ = std::fs::write(dir.join("a.txt"), "needle here\n");
         let _ = std::fs::write(dir.join("b.txt"), "nothing\n");
 
+        // The walk runs on the backend's search worker; the results event fills
+        // the panel.
+        let (local_backend, _snaps) = local(SessionConfig {
+            roots: vec![dir.clone()],
+            ..SessionConfig::default()
+        });
+        let backend: Arc<dyn Backend> = Arc::new(local_backend);
+        let mut events = backend.take_events().expect("backend event stream");
         let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend);
         app.search.query = "needle".to_string();
         app.run_global_search();
+        pump(&mut app, &mut events).await;
         assert_eq!(app.search.results.len(), 1);
         assert!(app.search.results[0].path.ends_with("a.txt"));
 
@@ -743,8 +753,8 @@
         assert!(wake <= COMMIT_REVEAL && wake > Duration::ZERO);
     }
 
-    #[test]
-    fn global_search_highlights_matches_in_an_already_open_tab() {
+    #[tokio::test]
+    async fn global_search_highlights_matches_in_an_already_open_tab() {
         let n = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "karet-app-search-decos-{}-{}",
@@ -755,11 +765,20 @@
         let file = dir.join("a.txt");
         let _ = std::fs::write(&file, "needle here\n");
 
+        let (local_backend, _snaps) = local(SessionConfig {
+            roots: vec![dir.clone()],
+            ..SessionConfig::default()
+        });
+        let backend: Arc<dyn Backend> = Arc::new(local_backend);
+        let mut events = backend.take_events().expect("backend event stream");
         let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend);
         app.open_path(&file);
+        pump(&mut app, &mut events).await;
 
         app.search.query = "needle".to_string();
         app.run_global_search();
+        pump(&mut app, &mut events).await;
         assert_eq!(app.search.results.len(), 1);
         match &app.tabs[app.active].kind {
             TabKind::Code { search_decos, .. } => assert_eq!(search_decos.len(), 1),
@@ -777,8 +796,8 @@
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn fs_changed_event_reruns_a_live_global_search() {
+    #[tokio::test]
+    async fn fs_changed_event_reruns_a_live_global_search() {
         let n = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "karet-app-fschanged-{}-{}",
@@ -787,9 +806,17 @@
         ));
         let _ = std::fs::create_dir_all(&dir);
 
+        let (local_backend, _snaps) = local(SessionConfig {
+            roots: vec![dir.clone()],
+            ..SessionConfig::default()
+        });
+        let backend: Arc<dyn Backend> = Arc::new(local_backend);
+        let mut events = backend.take_events().expect("backend event stream");
         let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend);
         app.search.query = "needle".to_string();
         app.run_global_search();
+        pump(&mut app, &mut events).await;
         assert_eq!(app.search.results.len(), 0, "no matching file exists yet");
 
         // A file matching the live query appears on disk...
@@ -797,6 +824,7 @@
         let _ = std::fs::write(&file, "needle here\n");
         // ...and the watcher's debounced event is what tells the app to look again.
         app.on_backend_event(None, SessionEvent::FsChanged { paths: vec![file] });
+        pump(&mut app, &mut events).await;
         assert_eq!(
             app.search.results.len(),
             1,

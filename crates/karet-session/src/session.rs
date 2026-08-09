@@ -379,6 +379,7 @@ pub struct Session {
     vcs: Option<Repository>,
     /// Ordered background repository actions and network reads.
     vcs_worker: std::sync::mpsc::Sender<crate::vcs_worker::VcsJob>,
+    search_worker: std::sync::mpsc::Sender<crate::search_worker::SearchJob>,
     /// Cancellation registry for safely-droppable repository reads and builds.
     vcs_cancellations: crate::cancellation::CancellationHub,
     /// Serialized external LaTeX builds.
@@ -627,6 +628,36 @@ impl Session {
                 new_name,
             } => self.rename(id, doc, position, new_name),
             Command::FormatOnSave { doc } => self.format_document(id, doc),
+            Command::AddDictionaryWord {
+                word,
+                scope,
+                create_project,
+            } => self.add_dictionary_word(id, word, scope, create_project),
+            Command::SetBlameEnabled { enabled } => self.set_blame_enabled(id, enabled),
+            Command::Search { query, limit } => {
+                if let Some(root) = self.config.roots.first().cloned() {
+                    let _ = self
+                        .search_worker
+                        .send(crate::search_worker::SearchJob::Search {
+                            id,
+                            root,
+                            query,
+                            limit,
+                        });
+                }
+            },
+            Command::SearchReplaceAll { query, replacement } => {
+                if let Some(root) = self.config.roots.first().cloned() {
+                    let _ = self
+                        .search_worker
+                        .send(crate::search_worker::SearchJob::ReplaceAll {
+                            id,
+                            root,
+                            query,
+                            replacement,
+                        });
+                }
+            },
             // Language-server management commands are consumed by the
             // `handle_lsp_command` pre-dispatch above and never reach this match.
             _ => {},

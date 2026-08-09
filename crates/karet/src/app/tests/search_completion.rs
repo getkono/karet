@@ -205,18 +205,28 @@
         assert!(app.text_field_drag.is_none());
     }
 
-    #[test]
-    fn search_replace_all_rewrites_matching_files() {
+    #[tokio::test]
+    async fn search_replace_all_rewrites_matching_files() {
         let dir = std::env::temp_dir().join(format!("karet-replace-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::write(dir.join("a.txt"), "needle and needle\n");
 
+        // The replace walk runs on the backend's search worker and answers with
+        // a SearchReplaced event.
+        let (local_backend, _snaps) = local(SessionConfig {
+            roots: vec![dir.clone()],
+            ..SessionConfig::default()
+        });
+        let backend: Arc<dyn Backend> = Arc::new(local_backend);
+        let mut events = backend.take_events().expect("backend event stream");
         let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend);
         app.sidebar_panel = SidebarPanel::Search;
         app.search.query = "needle".to_string();
         app.search.case_sensitive = true;
         app.search.replace = "pin".to_string();
         app.search_replace_all();
+        pump(&mut app, &mut events).await;
         assert_eq!(
             std::fs::read_to_string(dir.join("a.txt")).unwrap_or_default(),
             "pin and pin\n"

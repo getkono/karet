@@ -152,8 +152,8 @@
         assert_eq!(changes, 1);
     }
 
-    #[test]
-    fn add_word_updates_an_existing_project_settings_file_without_prompt()
+    #[tokio::test]
+    async fn add_word_updates_an_existing_project_settings_file_without_prompt()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::create_dir(dir.path().join(".git"))?;
@@ -162,13 +162,23 @@
             ".karet/setting.jsonc",
             b"{\n  // keep\n  \"spellcheck\": { \"enabled\": true }\n}\n",
         );
+        // The dictionary write runs on the backend; the answering event closes
+        // the loop.
+        let (local_backend, _snaps) = local(SessionConfig {
+            roots: vec![dir.path().to_path_buf()],
+            ..SessionConfig::default()
+        });
+        let backend: Arc<dyn Backend> = Arc::new(local_backend);
+        let mut events = backend.take_events().expect("backend event stream");
         let mut app = spelling_app(dir.path().to_path_buf(), "Unknown word “wrod”");
+        app.backend = Some(backend);
         open_spelling_menu(&mut app);
         if let Some(menu) = app.context_menu.as_mut() {
             menu.selected = 1;
         }
 
         app.accept_context_menu();
+        pump(&mut app, &mut events).await;
 
         assert!(app.overlay.is_none());
         let text = std::fs::read_to_string(dir.path().join(".karet/setting.jsonc"))?;
@@ -177,25 +187,34 @@
         Ok(())
     }
 
-    #[test]
-    fn add_word_requires_typed_confirmation_before_creating_project_settings()
+    #[tokio::test]
+    async fn add_word_requires_typed_confirmation_before_creating_project_settings()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::create_dir(dir.path().join(".git"))?;
         let path = dir.path().join(".karet/setting.jsonc");
+        let (local_backend, _snaps) = local(SessionConfig {
+            roots: vec![dir.path().to_path_buf()],
+            ..SessionConfig::default()
+        });
+        let backend: Arc<dyn Backend> = Arc::new(local_backend);
+        let mut events = backend.take_events().expect("backend event stream");
         let mut app = spelling_app(dir.path().to_path_buf(), "Unknown word “wrod”");
+        app.backend = Some(backend);
         open_spelling_menu(&mut app);
         if let Some(menu) = app.context_menu.as_mut() {
             menu.selected = 1;
         }
 
         app.accept_context_menu();
+        pump(&mut app, &mut events).await;
 
         assert!(!path.exists());
         let overlay = app.overlay.as_mut().expect("typed creation prompt");
         assert!(overlay.title().contains("Type create"));
         overlay.push_str("create");
         app.overlay_accept();
+        pump(&mut app, &mut events).await;
         assert!(path.exists());
         assert!(std::fs::read_to_string(path)?.contains("\"wrod\""));
         Ok(())

@@ -3109,6 +3109,7 @@ dependencies = [
  "ignore",
  "memchr",
  "regex",
+ "serde",
  "thiserror 2.0.19",
 ]
 
@@ -3129,6 +3130,7 @@ dependencies = [
  "karet-filetype",
  "karet-github",
  "karet-lsp",
+ "karet-search",
  "karet-supervisor",
  "karet-syntax",
  "karet-text",

@@ -504,6 +504,15 @@ pub struct LanguageServerStatus {
     pub instances: Vec<LanguageServerInstanceStatus>,
 }
 
+/// The spell-check dictionary settings layer a word is written to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DictionaryScope {
+    /// The per-user settings layer.
+    User,
+    /// The workspace's `.karet/setting.jsonc` layer.
+    Project,
+}
+
 /// Which diff-between-two-points a [`Command::RangeChanges`] asks for. The backend
 /// resolves the endpoints against the repository (upstream, base branch, merge base) so
 /// ref resolution stays with the repo, and answers with [`Event::RangeReady`].
@@ -666,6 +675,41 @@ pub enum Command {
     BuildLatex {
         /// The open TeX document that initiated the build.
         doc: DocumentId,
+    },
+    /// Run a workspace search on the backend's search worker; answered with
+    /// [`Event::SearchResults`]. A newer search supersedes an unstarted one.
+    Search {
+        /// The search query and options.
+        query: karet_search::SearchQuery,
+        /// Keep at most this many file hits.
+        limit: usize,
+    },
+    /// Replace across every workspace match on the search worker; answered with
+    /// [`Event::SearchReplaced`]. Open buffers pick the edits up through the
+    /// file watcher.
+    SearchReplaceAll {
+        /// The query selecting the text to replace.
+        query: karet_search::SearchQuery,
+        /// The replacement text.
+        replacement: String,
+    },
+    /// Add `word` to a spell-check dictionary settings layer. The write runs on
+    /// the backend (never a UI thread); answered with
+    /// [`Event::DictionaryWordAdded`], or
+    /// [`Event::ProjectSettingsCreationRequired`] when the project layer does not
+    /// exist and `create_project` was not set.
+    AddDictionaryWord {
+        /// The word to accept.
+        word: String,
+        /// Which settings layer receives it.
+        scope: DictionaryScope,
+        /// Explicit confirmation to create a missing project settings tree.
+        create_project: bool,
+    },
+    /// Persist the inline-blame toggle to the user settings layer.
+    SetBlameEnabled {
+        /// Whether inline blame is enabled.
+        enabled: bool,
     },
     /// Report the client's cursor/selection state for a view.
     SetCursor {

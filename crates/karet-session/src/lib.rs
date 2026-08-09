@@ -31,6 +31,7 @@ mod latex;
 pub mod local;
 mod lsp;
 mod lsp_registry;
+mod search_worker;
 pub mod session;
 mod spell;
 mod vcs_worker;
@@ -38,6 +39,7 @@ mod vcs_worker;
 pub mod viz;
 
 pub use api::Command;
+pub use api::DictionaryScope;
 pub use api::DocumentEncoding;
 pub use api::DocumentId;
 pub use api::DocumentLineEnding;
