@@ -104,8 +104,8 @@ fn build_files(
     file_status: CommitFileStatus<'_>,
     collapsed_files: &BTreeSet<usize>,
 ) -> FileDocument {
-    let muted = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
-    let label = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
+    let muted = theme.style(ThemeRole::Muted);
+    let label = theme.style(ThemeRole::LineNumberActive);
     let mut doc = FileDocument::default();
     match file_status {
         CommitFileStatus::Loading(since) => {
@@ -616,9 +616,9 @@ fn visible_badge(
 }
 
 fn file_summary_line(theme: &Theme, files: &[render::FileView]) -> Line<'static> {
-    let label = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
-    let add = Style::default().fg(theme.role(ThemeRole::DiagnosticHint).to_ratatui());
-    let remove = Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui());
+    let label = theme.style(ThemeRole::LineNumberActive);
+    let add = theme.style(ThemeRole::DiagnosticHint);
+    let remove = theme.style(ThemeRole::DiagnosticError);
     let (added, removed) = files.iter().fold((0usize, 0usize), |(a, r), file| {
         let (next_a, next_r) = file.line_stats();
         (a + next_a, r + next_r)
@@ -645,9 +645,9 @@ fn file_index_line(
     width: u16,
     selected: bool,
 ) -> Line<'static> {
-    let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
-    let add = Style::default().fg(theme.role(ThemeRole::DiagnosticHint).to_ratatui());
-    let remove = Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui());
+    let fg = theme.style(ThemeRole::Foreground);
+    let add = theme.style(ThemeRole::DiagnosticHint);
+    let remove = theme.style(ThemeRole::DiagnosticError);
     let (glyph, role) = status_glyph(file.change.status);
     let (added, removed) = file.line_stats();
     let stats = format!("+{added} \u{2212}{removed}");
@@ -662,10 +662,7 @@ fn file_index_line(
         0
     };
     let mut spans = vec![
-        Span::styled(
-            format!(" {glyph} "),
-            Style::default().fg(theme.role(role).to_ratatui()),
-        ),
+        Span::styled(format!(" {glyph} "), theme.style(role)),
         Span::styled(
             path,
             if selected {
@@ -694,10 +691,10 @@ fn compare_header_lines(
     head_label: &str,
     merge_base: bool,
 ) -> Vec<Line<'static>> {
-    let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
-    let label = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
-    let hash = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
-    let muted = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
+    let fg = theme.style(ThemeRole::Foreground);
+    let label = theme.style(ThemeRole::LineNumberActive);
+    let hash = theme.style(ThemeRole::DiagnosticWarning);
+    let muted = theme.style(ThemeRole::Muted);
     vec![
         Line::from(vec![
             Span::styled(" Comparing ", fg.add_modifier(Modifier::BOLD)),

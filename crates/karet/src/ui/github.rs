@@ -109,7 +109,7 @@ pub(super) fn draw_github(f: &mut Frame, theme: &Theme, area: Rect, view: &mut G
                     Span::styled("Commit  ", muted_style(theme)),
                     Span::styled(
                         run.head_sha.clone(),
-                        Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui()),
+                        theme.style(ThemeRole::DiagnosticWarning),
                     ),
                 ]),
             ];
@@ -149,11 +149,11 @@ fn draw_dashboard(f: &mut Frame, theme: &Theme, area: Rect, state: &mut GithubDa
     let mut tab_x = rows[0].x;
     for (section, label) in tabs {
         let style = if state.section == section {
-            Style::default()
-                .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+            theme
+                .style(ThemeRole::Foreground)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else {
-            Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui())
+            theme.style(ThemeRole::Muted)
         };
         let text = format!("  {label}  ");
         let width =
@@ -180,7 +180,7 @@ fn draw_dashboard(f: &mut Frame, theme: &Theme, area: Rect, state: &mut GithubDa
         Paragraph::new(search).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui())),
+                .border_style(theme.style(ThemeRole::Muted)),
         ),
         rows[1],
     );
@@ -221,9 +221,9 @@ fn draw_dashboard(f: &mut Frame, theme: &Theme, area: Rect, state: &mut GithubDa
         )
     };
     let account_style = if state.auth.can_write {
-        Style::default().fg(theme.role(ThemeRole::DiagnosticHint).to_ratatui())
+        theme.style(ThemeRole::DiagnosticHint)
     } else {
-        Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui())
+        theme.style(ThemeRole::DiagnosticWarning)
     };
     f.render_widget(
         Paragraph::new(Line::styled(account, account_style)),
@@ -390,8 +390,8 @@ fn issue_or_pull_request_lines(
     if let Some(badge) = card.badge {
         metadata.push(Span::styled(
             format!("  {badge}"),
-            Style::default()
-                .fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui())
+            theme
+                .style(ThemeRole::DiagnosticWarning)
                 .add_modifier(Modifier::BOLD),
         ));
     }
@@ -406,18 +406,18 @@ fn issue_or_pull_request_lines(
         Line::from(vec![
             Span::styled(
                 format!("{checkbox} "),
-                Style::default()
-                    .fg(theme.role(ThemeRole::DiagnosticInfo).to_ratatui())
+                theme
+                    .style(ThemeRole::DiagnosticInfo)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("#{:<5} ", card.number),
-                Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui()),
+                theme.style(ThemeRole::DiagnosticWarning),
             ),
             Span::styled(
                 fit_one_line(card.title, title_width),
-                Style::default()
-                    .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+                theme
+                    .style(ThemeRole::Foreground)
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
@@ -456,19 +456,19 @@ fn action_lines(
         Line::from(vec![
             Span::styled(
                 format!("{checkbox} "),
-                Style::default()
-                    .fg(theme.role(ThemeRole::DiagnosticInfo).to_ratatui())
+                theme
+                    .style(ThemeRole::DiagnosticInfo)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 fit_one_line(workflow, usize::from(width).saturating_sub(16)),
-                Style::default()
-                    .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+                theme
+                    .style(ThemeRole::Foreground)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("  Run #{}", run.run_number),
-                Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui()),
+                theme.style(ThemeRole::DiagnosticWarning),
             ),
         ]),
         Line::from(vec![
@@ -501,21 +501,18 @@ fn action_lines(
 fn heading(text: impl Into<String>, theme: &Theme) -> Line<'static> {
     Line::styled(
         text.into(),
-        Style::default()
-            .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+        theme
+            .style(ThemeRole::Foreground)
             .add_modifier(Modifier::BOLD),
     )
 }
 
 fn muted_line(text: &str, theme: &Theme) -> Line<'static> {
-    Line::styled(
-        text.to_string(),
-        Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui()),
-    )
+    Line::styled(text.to_string(), theme.style(ThemeRole::Muted))
 }
 
 fn muted_style(theme: &Theme) -> Style {
-    Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui())
+    theme.style(ThemeRole::Muted)
 }
 
 fn author_span(
@@ -545,7 +542,7 @@ fn workflow_result_style(result: &str, theme: &Theme) -> Style {
         "queued" | "pending" | "in_progress" | "waiting" => ThemeRole::DiagnosticWarning,
         _ => ThemeRole::DiagnosticInfo,
     };
-    Style::default().fg(theme.role(role).to_ratatui())
+    theme.style(role)
 }
 
 fn github_label_style(value: &str, theme: &Theme) -> Style {
@@ -586,40 +583,17 @@ fn error_line(text: &str, theme: &Theme) -> Line<'static> {
     Line::from(vec![
         Span::styled(
             "Error · ",
-            Style::default()
-                .fg(theme.role(ThemeRole::DiagnosticError).to_ratatui())
+            theme
+                .style(ThemeRole::DiagnosticError)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            text.to_string(),
-            Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui()),
-        ),
+        Span::styled(text.to_string(), theme.style(ThemeRole::Foreground)),
     ])
 }
 
 fn fit_one_line(text: &str, max: usize) -> String {
     let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if unicode_width::UnicodeWidthStr::width(normalized.as_str()) <= max {
-        return normalized;
-    }
-    if max == 0 {
-        return String::new();
-    }
-    if max == 1 {
-        return "…".to_string();
-    }
-    let mut shortened = String::new();
-    let mut used = 1;
-    for character in normalized.chars() {
-        let width = unicode_width::UnicodeWidthChar::width(character).unwrap_or(0);
-        if used + width > max {
-            break;
-        }
-        shortened.push(character);
-        used += width;
-    }
-    shortened.push('…');
-    shortened
+    karet_widgets::text::fit_end(&normalized, max)
 }
 
 #[cfg(test)]

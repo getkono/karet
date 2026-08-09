@@ -94,9 +94,9 @@ pub(super) fn draw_pane_content(
                     editor_rect = columns[0];
                     markdown_preview_rect = columns[2];
                     f.render_widget(
-                        Block::default().borders(Borders::LEFT).border_style(
-                            Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui()),
-                        ),
+                        Block::default()
+                            .borders(Borders::LEFT)
+                            .border_style(theme.style(ThemeRole::IndentGuide)),
                         columns[1],
                     );
                 }
@@ -239,9 +239,7 @@ pub(super) fn draw_pane_content(
         } => match (file, &*error) {
             (Some(file), _) => draw_diff(f, theme, area, file, *view, scroll, column),
             (None, Some(error)) => f.render_widget(
-                Paragraph::new(error.as_str()).style(
-                    Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui()),
-                ),
+                Paragraph::new(error.as_str()).style(theme.style(ThemeRole::DiagnosticError)),
                 area,
             ),
             // The diff is still being prepared: a stable, muted placeholder after
@@ -249,8 +247,7 @@ pub(super) fn draw_pane_content(
             (None, None) => {
                 if loading_since.is_some_and(|since| since.elapsed() >= LOADING_REVEAL_DELAY) {
                     f.render_widget(
-                        Paragraph::new("Loading diff…")
-                            .style(Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui())),
+                        Paragraph::new("Loading diff…").style(theme.style(ThemeRole::Muted)),
                         area,
                     );
                 }
@@ -448,13 +445,8 @@ pub(super) fn draw_pane_content(
                         Scrollbar::new(ScrollbarOrientation::VerticalRight)
                             .begin_symbol(None)
                             .end_symbol(None)
-                            .track_style(
-                                Style::default()
-                                    .fg(theme.role(ThemeRole::IndentGuide).to_ratatui()),
-                            )
-                            .thumb_style(
-                                Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui()),
-                            ),
+                            .track_style(theme.style(ThemeRole::IndentGuide))
+                            .thumb_style(theme.style(ThemeRole::Foreground)),
                         track,
                         &mut sb,
                     );
@@ -472,7 +464,7 @@ pub(super) fn draw_pane_content(
                             page_count
                         ))
                         .alignment(Alignment::Center)
-                        .style(Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())),
+                        .style(theme.style(ThemeRole::LineNumber)),
                         footer,
                     );
                 }
@@ -514,7 +506,7 @@ pub(super) fn draw_pane_content(
                 f.render_widget(
                     Paragraph::new(format!("{message}\n{detail}"))
                         .alignment(Alignment::Center)
-                        .style(Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui())),
+                        .style(theme.style(ThemeRole::Muted)),
                     area,
                 );
             }
@@ -565,11 +557,9 @@ fn draw_merge_conflict(
         Constraint::Min(0),
     ])
     .split(rows[0]);
-    let muted = Style::default()
-        .fg(theme.role(ThemeRole::Muted).to_ratatui())
-        .add_modifier(Modifier::BOLD);
-    let active = Style::default()
-        .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+    let muted = theme.style(ThemeRole::Muted).add_modifier(Modifier::BOLD);
+    let active = theme
+        .style(ThemeRole::Foreground)
         .bg(theme.role(ThemeRole::Selection).to_ratatui())
         .add_modifier(Modifier::BOLD);
     f.render_widget(
@@ -584,7 +574,7 @@ fn draw_merge_conflict(
         Paragraph::new(" INCOMING · read-only ").style(muted),
         labels[4],
     );
-    let divider_style = Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui());
+    let divider_style = theme.style(ThemeRole::IndentGuide);
     f.render_widget(
         Block::default()
             .borders(Borders::LEFT)
@@ -665,14 +655,12 @@ fn draw_conflict_side(
         );
     } else if let Some(error) = error {
         f.render_widget(
-            Paragraph::new(error)
-                .style(Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui())),
+            Paragraph::new(error).style(theme.style(ThemeRole::DiagnosticError)),
             area,
         );
     } else if loading_since.elapsed() >= LOADING_REVEAL_DELAY {
         f.render_widget(
-            Paragraph::new("Loading conflict side…")
-                .style(Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui())),
+            Paragraph::new("Loading conflict side…").style(theme.style(ThemeRole::Muted)),
             area,
         );
     }

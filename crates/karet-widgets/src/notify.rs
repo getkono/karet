@@ -233,25 +233,7 @@ fn wrap_display(text: &str, width: usize) -> Vec<String> {
 
 /// Truncate `s` to `max` display columns, appending `…` when it overflows.
 fn fit(s: &str, max: usize) -> String {
-    if s.width() <= max {
-        return s.to_string();
-    }
-    if max == 0 {
-        return String::new();
-    }
-    let budget = max.saturating_sub(1);
-    let mut out = String::new();
-    let mut used = 0usize;
-    for ch in s.chars() {
-        let w = UnicodeWidthStr::width(ch.to_string().as_str());
-        if used + w > budget {
-            break;
-        }
-        out.push(ch);
-        used += w;
-    }
-    out.push('\u{2026}');
-    out
+    crate::text::fit_end(s, max)
 }
 
 fn with_ellipsis(s: &str, max: usize) -> String {

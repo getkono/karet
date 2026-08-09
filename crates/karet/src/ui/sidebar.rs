@@ -16,8 +16,8 @@ pub(super) fn draw_outline(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
     );
     f.render_widget(
         Paragraph::new(" OUTLINE").style(
-            Style::default()
-                .fg(theme.role(ThemeRole::LineNumber).to_ratatui())
+            theme
+                .style(ThemeRole::LineNumber)
                 .add_modifier(Modifier::BOLD),
         ),
         header,
@@ -36,8 +36,7 @@ pub(super) fn draw_outline(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
                 " No outline"
             };
         f.render_widget(
-            Paragraph::new(label)
-                .style(Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui())),
+            Paragraph::new(label).style(theme.style(ThemeRole::Muted)),
             content,
         );
         return;
@@ -58,7 +57,7 @@ pub(super) fn draw_outline(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
         })
         .collect();
     let list = List::new(items)
-        .style(Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui()))
+        .style(theme.style(ThemeRole::Foreground))
         .highlight_style(Style::default().bg(theme.role(sel_bg).to_ratatui()));
     let mut state = ListState::default();
     *state.offset_mut() = app.outline_scroll;
@@ -178,10 +177,10 @@ pub(super) fn draw_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, are
     let block = Block::default()
         .borders(Borders::ALL)
         .style(style)
-        .border_style(Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui()));
+        .border_style(theme.style(ThemeRole::IndentGuide));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
-    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let dim = theme.style(ThemeRole::LineNumber);
     let items: Vec<ListItem> = labels
         .iter()
         .zip(hints.iter())
@@ -277,16 +276,14 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
     ])
     .split(area);
     if show_root {
-        let root_style = Style::default()
-            .fg(theme.role(ThemeRole::Muted).to_ratatui())
-            .add_modifier(Modifier::BOLD);
+        let root_style = theme.style(ThemeRole::Muted).add_modifier(Modifier::BOLD);
         f.render_widget(
             Paragraph::new(Line::styled(format!(" {root_label}"), root_style)),
             cols[0],
         );
     }
-    let title = Style::default()
-        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+    let title = theme
+        .style(ThemeRole::LineNumberActive)
         .add_modifier(Modifier::BOLD);
     f.render_widget(
         Paragraph::new(Line::styled(format!(" {name}"), title)),
@@ -367,17 +364,13 @@ pub(super) enum ChromeButtonState {
 
 pub(super) fn chrome_button_style(theme: &Theme, state: ChromeButtonState) -> Style {
     match state {
-        ChromeButtonState::Normal => {
-            Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())
-        },
-        ChromeButtonState::Hovered => {
-            Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
-        },
-        ChromeButtonState::Active => Style::default()
-            .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+        ChromeButtonState::Normal => theme.style(ThemeRole::LineNumber),
+        ChromeButtonState::Hovered => theme.style(ThemeRole::LineNumberActive),
+        ChromeButtonState::Active => theme
+            .style(ThemeRole::LineNumberActive)
             .add_modifier(Modifier::BOLD),
-        ChromeButtonState::ActiveHovered => Style::default()
-            .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+        ChromeButtonState::ActiveHovered => theme
+            .style(ThemeRole::Foreground)
             .add_modifier(Modifier::BOLD),
     }
 }
@@ -407,22 +400,7 @@ pub(super) fn root_header_label(root: &Path, max_width: u16) -> String {
 }
 
 pub(super) fn truncate_left(text: &str, max_width: u16) -> String {
-    if max_width <= 3 {
-        return ".".repeat(max_width as usize);
-    }
-    let suffix_width = max_width - 3;
-    let mut suffix = String::new();
-    let mut used = 0;
-    for ch in text.chars().rev() {
-        let mut buf = [0; 4];
-        let w = cell_width(ch.encode_utf8(&mut buf));
-        if used + w > suffix_width {
-            break;
-        }
-        suffix.insert(0, ch);
-        used += w;
-    }
-    format!("...{suffix}")
+    karet_widgets::text::fit_start(text, usize::from(max_width))
 }
 
 pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
@@ -560,7 +538,7 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
 
     let search = &app.search;
     if search.results.is_empty() {
-        let hint = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+        let hint = theme.style(ThemeRole::LineNumber);
         let msg = if search.query.is_empty() {
             "  type a query, Enter to search"
         } else {
@@ -584,7 +562,7 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
                 Span::raw(format!(" {name} ")),
                 Span::styled(
                     format!("({})", hit.matches.len()),
-                    Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
+                    theme.style(ThemeRole::LineNumber),
                 ),
             ]))
         })

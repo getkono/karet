@@ -31,13 +31,13 @@ pub(super) fn draw_detail_page(
         Line::from(vec![
             Span::styled(
                 detail.title.to_string(),
-                Style::default()
-                    .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+                theme
+                    .style(ThemeRole::Foreground)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("  #{}", detail.number),
-                Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui()),
+                theme.style(ThemeRole::Muted),
             ),
         ]),
         Line::from(vec![
@@ -56,7 +56,7 @@ pub(super) fn draw_detail_page(
         ]),
         Line::styled(
             "━".repeat(usize::from(area.width)),
-            Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui()),
+            theme.style(ThemeRole::IndentGuide),
         ),
     ];
     f.render_widget(Paragraph::new(header).wrap(Wrap { trim: false }), rows[0]);
@@ -70,8 +70,8 @@ pub(super) fn draw_detail_page(
     let mut conversation = vec![Line::from(vec![
         Span::styled(
             format!("@{}", detail.creator.unwrap_or("ghost")),
-            Style::default()
-                .fg(theme.role(ThemeRole::DiagnosticInfo).to_ratatui())
+            theme
+                .style(ThemeRole::DiagnosticInfo)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
@@ -90,13 +90,13 @@ pub(super) fn draw_detail_page(
         conversation.push(Line::default());
         conversation.push(Line::styled(
             "─".repeat(usize::from(content_width)),
-            Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui()),
+            theme.style(ThemeRole::IndentGuide),
         ));
         conversation.push(Line::from(vec![
             Span::styled(
                 format!("@{}", comment.creator.as_deref().unwrap_or("ghost")),
-                Style::default()
-                    .fg(theme.role(ThemeRole::DiagnosticInfo).to_ratatui())
+                theme
+                    .style(ThemeRole::DiagnosticInfo)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -117,9 +117,7 @@ pub(super) fn draw_detail_page(
                 Block::default()
                     .borders(Borders::ALL)
                     .title(" Conversation ")
-                    .border_style(
-                        Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui()),
-                    ),
+                    .border_style(theme.style(ThemeRole::IndentGuide)),
             )
             .scroll((scroll, 0))
             .wrap(Wrap { trim: false }),
@@ -134,8 +132,8 @@ pub(super) fn draw_detail_page(
         if detail.blocked {
             details.push(Line::styled(
                 " BLOCKED ",
-                Style::default()
-                    .fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui())
+                theme
+                    .style(ThemeRole::DiagnosticWarning)
                     .add_modifier(Modifier::BOLD | Modifier::REVERSED),
             ));
         }
@@ -157,9 +155,7 @@ pub(super) fn draw_detail_page(
                     Block::default()
                         .borders(Borders::ALL)
                         .title(" Details ")
-                        .border_style(
-                            Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui()),
-                        ),
+                        .border_style(theme.style(ThemeRole::IndentGuide)),
                 )
                 .wrap(Wrap { trim: false }),
             columns[1],
@@ -264,8 +260,8 @@ fn draw_pull_request_header(
         Line::from(vec![
             Span::styled(
                 pull.title.clone(),
-                Style::default()
-                    .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+                theme
+                    .style(ThemeRole::Foreground)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!("  #{}", pull.number), muted_style(theme)),
@@ -284,7 +280,7 @@ fn draw_pull_request_header(
         ]),
         Line::styled(
             "━".repeat(usize::from(area.width)),
-            Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui()),
+            theme.style(ThemeRole::IndentGuide),
         ),
     ];
     f.render_widget(Paragraph::new(lines), area);
@@ -315,8 +311,8 @@ fn draw_pull_request_tabs(
             .push((section, Rect::new(x, area.y, width, 1)));
         x = x.saturating_add(width);
         let style = if view.section == section {
-            Style::default()
-                .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+            theme
+                .style(ThemeRole::Foreground)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else {
             muted_style(theme)
@@ -377,15 +373,15 @@ fn draw_pull_request_conversation(
         lines.push(Line::default());
         lines.push(Line::styled(
             "─".repeat(usize::from(content_width)),
-            Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui()),
+            theme.style(ThemeRole::IndentGuide),
         ));
         match item {
             Timeline::Comment(comment) => {
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("@{}", comment.creator.as_deref().unwrap_or("ghost")),
-                        Style::default()
-                            .fg(theme.role(ThemeRole::DiagnosticInfo).to_ratatui())
+                        theme
+                            .style(ThemeRole::DiagnosticInfo)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
@@ -416,9 +412,7 @@ fn draw_pull_request_conversation(
                 Block::default()
                     .borders(Borders::ALL)
                     .title(" Conversation ")
-                    .border_style(
-                        Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui()),
-                    ),
+                    .border_style(theme.style(ThemeRole::IndentGuide)),
             )
             .scroll((view.scroll, 0))
             .wrap(Wrap { trim: false }),
@@ -442,7 +436,7 @@ fn append_pull_request_body(
     theme: &Theme,
     view: &mut GithubPullRequestView,
 ) {
-    let border = Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui());
+    let border = theme.style(ThemeRole::IndentGuide);
     lines.push(Line::from(vec![
         Span::styled("╭─ ", border),
         Span::styled(
@@ -450,8 +444,8 @@ fn append_pull_request_body(
                 "@{}",
                 view.pull_request.creator.as_deref().unwrap_or("ghost")
             ),
-            Style::default()
-                .fg(theme.role(ThemeRole::DiagnosticInfo).to_ratatui())
+            theme
+                .style(ThemeRole::DiagnosticInfo)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
@@ -603,8 +597,8 @@ fn draw_pull_request_status(
             ),
             Span::styled(
                 check.name.clone(),
-                Style::default()
-                    .fg(theme.role(ThemeRole::DiagnosticInfo).to_ratatui())
+                theme
+                    .style(ThemeRole::DiagnosticInfo)
                     .add_modifier(Modifier::UNDERLINED),
             ),
             Span::styled(format!("  {result}"), muted_style(theme)),
@@ -643,25 +637,21 @@ fn draw_pull_request_status(
             if merge_ready {
                 Style::default().fg(Color::Black).bg(Color::Green)
             } else {
-                Style::default()
-                    .fg(theme.role(ThemeRole::Muted).to_ratatui())
-                    .bg(Color::DarkGray)
+                theme.style(ThemeRole::Muted).bg(Color::DarkGray)
             }
             .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled(
             draft_text,
-            Style::default()
-                .fg(theme.role(ThemeRole::Foreground).to_ratatui())
-                .bg(Color::DarkGray),
+            theme.style(ThemeRole::Foreground).bg(Color::DarkGray),
         ),
     ]);
     f.render_widget(
         Block::default()
             .borders(Borders::ALL)
             .title(" Status ")
-            .border_style(Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui())),
+            .border_style(theme.style(ThemeRole::IndentGuide)),
         area,
     );
     let inner = area.inner(Margin {

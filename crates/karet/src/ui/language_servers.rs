@@ -100,7 +100,7 @@ fn draw_actions(f: &mut Frame, theme: &Theme, area: Rect, view: &mut LanguageSer
         |error| (error, ThemeRole::DiagnosticError),
     );
     f.render_widget(
-        Paragraph::new(filter).style(Style::default().fg(theme.role(filter_role).to_ratatui())),
+        Paragraph::new(filter).style(theme.style(filter_role)),
         Rect {
             y: area.y.saturating_add(1),
             height: 1,
@@ -112,7 +112,7 @@ fn draw_actions(f: &mut Frame, theme: &Theme, area: Rect, view: &mut LanguageSer
 fn draw_inventory(f: &mut Frame, theme: &Theme, area: Rect, view: &mut LanguageServersViewState) {
     view.table_rect = area;
     view.row_hits.clear();
-    let border_style = Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui());
+    let border_style = theme.style(ThemeRole::IndentGuide);
     let table_block = Block::default()
         .title(" Language servers ")
         .borders(Borders::ALL)
@@ -135,7 +135,7 @@ fn draw_inventory(f: &mut Frame, theme: &Theme, area: Rect, view: &mut LanguageS
             f.render_widget(
                 Paragraph::new(message)
                     .alignment(Alignment::Center)
-                    .style(Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui())),
+                    .style(theme.style(ThemeRole::Muted)),
                 content,
             );
         }
@@ -523,7 +523,7 @@ fn inventory_summary(theme: &Theme, status: &LanguageServerStatus, width: u16) -
         "mixed" => ThemeRole::DiagnosticWarning,
         _ => ThemeRole::DiagnosticInfo,
     };
-    let style = |role| Style::default().fg(theme.role(role).to_ratatui());
+    let style = |role| theme.style(role);
     let bold = |role| style(role).add_modifier(Modifier::BOLD);
 
     if width >= 72 {
@@ -573,24 +573,7 @@ fn styled_field(text: &str, width: usize, style: Style) -> Span<'static> {
 }
 
 fn fit_columns(text: &str, max: usize) -> String {
-    if text.width() <= max {
-        return text.to_string();
-    }
-    if max == 0 {
-        return String::new();
-    }
-    let mut result = String::new();
-    let mut used = 0_usize;
-    for character in text.chars() {
-        let width = character.to_string().width();
-        if used.saturating_add(width) > max.saturating_sub(1) {
-            break;
-        }
-        result.push(character);
-        used = used.saturating_add(width);
-    }
-    result.push('…');
-    result
+    karet_widgets::text::fit_end(text, max)
 }
 
 fn draw_detail(f: &mut Frame, theme: &Theme, area: Rect, view: &LanguageServersViewState) {
@@ -615,7 +598,7 @@ fn draw_detail(f: &mut Frame, theme: &Theme, area: Rect, view: &LanguageServersV
     } else {
         "external"
     };
-    let style = |role| Style::default().fg(theme.role(role).to_ratatui());
+    let style = |role| theme.style(role);
     let mut identity = vec![
         Span::styled(
             status.server.display_name().to_owned(),
@@ -680,14 +663,14 @@ fn draw_detail(f: &mut Frame, theme: &Theme, area: Rect, view: &LanguageServersV
         if let Some(error) = instance.error.as_deref() {
             lines.push(Line::styled(
                 format!("  Error: {error}"),
-                Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui()),
+                theme.style(ThemeRole::DiagnosticError),
             ));
         }
     }
     if status.cleanup_pending {
         lines.push(Line::styled(
             "Payload cleanup pending: another shared Karet process still owns it",
-            Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui()),
+            theme.style(ThemeRole::DiagnosticWarning),
         ));
     }
     f.render_widget(
@@ -695,7 +678,7 @@ fn draw_detail(f: &mut Frame, theme: &Theme, area: Rect, view: &LanguageServersV
             Block::default()
                 .title(" Selected server ")
                 .borders(Borders::TOP)
-                .border_style(Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui())),
+                .border_style(theme.style(ThemeRole::IndentGuide)),
         ),
         area,
     );
@@ -708,7 +691,7 @@ fn instance_line(theme: &Theme, instance: &LanguageServerInstanceStatus) -> Line
     } else {
         format!(" {}", instance.args.join(" "))
     };
-    let style = |role| Style::default().fg(theme.role(role).to_ratatui());
+    let style = |role| theme.style(role);
     Line::from(vec![
         Span::raw(instance.root.display().to_string()),
         Span::raw(" · "),

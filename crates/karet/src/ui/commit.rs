@@ -27,12 +27,12 @@ pub(super) fn draw_commit_loading(
         );
         return;
     }
-    let title = Style::default()
-        .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+    let title = theme
+        .style(ThemeRole::Foreground)
         .add_modifier(Modifier::BOLD);
-    let muted = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
-    let error_style = Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui());
-    let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
+    let muted = theme.style(ThemeRole::Muted);
+    let error_style = theme.style(ThemeRole::DiagnosticError);
+    let hash_style = theme.style(ThemeRole::DiagnosticWarning);
     let short = rev.chars().take(12).collect::<String>();
     let lines = if let Some(error) = error {
         vec![
@@ -162,13 +162,13 @@ pub(super) fn commit_metadata_lines(
     verification: Option<&karet_session::GithubVerification>,
     reveal: bool,
 ) -> (Vec<Line<'static>>, Option<BadgeHit>) {
-    let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
+    let fg = theme.style(ThemeRole::Foreground);
     let subject = fg.add_modifier(Modifier::BOLD);
-    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
-    let muted = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
-    let accent = Style::default().fg(theme.role(ThemeRole::DiffModified).to_ratatui());
-    let label = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
-    let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
+    let dim = theme.style(ThemeRole::LineNumber);
+    let muted = theme.style(ThemeRole::Muted);
+    let accent = theme.style(ThemeRole::DiffModified);
+    let label = theme.style(ThemeRole::LineNumberActive);
+    let hash_style = theme.style(ThemeRole::DiagnosticWarning);
     let bar = || Span::styled("\u{258c} ", accent);
 
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -184,9 +184,7 @@ pub(super) fn commit_metadata_lines(
 
     // Commit hash + verified badge.
     let (glyph, badge, badge_role) = verified_badge(verification, detail.signature.as_ref());
-    let badge_style = Style::default()
-        .fg(theme.role(badge_role).to_ratatui())
-        .add_modifier(Modifier::BOLD);
+    let badge_style = theme.style(badge_role).add_modifier(Modifier::BOLD);
     let mut hash_spans = vec![
         bar(),
         Span::styled(format!("{:<10} ", "commit"), label),
@@ -300,8 +298,8 @@ pub(super) fn commit_detail_lines(
     width: u16,
 ) -> (Vec<Line<'static>>, Option<BadgeHit>) {
     let (mut lines, badge) = commit_metadata_lines(theme, detail, verification, reveal);
-    let muted = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
-    let label = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
+    let muted = theme.style(ThemeRole::Muted);
+    let label = theme.style(ThemeRole::LineNumberActive);
     match file_status {
         CommitFileStatus::Ready => lines.extend(changed_files_lines(theme, files, width)),
         CommitFileStatus::Loading(since) => {
@@ -331,10 +329,10 @@ pub(super) fn changed_files_lines(
     files: &[render::FileView],
     width: u16,
 ) -> Vec<Line<'static>> {
-    let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
-    let label = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
-    let add_fg = Style::default().fg(theme.role(ThemeRole::DiagnosticHint).to_ratatui());
-    let rem_fg = Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui());
+    let fg = theme.style(ThemeRole::Foreground);
+    let label = theme.style(ThemeRole::LineNumberActive);
+    let add_fg = theme.style(ThemeRole::DiagnosticHint);
+    let rem_fg = theme.style(ThemeRole::DiagnosticError);
 
     let mut lines: Vec<Line<'static>> = Vec::new();
 
@@ -366,10 +364,7 @@ pub(super) fn changed_files_lines(
         let (a, r) = file.line_stats();
         let (g, role) = status_glyph(file.change.status);
         lines.push(Line::from(vec![
-            Span::styled(
-                format!(" {g}  "),
-                Style::default().fg(theme.role(role).to_ratatui()),
-            ),
+            Span::styled(format!(" {g}  "), theme.style(role)),
             Span::styled(file.change.path.to_string_lossy().into_owned(), fg),
             Span::styled(format!("   +{a}"), add_fg),
             Span::styled(format!(" \u{2212}{r}"), rem_fg),
@@ -412,11 +407,11 @@ pub(super) fn commit_list_items(
         Color::Red,
     ];
     let lane_style = |lane: u8| Style::default().fg(LANE_COLORS[lane as usize % LANE_COLORS.len()]);
-    let header_style = Style::default()
-        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+    let header_style = theme
+        .style(ThemeRole::LineNumberActive)
         .add_modifier(Modifier::BOLD);
-    let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
-    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let hash_style = theme.style(ThemeRole::DiagnosticWarning);
+    let dim = theme.style(ThemeRole::LineNumber);
     let sel_bg = theme.role(ThemeRole::Selection).to_ratatui();
     let inputs: Vec<LaneInput> = entries
         .iter()
@@ -472,14 +467,14 @@ pub(super) fn file_card_header(
     width: u16,
     collapsed: bool,
 ) -> Line<'static> {
-    let border = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
-    let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
-    let add_fg = Style::default().fg(theme.role(ThemeRole::DiagnosticHint).to_ratatui());
-    let rem_fg = Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui());
+    let border = theme.style(ThemeRole::LineNumber);
+    let fg = theme.style(ThemeRole::Foreground);
+    let add_fg = theme.style(ThemeRole::DiagnosticHint);
+    let rem_fg = theme.style(ThemeRole::DiagnosticError);
     let (glyph, role) = status_glyph(file.change.status);
-    let glyph_style = Style::default().fg(theme.role(role).to_ratatui());
-    let toggle_style = Style::default()
-        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+    let glyph_style = theme.style(role);
+    let toggle_style = theme
+        .style(ThemeRole::LineNumberActive)
         .add_modifier(Modifier::BOLD);
     let toggle = if collapsed { "\u{25b8}" } else { "\u{25be}" };
     let (a, r) = file.line_stats();
@@ -552,7 +547,7 @@ pub(super) fn file_card_body(
     count: usize,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let border = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let border = theme.style(ThemeRole::LineNumber);
     let mut out = Vec::new();
     for line in render::unified_lines_window(file, theme, start, count) {
         let style = line.style;
@@ -567,7 +562,7 @@ pub(super) fn file_card_body(
 }
 
 pub(super) fn file_card_footer(theme: &Theme, width: u16) -> Line<'static> {
-    let border = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let border = theme.style(ThemeRole::LineNumber);
     let width = usize::from(width);
     Line::styled(
         format!(
@@ -580,27 +575,7 @@ pub(super) fn file_card_footer(theme: &Theme, width: u16) -> Line<'static> {
 
 /// Keep the right-most, most-specific part of `text` within `max` terminal cells.
 pub(super) fn truncate_start(text: &str, max: usize) -> String {
-    if UnicodeWidthStr::width(text) <= max {
-        return text.to_string();
-    }
-    if max == 0 {
-        return String::new();
-    }
-    if max == 1 {
-        return "\u{2026}".to_string();
-    }
-    let mut used = 1usize;
-    let mut kept = Vec::new();
-    for ch in text.chars().rev() {
-        let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + width > max {
-            break;
-        }
-        kept.push(ch);
-        used += width;
-    }
-    kept.reverse();
-    format!("\u{2026}{}", kept.into_iter().collect::<String>())
+    karet_widgets::text::fit_start(text, max)
 }
 
 /// Draw the full-screen commit graph browser: a DAG commit list on the left and the
@@ -632,7 +607,7 @@ pub(super) fn draw_commit_graph(
     let (list_area, detail_area) = (cols[0], cols[2]);
     f.render_widget(Block::new().borders(Borders::LEFT), cols[1]);
 
-    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let dim = theme.style(ThemeRole::LineNumber);
     let entries: Vec<CommitListEntry<'_>> = commits
         .iter()
         .enumerate()
@@ -732,13 +707,13 @@ pub(super) fn draw_graph(
 ) {
     use karet_core::GraphEdgeKind;
 
-    let header_style = Style::default()
-        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+    let header_style = theme
+        .style(ThemeRole::LineNumberActive)
         .add_modifier(Modifier::BOLD);
-    let guide = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
-    let name_style = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
-    let badge_style = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
-    let revisit_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
+    let guide = theme.style(ThemeRole::LineNumber);
+    let name_style = theme.style(ThemeRole::Foreground);
+    let badge_style = theme.style(ThemeRole::LineNumber);
+    let revisit_style = theme.style(ThemeRole::DiagnosticWarning);
 
     // Flatten the graph to indented rows (DFS from roots, cycle-safe).
     let mut rows: Vec<Line> = vec![Line::styled(

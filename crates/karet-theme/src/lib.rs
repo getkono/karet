@@ -194,6 +194,25 @@ impl Theme {
     pub fn is_dark(&self) -> bool {
         self.dark
     }
+
+    /// The ratatui foreground style for a UI role — the one-step spelling of
+    /// `Style::default().fg(theme.role(role).to_ratatui())`.
+    #[cfg(feature = "view")]
+    #[must_use]
+    pub fn style(&self, role: ThemeRole) -> ratatui::style::Style {
+        ratatui::style::Style::default().fg(self.role(role).to_ratatui())
+    }
+
+    /// The full ratatui style for a semantic token class: its foreground color
+    /// plus its emphasis modifiers (bold/italic/…), so themed emphasis is never
+    /// silently dropped.
+    #[cfg(feature = "view")]
+    #[must_use]
+    pub fn token_style(&self, token: TokenId) -> ratatui::style::Style {
+        ratatui::style::Style::default()
+            .fg(self.color(token).to_ratatui())
+            .add_modifier(EmphasisExt::to_ratatui(self.emphasis(token)))
+    }
 }
 
 /// The WCAG 2.1 contrast ratio between two colors (1.0 – 21.0).
@@ -329,5 +348,27 @@ mod tests {
         let ratio = contrast_ratio(t.role(ThemeRole::Foreground), t.role(ThemeRole::Background));
         // WCAG AA for normal text is 4.5; a code theme's default fg should clear it.
         assert!(ratio > 4.5, "contrast ratio was {ratio}");
+    }
+
+    #[cfg(feature = "view")]
+    #[test]
+    fn style_and_token_style_resolve_color_and_emphasis() {
+        use karet_core::StandardToken;
+        let theme = Theme::dark();
+        let role_style = theme.style(karet_core::ThemeRole::Foreground);
+        assert_eq!(
+            role_style.fg,
+            Some(theme.role(karet_core::ThemeRole::Foreground).to_ratatui())
+        );
+        // Keywords carry the theme's emphasis (bold in the built-in dark theme's
+        // mapping, or none) — either way the color must match and the modifier
+        // set must equal the theme's emphasis conversion.
+        let token = StandardToken::Keyword.id();
+        let token_style = theme.token_style(token);
+        assert_eq!(token_style.fg, Some(theme.color(token).to_ratatui()));
+        assert_eq!(
+            token_style.add_modifier,
+            EmphasisExt::to_ratatui(theme.emphasis(token))
+        );
     }
 }

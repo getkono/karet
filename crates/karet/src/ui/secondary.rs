@@ -9,14 +9,14 @@ pub(super) fn draw_loaded_config(
     scroll: &mut u16,
     column: &mut u16,
 ) {
-    let header = Style::default()
-        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+    let header = theme
+        .style(ThemeRole::LineNumberActive)
         .add_modifier(Modifier::BOLD);
-    let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
+    let fg = theme.style(ThemeRole::Foreground);
     let explicit = fg.add_modifier(Modifier::BOLD);
-    let muted = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
-    let badge = Style::default().fg(theme.role(ThemeRole::DiagnosticHint).to_ratatui());
-    let warning = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
+    let muted = theme.style(ThemeRole::Muted);
+    let badge = theme.style(ThemeRole::DiagnosticHint);
+    let warning = theme.style(ThemeRole::DiagnosticWarning);
 
     let mut lines = Vec::new();
     lines.push(Line::styled(" Loaded Settings", header));
@@ -136,7 +136,7 @@ pub(super) fn severity_style(theme: &Theme, severity: Severity) -> Style {
         Severity::Hint => ThemeRole::DiagnosticHint,
         _ => ThemeRole::DiagnosticInfo,
     };
-    Style::default().fg(theme.role(role).to_ratatui())
+    theme.style(role)
 }
 
 /// The breathing room between a markdown preview's rendered text and its pane edges. Prose
@@ -325,9 +325,9 @@ pub(super) const WELCOME_HINTS: &[(Command, &str)] = &[
 ];
 
 pub(super) fn draw_welcome(f: &mut Frame, theme: &Theme, area: Rect) {
-    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
-    let title = Style::default()
-        .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+    let dim = theme.style(ThemeRole::LineNumber);
+    let title = theme
+        .style(ThemeRole::Foreground)
         .add_modifier(Modifier::BOLD);
     let mut text = vec![Line::raw(""), Line::styled("  karet", title), Line::raw("")];
     for &(cmd, desc) in WELCOME_HINTS {

@@ -81,17 +81,14 @@ pub(super) fn draw_repository_header(f: &mut Frame, app: &mut App, theme: &Theme
             format!("  {}", parts.join(" "))
         }
     });
-    let branch_style = Style::default()
-        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+    let branch_style = theme
+        .style(ThemeRole::LineNumberActive)
         .add_modifier(Modifier::BOLD);
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(" ⎇ ", branch_style),
             Span::styled(branch.to_string(), branch_style),
-            Span::styled(
-                divergence,
-                Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
-            ),
+            Span::styled(divergence, theme.style(ThemeRole::LineNumber)),
         ])),
         Rect { height: 1, ..area },
     );
@@ -113,8 +110,8 @@ pub(super) fn draw_repository_header(f: &mut Frame, app: &mut App, theme: &Theme
             .push((x, x + width, action_row, command));
         spans.push(Span::styled(
             label,
-            Style::default()
-                .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+            theme
+                .style(ThemeRole::Foreground)
                 .bg(theme.role(ThemeRole::HoverHighlight).to_ratatui()),
         ));
         spans.push(Span::raw(" "));
@@ -137,7 +134,7 @@ pub(super) fn draw_scm_divider(f: &mut Frame, theme: &Theme, area: Rect, active:
     } else {
         ThemeRole::IndentGuide
     };
-    let style = Style::default().fg(theme.role(role).to_ratatui());
+    let style = theme.style(role);
     let rule = "\u{2500}".repeat(area.width as usize); // ─
     f.render_widget(Paragraph::new(Line::styled(rule, style)), area);
 }
@@ -150,10 +147,10 @@ pub(super) fn draw_scm_changes(f: &mut Frame, app: &mut App, theme: &Theme, area
     let hover_bg = theme.role(ThemeRole::HoverHighlight).to_ratatui();
     let hovered = app.hovered_scm_change();
     let cursor = app.scm.selection.cursor();
-    let header_style = Style::default()
-        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+    let header_style = theme
+        .style(ThemeRole::LineNumberActive)
         .add_modifier(Modifier::BOLD);
-    let placeholder_style = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
+    let placeholder_style = theme.style(ThemeRole::Muted);
     let mut items: Vec<ListItem> = Vec::new();
     let mut row_map: Vec<Option<usize>> = Vec::new();
 
@@ -230,26 +227,23 @@ pub(super) fn change_line(
         .map(|p| p.to_string_lossy().into_owned())
         .filter(|p| !p.is_empty());
     let mut spans = vec![
-        Span::styled(
-            format!(" {glyph} "),
-            Style::default().fg(theme.role(role).to_ratatui()),
-        ),
+        Span::styled(format!(" {glyph} "), theme.style(role)),
         Span::raw(name),
     ];
     if let Some(parent) = parent {
         spans.push(Span::styled(
             format!("  {parent}"),
-            Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
+            theme.style(ThemeRole::LineNumber),
         ));
     }
     spans.extend([
         Span::styled(
             format!("   +{added}"),
-            Style::default().fg(theme.role(ThemeRole::DiagnosticHint).to_ratatui()),
+            theme.style(ThemeRole::DiagnosticHint),
         ),
         Span::styled(
             format!(" \u{2212}{removed}"),
-            Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui()),
+            theme.style(ThemeRole::DiagnosticError),
         ),
     ]);
     Line::from(spans)
@@ -259,7 +253,7 @@ pub(super) fn change_line(
 /// Its rows aren't selectable; only the "load more" affordance is clickable.
 pub(super) fn draw_scm_commits(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     app.scm_more_row = None;
-    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let dim = theme.style(ThemeRole::LineNumber);
     let entries: Vec<CommitListEntry<'_>> = app
         .scm
         .log

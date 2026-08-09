@@ -179,9 +179,7 @@ pub(super) fn token_style(
     default_fg: Rgba,
 ) -> Style {
     match token_at(abs, hl) {
-        Some(token) => Style::default()
-            .fg(theme.color(token).to_ratatui())
-            .add_modifier(theme.emphasis(token).to_ratatui()),
+        Some(token) => theme.token_style(token),
         None => Style::default().fg(default_fg.to_ratatui()),
     }
 }

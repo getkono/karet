@@ -14,6 +14,7 @@ pub mod glyph;
 pub mod notify;
 pub mod pane;
 pub mod select;
+pub mod text;
 
 pub use completion::CompletionPopup;
 pub use completion::CompletionState;

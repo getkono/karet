@@ -7,7 +7,6 @@
 //! [`MarkdownView`] paints those lines into a scrollable viewport; callers that want the
 //! lines themselves (to lay out a popup, say) use [`to_ratatui`] directly.
 
-use karet_theme::EmphasisExt;
 use karet_theme::Theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -27,9 +26,7 @@ pub fn line_to_ratatui(line: &WrappedLine, theme: &Theme) -> Line<'static> {
         .iter()
         .map(|s| {
             let style = match s.token {
-                Some(token) => Style::default()
-                    .fg(theme.color(token).to_ratatui())
-                    .add_modifier(theme.emphasis(token).to_ratatui()),
+                Some(token) => theme.token_style(token),
                 None => Style::default(),
             };
             Span::styled(s.text.clone(), style)

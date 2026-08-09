@@ -196,25 +196,7 @@ fn kind_glyph(kind: CompletionKind) -> (char, Option<TokenId>) {
 /// Fit `text` into `width` columns; when it does not fit, truncate and end
 /// with `…` so the cut is visible.
 fn truncate_to(text: &str, width: u16) -> String {
-    let width = usize::from(width);
-    if text.width() <= width {
-        return text.to_owned();
-    }
-    if width == 0 {
-        return String::new();
-    }
-    let mut out = String::new();
-    let mut used = 0;
-    for ch in text.chars() {
-        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + w > width.saturating_sub(1) {
-            break;
-        }
-        out.push(ch);
-        used += w;
-    }
-    out.push('…');
-    out
+    crate::text::fit_end(text, usize::from(width))
 }
 
 impl StatefulWidget for CompletionPopup<'_> {

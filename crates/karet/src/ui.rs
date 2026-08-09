@@ -220,8 +220,8 @@ pub(super) fn draw_scroll_indicators(
     scroll: u16,
     column: u16,
 ) {
-    let track = Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui());
-    let thumb = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
+    let track = theme.style(ThemeRole::IndentGuide);
+    let thumb = theme.style(ThemeRole::Foreground);
     if content_height > usize::from(area.height) && area.height > 2 {
         let mut state = ScrollbarState::new(content_height)
             .position(usize::from(scroll))
@@ -369,7 +369,7 @@ fn draw_operation_blocker(f: &mut Frame, blocker: &OperationBlocker, theme: &The
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Finishing source control operation")
-        .border_style(Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui()))
+        .border_style(theme.style(ThemeRole::DiagnosticWarning))
         .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui()));
     let inner = block.inner(rect);
     f.render_widget(Clear, rect);
@@ -393,20 +393,14 @@ fn draw_rev_input(f: &mut Frame, rev: &str, theme: &Theme, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Go to commit")
-        .border_style(Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui()))
+        .border_style(theme.style(ThemeRole::LineNumberActive))
         .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui()));
     let inner = block.inner(rect);
     f.render_widget(Clear, rect);
     f.render_widget(block, rect);
     let line = Line::from(vec![
-        Span::styled(
-            "› ",
-            Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
-        ),
-        Span::styled(
-            rev.to_string(),
-            Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui()),
-        ),
+        Span::styled("› ", theme.style(ThemeRole::LineNumber)),
+        Span::styled(rev.to_string(), theme.style(ThemeRole::Foreground)),
         Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
     ]);
     f.render_widget(Paragraph::new(line), inner);
@@ -499,7 +493,7 @@ fn draw_sidebar_divider(f: &mut Frame, theme: &Theme, area: Rect, active: bool) 
     } else {
         ThemeRole::IndentGuide
     };
-    let style = Style::default().fg(theme.role(role).to_ratatui());
+    let style = theme.style(role);
     let buf = f.buffer_mut();
     for y in area.y..area.bottom() {
         buf.set_string(area.x, y, "\u{2502}", style); // │
@@ -608,17 +602,17 @@ fn pane_actions(tab: &Tab) -> Vec<(UiIcon, Command, bool)> {
 
 fn tab_text_style(theme: &Theme, active: bool, pane_focused: bool, preview: bool) -> Style {
     let mut style = if active && pane_focused {
-        Style::default()
-            .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+        theme
+            .style(ThemeRole::Foreground)
             .add_modifier(Modifier::BOLD | Modifier::REVERSED)
     } else if active {
         // Active tab of an unfocused pane: a distinct accent keeps pane ownership
         // visible without competing with the reversed tab in the focused pane.
-        Style::default()
-            .fg(theme.role(ThemeRole::DiagnosticInfo).to_ratatui())
+        theme
+            .style(ThemeRole::DiagnosticInfo)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())
+        theme.style(ThemeRole::LineNumber)
     };
     // The preview tab (VS Code-style single-reused-slot tab) renders italicized so
     // it reads as provisional until edited or promoted.
@@ -764,7 +758,7 @@ fn draw_pane_breadcrumb(
         last.push(UiIcon::Symlink.glyph(icon_style));
     }
     let crumbs = components.join(BREADCRUMB_SEP);
-    let style = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
+    let style = theme.style(ThemeRole::LineNumberActive);
     f.render_widget(Paragraph::new(Line::styled(crumbs, style)), area);
 
     let mut hits = Vec::new();

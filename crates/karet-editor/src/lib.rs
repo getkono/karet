@@ -37,7 +37,6 @@ use karet_syntax::Highlights;
 use karet_syntax::SemanticBlock;
 use karet_syntax::SemanticBlocks;
 use karet_text::TextBuffer;
-use karet_theme::EmphasisExt;
 use karet_theme::Rgba;
 use karet_theme::Theme;
 use ratatui::buffer::Buffer;
