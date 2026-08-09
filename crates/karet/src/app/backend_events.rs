@@ -1,3 +1,7 @@
+mod documents;
+mod shell;
+mod vcs;
+
 use super::*;
 
 impl App {
@@ -85,52 +89,12 @@ impl App {
             self.status = Some("branch switch cancelled: save failed".to_string());
         }
         match event {
-            SessionEvent::Opened { doc, .. } => {
-                if id.is_some_and(|request| self.abandoned_open.remove(&request)) {
-                    self.send_command(SessionCommand::CloseDocument { doc });
-                    return;
-                }
-                let pending = id.and_then(|request| self.pending_open.remove(&request));
-                if let Some(pending) = pending {
-                    let mut bound = false;
-                    for tab in self.all_tabs_mut() {
-                        if tab.view == pending.view
-                            && let TabKind::Code {
-                                path, doc: slot, ..
-                            } = &mut tab.kind
-                            && slot.is_none()
-                            && *path == pending.path
-                        {
-                            *slot = Some(doc);
-                            bound = true;
-                            break;
-                        }
-                    }
-                    if bound {
-                        self.open_docs.insert(doc);
-                    } else {
-                        self.send_command(SessionCommand::CloseDocument { doc });
-                    }
-                }
-            },
+            SessionEvent::Opened { doc, .. } => self.on_opened(id, doc),
             SessionEvent::DocumentSettingsChanged { doc, settings } => {
                 self.document_settings.insert(doc, settings);
             },
             SessionEvent::DiagnosticsPublished { doc, diagnostics } => {
-                // This event currently carries the complete non-LaTeX layer
-                // (spell checking today, with room for other producers). Keep
-                // compiler feedback alive when that layer refreshes.
-                let mut combined = diagnostics;
-                if let Some(existing) = self.document_diagnostics.get(&doc) {
-                    combined.extend(
-                        existing
-                            .iter()
-                            .filter(|diagnostic| diagnostic.source.as_deref() == Some("latex"))
-                            .cloned(),
-                    );
-                }
-                self.replace_document_diagnostics(doc, combined);
-                self.maybe_auto_complete_spelling(doc);
+                self.on_diagnostics_published(doc, diagnostics);
             },
             SessionEvent::LatexBuildFinished {
                 doc,
@@ -139,34 +103,8 @@ impl App {
                 error,
                 ..
             } => self.finish_latex_build(id, doc, pdf, diagnostics, error),
-            SessionEvent::Closed { doc } => {
-                self.document_settings.remove(&doc);
-                self.document_diagnostics.remove(&doc);
-                self.document_symbols.remove(&doc);
-                self.outline_versions.remove(&doc);
-                self.outline_loading.remove(&doc);
-            },
-            SessionEvent::Symbols { doc, symbols } => {
-                let version = self
-                    .outline_loading
-                    .remove(&doc)
-                    .map(|(version, _)| version)
-                    .or_else(|| {
-                        self.all_tabs().find_map(|tab| match &tab.kind {
-                            TabKind::Code {
-                                doc: Some(candidate),
-                                buffer,
-                                ..
-                            } if *candidate == doc => Some(buffer.version()),
-                            _ => None,
-                        })
-                    });
-                self.document_symbols.insert(doc, symbols);
-                if let Some(version) = version {
-                    self.outline_versions.insert(doc, version);
-                }
-                self.sync_outline_selection();
-            },
+            SessionEvent::Closed { doc } => self.on_document_closed(doc),
+            SessionEvent::Symbols { doc, symbols } => self.on_symbols(doc, symbols),
             SessionEvent::Completions {
                 doc,
                 version,
@@ -205,14 +143,7 @@ impl App {
                 state,
                 error,
             } => self.update_language_server_runtime(server, root, state, error),
-            SessionEvent::Saved { doc } => {
-                for tab in self.all_tabs_mut() {
-                    if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
-                        tab.dirty = false;
-                    }
-                }
-                self.status = Some("saved".to_string());
-            },
+            SessionEvent::Saved { doc } => self.on_saved(doc),
             // The fresh content arrives via the snapshot stream; just note it.
             SessionEvent::Reloaded { .. } => {
                 self.notify(
@@ -230,96 +161,9 @@ impl App {
                     "file changed on disk — you have unsaved changes",
                 );
             },
-            // Full non-UTF-8 editing isn't supported: the tab requested a document
-            // that will never arrive (no `Opened` follows), so leaving it as a
-            // `doc: None` code tab would make every keystroke silently no-op. Fall
-            // back to the same read-only hex view a corrupt CBOR file already uses.
-            SessionEvent::NotUtf8 { path } => {
-                if let Some(req) = id {
-                    self.pending_open.remove(&req);
-                    self.abandoned_open.remove(&req);
-                }
-                for tab in self.all_tabs_mut() {
-                    let is_pending_for_path =
-                        matches!(&tab.kind, TabKind::Code { path: p, doc: None, .. } if *p == path);
-                    if is_pending_for_path && let Ok(bytes) = std::fs::read(&path) {
-                        tab.kind = TabKind::Hex {
-                            path: path.clone(),
-                            bytes,
-                            scroll: 0,
-                        };
-                        tab.markdown_preview = None;
-                    }
-                }
-                self.notify(
-                    Severity::Warning,
-                    NotificationKind::Io,
-                    format!("opened {} read-only: not valid UTF-8", path.display()),
-                );
-            },
-            // Keep a live workspace search current: re-run it (which also
-            // refreshes open-pane highlights) whenever something changes on
-            // disk. No extra debouncing needed here — the watcher already
-            // debounces at the source, and the result cap keeps a re-run cheap.
-            SessionEvent::FsChanged { paths } => {
-                self.invalidate_nested_repository_statuses(&paths);
-                if !self.search.query.is_empty() {
-                    self.run_global_search();
-                }
-                if paths.iter().any(|path| {
-                    path.file_name().is_some_and(|name| name == "config")
-                        && path
-                            .parent()
-                            .and_then(Path::file_name)
-                            .is_some_and(|name| name == ".git")
-                }) {
-                    self.send_command(SessionCommand::GithubRefresh);
-                }
-            },
-            SessionEvent::ConfigChanged { report } => {
-                let report = *report;
-                self.apply_loaded_config(report.clone(), false);
-                for tab in self.all_tabs_mut() {
-                    if let TabKind::LoadedConfig {
-                        report: open_report,
-                        ..
-                    } = &mut tab.kind
-                    {
-                        *open_report = report.clone();
-                    }
-                }
-                for diag in std::mem::take(&mut self.config_diagnostics) {
-                    self.notify(
-                        diag.severity,
-                        NotificationKind::System,
-                        format!("config: {}", diag.message),
-                    );
-                }
-                let graphical_cursor_requested = self.tabs.get(self.active).is_some_and(|tab| {
-                    self.settings
-                        .editor
-                        .for_language(tab_language(tab))
-                        .graphical_cursor()
-                        == Some(true)
-                });
-                if graphical_cursor_requested && !self.graphical_cursor_compatible() {
-                    self.notify(
-                        Severity::Error,
-                        NotificationKind::System,
-                        "graphical cursor is not compatible with this terminal",
-                    );
-                }
-                let completion_enabled = self.tabs.get(self.active).is_some_and(|tab| {
-                    self.settings
-                        .editor
-                        .for_language(tab_language(tab))
-                        .completion()
-                        .enabled()
-                });
-                if !completion_enabled {
-                    self.dismiss_completion();
-                }
-            },
+            SessionEvent::NotUtf8 { path } => self.on_not_utf8(id, path),
+            SessionEvent::FsChanged { paths } => self.on_fs_changed(&paths),
+            SessionEvent::ConfigChanged { report } => self.on_config_changed(*report),
             SessionEvent::Progress { message, .. } => self.status = Some(message),
             // The single high-up funnel: every backend-reported condition becomes a
             // notification, so nothing is silently dropped.
@@ -327,75 +171,13 @@ impl App {
                 severity,
                 kind,
                 message,
-            } => {
-                let language_server_operation_failed = id
-                    .is_some_and(|request| self.fail_language_server_operation(request, &message));
-                if id.is_some() && id == self.commit_input.pending {
-                    self.commit_input.pending = None;
-                }
-                if id.is_some() && id == self.scm.repository_request {
-                    self.scm.repository_request = None;
-                    self.scm.repository_loading_since = None;
-                }
-                if id.is_some() && id == self.pending_pull_requests {
-                    self.pending_pull_requests = None;
-                    self.pull_request_items.clear();
-                    self.pull_request_remote = None;
-                }
-                if let Some(pending) = self.pending_blame.filter(|pending| Some(pending.0) == id) {
-                    self.pending_blame = None;
-                    self.failed_blame = Some((pending.1, pending.2, pending.3));
-                }
-                if let Some(req) = id {
-                    self.fail_pending_commit_detail(req, &message);
-                    if let Some((view, _)) = self.pending_merge_conflicts.remove(&req)
-                        && let Some(tab) = self.all_tabs_mut().find(|tab| tab.view == view)
-                        && let Some(conflict) = tab.merge_conflict.as_mut()
-                    {
-                        conflict.error = Some(message.clone());
-                    }
-                }
-                for tab in self.all_tabs_mut() {
-                    if let TabKind::LanguageServers(view) = &mut tab.kind
-                        && id.is_some()
-                        && view.inventory_request == id
-                    {
-                        if view.inventory_request == id {
-                            view.inventory_request = None;
-                        }
-                        view.loading_since = None;
-                        view.error = Some(message.clone());
-                    }
-                }
-                if !language_server_operation_failed {
-                    self.notify(severity, kind, message);
-                }
-            },
-            SessionEvent::VcsStatus { staged, working } => {
-                // Commits and branch switches change every cached repository
-                // fact (head, tracked-ness); drop them and re-resolve on demand.
-                self.remote_facts.clear();
-
-                self.live_blame = None;
-                self.pending_blame = None;
-                self.failed_blame = None;
-                self.apply_vcs_status(staged, working);
-            },
+            } => self.on_notification(id, severity, kind, message),
+            SessionEvent::VcsStatus { staged, working } => self.on_vcs_status(staged, working),
             SessionEvent::MergeConflictReady {
                 path,
                 current,
                 incoming,
-            } => {
-                let destination =
-                    id.and_then(|request| self.pending_merge_conflicts.remove(&request));
-                if let Some((view, expected)) = destination
-                    && expected == path
-                    && let Some(tab) = self.all_tabs_mut().find(|tab| tab.view == view)
-                    && let Some(conflict) = tab.merge_conflict.as_mut()
-                {
-                    conflict.finish(current, incoming);
-                }
-            },
+            } => self.on_merge_conflict_ready(id, &path, current, incoming),
             SessionEvent::RepositorySnapshot { snapshot } => {
                 self.scm.repository = Some(*snapshot);
                 self.scm.repository_loading_since = None;
@@ -411,204 +193,40 @@ impl App {
                 action,
                 outcome,
                 error,
-            } => {
-                self.scm.operation = None;
-                let resume_quit = self.operation_blocker.take().is_some();
-                if let Some(error) = error {
-                    match action {
-                        VcsAction::SwitchBranch(target)
-                            if error.contains("local changes")
-                                || error.contains("would be overwritten") =>
-                        {
-                            self.overlay = Some(Overlay::text(
-                                "Switch blocked · type stash to stash changes and retry",
-                                TextPurpose::StashAndSwitch { target },
-                            ));
-                        },
-                        VcsAction::UndoCommit {
-                            allow_upstream: false,
-                        } if error.contains("already present upstream") => {
-                            self.overlay = Some(Overlay::text(
-                                "Commit is upstream · type undo to confirm soft reset",
-                                TextPurpose::ConfirmPublishedUndo,
-                            ));
-                        },
-                        _ => self.notify(Severity::Error, NotificationKind::Vcs, error),
-                    }
-                } else if let Some(outcome) = outcome {
-                    match outcome {
-                        VcsOutcome::NeedsPublish => {
-                            self.publish_current_branch();
-                        },
-                        VcsOutcome::PullRequestUpdated => {
-                            self.status = Some("pull request branch updated".to_string());
-                        },
-                        VcsOutcome::PullRequestCheckedOut { branch } => {
-                            self.status = Some(format!("switched to {branch}"));
-                        },
-                        VcsOutcome::CommitUndone { commit, .. } => {
-                            let short: String = commit.chars().take(7).collect();
-                            self.status = Some(format!("undid commit {short}"));
-                        },
-                        VcsOutcome::StashCreated(true) => {
-                            self.status = Some("stashed local changes".to_string());
-                        },
-                        VcsOutcome::StashCreated(false) => {
-                            self.status = Some("stash: no local changes".to_string());
-                        },
-                        VcsOutcome::StashPreview { reference, patch } => {
-                            self.push_tab(Tab::stash_preview(&reference, patch));
-                        },
-                        VcsOutcome::Completed => {
-                            self.status = Some("source control operation completed".to_string());
-                        },
-                        _ => {},
-                    }
-                }
-                if resume_quit {
-                    self.guarded_close(CloseRequest::Quit);
-                }
-            },
+            } => self.on_vcs_operation_finished(action, outcome, error),
             SessionEvent::BlameResult {
                 doc,
                 version,
                 line,
                 attribution,
-            } => {
-                let matches = self.pending_blame.as_ref().is_some_and(|pending| {
-                    Some(pending.0) == id
-                        && pending.1 == doc
-                        && pending.2 == version
-                        && pending.3 == line
-                });
-                if matches {
-                    self.pending_blame = None;
-                    self.failed_blame = None;
-                    let current = self.tabs.get(self.active).is_some_and(|tab| {
-                        matches!(&tab.kind, TabKind::Code { doc: Some(active), buffer, .. }
-                            if *active == doc
-                                && buffer.version() == version
-                                && tab.editor.cursor().line == line)
-                    });
-                    if current {
-                        self.live_blame = Some(LiveBlame {
-                            doc,
-                            version,
-                            line,
-                            attribution,
-                        });
-                    }
-                }
-            },
+            } => self.on_blame_result(id, doc, version, line, attribution),
             SessionEvent::PullRequests {
                 remote,
                 items,
                 next_page,
-            } => {
-                if id.is_some() && id == self.pending_pull_requests {
-                    self.pending_pull_requests = None;
-                    self.pull_request_items.extend(items);
-                    if let Some(page) = next_page {
-                        self.pending_pull_requests = self.send(SessionCommand::PullRequests {
-                            remote,
-                            page,
-                            per_page: 100,
-                        });
-                    } else if self.pull_request_items.is_empty() {
-                        self.pull_request_remote = None;
-                        self.status = Some(format!("{remote}: no open pull requests"));
-                    } else {
-                        let items = std::mem::take(&mut self.pull_request_items);
-                        let remote = self.pull_request_remote.take().unwrap_or(remote);
-                        self.overlay = Some(Overlay::pull_requests(remote, items));
-                    }
-                }
-            },
+            } => self.on_pull_requests(id, remote, items, next_page),
             SessionEvent::VcsLog {
                 skip,
                 commits,
                 has_more,
-            } => {
-                // A page requested by the graph browser fills it; anything else is the
-                // sidebar log.
-                if id.is_some_and(|request| {
-                    self.graph_log_req
-                        .is_some_and(|(pending, _)| pending == request)
-                }) {
-                    self.graph_log_req = None;
-                    self.apply_graph_log(skip, commits, has_more);
-                } else {
-                    self.apply_vcs_log(skip, commits, has_more);
-                }
-            },
+            } => self.on_vcs_log(id, skip, commits, has_more),
             SessionEvent::FileHistory {
                 skip,
                 commits,
                 has_more,
                 ..
-            } => {
-                // File history fills exactly the surface that asked: the graph
-                // browser, or the With Revision diff-target picker.
-                if id.is_some_and(|request| {
-                    self.graph_log_req
-                        .is_some_and(|(pending, _)| pending == request)
-                }) {
-                    self.graph_log_req = None;
-                    self.apply_graph_log(skip, commits, has_more);
-                } else if id.is_some() && id == self.pending_history_picker {
-                    self.pending_history_picker = None;
-                    self.apply_history_picker(commits);
-                }
-            },
+            } => self.on_file_history(id, skip, commits, has_more),
             SessionEvent::VcsCommitsPrepended { commits } => {
                 self.apply_vcs_commits_prepended(commits);
             },
-            SessionEvent::Committed { oid } => {
-                self.commit_input = CommitInput::default();
-                let short: String = oid.chars().take(7).collect();
-                self.notify(
-                    Severity::Information,
-                    NotificationKind::Vcs,
-                    format!("committed {short}"),
-                );
-            },
+            SessionEvent::Committed { oid } => self.on_committed(&oid),
             SessionEvent::CommitMessageGenerated { message } => {
-                self.commit_input.text = message;
-                self.commit_input.edit.set_cursor(
-                    &self.commit_input.text,
-                    self.commit_input.text.len(),
-                    false,
-                );
-                self.commit_input.scroll = 0;
-                self.status = Some("commit message generated".to_string());
+                self.on_commit_message_generated(message);
             },
             SessionEvent::SwapsFound { swaps } => self.arm_swap_recovery(swaps),
-            SessionEvent::CommitDetailReady { detail } => {
-                let dest = id.and_then(|i| self.pending_commit_detail.get(&i).cloned());
-                match dest {
-                    Some(CommitDest::Browser { view, hash }) if detail.hash == hash => {
-                        self.fill_graph_metadata(view, detail);
-                    },
-                    Some(CommitDest::Browser { .. }) => {},
-                    Some(CommitDest::Tab { view }) => self.fill_commit_metadata(view, detail),
-                    None if id.is_none() => self.open_commit_metadata_tab(detail),
-                    _ => {},
-                }
-            },
+            SessionEvent::CommitDetailReady { detail } => self.on_commit_detail_ready(id, detail),
             SessionEvent::CommitReady { detail, changes } => {
-                match id.and_then(|request| self.pending_commit_detail.remove(&request)) {
-                    Some(CommitDest::Browser { view, hash })
-                        if detail.hash == hash && self.all_tabs().any(|tab| tab.view == view) =>
-                    {
-                        self.fill_graph_detail(view, detail, changes);
-                    },
-                    Some(CommitDest::Browser { .. }) => {},
-                    Some(CommitDest::Tab { view }) => {
-                        self.fill_commit_tab(view, detail, changes);
-                    },
-                    None if id.is_none() => self.open_commit_tab(detail, changes),
-                    _ => {},
-                }
+                self.on_commit_ready(id, detail, changes);
             },
             SessionEvent::RangeReady {
                 base_label,
@@ -617,13 +235,7 @@ impl App {
                 changes,
             } => self.open_compare_tab(base_label, head_label, merge_base, changes),
             SessionEvent::CommitVerification { hash, status } => {
-                let owner =
-                    id.and_then(|request| self.pending_commit_verification.remove(&request));
-                if owner.is_some_and(|(view, expected)| {
-                    expected == hash && self.all_tabs().any(|tab| tab.view == view)
-                }) {
-                    self.apply_commit_verification(&hash, status);
-                }
+                self.on_commit_verification(id, &hash, status);
             },
             SessionEvent::GithubAvailability { repository, auth } => {
                 self.apply_github_availability(repository, auth);
