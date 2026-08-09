@@ -3,14 +3,43 @@
     use super::*;
     use crate::keymap::SidebarPanel;
 
-    fn change(path: &str, status: StatusKind) -> FileChange {
-        FileChange {
+    fn change(path: &str, status: StatusKind) -> ChangeSummary {
+        ChangeSummary {
             path: PathBuf::from(path),
             old_path: None,
             status,
             is_binary: false,
-            old: String::new(),
-            new: "x\n".to_string(),
+            added: 1,
+            removed: 0,
+        }
+    }
+
+    /// A backend-prepared change as the session would deliver it (plaintext).
+    fn prepared_change(path: &str, status: StatusKind) -> karet_session::PreparedChange {
+        prepared_from_texts(path, status, "", "x\n")
+    }
+
+    /// A backend-prepared change diffing two explicit texts (plaintext).
+    fn prepared_from_texts(
+        path: &str,
+        status: StatusKind,
+        old: &str,
+        new: &str,
+    ) -> karet_session::PreparedChange {
+        let diff = karet_diff::diff_text(
+            old,
+            new,
+            &karet_diff::DiffOptions {
+                path_hint: Some(path.to_string()),
+                ..Default::default()
+            },
+        );
+        karet_session::PreparedChange {
+            path: PathBuf::from(path),
+            old_path: None,
+            status,
+            language: "plaintext".to_string(),
+            diff: karet_diff::PreparedDiff::new(diff, Vec::new(), Vec::new()),
         }
     }
 
@@ -21,18 +50,6 @@
             vec![change("b.rs", StatusKind::Modified)],
             false,
         )
-    }
-
-    fn finish_preparation(app: &mut App) {
-        let Some(mut rx) = app.prepare_rx.take() else {
-            panic!("preparation receiver missing");
-        };
-        let result = rx.blocking_recv();
-        app.prepare_rx = Some(rx);
-        let Some(result) = result else {
-            panic!("preparation worker stopped");
-        };
-        app.on_prepare_result(result);
     }
 
     fn test_dir(name: &str) -> PathBuf {

@@ -230,10 +230,32 @@ pub(super) fn draw_pane_content(
         },
         TabKind::Diff {
             file,
+            loading_since,
+            error,
             view,
             scroll,
             column,
-        } => draw_diff(f, theme, area, file, *view, scroll, column),
+            ..
+        } => match (file, &*error) {
+            (Some(file), _) => draw_diff(f, theme, area, file, *view, scroll, column),
+            (None, Some(error)) => f.render_widget(
+                Paragraph::new(error.as_str()).style(
+                    Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui()),
+                ),
+                area,
+            ),
+            // The diff is still being prepared: a stable, muted placeholder after
+            // the shared reveal delay; nothing before it (fast paths never flash).
+            (None, None) => {
+                if loading_since.is_some_and(|since| since.elapsed() >= LOADING_REVEAL_DELAY) {
+                    f.render_widget(
+                        Paragraph::new("Loading diff…")
+                            .style(Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui())),
+                        area,
+                    );
+                }
+            },
+        },
         TabKind::StashPreview {
             patch,
             scroll,

@@ -2,11 +2,7 @@ fn responsive_commit_files() -> Vec<FileView> {
     ["src/first.rs", "src/second.rs", "src/third.rs"]
         .into_iter()
         .map(|path| {
-            FileView::new(
-                change(path, StatusKind::Modified),
-                crate::render::Section::Staged,
-                false,
-            )
+            FileView::new(prepared_change(path, StatusKind::Modified))
         })
         .collect()
 }

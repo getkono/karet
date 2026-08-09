@@ -182,22 +182,13 @@ impl App {
             self.latex_previews.remove(&request);
             requests.push(request);
         }
-        let preparing: Vec<RequestId> = self
-            .pending_commit_preparation
+        let prepared_diffs: Vec<RequestId> = self
+            .pending_prepared_diffs
             .iter()
-            .filter_map(|(request, pending)| {
-                let view = match &pending.destination {
-                    CommitDest::Tab { view } | CommitDest::Browser { view, .. } => view,
-                };
-                views.contains(view).then_some(*request)
-            })
+            .filter_map(|(request, view)| views.contains(view).then_some(*request))
             .collect();
-        for request in preparing {
-            if let Some(pending) = self.pending_commit_preparation.remove(&request) {
-                pending
-                    .cancelled
-                    .store(true, std::sync::atomic::Ordering::Release);
-            }
+        for request in prepared_diffs {
+            self.pending_prepared_diffs.remove(&request);
             requests.push(request);
         }
         let verifications: Vec<RequestId> = self

@@ -15,6 +15,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     let runtime = tokio::runtime::Runtime::new().map_err(|e| eyre!("tokio runtime: {e}"))?;
     let config = SessionConfig {
         roots: vec![app.root.clone()],
+        diff_syntax: app.syntax,
         settings: app.settings.clone(),
         loaded_config: app.loaded_config.clone(),
         // The real app persists crash-recovery swaps to the user data directory;
@@ -76,6 +77,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
         };
         app.backend = Some(backend);
         app.register_open_tabs();
+        app.request_pending_startup_diffs();
         // Surface any configuration-load problems as startup notifications, now that
         // the notification center will render on the first frame.
         for diag in std::mem::take(&mut app.config_diagnostics) {
@@ -99,10 +101,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
                 "graphical cursor is not compatible with this terminal",
             );
         }
-        let Some(prepared) = app.prepare_rx.take() else {
-            return Err(eyre!("diff preparation result stream is unavailable"));
-        };
-        event_loop(&mut terminal, &mut app, events, snaps, prepared).await
+        event_loop(&mut terminal, &mut app, events, snaps).await
     });
 
     let _ = write!(io::stdout(), "{}", image::kitty_delete_all());
@@ -124,7 +123,6 @@ async fn event_loop(
     app: &mut App,
     mut events: EventRx,
     mut snaps: SnapshotRx,
-    mut prepared: tokio::sync::mpsc::UnboundedReceiver<prepare::PrepareResult>,
 ) -> color_eyre::Result<()> {
     // A dedicated thread turns the blocking `event::read` into an async stream.
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Event>();
@@ -156,9 +154,6 @@ async fn event_loop(
             snap = snaps.recv() => if let Some((doc, snap)) = snap {
                 app.on_snapshot(doc, &snap);
             },
-            result = prepared.recv() => if let Some(result) = result {
-                app.on_prepare_result(result);
-            },
             () = async move {
                 match deadline {
                     Some(d) => tokio::time::sleep(d).await,
@@ -182,9 +177,6 @@ async fn event_loop(
         }
         while let Some((doc, snap)) = snaps.try_recv() {
             app.on_snapshot(doc, &snap);
-        }
-        while let Ok(result) = prepared.try_recv() {
-            app.on_prepare_result(result);
         }
 
         if app.should_quit {

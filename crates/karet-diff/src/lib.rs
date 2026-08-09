@@ -16,6 +16,9 @@ mod intraline;
 mod model;
 mod parse;
 mod patch;
+mod prepared;
+#[cfg(feature = "view")]
+mod view;
 
 use std::path::Path;
 
@@ -37,6 +40,17 @@ pub use model::LineKind;
 pub use parse::parse;
 pub use patch::Staging;
 pub use patch::format_hunk_patch;
+pub use prepared::PreparedDiff;
+pub use prepared::TokenSpan;
+pub use prepared::line_stats;
+#[cfg(feature = "view")]
+pub use view::DiffPalette;
+#[cfg(feature = "view")]
+pub use view::pad_diff_lines;
+#[cfg(feature = "view")]
+pub use view::side_by_side_lines;
+#[cfg(feature = "view")]
+pub use view::unified_lines;
 
 /// Errors produced while diffing or parsing.
 #[derive(Debug, thiserror::Error)]

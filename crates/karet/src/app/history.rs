@@ -97,21 +97,6 @@ impl App {
             self.pending_commit_detail.remove(&request);
             self.cancel_backend_request(request);
         }
-        let stale_preparation: Vec<RequestId> = self
-            .pending_commit_preparation
-            .iter()
-            .filter_map(|(request, pending)| {
-                matches!(pending.destination, CommitDest::Browser { view: owner, .. } if owner == view)
-                    .then_some(*request)
-            })
-            .collect();
-        for request in stale_preparation {
-            if let Some(pending) = self.pending_commit_preparation.remove(&request) {
-                pending
-                    .cancelled
-                    .store(true, std::sync::atomic::Ordering::Release);
-            }
-        }
         let stale_verification: Vec<RequestId> = self
             .pending_commit_verification
             .iter()
@@ -255,10 +240,10 @@ impl App {
         &mut self,
         view: ViewId,
         detail: Box<CommitDetail>,
-        prepared: Vec<FileView>,
+        prepared: Vec<PreparedChange>,
     ) {
         let hash = detail.hash.clone();
-        let mut prepared = Some(prepared);
+        let mut prepared = Some(commit_file_views(prepared));
         let mut filled = false;
         for tab in self.all_tabs_mut() {
             if tab.view != view {
@@ -329,13 +314,15 @@ impl App {
         }
     }
 
-    /// Build and open a commit tab from a resolved [`CommitDetail`] and its changes,
-    /// then fire the lazy GitHub verification fetch to upgrade the signature badge.
-    pub(super) fn open_commit_tab(&mut self, detail: Box<CommitDetail>, changes: Vec<FileChange>) {
-        let files = changes
-            .into_iter()
-            .map(|c| FileView::new(c, Section::Staged, self.syntax))
-            .collect();
+    /// Build and open a commit tab from a resolved [`CommitDetail`] and its
+    /// backend-prepared changes, then fire the lazy GitHub verification fetch to
+    /// upgrade the signature badge.
+    pub(super) fn open_commit_tab(
+        &mut self,
+        detail: Box<CommitDetail>,
+        changes: Vec<PreparedChange>,
+    ) {
+        let files = commit_file_views(changes);
         let hash = detail.hash.clone();
         self.push_tab(Tab::commit(detail, files));
         let view = self.tabs[self.active].view;
@@ -404,9 +391,9 @@ impl App {
         &mut self,
         view: ViewId,
         detail: Box<CommitDetail>,
-        prepared: Vec<FileView>,
+        prepared: Vec<PreparedChange>,
     ) {
-        let mut files = Some(prepared);
+        let mut files = Some(commit_file_views(prepared));
         let hash = detail.hash.clone();
         let title = commit_title(&detail.short_hash);
         let mut detail = Some(detail);
@@ -465,58 +452,6 @@ impl App {
         {
             self.pending_commit_verification
                 .insert(request, (view, hash));
-        }
-    }
-
-    /// Hand neutral commit changes to the app-local preparation worker. The originating
-    /// request remains view-owned until the prepared result is adopted or cancelled.
-    pub(super) fn prepare_commit_result(
-        &mut self,
-        request: RequestId,
-        destination: CommitDest,
-        detail: Box<CommitDetail>,
-        changes: Vec<FileChange>,
-    ) {
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let job = prepare::PrepareJob {
-            request,
-            changes,
-            syntax: self.syntax,
-            theme: self.theme.clone(),
-            cancelled: cancelled.clone(),
-        };
-        self.pending_commit_preparation.insert(
-            request,
-            PendingCommitPreparation {
-                destination,
-                detail,
-                cancelled,
-            },
-        );
-        if self.prepare_tx.send(job).is_err() {
-            self.pending_commit_preparation.remove(&request);
-            self.status = Some("commit diff preparation worker is unavailable".to_owned());
-        }
-    }
-
-    /// Adopt one completed preparation only while its exact request and view remain live.
-    pub(super) fn on_prepare_result(&mut self, result: prepare::PrepareResult) {
-        let Some(pending) = self.pending_commit_preparation.remove(&result.request) else {
-            return;
-        };
-        if pending.cancelled.load(std::sync::atomic::Ordering::Acquire) {
-            return;
-        }
-        match pending.destination {
-            CommitDest::Browser { view, hash }
-                if pending.detail.hash == hash && self.all_tabs().any(|tab| tab.view == view) =>
-            {
-                self.fill_graph_detail(view, pending.detail, result.files);
-            },
-            CommitDest::Browser { .. } => {},
-            CommitDest::Tab { view } => {
-                self.fill_commit_tab(view, pending.detail, result.files);
-            },
         }
     }
 
@@ -584,15 +519,12 @@ impl App {
         base_label: String,
         head_label: String,
         merge_base: bool,
-        changes: Vec<FileChange>,
+        changes: Vec<PreparedChange>,
     ) {
         if changes.is_empty() {
             self.status = Some(format!("no changes between {base_label} and {head_label}"));
         }
-        let files = changes
-            .into_iter()
-            .map(|c| FileView::new(c, Section::Staged, self.syntax))
-            .collect();
+        let files = commit_file_views(changes);
         self.push_tab(Tab::compare(base_label, head_label, merge_base, files));
     }
 
@@ -615,4 +547,9 @@ impl App {
             }
         }
     }
+}
+
+/// Wrap backend-prepared commit/range changes for display.
+fn commit_file_views(changes: Vec<PreparedChange>) -> Vec<FileView> {
+    changes.into_iter().map(FileView::new).collect()
 }

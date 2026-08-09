@@ -3,6 +3,7 @@ include!("tests/lifecycle.rs");
 include!("tests/startup.rs");
 include!("tests/save.rs");
 include!("tests/scm.rs");
+include!("tests/diff_view.rs");
 include!("tests/tabs_search.rs");
 include!("tests/blame.rs");
 include!("tests/preview.rs");

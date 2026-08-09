@@ -60,9 +60,7 @@ use karet_text::TextError;
 use karet_treesitter::LanguageId;
 use karet_treesitter::language_id_from_path;
 use karet_treesitter::language_name_from_path;
-use karet_vcs::FileChange;
 use karet_vcs::Repository;
-use karet_vcs::Selection as VcsSelection;
 use karet_vcs::VcsError;
 use karet_watch::FsEvent;
 use karet_watch::Watcher;
@@ -94,10 +92,14 @@ use crate::spell::SpellJob;
 use crate::spell::SpellResult;
 
 /// Configuration for a [`Session`].
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SessionConfig {
     /// Workspace root directories.
     pub roots: Vec<PathBuf>,
+    /// Whether prepared diffs include syntax token runs. The client's
+    /// presentation choice (e.g. a `--no-syntax` flag or `NO_COLOR`); defaults
+    /// to `true`.
+    pub diff_syntax: bool,
     /// The loaded, verified settings (see [`crate::config`]). Producers read editing
     /// behaviour (format-on-save, spell-check, …) from here.
     pub settings: crate::config::Settings,
@@ -118,6 +120,20 @@ pub struct SessionConfig {
     /// A headless embedding may leave this unset to disable built-in providers;
     /// configured custom servers remain available through the process supervisor.
     pub lsp_registry_dir: Option<PathBuf>,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            roots: Vec::new(),
+            diff_syntax: true,
+            settings: crate::config::Settings::default(),
+            loaded_config: crate::config::LoadedConfig::default(),
+            swap_dir: None,
+            process_supervisor: None,
+            lsp_registry_dir: None,
+        }
+    }
 }
 
 impl SessionConfig {
@@ -384,10 +400,9 @@ pub struct Session {
     vcs_cancellations: crate::cancellation::CancellationHub,
     /// Serialized external LaTeX builds.
     latex_worker: std::sync::mpsc::Sender<crate::latex::LatexJob>,
-    /// The last emitted `(staged, working)` status. Spontaneous recomputes (from
-    /// filesystem events) emit only when this changes, which absorbs the feedback
-    /// from the session's own index writes.
-    last_vcs: Option<(Vec<FileChange>, Vec<FileChange>)>,
+    /// Whether prepared diffs carry syntax token runs (the client's choice; see
+    /// [`SessionConfig::diff_syntax`]).
+    diff_syntax: bool,
     /// The last observed `HEAD` commit hash. A filesystem event that moves the tip
     /// away from this triggers an incremental commit-log reconciliation.
     last_head: Option<String>,
@@ -497,16 +512,20 @@ impl Session {
                 });
             },
             Command::CommitDetail { rev } => {
+                let syntax = self.diff_syntax;
                 self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::CommitDetail {
                     id,
                     rev,
+                    syntax,
                     cancel,
                 });
             },
             Command::RangeChanges { spec } => {
+                let syntax = self.diff_syntax;
                 self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::RangeChanges {
                     id,
                     spec,
+                    syntax,
                     cancel,
                 });
             },
@@ -635,11 +654,35 @@ impl Session {
                     cancel,
                 });
             },
-            Command::FileAtRev { path, rev } => {
-                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::FileAtRev {
+            Command::PrepareChange { path, staged } => {
+                let syntax = self.diff_syntax;
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::PrepareChange {
+                    id,
+                    path,
+                    staged,
+                    syntax,
+                    cancel,
+                });
+            },
+            Command::PrepareDiff { path, old, new } => {
+                let syntax = self.diff_syntax;
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::PrepareTexts {
+                    id,
+                    path,
+                    old,
+                    new,
+                    syntax,
+                    cancel,
+                });
+            },
+            Command::DiffWithRev { path, rev, live } => {
+                let syntax = self.diff_syntax;
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::DiffWithRev {
                     id,
                     path,
                     rev,
+                    live,
+                    syntax,
                     cancel,
                 });
             },

@@ -25,6 +25,7 @@ pub mod backend;
 pub mod backup;
 mod cancellation;
 pub mod config;
+mod diff_prepare;
 mod editorconfig;
 mod highlight;
 mod latex;
@@ -38,6 +39,7 @@ mod vcs_worker;
 #[cfg(feature = "viz")]
 pub mod viz;
 
+pub use api::ChangeSummary;
 pub use api::Command;
 pub use api::DictionaryScope;
 pub use api::DocumentEncoding;
@@ -70,6 +72,7 @@ pub use api::LanguageServerPlanId;
 pub use api::LanguageServerRuntimeState;
 pub use api::LanguageServerSource;
 pub use api::LanguageServerStatus;
+pub use api::PreparedChange;
 pub use api::PullRequestSummary;
 pub use api::RangeSpec;
 pub use api::RemoteFacts;

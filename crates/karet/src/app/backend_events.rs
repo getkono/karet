@@ -85,6 +85,12 @@ impl App {
                 files_loading_since,
                 ..
             } => files_loading_since.and_then(|since| loading_delay_remaining(since, now)),
+            TabKind::Diff {
+                file: None,
+                loading_since,
+                error: None,
+                ..
+            } => loading_since.and_then(|since| loading_delay_remaining(since, now)),
             TabKind::Code { .. }
                 if tab.merge_conflict.as_ref().is_some_and(|conflict| {
                     conflict.current.is_none() && conflict.error.is_none()
@@ -634,13 +640,17 @@ impl App {
                 has_more,
                 ..
             } => {
-                // File history only ever fills the graph browser it was opened for.
+                // File history fills exactly the surface that asked: the graph
+                // browser, or the With Revision diff-target picker.
                 if id.is_some_and(|request| {
                     self.graph_log_req
                         .is_some_and(|(pending, _)| pending == request)
                 }) {
                     self.graph_log_req = None;
                     self.apply_graph_log(skip, commits, has_more);
+                } else if id.is_some() && id == self.pending_history_picker {
+                    self.pending_history_picker = None;
+                    self.apply_history_picker(commits);
                 }
             },
             SessionEvent::VcsCommitsPrepended { commits } => {
@@ -679,13 +689,15 @@ impl App {
                 }
             },
             SessionEvent::CommitReady { detail, changes } => {
-                match id.and_then(|request| {
-                    self.pending_commit_detail
-                        .remove(&request)
-                        .map(|destination| (request, destination))
-                }) {
-                    Some((request, destination)) => {
-                        self.prepare_commit_result(request, destination, detail, changes);
+                match id.and_then(|request| self.pending_commit_detail.remove(&request)) {
+                    Some(CommitDest::Browser { view, hash })
+                        if detail.hash == hash && self.all_tabs().any(|tab| tab.view == view) =>
+                    {
+                        self.fill_graph_detail(view, detail, changes);
+                    },
+                    Some(CommitDest::Browser { .. }) => {},
+                    Some(CommitDest::Tab { view }) => {
+                        self.fill_commit_tab(view, detail, changes);
                     },
                     None if id.is_none() => self.open_commit_tab(detail, changes),
                     _ => {},
@@ -753,9 +765,12 @@ impl App {
             SessionEvent::LoadedConfig { report } => self.open_loaded_config(*report),
             SessionEvent::SearchResults { hits } => self.apply_search_results(hits),
             SessionEvent::RemoteFacts { path, facts } => self.apply_remote_facts(path, facts),
-            SessionEvent::FileAtRev { path, rev, content } => {
-                self.apply_file_at_rev(path, rev, content);
-            },
+            SessionEvent::ChangePrepared {
+                path,
+                staged,
+                result,
+            } => self.apply_change_prepared(&path, staged, result),
+            SessionEvent::DiffPrepared { result, .. } => self.apply_diff_prepared(id, result),
             SessionEvent::DictionaryWordAdded { word, path } => {
                 self.dictionary_word_added(&word, &path);
             },

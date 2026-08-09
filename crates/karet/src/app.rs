@@ -7,6 +7,7 @@ mod capture;
 mod change_view;
 mod commands;
 mod completion;
+mod diffs;
 mod editor;
 mod explorer;
 pub(crate) mod github;
@@ -19,7 +20,6 @@ mod lifecycle;
 mod mouse;
 mod notifications;
 mod panes;
-mod prepare;
 mod remote_actions;
 mod runtime;
 mod scm;
@@ -44,7 +44,6 @@ use std::io::{self};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -97,6 +96,7 @@ use karet_search::SearchQuery;
 use karet_search::search_in_file;
 use karet_session::Backend;
 use karet_session::BackendError;
+use karet_session::ChangeSummary;
 use karet_session::Command as SessionCommand;
 use karet_session::ConfigDiagnostic;
 use karet_session::DocSnapshot;
@@ -111,6 +111,7 @@ use karet_session::LanguageServerPlanId;
 use karet_session::LanguageServerRuntimeState;
 use karet_session::LanguageServerStatus;
 use karet_session::LoadedConfig;
+use karet_session::PreparedChange;
 use karet_session::PullRequestSummary;
 use karet_session::RangeSpec;
 use karet_session::RepositorySnapshot;
@@ -130,7 +131,6 @@ use karet_text::TextBuffer;
 use karet_theme::Theme;
 use karet_vcs::Commit;
 use karet_vcs::CommitDetail;
-use karet_vcs::FileChange;
 use karet_vcs::RepositorySummary;
 use karet_vcs::StatusKind;
 use karet_widgets::DropZone;
@@ -211,10 +211,9 @@ use crate::workspace;
 
 /// The Source-Control panel state: the changed files (staged first) and selection.
 pub(crate) struct Scm {
-    /// Changed files: the staged group first, then the working group.
-    pub(crate) changes: Vec<FileChange>,
-    /// Added/removed line counts aligned with `changes`.
-    pub(crate) change_line_stats: Vec<(usize, usize)>,
+    /// Changed files: the staged group first, then the working group. Identity
+    /// and line counts only — the backend prepares a displayable diff on demand.
+    pub(crate) changes: Vec<ChangeSummary>,
     /// The number of staged files at the front of `changes`.
     pub(crate) staged_count: usize,
     /// The cursor and multi-file selection over `changes`.
@@ -286,21 +285,6 @@ impl LiveBlame {
 }
 
 impl Scm {
-    fn line_stats(changes: &[FileChange], staged_count: usize) -> Vec<(usize, usize)> {
-        changes
-            .iter()
-            .enumerate()
-            .map(|(index, change)| {
-                let section = if index < staged_count {
-                    Section::Staged
-                } else {
-                    Section::Working
-                };
-                FileView::new(change.clone(), section, false).line_stats()
-            })
-            .collect()
-    }
-
     /// The Source-Control [`Section`] for the entry at `index`.
     fn section(&self, index: usize) -> Section {
         if index < self.staged_count {
@@ -574,13 +558,6 @@ enum CommitDest {
     Tab { view: ViewId },
     /// Fill the graph browser's detail pane if it still selects this hash.
     Browser { view: ViewId, hash: String },
-}
-
-/// A commit result whose render model is being prepared away from the UI thread.
-struct PendingCommitPreparation {
-    destination: CommitDest,
-    detail: Box<CommitDetail>,
-    cancelled: Arc<AtomicBool>,
 }
 
 /// A document open owned by one concrete editor view.
@@ -904,10 +881,9 @@ pub struct App {
     pub(crate) remote_facts_pending: HashSet<PathBuf>,
     /// Actions parked on a facts answer.
     pub(crate) pending_remote_actions: Vec<PendingRemoteAction>,
-    /// Open-changes requests awaiting their FileAtRev answer, keyed by
-    /// `(path, rev)`: the tab title label and the live buffer text at request
-    /// time.
-    pub(crate) pending_open_changes: HashMap<(PathBuf, String), (String, Option<String>)>,
+    /// The in-flight file-history request for the With Revision diff-target
+    /// picker, so its answering [`SessionEvent::FileHistory`] opens the picker.
+    pub(crate) pending_history_picker: Option<RequestId>,
     /// Request currently computing live blame.
     pub(crate) pending_blame: Option<(RequestId, DocumentId, u64, u32)>,
     /// Failed blame anchor, suppressed until its inputs change.
@@ -1137,16 +1113,16 @@ pub struct App {
     pending_commit_detail: HashMap<RequestId, CommitDest>,
     /// Explicit LaTeX build requests mapped to their reserved preview view.
     latex_previews: HashMap<RequestId, ViewId>,
-    /// Backend commit results currently being diffed and highlighted off-thread.
-    pending_commit_preparation: HashMap<RequestId, PendingCommitPreparation>,
     /// Lazy forge-verification reads, owned by their exact commit view.
     pending_commit_verification: HashMap<RequestId, (ViewId, String)>,
     /// Conflict-side reads owned by their exact editable view.
     pending_merge_conflicts: HashMap<RequestId, (ViewId, PathBuf)>,
-    /// Submission side of the app-local diff preparation worker.
-    prepare_tx: std::sync::mpsc::Sender<prepare::PrepareJob>,
-    /// Result side, taken by the runtime event loop while the TUI is running.
-    prepare_rx: Option<tokio::sync::mpsc::UnboundedReceiver<prepare::PrepareResult>>,
+    /// In-flight ad-hoc diff preparations (revision/two-file diffs), owned by the
+    /// reserved diff tab's view.
+    pending_prepared_diffs: HashMap<RequestId, ViewId>,
+    /// Two-file diffs from the `--diff` flag, opened as loading tabs before the
+    /// backend attaches; their `PrepareDiff` commands are sent on attach.
+    pending_startup_diffs: Vec<(ViewId, PathBuf, String, String)>,
     /// The graph browser's in-flight history-page request, so its answering
     /// [`SessionEvent::VcsLog`] fills the browser rather than the sidebar log.
     graph_log_req: Option<(RequestId, ViewId)>,

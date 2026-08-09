@@ -120,6 +120,34 @@
         (app, events)
     }
 
+    /// Reconstruct the `(old, new)` texts from a prepared diff's hunk lines
+    /// (complete for these small single-hunk fixtures).
+    fn diff_sides(file: &FileView) -> (String, String) {
+        let mut old = String::new();
+        let mut new = String::new();
+        for hunk in &file.change.diff.diff.hunks {
+            for line in &hunk.lines {
+                match line.kind {
+                    karet_diff::LineKind::Context => {
+                        old.push_str(&line.content);
+                        old.push('\n');
+                        new.push_str(&line.content);
+                        new.push('\n');
+                    },
+                    karet_diff::LineKind::Remove => {
+                        old.push_str(&line.content);
+                        old.push('\n');
+                    },
+                    karet_diff::LineKind::Add => {
+                        new.push_str(&line.content);
+                        new.push('\n');
+                    },
+                }
+            }
+        }
+        (old, new)
+    }
+
     #[tokio::test]
     async fn pane_menu_enables_github_links_for_a_tracked_file_on_github() {
         let Some(repo) = repo_with_remote("git@github.com:owner/repo.git") else {
@@ -285,21 +313,18 @@
 
         let Some(Tab {
             title,
-            kind: TabKind::Diff { file, .. },
+            kind: TabKind::Diff {
+                file: Some(file), ..
+            },
             ..
         }) = app.tabs.last()
         else {
-            panic!("open changes opens a diff tab, got none");
+            panic!("open changes opens a filled diff tab, got none");
         };
         assert_eq!(title, "new.rs (HEAD \u{2194} working)");
-        assert_eq!(
-            file.change.old, "fn main() {}\n",
-            "old side is HEAD content"
-        );
-        assert_eq!(
-            file.change.new, "fn main() { edited }\n",
-            "new side is the live buffer"
-        );
+        let (old, new) = diff_sides(file);
+        assert_eq!(old, "fn main() {}\n", "old side is HEAD content");
+        assert_eq!(new, "fn main() { edited }\n", "new side is the live buffer");
     }
 
     #[tokio::test]
@@ -317,6 +342,7 @@
         app.push_tab(code_tab_with_text(&path, "working\n"));
 
         app.dispatch(Command::OpenChangesWithRevision);
+        pump(&mut app, &mut events).await;
         let Some(overlay) = app.overlay.as_ref() else {
             panic!("the revision picker opens");
         };
@@ -333,17 +359,20 @@
         assert!(app.overlay.is_none(), "accept closes the picker");
         let Some(Tab {
             title,
-            kind: TabKind::Diff { file, .. },
+            kind: TabKind::Diff {
+                file: Some(file), ..
+            },
             ..
         }) = app.tabs.last()
         else {
-            panic!("accepting a revision opens a diff tab");
+            panic!("accepting a revision opens a filled diff tab");
         };
+        let (old, new) = diff_sides(file);
         assert_eq!(
-            file.change.old, "fn main() {}\n",
+            old, "fn main() {}\n",
             "old side is the picked revision's content"
         );
-        assert_eq!(file.change.new, "working\n");
+        assert_eq!(new, "working\n");
         assert!(
             title.contains("\u{2194} working"),
             "title names the comparison: {title}"
@@ -369,6 +398,10 @@
         let (mut app, mut events) = facts_app(repo.path.clone());
         app.push_tab(code_tab_with_text(&path, "working\n"));
 
+        // The first invocation requests the repository snapshot; once it lands,
+        // the picker opens from that snapshot.
+        app.dispatch(Command::OpenChangesWithBranch);
+        pump(&mut app, &mut events).await;
         app.dispatch(Command::OpenChangesWithBranch);
         let Some(overlay) = app.overlay.as_ref() else {
             panic!("the branch picker opens");
@@ -387,18 +420,21 @@
 
         let Some(Tab {
             title,
-            kind: TabKind::Diff { file, .. },
+            kind: TabKind::Diff {
+                file: Some(file), ..
+            },
             ..
         }) = app.tabs.last()
         else {
-            panic!("accepting a branch opens a diff tab");
+            panic!("accepting a branch opens a filled diff tab");
         };
         assert_eq!(title, "new.rs (feature \u{2194} working)");
+        let (old, new) = diff_sides(file);
         assert_eq!(
-            file.change.old, "fn main() { feature }\n",
+            old, "fn main() { feature }\n",
             "old side is the branch tip's content"
         );
-        assert_eq!(file.change.new, "working\n");
+        assert_eq!(new, "working\n");
     }
 
     #[tokio::test]
@@ -425,9 +461,12 @@
         app.open_changes_with("HEAD~1", "HEAD~1");
         pump(&mut app, &mut events).await;
         assert_eq!(app.tabs.len(), before, "no diff tab is opened");
-        assert_eq!(
-            app.status.as_deref(),
-            Some("open changes: file does not exist at HEAD~1")
+        assert!(
+            app.status
+                .as_deref()
+                .is_some_and(|status| status.contains("file does not exist at HEAD~1")),
+            "the refusal names the revision: {:?}",
+            app.status
         );
     }
 

@@ -231,20 +231,35 @@
             Some("fn b() {}\n".to_string()),
         );
 
+        // The tab is reserved immediately; the backend prepares the diff after
+        // attach (the PrepareDiff command is queued with the captured texts).
+        let view = app.tabs[app.active].view;
         match &app.tabs[app.active].kind {
-            TabKind::Diff { file, .. } => {
-                assert!(!file.change.is_binary);
-                assert_eq!(file.change.old, "fn a() {}\n");
-                assert_eq!(file.change.new, "fn b() {}\n");
-                assert_eq!(file.change.path, dir.join("new.rs"));
-                assert_eq!(file.change.old_path, Some(dir.join("old.rs")));
-                // Both lines differ, so the diff carries one added + one removed line.
-                assert_eq!(file.line_stats(), (1, 1));
+            TabKind::Diff {
+                path,
+                file,
+                loading_since,
+                ..
+            } => {
+                assert!(file.is_none(), "the diff loads via the backend");
+                assert!(loading_since.is_some());
+                assert_eq!(*path, dir.join("new.rs"));
             },
             _ => panic!("expected a diff tab"),
         }
         assert_eq!(app.tabs[app.active].title, "old.rs ↔ new.rs");
         assert_eq!(app.focus, Focus::Editor);
+        assert!(
+            app.pending_startup_diffs
+                .iter()
+                .any(|(pending_view, path, old, new)| {
+                    *pending_view == view
+                        && *path == dir.join("new.rs")
+                        && old == "fn a() {}\n"
+                        && new == "fn b() {}\n"
+                }),
+            "the texts are queued for the backend"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -263,10 +278,9 @@
 
         match &app.tabs[app.active].kind {
             TabKind::Diff { file, .. } => {
-                assert!(file.change.is_binary);
-                // The is_binary contract: both texts are empty.
-                assert!(file.change.old.is_empty());
-                assert!(file.change.new.is_empty());
+                let file = file.as_ref().expect("a binary pair needs no backend");
+                assert!(file.change.diff.is_binary());
+                assert_eq!(file.line_stats(), (0, 0));
             },
             _ => panic!("expected a diff tab"),
         }

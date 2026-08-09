@@ -701,7 +701,11 @@ impl App {
 
     /// Replace the Source-Control panel state from a fresh backend status,
     /// reconciling the existing selection against the new row count.
-    pub(super) fn apply_vcs_status(&mut self, staged: Vec<FileChange>, working: Vec<FileChange>) {
+    pub(super) fn apply_vcs_status(
+        &mut self,
+        staged: Vec<ChangeSummary>,
+        working: Vec<ChangeSummary>,
+    ) {
         let conflicted: HashSet<PathBuf> = working
             .iter()
             .filter(|change| change.status == karet_vcs::StatusKind::Conflicted)
@@ -716,9 +720,7 @@ impl App {
         let staged_count = staged.len();
         let mut changes = staged;
         changes.extend(working);
-        let change_line_stats = Scm::line_stats(&changes, staged_count);
         self.scm.changes = changes;
-        self.scm.change_line_stats = change_line_stats;
         self.scm.staged_count = staged_count;
         self.scm.selection.set_len(self.scm.changes.len());
         for tab in self.all_tabs_mut() {

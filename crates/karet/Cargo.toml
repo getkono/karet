@@ -44,7 +44,7 @@ karet-text.workspace = true
 karet-treesitter = { workspace = true, features = ["all-languages"] }
 karet-syntax.workspace = true
 karet-theme      = { workspace = true, features = ["view", "vscode"] }
-karet-diff.workspace = true
+karet-diff = { workspace = true, features = ["view"] } # paint-only: diffs are prepared by the session
 karet-markdown   = { workspace = true, features = ["view", "highlight"] }
 karet-cbor.workspace = true           # decode .cbor to editable diagnostic text
 karet-vcs.workspace = true

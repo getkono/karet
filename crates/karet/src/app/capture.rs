@@ -35,6 +35,7 @@ pub(crate) fn capture(mut app: App, spec: CaptureSpec) -> color_eyre::Result<()>
     let runtime = tokio::runtime::Runtime::new().map_err(|e| eyre!("tokio runtime: {e}"))?;
     let config = SessionConfig {
         roots: vec![app.root.clone()],
+        diff_syntax: app.syntax,
         settings: app.settings.clone(),
         loaded_config: app.loaded_config.clone(),
         // A capture is a throwaway read-only session: never write crash-recovery
@@ -78,6 +79,7 @@ async fn drive(
     };
     app.backend = Some(backend);
     app.register_open_tabs();
+    app.request_pending_startup_diffs();
     for diag in std::mem::take(&mut app.config_diagnostics) {
         app.notify(
             diag.severity,
@@ -85,16 +87,13 @@ async fn drive(
             format!("config: {}", diag.message),
         );
     }
-    let Some(prepared) = app.prepare_rx.take() else {
-        return Err(eyre!("diff preparation result stream is unavailable"));
-    };
-    settle(terminal, app, events, snaps, prepared, spec).await
+    settle(terminal, app, events, snaps, spec).await
 }
 
 /// Draw until the backend stops producing work, then draw one last frame.
 ///
-/// Each backend event, document snapshot, or diff-preparation result restarts the
-/// quiet timer, so a workspace that highlights slowly still captures a settled UI.
+/// Each backend event or document snapshot restarts the quiet timer, so a
+/// workspace that highlights slowly still captures a settled UI.
 /// Returns once nothing has arrived for `spec.settle` or `spec.timeout` has elapsed
 /// — the deadline is a ceiling, not a failure, so a workspace that never falls quiet
 /// still yields a frame.
@@ -103,7 +102,6 @@ async fn settle(
     app: &mut App,
     mut events: EventRx,
     mut snaps: SnapshotRx,
-    mut prepared: tokio::sync::mpsc::UnboundedReceiver<prepare::PrepareResult>,
     spec: CaptureSpec,
 ) -> color_eyre::Result<()> {
     let deadline = Instant::now() + spec.timeout;
@@ -130,10 +128,6 @@ async fn settle(
                 Some((doc, snap)) => { app.on_snapshot(doc, &snap); true },
                 None => false,
             },
-            result = prepared.recv() => match result {
-                Some(result) => { app.on_prepare_result(result); true },
-                None => false,
-            },
             () = tokio::time::sleep(quiet) => false,
         };
         if !progressed {
@@ -146,9 +140,6 @@ async fn settle(
         }
         while let Some((doc, snap)) = snaps.try_recv() {
             app.on_snapshot(doc, &snap);
-        }
-        while let Ok(result) = prepared.try_recv() {
-            app.on_prepare_result(result);
         }
         app.notifications.expire(Instant::now());
     }

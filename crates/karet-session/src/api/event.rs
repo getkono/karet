@@ -239,15 +239,24 @@ pub enum Event {
         /// repository, no origin remote, outside the worktree).
         facts: Result<RemoteFacts, String>,
     },
-    /// A file's content at a revision, answering [`Command::FileAtRev`].
-    FileAtRev {
-        /// The file that was read.
+    /// One status entry's displayable diff, answering [`Command::PrepareChange`].
+    ChangePrepared {
+        /// The changed file's path, as requested.
         path: PathBuf,
-        /// The revision it was read at.
-        rev: String,
-        /// The content, `Ok(None)` when the file does not exist at that
-        /// revision (or is not valid UTF-8), or a user-facing error.
-        content: Result<Option<String>, String>,
+        /// Which section was requested (`true` = staged).
+        staged: bool,
+        /// The prepared diff, or a user-facing reason it is unavailable (e.g.
+        /// the entry no longer exists in that section).
+        result: Result<Box<PreparedChange>, String>,
+    },
+    /// An ad-hoc prepared diff, answering [`Command::PrepareDiff`] or
+    /// [`Command::DiffWithRev`].
+    DiffPrepared {
+        /// The path the diff describes, as requested.
+        path: PathBuf,
+        /// The prepared diff, or a user-facing reason it is unavailable (e.g.
+        /// the file does not exist at the requested revision).
+        result: Result<Box<PreparedChange>, String>,
     },
     /// Progress on a long-running operation.
     Progress {
@@ -270,10 +279,10 @@ pub enum Event {
     /// The current source-control status: the staged (`HEAD`↔index) and working
     /// (index↔worktree, plus untracked and conflicted) change sets.
     VcsStatus {
-        /// The staged changes.
-        staged: Vec<FileChange>,
+        /// The staged changes (identity and line counts; no contents).
+        staged: Vec<ChangeSummary>,
         /// The working-tree changes (unstaged, untracked, conflicted).
-        working: Vec<FileChange>,
+        working: Vec<ChangeSummary>,
     },
     /// The read-only committed sides of an unresolved merge conflict.
     MergeConflictReady {
@@ -371,8 +380,9 @@ pub enum Event {
         /// The commit metadata (message, author/committer, parents, signature). Boxed
         /// to keep this large payload from bloating every other [`Event`] variant.
         detail: Box<CommitDetail>,
-        /// The files this commit changed relative to its first parent, for the diff view.
-        changes: Vec<FileChange>,
+        /// The files this commit changed relative to its first parent, prepared
+        /// for the diff view.
+        changes: Vec<PreparedChange>,
     },
     /// The diff between two points, answering [`Command::RangeChanges`].
     RangeReady {
@@ -383,8 +393,8 @@ pub enum Event {
         head_label: String,
         /// Whether the diff was taken from the merge base (three-dot) rather than the tips.
         merge_base: bool,
-        /// The files that differ between the two points, for the diff view.
-        changes: Vec<FileChange>,
+        /// The files that differ between the two points, prepared for the diff view.
+        changes: Vec<PreparedChange>,
     },
     /// A page of a file's history, answering [`Command::FileHistory`].
     FileHistory {

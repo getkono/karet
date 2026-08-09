@@ -556,7 +556,7 @@
             "main".to_string(),
             "HEAD".to_string(),
             true,
-            vec![change("a.rs", StatusKind::Modified)],
+            vec![prepared_change("a.rs", StatusKind::Modified)],
         );
         match &app.tabs[app.active].kind {
             TabKind::Compare {
@@ -648,11 +648,7 @@
             parents: Vec::new(),
             signature: None,
         };
-        let files = vec![FileView::new(
-            change("a.rs", StatusKind::Modified),
-            crate::render::Section::Staged,
-            false,
-        )];
+        let files = vec![FileView::new(prepared_change("a.rs", StatusKind::Modified))];
         app.push_tab(Tab::commit(Box::new(detail), files));
         assert!(matches!(
             &app.tabs[app.active].kind,
@@ -699,11 +695,7 @@
             parents: Vec::new(),
             signature: None,
         };
-        let files = vec![FileView::new(
-            change("a.rs", StatusKind::Modified),
-            crate::render::Section::Staged,
-            false,
-        )];
+        let files = vec![FileView::new(prepared_change("a.rs", StatusKind::Modified))];
         app.push_tab(Tab::commit(Box::new(detail), files));
         let area = Rect {
             x: 0,

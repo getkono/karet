@@ -721,26 +721,11 @@ fn compare_header_lines(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use karet_vcs::FileChange;
-    use karet_vcs::StatusKind;
 
     use super::*;
 
     fn file(path: &str, old: &str, new: &str) -> render::FileView {
-        render::FileView::new(
-            FileChange {
-                path: PathBuf::from(path),
-                old_path: None,
-                status: StatusKind::Modified,
-                is_binary: false,
-                old: old.to_owned(),
-                new: new.to_owned(),
-            },
-            render::Section::Staged,
-            false,
-        )
+        crate::render::test_file_view(path, old, new)
     }
 
     #[test]

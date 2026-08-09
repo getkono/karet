@@ -5,7 +5,7 @@ use crate::app::CommitInput;
 
 #[test]
 fn scm_change_rows_show_colored_added_and_removed_counts() {
-    use karet_vcs::FileChange;
+    use karet_session::ChangeSummary;
     use karet_vcs::StatusKind;
     use ratatui::buffer::Buffer;
     use ratatui::widgets::Widget;
@@ -13,13 +13,13 @@ fn scm_change_rows_show_colored_added_and_removed_counts() {
     let theme = Theme::dark();
     let line = change_line(
         &theme,
-        &FileChange {
+        &ChangeSummary {
             path: PathBuf::from("src/lib.rs"),
             old_path: None,
             status: StatusKind::Modified,
             is_binary: false,
-            old: String::new(),
-            new: String::new(),
+            added: 12,
+            removed: 3,
         },
         (12, 3),
     );
@@ -407,20 +407,10 @@ fn verified_badge_reflects_forge_and_signature() {
 
 #[test]
 fn file_cards_are_boxed_and_width_sized() {
-    use karet_vcs::FileChange;
-    use karet_vcs::StatusKind;
-    let change = FileChange {
-        path: std::path::PathBuf::from("src/main.rs"),
-        old_path: None,
-        status: StatusKind::Modified,
-        is_binary: false,
-        old: "fn a() {}\n".to_string(),
-        new: "fn b() {}\n".to_string(),
-    };
-    let files = vec![render::FileView::new(
-        change,
-        render::Section::Staged,
-        false,
+    let files = vec![crate::render::test_file_view(
+        "src/main.rs",
+        "fn a() {}\n",
+        "fn b() {}\n",
     )];
     let width = 60u16;
     let theme = Theme::dark();
@@ -474,24 +464,11 @@ fn file_cards_are_boxed_and_width_sized() {
 
 #[test]
 fn pane_diff_backgrounds_fill_unified_and_split_widths() {
-    use karet_vcs::FileChange;
-    use karet_vcs::StatusKind;
     use ratatui::buffer::Buffer;
     use ratatui::widgets::Widget;
 
     let theme = Theme::dark();
-    let file = render::FileView::new(
-        FileChange {
-            path: PathBuf::from("notes.txt"),
-            old_path: None,
-            status: StatusKind::Modified,
-            is_binary: false,
-            old: "old\n".to_string(),
-            new: "new\n".to_string(),
-        },
-        render::Section::Working,
-        false,
-    );
+    let file = crate::render::test_file_view("notes.txt", "old\n", "new\n");
     let mut lines = render::unified_lines(&file, &theme);
     render::pad_diff_lines(&mut lines, 40);
     let removed = lines
@@ -540,22 +517,10 @@ fn pane_diff_backgrounds_fill_unified_and_split_widths() {
 
 #[test]
 fn narrow_file_card_headers_never_exceed_the_pane() {
-    use karet_vcs::FileChange;
-    use karet_vcs::StatusKind;
     use unicode_width::UnicodeWidthStr;
 
-    let file = render::FileView::new(
-        FileChange {
-            path: PathBuf::from("very/long/\u{65e5}\u{672c}\u{8a9e}/filename.rs"),
-            old_path: None,
-            status: StatusKind::Modified,
-            is_binary: false,
-            old: String::new(),
-            new: "x\n".to_string(),
-        },
-        render::Section::Staged,
-        false,
-    );
+    let file =
+        crate::render::test_file_view("very/long/\u{65e5}\u{672c}\u{8a9e}/filename.rs", "", "x\n");
     for width in 1..24u16 {
         let top = file_card(&Theme::dark(), &file, width)
             .into_iter()

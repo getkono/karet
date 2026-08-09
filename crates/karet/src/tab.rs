@@ -4,6 +4,7 @@
 //! [`EditorState`] used by code tabs for scroll/cursor. Diff and hex tabs keep
 //! their own scroll inside the kind.
 
+mod language_servers;
 mod view_state;
 
 use std::collections::BTreeSet;
@@ -22,21 +23,23 @@ use karet_markdown::WrappedDocument;
 use karet_pdf::Document as PdfDocument;
 use karet_search::SearchQuery;
 use karet_session::DocumentId;
-use karet_session::LanguageServerChange;
-use karet_session::LanguageServerId;
-use karet_session::LanguageServerPlanId;
-use karet_session::LanguageServerStatus;
 use karet_session::LoadedConfig;
 use karet_session::ViewId;
 use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
 use karet_syntax::SemanticBlocks;
 use karet_text::TextBuffer;
+pub(crate) use language_servers::LanguageServerAction;
+pub(crate) use language_servers::LanguageServerActionHit;
+pub(crate) use language_servers::LanguageServerPending;
+pub(crate) use language_servers::LanguageServerPendingKind;
+pub(crate) use language_servers::LanguageServersViewState;
 use ratatui::layout::Rect;
 pub(crate) use view_state::MarkdownPreviewState;
 pub use view_state::ViewMode;
 
 use crate::render::FileView;
+use crate::render::Section;
 
 mod commit;
 mod merge_conflict;
@@ -92,144 +95,6 @@ pub(crate) enum SearchField {
     Find,
     /// The replacement text.
     Replace,
-}
-
-/// A clickable operation in the language-server manager's action strip.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LanguageServerAction {
-    Refresh,
-    CheckAll,
-    Primary,
-    Restart,
-    Uninstall,
-    Filter,
-}
-
-/// One in-flight registry operation shown by the language-server manager.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LanguageServerPendingKind {
-    CheckSelected,
-    CheckAll,
-    Install,
-    Update,
-    Uninstall,
-}
-
-/// Request correlation and presentation state for a registry operation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct LanguageServerPending {
-    pub(crate) request: karet_session::RequestId,
-    pub(crate) server: Option<LanguageServerId>,
-    pub(crate) kind: LanguageServerPendingKind,
-    pub(crate) downloaded: Option<u64>,
-    pub(crate) total: Option<u64>,
-}
-
-/// A clickable manager action from the most recently rendered frame.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct LanguageServerActionHit {
-    pub(crate) rect: Rect,
-    pub(crate) action: LanguageServerAction,
-    pub(crate) server: Option<LanguageServerId>,
-}
-
-/// View-local inventory, selection, update-plan, and hit-testing state.
-pub(crate) struct LanguageServersViewState {
-    pub(crate) servers: Vec<LanguageServerStatus>,
-    pub(crate) selected: usize,
-    pub(crate) offset: usize,
-    pub(crate) filter: String,
-    pub(crate) loading_since: Option<Instant>,
-    pub(crate) inventory_request: Option<karet_session::RequestId>,
-    pub(crate) pending: Vec<LanguageServerPending>,
-    pub(crate) plan: Option<LanguageServerPlanId>,
-    pub(crate) changes: Vec<LanguageServerChange>,
-    pub(crate) error: Option<String>,
-    pub(crate) table_rect: Rect,
-    pub(crate) action_hits: Vec<LanguageServerActionHit>,
-    pub(crate) row_hits: Vec<(Rect, LanguageServerId)>,
-    pub(crate) action_hover: Option<(u16, u16)>,
-}
-
-impl LanguageServersViewState {
-    #[must_use]
-    pub(crate) fn loading(inventory_request: Option<karet_session::RequestId>) -> Self {
-        Self {
-            servers: Vec::new(),
-            selected: 0,
-            offset: 0,
-            filter: String::new(),
-            loading_since: Some(Instant::now()),
-            inventory_request,
-            pending: Vec::new(),
-            plan: None,
-            changes: Vec::new(),
-            error: None,
-            table_rect: Rect::default(),
-            action_hits: Vec::new(),
-            row_hits: Vec::new(),
-            action_hover: None,
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn visible_indices(&self) -> Vec<usize> {
-        let query = self.filter.trim().to_lowercase();
-        self.servers
-            .iter()
-            .enumerate()
-            .filter_map(|(index, status)| {
-                (query.is_empty()
-                    || status.server.display_name().to_lowercase().contains(&query)
-                    || status
-                        .languages
-                        .iter()
-                        .any(|language| language.to_lowercase().contains(&query)))
-                .then_some(index)
-            })
-            .collect()
-    }
-
-    #[must_use]
-    pub(crate) fn selected_server(&self) -> Option<&LanguageServerStatus> {
-        let index = self.visible_indices().get(self.selected).copied()?;
-        self.servers.get(index)
-    }
-
-    #[must_use]
-    pub(crate) fn selected_id(&self) -> Option<LanguageServerId> {
-        self.selected_server().map(|status| status.server.clone())
-    }
-
-    pub(crate) fn select_relative(&mut self, delta: i32) {
-        let count = self.visible_indices().len();
-        if count == 0 {
-            self.selected = 0;
-            self.offset = 0;
-            return;
-        }
-        self.selected =
-            (self.selected as i64 + i64::from(delta)).clamp(0, (count - 1) as i64) as usize;
-    }
-
-    pub(crate) fn set_servers(&mut self, mut servers: Vec<LanguageServerStatus>) {
-        let selected = self.selected_id();
-        servers.sort_by_key(|status| status.server.display_name().to_lowercase());
-        self.servers = servers;
-        self.selected = selected
-            .and_then(|server| {
-                self.visible_indices().iter().position(|&index| {
-                    self.servers
-                        .get(index)
-                        .is_some_and(|status| status.server == server)
-                })
-            })
-            .unwrap_or(0);
-        self.offset = self.offset.min(self.selected);
-        self.loading_since = None;
-        self.inventory_request = None;
-        self.error = None;
-    }
 }
 
 /// The content of a tab and how to render it.
@@ -349,10 +214,21 @@ pub enum TabKind {
         /// Compiler/startup failure, when the preview could not be produced.
         error: Option<String>,
     },
-    /// A single-file diff (opened from the Source Control panel).
+    /// A single-file diff (opened from the Source Control panel). The tab is
+    /// reserved immediately with its identity; the prepared diff fills in when
+    /// the backend answers (the shared delayed-loading policy hides the gap on
+    /// fast paths).
     Diff {
-        /// The prepared file diff.
-        file: Box<FileView>,
+        /// The diffed file's path (the tab's identity while the diff loads).
+        path: PathBuf,
+        /// The Source-Control group the diff belongs to.
+        section: Section,
+        /// The prepared file diff, once the backend has answered.
+        file: Option<Box<FileView>>,
+        /// When the preparation request began, if one is in flight.
+        loading_since: Option<Instant>,
+        /// A load error, when the diff could not be prepared.
+        error: Option<String>,
         /// The current layout.
         view: ViewMode,
         /// Vertical scroll offset (display rows).
@@ -750,6 +626,33 @@ impl Tab {
         )
     }
 
+    /// A single-file diff tab. With `file` present the diff shows immediately;
+    /// without it the tab is reserved in its loading state (the caller has asked
+    /// the backend to prepare the diff).
+    #[must_use]
+    pub fn diff(
+        title: String,
+        path: PathBuf,
+        section: Section,
+        file: Option<Box<FileView>>,
+        view: ViewMode,
+    ) -> Self {
+        let loading_since = file.is_none().then(Instant::now);
+        Self::new(
+            title,
+            TabKind::Diff {
+                path,
+                section,
+                file,
+                loading_since,
+                error: None,
+                view,
+                scroll: 0,
+                column: 0,
+            },
+        )
+    }
+
     /// A read-only commit view for `detail` and its changed `files`.
     #[must_use]
     pub fn commit(detail: Box<karet_vcs::CommitDetail>, files: Vec<FileView>) -> Self {
@@ -862,7 +765,7 @@ impl Tab {
             TabKind::Image { path, .. } => Some(path),
             #[cfg(feature = "pdf")]
             TabKind::Document { path, .. } => Some(path),
-            TabKind::Diff { file, .. } => Some(&file.change.path),
+            TabKind::Diff { path, .. } => Some(path),
             TabKind::Welcome
             | TabKind::LanguageServers(_)
             | TabKind::Github(_)
@@ -902,7 +805,7 @@ impl Tab {
             TabKind::Hex { .. } => "binary",
             TabKind::Placeholder { .. } => "preview",
             TabKind::LatexPreview { .. } => "latex preview",
-            TabKind::Diff { file, .. } => file.language,
+            TabKind::Diff { file, .. } => file.as_deref().map_or("diff", FileView::language),
             TabKind::StashPreview { .. } => "stash",
             TabKind::Graph { .. } => "graph",
             TabKind::LoadedConfig { .. } => "settings",
@@ -943,7 +846,7 @@ fn tab_kind_path(kind: &TabKind) -> Option<&Path> {
         TabKind::Image { path, .. } => Some(path),
         #[cfg(feature = "pdf")]
         TabKind::Document { path, .. } => Some(path),
-        TabKind::Diff { file, .. } => Some(&file.change.path),
+        TabKind::Diff { path, .. } => Some(path),
         TabKind::Welcome
         | TabKind::LanguageServers(_)
         | TabKind::Github(_)

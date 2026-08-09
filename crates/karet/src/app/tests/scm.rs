@@ -154,7 +154,7 @@
             Some(RequestId(1)),
             SessionEvent::CommitReady {
                 detail: Box::new(commit_detail("aaaaaaa111", "first")),
-                changes: vec![change("a.rs", StatusKind::Modified)],
+                changes: vec![prepared_change("a.rs", StatusKind::Modified)],
             },
         );
         assert!(!app
@@ -163,7 +163,7 @@
     }
 
     #[test]
-    fn closing_while_commit_diffs_prepare_off_thread_stays_closed() {
+    fn late_commit_ready_after_closing_cannot_resurrect_the_tab() {
         let backend = Arc::new(RecordingBackend::new());
         let mut app = app();
         app.backend = Some(backend);
@@ -176,22 +176,24 @@
                 detail: Box::new(commit_detail("aaaaaaa111", "first")),
                 changes: (0..64)
                     .map(|index| {
-                        change(&format!("src/file-{index}.rs"), StatusKind::Modified)
+                        prepared_change(&format!("src/file-{index}.rs"), StatusKind::Modified)
                     })
                     .collect(),
             },
         );
-        assert!(app.pending_commit_preparation.contains_key(&RequestId(1)));
+        assert!(matches!(app.tabs[app.active].kind, TabKind::Commit { .. }));
 
         app.request_close_active_tab();
-
         assert!(!app.all_tabs().any(|tab| tab.view == view));
-        assert!(app.pending_commit_preparation.is_empty());
-        if let Some(rx) = app.prepare_rx.as_mut()
-            && let Ok(result) = rx.try_recv()
-        {
-            app.on_prepare_result(result);
-        }
+
+        // A duplicate (late-queued) answer for the closed view is dropped.
+        app.on_backend_event(
+            Some(RequestId(1)),
+            SessionEvent::CommitReady {
+                detail: Box::new(commit_detail("aaaaaaa111", "first")),
+                changes: vec![prepared_change("a.rs", StatusKind::Modified)],
+            },
+        );
         assert!(!app.all_tabs().any(|tab| tab.view == view));
     }
 
@@ -212,10 +214,9 @@
             Some(RequestId(1)),
             SessionEvent::CommitReady {
                 detail: Box::new(commit_detail("aaaaaaa111", "first")),
-                changes: vec![change("a.rs", StatusKind::Modified)],
+                changes: vec![prepared_change("a.rs", StatusKind::Modified)],
             },
         );
-        finish_preparation(&mut app);
 
         assert_eq!(app.tabs[app.active].view, view);
         assert_eq!(app.tabs[app.active].title, "Commit aaaaaaa");
@@ -275,10 +276,9 @@
             Some(RequestId(1)),
             SessionEvent::CommitReady {
                 detail: Box::new(commit_detail("aaaaaaa111", "first")),
-                changes: vec![change("a.rs", StatusKind::Modified)],
+                changes: vec![prepared_change("a.rs", StatusKind::Modified)],
             },
         );
-        finish_preparation(&mut app);
 
         match &app.tabs[app.active].kind {
             TabKind::Commit {
@@ -388,7 +388,12 @@
         );
         assert_eq!(app.scm.staged_count, 1);
         assert_eq!(app.scm.changes.len(), 3);
-        assert_eq!(app.scm.change_line_stats, vec![(1, 0); 3]);
+        assert!(
+            app.scm
+                .changes
+                .iter()
+                .all(|change| (change.added, change.removed) == (1, 0))
+        );
         assert_eq!(app.scm.changes[0].status, StatusKind::Added);
         assert_eq!(app.scm.selection.anchor(), None);
         assert_eq!(app.scm.selection.len(), 3);
@@ -608,89 +613,6 @@
     }
 
     #[test]
-    fn enter_on_a_focused_diff_opens_the_file_at_its_first_changed_line() {
-        let dir = test_dir("diff-enter-into-file");
-        write_file(&dir, "a.rs", b"fn a() {}\nfn added() {}\nfn c() {}\n");
-        let changed = FileChange {
-            path: PathBuf::from("a.rs"),
-            old_path: None,
-            status: StatusKind::Modified,
-            is_binary: false,
-            old: "fn a() {}\nfn c() {}\n".to_string(),
-            new: "fn a() {}\nfn added() {}\nfn c() {}\n".to_string(),
-        };
-        let mut app = App::new(dir.clone(), Vec::new(), vec![changed], false);
-        app.sidebar_panel = SidebarPanel::SourceControl;
-        app.focus = Focus::Sidebar;
-        app.dispatch(Command::SidebarActivate); // materialize + focus the diff
-        assert_eq!(app.focus_target(), FocusTarget::DiffEditor);
-
-        // Enter on the focused diff drops into the file, caret on the first
-        // changed line (line 2, 0-based 1) — keyboard parity with the mouse.
-        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(
-            matches!(app.tabs[app.active].kind, TabKind::Code { .. }),
-            "a normal, editable editor tab"
-        );
-        assert_eq!(
-            app.tabs[app.active].path().map(canonical),
-            Some(canonical(&dir.join("a.rs")))
-        );
-        assert_eq!(app.focus, Focus::Editor);
-        assert_eq!(
-            app.tabs[app.active].editor.cursor().line,
-            1,
-            "caret lands on the first changed line"
-        );
-        assert_eq!(app.tabs.len(), 2, "the diff stays open alongside the file");
-
-        // Enter again from the diff re-focuses the existing file tab — never a
-        // duplicate.
-        let file_idx = app.active;
-        let diff_idx = app
-            .tabs
-            .iter()
-            .position(Tab::is_diff)
-            .expect("the diff tab is still open");
-        app.select_tab(diff_idx);
-        app.dispatch(Command::OpenDiffFile);
-        assert_eq!(app.tabs.len(), 2, "no duplicate editor tab");
-        assert_eq!(app.active, file_idx);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn enter_on_a_deleted_files_diff_reports_instead_of_opening() {
-        let dir = test_dir("diff-enter-deleted");
-        let deleted = FileChange {
-            path: PathBuf::from("gone.rs"),
-            old_path: None,
-            status: StatusKind::Deleted,
-            is_binary: false,
-            old: "fn gone() {}\n".to_string(),
-            new: String::new(),
-        };
-        let mut app = App::new(dir.clone(), Vec::new(), vec![deleted], false);
-        app.sidebar_panel = SidebarPanel::SourceControl;
-        app.focus = Focus::Sidebar;
-        app.dispatch(Command::SidebarActivate);
-        assert_eq!(app.focus_target(), FocusTarget::DiffEditor);
-
-        // The file is gone from the working tree: Enter degrades to a status
-        // message — no dead tab, no panic.
-        app.dispatch(Command::OpenDiffFile);
-        assert_eq!(app.tabs.len(), 1, "nothing new opens for a deleted file");
-        assert!(app.active_is_diff(), "the diff stays active");
-        assert!(
-            app.status.as_deref().is_some_and(|s| s.contains("gone.rs")),
-            "a status message names the missing file"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn scm_double_click_materializes_the_previewed_diff_without_duplicating() {
         let mut app = app();
         app.sidebar_panel = SidebarPanel::SourceControl;
@@ -850,13 +772,13 @@
             "a.rs",
             b"<<<<<<< HEAD\nfn current() {}\n=======\nfn incoming() {}\n>>>>>>> incoming\n",
         );
-        let conflicted = FileChange {
+        let conflicted = ChangeSummary {
             path: PathBuf::from("a.rs"),
             old_path: None,
             status: StatusKind::Conflicted,
             is_binary: false,
-            old: String::new(),
-            new: String::new(),
+            added: 0,
+            removed: 0,
         };
         let backend = Arc::new(RecordingBackend::new());
         let mut app = App::new(dir.clone(), Vec::new(), vec![conflicted], false);

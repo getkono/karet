@@ -91,7 +91,7 @@ published to crates.io (everything else is `publish = false`).
 | `karet-treesitter` | engine | ✓ | shared tree-sitter parse host (parser pool, incremental trees, queries, **language injection** → layered trees) |
 | `karet-syntax` | engine | ✓ | tree-sitter highlighting (incl. **injected** languages), fold regions, semantic blocks, symbol outlines, inline macros |
 | `karet-theme` | engine | ✓ | token palette, VS Code JSON theme loader (`vscode` feat), ratatui styles + contrast (`view` feat) |
-| `karet-diff` | engine | ✓ | pure text diffing: histogram line diff, side-by-side alignment, intra-line highlights, unified-diff parse, per-hunk staging — no presentation |
+| `karet-diff` | engine | ✓ | pure text diffing: histogram line diff, side-by-side alignment, intra-line highlights, unified-diff parse, per-hunk staging, prepared-diff model (`PreparedDiff`); ratatui painters behind `view` |
 | `karet-graph` | engine | — | DAG lane-assignment layout + rail renderer (`view` feat) for the commit graph & code visualizations |
 | `karet-markdown` | engine | — | markdown parse → wrap → render model, with source-line anchors for scroll sync; `highlight` colours code fences, `view` paints ratatui (incl. a scrollable `MarkdownView`) |
 | `karet-cbor` | engine | — | CBOR decode/encode ↔ editable diagnostic-notation text (via `ciborium`); no presentation |

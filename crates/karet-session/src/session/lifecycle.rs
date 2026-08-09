@@ -71,6 +71,7 @@ impl Session {
             config.lsp_registry_dir.clone(),
             config.process_supervisor.clone(),
         );
+        let diff_syntax = config.diff_syntax;
         let mut session = Self {
             config,
             config_manager,
@@ -93,7 +94,7 @@ impl Session {
             search_worker,
             vcs_cancellations,
             latex_worker,
-            last_vcs: None,
+            diff_syntax,
             last_head,
             swaps,
             pending_swaps,

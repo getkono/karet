@@ -233,125 +233,65 @@ impl App {
         }
     }
 
-    /// Ask the backend for the active file's content at `rev`; the answering
-    /// [`SessionEvent::FileAtRev`] opens the diff tab (old = content at `rev`,
-    /// new = the working text captured now — the live buffer for a code tab, the
-    /// file on disk otherwise). `label` names the old side in the tab title.
+    /// Reserve a diff tab and ask the backend to diff the active file at `rev`
+    /// against its current content (the live buffer for a code tab, the file on
+    /// disk otherwise); the answering [`SessionEvent::DiffPrepared`] fills the
+    /// tab. `label` names the old side in the tab title.
     pub(super) fn open_changes_with(&mut self, rev: &str, label: &str) {
         let Some((path, live)) = self.active_file_and_text() else {
             self.status = Some("open changes: no file".to_string());
             return;
         };
         let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
-        self.pending_open_changes
-            .insert((abs.clone(), rev.to_string()), (label.to_string(), live));
-        self.send_command(SessionCommand::FileAtRev {
-            path: abs,
-            rev: rev.to_string(),
-        });
-    }
-
-    /// Complete a parked Open Changes request with the backend's answer.
-    pub(super) fn apply_file_at_rev(
-        &mut self,
-        path: PathBuf,
-        rev: String,
-        content: Result<Option<String>, String>,
-    ) {
-        let Some((label, live)) = self.pending_open_changes.remove(&(path.clone(), rev)) else {
-            return; // stale: the request's tab intent is gone
-        };
-        let old_text = match content {
-            Ok(Some(text)) => Some(text),
-            Ok(None) => {
-                self.status = Some(format!("open changes: file does not exist at {label}"));
-                return;
-            },
-            Err(reason) => {
-                self.notify(
-                    Severity::Error,
-                    NotificationKind::Vcs,
-                    format!("open changes: {reason}"),
-                );
-                return;
-            },
-        };
-        let new_text = live.or_else(|| {
-            std::fs::read(&path)
-                .ok()
-                .and_then(|b| String::from_utf8(b).ok())
-        });
-        // Either side non-text marks the change binary (both texts then empty),
-        // matching the FileChange::is_binary contract.
-        let is_binary = old_text.is_none() || new_text.is_none();
-        let name = path
+        let name = abs
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("file")
             .to_string();
-        let change = FileChange {
-            path,
-            old_path: None,
-            status: StatusKind::Modified,
-            is_binary,
-            old: if is_binary {
-                String::new()
-            } else {
-                old_text.unwrap_or_default()
-            },
-            new: if is_binary {
-                String::new()
-            } else {
-                new_text.unwrap_or_default()
-            },
-        };
-        let file = FileView::new(change, Section::Working, self.syntax);
-        self.push_tab(Tab::new(
+        self.push_tab(Tab::diff(
             format!("{name} ({label} \u{2194} working)"),
-            TabKind::Diff {
-                file: Box::new(file),
-                view: self.diff_layout,
-                scroll: 0,
-                column: 0,
-            },
+            abs.clone(),
+            Section::Working,
+            None,
+            self.diff_layout,
         ));
+        let view = self.tabs[self.active].view;
+        match self.send_command_id(SessionCommand::DiffWithRev {
+            path: abs,
+            rev: rev.to_string(),
+            live,
+        }) {
+            Some(request) => {
+                self.pending_prepared_diffs.insert(request, view);
+            },
+            None => self.fail_diff_tab(view, "diff backend is unavailable"),
+        }
     }
 
     /// How many commits the With Revision picker lists at most.
     const OPEN_CHANGES_HISTORY_CAP: usize = 200;
 
-    /// Open the diff-target picker over the active file's commit history
-    /// (newest first, capped), for "Open Changes: With Revision…".
-    ///
-    /// NOTE: the two picker flows below still read the repository directly —
-    /// short, capped reads behind an explicit picker action. They are the last
-    /// direct `karet-vcs` reads in the app and migrate behind the seam with the
-    /// diff-preparation move.
+    /// Ask the backend for the active file's commit history (newest first,
+    /// capped); the answering [`SessionEvent::FileHistory`] opens the
+    /// diff-target picker, for "Open Changes: With Revision…".
     pub(super) fn open_changes_pick_revision(&mut self) {
         let Some((path, _)) = self.active_file_and_text() else {
             self.status = Some("open changes: no file".to_string());
             return;
         };
         let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
-        let start = abs.parent().unwrap_or(&abs);
-        let repo = match karet_vcs::Repository::discover(start) {
-            Ok(repo) => repo,
-            Err(_) => {
-                self.status = Some("open changes: not in a git repository".to_string());
-                return;
-            },
-        };
-        let commits = match repo.file_history(&abs, 0, Self::OPEN_CHANGES_HISTORY_CAP) {
-            Ok(commits) => commits,
-            Err(e) => {
-                self.notify(
-                    Severity::Error,
-                    NotificationKind::Vcs,
-                    format!("open changes: {e}"),
-                );
-                return;
-            },
-        };
+        self.pending_history_picker = self.send_command_id(SessionCommand::FileHistory {
+            path: abs,
+            skip: 0,
+            limit: Self::OPEN_CHANGES_HISTORY_CAP,
+        });
+        if self.pending_history_picker.is_none() {
+            self.status = Some("open changes: backend is unavailable".to_string());
+        }
+    }
+
+    /// Open the With Revision diff-target picker from the backend's file history.
+    pub(super) fn apply_history_picker(&mut self, commits: Vec<karet_vcs::Commit>) {
         if commits.is_empty() {
             self.status = Some("open changes: no commits touch this file".to_string());
             return;
@@ -375,39 +315,23 @@ impl App {
         self.overlay = Some(Overlay::diff_target("Open Changes: With Revision", items));
     }
 
-    /// Open the diff-target picker over the repository's local branches, for
+    /// Open the diff-target picker over the workspace repository's local
+    /// branches (from the latest [`RepositorySnapshot`]), for
     /// "Open Changes: With Branch…".
     pub(super) fn open_changes_pick_branch(&mut self) {
-        let Some((path, _)) = self.active_file_and_text() else {
-            self.status = Some("open changes: no file".to_string());
+        let Some(snapshot) = self.scm.repository.as_ref() else {
+            // Fetch the snapshot so a retry (or the SCM panel) has it.
+            self.request_repository_snapshot();
+            self.status = Some("open changes: loading branches, try again".to_string());
             return;
         };
-        let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
-        let start = abs.parent().unwrap_or(&abs);
-        let repo = match karet_vcs::Repository::discover(start) {
-            Ok(repo) => repo,
-            Err(_) => {
-                self.status = Some("open changes: not in a git repository".to_string());
-                return;
-            },
-        };
-        let branches = match repo.branches() {
-            Ok(branches) => branches,
-            Err(e) => {
-                self.notify(
-                    Severity::Error,
-                    NotificationKind::Vcs,
-                    format!("open changes: {e}"),
-                );
-                return;
-            },
-        };
-        if branches.is_empty() {
+        if snapshot.branches.is_empty() {
             self.status = Some("open changes: no branches".to_string());
             return;
         }
-        let items = branches
-            .into_iter()
+        let items = snapshot
+            .branches
+            .iter()
             .map(|b| {
                 let display = if b.is_head {
                     format!("{} (current)", b.name)
@@ -416,7 +340,7 @@ impl App {
                 };
                 let target = DiffTarget {
                     rev: b.name.clone(),
-                    label: b.name,
+                    label: b.name.clone(),
                 };
                 (display, target)
             })

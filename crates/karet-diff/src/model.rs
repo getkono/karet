@@ -7,6 +7,7 @@
 
 /// Whether a [`DiffLine`] is unchanged context, an addition, or a removal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LineKind {
     /// A line present and unchanged on both sides.
     Context,
@@ -18,6 +19,7 @@ pub enum LineKind {
 
 /// One line within a [`Hunk`], tagged with its kind and 1-based line numbers.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DiffLine {
     /// Whether this line is context, an addition, or a removal.
     pub kind: LineKind,
@@ -31,6 +33,7 @@ pub struct DiffLine {
 
 /// A contiguous block of changes with surrounding context — a unified-diff hunk.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Hunk {
     /// The 1-based starting line on the old side (`0` when the old side is empty).
     pub old_start: u32,
@@ -82,6 +85,7 @@ impl Hunk {
 
 /// The change status of a whole file.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FileStatus {
     /// The file was added (the old side is empty).
     Added,
@@ -98,6 +102,7 @@ pub enum FileStatus {
 
 /// A single file's diff: its identity, status, and [`Hunk`]s.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FileDiff {
     /// The file path (the new path for renames).
     pub path: String,
@@ -113,6 +118,7 @@ pub struct FileDiff {
 
 /// A multi-file diff, as produced by [`crate::parse`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Diff {
     /// The per-file diffs, in order.
     pub files: Vec<FileDiff>,

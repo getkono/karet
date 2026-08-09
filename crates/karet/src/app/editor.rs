@@ -426,15 +426,19 @@ impl App {
             .and_then(|n| n.to_str())
             .unwrap_or("diff")
             .to_string();
-        let file = FileView::new(change, section, self.syntax);
         if let Some(tab) = self.tabs.get_mut(self.active) {
             tab.title = title;
             tab.kind = TabKind::Diff {
-                file: Box::new(file),
+                path: change.path.clone(),
+                section,
+                file: None,
+                loading_since: Some(Instant::now()),
+                error: None,
                 view,
                 scroll: 0,
                 column: 0,
             };
+            self.request_change_diff(change.path, section);
         }
     }
 
@@ -445,11 +449,15 @@ impl App {
     /// gracefully when the file is gone from the working tree (a deleted change):
     /// a status message, never a dead tab.
     pub(super) fn open_diff_file(&mut self) {
-        let Some(TabKind::Diff { file, .. }) = self.tabs.get(self.active).map(|t| &t.kind) else {
+        let Some(TabKind::Diff { path, file, .. }) = self.tabs.get(self.active).map(|t| &t.kind)
+        else {
             return;
         };
-        let line = file.first_changed_line().unwrap_or(1);
-        let path = file.change.path.clone();
+        let line = file
+            .as_ref()
+            .and_then(|file| file.first_changed_line())
+            .unwrap_or(1);
+        let path = path.clone();
         // Change paths come from the VCS repo-relative; resolve against the
         // workspace root so the file opens (and dedups) like any explorer open.
         let abs = if path.is_absolute() {

@@ -23,15 +23,57 @@ use crate::cancellation::Cancellation;
 
 mod blame;
 mod conflict;
+mod history;
+mod prepare;
 
 use blame::BlameCache;
 use blame::blame;
 #[cfg(test)]
 use blame::map_attribution;
 use conflict::run_merge_conflict;
+use history::run_commit_detail;
+use history::run_file_history;
+use history::run_log;
+use history::run_range_changes;
+use prepare::Status;
+use prepare::compute_status;
+use prepare::prepare_changes;
+use prepare::run_diff_with_rev;
+use prepare::run_status;
 
 /// A unit of work sent by the session actor to its serialized VCS worker.
 pub(crate) enum VcsJob {
+    /// Recompute the source-control status and emit it. A requested refresh
+    /// (`id` set) always emits; a spontaneous one (from a filesystem event)
+    /// emits only when the status changed, collapsing event bursts and
+    /// absorbing the feedback from the session's own index writes.
+    Status { id: Option<RequestId> },
+    /// Prepare one status entry's displayable diff.
+    PrepareChange {
+        id: RequestId,
+        path: PathBuf,
+        staged: bool,
+        syntax: bool,
+        cancel: Cancellation,
+    },
+    /// Prepare an ad-hoc diff of two provided texts.
+    PrepareTexts {
+        id: RequestId,
+        path: PathBuf,
+        old: String,
+        new: String,
+        syntax: bool,
+        cancel: Cancellation,
+    },
+    /// Diff one file at a revision against its current content.
+    DiffWithRev {
+        id: RequestId,
+        path: PathBuf,
+        rev: String,
+        live: Option<String>,
+        syntax: bool,
+        cancel: Cancellation,
+    },
     /// Load the current repository snapshot.
     Snapshot { id: RequestId, cancel: Cancellation },
     /// Compute compact status for one exact nested repository path.
@@ -66,13 +108,6 @@ pub(crate) enum VcsJob {
         path: PathBuf,
         cancel: Cancellation,
     },
-    /// Read one file's content at a revision.
-    FileAtRev {
-        id: RequestId,
-        path: PathBuf,
-        rev: String,
-        cancel: Cancellation,
-    },
     /// Fetch a page of repository history.
     Log {
         id: RequestId,
@@ -84,12 +119,14 @@ pub(crate) enum VcsJob {
     CommitDetail {
         id: RequestId,
         rev: String,
+        syntax: bool,
         cancel: Cancellation,
     },
     /// Compute a comparison between revisions.
     RangeChanges {
         id: RequestId,
         spec: RangeSpec,
+        syntax: bool,
         cancel: Cancellation,
     },
     /// Fetch one file's history.
@@ -116,8 +153,10 @@ pub(crate) fn spawn(
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut blame_cache = BlameCache::new();
+        // The last emitted status, for collapsing spontaneous no-op refreshes.
+        let mut last_status = None;
         while let Ok(job) = rx.recv() {
-            run(&root, &events, &mut blame_cache, job);
+            run(&root, &events, &mut blame_cache, &mut last_status, job);
         }
     });
     tx
@@ -127,9 +166,84 @@ fn run(
     root: &Option<PathBuf>,
     events: &UnboundedSender<(Option<RequestId>, Event)>,
     blame_cache: &mut BlameCache,
+    last_status: &mut Option<Status>,
     job: VcsJob,
 ) {
     match job {
+        VcsJob::Status { id } => run_status(root, events, last_status, id),
+        VcsJob::PrepareChange {
+            id,
+            path,
+            staged,
+            syntax,
+            cancel,
+        } => {
+            let result = repository(root).and_then(|repo| {
+                let selection = if staged {
+                    Selection::Staged
+                } else {
+                    Selection::Unstaged
+                };
+                let changes = repo
+                    .changes(selection, Some(&path))
+                    .map_err(|error| error.to_string())?;
+                changes
+                    .into_iter()
+                    .find(|change| change.path == path)
+                    .ok_or_else(|| {
+                        let section = if staged { "staged" } else { "working-tree" };
+                        format!("no {section} changes for {}", path.display())
+                    })
+            });
+            let result =
+                result.map(|change| Box::new(crate::diff_prepare::prepare_change(change, syntax)));
+            emit_cancellable(
+                events,
+                id,
+                &cancel,
+                Event::ChangePrepared {
+                    path,
+                    staged,
+                    result,
+                },
+            );
+        },
+        VcsJob::PrepareTexts {
+            id,
+            path,
+            old,
+            new,
+            syntax,
+            cancel,
+        } => {
+            let file = Box::new(crate::diff_prepare::prepare_texts(
+                path.clone(),
+                &old,
+                &new,
+                false,
+                syntax,
+            ));
+            emit_cancellable(
+                events,
+                id,
+                &cancel,
+                Event::DiffPrepared {
+                    path,
+                    result: Ok(file),
+                },
+            );
+        },
+        VcsJob::DiffWithRev {
+            id,
+            path,
+            rev,
+            live,
+            syntax,
+            cancel,
+        } => {
+            let result = run_diff_with_rev(&path, &rev, live, syntax);
+            emit_cancellable(events, id, &cancel, Event::DiffPrepared { path, result });
+        },
         VcsJob::Snapshot { id, cancel } => {
             match repository(root).and_then(|repo| snapshot(&repo)) {
                 Ok(snapshot) => emit_cancellable(
@@ -170,16 +284,12 @@ fn run(
             let result = repository(root).and_then(|repo| {
                 let outcome = execute(&repo, &action)?;
                 let snapshot = snapshot(&repo)?;
-                let staged = repo
-                    .changes(Selection::Staged, None)
-                    .map_err(|error| error.to_string())?;
-                let working = repo
-                    .changes(Selection::Unstaged, None)
-                    .map_err(|error| error.to_string())?;
-                Ok((outcome, snapshot, (staged, working)))
+                let status = compute_status(&repo);
+                Ok((outcome, snapshot, status))
             });
             match result {
                 Ok((outcome, snapshot, (staged, working))) => {
+                    *last_status = Some((staged.clone(), working.clone()));
                     emit(events, id, Event::VcsStatus { staged, working });
                     emit(
                         events,
@@ -256,26 +366,27 @@ fn run(
             let facts = remote_facts(&path);
             emit_cancellable(events, id, &cancel, Event::RemoteFacts { path, facts });
         },
-        VcsJob::FileAtRev {
-            id,
-            path,
-            rev,
-            cancel,
-        } => {
-            let content = file_at_rev(&path, &rev);
-            emit_cancellable(events, id, &cancel, Event::FileAtRev { path, rev, content });
-        },
         VcsJob::Log {
             id,
             skip,
             limit,
             cancel,
         } => run_log(root, events, id, skip, limit, &cancel),
-        VcsJob::CommitDetail { id, rev, cancel } => {
-            run_commit_detail(root, events, id, &rev, &cancel);
+        VcsJob::CommitDetail {
+            id,
+            rev,
+            syntax,
+            cancel,
+        } => {
+            run_commit_detail(root, events, id, &rev, syntax, &cancel);
         },
-        VcsJob::RangeChanges { id, spec, cancel } => {
-            run_range_changes(root, events, id, &spec, &cancel);
+        VcsJob::RangeChanges {
+            id,
+            spec,
+            syntax,
+            cancel,
+        } => {
+            run_range_changes(root, events, id, &spec, syntax, &cancel);
         },
         VcsJob::FileHistory {
             id,
@@ -287,197 +398,6 @@ fn run(
         VcsJob::MergeConflict { id, path, cancel } => {
             run_merge_conflict(root, events, id, path, &cancel);
         },
-    }
-}
-
-fn run_log(
-    root: &Option<PathBuf>,
-    events: &UnboundedSender<(Option<RequestId>, Event)>,
-    id: RequestId,
-    skip: usize,
-    limit: usize,
-    cancel: &Cancellation,
-) {
-    if cancel.is_cancelled() {
-        return;
-    }
-    let result = repository(root).and_then(|repo| {
-        let mut commits = repo
-            .log(skip, limit.saturating_add(1))
-            .map_err(|error| error.to_string())?;
-        let has_more = commits.len() > limit;
-        commits.truncate(limit);
-        Ok((commits, has_more))
-    });
-    match result {
-        Ok((commits, has_more)) => emit_cancellable(
-            events,
-            id,
-            cancel,
-            Event::VcsLog {
-                skip,
-                commits,
-                has_more,
-            },
-        ),
-        Err(message) => notify_cancellable(events, id, cancel, message),
-    }
-}
-
-fn run_commit_detail(
-    root: &Option<PathBuf>,
-    events: &UnboundedSender<(Option<RequestId>, Event)>,
-    id: RequestId,
-    rev: &str,
-    cancel: &Cancellation,
-) {
-    if cancel.is_cancelled() {
-        return;
-    }
-    let Ok(repo) = repository(root) else {
-        return;
-    };
-    let detail = match repo.commit_detail(rev) {
-        Ok(detail) => detail,
-        Err(error) => {
-            notify_cancellable(events, id, cancel, error.to_string());
-            return;
-        },
-    };
-    emit_cancellable(
-        events,
-        id,
-        cancel,
-        Event::CommitDetailReady {
-            detail: Box::new(detail.clone()),
-        },
-    );
-    if cancel.is_cancelled() {
-        return;
-    }
-    match repo.commit_changes(rev) {
-        Ok(changes) => emit_cancellable(
-            events,
-            id,
-            cancel,
-            Event::CommitReady {
-                detail: Box::new(detail),
-                changes,
-            },
-        ),
-        Err(error) => notify_cancellable(events, id, cancel, error.to_string()),
-    }
-}
-
-fn run_range_changes(
-    root: &Option<PathBuf>,
-    events: &UnboundedSender<(Option<RequestId>, Event)>,
-    id: RequestId,
-    spec: &RangeSpec,
-    cancel: &Cancellation,
-) {
-    if cancel.is_cancelled() {
-        return;
-    }
-    let outcome = repository(root).and_then(|repo| {
-        let (base_rev, head_rev, merge_base, base_label, head_label) = match spec {
-            RangeSpec::Unpushed => {
-                let upstream = repo
-                    .upstream_of_head()
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| {
-                        "no upstream branch is set for the current branch".to_string()
-                    })?;
-                (
-                    upstream.clone(),
-                    "HEAD".to_string(),
-                    true,
-                    upstream,
-                    "HEAD".to_string(),
-                )
-            },
-            RangeSpec::SinceBase { base } => {
-                let base = base
-                    .clone()
-                    .or_else(|| repo.default_base_branch())
-                    .ok_or_else(|| {
-                        "could not determine a base branch; use a range like main...HEAD"
-                            .to_string()
-                    })?;
-                (
-                    base.clone(),
-                    "HEAD".to_string(),
-                    true,
-                    base,
-                    "HEAD".to_string(),
-                )
-            },
-            RangeSpec::Between {
-                base,
-                head,
-                merge_base,
-            } => (
-                base.clone(),
-                head.clone(),
-                *merge_base,
-                base.clone(),
-                head.clone(),
-            ),
-        };
-        let changes = repo
-            .range_changes(&base_rev, &head_rev, merge_base)
-            .map_err(|error| error.to_string())?;
-        Ok((base_label, head_label, merge_base, changes))
-    });
-    match outcome {
-        Ok((base_label, head_label, merge_base, changes)) => emit_cancellable(
-            events,
-            id,
-            cancel,
-            Event::RangeReady {
-                base_label,
-                head_label,
-                merge_base,
-                changes,
-            },
-        ),
-        Err(message) => notify_cancellable(events, id, cancel, message),
-    }
-}
-
-fn run_file_history(
-    root: &Option<PathBuf>,
-    events: &UnboundedSender<(Option<RequestId>, Event)>,
-    id: RequestId,
-    path: PathBuf,
-    skip: usize,
-    limit: usize,
-    cancel: &Cancellation,
-) {
-    if cancel.is_cancelled() {
-        return;
-    }
-    let result = repository(root).and_then(|repo| {
-        let mut commits = repo
-            .file_history(&path, skip, limit.saturating_add(1))
-            .map_err(|error| error.to_string())?;
-        let has_more = commits.len() > limit;
-        commits.truncate(limit);
-        Ok((commits, has_more))
-    });
-    match result {
-        Ok((commits, has_more)) => emit_cancellable(
-            events,
-            id,
-            cancel,
-            Event::FileHistory {
-                path,
-                skip,
-                commits,
-                has_more,
-            },
-        ),
-        Err(message) => notify_cancellable(events, id, cancel, message),
     }
 }
 

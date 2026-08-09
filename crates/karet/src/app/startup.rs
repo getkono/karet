@@ -6,16 +6,14 @@ impl App {
     #[must_use]
     pub fn new(
         root: PathBuf,
-        staged: Vec<FileChange>,
-        working: Vec<FileChange>,
+        staged: Vec<ChangeSummary>,
+        working: Vec<ChangeSummary>,
         syntax: bool,
     ) -> Self {
         let staged_count = staged.len();
         let mut changes = staged;
         changes.extend(working);
-        let change_line_stats = Scm::line_stats(&changes, staged_count);
         let graphics = image::detect_protocol();
-        let (prepare_tx, prepare_rx) = prepare::spawn();
         Self {
             root,
             settings: Settings::default(),
@@ -39,7 +37,6 @@ impl App {
             scm: Scm {
                 selection: ListSelection::new(changes.len()),
                 changes,
-                change_line_stats,
                 staged_count,
                 log: Vec::new(),
                 log_has_more: false,
@@ -54,7 +51,7 @@ impl App {
             remote_facts: HashMap::new(),
             remote_facts_pending: HashSet::new(),
             pending_remote_actions: Vec::new(),
-            pending_open_changes: HashMap::new(),
+            pending_history_picker: None,
             pending_blame: None,
             failed_blame: None,
             pending_pull_requests: None,
@@ -161,11 +158,10 @@ impl App {
             inline_macro_engine: karet_syntax::InlineMacroEngine::new(),
             pending_commit_detail: HashMap::new(),
             latex_previews: HashMap::new(),
-            pending_commit_preparation: HashMap::new(),
+            pending_prepared_diffs: HashMap::new(),
+            pending_startup_diffs: Vec::new(),
             pending_commit_verification: HashMap::new(),
             pending_merge_conflicts: HashMap::new(),
-            prepare_tx,
-            prepare_rx: Some(prepare_rx),
             graph_log_req: None,
             cancelled_requests: HashSet::new(),
             open_docs: HashSet::new(),
@@ -320,12 +316,13 @@ impl App {
     }
 
     /// Open a diff of two arbitrary files as a startup tab (from the `--diff`
-    /// flag): `old` renders as the "before" side and `new` as the "after",
-    /// syntax-aware like any Source-Control diff. `old_text`/`new_text` carry each
-    /// file's content, already read by the caller (which fails fast on an unreadable
-    /// file), with `None` marking non-UTF-8 bytes — either side non-text flags the
-    /// change binary, rendering the standard binary-change placeholder (matching the
-    /// [`FileChange::is_binary`] contract that both texts are then empty).
+    /// flag): `old` renders as the "before" side and `new` as the "after".
+    /// `old_text`/`new_text` carry each file's content, already read by the caller
+    /// (which fails fast on an unreadable file), with `None` marking non-UTF-8
+    /// bytes — either side non-text flags the change binary, rendering the standard
+    /// binary-change placeholder. Text diffs are prepared by the backend: the tab
+    /// is reserved immediately and the `PrepareDiff` command is sent once the
+    /// backend attaches (see [`App::request_pending_startup_diffs`]).
     pub fn open_startup_diff(
         &mut self,
         old: &Path,
@@ -333,24 +330,6 @@ impl App {
         old_text: Option<String>,
         new_text: Option<String>,
     ) {
-        let is_binary = old_text.is_none() || new_text.is_none();
-        let change = FileChange {
-            path: new.to_path_buf(),
-            // The "renamed from" marker only applies when the two sides differ.
-            old_path: (old != new).then(|| old.to_path_buf()),
-            status: StatusKind::Modified,
-            is_binary,
-            old: if is_binary {
-                String::new()
-            } else {
-                old_text.unwrap_or_default()
-            },
-            new: if is_binary {
-                String::new()
-            } else {
-                new_text.unwrap_or_default()
-            },
-        };
         let name = |p: &Path| {
             p.file_name()
                 .and_then(|n| n.to_str())
@@ -363,16 +342,44 @@ impl App {
         } else {
             format!("{old_name} ↔ {new_name}")
         };
-        let file = FileView::new(change, Section::Working, self.syntax);
-        self.push_tab(Tab::new(
-            title,
-            TabKind::Diff {
-                file: Box::new(file),
-                view: self.diff_layout,
-                scroll: 0,
-                column: 0,
+        // A binary pair needs no backend round-trip: the placeholder diff is
+        // trivially constructible here.
+        let file = match (old_text, new_text) {
+            (Some(old_text), Some(new_text)) => {
+                self.push_tab(Tab::diff(
+                    title,
+                    new.to_path_buf(),
+                    Section::Working,
+                    None,
+                    self.diff_layout,
+                ));
+                let view = self.tabs[self.active].view;
+                self.pending_startup_diffs
+                    .push((view, new.to_path_buf(), old_text, new_text));
+                return;
             },
+            _ => Box::new(FileView::new(diffs::binary_prepared_change(new))),
+        };
+        self.push_tab(Tab::diff(
+            title,
+            new.to_path_buf(),
+            Section::Working,
+            Some(file),
+            self.diff_layout,
         ));
+    }
+
+    /// Send the `PrepareDiff` commands for startup two-file diffs. Called once,
+    /// right after the backend attaches (the tabs were reserved at CLI time).
+    pub(super) fn request_pending_startup_diffs(&mut self) {
+        for (view, path, old, new) in std::mem::take(&mut self.pending_startup_diffs) {
+            match self.send_command_id(SessionCommand::PrepareDiff { path, old, new }) {
+                Some(request) => {
+                    self.pending_prepared_diffs.insert(request, view);
+                },
+                None => self.fail_diff_tab(view, "diff backend is unavailable"),
+            }
+        }
     }
 
     /// Dispatch a palette command at startup (from the `--command` flag), after

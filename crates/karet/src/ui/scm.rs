@@ -1,4 +1,4 @@
-use karet_vcs::FileChange;
+use karet_session::ChangeSummary;
 
 use super::*;
 
@@ -182,13 +182,7 @@ pub(super) fn draw_scm_changes(f: &mut Frame, app: &mut App, theme: &Theme, area
         }
         for i in range {
             let change = &app.scm.changes[i];
-            let stats = app
-                .scm
-                .change_line_stats
-                .get(i)
-                .copied()
-                .unwrap_or_default();
-            let item = ListItem::new(change_line(theme, change, stats));
+            let item = ListItem::new(change_line(theme, change, (change.added, change.removed)));
             // Every selected row (a contiguous range or a scattered toggle-set) gets
             // the selection background; the cursor row additionally gets a bold
             // highlight. A hovered-but-unselected row gets the secondary hover accent.
@@ -220,7 +214,7 @@ pub(super) fn draw_scm_changes(f: &mut Frame, app: &mut App, theme: &Theme, area
 
 pub(super) fn change_line(
     theme: &Theme,
-    change: &FileChange,
+    change: &ChangeSummary,
     (added, removed): (usize, usize),
 ) -> Line<'static> {
     let (glyph, role) = status_glyph(change.status);

@@ -40,6 +40,7 @@ karet-filetype = { workspace = true, features = ["serde"] } # classify + serde-r
 karet-cbor = { workspace = true, optional = true } # decode/encode CBOR ↔ editable diagnostic text (feature `cbor`)
 karet-treesitter.workspace = true
 karet-syntax.workspace = true
+karet-diff = { workspace = true, features = ["serde"] } # displayable diffs prepared on the VCS worker
 karet-lsp.workspace = true            # headless
 karet-vcs = { workspace = true, features = ["serde"] }      # headless; writes use the installed git executable
 blameline.workspace = true # current-buffer line blame; workspace disables language features
