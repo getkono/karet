@@ -30,12 +30,11 @@ mod highlight;
 mod latex;
 pub mod local;
 mod lsp;
-pub mod lsp_broker;
 mod lsp_registry;
-pub mod process_supervisor;
 pub mod session;
 mod spell;
 mod vcs_worker;
+#[cfg(feature = "viz")]
 pub mod viz;
 
 pub use api::Command;

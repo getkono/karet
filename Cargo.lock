@@ -2939,6 +2939,7 @@ dependencies = [
  "karet-pdf",
  "karet-search",
  "karet-session",
+ "karet-supervisor",
  "karet-syntax",
  "karet-text",
  "karet-theme",
@@ -3128,6 +3129,7 @@ dependencies = [
  "karet-filetype",
  "karet-github",
  "karet-lsp",
+ "karet-supervisor",
  "karet-syntax",
  "karet-text",
  "karet-treesitter",
@@ -3146,6 +3148,20 @@ dependencies = [
  "tokio",
  "tracing",
  "zip",
+]
+
+[[package]]
+name = "karet-supervisor"
+version = "0.4.0"
+dependencies = [
+ "command-group",
+ "karet-lsp",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -54,6 +54,7 @@ impl Session {
 
     /// Build the workspace package-dependency graph and emit it, or surface a failure
     /// (no lockfile / parse error) as a notification.
+    #[cfg(feature = "viz")]
     pub(super) fn emit_dependency_graph(&mut self, id: RequestId) {
         let Some(root) = self.config.roots.first() else {
             return;
@@ -250,5 +251,19 @@ impl Session {
             });
             self.snapshots.send((doc_id, snapshot)).ok();
         }
+    }
+
+    /// Without the `viz` feature the dependency-graph lens is absent; say so
+    /// instead of silently ignoring the request.
+    #[cfg(not(feature = "viz"))]
+    pub(super) fn emit_dependency_graph(&mut self, id: RequestId) {
+        self.emit(
+            Some(id),
+            Event::Notification {
+                severity: Severity::Error,
+                kind: karet_core::NotificationKind::System,
+                message: "dependency graph support is not compiled in (feature `viz`)".to_string(),
+            },
+        );
     }
 }

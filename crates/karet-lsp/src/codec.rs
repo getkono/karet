@@ -16,11 +16,11 @@ use tokio::io::AsyncWriteExt;
 
 /// The largest message body we will read, guarding against a corrupt or hostile
 /// `Content-Length` allocating unbounded memory.
-pub(crate) const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Framing failures while reading a message.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum CodecError {
+pub enum CodecError {
     /// The underlying stream failed (including EOF mid-message).
     #[error("i/o error on the language-server stream: {0}")]
     Io(#[from] io::Error),
@@ -40,7 +40,7 @@ pub(crate) enum CodecError {
 /// Headers are parsed case-insensitively; unknown headers (e.g. `Content-Type`)
 /// are ignored. Both `\r\n` and bare `\n` line endings are accepted. EOF in the
 /// middle of a message (headers or body) is a [`CodecError::Io`] error.
-pub(crate) async fn read_frame<R>(reader: &mut R) -> Result<Option<Vec<u8>>, CodecError>
+pub async fn read_frame<R>(reader: &mut R) -> Result<Option<Vec<u8>>, CodecError>
 where
     R: AsyncBufRead + Unpin,
 {
@@ -86,7 +86,7 @@ where
 }
 
 /// Write `body` as one framed message and flush.
-pub(crate) async fn write_frame<W>(writer: &mut W, body: &[u8]) -> io::Result<()>
+pub async fn write_frame<W>(writer: &mut W, body: &[u8]) -> io::Result<()>
 where
     W: AsyncWrite + Unpin,
 {

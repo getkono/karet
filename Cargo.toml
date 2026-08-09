@@ -52,6 +52,7 @@ karet-editor     = { path = "crates/karet-editor", version = "0.4.0" }
 karet-fileview   = { path = "crates/karet-fileview", version = "0.4.0" }
 karet-pdf        = { path = "crates/karet-pdf", version = "0.4.0" }
 karet-session    = { path = "crates/karet-session" }
+karet-supervisor = { path = "crates/karet-supervisor" }
 karet-watch      = { path = "crates/karet-watch" }
 karet-graph      = { path = "crates/karet-graph" }
 karet-github     = { path = "crates/karet-github" }

@@ -107,7 +107,7 @@ pub struct SessionConfig {
     /// user data directory ([`crate::backup::default_swap_dir`]); left `None` (as in
     /// tests) the session keeps no backups and never touches the user's data dir.
     pub swap_dir: Option<PathBuf>,
-    /// Executable that can enter [`crate::process_supervisor`] mode.
+    /// Executable that can enter [`karet_supervisor::supervisor`] mode.
     ///
     /// The karet application supplies its own current executable. `None` is the
     /// safe headless/test default: external language servers are not spawned
@@ -141,6 +141,7 @@ enum DocFormat {
     Text,
     /// CBOR: the buffer holds diagnostic-notation text; disk holds CBOR bytes.
     /// Decoded on open and re-encoded on save.
+    #[cfg(feature = "cbor")]
     Cbor,
 }
 
@@ -168,21 +169,24 @@ fn load_document(path: &Path) -> Result<(TextBuffer, DocFormat), DocumentLoadErr
         },
         Err(error) => return Err(LoadError::Io(error.to_string()).into()),
     };
-    let head = &bytes[..bytes.len().min(CLASSIFY_HEAD)];
     // Format detection ignores the size guard: once the session is asked to open a
     // document it must decode it correctly regardless of size (the guard is an
     // app-level *routing* choice), so a large CBOR still decodes rather than being
     // mistaken for plain text.
-    if classify_ignoring_size(path, head) == FileKind::Cbor {
-        let text = karet_cbor::decode_to_text(&bytes).map_err(|e| LoadError::Io(e.to_string()))?;
-        let mut buffer = TextBuffer::from_text(&text);
-        buffer.record_disk_state(path, &bytes);
-        Ok((buffer, DocFormat::Cbor))
-    } else {
-        let mut buffer = TextBuffer::from_bytes(&bytes)?;
-        buffer.record_disk_state(path, &bytes);
-        Ok((buffer, DocFormat::Text))
+    #[cfg(feature = "cbor")]
+    {
+        let head = &bytes[..bytes.len().min(CLASSIFY_HEAD)];
+        if classify_ignoring_size(path, head) == FileKind::Cbor {
+            let text =
+                karet_cbor::decode_to_text(&bytes).map_err(|e| LoadError::Io(e.to_string()))?;
+            let mut buffer = TextBuffer::from_text(&text);
+            buffer.record_disk_state(path, &bytes);
+            return Ok((buffer, DocFormat::Cbor));
+        }
     }
+    let mut buffer = TextBuffer::from_bytes(&bytes)?;
+    buffer.record_disk_state(path, &bytes);
+    Ok((buffer, DocFormat::Text))
 }
 
 fn resolve_document_settings(
@@ -257,6 +261,7 @@ fn save_document(doc: &mut Document) -> Result<(), TextError> {
     let result = match (doc.format, doc.must_create) {
         (DocFormat::Text, false) => doc.buffer.save(&doc.path).map(|_| ()),
         (DocFormat::Text, true) => doc.buffer.save_new(&doc.path).map(|_| ()),
+        #[cfg(feature = "cbor")]
         (DocFormat::Cbor, must_create) => {
             let text = doc.buffer.text();
             let bytes =
@@ -447,16 +452,15 @@ impl Session {
             Command::GenerateCommitMessage => self.generate_commit_message(id),
             Command::RefreshVcs => self.emit_vcs_status(Some(id)),
             Command::RepositorySnapshot => {
-                let cancel = self.vcs_cancellations.register(id);
-                let _ = self
-                    .vcs_worker
-                    .send(crate::vcs_worker::VcsJob::Snapshot { id, cancel });
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::Snapshot {
+                    id,
+                    cancel,
+                });
             },
             Command::NestedRepositoryStatus { path } => {
-                let cancel = self.vcs_cancellations.register(id);
-                let _ = self
-                    .vcs_worker
-                    .send(crate::vcs_worker::VcsJob::NestedRepositoryStatus { id, path, cancel });
+                self.submit_vcs(id, |id, cancel| {
+                    crate::vcs_worker::VcsJob::NestedRepositoryStatus { id, path, cancel }
+                });
             },
             Command::VcsAction { action } => {
                 self.emit(
@@ -474,21 +478,17 @@ impl Session {
                 page,
                 per_page,
             } => {
-                let cancel = self.vcs_cancellations.register(id);
-                let _ = self
-                    .vcs_worker
-                    .send(crate::vcs_worker::VcsJob::PullRequests {
-                        id,
-                        remote,
-                        page,
-                        per_page,
-                        cancel,
-                    });
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::PullRequests {
+                    id,
+                    remote,
+                    page,
+                    per_page,
+                    cancel,
+                });
             },
             Command::Blame { doc, version, line } => self.request_blame(id, doc, version, line),
             Command::VcsLog { skip, limit } => {
-                let cancel = self.vcs_cancellations.register(id);
-                let _ = self.vcs_worker.send(crate::vcs_worker::VcsJob::Log {
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::Log {
                     id,
                     skip,
                     limit,
@@ -496,34 +496,34 @@ impl Session {
                 });
             },
             Command::CommitDetail { rev } => {
-                let cancel = self.vcs_cancellations.register(id);
-                let _ = self
-                    .vcs_worker
-                    .send(crate::vcs_worker::VcsJob::CommitDetail { id, rev, cancel });
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::CommitDetail {
+                    id,
+                    rev,
+                    cancel,
+                });
             },
             Command::RangeChanges { spec } => {
-                let cancel = self.vcs_cancellations.register(id);
-                let _ = self
-                    .vcs_worker
-                    .send(crate::vcs_worker::VcsJob::RangeChanges { id, spec, cancel });
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::RangeChanges {
+                    id,
+                    spec,
+                    cancel,
+                });
             },
             Command::MergeConflict { path } => {
-                let cancel = self.vcs_cancellations.register(id);
-                let _ = self
-                    .vcs_worker
-                    .send(crate::vcs_worker::VcsJob::MergeConflict { id, path, cancel });
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::MergeConflict {
+                    id,
+                    path,
+                    cancel,
+                });
             },
             Command::FileHistory { path, skip, limit } => {
-                let cancel = self.vcs_cancellations.register(id);
-                let _ = self
-                    .vcs_worker
-                    .send(crate::vcs_worker::VcsJob::FileHistory {
-                        id,
-                        path,
-                        skip,
-                        limit,
-                        cancel,
-                    });
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::FileHistory {
+                    id,
+                    path,
+                    skip,
+                    limit,
+                    cancel,
+                });
             },
             Command::FetchCommitVerification { hash } => self.fetch_commit_verification(id, hash),
             #[cfg(feature = "github")]
@@ -634,6 +634,17 @@ impl Session {
     }
 
     // --- source control ---------------------------------------------------
+
+    /// Register a cancellation for `id` and hand the worker a job built from it —
+    /// the single submission shape for every cancellable VCS request.
+    fn submit_vcs(
+        &self,
+        id: RequestId,
+        make: impl FnOnce(RequestId, crate::cancellation::Cancellation) -> crate::vcs_worker::VcsJob,
+    ) {
+        let cancel = self.vcs_cancellations.register(id);
+        let _ = self.vcs_worker.send(make(id, cancel));
+    }
 
     fn request_blame(&self, id: RequestId, doc: DocumentId, version: u64, line: u32) {
         let Some(document) = self.store.docs.get(&doc) else {

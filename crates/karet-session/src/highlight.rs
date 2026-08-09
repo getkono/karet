@@ -99,6 +99,10 @@ fn run(jobs: &Receiver<HighlightJob>, results: &tokio_mpsc::UnboundedSender<High
     let mut trees: HashMap<DocumentId, LayeredTree> = HashMap::new();
     let mut pending: HashMap<DocumentId, HighlightRequest> = HashMap::new();
 
+    // NOTE: this is backpressure *coalescing*, deliberately not the spell
+    // worker's deadline debounce: highlighting must start the moment the worker
+    // is free (any added delay is visible as un-colored text), while burst
+    // absorption below still collapses a fast edit run into one parse.
     loop {
         match jobs.recv() {
             Ok(job) => absorb(&mut pending, &mut trees, job),

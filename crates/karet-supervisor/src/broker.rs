@@ -35,7 +35,6 @@ use sha2::Sha256;
 use tokio::io::AsyncBufRead;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncRead;
-use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufReader;
@@ -247,7 +246,7 @@ async fn run_broker(spec: BrokerSpec) -> Result<(), BrokerError> {
     write_endpoint(&spec.metadata, &endpoint)?;
 
     let launch = spec.launch.clone();
-    let mut command = crate::process_supervisor::command(
+    let mut command = crate::supervisor::command(
         &spec.supervisor,
         launch.command.clone(),
         launch.args,
@@ -267,7 +266,7 @@ async fn run_broker(spec: BrokerSpec) -> Result<(), BrokerError> {
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                tracing::debug!(target: "karet_session::lsp_broker", "{line}");
+                tracing::debug!(target: "karet_supervisor::broker", "{line}");
             }
         });
     }
@@ -317,7 +316,7 @@ async fn run_broker(spec: BrokerSpec) -> Result<(), BrokerError> {
 }
 
 /// Whether a live shared broker still references a managed immutable payload.
-pub(crate) fn managed_payload_in_use(state_root: &Path, payload: &Path) -> bool {
+pub fn managed_payload_in_use(state_root: &Path, payload: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(state_root.join("brokers")) else {
         return false;
     };
@@ -610,32 +609,15 @@ async fn client_writer<W: AsyncWrite + Unpin>(mut writer: W, mut messages: mpsc:
     }
 }
 
+/// Read one framed JSON-RPC message, delegating framing (and the shared size
+/// cap) to `karet-lsp`'s codec — the one Content-Length implementation.
 async fn read_message<R: AsyncBufRead + Unpin>(reader: &mut R) -> io::Result<Option<Value>> {
-    let mut content_length = None;
-    let mut line = String::new();
-    loop {
-        line.clear();
-        if reader.read_line(&mut line).await? == 0 {
-            return Ok(None);
-        }
-        let trimmed = line.trim_end_matches(['\r', '\n']);
-        if trimmed.is_empty() {
-            break;
-        }
-        if let Some(value) = trimmed.strip_prefix("Content-Length:") {
-            content_length = value.trim().parse::<usize>().ok();
-        }
-    }
-    let length =
-        content_length.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no length"))?;
-    if length > 64 * 1024 * 1024 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "LSP message exceeds 64 MiB",
-        ));
-    }
-    let mut body = vec![0; length];
-    reader.read_exact(&mut body).await?;
+    let Some(body) = karet_lsp::codec::read_frame(reader)
+        .await
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
+    else {
+        return Ok(None);
+    };
     serde_json::from_slice(&body)
         .map(Some)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
@@ -644,11 +626,7 @@ async fn read_message<R: AsyncBufRead + Unpin>(reader: &mut R) -> io::Result<Opt
 async fn write_message<W: AsyncWrite + Unpin>(writer: &mut W, message: &Value) -> io::Result<()> {
     let body = serde_json::to_vec(message)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    writer
-        .write_all(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes())
-        .await?;
-    writer.write_all(&body).await?;
-    writer.flush().await
+    karet_lsp::codec::write_frame(writer, &body).await
 }
 
 fn broker_key(spec: &LspSpec, root: &Path) -> String {

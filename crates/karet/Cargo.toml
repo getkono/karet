@@ -39,6 +39,7 @@ docx = ["dep:karet-docx"]
 karet-core.workspace = true
 karet-filetype.workspace = true       # icon-style choice (`--icons`) shared with the widgets
 karet-session.workspace = true
+karet-supervisor.workspace = true     # hidden process-mode entry points (broker / supervisor)
 karet-text.workspace = true
 karet-treesitter = { workspace = true, features = ["all-languages"] }
 karet-syntax.workspace = true

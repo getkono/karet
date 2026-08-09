@@ -230,7 +230,7 @@ fn compile(
         .map(|argument| replace(argument))
         .collect::<Vec<_>>();
     let mut command = if let Some(supervisor) = supervisor {
-        crate::process_supervisor::blocking_command(
+        karet_supervisor::supervisor::blocking_command(
             supervisor,
             settings.command.clone(),
             args,

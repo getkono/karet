@@ -16,27 +16,15 @@ mod generated {
     include!(concat!(env!("OUT_DIR"), "/github-generated.rs"));
 }
 
-// The blocking compatibility surface below remains for Source Control's serialized
-// VCS worker. The richer repository dashboard uses `GitHubClient` asynchronously.
+// The compact blocking surface below remains for Source Control's serialized VCS
+// worker (a plain thread with no async runtime, where blocking is the correct
+// mode). It shares the crate's single error type ([`GitHubError`]) and the
+// richer dashboard operations live on the asynchronous [`GitHubClient`].
 use std::time::Duration;
 
 const API: &str = "https://api.github.com";
 const API_VERSION: &str = "2022-11-28";
 
-/// Errors produced by the compact blocking GitHub operations.
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum GithubError {
-    /// The remote URL is not a recognisable GitHub repository.
-    #[error("not a GitHub remote")]
-    NotGitHub,
-    /// The HTTP request failed, or returned a non-success status.
-    #[error("request failed: {0}")]
-    Http(String),
-    /// The response body was not the expected JSON shape.
-    #[error("unexpected response: {0}")]
-    Decode(String),
-}
 mod models;
 mod remote;
 
@@ -66,7 +54,8 @@ pub use remote::GitHubRemote;
 pub use remote::RepositoryIdentity;
 pub use remote::parse_remote;
 
-/// GitHub's verification verdict for a commit signature.
+/// GitHub's verification verdict for a commit signature, returned by
+/// [`GitHubClient::commit_verification`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Verification {
     /// Whether GitHub considers the signature verified.
@@ -76,7 +65,12 @@ pub struct Verification {
     /// Login attributed to the commit, when present.
     pub signer: Option<String>,
 }
+
 /// A compact open pull request suitable for a branch picker.
+///
+/// Deliberately distinct from [`models::PullRequestSummary`], the richer
+/// dashboard row (timestamps, labels, body): this is the minimal branch-picker
+/// vocabulary the blocking `/pulls` fetch actually needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PullRequest {
     /// Repository-local pull request number.
@@ -110,38 +104,6 @@ pub struct PullRequestPage {
     pub next_page: Option<u32>,
 }
 
-/// Fetch GitHub's signature-verification verdict for commit `sha` in `owner/repo`.
-///
-/// Blocking; run on a worker thread. Uses `GITHUB_TOKEN` / `GH_TOKEN` from the
-/// environment when set (raising the rate limit and allowing private repos); works
-/// unauthenticated for public repositories otherwise.
-///
-/// # Errors
-/// Returns [`GithubError::Http`] on a network failure or non-success status, and
-/// [`GithubError::Decode`] if the response is not the expected JSON shape.
-pub fn commit_verification(
-    owner: &str,
-    repo: &str,
-    sha: &str,
-) -> Result<Verification, GithubError> {
-    let url = format!("{API}/repos/{owner}/{repo}/commits/{sha}");
-    let mut req = client()?
-        .get(url)
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", API_VERSION);
-    if let Some(token) = auth_token() {
-        req = req.bearer_auth(token);
-    }
-    let resp = req.send().map_err(|e| GithubError::Http(e.to_string()))?;
-    if !resp.status().is_success() {
-        return Err(GithubError::Http(format!("HTTP {}", resp.status())));
-    }
-    let body: serde_json::Value = resp
-        .json()
-        .map_err(|e| GithubError::Decode(e.to_string()))?;
-    parse_verification(&body)
-}
-
 /// Fetch one page of open pull requests for `owner/repo`.
 ///
 /// Authentication uses `GITHUB_TOKEN`, then `GH_TOKEN`, then a non-interactive
@@ -149,16 +111,19 @@ pub fn commit_verification(
 /// `per_page` must be between 1 and 100 and `page` is 1-based.
 ///
 /// # Errors
-/// Returns [`GithubError::Http`] for invalid paging or an HTTP failure, and
-/// [`GithubError::Decode`] when GitHub returns an unexpected response shape.
+/// Returns [`GitHubError::Request`] for invalid paging, [`GitHubError::Transport`]
+/// on an HTTP failure, [`GitHubError::Status`] for a non-success response, and
+/// [`GitHubError::Decode`] when GitHub returns an unexpected response shape.
 pub fn open_pull_requests(
     owner: &str,
     repo: &str,
     page: u32,
     per_page: u8,
-) -> Result<PullRequestPage, GithubError> {
+) -> Result<PullRequestPage, GitHubError> {
     if owner.is_empty() || repo.is_empty() || page == 0 || !(1..=100).contains(&per_page) {
-        return Err(GithubError::Http("invalid pull-request query".to_string()));
+        return Err(GitHubError::Request(
+            "invalid pull-request query".to_string(),
+        ));
     }
     let url = format!("{API}/repos/{owner}/{repo}/pulls");
     let mut request = client()?
@@ -177,9 +142,13 @@ pub fn open_pull_requests(
     }
     let response = request
         .send()
-        .map_err(|error| GithubError::Http(error.to_string()))?;
+        .map_err(|error| GitHubError::Transport(error.to_string()))?;
     if !response.status().is_success() {
-        return Err(GithubError::Http(format!("HTTP {}", response.status())));
+        return Err(GitHubError::Status {
+            status: response.status().as_u16(),
+            message: "open pull-request listing failed".to_string(),
+            request_id: None,
+        });
     }
     let next_page = response
         .headers()
@@ -188,19 +157,19 @@ pub fn open_pull_requests(
         .and_then(parse_next_page);
     let body: serde_json::Value = response
         .json()
-        .map_err(|error| GithubError::Decode(error.to_string()))?;
+        .map_err(|error| GitHubError::Decode(error.to_string()))?;
     Ok(PullRequestPage {
         items: parse_pull_requests(&body)?,
         next_page,
     })
 }
 
-fn client() -> Result<reqwest::blocking::Client, GithubError> {
+fn client() -> Result<reqwest::blocking::Client, GitHubError> {
     reqwest::blocking::Client::builder()
         .user_agent("karet")
         .timeout(Duration::from_secs(10))
         .build()
-        .map_err(|error| GithubError::Http(error.to_string()))
+        .map_err(|error| GitHubError::Request(error.to_string()))
 }
 
 /// The GitHub token from the environment, if any non-empty one is set.
@@ -222,14 +191,14 @@ fn auth_token() -> Option<String> {
         .filter(|token| !token.is_empty())
 }
 
-fn parse_pull_requests(body: &serde_json::Value) -> Result<Vec<PullRequest>, GithubError> {
+fn parse_pull_requests(body: &serde_json::Value) -> Result<Vec<PullRequest>, GitHubError> {
     let rows = body
         .as_array()
-        .ok_or_else(|| GithubError::Decode("expected a pull-request array".to_string()))?;
+        .ok_or_else(|| GitHubError::Decode("expected a pull-request array".to_string()))?;
     rows.iter().map(parse_pull_request).collect()
 }
 
-fn parse_pull_request(row: &serde_json::Value) -> Result<PullRequest, GithubError> {
+fn parse_pull_request(row: &serde_json::Value) -> Result<PullRequest, GitHubError> {
     Ok(PullRequest {
         number: required_u64(row, "number")?,
         title: required(row, "title")?.to_string(),
@@ -244,16 +213,16 @@ fn parse_pull_request(row: &serde_json::Value) -> Result<PullRequest, GithubErro
     })
 }
 
-fn required<'a>(value: &'a serde_json::Value, key: &str) -> Result<&'a str, GithubError> {
+fn required<'a>(value: &'a serde_json::Value, key: &str) -> Result<&'a str, GitHubError> {
     value[key]
         .as_str()
-        .ok_or_else(|| GithubError::Decode(format!("missing `{key}`")))
+        .ok_or_else(|| GitHubError::Decode(format!("missing `{key}`")))
 }
 
-fn required_u64(value: &serde_json::Value, key: &str) -> Result<u64, GithubError> {
+fn required_u64(value: &serde_json::Value, key: &str) -> Result<u64, GitHubError> {
     value[key]
         .as_u64()
-        .ok_or_else(|| GithubError::Decode(format!("missing `{key}`")))
+        .ok_or_else(|| GitHubError::Decode(format!("missing `{key}`")))
 }
 
 fn parse_next_page(header: &str) -> Option<u32> {
@@ -269,26 +238,6 @@ fn parse_next_page(header: &str) -> Option<u32> {
             .nth(1)?
             .split('&')
             .find_map(|field| field.strip_prefix("page=")?.parse().ok())
-    })
-}
-
-/// Extract the [`Verification`] from a `GET /commits/{sha}` response body.
-fn parse_verification(body: &serde_json::Value) -> Result<Verification, GithubError> {
-    let v = &body["commit"]["verification"];
-    if v.is_null() {
-        return Err(GithubError::Decode("no verification object".to_string()));
-    }
-    let verified = v["verified"].as_bool().unwrap_or(false);
-    let reason = v["reason"].as_str().unwrap_or("unknown").to_string();
-    // Prefer the authoring login; fall back to the committer's.
-    let signer = body["author"]["login"]
-        .as_str()
-        .or_else(|| body["committer"]["login"].as_str())
-        .map(str::to_string);
-    Ok(Verification {
-        verified,
-        reason,
-        signer,
     })
 }
 
@@ -316,47 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_verification_from_response_body() -> Result<(), GithubError> {
-        let body = serde_json::json!({
-            "author": { "login": "web-flow" },
-            "commit": {
-                "verification": {
-                    "verified": true,
-                    "reason": "valid",
-                    "signature": "-----BEGIN SSH SIGNATURE-----\n...",
-                }
-            }
-        });
-        let v = parse_verification(&body)?;
-        assert!(v.verified);
-        assert_eq!(v.reason, "valid");
-        assert_eq!(v.signer.as_deref(), Some("web-flow"));
-        Ok(())
-    }
-
-    #[test]
-    fn unsigned_commit_parses_as_unverified() -> Result<(), GithubError> {
-        let body = serde_json::json!({
-            "commit": { "verification": { "verified": false, "reason": "unsigned" } }
-        });
-        let v = parse_verification(&body)?;
-        assert!(!v.verified);
-        assert_eq!(v.reason, "unsigned");
-        assert_eq!(v.signer, None);
-        Ok(())
-    }
-
-    #[test]
-    fn missing_verification_object_errors() {
-        let body = serde_json::json!({ "commit": {} });
-        assert!(matches!(
-            parse_verification(&body),
-            Err(GithubError::Decode(_))
-        ));
-    }
-
-    #[test]
-    fn pull_request_page_parses_forks_and_drafts() -> Result<(), GithubError> {
+    fn pull_request_page_parses_forks_and_drafts() -> Result<(), GitHubError> {
         let body = serde_json::json!([{
             "number": 42,
             "title": "Improve checkout",
@@ -398,11 +307,11 @@ mod tests {
     fn open_pull_requests_validates_paging_before_network() {
         assert!(matches!(
             open_pull_requests("owner", "repo", 0, 100),
-            Err(GithubError::Http(_))
+            Err(GitHubError::Request(_))
         ));
         assert!(matches!(
             open_pull_requests("owner", "repo", 1, 0),
-            Err(GithubError::Http(_))
+            Err(GitHubError::Request(_))
         ));
     }
 }

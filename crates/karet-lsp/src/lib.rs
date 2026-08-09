@@ -34,7 +34,7 @@
 //! symbols, inlay hints, rename, signature help, code actions, and document/range
 //! formatting are implemented as typed, non-panicking operations.
 
-mod codec;
+pub mod codec;
 mod conn;
 mod convert;
 mod jsonrpc;

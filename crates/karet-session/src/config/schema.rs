@@ -7,19 +7,22 @@
 //! tree also derives [`schemars::JsonSchema`] so the external `settings.schema.json`
 //! is generated from this one source of truth.
 
+#[cfg(feature = "schema")]
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 
-use schemars::JsonSchema;
+#[cfg(feature = "schema")]
 use schemars::Schema;
+#[cfg(feature = "schema")]
 use schemars::SchemaGenerator;
 use serde::Deserialize;
 use serde::Serialize;
 
 /// The full, validated karet configuration. Load it with
 /// [`crate::config::load`]; the sane baseline is [`Settings::default`].
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     /// Text-editing behaviour (indentation, gutters, on-save fixups).
@@ -41,9 +44,10 @@ pub struct Settings {
 }
 
 /// `editor.*` — text-editing behaviour.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, rename_all = "camelCase")]
-#[schemars(transform = deny_additional_properties)]
+#[cfg_attr(feature = "schema", schemars(transform = deny_additional_properties))]
 pub struct Editor {
     /// Number of columns a tab renders as / spaces inserted for one indent level.
     pub tab_size: u8,
@@ -83,6 +87,7 @@ pub struct Editor {
     pub language_overrides: BTreeMap<LanguageSelector, EditorOverride>,
 }
 
+#[cfg(feature = "schema")]
 fn deny_additional_properties(schema: &mut Schema) {
     schema.insert("additionalProperties".to_string(), false.into());
 }
@@ -181,7 +186,8 @@ impl<'de> Deserialize<'de> for LanguageSelector {
     }
 }
 
-impl JsonSchema for LanguageSelector {
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for LanguageSelector {
     fn schema_name() -> Cow<'static, str> {
         Cow::Borrowed("LanguageSelector")
     }
@@ -199,7 +205,8 @@ impl JsonSchema for LanguageSelector {
 /// Every field is optional: omitted fields inherit the merged global editor value.
 /// Arrays replace the global value when present, and nested objects merge field by
 /// field through their own partial patch types.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct EditorOverride {
     /// Override columns per indent level.
@@ -212,7 +219,7 @@ pub struct EditorOverride {
     pub cursor_line: Option<bool>,
     /// Override graphical-cursor behavior; explicit `null` restores auto mode.
     #[serde(default, skip_serializing_if = "NullableOverride::is_unset")]
-    #[schemars(with = "Option<bool>")]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<bool>"))]
     pub graphical_cursor: NullableOverride<bool>,
     /// Override the caret scroll margin.
     pub scroll_off: Option<u16>,
@@ -220,7 +227,7 @@ pub struct EditorOverride {
     pub rulers: Option<Vec<u16>>,
     /// Override wrapping; explicit `null` restores the file-type default.
     #[serde(default, skip_serializing_if = "NullableOverride::is_unset")]
-    #[schemars(with = "Option<bool>")]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<bool>"))]
     pub word_wrap: NullableOverride<bool>,
     /// Override semantic sticky-scroll rendering.
     pub sticky_scroll: Option<bool>,
@@ -237,7 +244,8 @@ pub struct EditorOverride {
 }
 
 /// A partial per-language patch for [`Completion`].
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct CompletionOverride {
     /// Override whether completion is enabled.
@@ -247,7 +255,8 @@ pub struct CompletionOverride {
 }
 
 /// A partial per-language patch for [`SemanticComments`].
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct SemanticCommentsOverride {
     /// Override whether semantic comments are highlighted.
@@ -469,7 +478,8 @@ impl<'a> ResolvedSemanticComments<'a> {
 }
 
 /// `editor.completion.*` — LSP-powered code completion.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Completion {
     /// Offer completions at all (the popup, manual and automatic).
@@ -495,7 +505,8 @@ impl Default for Completion {
 /// A comment whose content opens with a configured tag — plus the immediately
 /// following non-empty comment lines — is highlighted with an attention-drawing
 /// style instead of the ordinary comment color.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct SemanticComments {
     /// Highlight codetag comment blocks distinctly.
@@ -518,7 +529,8 @@ impl Default for SemanticComments {
 }
 
 /// How the line-number gutter is numbered.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum LineNumbers {
     /// Absolute line numbers.
@@ -531,7 +543,8 @@ pub enum LineNumbers {
 }
 
 /// `files.*` — file handling.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Files {
     /// When to write dirty buffers back to disk automatically.
@@ -571,7 +584,8 @@ impl Default for Files {
 }
 
 /// When dirty buffers are written back to disk automatically.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum AutoSave {
     /// Never auto-save; the user saves explicitly.
@@ -584,7 +598,8 @@ pub enum AutoSave {
 }
 
 /// Line-ending style used when saving.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum Eol {
     /// Preserve the file's existing endings (LF for new files).
@@ -597,7 +612,8 @@ pub enum Eol {
 }
 
 /// `workbench.*` — UI shell appearance.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Workbench {
     /// Colour theme: the built-in name `"dark"`, or a path to a `.tmTheme` /
@@ -625,7 +641,8 @@ impl Default for Workbench {
 /// This wire enum exists for the config format alone (camelCase JSONC values +
 /// the generated JSON Schema, which `karet-filetype`'s dependency-free charter
 /// cannot provide); the [`From`] conversion below is the single translation.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum IconStyleSetting {
     /// Rich Nerd Font glyphs (needs a patched font).
@@ -648,7 +665,8 @@ impl From<IconStyleSetting> for karet_filetype::IconStyle {
 }
 
 /// Which sidebar panel is shown at startup.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum StartupPanel {
     /// The file explorer.
@@ -663,7 +681,8 @@ pub enum StartupPanel {
 }
 
 /// `search.*` — workspace search behaviour.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Search {
     /// Glob patterns excluded from workspace search.
@@ -685,7 +704,8 @@ impl Default for Search {
 }
 
 /// `spellcheck.*` — spell-checking of prose and selected source-code tokens.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Spellcheck {
     /// Enable spell-checking.
@@ -722,7 +742,8 @@ impl Default for Spellcheck {
 }
 
 /// `latex.*` — external LaTeX compilation and preview behavior.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Latex {
     /// Compile the root document after each successful manual or automatic save.
@@ -758,7 +779,8 @@ impl Default for Latex {
 }
 
 /// `lsp.*` — language-server integration.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Lsp {
     /// Run language servers for open documents (powers completions).
@@ -788,7 +810,8 @@ impl Default for Lsp {
 }
 
 /// Managed language-server download policy.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum ManagedDownloads {
     /// Show exact release metadata and require confirmation.
@@ -801,7 +824,8 @@ pub enum ManagedDownloads {
 }
 
 /// How to launch one language server (see [`Lsp::servers`]).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct LspServer {
     /// Whether this provider participates in resolution.
@@ -824,7 +848,8 @@ impl Default for LspServer {
 }
 
 /// Provider selection and exclusive capability owners for one language.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct LspLanguage {
     /// Ordered provider IDs. The first capable provider owns intelligence.
@@ -838,7 +863,8 @@ pub struct LspLanguage {
 }
 
 /// `git.*` — source-control integration.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Git {
     /// Show gutter change decorations and file-tree status colouring.
@@ -860,7 +886,8 @@ impl Default for Git {
 }
 
 /// `git.aiCommit.*` — generate a commit message from the staged diff.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct AiCommit {
     /// Allow generating commit messages from the staged diff (needs the `claude`
@@ -893,7 +920,8 @@ impl Default for AiCommit {
 }
 
 /// How much thinking the commit-message model spends (`git.aiCommit.effort`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum AiCommitEffort {
     /// Fastest, cheapest.

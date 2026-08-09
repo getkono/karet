@@ -342,16 +342,33 @@ impl Session {
         }
     }
 
+    /// The single document-lookup used by request handlers: answers `id` with the
+    /// standard unknown-document notification when `doc_id` is not open.
+    ///
+    /// An associated function over the disjoint fields (not `&self`) so the
+    /// returned borrow leaves `self.lsp` free for the forwarding call.
+    fn doc_or_report<'a>(
+        store: &'a DocumentStore,
+        events: &mpsc::UnboundedSender<(Option<RequestId>, Event)>,
+        id: RequestId,
+        doc_id: DocumentId,
+    ) -> Option<&'a Document> {
+        let doc = store.docs.get(&doc_id);
+        if doc.is_none() {
+            events.send((Some(id), unknown_document(doc_id))).ok();
+        }
+        doc
+    }
+
     /// Serve [`Command::Completion`]: convert the caret to the server's UTF-16
     /// encoding and forward to the document's language server. Languages with no
     /// server answer immediately with an empty set, so the client never waits.
     pub(super) fn completion(&mut self, id: RequestId, doc_id: DocumentId, position: LineCol) {
-        let Some(doc) = self.store.docs.get(&doc_id) else {
-            self.emit(Some(id), unknown_document(doc_id));
+        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
             return;
         };
         let version = doc.buffer.version();
-        let utf16 = LineCol::new(position.line, doc.buffer.line_col_to_utf16(position));
+        let utf16 = utf16_caret(doc, position);
         let forwarded =
             self.lsp
                 .completion(doc.language_selector, id, doc_id, version, &doc.path, utf16);
@@ -369,8 +386,7 @@ impl Session {
 
     /// Serve [`Command::DocumentSymbols`] from the document's language server.
     pub(super) fn document_symbols(&mut self, id: RequestId, doc_id: DocumentId) {
-        let Some(doc) = self.store.docs.get(&doc_id) else {
-            self.emit(Some(id), unknown_document(doc_id));
+        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
             return;
         };
         let version = doc.buffer.version();
@@ -389,12 +405,11 @@ impl Session {
     }
 
     pub(super) fn hover(&mut self, id: RequestId, doc_id: DocumentId, position: LineCol) {
-        let Some(doc) = self.store.docs.get(&doc_id) else {
-            self.emit(Some(id), unknown_document(doc_id));
+        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
             return;
         };
         let version = doc.buffer.version();
-        let utf16 = LineCol::new(position.line, doc.buffer.line_col_to_utf16(position));
+        let utf16 = utf16_caret(doc, position);
         if !self
             .lsp
             .hover(doc.language_selector, id, doc_id, version, &doc.path, utf16)
@@ -404,12 +419,11 @@ impl Session {
     }
 
     pub(super) fn definition(&mut self, id: RequestId, doc_id: DocumentId, position: LineCol) {
-        let Some(doc) = self.store.docs.get(&doc_id) else {
-            self.emit(Some(id), unknown_document(doc_id));
+        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
             return;
         };
         let version = doc.buffer.version();
-        let utf16 = LineCol::new(position.line, doc.buffer.line_col_to_utf16(position));
+        let utf16 = utf16_caret(doc, position);
         if !self
             .lsp
             .definition(doc.language_selector, id, doc_id, version, &doc.path, utf16)
@@ -441,11 +455,10 @@ impl Session {
         position: LineCol,
         new_name: String,
     ) {
-        let Some(doc) = self.store.docs.get(&doc_id) else {
-            self.emit(Some(id), unknown_document(doc_id));
+        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
             return;
         };
-        let utf16 = LineCol::new(position.line, doc.buffer.line_col_to_utf16(position));
+        let utf16 = utf16_caret(doc, position);
         if !self
             .lsp
             .rename(doc.language_selector, id, &doc.path, utf16, new_name)
@@ -460,8 +473,7 @@ impl Session {
     }
 
     pub(super) fn format_document(&mut self, id: RequestId, doc_id: DocumentId) {
-        let Some(doc) = self.store.docs.get(&doc_id) else {
-            self.emit(Some(id), unknown_document(doc_id));
+        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
             return;
         };
         if !self.lsp.formatting(
@@ -800,4 +812,10 @@ fn utf16_range_to_buffer(buffer: &TextBuffer, range: Range) -> Range {
         start: buffer.utf16_to_line_col(range.start.line, range.start.col),
         end: buffer.utf16_to_line_col(range.end.line, range.end.col),
     }
+}
+
+/// A caret converted to the server's UTF-16 column encoding — the conversion
+/// every positional LSP forwarder applies (see the karet-lsp crate docs).
+fn utf16_caret(doc: &Document, position: LineCol) -> LineCol {
+    LineCol::new(position.line, doc.buffer.line_col_to_utf16(position))
 }

@@ -1,0 +1,32 @@
+[package]
+name        = "karet-supervisor"
+description = "karet's hidden process modes: the crash-safe process-group supervisor and the multi-window LSP broker."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+# karet-internal: these are alternate main() modes of the karet executable, not a
+# library with an external-consumer story.
+publish = false
+
+[features]
+default = []
+
+[dependencies]
+karet-lsp.workspace = true            # LspSpec + the shared Content-Length codec
+command-group.workspace = true        # crash-safe process groups / Windows Job Objects
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true                 # stable broker keys from launch descriptions
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "process", "sync", "time", "macros"] }
+tracing.workspace = true
+
+[lints]
+workspace = true

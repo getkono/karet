@@ -5,7 +5,6 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use karet_watch::FsEvent;
 use tokio::sync::mpsc;
 
 /// How often the actor sweeps for buffers due to be backed up. The per-document
@@ -14,13 +13,10 @@ const BACKUP_TICK: Duration = Duration::from_secs(2);
 
 use crate::api::Command;
 use crate::api::RequestId;
-use crate::highlight::HighlightResult;
 use crate::local::SnapshotRx;
-use crate::lsp::LspUpdate;
 use crate::session::EventRx;
 use crate::session::Session;
 use crate::session::SessionConfig;
-use crate::spell::SpellResult;
 
 /// Errors produced when submitting to a [`Backend`].
 #[derive(Debug, thiserror::Error)]
@@ -133,25 +129,25 @@ pub(crate) fn local_session(mut session: Session, events: Option<EventRx>) -> Lo
                     Some((id, command)) => session.handle(id, command),
                     None => break, // the backend was dropped
                 },
-                fs_event = recv_fs(&mut fs_rx) => match fs_event {
+                fs_event = recv_opt(&mut fs_rx) => match fs_event {
                     Some(event) => session.handle_fs_event(event),
                     None => fs_rx = None, // the watcher stopped; stop selecting it
                 },
                 // Layered highlights computed off-actor; applied (and published) here.
-                result = recv_highlights(&mut highlights) => match result {
+                result = recv_opt(&mut highlights) => match result {
                     Some(result) => session.apply_highlights(result),
                     None => highlights = None, // the worker stopped; stop selecting it
                 },
-                result = recv_spell(&mut spell_results) => match result {
+                result = recv_opt(&mut spell_results) => match result {
                     Some(result) => session.apply_spell_result(result),
                     None => spell_results = None,
                 },
                 // LSP answers computed on the server tasks; converted and emitted here.
-                update = recv_lsp(&mut lsp_updates) => match update {
+                update = recv_opt(&mut lsp_updates) => match update {
                     Some(update) => session.apply_lsp_update(update),
                     None => lsp_updates = None, // no LSP; stop selecting it
                 },
-                update = recv_registry(&mut registry_updates) => match update {
+                update = recv_opt(&mut registry_updates) => match update {
                     Some(update) => session.apply_lsp_registry_update(update),
                     None => registry_updates = None,
                 },
@@ -166,44 +162,10 @@ pub(crate) fn local_session(mut session: Session, events: Option<EventRx>) -> Lo
     }
 }
 
-async fn recv_registry(
-    rx: &mut Option<mpsc::UnboundedReceiver<crate::lsp_registry::RegistryUpdate>>,
-) -> Option<crate::lsp_registry::RegistryUpdate> {
-    match rx {
-        Some(rx) => rx.recv().await,
-        None => std::future::pending().await,
-    }
-}
-
-/// Await the next filesystem event, or never resolve when there is no watcher (so
-/// the actor's `select!` simply ignores that arm).
-async fn recv_fs(rx: &mut Option<mpsc::UnboundedReceiver<FsEvent>>) -> Option<FsEvent> {
-    match rx {
-        Some(rx) => rx.recv().await,
-        None => std::future::pending().await,
-    }
-}
-
-/// Await the next completed highlight, or never resolve when there is no worker.
-async fn recv_highlights(
-    rx: &mut Option<mpsc::UnboundedReceiver<HighlightResult>>,
-) -> Option<HighlightResult> {
-    match rx {
-        Some(rx) => rx.recv().await,
-        None => std::future::pending().await,
-    }
-}
-
-/// Await a completed spell pass, or never resolve after its worker stops.
-async fn recv_spell(rx: &mut Option<mpsc::UnboundedReceiver<SpellResult>>) -> Option<SpellResult> {
-    match rx {
-        Some(rx) => rx.recv().await,
-        None => std::future::pending().await,
-    }
-}
-
-/// Await the next LSP task result, or never resolve when LSP is not running.
-async fn recv_lsp(rx: &mut Option<mpsc::UnboundedReceiver<LspUpdate>>) -> Option<LspUpdate> {
+/// Await the next message on an optional worker stream, or never resolve when
+/// the worker is absent/stopped — so the actor's `select!` simply ignores that
+/// arm. The one receiver shape shared by every worker the actor drains.
+async fn recv_opt<T>(rx: &mut Option<mpsc::UnboundedReceiver<T>>) -> Option<T> {
     match rx {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,
