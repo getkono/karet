@@ -6,8 +6,6 @@
 //! Blanket impls on `Vec<T>` and `[T]` let callers pass slices directly.
 
 use crate::coord::LineCol;
-use crate::model::Decoration;
-use crate::model::Diagnostic;
 use crate::model::Symbol;
 
 /// A snapshot source of document/workspace symbols.
@@ -29,18 +27,6 @@ pub trait SymbolProvider {
     }
 }
 
-/// A snapshot source of diagnostics.
-pub trait DiagnosticSource {
-    /// The current diagnostics.
-    fn diagnostics(&self) -> &[Diagnostic];
-}
-
-/// A snapshot source of decorations.
-pub trait DecorationSource {
-    /// The current decorations.
-    fn decorations(&self) -> &[Decoration];
-}
-
 impl SymbolProvider for [Symbol] {
     fn symbols(&self) -> &[Symbol] {
         self
@@ -49,30 +35,6 @@ impl SymbolProvider for [Symbol] {
 
 impl SymbolProvider for Vec<Symbol> {
     fn symbols(&self) -> &[Symbol] {
-        self
-    }
-}
-
-impl DiagnosticSource for [Diagnostic] {
-    fn diagnostics(&self) -> &[Diagnostic] {
-        self
-    }
-}
-
-impl DiagnosticSource for Vec<Diagnostic> {
-    fn diagnostics(&self) -> &[Diagnostic] {
-        self
-    }
-}
-
-impl DecorationSource for [Decoration] {
-    fn decorations(&self) -> &[Decoration] {
-        self
-    }
-}
-
-impl DecorationSource for Vec<Decoration> {
-    fn decorations(&self) -> &[Decoration] {
         self
     }
 }

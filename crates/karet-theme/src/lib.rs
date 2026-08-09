@@ -164,16 +164,6 @@ impl Theme {
         default::dark()
     }
 
-    /// Load a TextMate `.tmTheme` (plist XML) theme.
-    ///
-    /// # Errors
-    /// Currently always returns [`ThemeError::Unsupported`] — tmTheme loading is
-    /// reserved; the built-in [`Theme::dark`] is used meanwhile.
-    pub fn load_tmtheme(bytes: &[u8]) -> Result<Self, ThemeError> {
-        let _ = bytes;
-        Err(ThemeError::Unsupported)
-    }
-
     /// Load a VS Code JSON theme (requires the `vscode` feature).
     ///
     /// Unknown keys fall back to the built-in dark theme's values.
@@ -228,6 +218,10 @@ impl Theme {
 }
 
 /// The WCAG 2.1 contrast ratio between two colors (1.0 – 21.0).
+///
+/// Behind the `view` feature: contrast checking is a presentation-time concern and
+/// keeps the color-science dependency out of headless builds.
+#[cfg(feature = "view")]
 #[must_use]
 pub fn contrast_ratio(fg: Rgba, bg: Rgba) -> f32 {
     use palette::Srgb;
@@ -318,6 +312,7 @@ mod tests {
         assert_eq!(t.emphasis(TokenId(60000)), Emphasis::default());
     }
 
+    #[cfg(feature = "view")]
     #[test]
     fn doc_comment_is_brighter_than_comment() {
         let t = Theme::dark();
@@ -328,6 +323,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "view")]
     #[test]
     fn semantic_comment_marker_stands_out_from_comments() {
         let t = Theme::dark();
@@ -347,6 +343,7 @@ mod tests {
         assert!(t.emphasis(StandardToken::CommentMark.id()).bold);
     }
 
+    #[cfg(feature = "view")]
     #[test]
     fn foreground_on_background_is_readable() {
         let t = Theme::dark();

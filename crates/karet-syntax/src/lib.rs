@@ -10,9 +10,8 @@
 //! is coloured as the language it names and a Rust doc comment as the markdown it is.
 //! [`mark_semantic_comments`] is an optional post-pass that retints codetag comment
 //! blocks (`TODO: …` and friends) so they stand out from ordinary comments.
-//!
-//! Fold regions, bracket pairs and structural selection are reserved (the public
-//! joints are defined; their tree-walking is filled in with the editor).
+//! [`fold`] computes fold regions; [`SemanticBlocker`] extracts sticky-scroll
+//! blocks; [`OutlineExtractor`] builds symbol outlines from declaration queries.
 
 use std::collections::BTreeMap;
 
@@ -198,44 +197,6 @@ pub fn fold(tree: &SyntaxTree) -> FoldRegions {
             .map(|(start, end)| FoldRegion { start, end })
             .collect(),
     }
-}
-
-/// Matched bracket pairs (open span, close span) within a buffer.
-#[derive(Clone, Debug, Default)]
-pub struct BracketPairs {
-    pairs: Vec<(Span, Span)>,
-}
-
-impl BracketPairs {
-    /// The bracket pairs.
-    #[must_use]
-    pub fn pairs(&self) -> &[(Span, Span)] {
-        &self.pairs
-    }
-}
-
-/// Compute matched bracket pairs from a parsed tree. (Reserved; not yet implemented.)
-#[must_use]
-pub fn brackets(tree: &SyntaxTree) -> BracketPairs {
-    let _ = tree;
-    BracketPairs::default()
-}
-
-/// The direction of a structural-selection change.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ExpandDir {
-    /// Grow the selection to the enclosing node.
-    Expand,
-    /// Shrink to the previously-expanded child.
-    Shrink,
-}
-
-/// Expand or shrink the selection `at` to the appropriate syntax node. (Reserved;
-/// not yet implemented — returns `at` unchanged.)
-#[must_use]
-pub fn structural_selection(tree: &SyntaxTree, at: Span, dir: ExpandDir) -> Span {
-    let _ = (tree, dir);
-    at
 }
 
 #[cfg(test)]

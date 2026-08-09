@@ -261,7 +261,7 @@ impl Drop for KeyboardEnhancementGuard {
 }
 
 /// Resolve a `workbench.colorTheme` setting to a [`Theme`]: the built-in `"dark"`
-/// (also the empty string), or a path to a `.tmTheme` or VS Code `.json` theme file.
+/// (also the empty string), or a path to a VS Code `.json` theme file.
 /// Returns a human-readable message on a read/parse failure so the caller can warn
 /// and fall back to the default.
 pub(super) fn load_theme(name: &str) -> Result<Theme, String> {
@@ -269,16 +269,17 @@ pub(super) fn load_theme(name: &str) -> Result<Theme, String> {
         return Ok(Theme::dark());
     }
     let path = Path::new(name);
-    let bytes = std::fs::read(path).map_err(|e| format!("theme `{name}`: {e}"))?;
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if ext == "json" {
-        let text = String::from_utf8(bytes).map_err(|e| format!("theme `{name}`: {e}"))?;
-        Theme::load_vscode(&text).map_err(|e| format!("theme `{name}`: {e}"))
-    } else {
-        Theme::load_tmtheme(&bytes).map_err(|e| format!("theme `{name}`: {e}"))
+    if ext != "json" {
+        return Err(format!(
+            "theme `{name}`: only the built-in `dark` theme and VS Code JSON theme files are supported"
+        ));
     }
+    let bytes = std::fs::read(path).map_err(|e| format!("theme `{name}`: {e}"))?;
+    let text = String::from_utf8(bytes).map_err(|e| format!("theme `{name}`: {e}"))?;
+    Theme::load_vscode(&text).map_err(|e| format!("theme `{name}`: {e}"))
 }

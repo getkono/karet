@@ -510,12 +510,6 @@ async fn spawn_missing_binary_is_a_spawn_error() {
 }
 
 #[test]
-fn provider_wraps_symbols() {
-    let ds = DocumentSymbols::new(Vec::new());
-    assert!(ds.symbols().is_empty());
-}
-
-#[test]
 fn error_displays() {
     assert_eq!(LspError::Timeout.to_string(), "request timed out");
     assert_eq!(

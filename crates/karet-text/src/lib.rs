@@ -200,32 +200,10 @@ impl TextBuffer {
     }
 
     /// The full text as an owned `String` (LF-normalized; allocates the whole
-    /// buffer — prefer line/slice accessors or [`rope`](Self::rope) on hot paths).
+    /// buffer — prefer line/slice accessors on hot paths).
     #[must_use]
     pub fn text(&self) -> String {
         self.rope.to_string()
-    }
-
-    /// Borrow the underlying rope (read-only) for chunk-wise consumers such as an
-    /// incremental parse host.
-    #[must_use]
-    pub fn rope(&self) -> &ropey::Rope {
-        &self.rope
-    }
-
-    /// The buffer bytes starting at `byte`, as one contiguous rope chunk, or an
-    /// empty slice at/after the end.
-    ///
-    /// This is the reader an incremental parser is fed with: call it repeatedly
-    /// with advancing offsets to stream the whole buffer without ever allocating it
-    /// as a single `String`.
-    #[must_use]
-    pub fn byte_chunk(&self, byte: usize) -> &[u8] {
-        if byte >= self.rope.len_bytes() {
-            return &[];
-        }
-        let (chunk, chunk_byte_start, _, _) = self.rope.chunk_at_byte(byte);
-        &chunk.as_bytes()[byte - chunk_byte_start..]
     }
 
     /// A cheap, render-only clone: shares the rope (O(1) structural sharing) but
@@ -243,16 +221,6 @@ impl TextBuffer {
             mixed_eol: self.mixed_eol,
             saved_state: self.saved_state.clone(),
         }
-    }
-
-    /// Discard all undo/redo history and reset the save point to "clean".
-    ///
-    /// The session calls this after replacing the buffer's content with a fresh
-    /// on-disk read (an accepted external reload): the recorded inverse edits no
-    /// longer match the new content, so they must be dropped.
-    pub fn reset_history(&mut self) {
-        self.history = History::default();
-        self.saved_text_hash = text_hash(&self.rope);
     }
 
     /// Replace this buffer's content (and line-ending/encoding/on-disk fingerprint)
@@ -275,9 +243,9 @@ impl TextBuffer {
 
     /// Convert an absolute byte offset to a line/column position.
     ///
-    /// The column is counted in Unicode scalar values (`char`s), matching karet's
-    /// internal [`PositionEncoding::Utf32`](karet_core::PositionEncoding). An offset
-    /// past the end of the buffer is clamped to the buffer end.
+    /// The column is counted in Unicode scalar values (`char`s), karet's canonical
+    /// internal unit. An offset past the end of the buffer is clamped to the
+    /// buffer end.
     #[must_use]
     pub fn byte_to_line_col(&self, byte: BytePos) -> LineCol {
         let b = byte.0.min(self.rope.len_bytes());

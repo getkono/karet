@@ -8,9 +8,9 @@
 //! a content fingerprint so equivalent manual edits become clean again.
 //!
 //! History is purely in-memory and lives for the buffer's lifetime; it is dropped
-//! only by [`TextBuffer::reset_history`](crate::TextBuffer::reset_history), which
-//! the session calls after an accepted external reload (the recorded inverse edits
-//! no longer match the new on-disk content).
+//! only by [`TextBuffer::replace_content`](crate::TextBuffer::replace_content) after
+//! an accepted external reload (the recorded inverse edits no longer match the new
+//! on-disk content).
 
 use karet_core::Change;
 use karet_core::CursorState;

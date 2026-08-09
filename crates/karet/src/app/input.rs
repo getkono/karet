@@ -442,14 +442,6 @@ impl App {
                 TextPurpose::FilterLanguageServers => {
                     self.set_language_server_filter(text);
                 },
-                TextPurpose::RestartLanguageServer { server } => {
-                    if text == "restart" {
-                        self.status = Some(format!("restarted {}", server.display_name()));
-                        self.send_command(SessionCommand::RestartLanguageServer { server });
-                    } else {
-                        self.status = Some("language-server restart deferred".to_string());
-                    }
-                },
                 TextPurpose::UninstallLanguageServer { server } => {
                     if text == "uninstall" {
                         self.status = Some(format!("uninstalling {}…", server.display_name()));

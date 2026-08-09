@@ -274,14 +274,9 @@ fn ctrl_r_refreshes_every_github_page_that_loads_remote_data() {
     let refresh = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
     assert!(app.github_key(refresh));
 
-    app.push_tab(Tab::github_issue(repository(), 4, None));
+    app.push_tab(Tab::github_issue(4, None));
     assert!(app.github_key(refresh));
-    app.push_tab(Tab::github_pull_request(
-        repository(),
-        pull_request(5, false),
-        true,
-        None,
-    ));
+    app.push_tab(Tab::github_pull_request(pull_request(5, false), true, None));
     assert!(app.github_key(refresh));
     app.push_tab(Tab::github_workflow_run(
         repository(),
@@ -334,12 +329,7 @@ fn pull_request_body_comment_merge_and_readiness_controls_submit_typed_commands(
     let backend = Arc::new(RecordingBackend::new());
     let mut app = app();
     app.backend = Some(backend.clone());
-    app.push_tab(Tab::github_pull_request(
-        repository(),
-        pull_request(12, false),
-        true,
-        None,
-    ));
+    app.push_tab(Tab::github_pull_request(pull_request(12, false), true, None));
     if let TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) =
         &mut app.tabs[app.active].kind
     {
@@ -433,12 +423,7 @@ fn pull_request_tabs_use_commits_and_existing_range_diff_paths() {
     let backend = Arc::new(RecordingBackend::new());
     let mut app = app();
     app.backend = Some(backend.clone());
-    app.push_tab(Tab::github_pull_request(
-        repository(),
-        pull_request(12, false),
-        true,
-        None,
-    ));
+    app.push_tab(Tab::github_pull_request(pull_request(12, false), true, None));
     assert!(app.github_key(KeyEvent::new(
         KeyCode::Char('2'),
         KeyModifiers::NONE
@@ -474,12 +459,7 @@ fn pull_request_conversation_renders_github_familiar_controls_and_success_colour
     use ratatui::style::Color;
 
     let mut app = app();
-    app.push_tab(Tab::github_pull_request(
-        repository(),
-        pull_request(12, false),
-        true,
-        None,
-    ));
+    app.push_tab(Tab::github_pull_request(pull_request(12, false), true, None));
     app.apply_github_pull_request(
         None,
         pull_request(12, false),

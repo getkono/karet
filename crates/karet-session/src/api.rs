@@ -12,7 +12,6 @@ use karet_core::BlameAttribution;
 use karet_core::Change;
 use karet_core::CompletionItem;
 use karet_core::CursorState;
-use karet_core::Decoration;
 use karet_core::Diagnostic;
 use karet_core::Hover;
 use karet_core::LineCol;
@@ -22,9 +21,6 @@ use karet_core::Severity;
 use karet_core::Symbol;
 use karet_core::TextEdit;
 use karet_core::WorkspaceEdit;
-use karet_search::FileHit;
-use karet_search::SearchQuery;
-use karet_syntax::HighlightSpan;
 use karet_text::EditCause;
 use karet_vcs::Branch;
 use karet_vcs::BranchTarget;
@@ -509,21 +505,6 @@ pub struct LanguageServerStatus {
     pub instances: Vec<LanguageServerInstanceStatus>,
 }
 
-/// Which producer a [`Event::DecorationsChanged`] batch belongs to, so the client
-/// can replace one producer's decoration layer atomically.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum DecorationLayer {
-    /// Version-control markers (git gutter, blame).
-    Vcs,
-    /// Debugger markers (breakpoints, current line).
-    Dap,
-    /// Search-match highlights.
-    Search,
-    /// Language-server decorations.
-    Lsp,
-}
-
 /// Which diff-between-two-points a [`Command::RangeChanges`] asks for. The backend
 /// resolves the endpoints against the repository (upstream, base branch, merge base) so
 /// ref resolution stays with the repo, and answers with [`Event::RangeReady`].
@@ -684,11 +665,6 @@ pub enum Command {
     BuildLatex {
         /// The open TeX document that initiated the build.
         doc: DocumentId,
-    },
-    /// Run a workspace search.
-    Search {
-        /// The search query and options.
-        query: SearchQuery,
     },
     /// Report the client's cursor/selection state for a view.
     SetCursor {
@@ -992,7 +968,6 @@ mod tests {
                 servers: vec![status],
             },
         ];
-        assert_eq!(DecorationLayer::Vcs, DecorationLayer::Vcs);
         assert_eq!(
             DocumentSettings::default(),
             DocumentSettings {

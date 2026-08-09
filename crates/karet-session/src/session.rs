@@ -93,18 +93,6 @@ use crate::lsp::LspUpdate;
 use crate::spell::SpellJob;
 use crate::spell::SpellResult;
 
-/// Errors produced by the backend session.
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum SessionError {
-    /// A command referenced a document that is not open.
-    #[error("unknown document")]
-    UnknownDocument,
-    /// An underlying engine reported an error.
-    #[error("backend error: {0}")]
-    Backend(String),
-}
-
 /// Configuration for a [`Session`].
 #[derive(Clone, Debug, Default)]
 pub struct SessionConfig {
@@ -639,8 +627,8 @@ impl Session {
                 new_name,
             } => self.rename(id, doc, position, new_name),
             Command::FormatOnSave { doc } => self.format_document(id, doc),
-            // The remaining language-intelligence and search commands are wired in
-            // later milestones.
+            // Language-server management commands are consumed by the
+            // `handle_lsp_command` pre-dispatch above and never reach this match.
             _ => {},
         }
     }
@@ -858,43 +846,6 @@ fn unknown_document(doc: DocumentId) -> Event {
         severity: Severity::Error,
         kind: NotificationKind::System,
         message: format!("unknown document {}", doc.0),
-    }
-}
-
-/// A read-only borrow of a document's renderable state (local mode).
-///
-/// In a future remote split this is replaced by a client-side snapshot replicated
-/// from [`Event`]s; the renderer (`karet-editor`) consumes the same data either way.
-pub struct DocumentView<'a> {
-    buffer: &'a TextBuffer,
-    highlights: &'a Highlights,
-    decorations: &'a [Decoration],
-    version: u64,
-}
-
-impl DocumentView<'_> {
-    /// The document's text buffer.
-    #[must_use]
-    pub fn buffer(&self) -> &TextBuffer {
-        self.buffer
-    }
-
-    /// The document's syntax highlights.
-    #[must_use]
-    pub fn highlights(&self) -> &Highlights {
-        self.highlights
-    }
-
-    /// The document's decorations (merged across producers).
-    #[must_use]
-    pub fn decorations(&self) -> &[Decoration] {
-        self.decorations
-    }
-
-    /// The document's current version.
-    #[must_use]
-    pub fn version(&self) -> u64 {
-        self.version
     }
 }
 

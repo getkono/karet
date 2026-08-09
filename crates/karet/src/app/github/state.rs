@@ -60,7 +60,6 @@ pub(crate) enum GithubPullRequestEditor {
 /// Stateful GitHub pull-request page.
 #[derive(Debug)]
 pub(crate) struct GithubPullRequestView {
-    pub(crate) repository: GithubRepository,
     pub(crate) pull_request: GithubPullRequest,
     pub(crate) comments: GithubPage<GithubComment>,
     pub(crate) commits: Vec<GithubPullRequestCommit>,

@@ -223,6 +223,9 @@ fn delete_between(start: LineCol, end: LineCol, base: u64) -> Edit {
 
 /// Indent: insert one level at the caret with no selection, or at the start of every
 /// line the selection touches.
+// Currently unbound (no key produces an indent command); kept because the pure
+// Change-builders in this module move to karet-editor as its edit vocabulary.
+#[allow(dead_code)]
 #[must_use]
 pub fn indent(
     caret: LineCol,
@@ -256,6 +259,8 @@ pub fn indent(
 }
 
 /// Dedent the caret's line: remove up to one indent level of leading whitespace.
+// Currently unbound; see [`indent`].
+#[allow(dead_code)]
 #[must_use]
 pub fn dedent(caret: LineCol, buffer: &TextBuffer, base: u64, indentation: &str) -> Option<Edit> {
     let line = buffer.line(caret.line as usize)?;

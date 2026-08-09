@@ -368,7 +368,7 @@ impl App {
         }
         self.scm.log_loading = true;
         self.scm.log_loading_since = Some(Instant::now());
-        self.send_vcs(SessionCommand::VcsLog {
+        self.send_command(SessionCommand::VcsLog {
             skip,
             limit: SCM_LOG_PAGE,
         });
@@ -485,11 +485,6 @@ impl App {
             _ => {},
         }
     }
-    /// Send a fire-and-forget command to the backend (no document context).
-    pub(super) fn send_vcs(&mut self, command: SessionCommand) {
-        self.send_command(command);
-    }
-
     /// Submit a fire-and-forget backend command (the answering event, if any, is
     /// handled generically), surfacing a dropped-backend error as a notification.
     pub(super) fn send_command(&mut self, command: SessionCommand) {
@@ -526,7 +521,7 @@ impl App {
         if paths.is_empty() {
             return;
         }
-        self.send_vcs(make(paths));
+        self.send_command(make(paths));
     }
 
     /// Toggle staging for the selection. A multi-file selection may span both
@@ -545,10 +540,10 @@ impl App {
             }
         }
         if !to_unstage.is_empty() {
-            self.send_vcs(SessionCommand::Unstage { paths: to_unstage });
+            self.send_command(SessionCommand::Unstage { paths: to_unstage });
         }
         if !to_stage.is_empty() {
-            self.send_vcs(SessionCommand::Stage { paths: to_stage });
+            self.send_command(SessionCommand::Stage { paths: to_stage });
         }
     }
 
@@ -642,7 +637,7 @@ impl App {
     /// notification.
     pub(super) fn commit_generate(&mut self) {
         self.status = Some("generating commit message…".to_string());
-        self.send_vcs(SessionCommand::GenerateCommitMessage);
+        self.send_command(SessionCommand::GenerateCommitMessage);
     }
 
     /// Edit the multiline commit message with an unbound text-field key.
@@ -697,7 +692,7 @@ impl App {
         let paths = self.pending_discard.take();
         if confirmed {
             if let Some(paths) = paths {
-                self.send_vcs(SessionCommand::Discard { paths });
+                self.send_command(SessionCommand::Discard { paths });
                 self.notify(
                     Severity::Information,
                     NotificationKind::Vcs,

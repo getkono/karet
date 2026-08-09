@@ -1,18 +1,37 @@
 use super::*;
 
+/// Test-only read view of a document's buffer state. Production consumers render
+/// from the [`DocSnapshot`](crate::local::DocSnapshot) stream instead.
+#[cfg(test)]
+pub(crate) struct DocumentView<'a> {
+    pub(crate) buffer: &'a TextBuffer,
+    version: u64,
+}
+
+#[cfg(test)]
+impl DocumentView<'_> {
+    pub(crate) fn buffer(&self) -> &TextBuffer {
+        self.buffer
+    }
+
+    pub(crate) fn version(&self) -> u64 {
+        self.version
+    }
+}
+
+#[cfg(test)]
 impl Session {
-    /// Borrow a read-only view of a document for local-mode rendering or tests.
-    #[must_use]
-    pub fn document(&self, doc: DocumentId) -> Option<DocumentView<'_>> {
+    /// Borrow a read-only view of a document (tests only).
+    pub(crate) fn document(&self, doc: DocumentId) -> Option<DocumentView<'_>> {
         let d = self.store.docs.get(&doc)?;
         Some(DocumentView {
             buffer: &d.buffer,
-            highlights: d.highlights.as_ref(),
-            decorations: d.decorations.as_slice(),
             version: d.buffer.version(),
         })
     }
+}
 
+impl Session {
     // --- command handlers -------------------------------------------------
 
     pub(super) fn open(&mut self, id: RequestId, path: PathBuf, language: Option<&str>) {

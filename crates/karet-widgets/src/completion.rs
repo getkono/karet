@@ -173,7 +173,7 @@ impl<'a> CompletionPopup<'a> {
 /// The glyph and color marking a completion kind, VS Code-style: a single
 /// lowercase letter colored like the token the item would become.
 #[must_use]
-pub fn kind_glyph(kind: CompletionKind) -> (char, Option<TokenId>) {
+fn kind_glyph(kind: CompletionKind) -> (char, Option<TokenId>) {
     match kind {
         CompletionKind::Method => ('m', Some(TokenId::FUNCTION)),
         CompletionKind::Function => ('f', Some(TokenId::FUNCTION)),

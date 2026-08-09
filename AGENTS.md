@@ -28,8 +28,8 @@ and we refuse to relitigate the axes where choice only adds surface area.
 - **Headless by default** — engines carry no `ratatui`; presentation is the
   consumer's choice. Any TUI widget an engine offers lives behind an off-by-default
   **`view`** feature, so headless consumers get zero ratatui.
-- **Neutral models, decoupled by inversion** — producers (`karet-lsp`, `karet-vcs`,
-  `karet-dap`) emit neutral `karet-core` models (`Decoration`, `Diagnostic`,
+- **Neutral models, decoupled by inversion** — producers (`karet-lsp`, `karet-vcs`)
+  emit neutral `karet-core` models (`Decoration`, `Diagnostic`,
   `Symbol`); renderers (`karet-editor`, `karet-widgets`) consume them. Only the app
   wires a producer to a widget — no widget crate depends on a producer crate.
 - **Serde-ready `Backend` seam** — the headless `karet-session` backend owns the
@@ -37,8 +37,12 @@ and we refuse to relitigate the axes where choice only adds surface area.
   and a `Backend` trait. Presentation talks to it only through that seam. The
   remote client-server split is deferred, but the seams (serde-ready core models,
   in-proc `Backend`) are pre-placed so it lands as an *additive* change, not a rewrite.
-- **Pure-Rust dependencies** — no C `*-sys` deps (verify with `cargo tree`), so
-  consumers get clean, portable, cross-compilable builds.
+- **No system dependencies** — nothing links a system C library (`*-sys`) or needs
+  `pkg-config`; verify with `cargo tree`. The one scoped exception to "pure Rust"
+  is deliberate: tree-sitter (our sole syntax backend) and its grammar crates
+  compile vendored C via `cc`, so a C compiler (and, for cross-builds, a cross C
+  toolchain) is required whenever any `lang-*` feature is on. Everything else
+  (PDF, DOCX, images, TLS) is pure Rust by policy.
 
 **Opinionated where sane defaults** — one blessed way; shrink the decision surface:
 
@@ -50,13 +54,17 @@ and we refuse to relitigate the axes where choice only adds surface area.
   fine; crates.io requires a real *external-consumer* story. Gate `publish`
   conservatively: unset on the publishable few, `publish = false` on the rest.
 - **Commit to one best backend** rather than a multiple-backend abstraction — e.g.
-  tree-sitter only for syntax, not a syntect+tree-sitter dual path.
+  tree-sitter only for syntax, not a syntect+tree-sitter dual path. The documented
+  exception: `karet-vcs` reads via `gix` in-process but performs writes/network
+  through hardened `git` subprocesses, so user hooks, signing, and credential
+  helpers keep working (requires `git` on `PATH`).
 - **Lockstep versioning** for the `karet-*` crates (one workspace version); a truly
   standalone library (`blameline`) may run its own SemVer line — the deliberate
   exception, not the rule.
 - **Quality is non-negotiable** — nightly rustfmt, `missing_docs`, and clippy
-  denying `unwrap`/`expect`/`panic` in library code (the app opts out). This floor
-  is workspace policy, not a per-crate choice. See [Quality](#quality).
+  denying `unwrap`/`expect`/`panic`/`todo`/`unimplemented` in library code (the app
+  opts out of the docs lint; a deliberate stub needs a justified `#[allow]`). This
+  floor is workspace policy, not a per-crate choice. See [Quality](#quality).
 
 ## Versioning
 
@@ -77,29 +85,29 @@ published to crates.io (everything else is `publish = false`).
 
 | crate | role | pub | one-line scope |
 |---|---|---|---|
-| `karet-core` | foundation | ✓ | shared vocabulary: geometry, text coords, neutral models (Diagnostic/Decoration/Symbol/Completion/Hover/…), neutral edits, `SymbolProvider`, `TokenId` |
+| `karet-core` | foundation | ✓ | shared vocabulary: text coords, neutral models (Diagnostic/Decoration/Symbol/Completion/Hover/…), neutral edits, `GraphView`, `SymbolProvider`, `TokenId` |
 | `karet-filetype` | engine | ✓ | single registry: path → file type (name, category, per-`IconStyle` icon) + renderer routing (`FileKind`/`classify`); dependency-free |
-| `karet-text` | engine | ✓ | rope buffer, undo/redo, dirty/save, large-file mmap |
+| `karet-text` | engine | ✓ | rope buffer, undo/redo, dirty/save, EOL/encoding detection, atomic save |
 | `karet-treesitter` | engine | ✓ | shared tree-sitter parse host (parser pool, incremental trees, queries, **language injection** → layered trees) |
-| `karet-syntax` | engine | ✓ | tree-sitter highlighting (incl. **injected** languages), fold regions, bracket pairs, structural selection |
-| `karet-theme` | engine | ✓ | token palette, .tmTheme + VS Code JSON loaders, contrast (`view` feat) |
-| `karet-diff` | engine | ✓ | pure syntax-aware diffing (tree-sitter + line/word fallback) — no presentation |
-| `karet-graph` | engine | — | DAG lane-assignment layout + rail renderer (`view` feat) for the commit graph & code visualizations; consumes `karet_core::GraphView` |
+| `karet-syntax` | engine | ✓ | tree-sitter highlighting (incl. **injected** languages), fold regions, semantic blocks, symbol outlines, inline macros |
+| `karet-theme` | engine | ✓ | token palette, VS Code JSON theme loader (`vscode` feat), ratatui styles + contrast (`view` feat) |
+| `karet-diff` | engine | ✓ | pure text diffing: histogram line diff, side-by-side alignment, intra-line highlights, unified-diff parse, per-hunk staging — no presentation |
+| `karet-graph` | engine | — | DAG lane-assignment layout + rail renderer (`view` feat) for the commit graph & code visualizations |
 | `karet-markdown` | engine | — | markdown parse → wrap → render model, with source-line anchors for scroll sync; `highlight` colours code fences, `view` paints ratatui (incl. a scrollable `MarkdownView`) |
 | `karet-cbor` | engine | — | CBOR decode/encode ↔ editable diagnostic-notation text (via `ciborium`); no presentation |
 | `karet-docx` | engine | — | DOCX (OOXML) parse → neutral document model → markdown text, hand-rolled on deflate-only `zip` + `quick-xml` (pure-Rust, no zstd/bzip2); no presentation |
 | `karet-pdf` | engine | ✓ | pure-Rust PDF page → RGBA rasterization (via `hayro`); no presentation |
-| `karet-terminal` | engine | — | VT/PTY emulator, scrollback, OSC 133 (`view` feat) |
 | `karet-lsp` | engine | ✓ | async LSP client → core models (headless; ratatui popups live in `karet-widgets`) |
-| `karet-dap` | engine | ✓ | async DAP client → breakpoint decorations (`view` feat = panels) |
-| `karet-vcs` | engine | ✓ | git status/blame/branches/staging → decorations (`view` feat = SCM panels) |
-| `karet-search` | engine | ✓ | in-file + workspace search/replace (ripgrep-style; no karet deps) |
+| `karet-dap` | engine | — | **unimplemented skeleton** for the future async DAP client; `publish = false`, no consumer |
+| `karet-vcs` | engine | ✓ | git facts engine: status/branches/log/commit detail/stash/staging/remotes — `gix` reads + hardened `git`-CLI writes; headless |
+| `karet-github` | engine | — | headless GitHub REST client (issues, PRs, checks, workflows); generated from a vendored OpenAPI spec at build time; consumed only by `karet-session` |
+| `karet-search` | engine | ✓ | in-file + workspace search/replace (gitignore-aware; no karet deps) |
 | `karet-watch` | engine | — | debounced cross-platform FS-watch → neutral `FsEvent` Tokio stream; enumerates off-thread (headless) |
-| `karet-fuzzy` | engine | — | fuzzy match + frecency + quick-open query parsing |
+| `karet-fuzzy` | engine | — | fuzzy match + ranking (nucleo-backed, smart case), shared by widgets and completion |
 | `karet-session` | backend | — | headless editor backend: owns documents/workspace, orchestrates producers, applies `Command`s, emits `Event`s; runs layered highlighting on a background worker; holds format-on-save, spell-check, settings/session |
-| `karet-widgets` | widget | — | ratatui UI toolkit: file tree, picker/palette, outline+breadcrumbs, status bar, dialogs, dock, problems, pane layout, LSP completion/hover popups |
-| `karet-editor` | widget | ✓ | the editor widget: gutter, minimap, scroll, visual aids, snippets (modules); `read_only` pager mode |
-| `karet-fileview` | widget | ✓ | read-only "render any file" widget: dispatches `FileKind` → editor/hex/image/placeholder; hosts the hex view + terminal image (behind `raster`/`images`) and PDF (behind `pdf`); Markdown renders as source |
+| `karet-widgets` | widget | — | ratatui UI toolkit: file tree, completion popup, toasts, pane layout + drop zones, multi-select model, UI glyphs; LSP hover popup behind the `hover` feat |
+| `karet-editor` | widget | ✓ | the editor widget: gutter, folds, sticky scroll, word wrap, multi-caret, merge-conflict decorations; `read_only` mode |
+| `karet-fileview` | widget | ✓ | read-only file-view primitives: hex view + terminal image (behind `raster`/`images`) + placeholder, plus `FileKind`/`classify` re-exports; composition is the consumer's |
 | `karet` | app | — | composition root / TUI client (local mode); merges the clipboard + input (keymap) modules; default-on `images`/`pdf`/`docx` features gate the optional media/document deps (`--no-default-features` → lean build, see `docs/binary-size.md`); `publish = false` |
 | `blameline` | standalone | ✓ | semantic git-blame (via `gix`): group lines by commit, tree-sitter function narrowing, serde/JSON output; headless, on its **own** SemVer line (see [Versioning](#versioning)) |
 

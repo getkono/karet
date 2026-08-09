@@ -1,78 +1,51 @@
 # karet-fileview
 
-One read-only [ratatui] widget that renders **any** file — syntax-highlighted code
-(tree-sitter), raster images (Kitty graphics with a truecolor halfblock fallback),
-binaries (hex dump), and a graceful placeholder for PDFs / oversized / undecodable
-files — behind a single dispatch.
+Read-only [ratatui] file-view **primitives**: a terminal image renderer (Kitty
+graphics with a truecolor halfblock fallback), a hex dump for binaries, and a
+graceful placeholder for oversized / undecodable files, plus the
+`classify`/`FileKind` re-exports from `karet-filetype` to route a path to the
+right primitive.
 
-It is the one crate an external consumer imports to drop a file preview or reader
-into their TUI, without pulling the full editor toolkit (fuzzy matching, file tree,
-LSP popups).
+It is the crate an external consumer imports to drop a file preview into their
+TUI without pulling the full editor toolkit (fuzzy matching, file tree, LSP
+popups). Composition — which primitive draws which `FileKind`, and how text is
+highlighted — stays with the consumer: pair the `viewer::classify` result with
+your own text/editor widget for code, `HexView` for binaries, and
+`image::ImageWidget` for pictures.
 
 ## Usage
 
-Split the work into an expensive **prepare** (run once) and a cheap **render** (per
-frame):
-
 ```rust
-use karet_fileview::{FileDoc, FileView, FileViewState, Limits};
+use karet_fileview::viewer::{classify, FileKind, Placeholder};
+use karet_fileview::HexView;
 
-// Once, when the file is opened:
 let bytes = std::fs::read(path)?;
-let len = bytes.len() as u64;
-let doc = FileDoc::prepare(path, &bytes, len, &Limits::default());
-let mut state = FileViewState::new();
-
-// Each frame:
-frame.render_stateful_widget(FileView::new(&doc).theme(&theme), area, &mut state);
-```
-
-`FileViewState` provides `scroll_down`/`scroll_up`/`page_down`/`page_up`/
-`scroll_to_top`/`center_on` for paging; the active branch scrolls without the caller
-needing to know the file's kind. Search matches (or any overlay) are supplied as
-`karet_core::Decoration`s via `FileView::decorations`.
-
-`Limits { max_bytes, highlight_line_budget }` bounds size and highlighting per
-context — e.g. a small inline preview vs. a full-file reader.
-
-## Images
-
-Halfblock rendering (the default) is fully self-contained. For pixel-perfect Kitty
-graphics, select the protocol and flush after drawing:
-
-```rust
-use karet_fileview::{flush_kitty_image, image::{detect_protocol, GraphicsProtocol}};
-
-let protocol = detect_protocol();
-frame.render_stateful_widget(FileView::new(&doc).graphics(protocol), area, &mut state);
-// after terminal.draw(...):
-if protocol == GraphicsProtocol::Kitty {
-    flush_kitty_image(&doc, &state, &mut std::io::stdout())?;
+match classify(path, bytes.len() as u64, &bytes) {
+    FileKind::Binary => { /* render HexView::new(&bytes) */ },
+    FileKind::Image => { /* render image::ImageWidget (feature `images`) */ },
+    FileKind::TooLarge => { /* render Placeholder */ },
+    _ => { /* your text/editor rendering */ },
 }
 ```
 
+## Images
+
+Halfblock rendering is fully self-contained. For pixel-perfect output, probe the
+terminal with `image::detect_protocol()` and use the Kitty escape path.
+
 ## Features
 
-All off by default, so a consumer that only renders hex or plain text pulls no
-grammar, codec, or PDF dependencies. Disabled file kinds fall through to the
-placeholder branch.
+All off by default, so a consumer that only renders hex or placeholders pulls no
+codec dependencies.
 
-- `all-languages` — compile in every tree-sitter grammar so the text branch
-  highlights. Without it (or a per-language feature) text still renders,
-  unhighlighted.
 - `raster` — the shared terminal-image primitives (Kitty escape + halfblock
-  rendering); pulls the `image` crate. Enabled automatically by `images` and
-  `pdf`, so it is rarely selected on its own.
-- `images` — decode & render raster image **files** (adds the image-codec entry
-  points on top of `raster`).
-- `pdf` — rasterize PDF pages via `karet-pdf`/`hayro` and display them through
-  the shared `raster` primitives.
+  rendering). Enabled automatically by `images`.
+- `images` — decode & render raster image **files** (adds the pure-Rust
+  PNG/JPEG/WebP/TIFF codecs on top of `raster`).
 
 ## Notes
 
-- **Markdown** renders as highlighted **source** (a rendered-markdown model is not
-  wired up yet).
 - Images use karet's own Kitty / halfblock backend (not `ratatui-image`).
-- Built against `ratatui` 0.30 on edition 2024; MSRV 1.90.
+- Built against `ratatui` 0.30 on edition 2024.
 
 [ratatui]: https://crates.io/crates/ratatui

@@ -120,7 +120,7 @@ impl App {
         for request in pending {
             self.cancel_backend_request(request);
         }
-        self.send_vcs(SessionCommand::RefreshVcs);
+        self.send_command(SessionCommand::RefreshVcs);
     }
 
     /// Apply the explorer inline edit: create the file/folder or rename on disk, then
@@ -142,7 +142,7 @@ impl App {
                 match result {
                     Ok(()) => {
                         self.explorer.rebuild(&self.root);
-                        self.send_vcs(SessionCommand::RefreshVcs);
+                        self.send_command(SessionCommand::RefreshVcs);
                         if !*folder {
                             self.open_path(path);
                         }
@@ -161,7 +161,7 @@ impl App {
                 Ok(()) => {
                     self.retarget_open_paths(from, to);
                     self.explorer.rebuild(&self.root);
-                    self.send_vcs(SessionCommand::RefreshVcs);
+                    self.send_command(SessionCommand::RefreshVcs);
                 },
                 Err(e) => {
                     self.explorer.restore_edit(&pending);
@@ -277,7 +277,7 @@ impl App {
                 self.retarget_open_paths(from, to);
             }
             self.explorer.rebuild(&self.root);
-            self.send_vcs(SessionCommand::RefreshVcs);
+            self.send_command(SessionCommand::RefreshVcs);
             if clipboard.op == ExplorerFileOp::Cut {
                 self.explorer_clipboard = None;
             }
@@ -349,7 +349,7 @@ impl App {
         }
         if copied > 0 {
             self.explorer.rebuild(&self.root);
-            self.send_vcs(SessionCommand::RefreshVcs);
+            self.send_command(SessionCommand::RefreshVcs);
             self.status = Some(format!("duplicated {copied} item(s)"));
         }
         if let Some(message) = first_error {
@@ -433,7 +433,7 @@ impl App {
         }
         if deleted > 0 {
             self.explorer.rebuild(&self.root);
-            self.send_vcs(SessionCommand::RefreshVcs);
+            self.send_command(SessionCommand::RefreshVcs);
             self.status = Some(format!("deleted {deleted} item(s)"));
         }
         if let Some(message) = first_error {

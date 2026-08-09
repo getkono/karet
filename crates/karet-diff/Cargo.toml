@@ -1,6 +1,6 @@
 [package]
 name        = "karet-diff"
-description = "Pure, syntax-aware text diffing engine (tree-sitter structural diff with line/word fallback) for karet."
+description = "Pure text diffing engine (histogram line diff, intra-line highlights, unified-diff parse, hunk staging) for karet."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

@@ -181,6 +181,7 @@ impl App {
     /// settings (later handed to the session backend) and any load diagnostics (shown
     /// as startup notifications), and applies the `workbench.*` slice: colour theme,
     /// icon style, and the startup sidebar panel.
+    #[cfg(test)]
     #[must_use]
     pub fn with_settings(mut self, settings: Settings, diagnostics: Vec<ConfigDiagnostic>) -> Self {
         let mut loaded = LoadedConfig::from_settings(settings);

@@ -39,16 +39,14 @@ docx = ["dep:karet-docx"]
 karet-core.workspace = true
 karet-filetype.workspace = true       # icon-style choice (`--icons`) shared with the widgets
 karet-session.workspace = true
-karet-text       = { workspace = true, features = ["mmap"] }
+karet-text.workspace = true
 karet-treesitter = { workspace = true, features = ["all-languages"] }
 karet-syntax.workspace = true
 karet-theme      = { workspace = true, features = ["view", "vscode"] }
 karet-diff.workspace = true
 karet-markdown   = { workspace = true, features = ["view", "highlight"] }
 karet-cbor.workspace = true           # decode .cbor to editable diagnostic text
-karet-terminal   = { workspace = true, features = ["view"] }
-karet-dap        = { workspace = true, features = ["view"] }
-karet-vcs        = { workspace = true, features = ["view"] }
+karet-vcs.workspace = true
 karet-graph      = { workspace = true, features = ["view"] }
 karet-search.workspace = true
 karet-fuzzy.workspace = true
@@ -72,8 +70,6 @@ directories.workspace = true
 ignore.workspace = true              # quick-open file listing (gitignore-aware)
 thiserror.workspace = true           # error types for the merged clipboard/input modules
 base64.workspace = true              # `clipboard` module (OSC 52), merged from karet-clipboard
-toml.workspace = true                # `input` module keymap config, merged from karet-input
-serde.workspace = true               # `input` module keymap config
 serde_json.workspace = true          # loaded-settings inspector formatting
 
 [dev-dependencies]

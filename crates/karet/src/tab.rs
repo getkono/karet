@@ -362,8 +362,6 @@ pub enum TabKind {
     },
     /// A read-only stash patch preview.
     StashPreview {
-        /// Stable stash selector.
-        reference: String,
         /// Unified patch and stat output.
         patch: String,
         /// Vertical scroll offset.
@@ -578,15 +576,10 @@ impl Tab {
 
     /// A lazily loaded issue detail tab.
     #[must_use]
-    pub(crate) fn github_issue(
-        repository: karet_session::GithubRepository,
-        number: u64,
-        pending: Option<karet_session::RequestId>,
-    ) -> Self {
+    pub(crate) fn github_issue(number: u64, pending: Option<karet_session::RequestId>) -> Self {
         Self::new(
             format!("Issue #{number}"),
             TabKind::Github(crate::app::github::GithubViewState::Issue {
-                repository,
                 number,
                 issue: None,
                 comments: karet_session::GithubPage {
@@ -606,7 +599,6 @@ impl Tab {
     /// A pull-request detail tab seeded from its search result.
     #[must_use]
     pub(crate) fn github_pull_request(
-        repository: karet_session::GithubRepository,
         pull_request: karet_session::GithubPullRequest,
         can_write: bool,
         pending: Option<karet_session::RequestId>,
@@ -615,7 +607,6 @@ impl Tab {
             format!("Pull Request #{}", pull_request.number),
             TabKind::Github(crate::app::github::GithubViewState::PullRequest(
                 crate::app::github::GithubPullRequestView {
-                    repository,
                     pull_request,
                     comments: karet_session::GithubPage {
                         items: Vec::new(),
@@ -748,11 +739,10 @@ impl Tab {
 
     /// A read-only stash patch preview.
     #[must_use]
-    pub fn stash_preview(reference: String, patch: String) -> Self {
+    pub fn stash_preview(reference: &str, patch: String) -> Self {
         Self::new(
             format!("Stash {reference}"),
             TabKind::StashPreview {
-                reference,
                 patch,
                 scroll: 0,
                 column: 0,

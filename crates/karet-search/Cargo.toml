@@ -17,9 +17,6 @@ default = []
 
 [dependencies]
 ignore.workspace = true
-grep-searcher.workspace = true
-grep-regex.workspace = true
-grep-matcher.workspace = true
 regex.workspace = true
 memchr.workspace = true
 thiserror.workspace = true

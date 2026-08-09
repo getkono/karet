@@ -21,7 +21,6 @@ categories   = ["development-tools", "command-line-utilities"]
 # opts back into it (feature unification re-enables the gix blame module workspace-wide).
 gix              = { workspace = true, features = ["blame"] }
 karet-treesitter = { workspace = true }   # shared tree-sitter parse host (function detection)
-karet-core       = { workspace = true }   # BytePos/Span coordinate types
 serde            = { workspace = true }    # derive(Serialize/Deserialize) on the output models
 serde_json       = { workspace = true }    # `to_json` convenience helper
 thiserror        = { workspace = true }

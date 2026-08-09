@@ -70,24 +70,10 @@ pub struct Diagnostic {
     pub related: Vec<RelatedInfo>,
 }
 
-/// The visual style of an [`DecorationKind::Underline`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[non_exhaustive]
-pub enum UnderlineStyle {
-    /// A straight underline.
-    Straight,
-    /// A curly/squiggly underline.
-    Curly,
-    /// A dotted underline.
-    Dotted,
-    /// A dashed underline.
-    Dashed,
-    /// A double underline.
-    Double,
-}
-
 /// The kind of a [`Decoration`] — the visual treatment to apply to a range.
+///
+/// `#[non_exhaustive]`: richer treatments (underlines, gutter icons, breakpoint
+/// markers, …) are added as variants when a producer and a renderer exist for them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
@@ -97,26 +83,10 @@ pub enum DecorationKind {
         /// The glyph to draw.
         glyph: char,
     },
-    /// A named gutter icon, resolved by the renderer.
-    GutterIcon {
-        /// Icon identifier.
-        id: u16,
-    },
     /// Highlight the whole line's background.
     LineBackground,
     /// Highlight the text background within the range.
     TextBackground,
-    /// Underline the range with the given style.
-    Underline(UnderlineStyle),
-    /// Strike through the range.
-    Strikethrough,
-    /// A debugger breakpoint marker.
-    Breakpoint {
-        /// Whether the breakpoint is enabled.
-        enabled: bool,
-        /// Whether it is conditional.
-        condition: bool,
-    },
     /// Inline "ghost" text (e.g. VCS blame, parameter names).
     InlineText {
         /// The text to render.
@@ -248,18 +218,6 @@ pub struct InlayHint {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CommandId(pub String);
-
-/// A code lens: an actionable annotation shown above a range.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct CodeLens {
-    /// The range the lens annotates.
-    pub range: Range,
-    /// The lens title (e.g. `"3 references"`).
-    pub title: String,
-    /// The command to run when activated.
-    pub command: Option<CommandId>,
-}
 
 /// A path-based location (works for files that are not currently open).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -427,10 +385,10 @@ mod tests {
     fn decoration_kinds() {
         let dec = Decoration {
             range: Range::default(),
-            kind: DecorationKind::Underline(UnderlineStyle::Curly),
+            kind: DecorationKind::GutterMarker { glyph: '▎' },
             role: Some(ThemeRole::DiagnosticError),
         };
-        assert_eq!(dec.kind, DecorationKind::Underline(UnderlineStyle::Curly));
+        assert_eq!(dec.kind, DecorationKind::GutterMarker { glyph: '▎' });
     }
 
     #[test]

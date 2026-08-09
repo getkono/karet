@@ -99,22 +99,6 @@ pub enum Event {
         /// A concise failure explanation, absent on success.
         error: Option<String>,
     },
-    /// A producer's decoration layer changed.
-    DecorationsChanged {
-        /// The document.
-        doc: DocumentId,
-        /// Which producer's layer this replaces.
-        layer: DecorationLayer,
-        /// The new decorations for that layer.
-        decorations: Vec<Decoration>,
-    },
-    /// Updated syntax highlight spans for a document.
-    Highlights {
-        /// The document.
-        doc: DocumentId,
-        /// The highlight spans.
-        spans: Vec<HighlightSpan>,
-    },
     /// Resolved document symbols.
     Symbols {
         /// The document.
@@ -219,11 +203,6 @@ pub enum Event {
         version: u64,
         /// Non-overlapping edits in buffer coordinates.
         edits: Vec<TextEdit>,
-    },
-    /// Search results answering a [`Command::Search`].
-    SearchResults {
-        /// The per-file hits.
-        hits: Vec<FileHit>,
     },
     /// Progress on a long-running operation.
     Progress {

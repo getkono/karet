@@ -228,10 +228,6 @@ pub enum Command {
     DeleteWordBackward,
     /// Delete the selection, or the next word/punctuation run.
     DeleteWordForward,
-    /// Indent the caret line (or every selected line) by one level.
-    Indent,
-    /// Dedent the caret line by one level.
-    Dedent,
     /// Undo the last edit group.
     Undo,
     /// Redo the last undone edit group.
@@ -574,8 +570,6 @@ impl Command {
             Self::DeleteForward => "Delete Forward",
             Self::DeleteWordBackward => "Delete Word Backward",
             Self::DeleteWordForward => "Delete Word Forward",
-            Self::Indent => "Indent Line",
-            Self::Dedent => "Dedent Line",
             Self::Undo => "Undo",
             Self::Redo => "Redo",
             Self::Save => "Save",
@@ -909,8 +903,6 @@ impl Command {
             | Self::DeleteForward
             | Self::DeleteWordBackward
             | Self::DeleteWordForward
-            | Self::Indent
-            | Self::Dedent
             | Self::SelectExtendUp
             | Self::SelectExtendDown
             | Self::OverlayUp

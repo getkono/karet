@@ -2,7 +2,7 @@
 //!
 //! Headless: connects to language servers over stdio and turns their responses
 //! into neutral `karet-core` models (`Diagnostic`, `Symbol`, `CompletionItem`,
-//! `Hover`, `InlayHint`, …), implementing [`SymbolProvider`]. Usable from a CLI or
+//! `Hover`, `InlayHint`, …). Usable from a CLI or
 //! a non-ratatui UI. (The ratatui completion/hover popups live in `karet-widgets`,
 //! which renders these models, so this crate stays free of UI dependencies.)
 //!
@@ -55,7 +55,6 @@ use karet_core::Location;
 use karet_core::Range;
 use karet_core::SignatureHelp;
 use karet_core::Symbol;
-use karet_core::SymbolProvider;
 use karet_core::TextEdit;
 use karet_core::WorkspaceEdit;
 use serde_json::Value;
@@ -583,26 +582,6 @@ fn initialize_params(root: &Path) -> Result<lsp_types::InitializeParams, LspErro
         capabilities,
         ..lsp_types::InitializeParams::default()
     })
-}
-
-/// A document's resolved symbols, cached so they can be borrowed as a
-/// [`SymbolProvider`] by widgets that render an outline/breadcrumbs.
-pub struct DocumentSymbols {
-    symbols: Vec<Symbol>,
-}
-
-impl DocumentSymbols {
-    /// Wrap a resolved symbol list.
-    #[must_use]
-    pub fn new(symbols: Vec<Symbol>) -> Self {
-        Self { symbols }
-    }
-}
-
-impl SymbolProvider for DocumentSymbols {
-    fn symbols(&self) -> &[Symbol] {
-        &self.symbols
-    }
 }
 
 #[cfg(test)]

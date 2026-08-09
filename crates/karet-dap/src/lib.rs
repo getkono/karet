@@ -2,10 +2,12 @@
 //!
 //! Headless: drives a debug adapter and exposes debugging state (breakpoints,
 //! variables, call stack), emitting breakpoint markers as neutral `karet-core`
-//! [`Decoration`]s. (The ratatui debug panels live behind the `view` feature.)
+//! [`Decoration`]s.
 //!
-//! This is the implementation *skeleton*: the public joints are defined; the DAP
-//! protocol/session logic is filled in separately.
+//! This is an unimplemented *skeleton* (`publish = false`, no workspace consumer):
+//! the public joints are defined so the future debugger work has a landing spot,
+//! but every `DapClient` method is a stub.
+#![allow(clippy::todo)] // deliberate skeleton: see crate docs; nothing depends on this crate
 
 use std::path::Path;
 

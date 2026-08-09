@@ -539,7 +539,7 @@ impl App {
                             self.status = Some("stash: no local changes".to_string());
                         },
                         VcsOutcome::StashPreview { reference, patch } => {
-                            self.push_tab(Tab::stash_preview(reference, patch));
+                            self.push_tab(Tab::stash_preview(&reference, patch));
                         },
                         VcsOutcome::Completed => {
                             self.status = Some("source control operation completed".to_string());
@@ -747,42 +747,9 @@ impl App {
                 self.status = Some(format!("dependency graph: {count} package(s)"));
             },
             SessionEvent::LoadedConfig { report } => self.open_loaded_config(*report),
-            SessionEvent::HoverResult { hover } => {
-                self.status = hover.map_or_else(
-                    || Some("no hover information".to_string()),
-                    |hover| {
-                        hover
-                            .contents
-                            .value
-                            .lines()
-                            .next()
-                            .map(|line| format!("hover: {line}"))
-                    },
-                );
-            },
-            SessionEvent::Definitions { locations } => {
-                self.status = locations.first().map_or_else(
-                    || Some("definition not found".to_string()),
-                    |location| {
-                        Some(format!(
-                            "definition: {}:{}:{}",
-                            location.path.display(),
-                            location.range.start.line + 1,
-                            location.range.start.col + 1
-                        ))
-                    },
-                );
-            },
-            SessionEvent::WorkspaceSymbols { symbols } => {
-                self.status = Some(format!("{} workspace symbol(s)", symbols.len()));
-            },
-            SessionEvent::WorkspaceEdit { edit } => {
-                let files = edit.changes.len();
-                self.status = Some(format!("rename preview: {files} file(s)"));
-            },
-            SessionEvent::FormattingEdits { edits, .. } => {
-                self.status = Some(format!("formatter returned {} edit(s)", edits.len()));
-            },
+            // Events answering commands this client never sends (hover, definition,
+            // workspace symbols, rename, format-on-save) fall through here until the
+            // corresponding UI exists.
             _ => {},
         }
         // A "save & close" runs the parked request once every issued save succeeds.

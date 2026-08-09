@@ -164,7 +164,7 @@
         assert_eq!(app.tabs[app.active].editor.scroll_col, 0);
 
         app.tabs[app.active] = Tab::stash_preview(
-            "stash@{0}".to_string(),
+            "stash@{0}",
             "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\nsecond\nthird\nfourth"
                 .to_string(),
         );
@@ -571,7 +571,6 @@
         );
         let rows = app.active_outline_rows();
         assert_eq!(rows.first().map(|row| row.label.as_str()), Some("run"));
-        assert_eq!(rows.first().and_then(|row| row.detail.as_deref()), Some("fn run()"));
         app.dispatch(Command::ToggleOutline);
         app.dispatch(Command::OutlineActivate);
         assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 4));

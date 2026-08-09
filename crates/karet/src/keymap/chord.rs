@@ -106,7 +106,9 @@ impl KeyChord {
         .canonical()
     }
 
-    /// Whether this chord matches a live key event.
+    /// Whether this chord matches a live key event (test helper; the resolver
+    /// compares canonical chords directly).
+    #[cfg(test)]
     #[must_use]
     pub fn matches(self, ev: KeyEvent) -> bool {
         self.canonical() == Self::from_event(ev)

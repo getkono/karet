@@ -1,6 +1,6 @@
 [package]
 name        = "karet-syntax"
-description = "Tree-sitter syntactic analysis (highlighting, fold regions, brackets) for karet TUI editors."
+description = "Tree-sitter syntactic analysis (highlighting incl. injected languages, fold regions, semantic blocks, outlines) for karet TUI editors."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

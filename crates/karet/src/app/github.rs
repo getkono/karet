@@ -199,7 +199,6 @@ pub(crate) enum GithubViewState {
     Dashboard(GithubDashboard),
     /// An issue detail request or loaded issue.
     Issue {
-        repository: GithubRepository,
         number: u64,
         issue: Option<GithubIssue>,
         comments: GithubPage<GithubComment>,
@@ -631,20 +630,15 @@ impl App {
             return;
         };
         match selection {
-            Selection::Issue(repository, number) => {
+            Selection::Issue(_repository, number) => {
                 let request = self.send_command_id(SessionCommand::GithubIssue { number });
-                self.push_tab(Tab::github_issue(repository, number, request));
+                self.push_tab(Tab::github_issue(number, request));
             },
-            Selection::PullRequest(repository, pull_request, can_write) => {
+            Selection::PullRequest(_repository, pull_request, can_write) => {
                 let request = self.send_command_id(SessionCommand::GithubPullRequest {
                     number: pull_request.number,
                 });
-                self.push_tab(Tab::github_pull_request(
-                    repository,
-                    pull_request,
-                    can_write,
-                    request,
-                ));
+                self.push_tab(Tab::github_pull_request(pull_request, can_write, request));
             },
             Selection::WorkflowRun(repository, workflow, run) => {
                 self.push_tab(Tab::github_workflow_run(repository, workflow, run));

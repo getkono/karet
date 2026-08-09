@@ -1,7 +1,7 @@
 //! Local-mode renderable snapshots and the snapshot stream.
 //!
 //! In local mode the UI renders from owned [`DocSnapshot`]s the session pushes on
-//! the snapshot stream, rather than borrowing a [`DocumentView`](crate::session::DocumentView)
+//! the snapshot stream, rather than borrowing document state
 //! across the actor task boundary. A snapshot is cheap to produce — the buffer
 //! clone shares the rope (O(1) structural sharing) and highlights/decorations are
 //! `Arc`-shared — so a snapshot can be minted on every applied edit.

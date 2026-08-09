@@ -22,7 +22,6 @@ pub(super) fn draw_github(f: &mut Frame, theme: &Theme, area: Rect, view: &mut G
     match view {
         GithubViewState::Dashboard(dashboard) => draw_dashboard(f, theme, area, dashboard),
         GithubViewState::Issue {
-            repository: _,
             number,
             issue,
             comments,

@@ -160,7 +160,7 @@ impl App {
     /// tab, and an unresolvable range answers with a VCS notification instead.
     pub(super) fn open_range(&mut self, command: SessionCommand) {
         self.status = Some("computing diff…".to_string());
-        self.send_vcs(command);
+        self.send_command(command);
     }
 
     /// Mark the browser's selected commit as the base for a two-commit comparison.

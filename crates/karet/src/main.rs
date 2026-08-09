@@ -6,13 +6,9 @@
 //! opened directly; when it is inside a git repository, the Source Control panel
 //! lists the staged and working-tree changes (each opens as a diff tab).
 //!
-//! Routing through the headless `karet-session` backend is a deferred step; for now
-//! the shell calls the engines directly.
-
-// Some scaffolding is intentionally not wired into the shell yet: a handful of
-// planned commands (scroll/indent), symmetry helpers exercised only by tests, the
-// clipboard's read path, and render helpers.
-#![allow(dead_code)]
+//! Editing, language intelligence, and source control route through the headless
+//! `karet-session` backend; the remaining direct engine calls (diff rendering,
+//! workspace search, remote-URL reads) are being migrated behind the same seam.
 
 mod app;
 mod cli;

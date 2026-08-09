@@ -15,21 +15,17 @@ use crate::error::CoreError;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BytePos(pub usize);
 
-/// An absolute offset measured in Unicode scalar values (`char`s).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct CharPos(pub usize);
-
 /// A zero-based line/column position.
 ///
-/// `col` is counted in the active [`PositionEncoding`]; karet's internal default
-/// is `Utf32` (Unicode scalar values).
+/// `col` is counted in Unicode scalar values (`char`s) — karet's canonical
+/// internal unit. Boundaries that speak other units (LSP's UTF-16 default)
+/// translate at the edge via `karet_text::TextBuffer`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LineCol {
     /// Zero-based line index.
     pub line: u32,
-    /// Zero-based column index, in [`PositionEncoding`] units.
+    /// Zero-based column index, in Unicode scalar values.
     pub col: u32,
 }
 
@@ -39,22 +35,6 @@ impl LineCol {
     pub const fn new(line: u32, col: u32) -> Self {
         Self { line, col }
     }
-}
-
-/// The unit in which a [`LineCol`] column is counted at a protocol boundary.
-///
-/// karet's canonical internal unit is [`PositionEncoding::Utf32`]; LSP defaults to
-/// `Utf16` and must be translated at the edge.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum PositionEncoding {
-    /// Columns counted in UTF-8 code units (bytes).
-    Utf8,
-    /// Columns counted in UTF-16 code units.
-    Utf16,
-    /// Columns counted in Unicode scalar values (`char`s).
-    #[default]
-    Utf32,
 }
 
 /// A half-open byte span `[start, end)` within a single buffer.
@@ -173,6 +153,5 @@ mod tests {
             Range::new(LineCol::new(3, 0), LineCol::new(1, 0)),
             Err(CoreError::InvalidRange)
         );
-        assert_eq!(PositionEncoding::default(), PositionEncoding::Utf32);
     }
 }
