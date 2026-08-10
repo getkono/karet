@@ -188,6 +188,29 @@ when automatic completion is disabled. Double-clicking a spelling squiggle opens
 same replacements in a correction menu. A warning without close matches instead shows
 a muted `No similar words found` row, while still offering the dictionary action.
 
+#### The Spelling panel
+
+Squiggles only show what is on screen, so the **Spelling** sidebar panel (`Ctrl+4`, or
+**View: Show Spelling** in the command palette) lists every misspelling in the whole
+workspace, grouped by file. Selecting a row — <kbd>Enter</kbd> or a click — opens that
+file with the caret on the word, so a pass over the list is a pass over the fixes.
+
+The scan walks the same corpus workspace search does: gitignore-aware, skipping binary
+and oversize files, with `.git`, `target`, and `node_modules` pruned. It applies the
+same scope settings as the editor, so with the defaults it checks prose documents and
+source comments and nothing else. Files you have open are answered from their live
+buffers, so unsaved edits are never reported from stale text on disk.
+
+Results stream in as the walk proceeds rather than appearing all at once — on this
+repository (435 files, ~113k lines) the first rows land in well under a second and the
+whole scan takes a couple of seconds. Opening the panel scans if it has nothing to
+show; `⟳ scan` in the panel header re-runs it, superseding any scan still in flight.
+The list is capped at 5000 misspellings, and says so when it stops there.
+
+The panel deliberately shows no replacement suggestions: computing them for a whole
+workspace dominates the scan's cost, and the correction menu and completion popup
+already offer them in the editor, where the fix actually happens.
+
 `Add “…” to Project Dictionary` appends the word to `spellcheck.words` in the project
 layer. An existing `$GIT_ROOT/.karet/setting.jsonc` is updated in place while retaining
 its comments and unrelated settings. If that file does not exist, karet requires the
