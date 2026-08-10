@@ -229,17 +229,10 @@ impl App {
     /// 0-based coordinates and clamped into the buffer. A non-text target (image,
     /// binary, …) simply opens with no caret to place.
     pub fn open_startup_goto(&mut self, path: &Path, line: u32, col: u32) {
-        self.open_path(path);
         // `line`/`col` are 1-based with a minimum of 1; `saturating_sub` maps them to
         // the editor's 0-based coordinates, and `goto` clamps into the buffer.
         let pos = LineCol::new(line.saturating_sub(1), col.saturating_sub(1));
-        let buffer = match self.tabs.get(self.active).map(|t| &t.kind) {
-            Some(TabKind::Code { buffer, .. }) => Some(buffer.clone()),
-            _ => None,
-        };
-        if let (Some(buffer), Some(tab)) = (buffer, self.tabs.get_mut(self.active)) {
-            tab.editor.goto(&buffer, pos);
-        }
+        self.focus_by_file_line(path, pos);
         self.focus = Focus::Editor;
     }
 

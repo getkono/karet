@@ -51,6 +51,39 @@ impl App {
         self.install_preview_tab(tab, steal_focus);
     }
 
+    /// Open (or focus, when it is already open) `path` and put the caret at
+    /// `position` — the single "jump to this file:line" primitive behind every
+    /// result list that navigates somewhere: workspace search hits, a diff's
+    /// underlying file, `--goto` at startup, and the Spelling panel.
+    ///
+    /// A relative `path` resolves against the workspace root, so a VCS-relative
+    /// change path opens and dedups like any explorer open. Focus follows
+    /// [`open_path`](Self::open_path) to the editor. `position` is in the editor's
+    /// 0-based coordinates and [`goto`](karet_editor::EditorState::goto) clamps it
+    /// into the buffer; a non-text tab (image, binary, placeholder) simply has no
+    /// caret to place.
+    ///
+    /// Callers keep their own pre-checks: this deliberately does *not* require the
+    /// path to exist, because `--goto` on a missing file is how karet opens a new
+    /// one.
+    pub(super) fn focus_by_file_line(&mut self, path: &Path, position: LineCol) {
+        let target = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.root.join(path)
+        };
+        self.open_path(&target);
+        // The buffer is cloned out first (an O(1) rope share) so the tab can be
+        // borrowed mutably to move its caret.
+        let buffer = match self.tabs.get(self.active).map(|t| &t.kind) {
+            Some(TabKind::Code { buffer, .. }) => Some(buffer.clone()),
+            _ => None,
+        };
+        if let (Some(buffer), Some(tab)) = (buffer, self.tabs.get_mut(self.active)) {
+            tab.editor.goto(&buffer, position);
+        }
+    }
+
     /// Place `tab` (already flagged [`is_preview`](Tab::is_preview)) into the
     /// focused pane's single preview slot: replace the existing preview tab in
     /// place, or — when this pane has none — open it as a new tab. One slot per
