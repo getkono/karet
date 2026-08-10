@@ -62,6 +62,39 @@ fn github_dashboard_is_singleton_leftmost_and_uncloseable() {
 }
 
 #[test]
+fn github_dashboard_install_does_not_steal_focus_from_the_startup_preview() {
+    let dir = test_dir("github_startup_focus");
+    let _ = std::fs::create_dir_all(&dir);
+    let readme = dir.join("README.md");
+    let _ = std::fs::write(&readme, "# karet\n");
+
+    let mut app = app();
+    app.open_initial_preview(&readme);
+    assert_eq!(app.tabs.len(), 1);
+    assert_eq!(app.focus, Focus::Sidebar);
+
+    // Availability arrives asynchronously, well after startup settled.
+    app.apply_github_availability(Some(repository()), anonymous_auth());
+
+    assert_eq!(app.tabs.len(), 2, "the preview tab survives the dashboard");
+    assert!(app.tabs[0].is_github_dashboard());
+    assert_eq!(app.active, 1, "the README stays the active tab");
+    assert_eq!(app.tabs[app.active].path(), Some(readme.as_path()));
+    assert_eq!(app.focus, Focus::Sidebar, "the sidebar keeps focus");
+
+    // ...and the unfocused dashboard still kicked off its first section load.
+    let dashboard = app.tabs.first().and_then(|tab| match &tab.kind {
+        TabKind::Github(crate::app::github::GithubViewState::Dashboard(dashboard)) => {
+            Some(dashboard)
+        },
+        _ => None,
+    });
+    assert!(dashboard.is_some_and(|dashboard| dashboard.loading_since.is_some()));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn github_dashboard_disappears_when_repository_becomes_ineligible() {
     let mut app = app();
     app.apply_github_availability(Some(repository()), anonymous_auth());
@@ -76,6 +109,9 @@ fn github_dashboard_disappears_when_repository_becomes_ineligible() {
 fn github_dashboard_opens_a_masked_in_tui_sign_in_control() {
     let mut app = app();
     app.apply_github_availability(Some(repository()), anonymous_auth());
+    // Installing the dashboard no longer grabs focus, so drive it as a user does:
+    // select the tab first.
+    app.select_tab(0);
 
     assert!(app.github_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE)));
     assert!(app.github_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)));
@@ -98,6 +134,7 @@ fn github_dashboard_opens_a_masked_in_tui_sign_in_control() {
 fn github_issue_table_supports_keyboard_multi_selection() {
     let mut app = app();
     app.apply_github_availability(Some(repository()), anonymous_auth());
+    app.select_tab(0);
     app.apply_github_issues(
         None,
         GithubPage {
@@ -163,6 +200,7 @@ fn github_shift_click_appends_focused_range_across_card_rows() {
 fn github_section_labels_are_clickable_and_actions_rows_open() {
     let mut app = app();
     app.apply_github_availability(Some(repository()), anonymous_auth());
+    app.select_tab(0);
     if let Some(TabKind::Github(crate::app::github::GithubViewState::Dashboard(dashboard))) =
         app.tabs.first_mut().map(|tab| &mut tab.kind)
     {
@@ -244,6 +282,7 @@ fn ctrl_r_refreshes_every_github_page_that_loads_remote_data() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.apply_github_availability(Some(repository()), anonymous_auth());
+    app.select_tab(0);
     if let Ok(mut sent) = backend.sent.lock() {
         sent.clear();
     }
