@@ -38,7 +38,7 @@
     fn prepended_commits_dedupe_and_preserve_scroll() {
         let mut app = app();
         app.scm.log = vec![commit("aaaaaaa1", "old top"), commit("bbbbbbb2", "older")];
-        app.scm_commits_offset = 5;
+        app.scm_ui.commits_offset = 5;
         // A genuinely-new commit plus a duplicate of the current top: only the new
         // one prepends, and the viewport shifts down by that one inserted row.
         app.apply_vcs_commits_prepended(vec![
@@ -48,7 +48,7 @@
         assert_eq!(app.scm.log.len(), 3);
         assert_eq!(app.scm.log[0].summary, "new");
         assert_eq!(app.scm.log[1].summary, "old top");
-        assert_eq!(app.scm_commits_offset, 6);
+        assert_eq!(app.scm_ui.commits_offset, 6);
     }
 
     #[test]
@@ -56,35 +56,35 @@
         let mut app = app();
         app.sidebar_panel = SidebarPanel::SourceControl;
         // Changes region on top (rows 0..10), commit-log region below (rows 10..15).
-        app.scm_changes_rect = Rect {
+        app.scm_ui.changes_rect = Rect {
             x: 0,
             y: 0,
             width: 20,
             height: 10,
         };
-        app.scm_total_rows = 20;
-        app.scm_commits_rect = Rect {
+        app.scm_ui.total_rows = 20;
+        app.scm_ui.commits_rect = Rect {
             x: 0,
             y: 10,
             width: 20,
             height: 5,
         };
-        app.scm_commits_total = 12;
+        app.scm_ui.commits_total = 12;
 
         // Wheeling over the changes region scrolls it, clamped to total - height.
         app.sidebar_wheel(5, 3);
-        assert_eq!(app.scm_offset, 5);
+        assert_eq!(app.scm_ui.offset, 5);
         app.sidebar_wheel(100, 3);
-        assert_eq!(app.scm_offset, 10);
+        assert_eq!(app.scm_ui.offset, 10);
         app.sidebar_wheel(-100, 3);
-        assert_eq!(app.scm_offset, 0);
+        assert_eq!(app.scm_ui.offset, 0);
 
         // Wheeling over the commit-log region scrolls it independently.
         app.sidebar_wheel(4, 11);
-        assert_eq!(app.scm_commits_offset, 4);
-        assert_eq!(app.scm_offset, 0); // changes untouched
+        assert_eq!(app.scm_ui.commits_offset, 4);
+        assert_eq!(app.scm_ui.offset, 0); // changes untouched
         app.sidebar_wheel(100, 11);
-        assert_eq!(app.scm_commits_offset, 7); // clamps to 12 - 5
+        assert_eq!(app.scm_ui.commits_offset, 7); // clamps to 12 - 5
     }
 
     #[test]
@@ -99,13 +99,13 @@
             width: 30,
             height: 12,
         };
-        app.scm_commits_rect = Rect {
+        app.scm_ui.commits_rect = Rect {
             x: 0,
             y: 4,
             width: 30,
             height: 6,
         };
-        app.scm_commits_offset = 0;
+        app.scm_ui.commits_offset = 0;
         app.scm.log = vec![commit("aaaaaaa111", "first")];
 
         app.handle_sidebar_click(2, 5, KeyModifiers::NONE);
@@ -610,8 +610,8 @@
         // Seed the layout state a render would have produced: the changes region
         // starts at row 2, whose first display row is change index 0.
         app.sidebar_rect = Rect::new(0, 0, 20, 20);
-        app.scm_changes_rect = Rect::new(0, 2, 20, 10);
-        app.scm_row_map = vec![Some(0), Some(1)];
+        app.scm_ui.changes_rect = Rect::new(0, 2, 20, 10);
+        app.scm_ui.row_map = vec![Some(0), Some(1)];
 
         // First click of the double-click: the diff opens as a preview and the
         // panel keeps focus (a plain single click is a browse).

@@ -452,19 +452,19 @@
                 diagnostics: vec![diagnostic.clone()],
             },
         );
-        assert_eq!(app.document_settings.get(&doc), Some(&settings));
-        assert_eq!(app.document_diagnostics.get(&doc), Some(&vec![diagnostic]));
+        assert_eq!(app.docs.settings.get(&doc), Some(&settings));
+        assert_eq!(app.docs.diagnostics.get(&doc), Some(&vec![diagnostic]));
 
         app.on_backend_event(None, SessionEvent::Closed { doc });
-        assert!(!app.document_settings.contains_key(&doc));
-        assert!(!app.document_diagnostics.contains_key(&doc));
+        assert!(!app.docs.settings.contains_key(&doc));
+        assert!(!app.docs.diagnostics.contains_key(&doc));
     }
 
     #[test]
     fn active_spell_language_is_named_beside_the_file_language() {
         let mut app = app();
         dirty_doc_tab(&mut app, "notes.md", 4);
-        app.document_settings.insert(
+        app.docs.settings.insert(
             DocumentId(4),
             DocumentSettings {
                 spelling_language: karet_session::SpellingLanguage::parse("en_GB"),
@@ -543,7 +543,7 @@
             source: Some("karet-spell".to_owned()),
             ..diagnostic.clone()
         };
-        app.document_diagnostics
+        app.docs.diagnostics
             .insert(DocumentId(14), vec![spelling.clone()]);
 
         app.on_backend_event(
@@ -560,7 +560,7 @@
         let replaced = app.tabs.iter().find(|tab| tab.view == view);
         assert!(replaced.is_some_and(|tab| tab.path() == Some(pdf.as_path())));
         assert_eq!(
-            app.document_diagnostics.get(&DocumentId(14)),
+            app.docs.diagnostics.get(&DocumentId(14)),
             Some(&vec![spelling, diagnostic])
         );
         assert!(request.is_some_and(|request| !app.latex_previews.contains_key(&request)));

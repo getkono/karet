@@ -179,7 +179,7 @@
         app.search_edit(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         assert_eq!(app.search.query, "alpha x");
 
-        app.search_query_rect = Rect {
+        app.search_ui.query_rect = Rect {
             x: 4,
             y: 3,
             width: 12,
@@ -245,7 +245,7 @@
             height: 10,
         };
         // A "regex" toggle button on row 2, columns 20..22.
-        app.search_action_hits = vec![(20, 22, 2, Command::SearchToggleRegex)];
+        app.search_ui.action_hits = vec![(20, 22, 2, Command::SearchToggleRegex)];
         assert!(!app.search.regex);
         app.handle_sidebar_click(20, 2, KeyModifiers::NONE);
         assert!(app.search.regex);

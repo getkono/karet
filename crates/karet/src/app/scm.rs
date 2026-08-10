@@ -742,7 +742,7 @@ impl App {
             // A fresh first page (initial load or a reconciliation reset) replaces the
             // log; scroll back to the top so the newest commits are in view.
             self.scm.log = commits;
-            self.scm_commits_offset = 0;
+            self.scm_ui.commits_offset = 0;
         } else if skip == self.scm.log.len() {
             self.scm.log.extend(commits);
         }
@@ -762,8 +762,8 @@ impl App {
         self.scm.log = commits;
         // If the user had scrolled into the log, shift down so the same commits stay
         // put; at the top (offset 0) keep them at the newest.
-        if self.scm_commits_offset > 0 {
-            self.scm_commits_offset += inserted;
+        if self.scm_ui.commits_offset > 0 {
+            self.scm_ui.commits_offset += inserted;
         }
     }
 }

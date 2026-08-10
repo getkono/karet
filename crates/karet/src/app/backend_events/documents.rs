@@ -46,7 +46,7 @@ impl App {
         // (spell checking today, with room for other producers). Keep
         // compiler feedback alive when that layer refreshes.
         let mut combined = diagnostics;
-        if let Some(existing) = self.document_diagnostics.get(&doc) {
+        if let Some(existing) = self.docs.diagnostics.get(&doc) {
             combined.extend(
                 existing
                     .iter()
@@ -60,16 +60,17 @@ impl App {
 
     /// Drop every per-document cache for a closed session document.
     pub(super) fn on_document_closed(&mut self, doc: DocumentId) {
-        self.document_settings.remove(&doc);
-        self.document_diagnostics.remove(&doc);
-        self.document_symbols.remove(&doc);
-        self.outline_versions.remove(&doc);
-        self.outline_loading.remove(&doc);
+        self.docs.settings.remove(&doc);
+        self.docs.diagnostics.remove(&doc);
+        self.docs.symbols.remove(&doc);
+        self.docs.outline_versions.remove(&doc);
+        self.docs.outline_loading.remove(&doc);
     }
 
     /// Adopt a symbol tree, resolving which buffer version it represents.
     pub(super) fn on_symbols(&mut self, doc: DocumentId, symbols: Vec<Symbol>) {
         let version = self
+            .docs
             .outline_loading
             .remove(&doc)
             .map(|(version, _)| version)
@@ -83,9 +84,9 @@ impl App {
                     _ => None,
                 })
             });
-        self.document_symbols.insert(doc, symbols);
+        self.docs.symbols.insert(doc, symbols);
         if let Some(version) = version {
-            self.outline_versions.insert(doc, version);
+            self.docs.outline_versions.insert(doc, version);
         }
         self.sync_outline_selection();
     }

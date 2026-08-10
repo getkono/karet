@@ -91,7 +91,7 @@ impl App {
         match event {
             SessionEvent::Opened { doc, .. } => self.on_opened(id, doc),
             SessionEvent::DocumentSettingsChanged { doc, settings } => {
-                self.document_settings.insert(doc, settings);
+                self.docs.settings.insert(doc, settings);
             },
             SessionEvent::DiagnosticsPublished { doc, diagnostics } => {
                 self.on_diagnostics_published(doc, diagnostics);

@@ -605,7 +605,7 @@
         assert_eq!((rows[1].depth, rows[1].label.as_str()), (1, "Child"));
 
         app.dispatch(Command::ToggleOutline);
-        app.outline_sel.move_to(1);
+        app.outline.sel.move_to(1);
         app.dispatch(Command::OutlineActivate);
         assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(2, 0));
     }
@@ -653,12 +653,12 @@
         let painted = screen(&mut app, 36, 10).join("\n");
         assert!(painted.contains("OUTLINE"));
         assert!(painted.contains("Contents"));
-        assert!(app.outline_overlay);
+        assert!(app.outline.overlay);
 
         app.dispatch(Command::OutlineCollapse);
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert!(!app.outline_visible);
-        assert!(!app.outline_overlay);
+        assert!(!app.outline.visible);
+        assert!(!app.outline.overlay);
     }
 
     /// The draw-time render cache is keyed on the document version, so an edit re-renders

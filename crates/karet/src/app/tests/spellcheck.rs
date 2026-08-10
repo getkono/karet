@@ -19,7 +19,7 @@
         if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
             *doc = Some(DocumentId(9));
         }
-        app.document_diagnostics
+        app.docs.diagnostics
             .insert(DocumentId(9), vec![spell_diagnostic(message)]);
         app.pane_frames = vec![content_frame(
             &app,

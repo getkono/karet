@@ -13,7 +13,6 @@ impl App {
         let staged_count = staged.len();
         let mut changes = staged;
         changes.extend(working);
-        let graphics = image::detect_protocol();
         Self {
             root,
             settings: Settings::default(),
@@ -23,11 +22,7 @@ impl App {
             syntax,
             icon_style: IconStyle::default(),
             icon_override: None,
-            graphics,
-            kitty_graphics_supported: graphics == GraphicsProtocol::Kitty,
-            kitty_keyboard_supported: false,
-            pointer_shapes_supported: false,
-            pointer_shape: None,
+            caps: TerminalCaps::detect(),
             focus: Focus::Sidebar,
             sidebar_panel: SidebarPanel::Explorer,
             sidebar_visible: true,
@@ -94,35 +89,13 @@ impl App {
             pane_action_hover: None,
             sidebar_header_hover: None,
             panel_hits: Vec::new(),
-            outline_visible: false,
-            outline_overlay: false,
-            outline_sel: ListSelection::new(0),
-            outline_rect: Rect::default(),
-            outline_content_rect: Rect::default(),
-            outline_width: OUTLINE_WIDTH,
-            outline_scroll: 0,
+            outline: OutlinePanel::default(),
             header_action_hits: Vec::new(),
-            scm_row_map: Vec::new(),
-            scm_header_hits: Vec::new(),
             nested_repository_status: HashMap::new(),
             nested_repository_pending: HashMap::new(),
-            scm_offset: 0,
-            scm_changes_rect: Rect::default(),
-            scm_commit_rect: Rect::default(),
+            scm_ui: ScmChrome::default(),
             text_field_drag: None,
-            scm_total_rows: 0,
-            scm_commits_offset: 0,
-            scm_commits_rect: Rect::default(),
-            scm_commits_total: 0,
-            scm_more_row: None,
-            scm_commits_h: DEFAULT_SCM_COMMITS_H,
-            scm_divider_y: 0,
-            scm_resizing: false,
-            search_results_rect: Rect::default(),
-            search_offset: 0,
-            search_query_rect: Rect::default(),
-            search_replace_rect: None,
-            search_action_hits: Vec::new(),
+            search_ui: SearchChrome::default(),
             status_rect: Rect::default(),
             status_hits: Vec::new(),
             editor_rect: Rect::default(),
@@ -145,12 +118,8 @@ impl App {
             pending_open: HashMap::new(),
             abandoned_open: HashSet::new(),
             pending_saves: HashMap::new(),
-            document_settings: HashMap::new(),
-            document_diagnostics: HashMap::new(),
-            document_symbols: HashMap::new(),
+            docs: DocState::default(),
             lsp_runtime: language_servers::LanguageServerRuntimeModel::default(),
-            outline_versions: HashMap::new(),
-            outline_loading: HashMap::new(),
             auto_save_pending: HashMap::new(),
             pending_completion: None,
             completion: None,
@@ -460,8 +429,8 @@ impl App {
     }
 
     pub(super) fn graphical_cursor_compatible(&self) -> bool {
-        self.kitty_keyboard_supported
-            && self.kitty_graphics_supported
-            && self.graphics == GraphicsProtocol::Kitty
+        self.caps.kitty_keyboard
+            && self.caps.kitty_graphics
+            && self.caps.graphics == GraphicsProtocol::Kitty
     }
 }

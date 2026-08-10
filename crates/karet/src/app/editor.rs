@@ -40,7 +40,8 @@ impl App {
         error: Option<String>,
     ) {
         let mut combined = self
-            .document_diagnostics
+            .docs
+            .diagnostics
             .get(&doc)
             .into_iter()
             .flatten()
@@ -134,7 +135,7 @@ impl App {
                 .tab_size(),
         );
         App::tab_doc(tab)
-            .and_then(|doc| self.document_settings.get(&doc))
+            .and_then(|doc| self.docs.settings.get(&doc))
             .map_or(fallback, |settings| settings.tab_width)
             .max(1)
     }
@@ -148,7 +149,7 @@ impl App {
         let fallback_spaces = resolved.is_none_or(|settings| settings.insert_spaces());
         let document = tab
             .and_then(App::tab_doc)
-            .and_then(|doc| self.document_settings.get(&doc).copied());
+            .and_then(|doc| self.docs.settings.get(&doc).copied());
         let size = usize::from(document.map_or(fallback_size, |settings| settings.indent_size));
         let insert_spaces = document.map_or(fallback_spaces, |settings| settings.insert_spaces);
         if insert_spaces {

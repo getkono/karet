@@ -20,7 +20,7 @@
         if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
             *doc = Some(DocumentId(9));
         }
-        app.document_settings.insert(
+        app.docs.settings.insert(
             DocumentId(9),
             DocumentSettings {
                 insert_spaces: false,
@@ -450,15 +450,15 @@
             height: 8,
         };
         // Clicks hit-test against the changes region rect.
-        app.scm_changes_rect = Rect {
+        app.scm_ui.changes_rect = Rect {
             x: 0,
             y: 2,
             width: 30,
             height: 8,
         };
-        app.scm_offset = 0;
+        app.scm_ui.offset = 0;
         // Display rows: 0 header, 1 a.rs(0), 2 header, 3 b.rs(1).
-        app.scm_row_map = vec![None, Some(0), None, Some(1)];
+        app.scm_ui.row_map = vec![None, Some(0), None, Some(1)];
         app.handle_sidebar_click(2, 5, KeyModifiers::NONE); // content row 3 -> change index 1
         assert_eq!(app.scm.selection.cursor(), 1);
         assert!(app.active_is_diff());

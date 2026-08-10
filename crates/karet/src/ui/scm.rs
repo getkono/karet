@@ -17,7 +17,7 @@ pub(super) fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
     // it, a resizable commit-log region pinned to the bottom with a drag divider.
     let has_log = !app.scm.log.is_empty() || app.scm.log_has_more;
     let (changes_area, commits_area) = if has_log && list_area.height > MIN_SCM_REGION * 2 + 1 {
-        let commits_h = app.scm_commits_h.clamp(
+        let commits_h = app.scm_ui.commits_h.clamp(
             MIN_SCM_REGION,
             list_area.height.saturating_sub(MIN_SCM_REGION + 1),
         );
@@ -27,11 +27,11 @@ pub(super) fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
             Constraint::Length(commits_h),
         ])
         .split(list_area);
-        app.scm_divider_y = parts[1].y;
-        draw_scm_divider(f, theme, parts[1], app.scm_resizing);
+        app.scm_ui.divider_y = parts[1].y;
+        draw_scm_divider(f, theme, parts[1], app.scm_ui.resizing);
         (parts[0], Some(parts[2]))
     } else {
-        app.scm_divider_y = 0;
+        app.scm_ui.divider_y = 0;
         (list_area, None)
     };
 
@@ -40,15 +40,15 @@ pub(super) fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
         draw_scm_commits(f, app, theme, commits_area);
     } else {
         // No pinned region this frame: clear its state so stale hit-testing can't fire.
-        app.scm_commits_rect = Rect::default();
-        app.scm_commits_total = 0;
-        app.scm_more_row = None;
+        app.scm_ui.commits_rect = Rect::default();
+        app.scm_ui.commits_total = 0;
+        app.scm_ui.more_row = None;
     }
 }
 
 /// Draw current branch/divergence plus direct Sync, Commit, and overflow actions.
 pub(super) fn draw_repository_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
-    app.scm_header_hits.clear();
+    app.scm_ui.header_hits.clear();
     if area.height < 2 {
         return;
     }
@@ -106,7 +106,8 @@ pub(super) fn draw_repository_header(f: &mut Frame, app: &mut App, theme: &Theme
         if x.saturating_add(width) > area.right() {
             break;
         }
-        app.scm_header_hits
+        app.scm_ui
+            .header_hits
             .push((x, x + width, action_row, command));
         spans.push(Span::styled(
             label,
@@ -197,16 +198,16 @@ pub(super) fn draw_scm_changes(f: &mut Frame, app: &mut App, theme: &Theme, area
         }
     }
 
-    app.scm_changes_rect = area;
+    app.scm_ui.changes_rect = area;
     let total = items.len();
     let height = area.height as usize;
-    let offset = app.scm_offset.min(total.saturating_sub(height));
+    let offset = app.scm_ui.offset.min(total.saturating_sub(height));
     let mut state = ListState::default();
     *state.offset_mut() = offset;
     f.render_stateful_widget(List::new(items), area, &mut state);
-    app.scm_row_map = row_map;
-    app.scm_offset = state.offset();
-    app.scm_total_rows = total;
+    app.scm_ui.row_map = row_map;
+    app.scm_ui.offset = state.offset();
+    app.scm_ui.total_rows = total;
 }
 
 pub(super) fn change_line(
@@ -252,7 +253,7 @@ pub(super) fn change_line(
 /// Draw the pinned commit-log region (header, lazily-loaded commits, "load more").
 /// Its rows aren't selectable; only the "load more" affordance is clickable.
 pub(super) fn draw_scm_commits(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
-    app.scm_more_row = None;
+    app.scm_ui.more_row = None;
     let dim = theme.style(ThemeRole::LineNumber);
     let entries: Vec<CommitListEntry<'_>> = app
         .scm
@@ -265,13 +266,13 @@ pub(super) fn draw_scm_commits(f: &mut Frame, app: &mut App, theme: &Theme, area
             summary: &commit.summary,
             time: commit.time,
             parents: &commit.parents,
-            head: i == 0 && app.scm_commits_offset == 0,
+            head: i == 0 && app.scm_ui.commits_offset == 0,
         })
         .collect();
     let mut items = commit_list_items(theme, &entries, None, true);
     if app.scm.log_has_more {
         // The "load more" display row is relative to the commit region's top.
-        app.scm_more_row = Some(items.len());
+        app.scm_ui.more_row = Some(items.len());
         let label = if app.scm.log_loading_since.is_some_and(Pending::visible) {
             " loading…"
         } else {
@@ -282,13 +283,13 @@ pub(super) fn draw_scm_commits(f: &mut Frame, app: &mut App, theme: &Theme, area
 
     let total = items.len();
     let height = area.height as usize;
-    let offset = app.scm_commits_offset.min(total.saturating_sub(height));
+    let offset = app.scm_ui.commits_offset.min(total.saturating_sub(height));
     let mut state = ListState::default();
     *state.offset_mut() = offset;
     f.render_stateful_widget(List::new(items), area, &mut state);
-    app.scm_commits_offset = state.offset();
-    app.scm_commits_total = total;
-    app.scm_commits_rect = area;
+    app.scm_ui.commits_offset = state.offset();
+    app.scm_ui.commits_total = total;
+    app.scm_ui.commits_rect = area;
 }
 
 /// A terse `git log`-style relative time (e.g. `3d ago`) for a Unix timestamp.
@@ -327,7 +328,7 @@ pub(super) fn relative_time_at(secs: i64, now: i64) -> String {
 /// Draw the permanent multiline commit-message editor above the change list.
 pub(super) fn draw_commit_input(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     if area.width == 0 || area.height == 0 {
-        app.scm_commit_rect = Rect::default();
+        app.scm_ui.commit_rect = Rect::default();
         return;
     }
     let accent = theme.role(ThemeRole::LineNumberActive).to_ratatui();
@@ -347,7 +348,7 @@ pub(super) fn draw_commit_input(f: &mut Frame, app: &mut App, theme: &Theme, are
         }));
     let inner = block.inner(area);
     f.render_widget(block, area);
-    app.scm_commit_rect = inner;
+    app.scm_ui.commit_rect = inner;
     if inner.width == 0 || inner.height == 0 {
         return;
     }

@@ -396,7 +396,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
 
         // Toggling shows and focuses the panel (it has content).
         app.dispatch(Command::ToggleOutline);
-        assert!(app.outline_visible);
+        assert!(app.outline.visible);
         assert_eq!(app.focus, Focus::Outline);
 
         // Activating the bookmark jumps the document to its page.
@@ -409,7 +409,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
 
         // Toggling again hides the panel and returns focus to the editor.
         app.dispatch(Command::ToggleOutline);
-        assert!(!app.outline_visible);
+        assert!(!app.outline.visible);
         assert_eq!(app.focus, Focus::Editor);
     }
 
@@ -435,22 +435,22 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         let mut app = app();
         // A 20-row list area (rows 2..22); the changes list starts at row 2.
         app.sidebar_content_rect = Rect::new(0, 2, 30, 20);
-        app.scm_changes_rect = Rect::new(0, 2, 30, 10);
+        app.scm_ui.changes_rect = Rect::new(0, 2, 30, 10);
         // Drag the divider up to row 12 → commits region = rows 13..22 = 9 rows.
         app.resize_scm_commits_to(12);
-        assert_eq!(app.scm_commits_h, 9);
+        assert_eq!(app.scm_ui.commits_h, 9);
         // Dragging past the bottom clamps so the commits region keeps the minimum.
         app.resize_scm_commits_to(30);
-        assert_eq!(app.scm_commits_h, MIN_SCM_REGION);
+        assert_eq!(app.scm_ui.commits_h, MIN_SCM_REGION);
         // Dragging to the very top clamps so the changes region keeps room too.
         app.resize_scm_commits_to(0);
-        assert_eq!(app.scm_commits_h, 20 - (MIN_SCM_REGION + 1));
+        assert_eq!(app.scm_ui.commits_h, 20 - (MIN_SCM_REGION + 1));
     }
 
     #[test]
     fn pointer_shape_hint_tracks_divider_hover_when_supported() {
         let mut app = app();
-        app.pointer_shapes_supported = true;
+        app.caps.pointer_shapes = true;
         app.sidebar_visible = true;
         app.sidebar_divider_x = 30;
 
@@ -461,11 +461,11 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
             modifiers: KeyModifiers::NONE,
         };
         app.update_pointer_shape_hint(&moved(30, 5));
-        assert_eq!(app.pointer_shape, Some("col-resize"));
+        assert_eq!(app.caps.pointer_shape, Some("col-resize"));
 
         app.update_pointer_shape_hint(&moved(10, 5));
         assert_eq!(
-            app.pointer_shape, None,
+            app.caps.pointer_shape, None,
             "moving off the divider resets to the default shape"
         );
     }
@@ -483,7 +483,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(
-            app.pointer_shape, None,
+            app.caps.pointer_shape, None,
             "an unconfirmed terminal must never get a pointer-shape hint"
         );
     }
@@ -491,15 +491,15 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
     #[test]
     fn graphical_cursor_requires_kitty_keyboard_and_graphics() {
         let mut app = app();
-        app.graphics = GraphicsProtocol::Kitty;
-        app.kitty_graphics_supported = true;
+        app.caps.graphics = GraphicsProtocol::Kitty;
+        app.caps.kitty_graphics = true;
 
         assert!(!app.graphical_cursor_compatible());
 
-        app.kitty_keyboard_supported = true;
+        app.caps.kitty_keyboard = true;
         assert!(app.graphical_cursor_compatible());
 
-        app.graphics = GraphicsProtocol::Halfblocks;
+        app.caps.graphics = GraphicsProtocol::Halfblocks;
         assert!(
             !app.graphical_cursor_compatible(),
             "the graphical cursor must only ride the Kitty graphics path"
@@ -512,9 +512,9 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         app.push_tab(text_tab("t.rs", "x"));
         app.focus = Focus::Editor;
         app.editor_rect = Rect::new(0, 0, 20, 5);
-        app.graphics = GraphicsProtocol::Kitty;
-        app.kitty_graphics_supported = true;
-        app.kitty_keyboard_supported = true;
+        app.caps.graphics = GraphicsProtocol::Kitty;
+        app.caps.kitty_graphics = true;
+        app.caps.kitty_keyboard = true;
 
         let wake = app.next_wake().expect("an active graphical cursor blinks");
         assert!(wake <= GRAPHICS_CARET_BLINK_INTERVAL && wake > Duration::ZERO);
@@ -526,9 +526,9 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
         app.push_tab(text_tab("t.rs", "x"));
         app.focus = Focus::Editor;
         app.editor_rect = Rect::new(0, 0, 20, 5);
-        app.graphics = GraphicsProtocol::Kitty;
-        app.kitty_graphics_supported = true;
-        app.kitty_keyboard_supported = true;
+        app.caps.graphics = GraphicsProtocol::Kitty;
+        app.caps.kitty_graphics = true;
+        app.caps.kitty_keyboard = true;
 
         assert!(app.active_graphics_caret().is_some());
         app.graphics_caret_blink_epoch = Instant::now() - GRAPHICS_CARET_BLINK_INTERVAL;

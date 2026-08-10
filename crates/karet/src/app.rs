@@ -13,6 +13,7 @@ mod explorer;
 pub(crate) mod github;
 mod graphics;
 mod history;
+mod hit;
 mod inline_macros;
 mod input;
 mod language_servers;
@@ -30,6 +31,7 @@ mod sidebar;
 mod snapshot_events;
 mod spellcheck;
 mod startup;
+mod state;
 mod tabs;
 mod util;
 
@@ -68,6 +70,7 @@ use crossterm::event::PopKeyboardEnhancementFlags;
 use crossterm::event::PushKeyboardEnhancementFlags;
 use crossterm::event::{self};
 use crossterm::terminal::SetTitle;
+pub(crate) use hit::*;
 use karet_core::BlameAttribution;
 use karet_core::BytePos;
 use karet_core::Change;
@@ -152,6 +155,7 @@ pub(crate) use language_servers::LanguageServerBadge;
 pub(crate) use pending::Pending;
 use ratatui::layout::Rect;
 pub(crate) use runtime::run;
+pub(crate) use state::*;
 use tokio::sync::mpsc;
 use util::KeyboardEnhancementGuard;
 use util::canonical;
@@ -211,172 +215,6 @@ use crate::tab::commit_title;
 use crate::ui;
 use crate::workspace;
 
-/// The Source-Control panel state: the changed files (staged first) and selection.
-pub(crate) struct Scm {
-    /// Changed files: the staged group first, then the working group. Identity
-    /// and line counts only — the backend prepares a displayable diff on demand.
-    pub(crate) changes: Vec<ChangeSummary>,
-    /// The number of staged files at the front of `changes`.
-    pub(crate) staged_count: usize,
-    /// The cursor and multi-file selection over `changes`.
-    pub(crate) selection: ListSelection,
-    /// The loaded commit-log page(s), newest first (lazily fetched).
-    pub(crate) log: Vec<Commit>,
-    /// Whether more commits exist beyond the loaded ones.
-    pub(crate) log_has_more: bool,
-    /// Whether a log page request is currently in flight.
-    pub(crate) log_loading: bool,
-    /// When the current log-page request began, if one is in flight.
-    pub(crate) log_loading_since: Option<Pending>,
-    /// Latest branch, remote, recovery, and stash snapshot.
-    pub(crate) repository: Option<RepositorySnapshot>,
-    /// Whether a repository snapshot is being loaded.
-    pub(crate) repository_loading_since: Option<Pending>,
-    /// Request currently loading the repository snapshot.
-    pub(crate) repository_request: Option<RequestId>,
-    /// The repository action currently running, if any.
-    pub(crate) operation: Option<VcsAction>,
-}
-
-/// Live current-buffer blame that still matches the active document and cursor.
-#[derive(Clone)]
-pub(crate) struct LiveBlame {
-    pub(crate) doc: DocumentId,
-    pub(crate) version: u64,
-    pub(crate) line: u32,
-    pub(crate) attribution: Option<BlameAttribution>,
-}
-
-impl LiveBlame {
-    /// Compact attribution text shown after the active line.
-    pub(crate) fn text(&self) -> Option<String> {
-        match self.attribution.as_ref()? {
-            BlameAttribution::Commit(commit) => Some(format!(
-                "  {} {}",
-                commit.author,
-                crate::ui::relative_time(commit.author_time)
-            )),
-            BlameAttribution::Uncommitted => Some("  Uncommitted changes".to_string()),
-            _ => None,
-        }
-    }
-
-    /// Commit opened by the inline attribution's detail action.
-    pub(crate) fn commit_hash(&self) -> Option<&str> {
-        match self.attribution.as_ref()? {
-            BlameAttribution::Commit(commit) => Some(&commit.hash),
-            _ => None,
-        }
-    }
-
-    /// Compact current-line attribution rendered as editor virtual text.
-    pub(crate) fn decoration(&self) -> Option<Decoration> {
-        let text = self.text()?;
-        Some(Decoration {
-            range: Range {
-                start: LineCol::new(self.line, 0),
-                end: LineCol::new(self.line, 1),
-            },
-            kind: DecorationKind::InlineText {
-                text,
-                before: false,
-            },
-            role: Some(ThemeRole::Muted),
-        })
-    }
-}
-
-impl Scm {
-    /// The Source-Control [`Section`] for the entry at `index`.
-    fn section(&self, index: usize) -> Section {
-        if index < self.staged_count {
-            Section::Staged
-        } else {
-            Section::Working
-        }
-    }
-
-    /// The repository-relative paths of the selected file(s).
-    fn selected_paths(&self) -> Vec<PathBuf> {
-        self.selection
-            .selected_indices()
-            .into_iter()
-            .filter_map(|i| self.changes.get(i))
-            .map(|c| c.path.clone())
-            .collect()
-    }
-}
-
-/// The tab list of a pane that does not currently hold focus. The focused pane's
-/// tabs live directly on [`App`] (`tabs`/`active`); switching focus swaps a pane's
-/// tabs in and out of here, so the vast majority of the shell operates on "the
-/// current pane" without knowing about the split layout.
-pub(crate) struct StoredPane {
-    /// The pane's open tabs.
-    pub(crate) tabs: Vec<Tab>,
-    /// The pane's active tab index.
-    pub(crate) active: usize,
-}
-
-/// A toggleable match option shared by the Search panel and the in-file find bar.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SearchOption {
-    /// Interpret the query as a regular expression.
-    Regex,
-    /// Match case-sensitively.
-    Case,
-    /// Match whole words only.
-    Word,
-}
-
-/// The workspace-search panel state.
-pub(crate) struct SearchPanel {
-    /// The query being typed/run.
-    pub(crate) query: String,
-    /// Cursor and selection state for the query field.
-    pub(crate) query_edit: TextFieldState,
-    /// The replacement text.
-    pub(crate) replace: String,
-    /// Cursor and selection state for the replacement field.
-    pub(crate) replace_edit: TextFieldState,
-    /// The streamed results (one entry per matching file).
-    pub(crate) results: Vec<FileHit>,
-    /// The selected result.
-    pub(crate) selected: usize,
-    /// Whether a field is being edited (vs. browsing results).
-    pub(crate) input: bool,
-    /// Which field the input edits (find / replace).
-    pub(crate) field: SearchField,
-    /// Whether the replace field is shown (collapsible; shown by default).
-    pub(crate) replace_visible: bool,
-    /// Interpret the query as a regular expression.
-    pub(crate) regex: bool,
-    /// Match case-sensitively.
-    pub(crate) case_sensitive: bool,
-    /// Match whole words only.
-    pub(crate) whole_word: bool,
-}
-
-impl Default for SearchPanel {
-    fn default() -> Self {
-        Self {
-            query: String::new(),
-            query_edit: TextFieldState::default(),
-            replace: String::new(),
-            replace_edit: TextFieldState::default(),
-            results: Vec::new(),
-            selected: 0,
-            input: false,
-            field: SearchField::Find,
-            // The replace field is shown by default (collapsible via keybinding).
-            replace_visible: true,
-            regex: false,
-            case_sensitive: false,
-            whole_word: false,
-        }
-    }
-}
-
 /// The maximum number of matching files the workspace search panel collects.
 const SEARCH_RESULT_CAP: usize = 500;
 
@@ -417,303 +255,6 @@ const OPERATION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 /// Half-period for the app-drawn graphical editor caret.
 const GRAPHICS_CARET_BLINK_INTERVAL: Duration = Duration::from_millis(530);
 
-/// A clickable tab region in the tab strip, recorded during the last render.
-#[derive(Clone, Copy)]
-pub(crate) struct TabHit {
-    /// First column of the tab (inclusive).
-    pub(crate) start: u16,
-    /// One past the last column of the tab (exclusive).
-    pub(crate) end: u16,
-    /// Column of the close (×) glyph.
-    pub(crate) close: u16,
-}
-
-pub(crate) use karet_widgets::breadcrumbs::BreadcrumbHit;
-
-/// A clickable changed-file row from a commit or compare view's last frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct CommitFileHit {
-    /// The rendered row in screen coordinates.
-    pub(crate) rect: Rect,
-    /// The changed file's index in the tab.
-    pub(crate) file: usize,
-    /// The layout-specific scroll offset that puts its card header at the top.
-    pub(crate) scroll: u16,
-}
-
-/// A clickable disclosure control in a commit or compare file-card header.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct CommitCollapseHit {
-    /// The rendered disclosure cell in screen coordinates.
-    pub(crate) rect: Rect,
-    /// The changed file's index in the tab.
-    pub(crate) file: usize,
-}
-
-/// A visible link run in the focused Markdown preview's last rendered frame.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct MarkdownLinkHit {
-    /// The rendered cells occupied by this run.
-    pub(crate) rect: Rect,
-    /// The renderer-neutral target from the Markdown source.
-    pub(crate) target: String,
-}
-
-/// Persistent multiline commit-message editor shown in the Source Control panel.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct CommitInput {
-    /// Draft message, retained while the field is blurred and while a commit runs.
-    pub(crate) text: String,
-    /// Cursor and selection state within the draft.
-    pub(crate) edit: TextFieldState,
-    /// First wrapped display row visible inside the field.
-    pub(crate) scroll: u16,
-    /// Whether keyboard input is currently routed into the field.
-    pub(crate) focused: bool,
-    /// Commit request in flight; prevents accidental duplicate submissions.
-    pub(crate) pending: Option<RequestId>,
-}
-
-/// Lightweight field currently owning a mouse selection drag.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TextFieldTarget {
-    SearchFind,
-    SearchReplace,
-    Commit,
-}
-
-/// A rendered pane's clickable regions, recorded during the last frame for mouse
-/// hit-testing (which pane a click lands in, and its tab strip / content).
-#[derive(Clone)]
-pub(crate) struct PaneFrame {
-    /// The pane this frame belongs to.
-    pub(crate) pane: PaneId,
-    /// The pane's tab strip row.
-    pub(crate) tabstrip_rect: Rect,
-    /// Per-tab clickable regions within the strip.
-    pub(crate) tab_hits: Vec<TabHit>,
-    /// Format-specific actions right-aligned in the pane's tab strip.
-    pub(crate) action_hits: Vec<(u16, u16, Command)>,
-    /// The pane's breadcrumb row (zero-sized when the active tab has no path).
-    pub(crate) breadcrumb_rect: Rect,
-    /// Per-segment clickable regions within the breadcrumb row.
-    pub(crate) breadcrumb_hits: Vec<BreadcrumbHit>,
-    /// The pane's content (editor) area.
-    pub(crate) content_rect: Rect,
-    /// The exact editable editor viewport within the content area.
-    pub(crate) editor_rect: Rect,
-    /// Changed-file rows clickable within the pane's commit-like view.
-    pub(crate) commit_file_hits: Vec<CommitFileHit>,
-    /// File-card disclosure controls clickable within the pane's commit-like view.
-    pub(crate) commit_collapse_hits: Vec<CommitCollapseHit>,
-}
-
-/// An in-progress tab drag: the pane it started from and the current drop target
-/// (a pane plus which zone of it), used to preview and apply a move/split on release.
-#[derive(Clone, Copy)]
-pub(crate) struct TabDrag {
-    /// The pane the dragged tab started in (and is still in until dropped).
-    pub(crate) from_pane: PaneId,
-    /// The current drop target: a pane and the zone the cursor is over, if any.
-    pub(crate) hover: Option<(PaneId, DropZone)>,
-}
-
-/// An in-progress drag of a pane split boundary.
-#[derive(Clone, Copy)]
-pub(crate) struct PaneResize {
-    /// Stable identity and geometry of the boundary when dragging began.
-    pub(crate) divider: PaneDivider,
-}
-
-/// A clickable toast card, recorded during the last render for click hit-testing.
-#[derive(Clone, Copy)]
-pub(crate) struct ToastHit {
-    /// The card rectangle (a click anywhere on it dismisses the notification).
-    pub(crate) rect: Rect,
-    /// The notification the card shows.
-    pub(crate) id: NotificationId,
-}
-
-/// A quit request waiting for a repository mutation that must not be interrupted.
-pub(crate) struct OperationBlocker {
-    /// Human-readable operation label.
-    pub(crate) label: String,
-    /// Point after which shutdown stops waiting.
-    pub(crate) deadline: Instant,
-}
-
-/// Where a resolved commit detail should be shown.
-#[derive(Clone)]
-enum CommitDest {
-    /// Fill the already-open standalone commit tab with this view id.
-    Tab { view: ViewId },
-    /// Fill the graph browser's detail pane if it still selects this hash.
-    Browser { view: ViewId, hash: String },
-}
-
-/// A document open owned by one concrete editor view.
-struct PendingOpen {
-    path: PathBuf,
-    view: ViewId,
-}
-
-/// Which filesystem operation the explorer's internal file clipboard will perform.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ExplorerFileOp {
-    /// Duplicate the selected files/directories on paste.
-    Copy,
-    /// Move the selected files/directories on paste.
-    Cut,
-}
-
-/// The settings layer that should receive an accepted spelling word.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DictionaryTarget {
-    /// The current repository's `.karet/setting.jsonc`.
-    Project,
-    /// The platform user configuration.
-    User,
-}
-
-/// The explorer's internal file clipboard. This is intentionally separate from the
-/// system text clipboard: terminal clipboards do not carry portable file lists.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ExplorerFileClipboard {
-    op: ExplorerFileOp,
-    paths: Vec<PathBuf>,
-}
-
-/// The action dispatched by a positioned context-menu row.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ContextMenuAction {
-    /// Dispatch an ordinary named application command.
-    Command(Command),
-    /// Replace one misspelled range with a dictionary suggestion.
-    ReplaceSpelling {
-        /// The document containing the warning.
-        doc: DocumentId,
-        /// The exact warning range to replace.
-        range: Range,
-        /// The suggested replacement.
-        replacement: String,
-    },
-    /// Add a word to one spell-check dictionary layer.
-    AddSpellingToDictionary {
-        /// The word accepted by the user.
-        word: String,
-        /// The configuration layer to update.
-        target: DictionaryTarget,
-    },
-}
-
-/// One row of the app's context menu (the shared widget over
-/// [`ContextMenuAction`]).
-pub(crate) type ContextMenuEntry = karet_widgets::menu::ContextMenuEntry<ContextMenuAction>;
-/// The app's positioned context menu (opened from the explorer or over a pane).
-pub(crate) type ContextMenu = karet_widgets::menu::ContextMenu<ContextMenuAction>;
-
-impl From<Command> for ContextMenuAction {
-    fn from(command: Command) -> Self {
-        Self::Command(command)
-    }
-}
-
-/// App-side accessors over the shared menu entry.
-pub(crate) trait ContextMenuEntryExt {
-    /// The named command behind this row, when it is a regular command action.
-    fn command(&self) -> Option<Command>;
-}
-
-impl ContextMenuEntryExt for ContextMenuEntry {
-    fn command(&self) -> Option<Command> {
-        match &self.action {
-            ContextMenuAction::Command(command) => Some(*command),
-            ContextMenuAction::ReplaceSpelling { .. }
-            | ContextMenuAction::AddSpellingToDictionary { .. } => None,
-        }
-    }
-}
-
-/// A remote action parked until the backend answers the facts request that
-/// enables it (see [`App::copy_remote_link`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum PendingRemoteAction {
-    /// Copy a web link once the facts for `path` arrive.
-    CopyLink {
-        /// Which link flavor to build.
-        kind: remote::LinkKind,
-        /// The file the link points at.
-        path: PathBuf,
-        /// The 1-based line anchoring a permalink, when any.
-        line: Option<u32>,
-    },
-}
-
-/// The repository/remote facts behind the pane menu's link actions, resolved on
-/// the backend's VCS worker and cached per path (see [`App::cached_remote_facts`]).
-pub(crate) struct RemoteFacts {
-    /// The parsed origin remote.
-    remote: remote::Remote,
-    /// The full `HEAD` commit hash, or `None` on an unborn branch.
-    head: Option<String>,
-    /// The current branch's short name, or `None` when `HEAD` is detached.
-    branch: Option<String>,
-    /// The file's path relative to the repository worktree root.
-    rel_path: PathBuf,
-    /// Whether the file exists in the `HEAD` commit's tree.
-    tracked: bool,
-}
-
-impl RemoteFacts {
-    /// Borrow these facts as a [`remote::LinkTarget`] for link building.
-    fn link_target(&self) -> remote::LinkTarget<'_> {
-        remote::LinkTarget {
-            remote: &self.remote,
-            head: self.head.as_deref(),
-            branch: self.branch.as_deref(),
-            rel_path: &self.rel_path,
-            tracked: self.tracked,
-        }
-    }
-}
-
-/// An irreversible close routed through the unified unsaved-changes guard. Every
-/// entry point that can drop a tab (or the whole app) names its intent here so the
-/// guard can decide, uniformly, whether it must first confirm the loss of unsaved
-/// changes (see [`App::guarded_close`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CloseRequest {
-    /// Quit the application.
-    Quit,
-    /// Close a single tab in the focused pane, identified by its stable view id so
-    /// the request survives index shifts while a save-then-close is in flight.
-    Tab {
-        /// The view id of the tab to close.
-        view: ViewId,
-    },
-    /// Close every tab in the focused pane except the active one.
-    OtherTabs,
-    /// Close every tab to the right of the active one in the focused pane.
-    TabsToRight,
-    /// Close every tab in the focused pane (leaving a Welcome tab).
-    AllTabs,
-}
-
-/// An edit waiting for the configured automatic-save trigger.
-#[derive(Clone, Copy)]
-struct PendingAutoSave {
-    /// Newest document version covered by this trigger.
-    version: u64,
-    /// Debounce deadline, or `None` when waiting for an editor-focus change.
-    deadline: Option<Instant>,
-}
-
-/// One save request in flight.
-#[derive(Clone, Copy)]
-struct PendingSave {
-    doc: DocumentId,
-}
-
 /// The IDE shell state.
 pub struct App {
     /// The workspace root.
@@ -733,19 +274,8 @@ pub struct App {
     pub(crate) icon_style: IconStyle,
     /// Command-line icon selection, which remains authoritative across config reloads.
     icon_override: Option<IconStyle>,
-    /// The detected terminal graphics protocol.
-    pub(crate) graphics: GraphicsProtocol,
-    /// Whether Kitty graphics support was detected or confirmed at startup.
-    kitty_graphics_supported: bool,
-    /// Whether crossterm confirmed Kitty keyboard protocol support at startup.
-    kitty_keyboard_supported: bool,
-    /// Whether the terminal was confirmed (via a startup handshake) to support
-    /// OSC 22 mouse-pointer-shape hints. `false` means every pointer-shape hint
-    /// is a no-op — never assumed, only confirmed, mirroring `graphics`.
-    pub(crate) pointer_shapes_supported: bool,
-    /// The last OSC 22 pointer shape sent (so hover doesn't re-send every mouse
-    /// event), or `None` for the terminal's default shape.
-    pub(crate) pointer_shape: Option<&'static str>,
+    /// What the terminal was confirmed to support at startup.
+    pub(crate) caps: TerminalCaps,
     /// Which area has keyboard focus.
     pub(crate) focus: Focus,
     /// The active sidebar panel.
@@ -866,67 +396,22 @@ pub struct App {
     pub(crate) sidebar_header_hover: Option<(u16, u16)>,
     /// The header panel-switcher cells (`1 2 3`) from the last frame.
     pub(crate) panel_hits: Vec<(u16, u16, SidebarPanel)>,
-    /// Whether the right-side outline panel is shown.
-    pub(crate) outline_visible: bool,
-    /// Whether the outline currently overlays (rather than reserves) editor space.
-    pub(crate) outline_overlay: bool,
-    /// The outline panel's row selection, driving keyboard navigation.
-    pub(crate) outline_sel: ListSelection,
-    /// The outline panel rect from the last frame (mouse hit-testing).
-    pub(crate) outline_rect: Rect,
-    /// The outline panel's content area (below its header) from the last frame.
-    pub(crate) outline_content_rect: Rect,
-    /// The outline panel width in columns.
-    pub(crate) outline_width: u16,
-    /// The outline list's scroll offset (first visible row) from the last frame, so a
-    /// click maps to the correct entry even when the list is scrolled.
-    pub(crate) outline_scroll: usize,
+    /// The right-side outline panel.
+    pub(crate) outline: OutlinePanel,
     /// The explorer header toolbar-button cells `(start, end, command)` from the last
     /// frame (new file / new folder / refresh / collapse all).
     pub(crate) header_action_hits: Vec<(u16, u16, Command)>,
-    /// Source-Control *changes* display-row → change-index map from the last frame.
-    pub(crate) scm_row_map: Vec<Option<usize>>,
-    /// Source-Control header controls `(start, end, row, command)`.
-    pub(crate) scm_header_hits: Vec<(u16, u16, u16, Command)>,
+
     /// Last completed compact status for nested repositories in the explorer.
     nested_repository_status: HashMap<PathBuf, RepositorySummary>,
     /// In-flight nested-repository requests keyed by request id.
     nested_repository_pending: HashMap<RequestId, (PathBuf, Pending)>,
-    /// The changes-region scroll offset (top region; wheel + selection-follow).
-    pub(crate) scm_offset: usize,
-    /// The changes-region viewport rect from the last frame (hit-testing/hover).
-    pub(crate) scm_changes_rect: Rect,
-    /// The editable inner rect of the permanent Source-Control commit field.
-    pub(crate) scm_commit_rect: Rect,
+    /// The Source-Control panel's last-frame render chrome.
+    pub(crate) scm_ui: ScmChrome,
     /// Text field currently being extended by a left-button drag.
     pub(crate) text_field_drag: Option<TextFieldTarget>,
-    /// The total number of changes display rows from the last frame.
-    pub(crate) scm_total_rows: usize,
-    /// The commit-log region scroll offset (bottom pinned region; wheel + autoload).
-    pub(crate) scm_commits_offset: usize,
-    /// The commit-log region viewport rect from the last frame (hit-testing).
-    pub(crate) scm_commits_rect: Rect,
-    /// The total number of commit-log display rows from the last frame.
-    pub(crate) scm_commits_total: usize,
-    /// The display row *within the commit-log region* of the "load more" affordance.
-    pub(crate) scm_more_row: Option<usize>,
-    /// User-controlled height (rows) of the pinned commit-log region (draggable).
-    pub(crate) scm_commits_h: u16,
-    /// The y of the changes/commits drag divider from the last frame (0 = not shown).
-    pub(crate) scm_divider_y: u16,
-    /// Whether a commits-divider resize drag is in progress.
-    pub(crate) scm_resizing: bool,
-    /// The search-results area from the last frame.
-    pub(crate) search_results_rect: Rect,
-    /// The search-results list scroll offset from the last frame.
-    pub(crate) search_offset: usize,
-    /// Editable Search query rect from the last frame.
-    pub(crate) search_query_rect: Rect,
-    /// Editable Search replacement rect from the last frame, if shown.
-    pub(crate) search_replace_rect: Option<Rect>,
-    /// The Search panel's clickable header buttons `(start, end, row, command)` from
-    /// the last frame (option toggles and replace-all).
-    pub(crate) search_action_hits: Vec<(u16, u16, u16, Command)>,
+    /// The Search panel's last-frame render chrome.
+    pub(crate) search_ui: SearchChrome,
     /// The status bar rect from the last frame (mouse hit-testing).
     pub(crate) status_rect: Rect,
     /// Clickable status-bar segments `(start, end, command)` from the last frame.
@@ -975,18 +460,10 @@ pub struct App {
     /// In-flight save requests, mapping request id → document, so the tab's saving
     /// spinner clears when the answering event (saved or error) arrives.
     pending_saves: HashMap<RequestId, PendingSave>,
-    /// Editing/save behavior resolved per open session document.
-    pub(crate) document_settings: HashMap<DocumentId, DocumentSettings>,
-    /// Latest complete diagnostic set per editable backend document.
-    pub(crate) document_diagnostics: HashMap<DocumentId, Vec<Diagnostic>>,
-    /// Latest language-server symbol tree for each open document.
-    document_symbols: HashMap<DocumentId, Vec<Symbol>>,
+    /// Per-document caches fed by backend events.
+    pub(crate) docs: DocState,
     /// Repository-scoped lifecycle state used by every LSP presentation surface.
     lsp_runtime: language_servers::LanguageServerRuntimeModel,
-    /// Buffer version represented by each cached symbol tree.
-    outline_versions: HashMap<DocumentId, u64>,
-    /// In-flight symbol request version and start time per document.
-    outline_loading: HashMap<DocumentId, (u64, Pending)>,
     /// Dirty document versions waiting for the configured automatic-save trigger.
     auto_save_pending: HashMap<DocumentId, PendingAutoSave>,
     /// The in-flight completion request, if any (see [`crate::completion`]).

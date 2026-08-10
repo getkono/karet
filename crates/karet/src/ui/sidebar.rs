@@ -8,7 +8,7 @@ pub(super) fn draw_outline(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
     let header = rows[0];
     let content = rows[1];
-    app.outline_content_rect = content;
+    app.outline.content_rect = content;
 
     f.render_widget(
         Block::default().style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui())),
@@ -24,7 +24,7 @@ pub(super) fn draw_outline(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
     );
 
     let entries = app.active_outline_rows();
-    app.outline_sel.set_len(entries.len());
+    app.outline.sel.set_len(entries.len());
     if entries.is_empty() {
         let pending = app.active_outline_loading();
         let label = if pending.is_some_and(crate::app::Pending::visible) {
@@ -42,7 +42,7 @@ pub(super) fn draw_outline(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
     }
 
     let focused = app.focus == Focus::Outline;
-    let cursor = app.outline_sel.cursor();
+    let cursor = app.outline.sel.cursor();
     let sel_bg = if focused {
         ThemeRole::Selection
     } else {
@@ -59,11 +59,11 @@ pub(super) fn draw_outline(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
         .style(theme.style(ThemeRole::Foreground))
         .highlight_style(Style::default().bg(theme.role(sel_bg).to_ratatui()));
     let mut state = ListState::default();
-    *state.offset_mut() = app.outline_scroll;
+    *state.offset_mut() = app.outline.scroll;
     state.select(Some(cursor));
     f.render_stateful_widget(list, content, &mut state);
     // Remember where the list settled so a click maps to the right entry next frame.
-    app.outline_scroll = state.offset();
+    app.outline.scroll = state.offset();
 }
 
 pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
@@ -352,9 +352,9 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
         Constraint::Min(0),            // results
     ])
     .split(area);
-    app.search_results_rect = rows[2];
-    app.search_offset = 0;
-    app.search_action_hits = Vec::new();
+    app.search_ui.results_rect = rows[2];
+    app.search_ui.offset = 0;
+    app.search_ui.action_hits = Vec::new();
 
     let accent = theme.role(ThemeRole::LineNumberActive).to_ratatui();
     let dim = theme.role(ThemeRole::LineNumber).to_ratatui();
@@ -379,7 +379,7 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
         width: find_cols[0].width.saturating_sub(find_prefix.width),
         ..find_cols[0]
     };
-    app.search_query_rect = find_field;
+    app.search_ui.query_rect = find_field;
     app.search
         .query_edit
         .ensure_cursor_visible(&app.search.query, find_field.width);
@@ -405,7 +405,7 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
     let mut toggle_spans = Vec::with_capacity(toggles.len());
     for (i, (label, on, cmd)) in toggles.into_iter().enumerate() {
         let x = find_cols[1].x + i as u16 * 3;
-        app.search_action_hits.push((x, x + 2, rows[0].y, cmd));
+        app.search_ui.action_hits.push((x, x + 2, rows[0].y, cmd));
         let style = if on {
             Style::default().fg(accent).add_modifier(Modifier::REVERSED)
         } else {
@@ -434,7 +434,7 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
             width: rep_cols[0].width.saturating_sub(rep_prefix.width),
             ..rep_cols[0]
         };
-        app.search_replace_rect = Some(rep_field);
+        app.search_ui.replace_rect = Some(rep_field);
         app.search
             .replace_edit
             .ensure_cursor_visible(&app.search.replace, rep_field.width);
@@ -458,7 +458,7 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
         } else {
             Style::default().fg(dim)
         };
-        app.search_action_hits.push((
+        app.search_ui.action_hits.push((
             rep_cols[1].x,
             rep_cols[1].x + SLOT_W,
             rows[1].y,
@@ -469,7 +469,7 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
             rep_cols[1],
         );
     } else {
-        app.search_replace_rect = None;
+        app.search_ui.replace_rect = None;
     }
 
     let search = &app.search;
@@ -511,5 +511,5 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
             .add_modifier(Modifier::BOLD),
     );
     f.render_stateful_widget(list, rows[2], &mut state);
-    app.search_offset = state.offset();
+    app.search_ui.offset = state.offset();
 }

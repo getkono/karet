@@ -206,33 +206,33 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // temporarily overlays the right edge and dismisses as soon as the editor is used.
     let mut outline_area = None;
     let mut outline_divider = None;
-    app.outline_overlay = false;
-    if app.outline_visible && app.main_rect.width > app.outline_width + 8 {
+    app.outline.overlay = false;
+    if app.outline.visible && app.main_rect.width > app.outline.width + 8 {
         let region = app.main_rect;
         let cols = Layout::horizontal([
             Constraint::Min(0),
             Constraint::Length(1),
-            Constraint::Length(app.outline_width),
+            Constraint::Length(app.outline.width),
         ])
         .split(region);
         app.main_rect = cols[0];
-        app.outline_rect = cols[2];
+        app.outline.rect = cols[2];
         outline_area = Some(cols[2]);
         outline_divider = Some(cols[1]);
-    } else if app.outline_visible && app.main_rect.width > 0 {
-        let width = app.outline_width.min(app.main_rect.width);
+    } else if app.outline.visible && app.main_rect.width > 0 {
+        let width = app.outline.width.min(app.main_rect.width);
         let rect = Rect::new(
             app.main_rect.right().saturating_sub(width),
             app.main_rect.y,
             width,
             app.main_rect.height,
         );
-        app.outline_rect = rect;
-        app.outline_overlay = true;
+        app.outline.rect = rect;
+        app.outline.overlay = true;
         outline_area = Some(rect);
     } else {
-        app.outline_rect = Rect::default();
-        app.outline_content_rect = Rect::default();
+        app.outline.rect = Rect::default();
+        app.outline.content_rect = Rect::default();
     }
 
     draw_panes(f, app, &theme, app.main_rect);

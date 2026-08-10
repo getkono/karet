@@ -68,9 +68,9 @@ impl App {
         diagnostics: Vec<Diagnostic>,
     ) {
         if diagnostics.is_empty() {
-            self.document_diagnostics.remove(&doc);
+            self.docs.diagnostics.remove(&doc);
         } else {
-            self.document_diagnostics.insert(doc, diagnostics);
+            self.docs.diagnostics.insert(doc, diagnostics);
         }
     }
 }

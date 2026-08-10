@@ -23,14 +23,10 @@ impl App {
         else {
             return None;
         };
-        let diagnostic = self
-            .document_diagnostics
-            .get(doc)?
-            .iter()
-            .find(|diagnostic| {
-                diagnostic.source.as_deref() == Some(SPELLCHECK_SOURCE)
-                    && range_contains(diagnostic.range, position)
-            })?;
+        let diagnostic = self.docs.diagnostics.get(doc)?.iter().find(|diagnostic| {
+            diagnostic.source.as_deref() == Some(SPELLCHECK_SOURCE)
+                && range_contains(diagnostic.range, position)
+        })?;
         spell_warning(*doc, buffer, text, diagnostic)
     }
 
@@ -53,14 +49,10 @@ impl App {
         if *active_doc != doc {
             return None;
         }
-        let diagnostic = self
-            .document_diagnostics
-            .get(&doc)?
-            .iter()
-            .find(|diagnostic| {
-                diagnostic.source.as_deref() == Some(SPELLCHECK_SOURCE)
-                    && diagnostic.range.end == position
-            })?;
+        let diagnostic = self.docs.diagnostics.get(&doc)?.iter().find(|diagnostic| {
+            diagnostic.source.as_deref() == Some(SPELLCHECK_SOURCE)
+                && diagnostic.range.end == position
+        })?;
         spell_warning(doc, buffer, text, diagnostic)
     }
 

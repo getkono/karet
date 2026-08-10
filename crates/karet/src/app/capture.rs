@@ -24,13 +24,13 @@ pub(crate) fn capture(mut app: App, spec: CaptureSpec) -> color_eyre::Result<()>
     // The live shell gates on kitty keyboard support; a capture has no terminal to
     // ask, and the frame should show the shell's normal state rather than the
     // degraded one, so record the capability as present without probing for it.
-    app.kitty_keyboard_supported = true;
+    app.caps.kitty_keyboard = true;
     // Halfblocks draw images into the buffer itself. Kitty graphics would instead be
     // written out of band by `flush_graphics` (which a capture never calls), leaving
     // a hole in the grid, so pin the in-band protocol regardless of the environment.
-    app.graphics = GraphicsProtocol::Halfblocks;
-    app.kitty_graphics_supported = false;
-    app.pointer_shapes_supported = false;
+    app.caps.graphics = GraphicsProtocol::Halfblocks;
+    app.caps.kitty_graphics = false;
+    app.caps.pointer_shapes = false;
 
     let runtime = tokio::runtime::Runtime::new().map_err(|e| eyre!("tokio runtime: {e}"))?;
     // A capture is a throwaway read-only session: never write crash-recovery

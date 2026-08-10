@@ -20,7 +20,8 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     let language = app.tabs.get(app.active).map_or("", Tab::language);
     let language = match app.tabs.get(app.active).and_then(|tab| match &tab.kind {
         TabKind::Code { doc: Some(doc), .. } => app
-            .document_settings
+            .docs
+            .settings
             .get(doc)
             .and_then(|settings| settings.spelling_language),
         _ => None,

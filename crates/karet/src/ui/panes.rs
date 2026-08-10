@@ -12,7 +12,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
     app.commit_badge_rect = None;
     let focused = app.focus_pane();
     let editor_focused = app.focus == Focus::Editor;
-    let graphics = app.graphics;
+    let graphics = app.caps.graphics;
     let graphical_cursor = app.graphical_cursor_enabled();
     for (pane, rect) in app.layout.layout(area) {
         let is_focused = pane == focused;
@@ -49,7 +49,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
                 word_wrap,
                 sticky_scroll,
                 tab_width,
-                diagnostics: &app.document_diagnostics,
+                diagnostics: &app.docs.diagnostics,
                 find: app
                     .find_open
                     .then(|| app.tabs.get(app.active))
@@ -86,7 +86,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
                 word_wrap,
                 sticky_scroll,
                 tab_width,
-                diagnostics: &app.document_diagnostics,
+                diagnostics: &app.docs.diagnostics,
                 find: None,
                 blame: None,
                 blame_clickable: false,

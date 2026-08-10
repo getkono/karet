@@ -302,14 +302,14 @@
 
         // Source control: display 0 is a section header, 1 and 2 are changes. Hover
         // maps against the changes region rect.
-        app.scm_changes_rect = Rect {
+        app.scm_ui.changes_rect = Rect {
             x: 0,
             y: 2,
             width: 20,
             height: 10,
         };
-        app.scm_offset = 0;
-        app.scm_row_map = vec![None, Some(0), Some(1)];
+        app.scm_ui.offset = 0;
+        app.scm_ui.row_map = vec![None, Some(0), Some(1)];
         app.hover = Some((5, 3)); // display = 0 + (3 - 2) = 1 → change 0
         assert_eq!(app.hovered_scm_change(), Some(0));
         app.hover = Some((5, 2)); // display 0 → header → nothing

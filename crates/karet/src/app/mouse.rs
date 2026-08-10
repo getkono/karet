@@ -284,12 +284,12 @@ impl App {
     pub(super) fn resize_scm_commits_to(&mut self, row: u16) {
         let content = self.sidebar_content_rect;
         let bottom = content.y + content.height;
-        let list_top = self.scm_changes_rect.y;
+        let list_top = self.scm_ui.changes_rect.y;
         let total = bottom.saturating_sub(list_top);
         // Reserve MIN for the changes region plus the 1-row divider.
         let max_commits = total.saturating_sub(MIN_SCM_REGION + 1).max(MIN_SCM_REGION);
         let h = bottom.saturating_sub(row).saturating_sub(1);
-        self.scm_commits_h = h.clamp(MIN_SCM_REGION, max_commits);
+        self.scm_ui.commits_h = h.clamp(MIN_SCM_REGION, max_commits);
     }
 
     /// Hint the terminal's mouse pointer shape (OSC 22) over a draggable
@@ -300,15 +300,15 @@ impl App {
     /// startup, and only writes when the shape actually changes (never spams
     /// an escape sequence per mouse-move event).
     pub(super) fn update_pointer_shape_hint(&mut self, mouse: &MouseEvent) {
-        if !self.pointer_shapes_supported {
+        if !self.caps.pointer_shapes {
             return;
         }
         let over_sidebar_divider = self.sidebar_resizing
             || (self.sidebar_visible && mouse.column == self.sidebar_divider_x);
-        let over_scm_divider = self.scm_resizing
+        let over_scm_divider = self.scm_ui.resizing
             || (self.sidebar_panel == SidebarPanel::SourceControl
-                && self.scm_divider_y != 0
-                && mouse.row == self.scm_divider_y
+                && self.scm_ui.divider_y != 0
+                && mouse.row == self.scm_ui.divider_y
                 && rect_contains(self.sidebar_rect, (mouse.column, mouse.row)));
         let pane_axis = self
             .pane_resize
@@ -335,12 +335,12 @@ impl App {
         } else {
             None
         };
-        if shape == self.pointer_shape {
+        if shape == self.caps.pointer_shape {
             return;
         }
         let _ = write!(io::stdout(), "\x1b]22;{}\x1b\\", shape.unwrap_or("default"));
         let _ = io::stdout().flush();
-        self.pointer_shape = shape;
+        self.caps.pointer_shape = shape;
     }
 
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent) {
@@ -385,10 +385,10 @@ impl App {
             return;
         }
         // An in-progress Source-Control commit-divider resize captures motion likewise.
-        if self.scm_resizing {
+        if self.scm_ui.resizing {
             match mouse.kind {
                 MouseEventKind::Drag(MouseButton::Left) => self.resize_scm_commits_to(mouse.row),
-                MouseEventKind::Up(MouseButton::Left) => self.scm_resizing = false,
+                MouseEventKind::Up(MouseButton::Left) => self.scm_ui.resizing = false,
                 _ => {},
             }
             return;
@@ -482,7 +482,7 @@ impl App {
         }
         let point = (mouse.column, mouse.row);
         let in_sidebar = self.sidebar_visible && rect_contains(self.sidebar_rect, point);
-        let in_outline = self.outline_visible && rect_contains(self.outline_rect, point);
+        let in_outline = self.outline.visible && rect_contains(self.outline.rect, point);
         let in_editor = rect_contains(self.editor_rect, point);
         let in_markdown_preview = rect_contains(self.markdown_preview_rect, point);
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
@@ -540,11 +540,11 @@ impl App {
                     self.sidebar_resizing = true;
                 } else if in_sidebar
                     && self.sidebar_panel == SidebarPanel::SourceControl
-                    && self.scm_divider_y != 0
-                    && mouse.row == self.scm_divider_y
+                    && self.scm_ui.divider_y != 0
+                    && mouse.row == self.scm_ui.divider_y
                 {
                     // Grab the Source-Control changes/commits divider.
-                    self.scm_resizing = true;
+                    self.scm_ui.resizing = true;
                 } else if in_sidebar {
                     self.handle_sidebar_click(mouse.column, mouse.row, mouse.modifiers);
                 } else {
@@ -587,11 +587,11 @@ impl App {
     /// SCM click hit-testing, using the last frame's row map).
     pub(crate) fn hovered_scm_change(&self) -> Option<usize> {
         let point = self.hover?;
-        if !rect_contains(self.scm_changes_rect, point) {
+        if !rect_contains(self.scm_ui.changes_rect, point) {
             return None;
         }
-        let display = self.scm_offset + usize::from(point.1 - self.scm_changes_rect.y);
-        self.scm_row_map.get(display).copied().flatten()
+        let display = self.scm_ui.offset + usize::from(point.1 - self.scm_ui.changes_rect.y);
+        self.scm_ui.row_map.get(display).copied().flatten()
     }
 
     /// The sidebar panel whose header switcher cell is at `(col, row_y)`, if any.
@@ -611,13 +611,13 @@ impl App {
     pub(super) fn handle_sidebar_click(&mut self, col: u16, row_y: u16, modifiers: KeyModifiers) {
         self.focus = Focus::Sidebar;
         if self.sidebar_panel == SidebarPanel::SourceControl
-            && rect_contains(self.scm_commit_rect, (col, row_y))
+            && rect_contains(self.scm_ui.commit_rect, (col, row_y))
         {
             self.commit_input.focused = true;
             self.commit_input.place_cursor(
-                col.saturating_sub(self.scm_commit_rect.x),
-                row_y.saturating_sub(self.scm_commit_rect.y),
-                self.scm_commit_rect.width,
+                col.saturating_sub(self.scm_ui.commit_rect.x),
+                row_y.saturating_sub(self.scm_ui.commit_rect.y),
+                self.scm_ui.commit_rect.width,
                 modifiers.contains(KeyModifiers::SHIFT),
             );
             self.text_field_drag = Some(TextFieldTarget::Commit);
@@ -640,7 +640,8 @@ impl App {
         }
         if self.sidebar_panel == SidebarPanel::SourceControl
             && let Some(command) =
-                self.scm_header_hits
+                self.scm_ui
+                    .header_hits
                     .iter()
                     .find_map(|&(start, end, row, command)| {
                         (row_y == row && col >= start && col < end).then_some(command)
@@ -681,10 +682,10 @@ impl App {
             SidebarPanel::SourceControl => {
                 // The pinned commit-log region: click a commit row to open its commit
                 // view; the trailing "load more" affordance pages in older history.
-                if rect_contains(self.scm_commits_rect, (col, row_y)) {
+                if rect_contains(self.scm_ui.commits_rect, (col, row_y)) {
                     let display =
-                        self.scm_commits_offset + (row_y - self.scm_commits_rect.y) as usize;
-                    if self.scm_more_row == Some(display) {
+                        self.scm_ui.commits_offset + (row_y - self.scm_ui.commits_rect.y) as usize;
+                    if self.scm_ui.more_row == Some(display) {
                         self.load_more_scm_log();
                     } else if let Some(commit) =
                         display.checked_sub(1).and_then(|i| self.scm.log.get(i))
@@ -694,11 +695,11 @@ impl App {
                     }
                     return;
                 }
-                if !rect_contains(self.scm_changes_rect, (col, row_y)) {
+                if !rect_contains(self.scm_ui.changes_rect, (col, row_y)) {
                     return;
                 }
-                let display = self.scm_offset + (row_y - self.scm_changes_rect.y) as usize;
-                if let Some(Some(idx)) = self.scm_row_map.get(display).copied() {
+                let display = self.scm_ui.offset + (row_y - self.scm_ui.changes_rect.y) as usize;
+                if let Some(Some(idx)) = self.scm_ui.row_map.get(display).copied() {
                     if ctrl {
                         self.scm.selection.toggle(idx);
                     } else if shift {
@@ -724,7 +725,8 @@ impl App {
                 // Header buttons: option toggles on the find row, replace-all on the
                 // replace row.
                 if let Some(cmd) =
-                    self.search_action_hits
+                    self.search_ui
+                        .action_hits
                         .iter()
                         .find_map(|&(start, end, ry, cmd)| {
                             (row_y == ry && col >= start && col < end).then_some(cmd)
@@ -734,7 +736,7 @@ impl App {
                     return;
                 }
                 // Click a field to edit it.
-                if rect_contains(self.search_query_rect, (col, row_y)) {
+                if rect_contains(self.search_ui.query_rect, (col, row_y)) {
                     self.search.field = SearchField::Find;
                     self.search.input = true;
                     self.place_text_field_cursor(TextFieldTarget::SearchFind, col, row_y, shift);
@@ -742,7 +744,8 @@ impl App {
                     return;
                 }
                 if self
-                    .search_replace_rect
+                    .search_ui
+                    .replace_rect
                     .is_some_and(|rect| rect_contains(rect, (col, row_y)))
                 {
                     self.search.field = SearchField::Replace;
@@ -752,10 +755,10 @@ impl App {
                     self.text_field_drag = Some(TextFieldTarget::SearchReplace);
                     return;
                 }
-                if !rect_contains(self.search_results_rect, (col, row_y)) {
+                if !rect_contains(self.search_ui.results_rect, (col, row_y)) {
                     return;
                 }
-                let idx = self.search_offset + (row_y - self.search_results_rect.y) as usize;
+                let idx = self.search_ui.offset + (row_y - self.search_ui.results_rect.y) as usize;
                 if idx < self.search.results.len() {
                     self.search.selected = idx;
                     self.open_selected_result();
@@ -773,15 +776,15 @@ impl App {
     ) {
         match target {
             TextFieldTarget::Commit => self.commit_input.place_cursor(
-                column.saturating_sub(self.scm_commit_rect.x),
-                row.saturating_sub(self.scm_commit_rect.y),
-                self.scm_commit_rect.width,
+                column.saturating_sub(self.scm_ui.commit_rect.x),
+                row.saturating_sub(self.scm_ui.commit_rect.y),
+                self.scm_ui.commit_rect.width,
                 extend,
             ),
             TextFieldTarget::SearchFind => {
                 let cell = usize::from(
                     column
-                        .saturating_sub(self.search_query_rect.x)
+                        .saturating_sub(self.search_ui.query_rect.x)
                         .saturating_add(self.search.query_edit.scroll),
                 );
                 let cursor = karet_widgets::textfield::byte_at_cell(&self.search.query, cell);
@@ -790,7 +793,7 @@ impl App {
                     .set_cursor(&self.search.query, cursor, extend);
             },
             TextFieldTarget::SearchReplace => {
-                let Some(rect) = self.search_replace_rect else {
+                let Some(rect) = self.search_ui.replace_rect else {
                     return;
                 };
                 let cell = usize::from(

@@ -57,7 +57,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
              (kitty, ghostty, WezTerm, foot, …)"
         ));
     }
-    app.kitty_keyboard_supported = true;
+    app.caps.kitty_keyboard = true;
 
     // The session backend runs on its own Tokio runtime; the UI task selects over
     // terminal input, backend events, and document snapshots so it never blocks.
@@ -95,13 +95,13 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     // Upgrade to Kitty when the terminal actually answers; never downgrade a terminal
     // the heuristic already trusts.
     if crate::term_caps::probe_kitty_graphics(crate::term_caps::PROBE_TIMEOUT) == Some(true) {
-        app.graphics = GraphicsProtocol::Kitty;
-        app.kitty_graphics_supported = true;
+        app.caps.graphics = GraphicsProtocol::Kitty;
+        app.caps.kitty_graphics = true;
     }
     // Same handshake for OSC 22 pointer-shape hints (col-resize/row-resize over
     // the sidebar/SCM dividers) — confirmed support only, never assumed.
     if crate::term_caps::probe_osc22_pointer_shape(crate::term_caps::PROBE_TIMEOUT) == Some(true) {
-        app.pointer_shapes_supported = true;
+        app.caps.pointer_shapes = true;
     }
 
     let result = runtime.block_on(async move {
