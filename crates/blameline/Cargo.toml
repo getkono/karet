@@ -4,7 +4,7 @@ description  = "Semantic git blame: grouped, full-message, tree-sitter-filtered 
 # INDEPENDENT versioning — blameline is a standalone library and is deliberately NOT
 # pinned to the karet workspace's lockstep `version.workspace`. It follows its own
 # SemVer line starting at 1.0.0 and releases on its own cadence. See `README.md`.
-version      = "1.1.0"
+version      = "2.0.0"
 edition.workspace      = true
 rust-version.workspace = true
 authors.workspace      = true
@@ -20,7 +20,7 @@ categories   = ["development-tools", "command-line-utilities"]
 # gix's `blame` feature is trimmed from the workspace default for weight; blameline
 # opts back into it (feature unification re-enables the gix blame module workspace-wide).
 gix              = { workspace = true, features = ["blame"] }
-karet-treesitter = { workspace = true }   # shared tree-sitter parse host (function detection)
+karet-treesitter = { workspace = true, optional = true } # shared parse host (function narrowing)
 serde            = { workspace = true }    # derive(Serialize/Deserialize) on the output models
 serde_json       = { workspace = true }    # `to_json` convenience helper
 thiserror        = { workspace = true }
@@ -29,22 +29,28 @@ thiserror        = { workspace = true }
 tempfile = "3"
 
 [features]
-# Pass-through to the parse host so the function filter only compiles in the grammars
-# a consumer wants. Default to the common set; the `karet` app drives its own grammar set.
-default = ["lang-rust", "lang-python", "lang-javascript", "lang-typescript", "lang-go", "lang-c"]
-lang-rust       = ["karet-treesitter/lang-rust"]
-lang-python     = ["karet-treesitter/lang-python"]
-lang-javascript = ["karet-treesitter/lang-javascript"]
-lang-typescript = ["karet-treesitter/lang-typescript"]
-lang-go         = ["karet-treesitter/lang-go"]
-lang-c          = ["karet-treesitter/lang-c"]
-lang-cpp        = ["karet-treesitter/lang-cpp"]
-lang-java       = ["karet-treesitter/lang-java"]
-lang-ruby       = ["karet-treesitter/lang-ruby"]
-lang-csharp     = ["karet-treesitter/lang-csharp"]
-lang-php        = ["karet-treesitter/lang-php"]
-lang-bash       = ["karet-treesitter/lang-bash"]
-all-languages = [
+# The default build is gix-only pure Rust: grouped whole-file blame with no C
+# compiler required. Function narrowing (tree-sitter, vendored C via `cc`) is
+# opt-in behind `treesitter` + the `lang-*` grammar set a consumer wants;
+# without it `blame_function` degrades to whole-file blame.
+default = []
+treesitter      = ["dep:karet-treesitter"]
+lang-rust       = ["treesitter", "karet-treesitter/lang-rust"]
+lang-python     = ["treesitter", "karet-treesitter/lang-python"]
+lang-javascript = ["treesitter", "karet-treesitter/lang-javascript"]
+lang-typescript = ["treesitter", "karet-treesitter/lang-typescript"]
+lang-go         = ["treesitter", "karet-treesitter/lang-go"]
+lang-c          = ["treesitter", "karet-treesitter/lang-c"]
+lang-cpp        = ["treesitter", "karet-treesitter/lang-cpp"]
+lang-java       = ["treesitter", "karet-treesitter/lang-java"]
+lang-ruby       = ["treesitter", "karet-treesitter/lang-ruby"]
+lang-csharp     = ["treesitter", "karet-treesitter/lang-csharp"]
+lang-php        = ["treesitter", "karet-treesitter/lang-php"]
+lang-bash       = ["treesitter", "karet-treesitter/lang-bash"]
+# Every language the function filter has a bundled query for. Deliberately NOT
+# named `all-languages`: karet-treesitter's bundle of that name covers its full
+# grammar catalogue, while this one covers only the narrowing queries above.
+all-narrowing-languages = [
     "lang-rust", "lang-python", "lang-javascript", "lang-typescript", "lang-go",
     "lang-c", "lang-cpp", "lang-java", "lang-ruby", "lang-csharp", "lang-php", "lang-bash",
 ]

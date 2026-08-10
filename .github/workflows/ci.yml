@@ -57,6 +57,16 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Verify workspace
         run: mise run verify
+      # The all-features workspace build above never exercises the lean grammar
+      # configurations, so check the feature seams a downstream consumer would
+      # actually use: the parse host with no grammars, with exactly one, the
+      # syntax pass-through bundle, and markdown's curated fence bundle.
+      - name: Check feature subsets
+        run: |
+          cargo check -p karet-treesitter --no-default-features
+          cargo check -p karet-treesitter --no-default-features --features lang-rust
+          cargo check -p karet-syntax --features all-languages
+          cargo check -p karet-markdown --features lang-common
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
