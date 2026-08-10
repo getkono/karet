@@ -675,9 +675,8 @@ pub(super) fn draw_commit_graph(
     }
 }
 
-/// Draw a code-visualization graph as a scrollable indented tree: a DFS from the
-/// graph's roots along dependency edges, with box-drawing depth guides. Cycles and
-/// already-expanded nodes are shown once and marked `⟲` rather than re-expanded.
+/// Draw a code-visualization graph: flatten via the karet-graph tree renderer
+/// (theme mapped onto its plain style slots), then paint scrollably.
 pub(super) fn draw_graph(
     f: &mut Frame,
     theme: &Theme,
@@ -687,54 +686,15 @@ pub(super) fn draw_graph(
     scroll: &mut u16,
     column: &mut u16,
 ) {
-    use karet_core::GraphEdgeKind;
-
-    let header_style = theme
-        .style(ThemeRole::LineNumberActive)
-        .add_modifier(Modifier::BOLD);
-    let guide = theme.style(ThemeRole::LineNumber);
-    let name_style = theme.style(ThemeRole::Foreground);
-    let badge_style = theme.style(ThemeRole::LineNumber);
-    let revisit_style = theme.style(ThemeRole::DiagnosticWarning);
-
-    // Flatten the graph to indented rows (DFS from roots, cycle-safe).
-    let mut rows: Vec<Line> = vec![Line::styled(
-        format!(" ⧉ {title} — dependency graph"),
-        header_style,
-    )];
-    let mut expanded: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    let mut stack: Vec<(&str, usize)> = view
-        .roots
-        .iter()
-        .rev()
-        .map(|r| (r.as_str(), 0usize))
-        .collect();
-    while let Some((id, depth)) = stack.pop() {
-        let Some(node) = view.nodes.iter().find(|n| n.id == id) else {
-            continue;
-        };
-        let first_visit = expanded.insert(id);
-        let children = view.successors(id, GraphEdgeKind::Dependency);
-        let mut spans = vec![Span::raw(" ")];
-        for _ in 0..depth {
-            spans.push(Span::styled("\u{2502} ", guide));
-        }
-        spans.push(Span::styled("\u{25CF} ", guide));
-        spans.push(Span::styled(node.label.clone(), name_style));
-        if let Some(badge) = &node.badge {
-            spans.push(Span::styled(format!("  {badge}"), badge_style));
-        }
-        if !first_visit && !children.is_empty() {
-            // Already expanded elsewhere (or a cycle): show but don't recurse again.
-            spans.push(Span::styled("  \u{27F2}", revisit_style));
-        }
-        rows.push(Line::from(spans));
-        if first_visit {
-            for child in children.iter().rev() {
-                stack.push((child, depth + 1));
-            }
-        }
-    }
-
+    let styles = karet_graph::view::TreeStyles {
+        header: theme
+            .style(ThemeRole::LineNumberActive)
+            .add_modifier(Modifier::BOLD),
+        guide: theme.style(ThemeRole::LineNumber),
+        name: theme.style(ThemeRole::Foreground),
+        badge: theme.style(ThemeRole::LineNumber),
+        revisit: theme.style(ThemeRole::DiagnosticWarning),
+    };
+    let rows = karet_graph::view::graph_tree_lines(title, view, &styles);
     draw_scrollable_lines(f, theme, area, rows, scroll, column);
 }
