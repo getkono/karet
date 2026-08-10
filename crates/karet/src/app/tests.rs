@@ -1,19 +1,24 @@
-include!("tests/support.rs");
-include!("tests/lifecycle.rs");
-include!("tests/startup.rs");
-include!("tests/save.rs");
-include!("tests/scm.rs");
-include!("tests/diff_view.rs");
-include!("tests/tabs_search.rs");
-include!("tests/blame.rs");
-include!("tests/preview.rs");
-include!("tests/language_servers.rs");
-include!("tests/commit_view.rs");
-include!("tests/commit_navigation.rs");
-include!("tests/editor_mouse.rs");
-include!("tests/explorer.rs");
-include!("tests/remote.rs");
-include!("tests/search_completion.rs");
-include!("tests/spellcheck.rs");
-include!("tests/github.rs");
-include!("tests/inline_macros.rs");
+//! The app test suite, one real module per surface. Shared fixtures and the
+//! RecordingBackend live in [`support`]; every sibling starts with the same
+//! two-glob prelude (the app scope plus the support helpers).
+
+mod support;
+
+mod blame;
+mod commit_navigation;
+mod commit_view;
+mod diff_view;
+mod editor_mouse;
+mod explorer;
+mod github;
+mod inline_macros;
+mod language_servers;
+mod lifecycle;
+mod preview;
+mod remote;
+mod save;
+mod scm;
+mod search_completion;
+mod spellcheck;
+mod startup;
+mod tabs_search;

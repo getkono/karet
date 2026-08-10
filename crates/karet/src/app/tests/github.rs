@@ -1,22 +1,15 @@
 use karet_session::GithubAuth;
 use karet_session::GithubAuthSource;
 use karet_session::GithubCheckRun;
-use karet_session::GithubIssue;
 use karet_session::GithubPage;
 use karet_session::GithubPullRequest;
 use karet_session::GithubPullRequestActivity;
 use karet_session::GithubPullRequestCommit;
-use karet_session::GithubRepository;
 use karet_session::GithubWorkflow;
 use karet_session::GithubWorkflowRun;
 
-fn repository() -> GithubRepository {
-    GithubRepository {
-        owner: "getkono".to_string(),
-        repo: "karet".to_string(),
-    }
-}
-
+use super::support::*;
+use crate::app::*;
 fn anonymous_auth() -> GithubAuth {
     GithubAuth {
         source: GithubAuthSource::Anonymous,
@@ -25,23 +18,6 @@ fn anonymous_auth() -> GithubAuth {
         viewer_login: None,
     }
 }
-
-fn issue(number: u64) -> GithubIssue {
-    GithubIssue {
-        number,
-        title: format!("Issue {number}"),
-        body: Some("description".to_string()),
-        state: "open".to_string(),
-        creator: Some("octocat".to_string()),
-        creator_id: Some(1),
-        created_unix: 1,
-        updated_unix: 2,
-        labels: Vec::new(),
-        blocked: false,
-        html_url: format!("https://github.com/getkono/karet/issues/{number}"),
-    }
-}
-
 fn pull_request(number: u64, draft: bool) -> GithubPullRequest {
     GithubPullRequest {
         number,
@@ -313,15 +289,19 @@ fn ctrl_r_refreshes_every_github_page_that_loads_remote_data() {
             page: 1,
         }
     )));
-    assert!(commands.contains(&std::mem::discriminant(
-        &SessionCommand::GithubIssue { number: 4 }
-    )));
+    assert!(
+        commands.contains(&std::mem::discriminant(&SessionCommand::GithubIssue {
+            number: 4
+        }))
+    );
     assert!(commands.contains(&std::mem::discriminant(
         &SessionCommand::GithubPullRequest { number: 5 }
     )));
-    assert!(commands.contains(&std::mem::discriminant(
-        &SessionCommand::GithubActions { page: 1 }
-    )));
+    assert!(
+        commands.contains(&std::mem::discriminant(&SessionCommand::GithubActions {
+            page: 1
+        }))
+    );
 }
 
 #[test]
@@ -329,7 +309,11 @@ fn pull_request_body_comment_merge_and_readiness_controls_submit_typed_commands(
     let backend = Arc::new(RecordingBackend::new());
     let mut app = app();
     app.backend = Some(backend.clone());
-    app.push_tab(Tab::github_pull_request(pull_request(12, false), true, None));
+    app.push_tab(Tab::github_pull_request(
+        pull_request(12, false),
+        true,
+        None,
+    ));
     if let TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) =
         &mut app.tabs[app.active].kind
     {
@@ -341,81 +325,75 @@ fn pull_request_body_comment_merge_and_readiness_controls_submit_typed_commands(
         row: 4,
         modifiers: KeyModifiers::NONE,
     }));
-    assert!(app.github_key(KeyEvent::new(
-        KeyCode::Char('!'),
-        KeyModifiers::NONE
-    )));
-    assert!(app.github_key(KeyEvent::new(
-        KeyCode::Enter,
-        KeyModifiers::CONTROL
-    )));
+    assert!(app.github_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE)));
+    assert!(app.github_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)));
     if let TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) =
         &mut app.tabs[app.active].kind
     {
         view.pending = None;
         view.editor = None;
     }
-    assert!(app.github_key(KeyEvent::new(
-        KeyCode::Char('m'),
-        KeyModifiers::NONE
-    )));
+    assert!(app.github_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE)));
     if let TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) =
         &mut app.tabs[app.active].kind
     {
         view.pending = None;
     }
-    assert!(app.github_key(KeyEvent::new(
-        KeyCode::Char('d'),
-        KeyModifiers::NONE
-    )));
+    assert!(app.github_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)));
     if let TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) =
         &mut app.tabs[app.active].kind
     {
         view.pending = None;
     }
-    assert!(app.github_key(KeyEvent::new(
-        KeyCode::Char('c'),
-        KeyModifiers::NONE
-    )));
+    assert!(app.github_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)));
     for character in "Looks good".chars() {
-        assert!(app.github_key(KeyEvent::new(
-            KeyCode::Char(character),
-            KeyModifiers::NONE
-        )));
+        assert!(app.github_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)));
     }
-    assert!(app.github_key(KeyEvent::new(
-        KeyCode::Enter,
-        KeyModifiers::CONTROL
-    )));
+    assert!(app.github_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)));
 
     let sent = backend.sent.lock();
-    assert!(sent.as_ref().is_ok_and(|sent| sent.iter().any(|(_, command)| {
-        matches!(
-            command,
-            SessionCommand::GithubUpdatePullRequestBody { number: 12, body }
-                if body == "PR description!"
-        )
-    })));
-    assert!(sent.as_ref().is_ok_and(|sent| sent.iter().any(|(_, command)| {
-        matches!(command, SessionCommand::GithubMergePullRequest { number: 12, .. })
-    })));
-    assert!(sent.as_ref().is_ok_and(|sent| sent.iter().any(|(_, command)| {
-        matches!(
-            command,
-            SessionCommand::GithubSetPullRequestDraft {
-                number: 12,
-                draft: true,
-                ..
-            }
-        )
-    })));
-    assert!(sent.as_ref().is_ok_and(|sent| sent.iter().any(|(_, command)| {
-        matches!(
-            command,
-            SessionCommand::GithubCommentPullRequest { number: 12, body }
-                if body == "Looks good"
-        )
-    })));
+    assert!(
+        sent.as_ref()
+            .is_ok_and(|sent| sent.iter().any(|(_, command)| {
+                matches!(
+                    command,
+                    SessionCommand::GithubUpdatePullRequestBody { number: 12, body }
+                        if body == "PR description!"
+                )
+            }))
+    );
+    assert!(
+        sent.as_ref()
+            .is_ok_and(|sent| sent.iter().any(|(_, command)| {
+                matches!(
+                    command,
+                    SessionCommand::GithubMergePullRequest { number: 12, .. }
+                )
+            }))
+    );
+    assert!(
+        sent.as_ref()
+            .is_ok_and(|sent| sent.iter().any(|(_, command)| {
+                matches!(
+                    command,
+                    SessionCommand::GithubSetPullRequestDraft {
+                        number: 12,
+                        draft: true,
+                        ..
+                    }
+                )
+            }))
+    );
+    assert!(
+        sent.as_ref()
+            .is_ok_and(|sent| sent.iter().any(|(_, command)| {
+                matches!(
+                    command,
+                    SessionCommand::GithubCommentPullRequest { number: 12, body }
+                        if body == "Looks good"
+                )
+            }))
+    );
 }
 
 #[test]
@@ -423,43 +401,49 @@ fn pull_request_tabs_use_commits_and_existing_range_diff_paths() {
     let backend = Arc::new(RecordingBackend::new());
     let mut app = app();
     app.backend = Some(backend.clone());
-    app.push_tab(Tab::github_pull_request(pull_request(12, false), true, None));
-    assert!(app.github_key(KeyEvent::new(
-        KeyCode::Char('2'),
-        KeyModifiers::NONE
-    )));
+    app.push_tab(Tab::github_pull_request(
+        pull_request(12, false),
+        true,
+        None,
+    ));
+    assert!(app.github_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE)));
     assert!(matches!(
         &app.tabs[app.active].kind,
         TabKind::Github(crate::app::github::GithubViewState::PullRequest(view))
             if view.section == crate::app::github::GithubPullRequestSection::Commits
     ));
-    assert!(app.github_key(KeyEvent::new(
-        KeyCode::Char('3'),
-        KeyModifiers::NONE
-    )));
-    assert!(backend.sent.lock().as_ref().is_ok_and(|sent| sent.iter().any(
-        |(_, command)| matches!(
-            command,
-            SessionCommand::RangeChanges {
-                spec: RangeSpec::Between {
-                    base,
-                    head,
-                    merge_base: true,
-                }
-            } if base == "aaaaaaaa" && head == "bbbbbbbb"
-        )
-    )));
+    assert!(app.github_key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE)));
+    assert!(
+        backend
+            .sent
+            .lock()
+            .as_ref()
+            .is_ok_and(|sent| sent.iter().any(|(_, command)| matches!(
+                command,
+                SessionCommand::RangeChanges {
+                    spec: RangeSpec::Between {
+                        base,
+                        head,
+                        merge_base: true,
+                    }
+                } if base == "aaaaaaaa" && head == "bbbbbbbb"
+            )))
+    );
 }
 
 #[test]
-fn pull_request_conversation_renders_github_familiar_controls_and_success_colours(
-) -> Result<(), String> {
+fn pull_request_conversation_renders_github_familiar_controls_and_success_colours()
+-> Result<(), String> {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
 
     let mut app = app();
-    app.push_tab(Tab::github_pull_request(pull_request(12, false), true, None));
+    app.push_tab(Tab::github_pull_request(
+        pull_request(12, false),
+        true,
+        None,
+    ));
     app.apply_github_pull_request(
         None,
         pull_request(12, false),

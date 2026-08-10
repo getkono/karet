@@ -1,3 +1,6 @@
+use super::support::*;
+use crate::app::*;
+
 fn inline_macro_app(name: &str, text: &str) -> (App, Arc<RecordingBackend>) {
     let backend = Arc::new(RecordingBackend::new());
     let mut app = app();
@@ -29,7 +32,10 @@ fn markdown_selection_character_runs_the_inline_macro_atomically() {
     };
     assert_eq!(text, "[café]() is good");
     assert_eq!(app.tabs[active].editor.cursor(), LineCol::new(0, 7));
-    let sent = backend.sent.lock().unwrap_or_else(|error| error.into_inner());
+    let sent = backend
+        .sent
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let Some((_, SessionCommand::ApplyChange { change, cause, .. })) = sent.last() else {
         panic!("macro did not submit an edit");
     };
@@ -94,10 +100,12 @@ fn markdown_macro_expands_every_selected_caret_in_one_change() {
     };
     assert_eq!(text, "[one]() [two]()");
     assert_eq!(app.tabs[active].editor.cursors().selections.len(), 2);
-    let sent = backend.sent.lock().unwrap_or_else(|error| error.into_inner());
+    let sent = backend
+        .sent
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let Some((_, SessionCommand::ApplyChange { change, .. })) = sent.last() else {
         panic!("macro did not submit an edit");
     };
     assert_eq!(change.edits.len(), 2);
 }
-

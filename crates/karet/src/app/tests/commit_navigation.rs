@@ -1,3 +1,6 @@
+use super::support::*;
+use crate::app::*;
+
 #[test]
 fn clicking_stacked_and_wide_file_rows_jumps_to_their_cards() {
     for width in [80, 104] {

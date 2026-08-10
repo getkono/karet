@@ -1,3 +1,6 @@
+use super::support::*;
+use crate::app::*;
+
 fn language_server_status(
     server: LanguageServerId,
     language: &str,
@@ -60,10 +63,13 @@ fn language_server_manager_filters_navigates_and_checks_selected_provider() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.open_language_servers();
-    app.show_language_server_status(None, vec![
-        language_server_status(LanguageServerId::RustAnalyzer, "rust", true),
-        language_server_status(LanguageServerId::Clangd, "c", false),
-    ]);
+    app.show_language_server_status(
+        None,
+        vec![
+            language_server_status(LanguageServerId::RustAnalyzer, "rust", true),
+            language_server_status(LanguageServerId::Clangd, "c", false),
+        ],
+    );
 
     app.set_language_server_filter("rust".to_string());
     app.dispatch(Command::LanguageServerCheckSelected);
@@ -94,10 +100,13 @@ fn language_server_manager_filters_navigates_and_checks_selected_provider() {
 fn language_server_manager_renders_inventory_controls_and_detail() {
     let mut app = app();
     app.open_language_servers();
-    app.show_language_server_status(None, vec![
-        language_server_status(LanguageServerId::RustAnalyzer, "rust", true),
-        language_server_status(LanguageServerId::Clangd, "c, cpp", false),
-    ]);
+    app.show_language_server_status(
+        None,
+        vec![
+            language_server_status(LanguageServerId::RustAnalyzer, "rust", true),
+            language_server_status(LanguageServerId::Clangd, "c, cpp", false),
+        ],
+    );
     app.language_server_select(1);
 
     let rendered = screen(&mut app, 120, 24).join("\n");
@@ -122,10 +131,13 @@ fn language_server_manager_mouse_selects_rows_and_runs_toolbar_actions() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.open_language_servers();
-    app.show_language_server_status(None, vec![
-        language_server_status(LanguageServerId::RustAnalyzer, "rust", true),
-        language_server_status(LanguageServerId::Clangd, "c", false),
-    ]);
+    app.show_language_server_status(
+        None,
+        vec![
+            language_server_status(LanguageServerId::RustAnalyzer, "rust", true),
+            language_server_status(LanguageServerId::Clangd, "c", false),
+        ],
+    );
     let _ = screen(&mut app, 120, 24);
     let (second_row, offset, refresh) = match &app.tabs[app.active].kind {
         TabKind::LanguageServers(view) => (
@@ -171,7 +183,10 @@ fn language_server_manager_mouse_selects_rows_and_runs_toolbar_actions() {
 fn language_server_manager_delays_its_loading_placeholder() {
     let mut app = app();
     app.open_language_servers();
-    assert!(app.next_wake().is_some_and(|wake| wake <= LOADING_REVEAL_DELAY));
+    assert!(
+        app.next_wake()
+            .is_some_and(|wake| wake <= LOADING_REVEAL_DELAY)
+    );
     assert!(!screen(&mut app, 100, 18).join("\n").contains("Loading"));
 
     if let TabKind::LanguageServers(view) = &mut app.tabs[app.active].kind {
@@ -200,12 +215,15 @@ fn language_server_manager_only_renders_applicable_row_actions() {
 
     let mut app = app();
     app.open_language_servers();
-    app.show_language_server_status(None, vec![
-        installed.clone(),
-        missing.clone(),
-        external.clone(),
-        manual.clone(),
-    ]);
+    app.show_language_server_status(
+        None,
+        vec![
+            installed.clone(),
+            missing.clone(),
+            external.clone(),
+            manual.clone(),
+        ],
+    );
     let rendered = screen(&mut app, 120, 28).join("\n");
     assert!(!rendered.contains("Install/Update"));
     assert!(rendered.contains("Check updates"));
@@ -245,10 +263,13 @@ fn language_server_row_action_targets_its_own_server() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.open_language_servers();
-    app.show_language_server_status(None, vec![
-        language_server_status(LanguageServerId::RustAnalyzer, "rust", true),
-        language_server_status(LanguageServerId::Clangd, "c", false),
-    ]);
+    app.show_language_server_status(
+        None,
+        vec![
+            language_server_status(LanguageServerId::RustAnalyzer, "rust", true),
+            language_server_status(LanguageServerId::Clangd, "c", false),
+        ],
+    );
     let _ = screen(&mut app, 120, 24);
     let hit = match &app.tabs[app.active].kind {
         TabKind::LanguageServers(view) => view
@@ -428,7 +449,11 @@ fn language_server_install_progress_stays_in_manager() {
     );
 
     assert_eq!(app.status, None);
-    assert!(screen(&mut app, 100, 18).join("\n").contains("Installing… 50%"));
+    assert!(
+        screen(&mut app, 100, 18)
+            .join("\n")
+            .contains("Installing… 50%")
+    );
 
     app.on_backend_event(
         request,
@@ -582,19 +607,18 @@ fn language_server_table_borders_and_runtime_text_are_semantic() {
         _ => panic!("expected language-server manager"),
     };
     assert_eq!(buffer[(table.x, table.y)].symbol(), "┌");
-    assert_eq!(
-        buffer[(table.x, table.y.saturating_add(1))].symbol(),
-        "│"
-    );
+    assert_eq!(buffer[(table.x, table.y.saturating_add(1))].symbol(), "│");
     assert!(
-        (table.x..table.right()).any(|x| {
-            (table.y..table.bottom()).any(|y| buffer[(x, y)].symbol() == "─")
-        }),
+        (table.x..table.right())
+            .any(|x| { (table.y..table.bottom()).any(|y| buffer[(x, y)].symbol() == "─") }),
         "table should render row separators"
     );
 
     let semantic_cell = |needle: &str| {
-        let needle = needle.chars().map(|character| character.to_string()).collect::<Vec<_>>();
+        let needle = needle
+            .chars()
+            .map(|character| character.to_string())
+            .collect::<Vec<_>>();
         (0_u16..24).find_map(|y| {
             (0_u16..120).find_map(|x| {
                 needle
@@ -649,9 +673,7 @@ fn active_file_lsp_badge_reacts_to_runtime_state_and_color() {
     let running_x = running_row.find("LSP in sync").expect("running LSP badge");
     assert_eq!(
         running[(u16::try_from(running_x).unwrap_or_default(), 11)].fg,
-        app.theme
-            .role(ThemeRole::DiagnosticHint)
-            .to_ratatui()
+        app.theme.role(ThemeRole::DiagnosticHint).to_ratatui()
     );
 
     app.on_backend_event(
@@ -673,9 +695,7 @@ fn active_file_lsp_badge_reacts_to_runtime_state_and_color() {
     let crashed_x = crashed_row.find("LSP crashed").expect("crashed LSP badge");
     assert_eq!(
         crashed[(u16::try_from(crashed_x).unwrap_or_default(), 11)].fg,
-        app.theme
-            .role(ThemeRole::DiagnosticError)
-            .to_ratatui()
+        app.theme.role(ThemeRole::DiagnosticError).to_ratatui()
     );
 }
 
@@ -768,7 +788,11 @@ fn completed_language_server_uninstall_clears_only_its_pending_request() {
             if view.pending.iter().map(|pending| pending.request).collect::<Vec<_>>()
                 == requests.get(1).copied().into_iter().collect::<Vec<_>>()
     ));
-    assert!(screen(&mut app, 100, 18).join("\n").contains("Uninstalling"));
+    assert!(
+        screen(&mut app, 100, 18)
+            .join("\n")
+            .contains("Uninstalling")
+    );
 
     app.on_backend_event(
         requests.get(1).copied(),
