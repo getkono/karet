@@ -121,6 +121,26 @@ impl SpellingLanguage {
     }
 }
 
+/// One misspelling located by a workspace spelling scan
+/// ([`Command::ScanWorkspaceSpelling`]).
+///
+/// Deliberately *not* a [`Diagnostic`](karet_core::Diagnostic): a scan hit belongs
+/// to a file rather than an open document, and carries no replacement suggestions —
+/// computing them for a whole workspace dominates the scan's cost, and the fix flow
+/// lives in the editor, which recomputes them for the one word being fixed.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SpellingHit {
+    /// The absolute path of the file the word was found in.
+    pub path: PathBuf,
+    /// The word's span, in the file's 0-based line/column coordinates.
+    pub range: karet_core::Range,
+    /// The unknown word exactly as written.
+    pub word: String,
+    /// The whole line the word sits on, trimmed of surrounding whitespace, as
+    /// one-line context for a results list.
+    pub line_text: String,
+}
+
 /// A text line-ending style supported by editable karet documents.
 ///
 /// This *is* `karet-text`'s [`Eol`](karet_text::Eol) — the buffer's own
@@ -488,6 +508,19 @@ pub enum Command {
         /// The search query and options.
         query: karet_search::SearchQuery,
         /// Keep at most this many file hits.
+        limit: usize,
+    },
+    /// Spell-check the whole workspace on the backend's scan worker; answered with
+    /// a stream of [`Event::SpellingScanProgress`] batches and one final
+    /// [`Event::SpellingScanFinished`].
+    ///
+    /// Open documents are answered from their live buffers rather than from disk,
+    /// so an unsaved edit is never reported stale. A no-op when spell-checking is
+    /// disabled (the finish event still arrives, with nothing scanned), and
+    /// cancellable through [`Command::Cancel`].
+    ScanWorkspaceSpelling {
+        /// Keep at most this many misspellings; the scan stops once it is reached
+        /// and reports `truncated`.
         limit: usize,
     },
     /// Replace across every workspace match on the search worker; answered with

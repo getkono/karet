@@ -145,6 +145,27 @@ fn push_diagnostic(
     });
 }
 
+/// Slice the word a diagnostic's `range` covers out of the line it starts on.
+///
+/// Columns are character counts, so a line with multi-byte characters still slices
+/// correctly. A range spanning lines (which the checker never produces, but the
+/// model permits) falls back to the whole trimmed line.
+pub(crate) fn word_in_line(line: &str, range: Range) -> String {
+    if range.start.line != range.end.line {
+        return line.trim().to_owned();
+    }
+    let start = char_offset(line, range.start.col);
+    let end = char_offset(line, range.end.col);
+    line.get(start..end).unwrap_or_default().to_owned()
+}
+
+/// Byte offset of the `col`th character of `line` (columns are character counts).
+fn char_offset(line: &str, col: u32) -> usize {
+    line.char_indices()
+        .nth(col as usize)
+        .map_or(line.len(), |(offset, _)| offset)
+}
+
 fn is_prose_document(language: Option<&str>) -> bool {
     language.is_some_and(|language| {
         matches!(
@@ -343,6 +364,23 @@ impl<'a> LineIndex<'a> {
             u32::try_from(self.text[*start..byte].chars().count()).unwrap_or(u32::MAX)
         });
         LineCol::new(line as u32, column)
+    }
+
+    /// The 0-based `line`th line of the indexed text, without its terminator —
+    /// the one-line context a results list shows next to a flagged word.
+    pub(crate) fn line(&self, line: u32) -> &'a str {
+        let line = line as usize;
+        let Some(&start) = self.starts.get(line) else {
+            return "";
+        };
+        let end = self
+            .starts
+            .get(line + 1)
+            .map_or(self.text.len(), |next| next.saturating_sub(1));
+        self.text
+            .get(start..end.max(start))
+            .unwrap_or_default()
+            .trim_end_matches('\r')
     }
 }
 
@@ -582,6 +620,32 @@ mod tests {
         assert_eq!(
             words("élan isn't end"),
             vec![(0, 5, "élan"), (6, 11, "isn't"), (12, 15, "end")]
+        );
+    }
+
+    #[test]
+    fn word_in_line_slices_by_character_columns() {
+        let range = |start_col, end_col| Range {
+            start: LineCol::new(0, start_col),
+            end: LineCol::new(0, end_col),
+        };
+        assert_eq!(word_in_line("the wrld ends", range(4, 8)), "wrld");
+        // "é" is two bytes but one column.
+        assert_eq!(word_in_line("élan wrld", range(5, 9)), "wrld");
+        // A column past the end clamps instead of panicking.
+        assert_eq!(word_in_line("short", range(2, 99)), "ort");
+    }
+
+    #[test]
+    fn line_index_reports_a_line_without_its_terminator() {
+        let index = LineIndex::new("first line\r\nsecond line\nthird");
+        assert_eq!(index.line(0), "first line");
+        assert_eq!(index.line(1), "second line");
+        assert_eq!(index.line(2), "third");
+        assert_eq!(
+            index.line(99),
+            "",
+            "a line past the end is empty, not a panic"
         );
     }
 

@@ -224,7 +224,7 @@ impl Session {
     /// Submit a safely-droppable GitHub read whose future may be abandoned on cancel.
     pub(super) fn send_cancellable_github(&self, id: RequestId, job: GithubJob) {
         if let Some(tx) = self.github_tx.as_ref() {
-            let cancel = self.vcs_cancellations.register(id);
+            let cancel = self.cancellations.register(id);
             let _ = tx.send((id, job, Some(cancel)));
         }
     }

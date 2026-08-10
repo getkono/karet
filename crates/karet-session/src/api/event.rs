@@ -209,6 +209,26 @@ pub enum Event {
         /// The per-file hits, capped at the request's limit.
         hits: Vec<karet_search::FileHit>,
     },
+    /// One streamed batch of a workspace spelling scan, answering
+    /// [`Command::ScanWorkspaceSpelling`]. Batches arrive as the walk progresses so
+    /// a client can fill a list incrementally rather than waiting for the whole
+    /// workspace; `files_scanned` is cumulative across the scan.
+    SpellingScanProgress {
+        /// The misspellings found since the previous batch.
+        hits: Vec<SpellingHit>,
+        /// How many files the scan has visited so far.
+        files_scanned: usize,
+    },
+    /// A workspace spelling scan reached a terminal state, answering
+    /// [`Command::ScanWorkspaceSpelling`]. Exactly one arrives per scan.
+    SpellingScanFinished {
+        /// How many files the scan visited in total.
+        files_scanned: usize,
+        /// The scan stopped at its result limit; more misspellings exist.
+        truncated: bool,
+        /// The scan stopped early because of a [`Command::Cancel`].
+        cancelled: bool,
+    },
     /// A workspace replace-all finished, answering [`Command::SearchReplaceAll`].
     SearchReplaced {
         /// The number of files written.
