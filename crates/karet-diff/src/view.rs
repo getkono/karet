@@ -105,6 +105,45 @@ pub fn unified_lines(prepared: &PreparedDiff, palette: &DiffPalette<'_>) -> Vec<
     lines
 }
 
+/// Which hunk of `prepared` the unified view's display `row` falls in.
+///
+/// Mirrors [`unified_lines`]'s layout exactly (optional scope line, header,
+/// then the hunk body). Rows past the last hunk (the trailing blank line) map
+/// to the last hunk, so "the hunk at the viewport top" stays well-defined at
+/// the end of the document; a binary or hunkless diff has no answer.
+#[must_use]
+pub fn unified_hunk_at_row(prepared: &PreparedDiff, row: usize) -> Option<usize> {
+    hunk_at_row(prepared, row, |hunk| hunk.lines.len())
+}
+
+/// Which hunk of `prepared` the side-by-side view's display `row` falls in
+/// (both panes share row geometry). Same conventions as
+/// [`unified_hunk_at_row`].
+#[must_use]
+pub fn side_by_side_hunk_at_row(prepared: &PreparedDiff, row: usize) -> Option<usize> {
+    hunk_at_row(prepared, row, |hunk| crate::align_hunk(&hunk.lines).len())
+}
+
+fn hunk_at_row(
+    prepared: &PreparedDiff,
+    row: usize,
+    body_rows: impl Fn(&crate::Hunk) -> usize,
+) -> Option<usize> {
+    if prepared.is_binary() || prepared.diff.hunks.is_empty() {
+        return None;
+    }
+    let mut next_row = 0usize;
+    let mut found = 0;
+    for (index, hunk) in prepared.diff.hunks.iter().enumerate() {
+        if row < next_row {
+            break;
+        }
+        found = index;
+        next_row += usize::from(hunk.scope.is_some()) + 1 + body_rows(hunk);
+    }
+    Some(found)
+}
+
 /// Build the side-by-side lines for `prepared` as aligned `(old, new)` columns.
 #[must_use]
 pub fn side_by_side_lines(
@@ -386,6 +425,29 @@ mod tests {
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.as_ref())
             .collect()
+    }
+
+    #[test]
+    fn hunk_at_row_mirrors_the_painted_layout() {
+        // Two hunks: change line 1 and line 9 of a 9-line file (context split).
+        let old = "a\nb\nc\nd\ne\nf\ng\nh\ni\n";
+        let new = "A\nb\nc\nd\ne\nf\ng\nh\nI\n";
+        let prep = prepared(old, new);
+        assert_eq!(prep.diff.hunks.len(), 2, "context split produces two hunks");
+        // Row 0 is the first hunk header; its body follows.
+        assert_eq!(unified_hunk_at_row(&prep, 0), Some(0));
+        let token_fg = |_: TokenId| Color::White;
+        let total = unified_lines(&prep, &palette(&token_fg)).len();
+        // The final row (trailing blank) still answers with the last hunk.
+        assert_eq!(unified_hunk_at_row(&prep, total - 1), Some(1));
+        assert_eq!(side_by_side_hunk_at_row(&prep, 0), Some(0));
+        assert_eq!(side_by_side_hunk_at_row(&prep, usize::MAX), Some(1));
+        // A binary diff has no hunks to answer with.
+        let mut binary_diff = diff_text("a\n", "b\n", &DiffOptions::default());
+        binary_diff.is_binary = true;
+        binary_diff.hunks.clear();
+        let binary = PreparedDiff::new(binary_diff, Vec::new(), Vec::new());
+        assert_eq!(unified_hunk_at_row(&binary, 0), None);
     }
 
     #[test]

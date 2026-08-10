@@ -99,3 +99,79 @@ fn enter_on_a_deleted_files_diff_reports_instead_of_opening() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn stage_hunk_applies_the_hunk_patch_and_reloads_the_diff() {
+    let dir = test_dir("diff-stage-hunk");
+    write_file(&dir, "a.rs", b"fn a() {}\nfn added() {}\nfn c() {}\n");
+    let changed = ChangeSummary {
+        path: PathBuf::from("a.rs"),
+        old_path: None,
+        status: StatusKind::Modified,
+        is_binary: false,
+        added: 1,
+        removed: 0,
+    };
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = App::new(dir.clone(), Vec::new(), vec![changed], false);
+    app.backend = Some(backend.clone());
+    app.sidebar_panel = SidebarPanel::SourceControl;
+    app.focus = Focus::Sidebar;
+    app.dispatch(Command::SidebarActivate);
+    app.on_backend_event(
+        None,
+        SessionEvent::ChangePrepared {
+            path: PathBuf::from("a.rs"),
+            staged: false,
+            result: Ok(Box::new(prepared_from_texts(
+                "a.rs",
+                StatusKind::Modified,
+                "fn a() {}\nfn c() {}\n",
+                "fn a() {}\nfn added() {}\nfn c() {}\n",
+            ))),
+        },
+    );
+    assert_eq!(app.focus_target(), FocusTarget::DiffEditor);
+
+    // `u` on a working-tree diff is a hint, not an inverted apply.
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+    assert!(
+        !backend.sent.lock().is_ok_and(|sent| sent
+            .iter()
+            .any(|(_, c)| matches!(c, SessionCommand::ApplyIndexPatch { .. }))),
+        "mismatched verb sends nothing"
+    );
+
+    // `s` stages the hunk under the viewport top.
+    app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+    let patch = backend.sent.lock().ok().and_then(|sent| {
+        sent.iter().find_map(|(_, command)| match command {
+            SessionCommand::ApplyIndexPatch { patch, reverse } => Some((patch.clone(), *reverse)),
+            _ => None,
+        })
+    });
+    let (patch, reverse) = patch.expect("the hunk patch was sent");
+    assert!(!reverse);
+    assert!(
+        patch.contains("+fn added() {}"),
+        "patch carries the hunk: {patch}"
+    );
+    assert!(patch.contains("--- a/a.rs") && patch.contains("+++ b/a.rs"));
+    // The tab reserved its loading state and re-requested the diff.
+    assert!(matches!(
+        &app.tabs[app.active].kind,
+        TabKind::Diff {
+            file: None,
+            loading_since: Some(_),
+            ..
+        }
+    ));
+    let requested = backend.sent.lock().is_ok_and(|sent| {
+        sent.iter().any(
+            |(_, c)| matches!(c, SessionCommand::PrepareChange { path, staged: false } if path == Path::new("a.rs")),
+        )
+    });
+    assert!(requested, "the diff is re-requested after the apply");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

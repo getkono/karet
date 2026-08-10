@@ -109,6 +109,8 @@ impl App {
             Command::Top => self.scroll_edge(true),
             Command::Bottom => self.scroll_edge(false),
             Command::ToggleDiffLayout => self.toggle_diff_layout(),
+            Command::StageHunk => self.stage_hunk_at_viewport(false),
+            Command::UnstageHunk => self.stage_hunk_at_viewport(true),
             Command::ToggleFold => self.toggle_fold(),
             Command::NextChangedFile => self.step_changed_file(1),
             Command::PrevChangedFile => self.step_changed_file(-1),

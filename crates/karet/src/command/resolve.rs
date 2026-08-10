@@ -61,6 +61,8 @@ static PALETTE: &[Command] = &[
     Command::Cut,
     Command::Paste,
     Command::ToggleDiffLayout,
+    Command::StageHunk,
+    Command::UnstageHunk,
     Command::ToggleFold,
     Command::AddCursorAbove,
     Command::AddCursorBelow,

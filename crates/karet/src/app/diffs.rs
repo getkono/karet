@@ -29,6 +29,71 @@ impl App {
         }
     }
 
+    /// Stage (`reverse: false`) or un-stage (`reverse: true`) the hunk at the
+    /// top of the active diff tab's viewport, then re-request the diff so the
+    /// tab reflects the moved hunk. The backend answers the apply with a fresh
+    /// [`SessionEvent::VcsStatus`], which refreshes the Source-Control lists.
+    pub(super) fn stage_hunk_at_viewport(&mut self, reverse: bool) {
+        let Some(TabKind::Diff {
+            path,
+            section,
+            file: Some(file),
+            view,
+            pager,
+            ..
+        }) = self.tabs.get(self.active).map(|tab| &tab.kind)
+        else {
+            self.status = Some("stage hunk: open a diff first".to_string());
+            return;
+        };
+        // Staged-side diffs un-stage; working-side diffs stage. Mismatched
+        // verbs are a no-op with a hint rather than a surprising inversion.
+        let staged_side = *section == Section::Staged;
+        if reverse != staged_side {
+            self.status = Some(if reverse {
+                "unstage hunk: this diff shows unstaged changes (press s)".to_string()
+            } else {
+                "stage hunk: this diff shows staged changes (press u)".to_string()
+            });
+            return;
+        }
+        let prepared = &file.change.diff;
+        let row = usize::from(pager.scroll);
+        let hunk_index = match view {
+            ViewMode::Unified => karet_diff::unified_hunk_at_row(prepared, row),
+            ViewMode::SideBySide => karet_diff::side_by_side_hunk_at_row(prepared, row),
+        };
+        let Some(hunk) = hunk_index.and_then(|index| prepared.diff.hunks.get(index)) else {
+            self.status = Some("stage hunk: no hunk here".to_string());
+            return;
+        };
+        let patch = karet_diff::format_hunk_patch(&prepared.diff, hunk);
+        let (path, section) = (path.clone(), *section);
+        if self
+            .send(SessionCommand::ApplyIndexPatch { patch, reverse })
+            .is_none()
+        {
+            self.status = Some("stage hunk: backend is unavailable".to_string());
+            return;
+        }
+        self.status = Some(if reverse {
+            "hunk unstaged".to_string()
+        } else {
+            "hunk staged".to_string()
+        });
+        // Reserve the tab's loading state and ask for the now-current diff.
+        if let Some(TabKind::Diff {
+            file,
+            loading_since,
+            ..
+        }) = self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
+        {
+            *file = None;
+            *loading_since = Some(Pending::start());
+        }
+        self.request_change_diff(path, section);
+    }
+
     /// Fill the loading diff tab for `(path, section)` with its prepared file,
     /// or record the failure. Late answers for closed or re-targeted tabs are
     /// dropped by the match.

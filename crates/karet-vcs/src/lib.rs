@@ -225,6 +225,18 @@ impl Repository {
     pub fn staged_diff(&self) -> Result<StagedDiff, VcsError> {
         self.git_staged_diff()
     }
+
+    /// Apply a unified-diff `patch` to the index only (the worktree is
+    /// untouched): `reverse: false` stages the patch's changes, `reverse: true`
+    /// un-stages them. This is the per-hunk staging primitive — feed it one
+    /// hunk's patch (see `karet-diff`'s `format_hunk_patch`).
+    ///
+    /// # Errors
+    /// Returns [`VcsError::GitUnavailable`] when `git` cannot be launched, or
+    /// [`VcsError::Git`] when the patch does not apply to the index.
+    pub fn apply_index_patch(&self, patch: &str, reverse: bool) -> Result<(), VcsError> {
+        self.git_apply_index_patch(patch, reverse)
+    }
 }
 
 #[cfg(test)]

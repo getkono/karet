@@ -464,6 +464,9 @@ impl Session {
             // (LSP at a position, multi-view sync) need it.
             Command::SetCursor { .. } => {},
             Command::Stage { paths } => self.vcs_write(id, |repo| repo.stage(&paths)),
+            Command::ApplyIndexPatch { patch, reverse } => {
+                self.vcs_write(id, |repo| repo.apply_index_patch(&patch, reverse));
+            },
             Command::Unstage { paths } => self.vcs_write(id, |repo| repo.unstage(&paths)),
             Command::Discard { paths } => self.vcs_write(id, |repo| repo.discard(&paths)),
             Command::StageAll => self.vcs_write(id, Repository::stage_all),

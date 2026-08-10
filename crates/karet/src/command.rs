@@ -214,6 +214,10 @@ pub enum Command {
     /// Open the diffed file in a normal editor tab, at its first changed line
     /// (diff tab).
     OpenDiffFile,
+    /// Stage the hunk at the top of the diff viewport (diff tab, working tree).
+    StageHunk,
+    /// Un-stage the hunk at the top of the diff viewport (diff tab, staged).
+    UnstageHunk,
     /// Ask the language server for completions at the caret (Ctrl+Space).
     TriggerCompletion,
     /// Insert a printable character at the caret (replacing any selection).
@@ -563,6 +567,8 @@ impl Command {
             Self::NextChangedFile => "Diff: Next Changed File",
             Self::PrevChangedFile => "Diff: Previous Changed File",
             Self::OpenDiffFile => "Diff: Open File",
+            Self::StageHunk => "Diff: Stage Hunk",
+            Self::UnstageHunk => "Diff: Unstage Hunk",
             Self::InsertChar(_) => "Insert Character",
             Self::TriggerCompletion => "Trigger Suggest",
             Self::InsertNewline => "Insert Newline",
@@ -749,6 +755,8 @@ impl Command {
             Self::NextChangedFile => "next change",
             Self::PrevChangedFile => "prev change",
             Self::OpenDiffFile => "open file",
+            Self::StageHunk => "stage hunk",
+            Self::UnstageHunk => "unstage hunk",
             // Source control.
             Self::ScmStage => "stage",
             Self::ScmUnstage => "unstage",

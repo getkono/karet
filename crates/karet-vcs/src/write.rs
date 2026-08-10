@@ -167,6 +167,45 @@ impl Repository {
     }
 }
 
+impl Repository {
+    /// `git apply --cached [--reverse]` with the patch on stdin — the index-only
+    /// patch application behind [`Repository::apply_index_patch`].
+    pub(crate) fn git_apply_index_patch(&self, patch: &str, reverse: bool) -> Result<(), VcsError> {
+        let mut args = vec!["apply", "--cached", "--whitespace=nowarn"];
+        if reverse {
+            args.push("--reverse");
+        }
+        let mut child = Command::new("git")
+            .args(&args)
+            .current_dir(self.workdir()?)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|error| VcsError::GitUnavailable(error.to_string()))?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            use std::io::Write as _;
+            stdin
+                .write_all(patch.as_bytes())
+                .map_err(|error| VcsError::Git(error.to_string()))?;
+        }
+        let output = child
+            .wait_with_output()
+            .map_err(|error| VcsError::Git(error.to_string()))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            Err(VcsError::Git(if message.is_empty() {
+                format!("git apply exited with {}", output.status)
+            } else {
+                message
+            }))
+        }
+    }
+}
+
 fn validate_relative(path: &Path) -> Result<(), VcsError> {
     let valid = !path.as_os_str().is_empty()
         && !path.is_absolute()
@@ -320,6 +359,27 @@ mod tests {
         assert!(diff.patch.contains("+two"), "patch: {}", diff.patch);
         assert!(diff.patch.contains("-one"), "patch: {}", diff.patch);
         assert!(!diff.patch.contains("three"), "patch: {}", diff.patch);
+        Ok(())
+    }
+
+    #[test]
+    fn apply_index_patch_stages_and_unstages_one_hunk() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        write(&repo.0, "f.txt", b"a\n")?;
+        let r = Repository::discover(&repo.0)?;
+        r.stage(&[PathBuf::from("f.txt")])?;
+        r.commit("base")?;
+        // Change the worktree but stage only via the patch.
+        write(&repo.0, "f.txt", b"b\n")?;
+        let patch = "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-a\n+b\n";
+        r.apply_index_patch(patch, false)?;
+        let staged = r.staged_diff()?;
+        assert!(staged.patch.contains("+b"), "the hunk landed in the index");
+        r.apply_index_patch(patch, true)?;
+        let staged = r.staged_diff()?;
+        assert!(staged.patch.is_empty(), "reverse apply un-staged it");
+        // A garbage patch is a clean error, not a panic.
+        assert!(r.apply_index_patch("not a patch", false).is_err());
         Ok(())
     }
 

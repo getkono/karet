@@ -585,6 +585,18 @@ pub enum Command {
         /// Repository-relative paths to discard.
         paths: Vec<PathBuf>,
     },
+    /// Apply a unified-diff patch to the index only (per-hunk staging):
+    /// `reverse: false` stages the patch's changes, `reverse: true` un-stages
+    /// them. The worktree is untouched. Answered by a fresh
+    /// [`Event::VcsStatus`], or an [`Event::Notification`] when the patch does
+    /// not apply.
+    ApplyIndexPatch {
+        /// A unified-diff patch (typically one hunk, from
+        /// `karet_diff::format_hunk_patch`).
+        patch: String,
+        /// Un-stage instead of stage.
+        reverse: bool,
+    },
     /// Stage every change in the worktree.
     StageAll,
     /// Unstage every staged change.
@@ -842,6 +854,12 @@ mod tests {
             }],
         };
         assert_eq!(rt(&diag)?, serde_json::to_string(&diag)?);
+
+        let hunk = Command::ApplyIndexPatch {
+            patch: "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n".into(),
+            reverse: true,
+        };
+        assert_eq!(rt(&hunk)?, serde_json::to_string(&hunk)?);
 
         let prepare = Command::PrepareChange {
             path: PathBuf::from("src/main.rs"),
