@@ -286,8 +286,8 @@ pub(crate) struct SearchPanel {
     pub(crate) replace_edit: TextFieldState,
     /// The streamed results (one entry per matching file).
     pub(crate) results: Vec<FileHit>,
-    /// The selected result.
-    pub(crate) selected: usize,
+    /// The cursor over `results`.
+    pub(crate) selection: ListSelection,
     /// Whether a field is being edited (vs. browsing results).
     pub(crate) input: bool,
     /// Which field the input edits (find / replace).
@@ -310,7 +310,7 @@ impl Default for SearchPanel {
             replace: String::new(),
             replace_edit: TextFieldState::default(),
             results: Vec::new(),
-            selected: 0,
+            selection: ListSelection::new(0),
             input: false,
             field: SearchField::Find,
             // The replace field is shown by default (collapsible via keybinding).

@@ -504,7 +504,7 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
         })
         .collect();
     let mut state = ListState::default();
-    state.select(Some(search.selected));
+    state.select(Some(search.selection.cursor()));
     let list = List::new(items).highlight_style(
         Style::default()
             .bg(theme.role(ThemeRole::Selection).to_ratatui())

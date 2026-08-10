@@ -760,7 +760,7 @@ impl App {
                 }
                 let idx = self.search_ui.offset + (row_y - self.search_ui.results_rect.y) as usize;
                 if idx < self.search.results.len() {
-                    self.search.selected = idx;
+                    self.search.selection.move_to(idx);
                     self.open_selected_result();
                 }
             },

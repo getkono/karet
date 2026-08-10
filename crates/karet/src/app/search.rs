@@ -391,7 +391,7 @@ impl App {
     /// answers and fills the panel. A newer query supersedes an unstarted one.
     pub(super) fn run_global_search(&mut self) {
         self.search.results.clear();
-        self.search.selected = 0;
+        self.search.selection.set_len(0);
         if self.search.query.is_empty() {
             self.refresh_search_decorations();
             return;
@@ -407,10 +407,9 @@ impl App {
     /// Adopt the backend's workspace search results into the panel.
     pub(super) fn apply_search_results(&mut self, hits: Vec<karet_search::FileHit>) {
         self.search.results = hits;
-        self.search.selected = self
-            .search
-            .selected
-            .min(self.search.results.len().saturating_sub(1));
+        // set_len clamps the cursor into the fresh result list.
+        let len = self.search.results.len();
+        self.search.selection.set_len(len);
         self.refresh_search_decorations();
     }
 
@@ -457,16 +456,12 @@ impl App {
 
     /// Move the selection within the search results.
     pub(super) fn search_select(&mut self, delta: i32) {
-        let len = self.search.results.len();
-        if len > 0 {
-            let next = (self.search.selected as i64 + i64::from(delta)).clamp(0, len as i64 - 1);
-            self.search.selected = next as usize;
-        }
+        self.search.selection.move_by(delta);
     }
 
     /// Open the selected result, scrolling to its first match.
     pub(super) fn open_selected_result(&mut self) {
-        let Some(hit) = self.search.results.get(self.search.selected) else {
+        let Some(hit) = self.search.results.get(self.search.selection.cursor()) else {
             return;
         };
         let path = hit.path.clone();
