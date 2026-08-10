@@ -264,25 +264,28 @@ impl App {
 
         let mut tab = Tab::github_dashboard(repository, auth);
         tab.view = self.alloc_view();
-        let only_landing = self.tabs.len() == 1
-            && (matches!(self.tabs[0].kind, TabKind::Welcome) || self.tabs[0].is_preview);
-        if matches!(
+        // Availability lands asynchronously, so installing the dashboard must never
+        // move the user: it slots in leftmost and the active tab rides along. The
+        // lone exception is a bare Welcome tab, which the dashboard replaces
+        // outright and is then the only tab there is. Focus is never touched — the
+        // startup panel (or `--focus`) keeps it.
+        let replacing_welcome = matches!(
             self.tabs.as_slice(),
             [Tab {
                 kind: TabKind::Welcome,
                 ..
             }]
-        ) {
+        );
+        if replacing_welcome {
             self.tabs.clear();
         }
         self.tabs.insert(0, tab);
-        if only_landing {
+        if replacing_welcome {
             self.active = 0;
-            self.focus = Focus::Editor;
         } else {
             self.active = self.active.saturating_add(1);
         }
-        self.request_github_section();
+        self.request_dashboard_section(0);
     }
 
     fn remove_github_dashboard(&mut self) {
@@ -305,14 +308,24 @@ impl App {
     }
 
     fn active_dashboard_mut(&mut self) -> Option<&mut GithubDashboard> {
-        match self.tabs.get_mut(self.active).map(|tab| &mut tab.kind) {
+        self.dashboard_at_mut(self.active)
+    }
+
+    /// The dashboard at `index` in the focused pane, if that tab is one. Used to
+    /// drive the dashboard that was just installed, before it is the active tab.
+    fn dashboard_at_mut(&mut self, index: usize) -> Option<&mut GithubDashboard> {
+        match self.tabs.get_mut(index).map(|tab| &mut tab.kind) {
             Some(TabKind::Github(GithubViewState::Dashboard(dashboard))) => Some(dashboard),
             _ => None,
         }
     }
 
     fn request_github_section(&mut self) {
-        let Some((section, query)) = self.active_dashboard_mut().map(|dashboard| {
+        self.request_dashboard_section(self.active);
+    }
+
+    fn request_dashboard_section(&mut self, index: usize) {
+        let Some((section, query)) = self.dashboard_at_mut(index).map(|dashboard| {
             dashboard.loading_since = Some(Pending::start());
             dashboard.error = None;
             (dashboard.section, dashboard.query.clone())
@@ -327,7 +340,7 @@ impl App {
             GithubSection::Actions => SessionCommand::GithubActions { page: 1 },
         };
         let request = self.send(command);
-        if let Some(dashboard) = self.active_dashboard_mut() {
+        if let Some(dashboard) = self.dashboard_at_mut(index) {
             dashboard.pending = request;
         }
     }
