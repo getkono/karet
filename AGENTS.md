@@ -89,11 +89,11 @@ published to crates.io (everything else is `publish = false`).
 | `karet-filetype` | engine | ✓ | single registry: path → file type (name, category, per-`IconStyle` icon) + renderer routing (`FileKind`/`classify`); dependency-free |
 | `karet-text` | engine | ✓ | rope buffer, undo/redo, dirty/save, EOL/encoding detection, atomic save |
 | `karet-treesitter` | engine | ✓ | shared tree-sitter parse host (parser pool, incremental trees, queries, **language injection** → layered trees) |
-| `karet-syntax` | engine | ✓ | tree-sitter highlighting (incl. **injected** languages), fold regions, semantic blocks, symbol outlines, inline macros |
+| `karet-syntax` | engine | ✓ | tree-sitter highlighting (incl. **injected** languages), fold regions, semantic blocks, symbol outlines, inline macros; `lang-*` pass-through + `all-languages` forward grammar choice to the parse host |
 | `karet-theme` | engine | ✓ | token palette, VS Code JSON theme loader (`vscode` feat), ratatui styles + contrast (`view` feat) |
 | `karet-diff` | engine | ✓ | pure text diffing: histogram line diff, side-by-side alignment, intra-line highlights, unified-diff parse, per-hunk staging, prepared-diff model (`PreparedDiff`); ratatui painters behind `view` |
-| `karet-graph` | engine | — | DAG lane-assignment layout + rail renderer (`view` feat) for the commit graph & code visualizations |
-| `karet-markdown` | engine | — | markdown parse → wrap → render model, with source-line anchors for scroll sync; `highlight` colours code fences, `view` paints ratatui (incl. a scrollable `MarkdownView`) |
+| `karet-graph` | engine | — | DAG lane-assignment layout; `view` paints the commit-rail gutter and flattens `karet_core::GraphView` into styled tree rows (plain-style slots, no theme dep) |
+| `karet-markdown` | engine | — | markdown parse → wrap → render model, with source-line anchors for scroll sync; `highlight` colours code fences (`lang-common`/`all-languages` bundle the grammars), `view` paints ratatui (incl. a scrollable `MarkdownView`) |
 | `karet-cbor` | engine | — | CBOR decode/encode ↔ editable diagnostic-notation text (via `ciborium`); no presentation |
 | `karet-docx` | engine | — | DOCX (OOXML) parse → neutral document model → markdown text, hand-rolled on deflate-only `zip` + `quick-xml` (pure-Rust, no zstd/bzip2); no presentation |
 | `karet-pdf` | engine | ✓ | pure-Rust PDF page → RGBA rasterization (via `hayro`); no presentation |
@@ -109,7 +109,7 @@ published to crates.io (everything else is `publish = false`).
 | `karet-editor` | widget | ✓ | the editor widget: gutter, folds, sticky scroll, word wrap, multi-caret, merge-conflict decorations; `read_only` mode |
 | `karet-fileview` | widget | ✓ | read-only file-view primitives: hex view + terminal image (behind `raster`/`images`) + placeholder, plus `FileKind`/`classify` re-exports; composition is the consumer's |
 | `karet` | app | — | composition root / TUI client (local mode); merges the clipboard + input (keymap) modules; default-on `images`/`pdf`/`docx` features gate the optional media/document deps (`--no-default-features` → lean build, see `docs/binary-size.md`); `publish = false` |
-| `blameline` | standalone | ✓ | semantic git-blame (via `gix`): group lines by commit, tree-sitter function narrowing, serde/JSON output; headless, on its **own** SemVer line (see [Versioning](#versioning)) |
+| `blameline` | standalone | ✓ | semantic git-blame (via `gix`): grouped whole-file blame by default (pure Rust, no C compiler); tree-sitter function narrowing opt-in behind `treesitter` + `lang-*` (`all-narrowing-languages`); serde/JSON output; on its **own** SemVer line (see [Versioning](#versioning)) |
 
 ## Quality
 
@@ -132,6 +132,10 @@ mise run coverage    # cargo llvm-cov --workspace
 - Keep `clippy` clean at `-D warnings`; `#[allow(...)]` needs a justifying comment.
 - ratatui rendering goes behind the `view` feature; never make a headless engine
   depend on `ratatui` unconditionally.
+- Content engines expose their entry point as `parse(input) -> Result<Model, Error>`
+  (`karet_markdown::parse`, `karet_diff::parse`, …) — the one blessed verb for
+  "bytes/text in, neutral model out". New engines follow it; published types keep
+  their names (no breaking renames just to satisfy the convention).
 
 ## UI loading states
 
