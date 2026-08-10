@@ -21,10 +21,10 @@ impl App {
                 continue;
             }
             if let Some(request) =
-                self.send_command_id(SessionCommand::NestedRepositoryStatus { path: path.clone() })
+                self.send(SessionCommand::NestedRepositoryStatus { path: path.clone() })
             {
                 self.nested_repository_pending
-                    .insert(request, (path, Instant::now()));
+                    .insert(request, (path, Pending::start()));
             }
         }
     }
@@ -46,11 +46,11 @@ impl App {
         badges.extend(
             self.nested_repository_pending
                 .values()
-                .filter(|(_, since)| now.saturating_duration_since(*since) >= LOADING_REVEAL_DELAY)
+                .filter(|(_, since)| since.visible())
                 .map(|(path, since)| {
                     (
                         path.clone(),
-                        repository_spinner(now.saturating_duration_since(*since), self.icon_style),
+                        repository_spinner(since.elapsed_since(now), self.icon_style),
                     )
                 }),
         );
@@ -65,11 +65,7 @@ impl App {
         }
         self.nested_repository_pending
             .values()
-            .map(|(_, since)| {
-                LOADING_REVEAL_DELAY
-                    .checked_sub(now.saturating_duration_since(*since))
-                    .unwrap_or(Duration::from_millis(100))
-            })
+            .map(|(_, since)| since.wake(now).unwrap_or(Duration::from_millis(100)))
             .min()
     }
 
@@ -120,7 +116,7 @@ impl App {
         for request in pending {
             self.cancel_backend_request(request);
         }
-        self.send_vcs(SessionCommand::RefreshVcs);
+        self.send_command(SessionCommand::RefreshVcs);
     }
 
     /// Apply the explorer inline edit: create the file/folder or rename on disk, then
@@ -142,7 +138,7 @@ impl App {
                 match result {
                     Ok(()) => {
                         self.explorer.rebuild(&self.root);
-                        self.send_vcs(SessionCommand::RefreshVcs);
+                        self.send_command(SessionCommand::RefreshVcs);
                         if !*folder {
                             self.open_path(path);
                         }
@@ -161,7 +157,7 @@ impl App {
                 Ok(()) => {
                     self.retarget_open_paths(from, to);
                     self.explorer.rebuild(&self.root);
-                    self.send_vcs(SessionCommand::RefreshVcs);
+                    self.send_command(SessionCommand::RefreshVcs);
                 },
                 Err(e) => {
                     self.explorer.restore_edit(&pending);
@@ -277,7 +273,7 @@ impl App {
                 self.retarget_open_paths(from, to);
             }
             self.explorer.rebuild(&self.root);
-            self.send_vcs(SessionCommand::RefreshVcs);
+            self.send_command(SessionCommand::RefreshVcs);
             if clipboard.op == ExplorerFileOp::Cut {
                 self.explorer_clipboard = None;
             }
@@ -349,7 +345,7 @@ impl App {
         }
         if copied > 0 {
             self.explorer.rebuild(&self.root);
-            self.send_vcs(SessionCommand::RefreshVcs);
+            self.send_command(SessionCommand::RefreshVcs);
             self.status = Some(format!("duplicated {copied} item(s)"));
         }
         if let Some(message) = first_error {
@@ -433,7 +429,7 @@ impl App {
         }
         if deleted > 0 {
             self.explorer.rebuild(&self.root);
-            self.send_vcs(SessionCommand::RefreshVcs);
+            self.send_command(SessionCommand::RefreshVcs);
             self.status = Some(format!("deleted {deleted} item(s)"));
         }
         if let Some(message) = first_error {
@@ -531,24 +527,32 @@ impl App {
     /// always work; the link items are enabled exactly when [`remote::link`] can
     /// build them (the same call their dispatch runs), with its refusal reason as
     /// the disabled note.
-    pub(super) fn pane_context_entries(&self, path: &Path) -> Vec<ContextMenuEntry> {
+    pub(super) fn pane_context_entries(&mut self, path: &Path) -> Vec<ContextMenuEntry> {
         let mut entries = vec![
             ContextMenuEntry::enabled(Command::CopyPath),
             ContextMenuEntry::enabled(Command::CopyRelativePath),
             ContextMenuEntry::enabled(Command::RevealActiveInExplorer),
         ];
-        let facts = self.remote_facts(path);
-        let link_entry = |command, kind| match &facts {
-            Ok(facts) => match remote::link(&facts.link_target(), kind, None) {
-                Ok(_) => ContextMenuEntry::enabled(command),
-                Err(note) => ContextMenuEntry::disabled(command, note),
-            },
-            Err(note) => ContextMenuEntry::disabled(command, note.clone()),
+        // Owned disabled-notes computed up front, so the facts borrow does not
+        // overlap the &mut calls below. `None` = enabled.
+        let link_notes: [Option<String>; 3] = {
+            let facts = self.cached_remote_facts(path);
+            let note = |kind| match facts {
+                Some(Ok(facts)) => remote::link(&facts.link_target(), kind, None).err(),
+                Some(Err(note)) => Some(note.clone()),
+                None => Some("resolving repository remote…".to_string()),
+            };
+            [
+                note(remote::LinkKind::RemoteFile),
+                note(remote::LinkKind::GithubPermalink),
+                note(remote::LinkKind::GithubHeadLink),
+            ]
         };
-        entries.push(link_entry(
-            Command::CopyRemoteFileUrl,
-            remote::LinkKind::RemoteFile,
-        ));
+        let link_entry = |command, note: &Option<String>| match note {
+            None => ContextMenuEntry::enabled(command),
+            Some(note) => ContextMenuEntry::disabled(command, note.clone()),
+        };
+        entries.push(link_entry(Command::CopyRemoteFileUrl, &link_notes[0]));
         // The Open Changes actions need a repository and a tracked file, but no
         // remote — their enablement is checked separately from the link rows.
         let changes_note = self.open_changes_note(path);
@@ -562,14 +566,8 @@ impl App {
                 Some(note) => ContextMenuEntry::disabled(command, note.clone()),
             });
         }
-        entries.push(link_entry(
-            Command::CopyGithubPermalink,
-            remote::LinkKind::GithubPermalink,
-        ));
-        entries.push(link_entry(
-            Command::CopyGithubHeadLink,
-            remote::LinkKind::GithubHeadLink,
-        ));
+        entries.push(link_entry(Command::CopyGithubPermalink, &link_notes[1]));
+        entries.push(link_entry(Command::CopyGithubHeadLink, &link_notes[2]));
         entries
     }
 

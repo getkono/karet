@@ -90,49 +90,28 @@ impl Rgba {
     }
 }
 
-/// The text emphasis a theme requests for a token class, independent of any
-/// renderer. Markup tokens carry weight/slant as much as color — a markdown
-/// heading reads as a heading because it is **bold**, not merely blue.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Emphasis {
-    /// Render bold.
-    pub bold: bool,
-    /// Render italic.
-    pub italic: bool,
-    /// Render struck through.
-    pub strikethrough: bool,
+pub use karet_core::Emphasis;
+
+/// Ratatui conversion for the neutral [`Emphasis`] flags (which live in
+/// `karet-core`; this view-only extension keeps ratatui out of the vocabulary).
+#[cfg(feature = "view")]
+pub trait EmphasisExt {
+    /// Convert to a ratatui modifier set (empty when no flag is set).
+    fn to_ratatui(self) -> ratatui::style::Modifier;
 }
 
-impl Emphasis {
-    /// Bold, and nothing else.
-    pub(crate) const BOLD: Self = Self {
-        bold: true,
-        italic: false,
-        strikethrough: false,
-    };
-    /// Italic, and nothing else.
-    pub(crate) const ITALIC: Self = Self {
-        bold: false,
-        italic: true,
-        strikethrough: false,
-    };
-    /// Struck through, and nothing else.
-    pub(crate) const STRIKETHROUGH: Self = Self {
-        bold: false,
-        italic: false,
-        strikethrough: true,
-    };
-
-    /// Convert to a ratatui modifier set (empty when neither flag is set).
-    #[cfg(feature = "view")]
-    #[must_use]
-    pub fn to_ratatui(self) -> ratatui::style::Modifier {
+#[cfg(feature = "view")]
+impl EmphasisExt for Emphasis {
+    fn to_ratatui(self) -> ratatui::style::Modifier {
         let mut m = ratatui::style::Modifier::empty();
         if self.bold {
             m |= ratatui::style::Modifier::BOLD;
         }
         if self.italic {
             m |= ratatui::style::Modifier::ITALIC;
+        }
+        if self.underline {
+            m |= ratatui::style::Modifier::UNDERLINED;
         }
         if self.strikethrough {
             m |= ratatui::style::Modifier::CROSSED_OUT;
@@ -162,16 +141,6 @@ impl Theme {
     #[must_use]
     pub fn dark() -> Self {
         default::dark()
-    }
-
-    /// Load a TextMate `.tmTheme` (plist XML) theme.
-    ///
-    /// # Errors
-    /// Currently always returns [`ThemeError::Unsupported`] — tmTheme loading is
-    /// reserved; the built-in [`Theme::dark`] is used meanwhile.
-    pub fn load_tmtheme(bytes: &[u8]) -> Result<Self, ThemeError> {
-        let _ = bytes;
-        Err(ThemeError::Unsupported)
     }
 
     /// Load a VS Code JSON theme (requires the `vscode` feature).
@@ -225,9 +194,32 @@ impl Theme {
     pub fn is_dark(&self) -> bool {
         self.dark
     }
+
+    /// The ratatui foreground style for a UI role — the one-step spelling of
+    /// `Style::default().fg(theme.role(role).to_ratatui())`.
+    #[cfg(feature = "view")]
+    #[must_use]
+    pub fn style(&self, role: ThemeRole) -> ratatui::style::Style {
+        ratatui::style::Style::default().fg(self.role(role).to_ratatui())
+    }
+
+    /// The full ratatui style for a semantic token class: its foreground color
+    /// plus its emphasis modifiers (bold/italic/…), so themed emphasis is never
+    /// silently dropped.
+    #[cfg(feature = "view")]
+    #[must_use]
+    pub fn token_style(&self, token: TokenId) -> ratatui::style::Style {
+        ratatui::style::Style::default()
+            .fg(self.color(token).to_ratatui())
+            .add_modifier(EmphasisExt::to_ratatui(self.emphasis(token)))
+    }
 }
 
 /// The WCAG 2.1 contrast ratio between two colors (1.0 – 21.0).
+///
+/// Behind the `view` feature: contrast checking is a presentation-time concern and
+/// keeps the color-science dependency out of headless builds.
+#[cfg(feature = "view")]
 #[must_use]
 pub fn contrast_ratio(fg: Rgba, bg: Rgba) -> f32 {
     use palette::Srgb;
@@ -318,6 +310,7 @@ mod tests {
         assert_eq!(t.emphasis(TokenId(60000)), Emphasis::default());
     }
 
+    #[cfg(feature = "view")]
     #[test]
     fn doc_comment_is_brighter_than_comment() {
         let t = Theme::dark();
@@ -328,6 +321,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "view")]
     #[test]
     fn semantic_comment_marker_stands_out_from_comments() {
         let t = Theme::dark();
@@ -347,11 +341,34 @@ mod tests {
         assert!(t.emphasis(StandardToken::CommentMark.id()).bold);
     }
 
+    #[cfg(feature = "view")]
     #[test]
     fn foreground_on_background_is_readable() {
         let t = Theme::dark();
         let ratio = contrast_ratio(t.role(ThemeRole::Foreground), t.role(ThemeRole::Background));
         // WCAG AA for normal text is 4.5; a code theme's default fg should clear it.
         assert!(ratio > 4.5, "contrast ratio was {ratio}");
+    }
+
+    #[cfg(feature = "view")]
+    #[test]
+    fn style_and_token_style_resolve_color_and_emphasis() {
+        use karet_core::StandardToken;
+        let theme = Theme::dark();
+        let role_style = theme.style(karet_core::ThemeRole::Foreground);
+        assert_eq!(
+            role_style.fg,
+            Some(theme.role(karet_core::ThemeRole::Foreground).to_ratatui())
+        );
+        // Keywords carry the theme's emphasis (bold in the built-in dark theme's
+        // mapping, or none) — either way the color must match and the modifier
+        // set must equal the theme's emphasis conversion.
+        let token = StandardToken::Keyword.id();
+        let token_style = theme.token_style(token);
+        assert_eq!(token_style.fg, Some(theme.color(token).to_ratatui()));
+        assert_eq!(
+            token_style.add_modifier,
+            EmphasisExt::to_ratatui(theme.emphasis(token))
+        );
     }
 }

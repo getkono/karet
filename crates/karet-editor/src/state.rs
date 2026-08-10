@@ -20,6 +20,24 @@ pub struct Fold {
     pub collapsed: bool,
 }
 
+/// Resolve fold regions against the set of collapsed header lines into the
+/// editor's per-render [`Fold`] list.
+#[must_use]
+pub fn resolve_folds(
+    folds: &karet_core::FoldRegions,
+    folded: &std::collections::BTreeSet<u32>,
+) -> Vec<Fold> {
+    folds
+        .regions()
+        .iter()
+        .map(|r| Fold {
+            start: r.start,
+            end: r.end,
+            collapsed: folded.contains(&r.start),
+        })
+        .collect()
+}
+
 /// The persistent, per-view editor state: scroll position and the cursor/selection
 /// set.
 ///

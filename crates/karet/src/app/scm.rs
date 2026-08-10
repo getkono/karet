@@ -8,14 +8,14 @@ impl App {
         if self.scm.repository_loading_since.is_some() {
             return;
         }
-        self.scm.repository_loading_since = Some(Instant::now());
-        self.scm.repository_request = self.send_command_id(SessionCommand::RepositorySnapshot);
+        self.scm.repository_loading_since = Some(Pending::start());
+        self.scm.repository_request = self.send(SessionCommand::RepositorySnapshot);
     }
 
     /// Submit one ordered repository action.
     pub(super) fn run_vcs_action(&mut self, action: VcsAction) {
         if self
-            .send_command_id(SessionCommand::VcsAction {
+            .send(SessionCommand::VcsAction {
                 action: action.clone(),
             })
             .is_some()
@@ -161,7 +161,7 @@ impl App {
         self.status = Some(format!("loading open pull requests from {remote}"));
         self.pull_request_items.clear();
         self.pull_request_remote = Some(remote.clone());
-        self.pending_pull_requests = self.send_command_id(SessionCommand::PullRequests {
+        self.pending_pull_requests = self.send(SessionCommand::PullRequests {
             remote,
             page: 1,
             per_page: 100,
@@ -317,7 +317,7 @@ impl App {
         if self.pending_blame.is_some() {
             return;
         }
-        if let Some(id) = self.send_command_id(SessionCommand::Blame { doc, version, line }) {
+        if let Some(id) = self.send(SessionCommand::Blame { doc, version, line }) {
             self.pending_blame = Some((id, doc, version, line));
         }
     }
@@ -342,14 +342,9 @@ impl App {
     fn apply_blame_setting(&mut self, enabled: bool) {
         self.settings.git.blame = enabled;
         self.loaded_config.settings.git.blame = enabled;
-        #[cfg(not(test))]
-        if let Err(error) = karet_session::config::set_user_blame(enabled) {
-            self.notify(
-                Severity::Error,
-                NotificationKind::System,
-                format!("settings: {error}"),
-            );
-        }
+        // The persistent write runs on the backend; a failure comes back as an
+        // ordinary notification event.
+        self.send_command(SessionCommand::SetBlameEnabled { enabled });
         self.pending_blame = None;
         self.failed_blame = None;
         self.live_blame = None;
@@ -367,8 +362,8 @@ impl App {
             return;
         }
         self.scm.log_loading = true;
-        self.scm.log_loading_since = Some(Instant::now());
-        self.send_vcs(SessionCommand::VcsLog {
+        self.scm.log_loading_since = Some(Pending::start());
+        self.send_command(SessionCommand::VcsLog {
             skip,
             limit: SCM_LOG_PAGE,
         });
@@ -388,7 +383,7 @@ impl App {
     pub(super) fn open_commit(&mut self, rev: String) {
         self.push_tab(Tab::commit_loading(rev.clone()));
         let view = self.tabs[self.active].view;
-        if let Some(id) = self.send_command_id(SessionCommand::CommitDetail { rev }) {
+        if let Some(id) = self.send(SessionCommand::CommitDetail { rev }) {
             self.pending_commit_detail
                 .insert(id, CommitDest::Tab { view });
         }
@@ -399,7 +394,7 @@ impl App {
         self.push_tab(Tab::commit_graph(None, "Commits"));
         let view = self.tabs[self.active].view;
         self.graph_log_req = self
-            .send_command_id(SessionCommand::VcsLog {
+            .send(SessionCommand::VcsLog {
                 skip: 0,
                 limit: SCM_LOG_PAGE,
             })
@@ -425,7 +420,7 @@ impl App {
         self.push_tab(Tab::commit_graph(Some(path.clone()), format!("⌥ {name}")));
         let view = self.tabs[self.active].view;
         self.graph_log_req = self
-            .send_command_id(SessionCommand::FileHistory {
+            .send(SessionCommand::FileHistory {
                 path,
                 skip: 0,
                 limit: SCM_LOG_PAGE,
@@ -485,27 +480,11 @@ impl App {
             _ => {},
         }
     }
-    /// Send a fire-and-forget command to the backend (no document context).
-    pub(super) fn send_vcs(&mut self, command: SessionCommand) {
-        self.send_command(command);
-    }
-
     /// Submit a fire-and-forget backend command (the answering event, if any, is
-    /// handled generically), surfacing a dropped-backend error as a notification.
-    pub(super) fn send_command(&mut self, command: SessionCommand) {
-        let result = self.backend.as_ref().map(|backend| {
-            let id = backend.next_id();
-            backend.send(id, command)
-        });
-        if let Some(Err(e)) = result {
-            self.notify_backend_error(e);
-        }
-    }
-
-    /// Submit a backend command and return its [`RequestId`], so the answering event
-    /// can be correlated (e.g. to route a commit detail to the right destination).
-    /// Returns `None` when there is no backend or the submission failed.
-    pub(super) fn send_command_id(&mut self, command: SessionCommand) -> Option<RequestId> {
+    /// Submit a backend command and return its [`RequestId`], so the answering
+    /// event can be correlated — the one submission primitive (a failed or
+    /// backend-less submission notifies and returns `None`).
+    pub(super) fn send(&mut self, command: SessionCommand) -> Option<RequestId> {
         let (id, result) = {
             let backend = self.backend.as_ref()?;
             let id = backend.next_id();
@@ -520,13 +499,18 @@ impl App {
         }
     }
 
+    /// Submit a backend command whose answer needs no correlation.
+    pub(super) fn send_command(&mut self, command: SessionCommand) {
+        let _ = self.send(command);
+    }
+
     /// Send a path-scoped Source-Control command for the current selection.
     pub(super) fn scm_send_paths(&mut self, make: impl FnOnce(Vec<PathBuf>) -> SessionCommand) {
         let paths = self.scm.selected_paths();
         if paths.is_empty() {
             return;
         }
-        self.send_vcs(make(paths));
+        self.send_command(make(paths));
     }
 
     /// Toggle staging for the selection. A multi-file selection may span both
@@ -545,10 +529,10 @@ impl App {
             }
         }
         if !to_unstage.is_empty() {
-            self.send_vcs(SessionCommand::Unstage { paths: to_unstage });
+            self.send_command(SessionCommand::Unstage { paths: to_unstage });
         }
         if !to_stage.is_empty() {
-            self.send_vcs(SessionCommand::Stage { paths: to_stage });
+            self.send_command(SessionCommand::Stage { paths: to_stage });
         }
     }
 
@@ -630,7 +614,7 @@ impl App {
             self.status = Some("commit: message required".to_string());
             return;
         }
-        if let Some(id) = self.send_command_id(SessionCommand::Commit { message }) {
+        if let Some(id) = self.send(SessionCommand::Commit { message }) {
             self.commit_input.pending = Some(id);
             self.status = Some("committing…".to_string());
         }
@@ -642,7 +626,7 @@ impl App {
     /// notification.
     pub(super) fn commit_generate(&mut self) {
         self.status = Some("generating commit message…".to_string());
-        self.send_vcs(SessionCommand::GenerateCommitMessage);
+        self.send_command(SessionCommand::GenerateCommitMessage);
     }
 
     /// Edit the multiline commit message with an unbound text-field key.
@@ -697,7 +681,7 @@ impl App {
         let paths = self.pending_discard.take();
         if confirmed {
             if let Some(paths) = paths {
-                self.send_vcs(SessionCommand::Discard { paths });
+                self.send_command(SessionCommand::Discard { paths });
                 self.notify(
                     Severity::Information,
                     NotificationKind::Vcs,
@@ -711,7 +695,11 @@ impl App {
 
     /// Replace the Source-Control panel state from a fresh backend status,
     /// reconciling the existing selection against the new row count.
-    pub(super) fn apply_vcs_status(&mut self, staged: Vec<FileChange>, working: Vec<FileChange>) {
+    pub(super) fn apply_vcs_status(
+        &mut self,
+        staged: Vec<ChangeSummary>,
+        working: Vec<ChangeSummary>,
+    ) {
         let conflicted: HashSet<PathBuf> = working
             .iter()
             .filter(|change| change.status == karet_vcs::StatusKind::Conflicted)
@@ -726,9 +714,7 @@ impl App {
         let staged_count = staged.len();
         let mut changes = staged;
         changes.extend(working);
-        let change_line_stats = Scm::line_stats(&changes, staged_count);
         self.scm.changes = changes;
-        self.scm.change_line_stats = change_line_stats;
         self.scm.staged_count = staged_count;
         self.scm.selection.set_len(self.scm.changes.len());
         for tab in self.all_tabs_mut() {
@@ -756,7 +742,7 @@ impl App {
             // A fresh first page (initial load or a reconciliation reset) replaces the
             // log; scroll back to the top so the newest commits are in view.
             self.scm.log = commits;
-            self.scm_commits_offset = 0;
+            self.scm_ui.commits_offset = 0;
         } else if skip == self.scm.log.len() {
             self.scm.log.extend(commits);
         }
@@ -776,8 +762,8 @@ impl App {
         self.scm.log = commits;
         // If the user had scrolled into the log, shift down so the same commits stay
         // put; at the top (offset 0) keep them at the newest.
-        if self.scm_commits_offset > 0 {
-            self.scm_commits_offset += inserted;
+        if self.scm_ui.commits_offset > 0 {
+            self.scm_ui.commits_offset += inserted;
         }
     }
 }

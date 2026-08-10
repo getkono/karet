@@ -60,7 +60,6 @@ pub(crate) enum GithubPullRequestEditor {
 /// Stateful GitHub pull-request page.
 #[derive(Debug)]
 pub(crate) struct GithubPullRequestView {
-    pub(crate) repository: GithubRepository,
     pub(crate) pull_request: GithubPullRequest,
     pub(crate) comments: GithubPage<GithubComment>,
     pub(crate) commits: Vec<GithubPullRequestCommit>,
@@ -70,7 +69,7 @@ pub(crate) struct GithubPullRequestView {
     pub(crate) can_write: bool,
     pub(crate) section: GithubPullRequestSection,
     pub(crate) pending: Option<RequestId>,
-    pub(crate) loading_since: Instant,
+    pub(crate) loading_since: Pending,
     pub(crate) error: Option<String>,
     pub(crate) scroll: u16,
     pub(crate) commit_cursor: usize,

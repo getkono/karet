@@ -8,6 +8,8 @@
 //! `InputEdit` shape — also descending — so a parse host can call `tree.edit` in
 //! that order without per-edit delta bookkeeping.
 
+use karet_core::AppliedEdit;
+use karet_core::BytePoint;
 use karet_core::BytePos;
 use karet_core::Change;
 use karet_core::CursorState;
@@ -17,27 +19,6 @@ use karet_core::TextEdit;
 use crate::TextBuffer;
 use crate::TextError;
 use crate::history::EditContext;
-
-/// One edit as applied to the rope, in tree-sitter `InputEdit` shape. Points are
-/// `(row, column-in-bytes)` — byte columns, **not** the `char` columns of
-/// [`LineCol`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct AppliedEdit {
-    /// Byte offset where the edit starts (same in old and new text).
-    pub start_byte: usize,
-    /// Byte offset of the end of the replaced region in the old text.
-    pub old_end_byte: usize,
-    /// Byte offset of the end of the inserted text in the new text.
-    pub new_end_byte: usize,
-    /// `(row, byte-column)` of `start_byte`.
-    pub start_point: (usize, usize),
-    /// `(row, byte-column)` of `old_end_byte` (old text).
-    pub old_end_point: (usize, usize),
-    /// `(row, byte-column)` of `new_end_byte` (new text).
-    pub new_end_point: (usize, usize),
-    /// The text that was replaced (the inverse insertion).
-    pub replaced: String,
-}
 
 /// The result of an [`apply`](TextBuffer::apply), [`undo`](TextBuffer::undo), or
 /// [`redo`](TextBuffer::redo): the new version and the per-edit ranges (descending
@@ -59,9 +40,9 @@ struct Resolved {
     old_end_byte: usize,
     new_text: String,
     replaced: String,
-    start_point: (usize, usize),
-    old_end_point: (usize, usize),
-    new_end_point: (usize, usize),
+    start_point: BytePoint,
+    old_end_point: BytePoint,
+    new_end_point: BytePoint,
 }
 
 impl TextBuffer {
@@ -230,14 +211,14 @@ impl TextBuffer {
 }
 
 /// The tree-sitter point at the end of inserting `new_text` starting at `start`.
-fn point_after_insert(start: (usize, usize), new_text: &str) -> (usize, usize) {
+fn point_after_insert(start: BytePoint, new_text: &str) -> BytePoint {
     let bytes = new_text.as_bytes();
     match memchr::memrchr(b'\n', bytes) {
         Some(last_nl) => {
             let nlines = memchr::memchr_iter(b'\n', bytes).count();
-            (start.0 + nlines, bytes.len() - last_nl - 1)
+            BytePoint::new(start.row + nlines, bytes.len() - last_nl - 1)
         },
-        None => (start.0, start.1 + bytes.len()),
+        None => BytePoint::new(start.row, start.col + bytes.len()),
     }
 }
 
@@ -430,8 +411,8 @@ mod tests {
         assert_eq!(e.start_byte, 1);
         assert_eq!(e.old_end_byte, 1); // pure insertion
         assert_eq!(e.new_end_byte, 4); // 1 + len("X\nY")
-        assert_eq!(e.start_point, (0, 1));
-        assert_eq!(e.new_end_point, (1, 1)); // one new line, then "Y" → byte col 1
+        assert_eq!(e.start_point, BytePoint::new(0, 1));
+        assert_eq!(e.new_end_point, BytePoint::new(1, 1)); // one new line, then "Y" → byte col 1
         assert_eq!(b.line(0).as_deref(), Some("aX"));
         assert_eq!(b.line(1).as_deref(), Some("Yb"));
     }

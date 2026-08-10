@@ -27,7 +27,11 @@ impl App {
             return;
         }
         let tab = self.build_change_tab(change, section);
+        let request = diff_request(&tab);
         self.push_tab(tab);
+        if let Some((path, section)) = request {
+            self.request_change_diff(path, section);
+        }
         if let Some(path) = conflict_path {
             self.request_merge_conflict(path);
         }
@@ -58,18 +62,22 @@ impl App {
         }
         let mut tab = self.build_change_tab(change, section);
         tab.is_preview = true;
+        let request = diff_request(&tab);
         self.install_preview_tab(tab, false);
+        if let Some((path, section)) = request {
+            self.request_change_diff(path, section);
+        }
         if let Some(path) = conflict_path {
             self.request_merge_conflict(path);
         }
     }
 
-    fn conflict_path(change: &FileChange, section: Section) -> Option<PathBuf> {
+    fn conflict_path(change: &ChangeSummary, section: Section) -> Option<PathBuf> {
         (section == Section::Working && change.status == karet_vcs::StatusKind::Conflicted)
             .then(|| change.path.clone())
     }
 
-    fn find_change_tab(&self, change: &FileChange, section: Section) -> Option<usize> {
+    fn find_change_tab(&self, change: &ChangeSummary, section: Section) -> Option<usize> {
         if Self::conflict_path(change, section).is_some() {
             let expected = if change.path.is_absolute() {
                 change.path.clone()
@@ -89,13 +97,15 @@ impl App {
     /// The existing regular diff tab for `path` in `section`, if any.
     pub(super) fn find_diff_tab(&self, path: &Path, section: Section) -> Option<usize> {
         self.tabs.iter().position(|tab| {
-            matches!(&tab.kind, TabKind::Diff { file, .. }
-                if file.change.path == *path && file.section == section)
+            matches!(&tab.kind, TabKind::Diff { path: tab_path, section: tab_section, .. }
+                if *tab_path == *path && *tab_section == section)
         })
     }
 
-    /// Build an editable conflict editor or an ordinary prepared diff tab.
-    pub(super) fn build_change_tab(&self, change: FileChange, section: Section) -> Tab {
+    /// Build an editable conflict editor, or reserve an ordinary diff tab in its
+    /// loading state (the caller sends the `PrepareChange` request after
+    /// installing the tab — see [`diff_request`]).
+    pub(super) fn build_change_tab(&self, change: ChangeSummary, section: Section) -> Tab {
         if let Some(path) = Self::conflict_path(&change, section) {
             let absolute = if path.is_absolute() {
                 path
@@ -115,26 +125,29 @@ impl App {
             .and_then(|name| name.to_str())
             .unwrap_or("diff")
             .to_string();
-        let file = FileView::new(change, section, self.syntax);
-        Tab::new(
-            title,
-            TabKind::Diff {
-                file: Box::new(file),
-                view: self.diff_layout,
-                scroll: 0,
-                column: 0,
-            },
-        )
+        Tab::diff(title, change.path, section, None, self.diff_layout)
     }
 
     fn request_merge_conflict(&mut self, path: PathBuf) {
         let view = self.tabs[self.active].view;
-        if let Some(request) =
-            self.send_command_id(SessionCommand::MergeConflict { path: path.clone() })
-        {
+        if let Some(request) = self.send(SessionCommand::MergeConflict { path: path.clone() }) {
             self.pending_merge_conflicts.insert(request, (view, path));
         } else if let Some(conflict) = self.tabs[self.active].merge_conflict.as_mut() {
             conflict.error = Some("merge-conflict backend is unavailable".to_string());
         }
+    }
+}
+
+/// The `(path, section)` a freshly built loading diff tab needs prepared, if it
+/// is one (a conflict editor needs no diff preparation).
+fn diff_request(tab: &Tab) -> Option<(PathBuf, Section)> {
+    match &tab.kind {
+        TabKind::Diff {
+            path,
+            section,
+            file: None,
+            ..
+        } => Some((path.clone(), *section)),
+        _ => None,
     }
 }

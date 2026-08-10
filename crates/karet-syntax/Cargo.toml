@@ -1,6 +1,6 @@
 [package]
 name        = "karet-syntax"
-description = "Tree-sitter syntactic analysis (highlighting, fold regions, brackets) for karet TUI editors."
+description = "Tree-sitter syntactic analysis (highlighting incl. injected languages, fold regions, semantic blocks, outlines) for karet TUI editors."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -14,6 +14,86 @@ categories.workspace   = true
 
 [features]
 default = []
+# Grammar pass-through: each `lang-*` forwards to the same feature on
+# karet-treesitter (the single parse host), so a consumer can depend on
+# karet-syntax alone and still choose its grammar set.
+lang-rust          = ["karet-treesitter/lang-rust"]
+lang-python        = ["karet-treesitter/lang-python"]
+lang-javascript    = ["karet-treesitter/lang-javascript"]
+lang-typescript    = ["karet-treesitter/lang-typescript"]
+lang-json          = ["karet-treesitter/lang-json"]
+lang-go            = ["karet-treesitter/lang-go"]
+lang-c             = ["karet-treesitter/lang-c"]
+lang-cpp           = ["karet-treesitter/lang-cpp"]
+lang-csharp        = ["karet-treesitter/lang-csharp"]
+lang-java          = ["karet-treesitter/lang-java"]
+lang-ruby          = ["karet-treesitter/lang-ruby"]
+lang-php           = ["karet-treesitter/lang-php"]
+lang-bash          = ["karet-treesitter/lang-bash"]
+lang-toml          = ["karet-treesitter/lang-toml"]
+lang-html          = ["karet-treesitter/lang-html"]
+lang-css           = ["karet-treesitter/lang-css"]
+lang-yaml          = ["karet-treesitter/lang-yaml"]
+lang-markdown      = ["karet-treesitter/lang-markdown"]
+lang-latex         = ["karet-treesitter/lang-latex"]
+lang-zig           = ["karet-treesitter/lang-zig"]
+lang-xml           = ["karet-treesitter/lang-xml"]
+lang-svelte        = ["karet-treesitter/lang-svelte"]
+lang-astro         = ["karet-treesitter/lang-astro"]
+lang-vue           = ["karet-treesitter/lang-vue"]
+lang-sql           = ["karet-treesitter/lang-sql"]
+lang-graphql       = ["karet-treesitter/lang-graphql"]
+lang-protobuf      = ["karet-treesitter/lang-protobuf"]
+lang-containerfile = ["karet-treesitter/lang-containerfile"]
+lang-make          = ["karet-treesitter/lang-make"]
+lang-cmake         = ["karet-treesitter/lang-cmake"]
+lang-rst           = ["karet-treesitter/lang-rst"]
+lang-asciidoc      = ["karet-treesitter/lang-asciidoc"]
+lang-zsh           = ["karet-treesitter/lang-zsh"]
+lang-fish          = ["karet-treesitter/lang-fish"]
+lang-powershell    = ["karet-treesitter/lang-powershell"]
+lang-batch         = ["karet-treesitter/lang-batch"]
+lang-kotlin        = ["karet-treesitter/lang-kotlin"]
+lang-swift         = ["karet-treesitter/lang-swift"]
+lang-scala         = ["karet-treesitter/lang-scala"]
+lang-lua           = ["karet-treesitter/lang-lua"]
+lang-haskell       = ["karet-treesitter/lang-haskell"]
+lang-ocaml         = ["karet-treesitter/lang-ocaml"]
+lang-elixir        = ["karet-treesitter/lang-elixir"]
+lang-erlang        = ["karet-treesitter/lang-erlang"]
+lang-dart          = ["karet-treesitter/lang-dart"]
+lang-r             = ["karet-treesitter/lang-r"]
+lang-perl          = ["karet-treesitter/lang-perl"]
+lang-clojure       = ["karet-treesitter/lang-clojure"]
+lang-elisp         = ["karet-treesitter/lang-elisp"]
+lang-vim           = ["karet-treesitter/lang-vim"]
+lang-scss          = ["karet-treesitter/lang-scss"]
+lang-sass          = ["karet-treesitter/lang-sass"]
+lang-less          = ["karet-treesitter/lang-less"]
+lang-erb           = ["karet-treesitter/lang-erb"]
+lang-mdx           = ["karet-treesitter/lang-mdx"]
+lang-json5         = ["karet-treesitter/lang-json5"]
+lang-ini           = ["karet-treesitter/lang-ini"]
+lang-properties    = ["karet-treesitter/lang-properties"]
+lang-edn           = ["karet-treesitter/lang-edn"]
+lang-cbor          = ["karet-treesitter/lang-cbor"]
+lang-lockfile      = ["karet-treesitter/lang-lockfile"]
+# Convenience bundle: every grammar above.
+all-languages = [
+    "lang-rust", "lang-python", "lang-javascript", "lang-typescript",
+    "lang-json", "lang-go", "lang-c", "lang-cpp", "lang-csharp", "lang-java",
+    "lang-ruby", "lang-php", "lang-bash", "lang-toml", "lang-html",
+    "lang-css", "lang-yaml", "lang-markdown", "lang-latex", "lang-zig",
+    "lang-xml", "lang-svelte", "lang-astro", "lang-vue", "lang-sql",
+    "lang-graphql", "lang-protobuf", "lang-containerfile", "lang-make",
+    "lang-cmake", "lang-rst", "lang-asciidoc", "lang-zsh", "lang-fish",
+    "lang-powershell", "lang-batch", "lang-kotlin", "lang-swift",
+    "lang-scala", "lang-lua", "lang-haskell", "lang-ocaml", "lang-elixir",
+    "lang-erlang", "lang-dart", "lang-r", "lang-perl", "lang-clojure",
+    "lang-elisp", "lang-vim", "lang-scss", "lang-sass", "lang-less",
+    "lang-erb", "lang-mdx", "lang-json5", "lang-ini", "lang-properties",
+    "lang-edn", "lang-cbor", "lang-lockfile",
+]
 
 [dependencies]
 karet-core.workspace = true

@@ -9,6 +9,77 @@ use std::path::PathBuf;
 use crate::coord::LineCol;
 use crate::coord::Range;
 
+/// A `(row, byte-column)` grid point, as tree-sitter counts them: the column is a
+/// **byte** offset from the line start, not a `char` column like [`LineCol`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct BytePoint {
+    /// Zero-based row (line) index.
+    pub row: usize,
+    /// Byte offset from the start of the row.
+    pub col: usize,
+}
+
+impl BytePoint {
+    /// Create a point at `row` / byte-`col`.
+    #[must_use]
+    pub const fn new(row: usize, col: usize) -> Self {
+        Self { row, col }
+    }
+}
+
+/// One edit as applied to a text buffer, in tree-sitter `InputEdit` shape.
+///
+/// This is the neutral vocabulary between the buffer that applies edits
+/// (`karet-text`) and the parse host that replays them incrementally
+/// (`karet-treesitter`): the buffer produces these, `SyntaxTree::edit` consumes
+/// them, and neither crate needs to know the other exists.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct AppliedEdit {
+    /// Byte offset where the edit starts (same in old and new text).
+    pub start_byte: usize,
+    /// Byte offset of the end of the replaced region in the old text.
+    pub old_end_byte: usize,
+    /// Byte offset of the end of the inserted text in the new text.
+    pub new_end_byte: usize,
+    /// Grid point of `start_byte`.
+    pub start_point: BytePoint,
+    /// Grid point of `old_end_byte` (old text).
+    pub old_end_point: BytePoint,
+    /// Grid point of `new_end_byte` (new text).
+    pub new_end_point: BytePoint,
+    /// The text that was replaced (the inverse insertion).
+    pub replaced: String,
+}
+
+/// Why an edit happened. Drives undo coalescing (only [`EditCause::Type`] is
+/// eligible to merge with the preceding edit) and rides
+/// the backend seam alongside each [`Change`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
+pub enum EditCause {
+    /// A single typed character.
+    Type,
+    /// A newline (always starts a fresh undo group).
+    Newline,
+    /// A backward/forward deletion.
+    Delete,
+    /// A clipboard paste (one group, however large).
+    Paste,
+    /// A cut (delete of a selection).
+    Cut,
+    /// A programmatic or multi-edit replacement.
+    Replace,
+    /// An edit originating from outside the editor (e.g. a reload).
+    External,
+    /// Forward-compatibility fallback: an unrecognized cause from a newer peer.
+    /// Never coalesces.
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
+}
+
 /// A single replacement of `range` with `new_text` (LSP-shaped).
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

@@ -14,6 +14,7 @@ use crate::repo::to_git;
 
 /// A person recorded on a commit (its author or its committer).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Identity {
     /// The display name.
     pub name: String,
@@ -28,6 +29,7 @@ pub struct Identity {
 /// The scheme of a commit's cryptographic signature.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SignatureKind {
     /// An SSH signature (`-----BEGIN SSH SIGNATURE-----`).
     Ssh,
@@ -49,6 +51,7 @@ pub enum SignatureKind {
 /// it can be recovered offline, and the raw armored text. The authoritative "Verified"
 /// status is fetched separately from the forge (see the session's GitHub integration).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CommitSignature {
     /// The signature scheme, detected from the armor header.
     pub kind: SignatureKind,
@@ -62,6 +65,7 @@ pub struct CommitSignature {
 
 /// Full detail for a single commit, backing the commit view.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CommitDetail {
     /// The full commit hash (hex).
     pub hash: String,

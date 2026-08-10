@@ -2,7 +2,7 @@
 /// [`super::Event::CommitVerification`]). Mirrors GitHub's `commit.verification`;
 /// defined here (rather than re-exported from `karet-github`) so the seam stays stable
 /// whether or not the `github` feature is compiled in.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GithubVerification {
     /// Whether the forge considers the signature verified.
     pub verified: bool,
@@ -52,8 +52,29 @@ pub struct GithubAuth {
 }
 
 /// A transient GitHub token whose debug representation never exposes the secret.
-#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+///
+/// Deliberately **refuses to serialize**: the credential must never ride a
+/// serialized transport, so its `Serialize`/`Deserialize` impls (required because
+/// [`Command`](crate::api::Command) derives serde) error instead of moving the
+/// secret. A remote client authenticates out-of-band on its own host.
+#[derive(Clone, PartialEq, Eq)]
 pub struct GithubToken(String);
+
+impl serde::Serialize for GithubToken {
+    fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+        Err(serde::ser::Error::custom(
+            "GithubToken must not cross a serialized transport; authenticate locally",
+        ))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for GithubToken {
+    fn deserialize<D: serde::Deserializer<'de>>(_deserializer: D) -> Result<Self, D::Error> {
+        Err(serde::de::Error::custom(
+            "GithubToken must not cross a serialized transport; authenticate locally",
+        ))
+    }
+}
 
 impl GithubToken {
     /// Wrap a token received from an interactive presentation.

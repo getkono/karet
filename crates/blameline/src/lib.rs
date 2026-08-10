@@ -17,11 +17,13 @@
 //! follows its **own** SemVer line starting at `1.0.0`. See the crate `README.md`.
 
 mod blame;
+#[cfg(feature = "treesitter")]
 mod treesitter;
 
 use std::path::Path;
 
 pub use blame::blame_file;
+#[cfg(feature = "treesitter")]
 pub use treesitter::enclosing_function_range;
 
 /// An inclusive, 1-based line range (e.g. the issue's "lines 42-58").
@@ -108,10 +110,13 @@ pub fn blame_function(
     line: u32,
 ) -> Result<Vec<BlameGroup>, BlameError> {
     let all = blame_file(repo_root, file)?;
-    match enclosing_function_range(source, file, line) {
-        Some(range) => Ok(clip_groups(all, range)),
-        None => Ok(all),
+    #[cfg(feature = "treesitter")]
+    if let Some(range) = enclosing_function_range(source, file, line) {
+        return Ok(clip_groups(all, range));
     }
+    #[cfg(not(feature = "treesitter"))]
+    let _ = (source, line);
+    Ok(all)
 }
 
 /// Serialize blame groups to pretty JSON (`[{lines, commit_hash, message, …}, …]`).
@@ -124,6 +129,7 @@ pub fn to_json(groups: &[BlameGroup]) -> Result<String, BlameError> {
 
 /// Restrict `groups` to the lines within `range`, clipping group boundaries and
 /// dropping groups that fall entirely outside it.
+#[cfg_attr(not(feature = "treesitter"), allow(dead_code))] // narrowing-only helper; unit-tested in every build
 fn clip_groups(groups: Vec<BlameGroup>, range: LineRange) -> Vec<BlameGroup> {
     groups
         .into_iter()

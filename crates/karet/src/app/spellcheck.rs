@@ -23,14 +23,10 @@ impl App {
         else {
             return None;
         };
-        let diagnostic = self
-            .document_diagnostics
-            .get(doc)?
-            .iter()
-            .find(|diagnostic| {
-                diagnostic.source.as_deref() == Some(SPELLCHECK_SOURCE)
-                    && range_contains(diagnostic.range, position)
-            })?;
+        let diagnostic = self.docs.diagnostics.get(doc)?.iter().find(|diagnostic| {
+            diagnostic.source.as_deref() == Some(SPELLCHECK_SOURCE)
+                && range_contains(diagnostic.range, position)
+        })?;
         spell_warning(*doc, buffer, text, diagnostic)
     }
 
@@ -53,14 +49,10 @@ impl App {
         if *active_doc != doc {
             return None;
         }
-        let diagnostic = self
-            .document_diagnostics
-            .get(&doc)?
-            .iter()
-            .find(|diagnostic| {
-                diagnostic.source.as_deref() == Some(SPELLCHECK_SOURCE)
-                    && diagnostic.range.end == position
-            })?;
+        let diagnostic = self.docs.diagnostics.get(&doc)?.iter().find(|diagnostic| {
+            diagnostic.source.as_deref() == Some(SPELLCHECK_SOURCE)
+                && diagnostic.range.end == position
+        })?;
         spell_warning(doc, buffer, text, diagnostic)
     }
 
@@ -208,70 +200,36 @@ impl App {
         }
     }
 
-    /// Add a spelling word directly to an existing project file, or require typed
-    /// confirmation before creating the missing `.karet/setting.jsonc` tree.
+    /// Ask the backend to add a spelling word to the project layer; the answering
+    /// event either confirms the write or asks for typed creation confirmation.
     pub(super) fn add_spelling_to_project_dictionary(&mut self, word: String) {
-        match karet_session::config::add_project_dictionary_word(
-            std::slice::from_ref(&self.root),
-            &word,
-            false,
-        ) {
-            Ok(path) => self.dictionary_word_added(&word, &path),
-            Err(karet_session::config::ConfigWriteError::ProjectCreationRequiresConfirmation(
-                path,
-            )) => {
-                self.overlay = Some(Overlay::text(
-                    format!("Type create to add “{word}” and create {}", path.display()),
-                    TextPurpose::ConfirmCreateProjectSettings { word, path },
-                ));
-            },
-            Err(error) => self.notify(
-                Severity::Error,
-                NotificationKind::System,
-                format!("dictionary: {error}"),
-            ),
-        }
+        self.send_command(SessionCommand::AddDictionaryWord {
+            word,
+            scope: karet_session::DictionaryScope::Project,
+            create_project: false,
+        });
     }
 
-    /// Add a spelling word to the platform user settings, creating that layer when
-    /// necessary.
+    /// Ask the backend to add a spelling word to the platform user settings,
+    /// creating that layer when necessary.
     pub(super) fn add_spelling_to_user_dictionary(&mut self, word: String) {
-        match karet_session::config::add_user_dictionary_word(&word) {
-            Ok(path) => self.dictionary_word_added(&word, &path),
-            Err(error) => self.notify(
-                Severity::Error,
-                NotificationKind::System,
-                format!("dictionary: {error}"),
-            ),
-        }
+        self.send_command(SessionCommand::AddDictionaryWord {
+            word,
+            scope: karet_session::DictionaryScope::User,
+            create_project: false,
+        });
     }
 
     /// Finish the explicitly confirmed missing-project-settings path.
-    pub(super) fn create_project_dictionary(&mut self, word: &str, expected_path: &Path) {
-        match karet_session::config::add_project_dictionary_word(
-            std::slice::from_ref(&self.root),
-            word,
-            true,
-        ) {
-            Ok(path) if path == expected_path => self.dictionary_word_added(word, &path),
-            Ok(path) => self.notify(
-                Severity::Error,
-                NotificationKind::System,
-                format!(
-                    "dictionary: project settings target changed from {} to {}",
-                    expected_path.display(),
-                    path.display()
-                ),
-            ),
-            Err(error) => self.notify(
-                Severity::Error,
-                NotificationKind::System,
-                format!("dictionary: {error}"),
-            ),
-        }
+    pub(super) fn create_project_dictionary(&mut self, word: &str, _expected_path: &Path) {
+        self.send_command(SessionCommand::AddDictionaryWord {
+            word: word.to_string(),
+            scope: karet_session::DictionaryScope::Project,
+            create_project: true,
+        });
     }
 
-    fn dictionary_word_added(&mut self, word: &str, path: &Path) {
+    pub(super) fn dictionary_word_added(&mut self, word: &str, path: &Path) {
         if !self
             .settings
             .spellcheck

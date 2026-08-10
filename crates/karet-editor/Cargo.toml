@@ -1,6 +1,6 @@
 [package]
 name        = "karet-editor"
-description = "The composable ratatui code-editor widget for karet (gutter, minimap, folds, visual aids, snippets)."
+description = "The composable ratatui code-editor widget for karet (gutter, folds, sticky scroll, word wrap, multi-caret, merge-conflict decorations)."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -22,8 +22,6 @@ karet-syntax.workspace = true
 karet-theme = { workspace = true, features = ["view"] }
 ratatui.workspace = true
 unicode-width.workspace = true
-unicode-segmentation.workspace = true
-thiserror.workspace = true
 
 [dev-dependencies]
 crossterm.workspace = true            # the read_only pager example's terminal loop

@@ -12,7 +12,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
     app.commit_badge_rect = None;
     let focused = app.focus_pane();
     let editor_focused = app.focus == Focus::Editor;
-    let graphics = app.graphics;
+    let graphics = app.caps.graphics;
     let graphical_cursor = app.graphical_cursor_enabled();
     for (pane, rect) in app.layout.layout(area) {
         let is_focused = pane == focused;
@@ -49,7 +49,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
                 word_wrap,
                 sticky_scroll,
                 tab_width,
-                diagnostics: &app.document_diagnostics,
+                diagnostics: &app.docs.diagnostics,
                 find: app
                     .find_open
                     .then(|| app.tabs.get(app.active))
@@ -86,7 +86,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
                 word_wrap,
                 sticky_scroll,
                 tab_width,
-                diagnostics: &app.document_diagnostics,
+                diagnostics: &app.docs.diagnostics,
                 find: None,
                 blame: None,
                 blame_clickable: false,
@@ -131,7 +131,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
         } else {
             ThemeRole::IndentGuide
         };
-        let style = Style::default().fg(theme.role(role).to_ratatui());
+        let style = theme.style(role);
         match divider.axis {
             SplitAxis::Cols => {
                 for y in divider.start..divider.end {
@@ -437,7 +437,7 @@ pub(super) fn draw_overlay(f: &mut Frame, overlay: &Overlay, theme: &Theme, area
     }
 
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
-    let query = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
+    let query = theme.style(ThemeRole::LineNumberActive);
     f.render_widget(
         Paragraph::new(Line::styled(format!("› {}", overlay.query()), query)),
         rows[0],
@@ -449,7 +449,7 @@ pub(super) fn draw_overlay(f: &mut Frame, overlay: &Overlay, theme: &Theme, area
     let list_h = rows[1].height as usize;
     let width = rows[1].width as usize;
     let offset = selected.saturating_sub(list_h.saturating_sub(1));
-    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let dim = theme.style(ThemeRole::LineNumber);
     let items: Vec<ListItem> = labels
         .iter()
         .zip(hints.iter())

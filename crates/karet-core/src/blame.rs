@@ -13,9 +13,11 @@ pub struct BlameCommit {
 }
 
 /// Attribution of a current-buffer line.
+///
+/// Wire casing is serde's default (variant names verbatim), matching every other
+/// model in this crate — one consistent convention across the whole vocabulary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[non_exhaustive]
 pub enum BlameAttribution {
     /// The range is unchanged from, or uniquely mapped to, this commit.

@@ -8,7 +8,7 @@ pub(super) fn draw_outline(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
     let header = rows[0];
     let content = rows[1];
-    app.outline_content_rect = content;
+    app.outline.content_rect = content;
 
     f.render_widget(
         Block::default().style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui())),
@@ -16,35 +16,33 @@ pub(super) fn draw_outline(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
     );
     f.render_widget(
         Paragraph::new(" OUTLINE").style(
-            Style::default()
-                .fg(theme.role(ThemeRole::LineNumber).to_ratatui())
+            theme
+                .style(ThemeRole::LineNumber)
                 .add_modifier(Modifier::BOLD),
         ),
         header,
     );
 
     let entries = app.active_outline_rows();
-    app.outline_sel.set_len(entries.len());
+    app.outline.sel.set_len(entries.len());
     if entries.is_empty() {
-        let pending = app.active_outline_loading_since();
-        let label =
-            if pending.is_some_and(|since| since.elapsed() >= crate::app::LOADING_REVEAL_DELAY) {
-                " Loading…"
-            } else if pending.is_some() {
-                ""
-            } else {
-                " No outline"
-            };
+        let pending = app.active_outline_loading();
+        let label = if pending.is_some_and(crate::app::Pending::visible) {
+            " Loading…"
+        } else if pending.is_some() {
+            ""
+        } else {
+            " No outline"
+        };
         f.render_widget(
-            Paragraph::new(label)
-                .style(Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui())),
+            Paragraph::new(label).style(theme.style(ThemeRole::Muted)),
             content,
         );
         return;
     }
 
     let focused = app.focus == Focus::Outline;
-    let cursor = app.outline_sel.cursor();
+    let cursor = app.outline.sel.cursor();
     let sel_bg = if focused {
         ThemeRole::Selection
     } else {
@@ -58,14 +56,14 @@ pub(super) fn draw_outline(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
         })
         .collect();
     let list = List::new(items)
-        .style(Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui()))
+        .style(theme.style(ThemeRole::Foreground))
         .highlight_style(Style::default().bg(theme.role(sel_bg).to_ratatui()));
     let mut state = ListState::default();
-    *state.offset_mut() = app.outline_scroll;
+    *state.offset_mut() = app.outline.scroll;
     state.select(Some(cursor));
     f.render_stateful_widget(list, content, &mut state);
     // Remember where the list settled so a click maps to the right entry next frame.
-    app.outline_scroll = state.offset();
+    app.outline.scroll = state.offset();
 }
 
 pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
@@ -123,10 +121,8 @@ pub(super) fn draw_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, are
     let Some(menu) = app.context_menu.as_mut() else {
         return;
     };
-    if menu.entries.is_empty() {
-        menu.rect = Rect::default();
-        return;
-    }
+    // Resolve the app-specific row texts (default command labels + key hints);
+    // the shared widget owns placement, clamping, and painting.
     let hints: Vec<Option<String>> = menu
         .entries
         .iter()
@@ -149,68 +145,7 @@ pub(super) fn draw_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, are
             })
         })
         .collect();
-    let label_w = labels
-        .iter()
-        .map(|label| cell_width(label))
-        .max()
-        .unwrap_or(0);
-    let hint_w = hints
-        .iter()
-        .flatten()
-        .map(|hint| cell_width(hint))
-        .max()
-        .unwrap_or(0);
-    let width = (label_w + hint_w + 6).clamp(18, 46).min(area.width.max(1));
-    let height = (menu.entries.len() as u16 + 2).min(area.height.max(1));
-    let x = menu.x.min(area.right().saturating_sub(width));
-    let y = menu.y.min(area.bottom().saturating_sub(height));
-    let rect = Rect {
-        x,
-        y,
-        width,
-        height,
-    };
-    menu.rect = rect;
-    f.render_widget(Clear, rect);
-    let style = Style::default()
-        .bg(theme.role(ThemeRole::Background).to_ratatui())
-        .fg(theme.role(ThemeRole::Foreground).to_ratatui());
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .style(style)
-        .border_style(Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui()));
-    let inner = block.inner(rect);
-    f.render_widget(block, rect);
-    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
-    let items: Vec<ListItem> = labels
-        .iter()
-        .zip(hints.iter())
-        .zip(menu.entries.iter())
-        .map(|((label, hint), entry)| {
-            // Disabled rows render fully dimmed (label and hint alike).
-            let label_style = if entry.enabled { Style::default() } else { dim };
-            match hint {
-                Some(hint) => {
-                    let used = cell_width(label) + cell_width(hint);
-                    let pad = inner.width.saturating_sub(used).max(1);
-                    ListItem::new(Line::from(vec![
-                        Span::styled(label.clone(), label_style),
-                        Span::raw(" ".repeat(pad as usize)),
-                        Span::styled(hint.clone(), dim),
-                    ]))
-                },
-                None => ListItem::new(Line::from(Span::styled(label.clone(), label_style))),
-            }
-        })
-        .collect();
-    let mut state = ListState::default();
-    state.select(Some(menu.selected));
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .bg(theme.role(ThemeRole::Selection).to_ratatui())
-            .add_modifier(Modifier::BOLD),
-    );
-    f.render_stateful_widget(list, inner, &mut state);
+    menu.draw(f, theme, area, &labels, &hints);
 }
 
 pub(super) fn context_menu_label(command: Command) -> &'static str {
@@ -277,16 +212,14 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
     ])
     .split(area);
     if show_root {
-        let root_style = Style::default()
-            .fg(theme.role(ThemeRole::Muted).to_ratatui())
-            .add_modifier(Modifier::BOLD);
+        let root_style = theme.style(ThemeRole::Muted).add_modifier(Modifier::BOLD);
         f.render_widget(
             Paragraph::new(Line::styled(format!(" {root_label}"), root_style)),
             cols[0],
         );
     }
-    let title = Style::default()
-        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+    let title = theme
+        .style(ThemeRole::LineNumberActive)
         .add_modifier(Modifier::BOLD);
     f.render_widget(
         Paragraph::new(Line::styled(format!(" {name}"), title)),
@@ -367,17 +300,13 @@ pub(super) enum ChromeButtonState {
 
 pub(super) fn chrome_button_style(theme: &Theme, state: ChromeButtonState) -> Style {
     match state {
-        ChromeButtonState::Normal => {
-            Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())
-        },
-        ChromeButtonState::Hovered => {
-            Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
-        },
-        ChromeButtonState::Active => Style::default()
-            .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+        ChromeButtonState::Normal => theme.style(ThemeRole::LineNumber),
+        ChromeButtonState::Hovered => theme.style(ThemeRole::LineNumberActive),
+        ChromeButtonState::Active => theme
+            .style(ThemeRole::LineNumberActive)
             .add_modifier(Modifier::BOLD),
-        ChromeButtonState::ActiveHovered => Style::default()
-            .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+        ChromeButtonState::ActiveHovered => theme
+            .style(ThemeRole::Foreground)
             .add_modifier(Modifier::BOLD),
     }
 }
@@ -407,22 +336,7 @@ pub(super) fn root_header_label(root: &Path, max_width: u16) -> String {
 }
 
 pub(super) fn truncate_left(text: &str, max_width: u16) -> String {
-    if max_width <= 3 {
-        return ".".repeat(max_width as usize);
-    }
-    let suffix_width = max_width - 3;
-    let mut suffix = String::new();
-    let mut used = 0;
-    for ch in text.chars().rev() {
-        let mut buf = [0; 4];
-        let w = cell_width(ch.encode_utf8(&mut buf));
-        if used + w > suffix_width {
-            break;
-        }
-        suffix.insert(0, ch);
-        used += w;
-    }
-    format!("...{suffix}")
+    karet_widgets::text::fit_start(text, usize::from(max_width))
 }
 
 pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
@@ -438,9 +352,9 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
         Constraint::Min(0),            // results
     ])
     .split(area);
-    app.search_results_rect = rows[2];
-    app.search_offset = 0;
-    app.search_action_hits = Vec::new();
+    app.search_ui.results_rect = rows[2];
+    app.search_ui.offset = 0;
+    app.search_ui.action_hits = Vec::new();
 
     let accent = theme.role(ThemeRole::LineNumberActive).to_ratatui();
     let dim = theme.role(ThemeRole::LineNumber).to_ratatui();
@@ -465,7 +379,7 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
         width: find_cols[0].width.saturating_sub(find_prefix.width),
         ..find_cols[0]
     };
-    app.search_query_rect = find_field;
+    app.search_ui.query_rect = find_field;
     app.search
         .query_edit
         .ensure_cursor_visible(&app.search.query, find_field.width);
@@ -491,7 +405,7 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
     let mut toggle_spans = Vec::with_capacity(toggles.len());
     for (i, (label, on, cmd)) in toggles.into_iter().enumerate() {
         let x = find_cols[1].x + i as u16 * 3;
-        app.search_action_hits.push((x, x + 2, rows[0].y, cmd));
+        app.search_ui.action_hits.push((x, x + 2, rows[0].y, cmd));
         let style = if on {
             Style::default().fg(accent).add_modifier(Modifier::REVERSED)
         } else {
@@ -520,7 +434,7 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
             width: rep_cols[0].width.saturating_sub(rep_prefix.width),
             ..rep_cols[0]
         };
-        app.search_replace_rect = Some(rep_field);
+        app.search_ui.replace_rect = Some(rep_field);
         app.search
             .replace_edit
             .ensure_cursor_visible(&app.search.replace, rep_field.width);
@@ -544,7 +458,7 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
         } else {
             Style::default().fg(dim)
         };
-        app.search_action_hits.push((
+        app.search_ui.action_hits.push((
             rep_cols[1].x,
             rep_cols[1].x + SLOT_W,
             rows[1].y,
@@ -555,12 +469,12 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
             rep_cols[1],
         );
     } else {
-        app.search_replace_rect = None;
+        app.search_ui.replace_rect = None;
     }
 
     let search = &app.search;
     if search.results.is_empty() {
-        let hint = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+        let hint = theme.style(ThemeRole::LineNumber);
         let msg = if search.query.is_empty() {
             "  type a query, Enter to search"
         } else {
@@ -584,18 +498,18 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
                 Span::raw(format!(" {name} ")),
                 Span::styled(
                     format!("({})", hit.matches.len()),
-                    Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
+                    theme.style(ThemeRole::LineNumber),
                 ),
             ]))
         })
         .collect();
     let mut state = ListState::default();
-    state.select(Some(search.selected));
+    state.select(Some(search.selection.cursor()));
     let list = List::new(items).highlight_style(
         Style::default()
             .bg(theme.role(ThemeRole::Selection).to_ratatui())
             .add_modifier(Modifier::BOLD),
     );
     f.render_stateful_widget(list, rows[2], &mut state);
-    app.search_offset = state.offset();
+    app.search_ui.offset = state.offset();
 }

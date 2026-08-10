@@ -67,6 +67,7 @@ impl TerminalCapabilities {
     }
 
     /// Whether OSC 22 pointer-shape hints were confirmed supported.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn pointer_shapes_supported(&self) -> bool {
         self.osc22_pointer_shape == Some(true)

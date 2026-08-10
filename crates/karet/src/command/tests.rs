@@ -2,10 +2,12 @@ use super::resolve::*;
 use super::*;
 
 #[test]
-fn every_palette_command_has_a_label() {
+fn every_palette_command_has_a_unique_label() {
+    let mut seen = std::collections::HashSet::new();
     for cmd in palette() {
         assert!(!cmd.label().is_empty(), "{cmd:?} has no label");
-        assert!(cmd.in_palette(), "{cmd:?} listed but not in_palette");
+        // `resolve_named` matches titles exactly, so they must be unique.
+        assert!(seen.insert(cmd.label()), "duplicate label: {}", cmd.label());
     }
 }
 

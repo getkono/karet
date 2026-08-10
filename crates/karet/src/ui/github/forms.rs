@@ -72,7 +72,7 @@ pub(super) fn draw_issue_form(
                 Block::default()
                     .borders(Borders::ALL)
                     .title(description_title)
-                    .border_style(Style::default().fg(theme.role(description_border).to_ratatui())),
+                    .border_style(theme.style(description_border)),
             )
             .wrap(Wrap { trim: false }),
         editor[1],
@@ -181,7 +181,7 @@ fn draw_form_field(
             Block::default()
                 .borders(Borders::ALL)
                 .title(format!(" {label} "))
-                .border_style(Style::default().fg(theme.role(border_role).to_ratatui())),
+                .border_style(theme.style(border_role)),
         ),
         area,
     );

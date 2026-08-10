@@ -12,7 +12,6 @@ use karet_core::BlameAttribution;
 use karet_core::Change;
 use karet_core::CompletionItem;
 use karet_core::CursorState;
-use karet_core::Decoration;
 use karet_core::Diagnostic;
 use karet_core::Hover;
 use karet_core::LineCol;
@@ -22,16 +21,12 @@ use karet_core::Severity;
 use karet_core::Symbol;
 use karet_core::TextEdit;
 use karet_core::WorkspaceEdit;
-use karet_search::FileHit;
-use karet_search::SearchQuery;
-use karet_syntax::HighlightSpan;
 use karet_text::EditCause;
 use karet_vcs::Branch;
 use karet_vcs::BranchTarget;
 use karet_vcs::Commit;
 use karet_vcs::CommitDetail;
 use karet_vcs::CreateBranchOptions;
-use karet_vcs::FileChange;
 use karet_vcs::Remote;
 use karet_vcs::RemoteBranch;
 use karet_vcs::RepositoryState;
@@ -41,13 +36,15 @@ use karet_vcs::StashOptions;
 
 mod event;
 mod github;
+mod vcs;
 
 pub use event::Event;
 pub use github::*;
+pub use vcs::*;
 
 /// Per-document editing and serialization behavior after application settings and
 /// matching EditorConfig files have been resolved.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DocumentSettings {
     /// Whether indentation commands insert spaces (`true`) or hard tabs (`false`).
     pub insert_spaces: bool,
@@ -86,7 +83,7 @@ impl Default for DocumentSettings {
 ///
 /// The dictionary files themselves are discovered at runtime so the application
 /// package stays small; this enum deliberately keeps the supported locale set narrow.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SpellingLanguage {
     /// American English (`en_US`).
     EnglishUnitedStates,
@@ -125,200 +122,32 @@ impl SpellingLanguage {
 }
 
 /// A text line-ending style supported by editable karet documents.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DocumentLineEnding {
-    /// Line feed (`\n`).
-    Lf,
-    /// Carriage return followed by line feed (`\r\n`).
-    Crlf,
-}
+///
+/// This *is* `karet-text`'s [`Eol`](karet_text::Eol) — the buffer's own
+/// vocabulary, serde-ready, carried across the seam without a mirror type.
+pub type DocumentLineEnding = karet_text::Eol;
 
 /// A text encoding supported by editable karet documents.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DocumentEncoding {
-    /// UTF-8 without a byte-order mark.
-    Utf8,
-    /// UTF-8 with a byte-order mark.
-    Utf8Bom,
-}
-
-/// A complete repository snapshot for Source Control controls and pickers.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RepositorySnapshot {
-    /// Current branch, upstream divergence, and recovery state.
-    pub state: RepositoryState,
-    /// Local branches.
-    pub branches: Vec<Branch>,
-    /// Configured remotes.
-    pub remotes: Vec<Remote>,
-    /// Locally known remote-tracking branches.
-    pub remote_branches: Vec<RemoteBranch>,
-    /// Stash entries, newest first.
-    pub stashes: Vec<StashEntry>,
-}
-
-/// A forge-neutral open pull request suitable for the branch picker.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PullRequestSummary {
-    /// Repository-local pull request number.
-    pub number: u64,
-    /// Pull request title.
-    pub title: String,
-    /// Author login, when available.
-    pub author: Option<String>,
-    /// Whether the pull request is a draft.
-    pub draft: bool,
-    /// Source branch name.
-    pub head_ref: String,
-    /// Source repository, including fork owner.
-    pub head_repo: String,
-    /// Current source commit.
-    pub head_sha: String,
-    /// Target branch name.
-    pub base_ref: String,
-    /// Target repository.
-    pub base_repo: String,
-    /// Browser URL.
-    pub url: String,
-}
-
-/// One serialized repository mutation. The backend runs these off the actor thread.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum VcsAction {
-    /// Create, optionally switch to, and optionally publish a branch.
-    CreateBranch(CreateBranchOptions),
-    /// Switch to a local or remote-tracking branch.
-    SwitchBranch(BranchTarget),
-    /// Rename a local branch.
-    RenameBranch {
-        /// Existing local name.
-        old: String,
-        /// Replacement local name.
-        new: String,
-    },
-    /// Safely delete a merged local branch.
-    DeleteBranch {
-        /// Local branch to delete.
-        name: String,
-    },
-    /// Publish a local branch.
-    PublishBranch {
-        /// Destination remote.
-        remote: String,
-        /// Local branch to publish.
-        branch: String,
-        /// Whether to configure the published branch as upstream.
-        set_upstream: bool,
-    },
-    /// Delete a remote branch.
-    DeleteRemoteBranch {
-        /// Destination remote.
-        remote: String,
-        /// Remote branch to delete.
-        branch: String,
-    },
-    /// Undo the latest commit with a soft reset.
-    UndoCommit {
-        /// Explicit confirmation when the commit is already upstream.
-        allow_upstream: bool,
-    },
-    /// Create a stash.
-    StashPush(StashOptions),
-    /// Load a stash patch without changing the repository.
-    StashPreview {
-        /// Stable stash selector.
-        reference: String,
-    },
-    /// Apply a stash while keeping it.
-    StashApply {
-        /// Stable stash selector.
-        reference: String,
-    },
-    /// Apply and remove a stash.
-    StashPop {
-        /// Stable stash selector.
-        reference: String,
-    },
-    /// Permanently remove a stash.
-    StashDrop {
-        /// Stable stash selector.
-        reference: String,
-    },
-    /// Create and switch to a branch from a stash.
-    StashBranch {
-        /// New local branch name.
-        name: String,
-        /// Stable stash selector.
-        reference: String,
-    },
-    /// Fetch and prune a remote.
-    Fetch {
-        /// Remote to fetch and prune.
-        remote: String,
-    },
-    /// Pull using Git configuration and push the current branch.
-    Sync,
-    /// Continue the in-progress merge, rebase, or cherry-pick.
-    Continue,
-    /// Abort the in-progress merge, rebase, or cherry-pick.
-    Abort,
-    /// Skip the current rebase or cherry-pick commit.
-    Skip,
-    /// Fetch and switch to a reusable local GitHub pull-request branch.
-    CheckoutPullRequest {
-        /// GitHub remote that owns the pull-request ref.
-        remote: String,
-        /// Repository-local pull-request number.
-        number: u64,
-    },
-}
-
-/// Structured result from a repository action.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum VcsOutcome {
-    /// The action completed without a more specific result.
-    Completed,
-    /// A stash was created; false means there were no changes to save.
-    StashCreated(bool),
-    /// Patch text for a stash preview.
-    StashPreview {
-        /// Previewed stash selector.
-        reference: String,
-        /// Unified diff and stat text.
-        patch: String,
-    },
-    /// Sync cannot proceed until the current branch is published.
-    NeedsPublish,
-    /// A managed pull-request branch was fast-forwarded.
-    PullRequestUpdated,
-    /// The new local branch used for a checked-out pull request.
-    PullRequestCheckedOut {
-        /// Reusable local branch name.
-        branch: String,
-    },
-    /// Commit removed from `HEAD` by undo.
-    CommitUndone {
-        /// Commit removed from `HEAD`.
-        commit: String,
-        /// Whether the removed commit was already reachable upstream.
-        was_upstream: bool,
-    },
-}
+///
+/// This *is* `karet-text`'s [`Encoding`](karet_text::Encoding).
+pub type DocumentEncoding = karet_text::Encoding;
 
 use crate::config::LoadedConfig;
 
 /// Identifies an open document within a session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct DocumentId(pub u64);
 
 /// Identifies a view (editor pane) within a session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ViewId(pub u64);
 
 /// Correlates a [`Command`] with the [`Event`] that answers it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct RequestId(pub u64);
 
 /// Stable, opaque identity for a language-server provider.
@@ -509,51 +338,19 @@ pub struct LanguageServerStatus {
     pub instances: Vec<LanguageServerInstanceStatus>,
 }
 
-/// Which producer a [`Event::DecorationsChanged`] batch belongs to, so the client
-/// can replace one producer's decoration layer atomically.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum DecorationLayer {
-    /// Version-control markers (git gutter, blame).
-    Vcs,
-    /// Debugger markers (breakpoints, current line).
-    Dap,
-    /// Search-match highlights.
-    Search,
-    /// Language-server decorations.
-    Lsp,
-}
-
-/// Which diff-between-two-points a [`Command::RangeChanges`] asks for. The backend
-/// resolves the endpoints against the repository (upstream, base branch, merge base) so
-/// ref resolution stays with the repo, and answers with [`Event::RangeReady`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RangeSpec {
-    /// The current branch's unpushed work: `@{upstream}...HEAD` (three-dot) — what the
-    /// local commits change since they diverged from the tracking branch.
-    Unpushed,
-    /// The current branch's changes since it forked from a base branch:
-    /// `base...HEAD` (three-dot). `base` is auto-detected when `None`.
-    SinceBase {
-        /// The base branch/ref to compare against, or `None` to auto-detect.
-        base: Option<String>,
-    },
-    /// An explicit comparison between two revisions. `merge_base` selects three-dot
-    /// (`base...head`, from their merge base) over two-dot (`base..head`, the raw tips).
-    Between {
-        /// The "before" revision.
-        base: String,
-        /// The "after" revision.
-        head: String,
-        /// Whether to diff from the merge base (three-dot) rather than the tips.
-        merge_base: bool,
-    },
+/// The spell-check dictionary settings layer a word is written to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DictionaryScope {
+    /// The per-user settings layer.
+    User,
+    /// The workspace's `.karet/setting.jsonc` layer.
+    Project,
 }
 
 /// A request submitted by the presentation layer to the backend.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum Command {
     /// Cancel a safely-droppable background request.
     ///
@@ -685,10 +482,84 @@ pub enum Command {
         /// The open TeX document that initiated the build.
         doc: DocumentId,
     },
-    /// Run a workspace search.
+    /// Run a workspace search on the backend's search worker; answered with
+    /// [`Event::SearchResults`]. A newer search supersedes an unstarted one.
     Search {
         /// The search query and options.
-        query: SearchQuery,
+        query: karet_search::SearchQuery,
+        /// Keep at most this many file hits.
+        limit: usize,
+    },
+    /// Replace across every workspace match on the search worker; answered with
+    /// [`Event::SearchReplaced`]. Open buffers pick the edits up through the
+    /// file watcher.
+    SearchReplaceAll {
+        /// The query selecting the text to replace.
+        query: karet_search::SearchQuery,
+        /// The replacement text.
+        replacement: String,
+    },
+    /// Add `word` to a spell-check dictionary settings layer. The write runs on
+    /// the backend (never a UI thread); answered with
+    /// [`Event::DictionaryWordAdded`], or
+    /// [`Event::ProjectSettingsCreationRequired`] when the project layer does not
+    /// exist and `create_project` was not set.
+    AddDictionaryWord {
+        /// The word to accept.
+        word: String,
+        /// Which settings layer receives it.
+        scope: DictionaryScope,
+        /// Explicit confirmation to create a missing project settings tree.
+        create_project: bool,
+    },
+    /// Persist the inline-blame toggle to the user settings layer.
+    SetBlameEnabled {
+        /// Whether inline blame is enabled.
+        enabled: bool,
+    },
+    /// Resolve the repository/remote facts for one file on the VCS worker
+    /// (discovery starts from the file's own directory, so nested repositories
+    /// resolve correctly); answered with [`Event::RemoteFacts`].
+    RemoteFacts {
+        /// The file whose repository context is wanted.
+        path: PathBuf,
+    },
+    /// Prepare one [`Event::VcsStatus`] entry's displayable diff (line diff,
+    /// syntax tokens, intra-line pairs) on the VCS worker; answered with
+    /// [`Event::ChangePrepared`].
+    PrepareChange {
+        /// The changed file's path as listed by [`Event::VcsStatus`].
+        path: PathBuf,
+        /// `true` for the staged entry, `false` for the working-tree entry.
+        staged: bool,
+    },
+    /// Convert a binary document (DOCX) to markdown for a read-only preview;
+    /// answered with [`Event::DocumentConverted`].
+    ConvertDocument {
+        /// The document to convert.
+        path: PathBuf,
+    },
+    /// Prepare an ad-hoc diff of two provided texts for display (e.g. the
+    /// client's two-file diff mode); answered with [`Event::DiffPrepared`].
+    PrepareDiff {
+        /// Path used for language detection and labeling (the new side's).
+        path: PathBuf,
+        /// The old (left) text.
+        old: String,
+        /// The new (right) text.
+        new: String,
+    },
+    /// Prepare the diff of one file at a revision against its current content,
+    /// on the VCS worker; answered with [`Event::DiffPrepared`]. The revision
+    /// side is read from the repository; the current side is `live` when given
+    /// (an unsaved buffer), the worktree file otherwise.
+    DiffWithRev {
+        /// The file to diff (absolute or workspace-relative).
+        path: PathBuf,
+        /// The revision to read the old side at (e.g. `HEAD`, a branch, a hash).
+        rev: String,
+        /// The current (new-side) text, when the client holds unsaved edits.
+        live: Option<String>,
     },
     /// Report the client's cursor/selection state for a view.
     SetCursor {
@@ -713,6 +584,18 @@ pub enum Command {
     Discard {
         /// Repository-relative paths to discard.
         paths: Vec<PathBuf>,
+    },
+    /// Apply a unified-diff patch to the index only (per-hunk staging):
+    /// `reverse: false` stages the patch's changes, `reverse: true` un-stages
+    /// them. The worktree is untouched. Answered by a fresh
+    /// [`Event::VcsStatus`], or an [`Event::Notification`] when the patch does
+    /// not apply.
+    ApplyIndexPatch {
+        /// A unified-diff patch (typically one hunk, from
+        /// `karet_diff::format_hunk_patch`).
+        patch: String,
+        /// Un-stage instead of stage.
+        reverse: bool,
     },
     /// Stage every change in the worktree.
     StageAll,
@@ -896,6 +779,7 @@ pub enum Command {
 /// Which visualization a [`Event::GraphReady`] carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum GraphKind {
     /// The package-dependency graph of the workspace.
     Dependency,
@@ -904,7 +788,7 @@ pub enum GraphKind {
 }
 
 /// A crash-recovery swap offered to the UI on startup (see [`Event::SwapsFound`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SwapInfo {
     /// The document the swap backs up.
     pub original: PathBuf,
@@ -918,6 +802,113 @@ pub struct SwapInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The seam's serde-ready claim, enforced: representative [`Command`]s and
+    /// [`Event`]s must round-trip through JSON. Every type a variant carries is
+    /// pulled into this guarantee by the derive, so a leak that breaks
+    /// serializability fails to compile and a behavioral regression fails here.
+    #[test]
+    fn commands_and_events_round_trip_through_serde() -> Result<(), serde_json::Error> {
+        fn rt<T: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug>(
+            value: &T,
+        ) -> Result<String, serde_json::Error> {
+            let json = serde_json::to_string(value)?;
+            let back: T = serde_json::from_str(&json)?;
+            serde_json::to_string(&back)
+        }
+
+        let open = Command::OpenDocument {
+            path: PathBuf::from("src/main.rs"),
+            language: None,
+        };
+        assert_eq!(rt(&open)?, serde_json::to_string(&open)?);
+
+        let apply = Command::ApplyChange {
+            doc: DocumentId(3),
+            change: Change::new(
+                7,
+                vec![TextEdit {
+                    range: karet_core::Range::default(),
+                    new_text: "x".into(),
+                }],
+            ),
+            cause: EditCause::Type,
+        };
+        assert_eq!(rt(&apply)?, serde_json::to_string(&apply)?);
+
+        let vcs = Command::VcsAction {
+            action: VcsAction::SwitchBranch(BranchTarget::Local("main".into())),
+        };
+        assert_eq!(rt(&vcs)?, serde_json::to_string(&vcs)?);
+
+        let diag = Event::DiagnosticsPublished {
+            doc: DocumentId(3),
+            diagnostics: vec![Diagnostic {
+                range: karet_core::Range::default(),
+                severity: Severity::Warning,
+                message: "m".into(),
+                source: None,
+                code: None,
+                tags: Vec::new(),
+                related: Vec::new(),
+            }],
+        };
+        assert_eq!(rt(&diag)?, serde_json::to_string(&diag)?);
+
+        let hunk = Command::ApplyIndexPatch {
+            patch: "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n".into(),
+            reverse: true,
+        };
+        assert_eq!(rt(&hunk)?, serde_json::to_string(&hunk)?);
+
+        let prepare = Command::PrepareChange {
+            path: PathBuf::from("src/main.rs"),
+            staged: true,
+        };
+        assert_eq!(rt(&prepare)?, serde_json::to_string(&prepare)?);
+
+        let status = Event::VcsStatus {
+            staged: vec![ChangeSummary {
+                path: PathBuf::from("src/main.rs"),
+                old_path: None,
+                status: karet_vcs::StatusKind::Modified,
+                is_binary: false,
+                added: 2,
+                removed: 1,
+            }],
+            working: Vec::new(),
+        };
+        assert_eq!(rt(&status)?, serde_json::to_string(&status)?);
+
+        let prepared = Event::ChangePrepared {
+            path: PathBuf::from("src/main.rs"),
+            staged: false,
+            result: Ok(Box::new(PreparedChange {
+                path: PathBuf::from("src/main.rs"),
+                old_path: None,
+                status: karet_vcs::StatusKind::Modified,
+                language: "Rust".into(),
+                diff: karet_diff::PreparedDiff::new(
+                    karet_diff::diff_text("a\n", "b\n", &karet_diff::DiffOptions::default()),
+                    Vec::new(),
+                    Vec::new(),
+                ),
+            })),
+        };
+        assert_eq!(rt(&prepared)?, serde_json::to_string(&prepared)?);
+        Ok(())
+    }
+
+    /// The one secret in the vocabulary must refuse to serialize: a transport can
+    /// never move a GitHub token, by construction.
+    #[test]
+    fn github_token_refuses_to_serialize() {
+        let command = Command::GithubLogin {
+            token: GithubToken::new("github_pat_secret".into()),
+        };
+        let result = serde_json::to_string(&command);
+        assert!(result.is_err(), "a credential must not cross the seam");
+    }
 
     #[test]
     fn ids_and_payloads_construct() {
@@ -992,7 +983,6 @@ mod tests {
                 servers: vec![status],
             },
         ];
-        assert_eq!(DecorationLayer::Vcs, DecorationLayer::Vcs);
         assert_eq!(
             DocumentSettings::default(),
             DocumentSettings {

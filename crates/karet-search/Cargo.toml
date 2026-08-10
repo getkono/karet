@@ -14,12 +14,12 @@ categories.workspace   = true
 
 [features]
 default = []
+# Serialize/Deserialize on the query/hit models that cross the backend seam.
+serde = ["dep:serde"]
 
 [dependencies]
 ignore.workspace = true
-grep-searcher.workspace = true
-grep-regex.workspace = true
-grep-matcher.workspace = true
+serde = { workspace = true, optional = true }
 regex.workspace = true
 memchr.workspace = true
 thiserror.workspace = true

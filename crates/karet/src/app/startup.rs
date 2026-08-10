@@ -6,16 +6,13 @@ impl App {
     #[must_use]
     pub fn new(
         root: PathBuf,
-        staged: Vec<FileChange>,
-        working: Vec<FileChange>,
+        staged: Vec<ChangeSummary>,
+        working: Vec<ChangeSummary>,
         syntax: bool,
     ) -> Self {
         let staged_count = staged.len();
         let mut changes = staged;
         changes.extend(working);
-        let change_line_stats = Scm::line_stats(&changes, staged_count);
-        let graphics = image::detect_protocol();
-        let (prepare_tx, prepare_rx) = prepare::spawn();
         Self {
             root,
             settings: Settings::default(),
@@ -25,11 +22,7 @@ impl App {
             syntax,
             icon_style: IconStyle::default(),
             icon_override: None,
-            graphics,
-            kitty_graphics_supported: graphics == GraphicsProtocol::Kitty,
-            kitty_keyboard_supported: false,
-            pointer_shapes_supported: false,
-            pointer_shape: None,
+            caps: TerminalCaps::detect(),
             focus: Focus::Sidebar,
             sidebar_panel: SidebarPanel::Explorer,
             sidebar_visible: true,
@@ -39,7 +32,6 @@ impl App {
             scm: Scm {
                 selection: ListSelection::new(changes.len()),
                 changes,
-                change_line_stats,
                 staged_count,
                 log: Vec::new(),
                 log_has_more: false,
@@ -51,6 +43,10 @@ impl App {
                 operation: None,
             },
             live_blame: None,
+            remote_facts: HashMap::new(),
+            remote_facts_pending: HashSet::new(),
+            pending_remote_actions: Vec::new(),
+            pending_history_picker: None,
             pending_blame: None,
             failed_blame: None,
             pending_pull_requests: None,
@@ -93,35 +89,13 @@ impl App {
             pane_action_hover: None,
             sidebar_header_hover: None,
             panel_hits: Vec::new(),
-            outline_visible: false,
-            outline_overlay: false,
-            outline_sel: ListSelection::new(0),
-            outline_rect: Rect::default(),
-            outline_content_rect: Rect::default(),
-            outline_width: OUTLINE_WIDTH,
-            outline_scroll: 0,
+            outline: OutlinePanel::default(),
             header_action_hits: Vec::new(),
-            scm_row_map: Vec::new(),
-            scm_header_hits: Vec::new(),
             nested_repository_status: HashMap::new(),
             nested_repository_pending: HashMap::new(),
-            scm_offset: 0,
-            scm_changes_rect: Rect::default(),
-            scm_commit_rect: Rect::default(),
+            scm_ui: ScmChrome::default(),
             text_field_drag: None,
-            scm_total_rows: 0,
-            scm_commits_offset: 0,
-            scm_commits_rect: Rect::default(),
-            scm_commits_total: 0,
-            scm_more_row: None,
-            scm_commits_h: DEFAULT_SCM_COMMITS_H,
-            scm_divider_y: 0,
-            scm_resizing: false,
-            search_results_rect: Rect::default(),
-            search_offset: 0,
-            search_query_rect: Rect::default(),
-            search_replace_rect: None,
-            search_action_hits: Vec::new(),
+            search_ui: SearchChrome::default(),
             status_rect: Rect::default(),
             status_hits: Vec::new(),
             editor_rect: Rect::default(),
@@ -144,12 +118,8 @@ impl App {
             pending_open: HashMap::new(),
             abandoned_open: HashSet::new(),
             pending_saves: HashMap::new(),
-            document_settings: HashMap::new(),
-            document_diagnostics: HashMap::new(),
-            document_symbols: HashMap::new(),
+            docs: DocState::default(),
             lsp_runtime: language_servers::LanguageServerRuntimeModel::default(),
-            outline_versions: HashMap::new(),
-            outline_loading: HashMap::new(),
             auto_save_pending: HashMap::new(),
             pending_completion: None,
             completion: None,
@@ -157,11 +127,11 @@ impl App {
             inline_macro_engine: karet_syntax::InlineMacroEngine::new(),
             pending_commit_detail: HashMap::new(),
             latex_previews: HashMap::new(),
-            pending_commit_preparation: HashMap::new(),
+            pending_prepared_diffs: HashMap::new(),
+            pending_conversions: HashMap::new(),
+            pending_startup_diffs: Vec::new(),
             pending_commit_verification: HashMap::new(),
             pending_merge_conflicts: HashMap::new(),
-            prepare_tx,
-            prepare_rx: Some(prepare_rx),
             graph_log_req: None,
             cancelled_requests: HashSet::new(),
             open_docs: HashSet::new(),
@@ -181,6 +151,7 @@ impl App {
     /// settings (later handed to the session backend) and any load diagnostics (shown
     /// as startup notifications), and applies the `workbench.*` slice: colour theme,
     /// icon style, and the startup sidebar panel.
+    #[cfg(test)]
     #[must_use]
     pub fn with_settings(mut self, settings: Settings, diagnostics: Vec<ConfigDiagnostic>) -> Self {
         let mut loaded = LoadedConfig::from_settings(settings);
@@ -199,7 +170,6 @@ impl App {
     /// Apply a configuration snapshot. Live reload deliberately leaves the startup
     /// panel alone; it is a startup action rather than persistent UI state.
     pub(super) fn apply_loaded_config(&mut self, loaded: LoadedConfig, apply_startup_panel: bool) {
-        use karet_session::config::schema::IconStyleSetting;
         use karet_session::config::schema::StartupPanel;
 
         let settings = loaded.settings.clone();
@@ -217,11 +187,7 @@ impl App {
         }
 
         if self.icon_override.is_none() {
-            self.icon_style = match settings.workbench.icon_style {
-                IconStyleSetting::NerdFont => IconStyle::NerdFont,
-                IconStyleSetting::Unicode => IconStyle::Unicode,
-                IconStyleSetting::Ascii => IconStyle::Ascii,
-            };
+            self.icon_style = settings.workbench.icon_style.into();
         }
 
         if apply_startup_panel {
@@ -320,12 +286,13 @@ impl App {
     }
 
     /// Open a diff of two arbitrary files as a startup tab (from the `--diff`
-    /// flag): `old` renders as the "before" side and `new` as the "after",
-    /// syntax-aware like any Source-Control diff. `old_text`/`new_text` carry each
-    /// file's content, already read by the caller (which fails fast on an unreadable
-    /// file), with `None` marking non-UTF-8 bytes — either side non-text flags the
-    /// change binary, rendering the standard binary-change placeholder (matching the
-    /// [`FileChange::is_binary`] contract that both texts are then empty).
+    /// flag): `old` renders as the "before" side and `new` as the "after".
+    /// `old_text`/`new_text` carry each file's content, already read by the caller
+    /// (which fails fast on an unreadable file), with `None` marking non-UTF-8
+    /// bytes — either side non-text flags the change binary, rendering the standard
+    /// binary-change placeholder. Text diffs are prepared by the backend: the tab
+    /// is reserved immediately and the `PrepareDiff` command is sent once the
+    /// backend attaches (see [`App::request_pending_startup_diffs`]).
     pub fn open_startup_diff(
         &mut self,
         old: &Path,
@@ -333,24 +300,6 @@ impl App {
         old_text: Option<String>,
         new_text: Option<String>,
     ) {
-        let is_binary = old_text.is_none() || new_text.is_none();
-        let change = FileChange {
-            path: new.to_path_buf(),
-            // The "renamed from" marker only applies when the two sides differ.
-            old_path: (old != new).then(|| old.to_path_buf()),
-            status: StatusKind::Modified,
-            is_binary,
-            old: if is_binary {
-                String::new()
-            } else {
-                old_text.unwrap_or_default()
-            },
-            new: if is_binary {
-                String::new()
-            } else {
-                new_text.unwrap_or_default()
-            },
-        };
         let name = |p: &Path| {
             p.file_name()
                 .and_then(|n| n.to_str())
@@ -363,16 +312,44 @@ impl App {
         } else {
             format!("{old_name} ↔ {new_name}")
         };
-        let file = FileView::new(change, Section::Working, self.syntax);
-        self.push_tab(Tab::new(
-            title,
-            TabKind::Diff {
-                file: Box::new(file),
-                view: self.diff_layout,
-                scroll: 0,
-                column: 0,
+        // A binary pair needs no backend round-trip: the placeholder diff is
+        // trivially constructible here.
+        let file = match (old_text, new_text) {
+            (Some(old_text), Some(new_text)) => {
+                self.push_tab(Tab::diff(
+                    title,
+                    new.to_path_buf(),
+                    Section::Working,
+                    None,
+                    self.diff_layout,
+                ));
+                let view = self.tabs[self.active].view;
+                self.pending_startup_diffs
+                    .push((view, new.to_path_buf(), old_text, new_text));
+                return;
             },
+            _ => Box::new(FileView::new(diffs::binary_prepared_change(new))),
+        };
+        self.push_tab(Tab::diff(
+            title,
+            new.to_path_buf(),
+            Section::Working,
+            Some(file),
+            self.diff_layout,
         ));
+    }
+
+    /// Send the `PrepareDiff` commands for startup two-file diffs. Called once,
+    /// right after the backend attaches (the tabs were reserved at CLI time).
+    pub(super) fn request_pending_startup_diffs(&mut self) {
+        for (view, path, old, new) in std::mem::take(&mut self.pending_startup_diffs) {
+            match self.send(SessionCommand::PrepareDiff { path, old, new }) {
+                Some(request) => {
+                    self.pending_prepared_diffs.insert(request, view);
+                },
+                None => self.fail_diff_tab(view, "diff backend is unavailable"),
+            }
+        }
     }
 
     /// Dispatch a palette command at startup (from the `--command` flag), after
@@ -452,8 +429,8 @@ impl App {
     }
 
     pub(super) fn graphical_cursor_compatible(&self) -> bool {
-        self.kitty_keyboard_supported
-            && self.kitty_graphics_supported
-            && self.graphics == GraphicsProtocol::Kitty
+        self.caps.kitty_keyboard
+            && self.caps.kitty_graphics
+            && self.caps.graphics == GraphicsProtocol::Kitty
     }
 }

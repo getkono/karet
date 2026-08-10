@@ -1,9 +1,12 @@
 //! Workspace helpers: opening a file into the right tab, and collecting the files
 //! shown in the explorer's quick-open list.
 //!
-//! These call the engines directly (`karet-text`, `karet-treesitter`,
-//! `karet-syntax`, `karet-fileview`). Routing through `karet-session` is a deferred
-//! step; its `Command`/`Event` variants already map onto this flow.
+//! Opening is routing, not decoding: the path is classified (via the shared
+//! `karet-filetype` registry) and the matching tab is reserved immediately.
+//! Decoding belongs to the backend — editable text/CBOR content arrives through
+//! the session's document snapshots, and DOCX previews through
+//! `Command::ConvertDocument`. Only presentation media (images, PDF pages, hex
+//! bytes) are read directly, since rendering them is the app's job.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -71,7 +74,10 @@ fn open_classified(path: &Path, kind: FileKind, bytes: Vec<u8>, len: u64) -> Tab
             ),
             Err(_) => placeholder(path, kind, &bytes, len),
         },
-        FileKind::Cbor => open_cbor(path, &bytes),
+        // The backend decodes CBOR authoritatively once the document registers;
+        // the tab is reserved empty and fills from the first snapshot. A corrupt
+        // file answers `NotUtf8`, which converts the tab to the hex fallback.
+        FileKind::Cbor => open_pending_code(path, "CBOR"),
         FileKind::Binary => Tab::new(
             title(path),
             TabKind::Hex {
@@ -82,8 +88,10 @@ fn open_classified(path: &Path, kind: FileKind, bytes: Vec<u8>, len: u64) -> Tab
         ),
         #[cfg(feature = "pdf")]
         FileKind::Pdf => open_document(path, bytes, len),
+        // The backend converts DOCX to markdown (`Command::ConvertDocument`);
+        // the preview tab is reserved immediately and fills when it answers.
         #[cfg(feature = "docx")]
-        FileKind::Docx => open_docx(path, &bytes, len),
+        FileKind::Docx => Tab::document_converting(path.to_path_buf()),
         FileKind::TooLarge { .. } => placeholder(path, kind, &bytes, len),
         // DOCX/PDF (without their features) and any future `#[non_exhaustive]`
         // kind route to a placeholder describing them.
@@ -125,41 +133,28 @@ fn open_text(path: &Path, bytes: &[u8]) -> Tab {
     )
 }
 
-/// Open a CBOR file as an editable code tab holding its decoded diagnostic
-/// notation, or fall back to a hex view if it cannot be decoded. The session
-/// re-decodes authoritatively and re-encodes on save (see `karet-session`).
-fn open_cbor(path: &Path, bytes: &[u8]) -> Tab {
-    match karet_cbor::decode_to_text(bytes) {
-        Ok(text) => {
-            let buffer = TextBuffer::from_text(&text);
-            Tab::new(
-                title(path),
-                TabKind::Code {
-                    path: path.to_path_buf(),
-                    language: "CBOR",
-                    doc: None,
-                    next_version: 0,
-                    buffer,
-                    text,
-                    highlights: Highlights::default(),
-                    semantic_blocks: SemanticBlocks::default(),
-                    folds: FoldRegions::default(),
-                    folded: BTreeSet::new(),
-                    decos: Vec::new(),
-                    search_decos: Vec::new(),
-                    syntax_errors: Vec::new(),
-                },
-            )
+/// Reserve an editable code tab whose content the session decodes (CBOR →
+/// diagnostic notation): the buffer starts empty and fills from the session's
+/// first snapshot once the document registers.
+fn open_pending_code(path: &Path, language: &'static str) -> Tab {
+    Tab::new(
+        title(path),
+        TabKind::Code {
+            path: path.to_path_buf(),
+            language,
+            doc: None,
+            next_version: 0,
+            buffer: TextBuffer::new(),
+            text: String::new(),
+            highlights: Highlights::default(),
+            semantic_blocks: SemanticBlocks::default(),
+            folds: FoldRegions::default(),
+            folded: BTreeSet::new(),
+            decos: Vec::new(),
+            search_decos: Vec::new(),
+            syntax_errors: Vec::new(),
         },
-        Err(_) => Tab::new(
-            title(path),
-            TabKind::Hex {
-                path: path.to_path_buf(),
-                bytes: bytes.to_vec(),
-                scroll: 0,
-            },
-        ),
-    }
+    )
 }
 
 /// Open a PDF as a document tab whose pages rasterize on demand (via `karet-pdf`),
@@ -183,18 +178,6 @@ fn open_document(path: &Path, bytes: Vec<u8>, len: u64) -> Tab {
             )
         },
         Err(_) => placeholder(path, FileKind::Pdf, &[], len),
-    }
-}
-
-/// Open a Word document as a rendered, read-only markdown preview: convert the
-/// bytes via `karet-docx` and seed a **standalone** [`TabKind::MarkdownPreview`]
-/// (no source tab, no session document — see [`Tab::document_preview`]).
-/// Unparseable bytes degrade to a placeholder, like a corrupt PDF.
-#[cfg(feature = "docx")]
-fn open_docx(path: &Path, bytes: &[u8], len: u64) -> Tab {
-    match karet_docx::parse(bytes) {
-        Ok(doc) => Tab::document_preview(path.to_path_buf(), &karet_docx::to_markdown(&doc)),
-        Err(_) => placeholder(path, FileKind::Docx, bytes, len),
     }
 }
 
@@ -235,9 +218,18 @@ fn title(path: &Path) -> String {
 #[must_use]
 pub fn list_files(root: &Path, limit: usize) -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
+    // Aligned with the workspace-search walk: symlinks are never followed and
+    // the heavyweight dirs are pruned even without an ignore file.
     for entry in ignore::WalkBuilder::new(root)
         .standard_filters(true)
         .require_git(false)
+        .follow_links(false)
+        .filter_entry(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_none_or(|name| !karet_search::IGNORED_DIRS.contains(&name))
+        })
         .build()
         .flatten()
     {
@@ -352,21 +344,26 @@ mod tests {
     }
 
     #[test]
-    fn opens_cbor_as_decoded_code_tab() {
+    fn opens_cbor_as_a_pending_code_tab_the_session_will_fill() {
         let dir = temp_dir();
         let file = dir.path.join("data.cbor");
-        let value = karet_cbor::CborValue::Array(vec![
-            karet_cbor::CborValue::Integer(1),
-            karet_cbor::CborValue::Integer(2),
-        ]);
-        let bytes = karet_cbor::encode(&value).unwrap_or_default();
-        let _ = std::fs::write(&file, &bytes);
+        // 0x82 0x01 0x02: the CBOR array [1, 2].
+        let _ = std::fs::write(&file, [0x82u8, 0x01, 0x02]);
         let tab = open_file(&file);
-        let TabKind::Code { language, text, .. } = tab.kind else {
-            panic!("expected a decoded code tab for a .cbor file");
+        let TabKind::Code {
+            language,
+            text,
+            doc,
+            ..
+        } = tab.kind
+        else {
+            panic!("expected a code tab for a .cbor file");
         };
         assert_eq!(language, "CBOR");
-        assert_eq!(text, "[\n  1,\n  2\n]");
+        // The buffer is reserved empty; the session decodes authoritatively and
+        // the first snapshot fills it (see the app save/open seam tests).
+        assert!(text.is_empty());
+        assert!(doc.is_none());
     }
 
     #[test]
@@ -392,13 +389,15 @@ mod tests {
     }
 
     #[test]
-    fn opens_corrupt_cbor_as_hex_tab() {
+    fn opens_corrupt_cbor_as_a_pending_code_tab() {
         let dir = temp_dir();
         let file = dir.path.join("broken.cbor");
         // Truncated / invalid CBOR (a map header promising entries, with none).
+        // Routing cannot know it is corrupt — the session's decode answers
+        // `NotUtf8`, and the app's handler converts the tab to the hex fallback.
         let _ = std::fs::write(&file, [0xa1u8]);
         let tab = open_file(&file);
-        assert!(matches!(tab.kind, TabKind::Hex { .. }));
+        assert!(matches!(tab.kind, TabKind::Code { doc: None, .. }));
     }
 
     /// A minimal single-page PDF (empty US-Letter page), inline (no fixture).
@@ -464,30 +463,39 @@ trailer<</Size 4/Root 1 0 R>>\n%%EOF";
 
     #[cfg(feature = "docx")]
     #[test]
-    fn opens_docx_as_a_standalone_markdown_preview() {
+    fn opens_docx_as_a_pending_markdown_preview() {
         let dir = temp_dir();
         let file = dir.path.join("report.docx");
         let _ = std::fs::write(&file, tiny_docx());
         let tab = open_file(&file);
         assert_eq!(tab.title, "report.docx");
-        let TabKind::MarkdownPreview { buffer, .. } = tab.kind else {
+        let TabKind::MarkdownPreview {
+            buffer,
+            pending_since,
+            ..
+        } = tab.kind
+        else {
             panic!("expected a markdown preview tab for a .docx file");
         };
-        assert_eq!(buffer.text(), "# Report\n\n**bold**");
+        // Reserved empty; the backend converts and answers DocumentConverted.
+        assert!(buffer.text().is_empty());
+        assert!(pending_since.is_some());
     }
 
     #[cfg(feature = "docx")]
     #[test]
-    fn opens_corrupt_docx_as_placeholder() {
+    fn opens_corrupt_docx_as_a_pending_preview() {
         let dir = temp_dir();
         let file = dir.path.join("broken.docx");
         // The `.docx` extension classifies Docx, but the bytes are not a ZIP.
+        // Routing reserves the preview; the backend's failed conversion degrades
+        // it to a placeholder (covered by the app's DocumentConverted handler).
         let _ = std::fs::write(&file, b"this is not a zip archive");
         let tab = open_file(&file);
         assert!(matches!(
             tab.kind,
-            TabKind::Placeholder {
-                kind: FileKind::Docx,
+            TabKind::MarkdownPreview {
+                pending_since: Some(_),
                 ..
             }
         ));

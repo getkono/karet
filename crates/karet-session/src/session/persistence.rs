@@ -54,6 +54,7 @@ impl Session {
 
     /// Build the workspace package-dependency graph and emit it, or surface a failure
     /// (no lockfile / parse error) as a notification.
+    #[cfg(feature = "viz")]
     pub(super) fn emit_dependency_graph(&mut self, id: RequestId) {
         let Some(root) = self.config.roots.first() else {
             return;
@@ -227,6 +228,63 @@ impl Session {
         u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
+    /// Persist a dictionary word to the requested settings layer and adopt it
+    /// into the live settings so the spell-checker accepts it immediately.
+    pub(super) fn add_dictionary_word(
+        &mut self,
+        id: RequestId,
+        word: String,
+        scope: crate::api::DictionaryScope,
+        create_project: bool,
+    ) {
+        let result = match scope {
+            crate::api::DictionaryScope::User => crate::config::add_user_dictionary_word(&word),
+            crate::api::DictionaryScope::Project => crate::config::add_project_dictionary_word(
+                &self.config.roots,
+                &word,
+                create_project,
+            ),
+        };
+        match result {
+            Ok(path) => {
+                let words = &mut self.config.settings.spellcheck.words;
+                if !words.iter().any(|existing| existing == &word) {
+                    words.push(word.clone());
+                }
+                self.emit(Some(id), Event::DictionaryWordAdded { word, path });
+            },
+            Err(crate::config::ConfigWriteError::ProjectCreationRequiresConfirmation(path)) => {
+                self.emit(
+                    Some(id),
+                    Event::ProjectSettingsCreationRequired { word, path },
+                );
+            },
+            Err(error) => self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::System,
+                    message: format!("dictionary: {error}"),
+                },
+            ),
+        }
+    }
+
+    /// Persist the inline-blame toggle and adopt it into the live settings.
+    pub(super) fn set_blame_enabled(&mut self, id: RequestId, enabled: bool) {
+        self.config.settings.git.blame = enabled;
+        if let Err(error) = crate::config::set_user_blame(enabled) {
+            self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::System,
+                    message: format!("settings: {error}"),
+                },
+            );
+        }
+    }
+
     pub(super) fn emit(&self, id: Option<RequestId>, event: Event) {
         self.events.send((id, event)).ok();
     }
@@ -250,5 +308,19 @@ impl Session {
             });
             self.snapshots.send((doc_id, snapshot)).ok();
         }
+    }
+
+    /// Without the `viz` feature the dependency-graph lens is absent; say so
+    /// instead of silently ignoring the request.
+    #[cfg(not(feature = "viz"))]
+    pub(super) fn emit_dependency_graph(&mut self, id: RequestId) {
+        self.emit(
+            Some(id),
+            Event::Notification {
+                severity: Severity::Error,
+                kind: karet_core::NotificationKind::System,
+                message: "dependency graph support is not compiled in (feature `viz`)".to_string(),
+            },
+        );
     }
 }

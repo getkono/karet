@@ -2,7 +2,7 @@ use super::*;
 
 /// A message emitted by the backend to the presentation layer. When it answers a
 /// [`Command`], it is delivered with that command's [`RequestId`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum Event {
     /// A document was opened at the given version.
@@ -98,22 +98,6 @@ pub enum Event {
         diagnostics: Vec<Diagnostic>,
         /// A concise failure explanation, absent on success.
         error: Option<String>,
-    },
-    /// A producer's decoration layer changed.
-    DecorationsChanged {
-        /// The document.
-        doc: DocumentId,
-        /// Which producer's layer this replaces.
-        layer: DecorationLayer,
-        /// The new decorations for that layer.
-        decorations: Vec<Decoration>,
-    },
-    /// Updated syntax highlight spans for a document.
-    Highlights {
-        /// The document.
-        doc: DocumentId,
-        /// The highlight spans.
-        spans: Vec<HighlightSpan>,
     },
     /// Resolved document symbols.
     Symbols {
@@ -220,10 +204,66 @@ pub enum Event {
         /// Non-overlapping edits in buffer coordinates.
         edits: Vec<TextEdit>,
     },
-    /// Search results answering a [`Command::Search`].
+    /// Workspace search results answering a [`Command::Search`].
     SearchResults {
-        /// The per-file hits.
-        hits: Vec<FileHit>,
+        /// The per-file hits, capped at the request's limit.
+        hits: Vec<karet_search::FileHit>,
+    },
+    /// A workspace replace-all finished, answering [`Command::SearchReplaceAll`].
+    SearchReplaced {
+        /// The number of files written.
+        files_changed: usize,
+        /// The total number of replacements applied.
+        replacements: usize,
+    },
+    /// A dictionary word was persisted, answering [`Command::AddDictionaryWord`].
+    DictionaryWordAdded {
+        /// The accepted word.
+        word: String,
+        /// The settings file that received it.
+        path: PathBuf,
+    },
+    /// Adding a project dictionary word needs explicit confirmation because the
+    /// project settings tree does not exist yet.
+    ProjectSettingsCreationRequired {
+        /// The word awaiting the confirmed write.
+        word: String,
+        /// The settings file that would be created.
+        path: PathBuf,
+    },
+    /// Repository/remote facts answering [`Command::RemoteFacts`].
+    RemoteFacts {
+        /// The file the facts describe.
+        path: PathBuf,
+        /// The facts, or a user-facing reason they are unavailable (outside a
+        /// repository, no origin remote, outside the worktree).
+        facts: Result<RemoteFacts, String>,
+    },
+    /// One status entry's displayable diff, answering [`Command::PrepareChange`].
+    ChangePrepared {
+        /// The changed file's path, as requested.
+        path: PathBuf,
+        /// Which section was requested (`true` = staged).
+        staged: bool,
+        /// The prepared diff, or a user-facing reason it is unavailable (e.g.
+        /// the entry no longer exists in that section).
+        result: Result<Box<PreparedChange>, String>,
+    },
+    /// A document converted to markdown, answering [`Command::ConvertDocument`].
+    DocumentConverted {
+        /// The converted document's path, as requested.
+        path: PathBuf,
+        /// The markdown text, or a user-facing reason conversion failed.
+        markdown: Result<String, String>,
+    },
+    /// An ad-hoc prepared diff, answering [`Command::PrepareDiff`] or
+    /// [`Command::DiffWithRev`].
+    DiffPrepared {
+        /// The path the diff describes, as requested.
+        path: PathBuf,
+        /// The prepared diff, or a user-facing reason it is unavailable (e.g.
+        /// the file does not exist at the requested revision).
+        result: Result<Box<PreparedChange>, String>,
     },
     /// Progress on a long-running operation.
     Progress {
@@ -246,10 +286,10 @@ pub enum Event {
     /// The current source-control status: the staged (`HEAD`↔index) and working
     /// (index↔worktree, plus untracked and conflicted) change sets.
     VcsStatus {
-        /// The staged changes.
-        staged: Vec<FileChange>,
+        /// The staged changes (identity and line counts; no contents).
+        staged: Vec<ChangeSummary>,
         /// The working-tree changes (unstaged, untracked, conflicted).
-        working: Vec<FileChange>,
+        working: Vec<ChangeSummary>,
     },
     /// The read-only committed sides of an unresolved merge conflict.
     MergeConflictReady {
@@ -347,8 +387,9 @@ pub enum Event {
         /// The commit metadata (message, author/committer, parents, signature). Boxed
         /// to keep this large payload from bloating every other [`Event`] variant.
         detail: Box<CommitDetail>,
-        /// The files this commit changed relative to its first parent, for the diff view.
-        changes: Vec<FileChange>,
+        /// The files this commit changed relative to its first parent, prepared
+        /// for the diff view.
+        changes: Vec<PreparedChange>,
     },
     /// The diff between two points, answering [`Command::RangeChanges`].
     RangeReady {
@@ -359,8 +400,8 @@ pub enum Event {
         head_label: String,
         /// Whether the diff was taken from the merge base (three-dot) rather than the tips.
         merge_base: bool,
-        /// The files that differ between the two points, for the diff view.
-        changes: Vec<FileChange>,
+        /// The files that differ between the two points, prepared for the diff view.
+        changes: Vec<PreparedChange>,
     },
     /// A page of a file's history, answering [`Command::FileHistory`].
     FileHistory {

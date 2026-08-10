@@ -29,6 +29,9 @@ pub enum GraphNodeKind {
     External,
     /// Anything else.
     Other,
+    /// Forward-compatibility fallback: an unrecognized value from a newer peer.
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 /// What a [`GraphEdge`] represents.
@@ -46,6 +49,9 @@ pub enum GraphEdgeKind {
     Contains,
     /// Anything else.
     Other,
+    /// Forward-compatibility fallback: an unrecognized value from a newer peer.
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 /// A node in a [`GraphView`].

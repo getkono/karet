@@ -19,6 +19,7 @@ use crate::selection::Selection;
 
 /// One changed file with full before/after text, ready for `karet-diff`.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FileChange {
     /// The new path (the old path for deletions).
     pub path: PathBuf,
@@ -41,6 +42,7 @@ pub struct FileChange {
 /// deliberately not duplicated here: callers can read it normally, including any
 /// conflict markers produced by Git's merge machinery.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ConflictSides {
     /// The current branch's bytes, or empty when the current side deleted the path.
     pub current: Vec<u8>,

@@ -1,5 +1,54 @@
 use super::*;
 
+/// The session configuration for `app` — shared by the interactive runtime and
+/// the capture harness so the two attach identically. `swap_dir` differs: the
+/// real app persists crash-recovery swaps; a throwaway capture must not.
+pub(super) fn session_config(app: &App, swap_dir: Option<std::path::PathBuf>) -> SessionConfig {
+    SessionConfig {
+        roots: vec![app.root.clone()],
+        diff_syntax: app.syntax,
+        settings: app.settings.clone(),
+        loaded_config: app.loaded_config.clone(),
+        swap_dir,
+        // Every external process is owned by a hidden copy of this executable.
+        process_supervisor: std::env::current_exe().ok(),
+        // Immutable installations are shared by every local karet instance.
+        lsp_registry_dir: directories::ProjectDirs::from("", "getkono", "karet")
+            .map(|dirs| dirs.data_local_dir().join("language-servers")),
+    }
+}
+
+/// Build the local backend from `config`, attach it to `app`, and run the
+/// shared post-attach steps (tab registration, deferred startup requests, and
+/// config-load notifications). Returns the event and snapshot streams the
+/// caller's loop selects over.
+pub(super) fn attach_backend(
+    app: &mut App,
+    config: SessionConfig,
+) -> color_eyre::Result<(EventRx, SnapshotRx)> {
+    let (local_backend, snaps) = local(config);
+    // The composition root only ever sees the `Backend` seam: the local
+    // implementation is constructed here, and the event stream comes off the
+    // trait — the exact shape a remote backend will slot into.
+    let backend: Arc<dyn Backend> = Arc::new(local_backend);
+    let Some(events) = backend.take_events() else {
+        return Err(eyre!("backend event stream is unavailable"));
+    };
+    app.backend = Some(backend);
+    app.register_open_tabs();
+    app.request_pending_startup_diffs();
+    // Surface any configuration-load problems as startup notifications, now that
+    // the notification center will render on the first frame.
+    for diag in std::mem::take(&mut app.config_diagnostics) {
+        app.notify(
+            diag.severity,
+            NotificationKind::System,
+            format!("config: {}", diag.message),
+        );
+    }
+    Ok((events, snaps))
+}
+
 pub fn run(mut app: App) -> color_eyre::Result<()> {
     let kitty_keyboard_supported = crate::term_caps::supports_kitty_keyboard();
     if !kitty_keyboard_supported {
@@ -8,24 +57,14 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
              (kitty, ghostty, WezTerm, foot, …)"
         ));
     }
-    app.kitty_keyboard_supported = true;
+    app.caps.kitty_keyboard = true;
 
     // The session backend runs on its own Tokio runtime; the UI task selects over
     // terminal input, backend events, and document snapshots so it never blocks.
     let runtime = tokio::runtime::Runtime::new().map_err(|e| eyre!("tokio runtime: {e}"))?;
-    let (session, events, snaps) = Session::new(SessionConfig {
-        roots: vec![app.root.clone()],
-        settings: app.settings.clone(),
-        loaded_config: app.loaded_config.clone(),
-        // The real app persists crash-recovery swaps to the user data directory;
-        // headless/test sessions leave this unset and keep no backups.
-        swap_dir: karet_session::backup::default_swap_dir(),
-        // Every external process is owned by a hidden copy of this executable.
-        process_supervisor: std::env::current_exe().ok(),
-        // Immutable installations are shared by every local karet instance.
-        lsp_registry_dir: directories::ProjectDirs::from("", "getkono", "karet")
-            .map(|dirs| dirs.data_local_dir().join("language-servers")),
-    });
+    // The real app persists crash-recovery swaps to the user data directory;
+    // headless/test sessions leave this unset and keep no backups.
+    let config = session_config(&app, karet_session::backup::default_swap_dir());
 
     let mut terminal = ratatui::init();
     let _ = crossterm::execute!(
@@ -56,28 +95,17 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     // Upgrade to Kitty when the terminal actually answers; never downgrade a terminal
     // the heuristic already trusts.
     if crate::term_caps::probe_kitty_graphics(crate::term_caps::PROBE_TIMEOUT) == Some(true) {
-        app.graphics = GraphicsProtocol::Kitty;
-        app.kitty_graphics_supported = true;
+        app.caps.graphics = GraphicsProtocol::Kitty;
+        app.caps.kitty_graphics = true;
     }
     // Same handshake for OSC 22 pointer-shape hints (col-resize/row-resize over
     // the sidebar/SCM dividers) — confirmed support only, never assumed.
     if crate::term_caps::probe_osc22_pointer_shape(crate::term_caps::PROBE_TIMEOUT) == Some(true) {
-        app.pointer_shapes_supported = true;
+        app.caps.pointer_shapes = true;
     }
 
     let result = runtime.block_on(async move {
-        let backend: Arc<dyn Backend> = Arc::new(local(session));
-        app.backend = Some(backend);
-        app.register_open_tabs();
-        // Surface any configuration-load problems as startup notifications, now that
-        // the notification center will render on the first frame.
-        for diag in std::mem::take(&mut app.config_diagnostics) {
-            app.notify(
-                diag.severity,
-                NotificationKind::System,
-                format!("config: {}", diag.message),
-            );
-        }
+        let (events, snaps) = attach_backend(&mut app, config)?;
         let graphical_cursor_requested = app.tabs.get(app.active).is_some_and(|tab| {
             app.settings
                 .editor
@@ -92,10 +120,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
                 "graphical cursor is not compatible with this terminal",
             );
         }
-        let Some(prepared) = app.prepare_rx.take() else {
-            return Err(eyre!("diff preparation result stream is unavailable"));
-        };
-        event_loop(&mut terminal, &mut app, events, snaps, prepared).await
+        event_loop(&mut terminal, &mut app, events, snaps).await
     });
 
     let _ = write!(io::stdout(), "{}", image::kitty_delete_all());
@@ -117,7 +142,6 @@ async fn event_loop(
     app: &mut App,
     mut events: EventRx,
     mut snaps: SnapshotRx,
-    mut prepared: tokio::sync::mpsc::UnboundedReceiver<prepare::PrepareResult>,
 ) -> color_eyre::Result<()> {
     // A dedicated thread turns the blocking `event::read` into an async stream.
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Event>();
@@ -149,9 +173,6 @@ async fn event_loop(
             snap = snaps.recv() => if let Some((doc, snap)) = snap {
                 app.on_snapshot(doc, &snap);
             },
-            result = prepared.recv() => if let Some(result) = result {
-                app.on_prepare_result(result);
-            },
             () = async move {
                 match deadline {
                     Some(d) => tokio::time::sleep(d).await,
@@ -175,9 +196,6 @@ async fn event_loop(
         }
         while let Some((doc, snap)) = snaps.try_recv() {
             app.on_snapshot(doc, &snap);
-        }
-        while let Ok(result) = prepared.try_recv() {
-            app.on_prepare_result(result);
         }
 
         if app.should_quit {

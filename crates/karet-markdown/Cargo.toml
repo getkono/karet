@@ -18,6 +18,27 @@ default = []
 # Syntax-highlight code fences via karet-syntax (a fence's info string resolves to a
 # grammar through karet-treesitter's shared injection-name resolver).
 highlight = ["dep:karet-syntax", "dep:karet-treesitter"]
+# Curated grammar bundle for typical fence languages (implies `highlight`).
+lang-common = [
+    "highlight",
+    "karet-syntax?/lang-rust",
+    "karet-syntax?/lang-python",
+    "karet-syntax?/lang-javascript",
+    "karet-syntax?/lang-typescript",
+    "karet-syntax?/lang-json",
+    "karet-syntax?/lang-go",
+    "karet-syntax?/lang-c",
+    "karet-syntax?/lang-cpp",
+    "karet-syntax?/lang-java",
+    "karet-syntax?/lang-bash",
+    "karet-syntax?/lang-toml",
+    "karet-syntax?/lang-html",
+    "karet-syntax?/lang-css",
+    "karet-syntax?/lang-yaml",
+    "karet-syntax?/lang-markdown",
+]
+# Every grammar karet-treesitter ships (implies `highlight`).
+all-languages = ["highlight", "karet-syntax?/all-languages"]
 # ratatui renderer: resolves span tokens through a karet-theme Theme.
 view = ["dep:ratatui", "dep:karet-theme"]
 

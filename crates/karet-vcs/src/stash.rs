@@ -6,6 +6,7 @@ use crate::VcsError;
 /// Options for creating a stash.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StashOptions {
     /// Optional user-visible stash message.
     pub message: Option<String>,
@@ -17,6 +18,7 @@ pub struct StashOptions {
 
 /// One stash entry, newest first.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StashEntry {
     /// Stable selector such as `stash@{0}`.
     pub reference: String,

@@ -27,6 +27,9 @@ pub enum Severity {
     Information,
     /// A hint (often rendered subtly).
     Hint,
+    /// Forward-compatibility fallback: an unrecognized value from a newer peer.
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 /// A rendering hint attached to a [`Diagnostic`].
@@ -38,6 +41,9 @@ pub enum DiagnosticTag {
     Unnecessary,
     /// Deprecated code (often struck through).
     Deprecated,
+    /// Forward-compatibility fallback: an unrecognized value from a newer peer.
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 /// A secondary location related to a [`Diagnostic`] (e.g. "first defined here").
@@ -70,24 +76,10 @@ pub struct Diagnostic {
     pub related: Vec<RelatedInfo>,
 }
 
-/// The visual style of an [`DecorationKind::Underline`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[non_exhaustive]
-pub enum UnderlineStyle {
-    /// A straight underline.
-    Straight,
-    /// A curly/squiggly underline.
-    Curly,
-    /// A dotted underline.
-    Dotted,
-    /// A dashed underline.
-    Dashed,
-    /// A double underline.
-    Double,
-}
-
 /// The kind of a [`Decoration`] — the visual treatment to apply to a range.
+///
+/// `#[non_exhaustive]`: richer treatments (underlines, gutter icons, breakpoint
+/// markers, …) are added as variants when a producer and a renderer exist for them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
@@ -97,26 +89,10 @@ pub enum DecorationKind {
         /// The glyph to draw.
         glyph: char,
     },
-    /// A named gutter icon, resolved by the renderer.
-    GutterIcon {
-        /// Icon identifier.
-        id: u16,
-    },
     /// Highlight the whole line's background.
     LineBackground,
     /// Highlight the text background within the range.
     TextBackground,
-    /// Underline the range with the given style.
-    Underline(UnderlineStyle),
-    /// Strike through the range.
-    Strikethrough,
-    /// A debugger breakpoint marker.
-    Breakpoint {
-        /// Whether the breakpoint is enabled.
-        enabled: bool,
-        /// Whether it is conditional.
-        condition: bool,
-    },
     /// Inline "ghost" text (e.g. VCS blame, parameter names).
     InlineText {
         /// The text to render.
@@ -195,6 +171,9 @@ pub enum SymbolKind {
     Operator,
     /// A type parameter.
     TypeParameter,
+    /// Forward-compatibility fallback: an unrecognized value from a newer peer.
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 /// A document or workspace symbol, possibly with nested children.
@@ -226,6 +205,9 @@ pub enum InlayHintKind {
     Type,
     /// A parameter name.
     Parameter,
+    /// Forward-compatibility fallback: an unrecognized value from a newer peer.
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 /// An inline hint rendered between characters (inferred types, parameter names).
@@ -248,18 +230,6 @@ pub struct InlayHint {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CommandId(pub String);
-
-/// A code lens: an actionable annotation shown above a range.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct CodeLens {
-    /// The range the lens annotates.
-    pub range: Range,
-    /// The lens title (e.g. `"3 references"`).
-    pub title: String,
-    /// The command to run when activated.
-    pub command: Option<CommandId>,
-}
 
 /// A path-based location (works for files that are not currently open).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -304,6 +274,9 @@ pub enum CompletionKind {
     Struct,
     /// An enum.
     Enum,
+    /// Forward-compatibility fallback: an unrecognized value from a newer peer.
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 /// A completion candidate.
@@ -336,6 +309,9 @@ pub enum MarkupKind {
     PlainText,
     /// CommonMark markdown (rendered by `karet-markdown` at the edge).
     Markdown,
+    /// Forward-compatibility fallback: an unrecognized value from a newer peer.
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 /// A documentation payload carried verbatim; rendered by the presentation layer.
@@ -427,10 +403,10 @@ mod tests {
     fn decoration_kinds() {
         let dec = Decoration {
             range: Range::default(),
-            kind: DecorationKind::Underline(UnderlineStyle::Curly),
+            kind: DecorationKind::GutterMarker { glyph: '▎' },
             role: Some(ThemeRole::DiagnosticError),
         };
-        assert_eq!(dec.kind, DecorationKind::Underline(UnderlineStyle::Curly));
+        assert_eq!(dec.kind, DecorationKind::GutterMarker { glyph: '▎' });
     }
 
     #[test]
@@ -448,5 +424,102 @@ mod tests {
         ];
         assert_eq!(kinds.len(), 9);
         assert!(kinds.contains(&SymbolKind::Object));
+    }
+
+    /// The wire payloads the backend seam actually carries must round-trip; this
+    /// is the compile- and run-time guarantee behind the "serde-ready" claim.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn wire_payloads_round_trip_through_serde() -> Result<(), serde_json::Error> {
+        fn rt<T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
+            value: &T,
+        ) -> Result<(), serde_json::Error> {
+            let json = serde_json::to_string(value)?;
+            assert_eq!(&serde_json::from_str::<T>(&json)?, value);
+            Ok(())
+        }
+
+        rt(&Diagnostic {
+            range: Range::default(),
+            severity: Severity::Warning,
+            message: "m".into(),
+            source: None,
+            code: Some("E0001".into()),
+            tags: vec![DiagnosticTag::Unnecessary],
+            related: vec![RelatedInfo {
+                location: Location {
+                    path: PathBuf::from("a.rs"),
+                    range: Range::default(),
+                },
+                message: "here".into(),
+            }],
+        })?;
+        rt(&Decoration {
+            range: Range::default(),
+            kind: DecorationKind::InlineText {
+                text: "blame".into(),
+                before: false,
+            },
+            role: Some(ThemeRole::Muted),
+        })?;
+        rt(&Symbol {
+            name: "f".into(),
+            kind: SymbolKind::Function,
+            detail: None,
+            range: Range::default(),
+            selection_range: Range::default(),
+            container_name: None,
+            children: Vec::new(),
+        })?;
+        rt(&CompletionItem {
+            label: "push".into(),
+            kind: CompletionKind::Method,
+            detail: None,
+            documentation: None,
+            insert_text: "push".into(),
+            edit: None,
+            sort_text: None,
+            deprecated: false,
+        })?;
+        rt(&Hover {
+            contents: Markup {
+                kind: MarkupKind::Markdown,
+                value: "# t".into(),
+            },
+            range: None,
+        })?;
+        rt(&SignatureHelp {
+            signatures: vec![Signature {
+                label: "f(x)".into(),
+                documentation: None,
+                parameters: vec![ParamInfo {
+                    label: "x".into(),
+                    documentation: None,
+                }],
+            }],
+            active_signature: 0,
+            active_parameter: 0,
+        })?;
+        Ok(())
+    }
+
+    /// A newer peer's unknown enum value deserializes to the `Unknown` fallback
+    /// instead of failing the whole payload.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn unknown_enum_values_degrade_instead_of_failing() -> Result<(), serde_json::Error> {
+        assert_eq!(
+            serde_json::from_str::<Severity>("\"Catastrophic\"")?,
+            Severity::Unknown
+        );
+        assert_eq!(
+            serde_json::from_str::<SymbolKind>("\"Quasar\"")?,
+            SymbolKind::Unknown
+        );
+        assert_eq!(
+            serde_json::from_str::<CompletionKind>("\"Novel\"")?,
+            CompletionKind::Unknown
+        );
+        Ok(())
     }
 }

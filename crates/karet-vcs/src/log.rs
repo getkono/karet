@@ -8,6 +8,7 @@ use crate::repo::to_git;
 
 /// One commit in the history log.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Commit {
     /// The full commit hash (hex).
     pub hash: String,

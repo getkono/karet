@@ -119,26 +119,12 @@ impl ParserPool {
     }
 }
 
-/// A neutral edit descriptor mirroring tree-sitter's `InputEdit`.
+/// The neutral applied-edit descriptor consumed by [`SyntaxTree::edit`], shared
+/// with `karet-text` (which produces one per applied edit) through `karet-core`.
 ///
 /// Points are `(row, column-in-bytes)` — tree-sitter columns are byte offsets from
-/// the line start, **not** `char` columns. `karet-text` produces these from each
-/// applied edit; feed them to [`SyntaxTree::edit`] before reparsing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Edit {
-    /// Byte offset where the edit starts.
-    pub start_byte: usize,
-    /// Byte offset of the end of the replaced region in the old text.
-    pub old_end_byte: usize,
-    /// Byte offset of the end of the inserted text in the new text.
-    pub new_end_byte: usize,
-    /// `(row, byte-column)` of `start_byte`.
-    pub start_point: (usize, usize),
-    /// `(row, byte-column)` of `old_end_byte`.
-    pub old_end_point: (usize, usize),
-    /// `(row, byte-column)` of `new_end_byte`.
-    pub new_end_point: (usize, usize),
-}
+/// the line start, **not** `char` columns.
+pub type Edit = karet_core::AppliedEdit;
 
 /// A parsed syntax tree for one buffer.
 pub struct SyntaxTree {
@@ -265,7 +251,7 @@ impl SyntaxTree {
         text: &str,
         ranges: &[Span],
     ) -> Result<Self, TsError> {
-        Self::parse_ranges_indexed(pool, lang, text, ranges, &line_starts(text))
+        Self::parse_ranges_indexed(pool, lang, text, ranges, &karet_core::LineIndex::new(text))
     }
 
     /// [`parse_ranges`](Self::parse_ranges) against a precomputed line index.
@@ -278,7 +264,7 @@ impl SyntaxTree {
         lang: LanguageId,
         text: &str,
         ranges: &[Span],
-        starts: &[usize],
+        starts: &karet_core::LineIndex,
     ) -> Result<Self, TsError> {
         if ranges.is_empty() {
             return Err(TsError::ParseFailed);
@@ -546,34 +532,24 @@ impl Query {
 }
 
 /// Convert a neutral `(row, byte-column)` point to a tree-sitter `Point`.
-fn to_point((row, column): (usize, usize)) -> tree_sitter::Point {
+fn to_point(point: karet_core::BytePoint) -> tree_sitter::Point {
+    let (row, column) = (point.row, point.col);
     tree_sitter::Point { row, column }
 }
 
-/// Byte offsets at which each line of `text` begins (line 0 starts at 0).
-fn line_starts(text: &str) -> Vec<usize> {
-    let mut starts = vec![0usize];
-    starts.extend(
-        text.bytes()
-            .enumerate()
-            .filter(|(_, b)| *b == b'\n')
-            .map(|(i, _)| i + 1),
-    );
-    starts
-}
-
-/// The `(row, byte-column)` of `byte`, resolved against a precomputed line index.
-fn point_at(starts: &[usize], byte: usize) -> tree_sitter::Point {
-    let row = starts.partition_point(|&s| s <= byte).saturating_sub(1);
+/// The `(row, byte-column)` of `byte`, resolved against the shared
+/// [`karet_core::LineIndex`] (the one line-index implementation in the toolkit).
+fn point_at(starts: &karet_core::LineIndex, byte: usize) -> tree_sitter::Point {
+    let (row, column) = starts.point_at(karet_core::BytePos(byte));
     tree_sitter::Point {
-        row,
-        column: byte - starts.get(row).copied().unwrap_or(0),
+        row: row as usize,
+        column,
     }
 }
 
 /// Convert byte [`Span`]s into the `tree_sitter::Range`s `set_included_ranges` wants,
 /// resolving points against a precomputed line index.
-fn to_ts_ranges(ranges: &[Span], starts: &[usize]) -> Vec<tree_sitter::Range> {
+fn to_ts_ranges(ranges: &[Span], starts: &karet_core::LineIndex) -> Vec<tree_sitter::Range> {
     ranges
         .iter()
         .map(|s| tree_sitter::Range {
@@ -665,7 +641,7 @@ impl LayeredParser {
         // One line index for the whole descent: every injected layer needs `(row, col)`
         // points for its ranges, and rebuilding the index per layer would make a
         // many-layer document quadratic in its own length.
-        let starts = line_starts(text);
+        let starts = karet_core::LineIndex::new(text);
         let mut out: Vec<SyntaxTree> = Vec::new();
         let mut frontier = self.expand(root, text, &starts);
 
@@ -692,7 +668,12 @@ impl LayeredParser {
     }
 
     /// Parse the regions `parent` directly injects — one layer per region.
-    fn expand(&mut self, parent: &SyntaxTree, text: &str, starts: &[usize]) -> Vec<SyntaxTree> {
+    fn expand(
+        &mut self,
+        parent: &SyntaxTree,
+        text: &str,
+        starts: &karet_core::LineIndex,
+    ) -> Vec<SyntaxTree> {
         let Some(regions) = self.regions_of(parent, text) else {
             return Vec::new();
         };

@@ -1,10 +1,10 @@
 //! Pure editing logic: build a [`Change`] (and the resulting caret position) from
 //! the current caret/selection and buffer, for each non-modal editing operation.
 //!
-//! These functions own *what* an edit is, independent of the app, the session, or
-//! any async machinery — so they are exhaustively unit-testable. The app turns the
-//! returned [`Change`] into a `karet_session::Command::ApplyChange` and moves the
-//! caret to the returned position optimistically.
+//! These functions own *what* an edit is — the editor widget's edit vocabulary —
+//! independent of any client, session, or async machinery, so they are
+//! exhaustively unit-testable. A client turns the returned [`Change`] into its
+//! backend's apply command and moves the caret optimistically.
 
 use karet_core::Change;
 use karet_core::LineCol;
@@ -20,8 +20,10 @@ pub struct Edit {
     pub caret: LineCol,
 }
 
-/// The caret position after inserting `text` starting at `start`.
-fn advance(start: LineCol, text: &str) -> LineCol {
+/// The caret position after inserting `text` starting at `start`
+/// (multi-line aware). Shared by edit construction and completion accepts.
+#[must_use]
+pub fn caret_after_insert(start: LineCol, text: &str) -> LineCol {
     let mut pos = start;
     for ch in text.chars() {
         if ch == '\n' {
@@ -45,7 +47,7 @@ pub fn reflow_caret(local: LineCol, earlier: &[TextEdit]) -> LineCol {
     let (mut line, mut col) = (i64::from(local.line), i64::from(local.col));
     for ed in earlier {
         let end = ed.range.end;
-        let new_end = advance(ed.range.start, &ed.new_text);
+        let new_end = caret_after_insert(ed.range.start, &ed.new_text);
         let net_lines = i64::from(new_end.line) - i64::from(end.line);
         if end.line < local.line {
             line += net_lines;
@@ -77,15 +79,17 @@ fn one_edit(range: Range, new_text: String, base: u64) -> Change {
 
 /// Replace `range` with `text`.
 fn replace(range: Range, text: String, base: u64) -> Edit {
-    let caret = advance(range.start, &text);
+    let caret = caret_after_insert(range.start, &text);
     Edit {
         change: one_edit(range, text, base),
         caret,
     }
 }
 
-/// Replace the complete buffer contents in one undoable edit.
-pub(crate) fn replace_document(buffer: &TextBuffer, text: String, base: u64) -> Edit {
+/// Replace the complete buffer contents in one undoable edit (e.g. adopting a
+/// formatter's output).
+#[must_use]
+pub fn replace_document(buffer: &TextBuffer, text: String, base: u64) -> Edit {
     let last = buffer.line_count().saturating_sub(1) as u32;
     replace(
         Range {
@@ -193,7 +197,7 @@ pub fn delete_word_backward(
     if let Some(range) = non_empty(selection) {
         return Some(delete_between(range.start, range.end, base));
     }
-    let start = karet_editor::previous_word_boundary(buffer, caret);
+    let start = crate::previous_word_boundary(buffer, caret);
     (start != caret).then(|| delete_between(start, caret, base))
 }
 
@@ -209,7 +213,7 @@ pub fn delete_word_forward(
     if let Some(range) = non_empty(selection) {
         return Some(delete_between(range.start, range.end, base));
     }
-    let end = karet_editor::next_word_boundary(buffer, caret);
+    let end = crate::next_word_boundary(buffer, caret);
     (end != caret).then(|| delete_between(caret, end, base))
 }
 
@@ -256,6 +260,7 @@ pub fn indent(
 }
 
 /// Dedent the caret's line: remove up to one indent level of leading whitespace.
+// Currently unbound; see [`indent`].
 #[must_use]
 pub fn dedent(caret: LineCol, buffer: &TextBuffer, base: u64, indentation: &str) -> Option<Edit> {
     let line = buffer.line(caret.line as usize)?;
@@ -372,23 +377,25 @@ mod tests {
     }
 
     #[test]
-    fn backspace_deletes_prev_char() {
+    fn backspace_deletes_prev_char() -> Result<(), &'static str> {
         let buffer = TextBuffer::from_text("abc");
-        let e = backspace(at(0, 2), None, &buffer, 0).expect("edit");
+        let e = backspace(at(0, 2), None, &buffer, 0).ok_or("edit")?;
         assert_eq!(e.change.edits[0].range.start, at(0, 1));
         assert_eq!(e.change.edits[0].range.end, at(0, 2));
         assert_eq!(e.change.edits[0].new_text, "");
         assert_eq!(e.caret, at(0, 1));
+        Ok(())
     }
 
     #[test]
-    fn backspace_joins_lines_at_column_zero() {
+    fn backspace_joins_lines_at_column_zero() -> Result<(), &'static str> {
         let buffer = TextBuffer::from_text("ab\ncd");
-        let e = backspace(at(1, 0), None, &buffer, 0).expect("edit");
+        let e = backspace(at(1, 0), None, &buffer, 0).ok_or("edit")?;
         // Deletes the newline: from end of line 0 (col 2) to start of line 1.
         assert_eq!(e.change.edits[0].range.start, at(0, 2));
         assert_eq!(e.change.edits[0].range.end, at(1, 0));
         assert_eq!(e.caret, at(0, 2));
+        Ok(())
     }
 
     #[test]
@@ -398,11 +405,12 @@ mod tests {
     }
 
     #[test]
-    fn backspace_prefers_selection() {
+    fn backspace_prefers_selection() -> Result<(), &'static str> {
         let buffer = TextBuffer::from_text("abcdef");
-        let e = backspace(at(0, 4), sel((0, 1), (0, 4)), &buffer, 0).expect("edit");
+        let e = backspace(at(0, 4), sel((0, 1), (0, 4)), &buffer, 0).ok_or("edit")?;
         assert_eq!(e.change.edits[0].range.start, at(0, 1));
         assert_eq!(e.caret, at(0, 1));
+        Ok(())
     }
 
     #[test]
@@ -437,12 +445,13 @@ mod tests {
     }
 
     #[test]
-    fn delete_forward_joins_next_line() {
+    fn delete_forward_joins_next_line() -> Result<(), &'static str> {
         let buffer = TextBuffer::from_text("ab\ncd");
-        let e = delete_forward(at(0, 2), None, &buffer, 0).expect("edit");
+        let e = delete_forward(at(0, 2), None, &buffer, 0).ok_or("edit")?;
         assert_eq!(e.change.edits[0].range.start, at(0, 2));
         assert_eq!(e.change.edits[0].range.end, at(1, 0));
         assert_eq!(e.caret, at(0, 2));
+        Ok(())
     }
 
     #[test]

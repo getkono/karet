@@ -35,6 +35,10 @@ pub(crate) struct SpellJob {
     pub doc: DocumentId,
     pub version: u64,
     pub language: Option<&'static str>,
+    /// The stable per-language settings selector (`karet-filetype`'s
+    /// `config_selector`) — the machine key for language-aware behavior. The
+    /// display `language` above is presentation-only and never dispatched on.
+    pub language_selector: Option<&'static str>,
     pub spelling_language: SpellingLanguage,
     pub text: String,
     pub highlights: Arc<Highlights>,
@@ -377,7 +381,12 @@ fn spell_scope(job: &SpellJob, start: usize, document: bool) -> Option<SpellScop
     }
     if job.settings.strings
         && token == Some(TokenId::STRING)
-        && !is_non_prose_string(&job.text, job.language, job.highlights.as_ref(), start)
+        && !is_non_prose_string(
+            &job.text,
+            job.language_selector,
+            job.highlights.as_ref(),
+            start,
+        )
     {
         return Some(SpellScope::Prose);
     }
@@ -584,6 +593,7 @@ mod tests {
             doc: DocumentId(1),
             version: 1,
             language: Some(language),
+            language_selector: karet_filetype::file_type_for_path(path).config_selector(),
             spelling_language: SpellingLanguage::EnglishUnitedStates,
             text: text.to_owned(),
             highlights: Arc::new(highlights),

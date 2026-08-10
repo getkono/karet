@@ -20,7 +20,8 @@ impl App {
                 crate::outline::flatten(&crate::outline::from_markdown(text))
             },
             Some(TabKind::Code { doc: Some(doc), .. }) => self
-                .document_symbols
+                .docs
+                .symbols
                 .get(doc)
                 .map(|symbols| crate::outline::flatten(&crate::outline::from_symbols(symbols)))
                 .unwrap_or_default(),
@@ -38,14 +39,14 @@ impl App {
     /// Keep the outline row selection's length in step with the active tab's outline.
     pub(super) fn sync_outline_selection(&mut self) {
         let n = self.active_outline_rows().len();
-        self.outline_sel.set_len(n);
+        self.outline.sel.set_len(n);
     }
 
     /// Show or hide the right-side outline panel. Showing it focuses the panel (so it
     /// is navigable at once); hiding it returns focus to the editor.
     pub(super) fn toggle_outline(&mut self) {
-        self.outline_visible = !self.outline_visible;
-        if self.outline_visible {
+        self.outline.visible = !self.outline.visible;
+        if self.outline.visible {
             self.request_active_outline();
             self.sync_outline_selection();
             // Focus the panel for immediate navigation, but only when it has content —
@@ -54,7 +55,7 @@ impl App {
                 self.focus = Focus::Outline;
             }
         } else {
-            self.outline_overlay = false;
+            self.outline.overlay = false;
             if self.focus == Focus::Outline {
                 self.focus = Focus::Editor;
             }
@@ -64,7 +65,7 @@ impl App {
     /// Request a fresh symbol tree for the active code document when its version
     /// is not already cached or in flight. Markdown headings are extracted locally.
     pub(crate) fn request_active_outline(&mut self) {
-        if !self.outline_visible {
+        if !self.outline.visible {
             return;
         }
         let Some((doc, version)) = self.tabs.get(self.active).and_then(|tab| match &tab.kind {
@@ -78,33 +79,33 @@ impl App {
         }) else {
             return;
         };
-        if self.outline_versions.get(&doc) == Some(&version)
+        if self.docs.outline_versions.get(&doc) == Some(&version)
             || self
+                .docs
                 .outline_loading
                 .get(&doc)
                 .is_some_and(|(pending, _)| *pending == version)
         {
             return;
         }
-        if self
-            .send_command_id(SessionCommand::DocumentSymbols { doc })
-            .is_some()
-        {
-            self.outline_loading.insert(doc, (version, Instant::now()));
+        if self.send(SessionCommand::DocumentSymbols { doc }).is_some() {
+            self.docs
+                .outline_loading
+                .insert(doc, (version, Pending::start()));
         }
     }
 
-    /// Start time of the active document's pending outline request.
-    pub(crate) fn active_outline_loading_since(&self) -> Option<Instant> {
+    /// The active document's in-flight outline request, if any.
+    pub(crate) fn active_outline_loading(&self) -> Option<Pending> {
         let doc = self.tabs.get(self.active).and_then(Self::tab_doc)?;
-        self.outline_loading.get(&doc).map(|(_, since)| *since)
+        self.docs.outline_loading.get(&doc).map(|(_, since)| *since)
     }
 
     /// Dismiss a transient narrow-screen outline once the editor is used.
     pub(crate) fn dismiss_outline_overlay(&mut self) {
-        if self.outline_overlay {
-            self.outline_visible = false;
-            self.outline_overlay = false;
+        if self.outline.overlay {
+            self.outline.visible = false;
+            self.outline.overlay = false;
             if self.focus == Focus::Outline {
                 self.focus = Focus::Editor;
             }
@@ -114,7 +115,7 @@ impl App {
     /// Move the outline selection by `delta` rows.
     pub(super) fn outline_step(&mut self, delta: i32) {
         self.sync_outline_selection();
-        self.outline_sel.move_by(delta);
+        self.outline.sel.move_by(delta);
     }
 
     /// Leave the outline panel, returning focus to the editor (the panel stays open).
@@ -126,7 +127,7 @@ impl App {
     /// the editor caret to its position.
     pub(super) fn outline_activate(&mut self) {
         let rows = self.active_outline_rows();
-        let Some(target) = rows.get(self.outline_sel.cursor()).and_then(|r| r.target) else {
+        let Some(target) = rows.get(self.outline.sel.cursor()).and_then(|r| r.target) else {
             return;
         };
         match target {
@@ -160,17 +161,17 @@ impl App {
     /// the right entry even when the list is scrolled.
     pub(super) fn handle_outline_click(&mut self, row_y: u16) {
         self.focus = Focus::Outline;
-        let top = self.outline_content_rect.y;
+        let top = self.outline.content_rect.y;
         if row_y < top {
             return; // a click on the header just focuses the panel
         }
         let rows = self.active_outline_rows();
-        self.outline_sel.set_len(rows.len());
-        let idx = self.outline_scroll + usize::from(row_y - top);
+        self.outline.sel.set_len(rows.len());
+        let idx = self.outline.scroll + usize::from(row_y - top);
         if idx >= rows.len() {
             return;
         }
-        self.outline_sel.move_to(idx);
+        self.outline.sel.move_to(idx);
         self.outline_activate();
     }
 
@@ -202,7 +203,7 @@ impl App {
             // Route to whichever Source-Control region the pointer is over: the pinned
             // commit-log at the bottom, or the changes list above it.
             SidebarPanel::SourceControl => {
-                if row_in_rect(self.scm_commits_rect, at_row) {
+                if row_in_rect(self.scm_ui.commits_rect, at_row) {
                     self.scm_scroll_commits(delta);
                 } else {
                     self.scm_scroll_changes(delta);
@@ -271,35 +272,37 @@ impl App {
 
     /// Scroll the changes region so the change cursor stays visible.
     pub(super) fn scm_follow_cursor(&mut self) {
-        let h = self.scm_changes_rect.height as usize;
+        let h = self.scm_ui.changes_rect.height as usize;
         if h == 0 {
             return;
         }
         let row = self.scm_cursor_display_row();
-        if row < self.scm_offset {
-            self.scm_offset = row;
-        } else if row >= self.scm_offset + h {
-            self.scm_offset = row + 1 - h;
+        if row < self.scm_ui.offset {
+            self.scm_ui.offset = row;
+        } else if row >= self.scm_ui.offset + h {
+            self.scm_ui.offset = row + 1 - h;
         }
     }
 
     /// Scroll the changes region by `delta` rows, clamped to its content.
     pub(super) fn scm_scroll_changes(&mut self, delta: i32) {
         let max = self
-            .scm_total_rows
-            .saturating_sub(self.scm_changes_rect.height as usize);
-        let next = (self.scm_offset as i64 + i64::from(delta)).clamp(0, max as i64);
-        self.scm_offset = next as usize;
+            .scm_ui
+            .total_rows
+            .saturating_sub(self.scm_ui.changes_rect.height as usize);
+        let next = (self.scm_ui.offset as i64 + i64::from(delta)).clamp(0, max as i64);
+        self.scm_ui.offset = next as usize;
     }
 
     /// Scroll the pinned commit-log region by `delta` rows, clamped to its content,
     /// and lazily load more commits near the bottom.
     pub(super) fn scm_scroll_commits(&mut self, delta: i32) {
         let max = self
-            .scm_commits_total
-            .saturating_sub(self.scm_commits_rect.height as usize);
-        let next = (self.scm_commits_offset as i64 + i64::from(delta)).clamp(0, max as i64);
-        self.scm_commits_offset = next as usize;
+            .scm_ui
+            .commits_total
+            .saturating_sub(self.scm_ui.commits_rect.height as usize);
+        let next = (self.scm_ui.commits_offset as i64 + i64::from(delta)).clamp(0, max as i64);
+        self.scm_ui.commits_offset = next as usize;
         self.maybe_autoload_commits();
     }
 
@@ -309,8 +312,8 @@ impl App {
         if !self.scm.log_has_more || self.scm.log_loading {
             return;
         }
-        let bottom = self.scm_commits_offset + self.scm_commits_rect.height as usize;
-        if bottom + COMMIT_AUTOLOAD_THRESHOLD >= self.scm_commits_total {
+        let bottom = self.scm_ui.commits_offset + self.scm_ui.commits_rect.height as usize;
+        if bottom + COMMIT_AUTOLOAD_THRESHOLD >= self.scm_ui.commits_total {
             self.load_more_scm_log();
         }
     }

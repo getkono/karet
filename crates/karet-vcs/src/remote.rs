@@ -7,6 +7,7 @@ use crate::VcsError;
 
 /// A configured Git remote.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Remote {
     /// Remote name.
     pub name: String,
@@ -16,6 +17,7 @@ pub struct Remote {
 
 /// A remote-tracking branch.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RemoteBranch {
     /// Remote name.
     pub remote: String,
@@ -28,6 +30,7 @@ pub struct RemoteBranch {
 /// An in-progress operation recorded by Git metadata.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RepositoryOperation {
     /// A merge with unresolved or uncommitted results.
     Merge,
@@ -39,6 +42,7 @@ pub enum RepositoryOperation {
 
 /// Current branch/upstream state for the Source Control header.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RepositoryState {
     /// Current local branch, or `None` for detached `HEAD`.
     pub branch: Option<String>,
@@ -57,6 +61,7 @@ pub struct RepositoryState {
 /// Result of synchronizing the current branch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SyncOutcome {
     /// Pull and push completed.
     Synced,

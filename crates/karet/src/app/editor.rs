@@ -23,7 +23,7 @@ impl App {
 
         self.push_tab(Tab::latex_preview(source));
         let view = self.tabs[self.active].view;
-        if let Some(request) = self.send_command_id(SessionCommand::BuildLatex { doc }) {
+        if let Some(request) = self.send(SessionCommand::BuildLatex { doc }) {
             self.latex_previews.insert(request, view);
         } else if let TabKind::LatexPreview { error, .. } = &mut self.tabs[self.active].kind {
             *error = Some("LaTeX backend is unavailable".to_owned());
@@ -40,7 +40,8 @@ impl App {
         error: Option<String>,
     ) {
         let mut combined = self
-            .document_diagnostics
+            .docs
+            .diagnostics
             .get(&doc)
             .into_iter()
             .flatten()
@@ -134,7 +135,7 @@ impl App {
                 .tab_size(),
         );
         App::tab_doc(tab)
-            .and_then(|doc| self.document_settings.get(&doc))
+            .and_then(|doc| self.docs.settings.get(&doc))
             .map_or(fallback, |settings| settings.tab_width)
             .max(1)
     }
@@ -148,7 +149,7 @@ impl App {
         let fallback_spaces = resolved.is_none_or(|settings| settings.insert_spaces());
         let document = tab
             .and_then(App::tab_doc)
-            .and_then(|doc| self.document_settings.get(&doc).copied());
+            .and_then(|doc| self.docs.settings.get(&doc).copied());
         let size = usize::from(document.map_or(fallback_size, |settings| settings.indent_size));
         let insert_spaces = document.map_or(fallback_spaces, |settings| settings.insert_spaces);
         if insert_spaces {
@@ -205,13 +206,14 @@ impl App {
                 let next = (i64::from(*scroll) + i64::from(delta)).clamp(0, max);
                 *scroll = next as u16;
             },
-            TabKind::Diff { scroll, .. }
-            | TabKind::StashPreview { scroll, .. }
-            | TabKind::Graph { scroll, .. }
-            | TabKind::LoadedConfig { scroll, .. }
-            | TabKind::CommitLoading { scroll, .. } => {
-                let next = (i64::from(*scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
-                *scroll = next as u16;
+            TabKind::Diff { pager, .. }
+            | TabKind::StashPreview { pager, .. }
+            | TabKind::Graph { pager, .. }
+            | TabKind::LoadedConfig { pager, .. }
+            | TabKind::CommitLoading { pager, .. } => {
+                let next =
+                    (i64::from(pager.scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
+                pager.scroll = next as u16;
             },
             TabKind::Commit { view, .. } | TabKind::Compare { view, .. } => {
                 let next =
@@ -289,12 +291,12 @@ impl App {
                 let last = u16::try_from(wrapped.lines.len().saturating_sub(1)).unwrap_or(u16::MAX);
                 *scroll = if top { 0 } else { last };
             },
-            TabKind::Diff { scroll, .. }
-            | TabKind::StashPreview { scroll, .. }
-            | TabKind::Graph { scroll, .. }
-            | TabKind::LoadedConfig { scroll, .. }
-            | TabKind::CommitLoading { scroll, .. } => {
-                *scroll = if top { 0 } else { u16::MAX };
+            TabKind::Diff { pager, .. }
+            | TabKind::StashPreview { pager, .. }
+            | TabKind::Graph { pager, .. }
+            | TabKind::LoadedConfig { pager, .. }
+            | TabKind::CommitLoading { pager, .. } => {
+                pager.scroll = if top { 0 } else { u16::MAX };
             },
             TabKind::Commit { view, .. } | TabKind::Compare { view, .. } => {
                 view.scroll = if top { 0 } else { u16::MAX };
@@ -327,21 +329,46 @@ impl App {
         }
     }
 
-    /// Toggle the active diff tab between unified and side-by-side.
-    pub(super) fn toggle_diff_layout(&mut self) {
-        if let Some(tab) = self.tabs.get_mut(self.active)
-            && let TabKind::Diff { view, scroll, .. } = &mut tab.kind
-        {
-            *view = match *view {
-                ViewMode::Unified => ViewMode::SideBySide,
-                ViewMode::SideBySide => ViewMode::Unified,
-            };
-            *scroll = 0;
-            // Remember the choice so subsequently-opened diffs adopt it.
-            self.diff_layout = *view;
+    /// Open the active diff's underlying file in a normal editor tab — the Enter
+    /// action on a focused diff ("editor mode") — placing the caret at the diff's
+    /// first changed line. Routes through [`open_path`](Self::open_path), so an
+    /// already-open tab for the file is focused rather than duplicated. Degrades
+    /// gracefully when the file is gone from the working tree (a deleted change):
+    /// a status message, never a dead tab.
+    pub(super) fn open_diff_file(&mut self) {
+        let Some(TabKind::Diff { path, file, .. }) = self.tabs.get(self.active).map(|t| &t.kind)
+        else {
+            return;
+        };
+        let line = file
+            .as_ref()
+            .and_then(|file| file.first_changed_line())
+            .unwrap_or(1);
+        let path = path.clone();
+        // Change paths come from the VCS repo-relative; resolve against the
+        // workspace root so the file opens (and dedups) like any explorer open.
+        let abs = if path.is_absolute() {
+            path
+        } else {
+            self.root.join(path)
+        };
+        if !abs.is_file() {
+            let name = abs.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+            self.status = Some(format!("open file: {name} is not in the working tree"));
+            return;
+        }
+        self.open_path(&abs);
+        // Land the caret on the first changed line (`goto` clamps into the buffer;
+        // a non-text tab — image, binary — simply has no caret to place).
+        let pos = LineCol::new(line.saturating_sub(1), 0);
+        let buffer = match self.tabs.get(self.active).map(|t| &t.kind) {
+            Some(TabKind::Code { buffer, .. }) => Some(buffer.clone()),
+            _ => None,
+        };
+        if let (Some(buffer), Some(tab)) = (buffer, self.tabs.get_mut(self.active)) {
+            tab.editor.goto(&buffer, pos);
         }
     }
-
     /// Fold or unfold the code region at the cursor: prefer a fold headered on the
     /// cursor line, else the innermost fold containing it. Collapsing a region the
     /// cursor sits inside relocates the caret to the (visible) header line.
@@ -384,96 +411,6 @@ impl App {
         }
     }
 
-    /// Replace the active diff tab with the next/previous changed file.
-    pub(super) fn step_changed_file(&mut self, delta: i32) {
-        if let Some(TabKind::Commit { files, view, .. } | TabKind::Compare { files, view, .. }) =
-            self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
-        {
-            if files.is_empty() || view.file_anchors.is_empty() {
-                return;
-            }
-            let current = view
-                .file_anchors
-                .iter()
-                .rposition(|anchor| *anchor <= view.scroll);
-            let next = current.map_or(0, |file| {
-                (file as i64 + i64::from(delta))
-                    .clamp(0, view.file_anchors.len().saturating_sub(1) as i64)
-                    as usize
-            });
-            view.scroll = view.file_anchors[next];
-            return;
-        }
-        if !self.active_is_diff() {
-            return;
-        }
-        let len = self.scm.changes.len();
-        if len == 0 {
-            return;
-        }
-        let next = (self.scm.selection.cursor() as i64 + i64::from(delta)).clamp(0, len as i64 - 1)
-            as usize;
-        self.scm.selection.move_to(next);
-        let view = match &self.tabs[self.active].kind {
-            TabKind::Diff { view, .. } => *view,
-            _ => ViewMode::Unified,
-        };
-        let change = self.scm.changes[next].clone();
-        let section = self.scm.section(next);
-        let title = change
-            .path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("diff")
-            .to_string();
-        let file = FileView::new(change, section, self.syntax);
-        if let Some(tab) = self.tabs.get_mut(self.active) {
-            tab.title = title;
-            tab.kind = TabKind::Diff {
-                file: Box::new(file),
-                view,
-                scroll: 0,
-                column: 0,
-            };
-        }
-    }
-
-    /// Open the active diff's underlying file in a normal editor tab — the Enter
-    /// action on a focused diff ("editor mode") — placing the caret at the diff's
-    /// first changed line. Routes through [`open_path`](Self::open_path), so an
-    /// already-open tab for the file is focused rather than duplicated. Degrades
-    /// gracefully when the file is gone from the working tree (a deleted change):
-    /// a status message, never a dead tab.
-    pub(super) fn open_diff_file(&mut self) {
-        let Some(TabKind::Diff { file, .. }) = self.tabs.get(self.active).map(|t| &t.kind) else {
-            return;
-        };
-        let line = file.first_changed_line().unwrap_or(1);
-        let path = file.change.path.clone();
-        // Change paths come from the VCS repo-relative; resolve against the
-        // workspace root so the file opens (and dedups) like any explorer open.
-        let abs = if path.is_absolute() {
-            path
-        } else {
-            self.root.join(path)
-        };
-        if !abs.is_file() {
-            let name = abs.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-            self.status = Some(format!("open file: {name} is not in the working tree"));
-            return;
-        }
-        self.open_path(&abs);
-        // Land the caret on the first changed line (`goto` clamps into the buffer;
-        // a non-text tab — image, binary — simply has no caret to place).
-        let pos = LineCol::new(line.saturating_sub(1), 0);
-        let buffer = match self.tabs.get(self.active).map(|t| &t.kind) {
-            Some(TabKind::Code { buffer, .. }) => Some(buffer.clone()),
-            _ => None,
-        };
-        if let (Some(buffer), Some(tab)) = (buffer, self.tabs.get_mut(self.active)) {
-            tab.editor.goto(&buffer, pos);
-        }
-    }
     /// Apply a caret `motion` to the active code tab, extending the selection when
     /// `extend` is set and clearing it otherwise.
     pub(super) fn caret_motion(
@@ -732,7 +669,8 @@ impl App {
     }
 
     /// Register the code tab at `idx` with the session so it can be edited, if it is
-    /// an as-yet-unregistered code tab and a backend is attached.
+    /// an as-yet-unregistered code tab and a backend is attached. A reserved DOCX
+    /// preview instead gets its backend conversion request.
     pub(super) fn register_doc(&mut self, idx: usize) {
         let (path, view) = match self.tabs.get(idx) {
             Some(Tab {
@@ -742,6 +680,29 @@ impl App {
                 view,
                 ..
             }) => (path.clone(), *view),
+            Some(Tab {
+                kind:
+                    TabKind::MarkdownPreview {
+                        path,
+                        pending_since: Some(_),
+                        ..
+                    },
+                view,
+                ..
+            }) => {
+                let (path, view) = (path.clone(), *view);
+                if self
+                    .pending_conversions
+                    .values()
+                    .any(|owner| *owner == view)
+                {
+                    return; // already requested (attach re-walks every tab)
+                }
+                if let Some(request) = self.send(SessionCommand::ConvertDocument { path }) {
+                    self.pending_conversions.insert(request, view);
+                }
+                return;
+            },
             _ => return,
         };
         let Some(backend) = &self.backend else {

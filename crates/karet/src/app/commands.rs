@@ -109,6 +109,8 @@ impl App {
             Command::Top => self.scroll_edge(true),
             Command::Bottom => self.scroll_edge(false),
             Command::ToggleDiffLayout => self.toggle_diff_layout(),
+            Command::StageHunk => self.stage_hunk_at_viewport(false),
+            Command::UnstageHunk => self.stage_hunk_at_viewport(true),
             Command::ToggleFold => self.toggle_fold(),
             Command::NextChangedFile => self.step_changed_file(1),
             Command::PrevChangedFile => self.step_changed_file(-1),
@@ -140,20 +142,6 @@ impl App {
             Command::DeleteWordForward => {
                 self.submit_edit_with_cause(EditCause::Delete, editing::delete_word_forward);
             },
-            Command::Indent => {
-                if !self.try_inline_macro(karet_syntax::InlineMacroTrigger::Tab) {
-                    let indentation = self.active_indentation();
-                    self.submit_edit(|caret, sel, _b, base| {
-                        editing::indent(caret, sel, base, &indentation)
-                    });
-                }
-            },
-            Command::Dedent => {
-                let indentation = self.active_indentation();
-                self.submit_edit(|caret, _sel, buf, base| {
-                    editing::dedent(caret, buf, base, &indentation)
-                });
-            },
             Command::Undo => self.send_doc_command(|doc| SessionCommand::Undo { doc }),
             Command::Redo => self.send_doc_command(|doc| SessionCommand::Redo { doc }),
             Command::Save => self.save_active(),
@@ -166,12 +154,12 @@ impl App {
             Command::ScmStage => self.scm_send_paths(|paths| SessionCommand::Stage { paths }),
             Command::ScmUnstage => self.scm_send_paths(|paths| SessionCommand::Unstage { paths }),
             Command::ScmToggleStage => self.scm_toggle_stage(),
-            Command::ScmStageAll => self.send_vcs(SessionCommand::StageAll),
-            Command::ScmUnstageAll => self.send_vcs(SessionCommand::UnstageAll),
+            Command::ScmStageAll => self.send_command(SessionCommand::StageAll),
+            Command::ScmUnstageAll => self.send_command(SessionCommand::UnstageAll),
             Command::ScmDiscard => self.scm_arm_discard(),
             Command::ScmCommit => self.scm_open_commit_input(),
             Command::ScmRefresh => {
-                self.send_vcs(SessionCommand::RefreshVcs);
+                self.send_command(SessionCommand::RefreshVcs);
                 self.request_repository_snapshot();
             },
             Command::ScmSync => self.run_vcs_action(VcsAction::Sync),

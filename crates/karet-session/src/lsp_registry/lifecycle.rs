@@ -79,7 +79,7 @@ fn cleanup_retired_provider(root: &Path, server: &LanguageServerId) {
     let versions = provider_root(root, server).join("versions");
     for retired in retired_installations(root, server) {
         let payload = versions.join(safe_version(&retired.version));
-        if payload.is_dir() && !crate::lsp_broker::managed_payload_in_use(root, &payload) {
+        if payload.is_dir() && !karet_supervisor::broker::managed_payload_in_use(root, &payload) {
             let _ = std::fs::remove_dir_all(payload);
         }
     }

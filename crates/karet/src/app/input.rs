@@ -55,7 +55,7 @@ impl App {
     /// active modal's text input when nothing is bound.
     pub(super) fn handle_key(&mut self, key: KeyEvent) {
         self.status = None;
-        let dismiss_outline_after = self.outline_overlay
+        let dismiss_outline_after = self.outline.overlay
             && self.focus == Focus::Editor
             && self.input_context().modal.is_none();
         if self.operation_blocker.is_some() {
@@ -441,14 +441,6 @@ impl App {
                 },
                 TextPurpose::FilterLanguageServers => {
                     self.set_language_server_filter(text);
-                },
-                TextPurpose::RestartLanguageServer { server } => {
-                    if text == "restart" {
-                        self.status = Some(format!("restarted {}", server.display_name()));
-                        self.send_command(SessionCommand::RestartLanguageServer { server });
-                    } else {
-                        self.status = Some("language-server restart deferred".to_string());
-                    }
                 },
                 TextPurpose::UninstallLanguageServer { server } => {
                     if text == "uninstall" {

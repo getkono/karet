@@ -77,36 +77,71 @@ impl App {
         self.reveal_in_explorer(&path);
     }
 
-    /// Gather the repository/remote facts for `path`, synchronously (fast local
-    /// reads on a short-lived repository handle, like blame). The `Err` side is a
-    /// user-facing reason, doubling as a context-menu disabled note.
-    pub(super) fn remote_facts(&self, path: &Path) -> Result<RemoteFacts, String> {
-        // Absolutize first so discovery starts from the file's own directory (a
-        // file may live in a different repository than the workspace root).
+    /// The cached repository/remote facts for `path`. A miss fires one backend
+    /// request (the reads run on the VCS worker, never this thread) and returns
+    /// `None` — menus show a resolving note and parked actions complete when
+    /// [`SessionEvent::RemoteFacts`] answers.
+    pub(super) fn cached_remote_facts(
+        &mut self,
+        path: &Path,
+    ) -> Option<&Result<RemoteFacts, String>> {
         let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-        let start = abs.parent().unwrap_or(&abs);
-        let repo = karet_vcs::Repository::discover(start)
-            .map_err(|_| "not in a git repository".to_string())?;
-        let origin = repo
-            .origin_url()
-            .ok_or_else(|| "no origin remote configured".to_string())?;
-        let remote = remote::parse_remote(&origin)
-            .ok_or_else(|| format!("unrecognized origin remote URL: {origin}"))?;
-        let rel_path = repo
-            .path_in_worktree(&abs)
-            .ok_or_else(|| "file is outside the repository worktree".to_string())?;
-        // An unborn branch has no HEAD hash; file_at_rev then errors, reading as
-        // untracked — both surface as accurate notes further down.
-        let head = repo.head_hash().ok().flatten();
-        let branch = repo.current_branch().ok().flatten();
-        let tracked = repo.file_at_rev(&abs, "HEAD").ok().flatten().is_some();
-        Ok(RemoteFacts {
-            remote,
-            head,
-            branch,
-            rel_path,
-            tracked,
-        })
+        if !self.remote_facts.contains_key(&abs) {
+            self.request_remote_facts(&abs);
+            return None;
+        }
+        self.remote_facts.get(&abs)
+    }
+
+    /// Ask the backend for `abs`'s repository facts unless a request is already
+    /// in flight.
+    pub(super) fn request_remote_facts(&mut self, abs: &Path) {
+        if self.remote_facts_pending.contains(abs) {
+            return;
+        }
+        self.remote_facts_pending.insert(abs.to_path_buf());
+        self.send_command(SessionCommand::RemoteFacts {
+            path: abs.to_path_buf(),
+        });
+    }
+
+    /// Adopt a backend facts answer: cache it (parsing the origin URL into the
+    /// presentation-side remote model) and complete any parked actions for the
+    /// path.
+    pub(super) fn apply_remote_facts(
+        &mut self,
+        path: PathBuf,
+        facts: Result<karet_session::RemoteFacts, String>,
+    ) {
+        self.remote_facts_pending.remove(&path);
+        let adopted = facts.and_then(|facts| {
+            let remote = remote::parse_remote(&facts.origin_url)
+                .ok_or_else(|| format!("unrecognized origin remote URL: {}", facts.origin_url))?;
+            Ok(RemoteFacts {
+                remote,
+                head: facts.head,
+                branch: facts.branch,
+                rel_path: facts.rel_path,
+                tracked: facts.tracked,
+            })
+        });
+        self.remote_facts.insert(path.clone(), adopted);
+        let parked: Vec<PendingRemoteAction> = {
+            let (ready, rest) = std::mem::take(&mut self.pending_remote_actions)
+                .into_iter()
+                .partition(|action| match action {
+                    PendingRemoteAction::CopyLink { path: p, .. } => *p == path,
+                });
+            self.pending_remote_actions = rest;
+            ready
+        };
+        for action in parked {
+            match action {
+                PendingRemoteAction::CopyLink { kind, path, line } => {
+                    self.copy_remote_link_for(kind, &path, line);
+                },
+            }
+        }
     }
 
     /// Copy the `kind` web link for the active file, or surface why it cannot be
@@ -131,10 +166,33 @@ impl App {
             },
             _ => None,
         };
-        let facts = match self.remote_facts(&path) {
+        self.copy_remote_link_for(kind, &path, line);
+    }
+
+    /// Build and copy `kind` for `path` from cached facts, or park the action on
+    /// the facts request so one keystroke still completes it when the backend
+    /// answers.
+    pub(super) fn copy_remote_link_for(
+        &mut self,
+        kind: remote::LinkKind,
+        path: &Path,
+        line: Option<u32>,
+    ) {
+        let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        let Some(facts) = self.cached_remote_facts(&abs) else {
+            self.pending_remote_actions
+                .push(PendingRemoteAction::CopyLink {
+                    kind,
+                    path: abs,
+                    line,
+                });
+            self.status = Some("resolving repository remote…".to_string());
+            return;
+        };
+        let facts = match facts {
             Ok(facts) => facts,
             Err(reason) => {
-                self.status = Some(reason);
+                self.status = Some(reason.clone());
                 return;
             },
         };
@@ -147,7 +205,7 @@ impl App {
                 };
                 self.copy_to_clipboard(url, what);
             },
-            Err(reason) => self.status = Some(reason),
+            Err(reason) => self.status = Some(reason.clone()),
         }
     }
 
@@ -163,124 +221,77 @@ impl App {
     }
 
     /// Why the Open Changes actions do not apply to `path` — outside a repository,
-    /// or untracked at `HEAD` (which also covers an unborn branch) — or `None` when
-    /// they do. Doubles as the pane menu's disabled note.
-    pub(super) fn open_changes_note(&self, path: &Path) -> Option<String> {
-        let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-        let start = abs.parent().unwrap_or(&abs);
-        let Ok(repo) = karet_vcs::Repository::discover(start) else {
-            return Some("not in a git repository".to_string());
-        };
-        if repo.file_at_rev(&abs, "HEAD").ok().flatten().is_none() {
-            return Some("file is not tracked at HEAD".to_string());
+    /// untracked at `HEAD` (which also covers an unborn branch), or the facts are
+    /// still resolving — or `None` when they do. Doubles as the pane menu's
+    /// disabled note, read from the same per-path facts cache as the link rows.
+    pub(super) fn open_changes_note(&mut self, path: &Path) -> Option<String> {
+        match self.cached_remote_facts(path)? {
+            Err(reason) if reason == "no origin remote configured" => None,
+            Err(reason) => Some(reason.clone()),
+            Ok(facts) if !facts.tracked => Some("file is not tracked at HEAD".to_string()),
+            Ok(_) => None,
         }
-        None
     }
 
-    /// Open a diff tab for the active file: old = its content at `rev`, new = the
-    /// working text (the live buffer for a code tab, the file on disk otherwise).
-    /// `label` names the old side in the tab title: `name (label ↔ working)`.
+    /// Reserve a diff tab and ask the backend to diff the active file at `rev`
+    /// against its current content (the live buffer for a code tab, the file on
+    /// disk otherwise); the answering [`SessionEvent::DiffPrepared`] fills the
+    /// tab. `label` names the old side in the tab title.
     pub(super) fn open_changes_with(&mut self, rev: &str, label: &str) {
         let Some((path, live)) = self.active_file_and_text() else {
             self.status = Some("open changes: no file".to_string());
             return;
         };
         let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
-        let start = abs.parent().unwrap_or(&abs);
-        let repo = match karet_vcs::Repository::discover(start) {
-            Ok(repo) => repo,
-            Err(_) => {
-                self.status = Some("open changes: not in a git repository".to_string());
-                return;
-            },
-        };
-        let old_bytes = match repo.file_at_rev(&abs, rev) {
-            Ok(Some(bytes)) => bytes,
-            Ok(None) => {
-                self.status = Some(format!("open changes: file does not exist at {label}"));
-                return;
-            },
-            Err(e) => {
-                self.notify(
-                    Severity::Error,
-                    NotificationKind::Vcs,
-                    format!("open changes: {e}"),
-                );
-                return;
-            },
-        };
-        let new_text = live.or_else(|| {
-            std::fs::read(&abs)
-                .ok()
-                .and_then(|b| String::from_utf8(b).ok())
-        });
-        let old_text = String::from_utf8(old_bytes).ok();
-        // Either side non-text marks the change binary (both texts then empty),
-        // matching the FileChange::is_binary contract.
-        let is_binary = old_text.is_none() || new_text.is_none();
         let name = abs
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("file")
             .to_string();
-        let change = FileChange {
-            path: abs,
-            old_path: None,
-            status: StatusKind::Modified,
-            is_binary,
-            old: if is_binary {
-                String::new()
-            } else {
-                old_text.unwrap_or_default()
-            },
-            new: if is_binary {
-                String::new()
-            } else {
-                new_text.unwrap_or_default()
-            },
-        };
-        let file = FileView::new(change, Section::Working, self.syntax);
-        self.push_tab(Tab::new(
+        self.push_tab(Tab::diff(
             format!("{name} ({label} \u{2194} working)"),
-            TabKind::Diff {
-                file: Box::new(file),
-                view: self.diff_layout,
-                scroll: 0,
-                column: 0,
-            },
+            abs.clone(),
+            Section::Working,
+            None,
+            self.diff_layout,
         ));
+        let view = self.tabs[self.active].view;
+        match self.send(SessionCommand::DiffWithRev {
+            path: abs,
+            rev: rev.to_string(),
+            live,
+        }) {
+            Some(request) => {
+                self.pending_prepared_diffs.insert(request, view);
+            },
+            None => self.fail_diff_tab(view, "diff backend is unavailable"),
+        }
     }
 
     /// How many commits the With Revision picker lists at most.
     const OPEN_CHANGES_HISTORY_CAP: usize = 200;
 
-    /// Open the diff-target picker over the active file's commit history
-    /// (newest first, capped), for "Open Changes: With Revision…".
+    /// Ask the backend for the active file's commit history (newest first,
+    /// capped); the answering [`SessionEvent::FileHistory`] opens the
+    /// diff-target picker, for "Open Changes: With Revision…".
     pub(super) fn open_changes_pick_revision(&mut self) {
         let Some((path, _)) = self.active_file_and_text() else {
             self.status = Some("open changes: no file".to_string());
             return;
         };
         let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
-        let start = abs.parent().unwrap_or(&abs);
-        let repo = match karet_vcs::Repository::discover(start) {
-            Ok(repo) => repo,
-            Err(_) => {
-                self.status = Some("open changes: not in a git repository".to_string());
-                return;
-            },
-        };
-        let commits = match repo.file_history(&abs, 0, Self::OPEN_CHANGES_HISTORY_CAP) {
-            Ok(commits) => commits,
-            Err(e) => {
-                self.notify(
-                    Severity::Error,
-                    NotificationKind::Vcs,
-                    format!("open changes: {e}"),
-                );
-                return;
-            },
-        };
+        self.pending_history_picker = self.send(SessionCommand::FileHistory {
+            path: abs,
+            skip: 0,
+            limit: Self::OPEN_CHANGES_HISTORY_CAP,
+        });
+        if self.pending_history_picker.is_none() {
+            self.status = Some("open changes: backend is unavailable".to_string());
+        }
+    }
+
+    /// Open the With Revision diff-target picker from the backend's file history.
+    pub(super) fn apply_history_picker(&mut self, commits: Vec<karet_vcs::Commit>) {
         if commits.is_empty() {
             self.status = Some("open changes: no commits touch this file".to_string());
             return;
@@ -304,39 +315,23 @@ impl App {
         self.overlay = Some(Overlay::diff_target("Open Changes: With Revision", items));
     }
 
-    /// Open the diff-target picker over the repository's local branches, for
+    /// Open the diff-target picker over the workspace repository's local
+    /// branches (from the latest [`RepositorySnapshot`]), for
     /// "Open Changes: With Branch…".
     pub(super) fn open_changes_pick_branch(&mut self) {
-        let Some((path, _)) = self.active_file_and_text() else {
-            self.status = Some("open changes: no file".to_string());
+        let Some(snapshot) = self.scm.repository.as_ref() else {
+            // Fetch the snapshot so a retry (or the SCM panel) has it.
+            self.request_repository_snapshot();
+            self.status = Some("open changes: loading branches, try again".to_string());
             return;
         };
-        let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
-        let start = abs.parent().unwrap_or(&abs);
-        let repo = match karet_vcs::Repository::discover(start) {
-            Ok(repo) => repo,
-            Err(_) => {
-                self.status = Some("open changes: not in a git repository".to_string());
-                return;
-            },
-        };
-        let branches = match repo.branches() {
-            Ok(branches) => branches,
-            Err(e) => {
-                self.notify(
-                    Severity::Error,
-                    NotificationKind::Vcs,
-                    format!("open changes: {e}"),
-                );
-                return;
-            },
-        };
-        if branches.is_empty() {
+        if snapshot.branches.is_empty() {
             self.status = Some("open changes: no branches".to_string());
             return;
         }
-        let items = branches
-            .into_iter()
+        let items = snapshot
+            .branches
+            .iter()
             .map(|b| {
                 let display = if b.is_head {
                     format!("{} (current)", b.name)
@@ -345,7 +340,7 @@ impl App {
                 };
                 let target = DiffTarget {
                     rev: b.name.clone(),
-                    label: b.name,
+                    label: b.name.clone(),
                 };
                 (display, target)
             })

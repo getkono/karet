@@ -16,6 +16,7 @@ use crate::save::hash_bytes;
 
 /// The line ending a buffer was loaded with and is saved with.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Eol {
     /// Unix `\n`.
     #[default]
@@ -47,6 +48,7 @@ impl std::fmt::Display for Eol {
 /// The detected encoding. Only UTF-8 is supported; the variant records whether the
 /// file carried a byte-order mark, which is re-emitted on save.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Encoding {
     /// Plain UTF-8, no BOM.
     #[default]

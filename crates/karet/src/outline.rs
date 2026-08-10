@@ -7,6 +7,7 @@
 
 use karet_core::LineCol;
 use karet_core::Symbol;
+#[cfg(test)]
 use karet_core::SymbolKind;
 use karet_markdown::Block;
 use karet_markdown::Inline;
@@ -26,8 +27,6 @@ pub enum OutlineTarget {
 pub struct OutlineEntry {
     /// The row label.
     pub label: String,
-    /// A secondary detail shown after the label (e.g. a symbol's type), if any.
-    pub detail: Option<String>,
     /// Where activating this entry navigates, or `None` for a pure grouping node.
     pub target: Option<OutlineTarget>,
     /// Nested child entries, in document order.
@@ -42,8 +41,6 @@ pub struct OutlineRow {
     pub depth: usize,
     /// The row's display label.
     pub label: String,
-    /// The row's detail suffix, if any.
-    pub detail: Option<String>,
     /// Where activating this row navigates, if anywhere.
     pub target: Option<OutlineTarget>,
 }
@@ -75,7 +72,6 @@ pub fn from_markdown(source: &str) -> Vec<OutlineEntry> {
                 *level,
                 OutlineEntry {
                     label,
-                    detail: Some(format!("H{level}")),
                     target: Some(OutlineTarget::Text(LineCol::new(line, 0))),
                     children: Vec::new(),
                 },
@@ -130,45 +126,9 @@ impl From<&Symbol> for OutlineEntry {
     fn from(symbol: &Symbol) -> Self {
         Self {
             label: symbol.name.clone(),
-            detail: symbol
-                .detail
-                .clone()
-                .or_else(|| Some(symbol_kind_label(symbol.kind).to_string())),
             target: Some(OutlineTarget::Text(symbol.selection_range.start)),
             children: symbol.children.iter().map(Self::from).collect(),
         }
-    }
-}
-
-fn symbol_kind_label(kind: SymbolKind) -> &'static str {
-    match kind {
-        SymbolKind::File => "file",
-        SymbolKind::Module => "module",
-        SymbolKind::Namespace => "namespace",
-        SymbolKind::Package => "package",
-        SymbolKind::Class => "class",
-        SymbolKind::Method => "method",
-        SymbolKind::Property => "property",
-        SymbolKind::Field => "field",
-        SymbolKind::Constructor => "constructor",
-        SymbolKind::Enum => "enum",
-        SymbolKind::Interface => "interface",
-        SymbolKind::Function => "function",
-        SymbolKind::Variable => "variable",
-        SymbolKind::Constant => "constant",
-        SymbolKind::String => "string",
-        SymbolKind::Number => "number",
-        SymbolKind::Boolean => "boolean",
-        SymbolKind::Array => "array",
-        SymbolKind::Object => "object",
-        SymbolKind::Key => "key",
-        SymbolKind::Null => "null",
-        SymbolKind::EnumMember => "enum member",
-        SymbolKind::Struct => "struct",
-        SymbolKind::Event => "event",
-        SymbolKind::Operator => "operator",
-        SymbolKind::TypeParameter => "type parameter",
-        _ => "symbol",
     }
 }
 
@@ -177,7 +137,6 @@ fn push_rows(entries: &[OutlineEntry], depth: usize, rows: &mut Vec<OutlineRow>)
         rows.push(OutlineRow {
             depth,
             label: e.label.clone(),
-            detail: e.detail.clone(),
             target: e.target,
         });
         push_rows(&e.children, depth + 1, rows);
@@ -196,7 +155,6 @@ impl From<&karet_pdf::OutlineItem> for OutlineEntry {
     fn from(item: &karet_pdf::OutlineItem) -> Self {
         Self {
             label: item.title.clone(),
-            detail: None,
             target: item.page.map(OutlineTarget::Page),
             children: item.children.iter().map(OutlineEntry::from).collect(),
         }
@@ -211,11 +169,9 @@ mod tests {
     fn flatten_walks_pre_order_with_depth() {
         let entries = vec![OutlineEntry {
             label: "A".into(),
-            detail: None,
             target: Some(OutlineTarget::Page(0)),
             children: vec![OutlineEntry {
                 label: "A.1".into(),
-                detail: None,
                 target: Some(OutlineTarget::Page(1)),
                 children: Vec::new(),
             }],
@@ -256,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn symbols_keep_children_details_and_selection_targets() {
+    fn symbols_keep_selection_targets() {
         let symbols = vec![Symbol {
             name: "App".into(),
             kind: SymbolKind::Struct,
@@ -270,7 +226,7 @@ mod tests {
             children: Vec::new(),
         }];
         let entries = from_symbols(&symbols);
-        assert_eq!(entries[0].detail.as_deref(), Some("struct"));
+        assert_eq!(entries[0].label, "App");
         assert_eq!(
             entries[0].target,
             Some(OutlineTarget::Text(LineCol::new(3, 7)))

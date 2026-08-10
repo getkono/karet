@@ -14,11 +14,16 @@ categories.workspace   = true
 
 [features]
 default = []
+# Serialize/Deserialize on the routing/vocabulary enums (FileKind, IconStyle,
+# Category, WrapMode). OFF by default: the crate's charter is a dependency-free
+# default build, and this optional feature is the one sanctioned exception.
+serde = ["dep:serde"]
 
 # Intentionally dependency-free (only `std`): this crate is a static-data registry
 # so a consumer can resolve "what is this file" — name, icon, category, renderer
 # kind — without pulling in karet-core, ratatui, or tree-sitter.
 [dependencies]
+serde = { workspace = true, optional = true }
 
 [lints]
 workspace = true

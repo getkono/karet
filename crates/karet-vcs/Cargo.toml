@@ -14,25 +14,22 @@ categories.workspace   = true
 
 [features]
 default = ["signature"]
-# ratatui source-control panels (status, branch picker, staging, blame overlay).
-view = ["dep:ratatui", "dep:karet-diff"]
-# Compatibility feature retained for consumers that previously enabled the optional
-# libgit2 writer. Writes now use the installed `git` executable and this is a no-op.
-git2 = []
 # Recover the signer's public key + fingerprint from an SSH commit signature (via the
 # pure-Rust `ssh-key` crate). On by default; turn it off to drop the dependency, and
 # signatures then report only their kind, not the signer. Extraction only — this crate
 # never *verifies* a signature (see `CommitSignature`).
 signature = ["dep:ssh-key"]
+# Serialize/Deserialize on the public git-facts models (Branch, Commit,
+# CommitDetail, FileChange, RepositoryState, …) so the backend seam that carries
+# them stays wire-ready. Off by default.
+serde = ["dep:serde", "karet-core/serde"]
 
 [dependencies]
 karet-core.workspace = true
+serde = { workspace = true, optional = true }
 gix.workspace = true
 imara-diff.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
-karet-diff = { workspace = true, optional = true }
-ratatui = { workspace = true, optional = true }
 ssh-key = { workspace = true, optional = true }
 
 [lints]

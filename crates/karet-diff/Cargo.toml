@@ -1,6 +1,6 @@
 [package]
 name        = "karet-diff"
-description = "Pure, syntax-aware text diffing engine (tree-sitter structural diff with line/word fallback) for karet."
+description = "Pure text diffing engine (histogram line diff, intra-line highlights, unified-diff parse, hunk staging) for karet."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -14,10 +14,20 @@ categories.workspace   = true
 
 [features]
 default = []
+# Derive `serde` (de)serialization on the diff model, so prepared diffs can cross
+# a serialized backend seam.
+serde = ["dep:serde", "karet-core/serde"]
+# The optional ratatui painters for prepared diffs (unified / side-by-side lines).
+# Headless consumers get zero ratatui.
+view = ["dep:ratatui", "dep:unicode-width"]
 
 [dependencies]
+karet-core.workspace = true
 imara-diff.workspace = true
+ratatui = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 thiserror.workspace = true
+unicode-width = { workspace = true, optional = true }
 # NOTE: tree-sitter structural diffing (DiffStrategy::Structural) is reserved but not
 # yet implemented; karet-treesitter will be re-added as a dependency when it lands.
 

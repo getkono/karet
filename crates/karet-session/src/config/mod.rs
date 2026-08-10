@@ -189,6 +189,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ConfigWriteError> {
 /// The JSON Schema for [`Settings`], pretty-printed. This is the single source the
 /// checked-in `settings.schema.json` is generated from; a test asserts they match.
 #[must_use]
+#[cfg(feature = "schema")]
 pub fn json_schema() -> String {
     let schema = schemars::schema_for!(Settings);
     // Serializing a generated schema cannot fail; fall back to an empty object.
@@ -200,6 +201,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(feature = "schema")]
     fn json_schema_describes_the_settings_sections() {
         let schema = json_schema();
         assert!(schema.contains("\"editor\""));
@@ -310,6 +312,7 @@ mod tests {
     /// `cargo run -p karet --bin karet -- ...` is not needed — the schema is emitted
     /// by this crate, so if this fails, refresh `settings.schema.json` from
     /// [`json_schema`]. Skipped when the file is absent (e.g. isolated crate checkout).
+    #[cfg(feature = "schema")]
     #[test]
     fn checked_in_schema_is_current() {
         let repo_schema = concat!(env!("CARGO_MANIFEST_DIR"), "/../../settings.schema.json");

@@ -537,7 +537,7 @@
       "additionalProperties": false
     },
     "IconStyleSetting": {
-      "description": "Icon glyph set (mirrors `karet_filetype::IconStyle`).",
+      "description": "Icon glyph set — the camelCase settings-file spelling of\n[`karet_filetype::IconStyle`].\n\nThis wire enum exists for the config format alone (camelCase JSONC values +\nthe generated JSON Schema, which `karet-filetype`'s dependency-free charter\ncannot provide); the [`From`] conversion below is the single translation.",
       "oneOf": [
         {
           "description": "Rich Nerd Font glyphs (needs a patched font).",

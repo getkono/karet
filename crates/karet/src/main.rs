@@ -6,13 +6,9 @@
 //! opened directly; when it is inside a git repository, the Source Control panel
 //! lists the staged and working-tree changes (each opens as a diff tab).
 //!
-//! Routing through the headless `karet-session` backend is a deferred step; for now
-//! the shell calls the engines directly.
-
-// Some scaffolding is intentionally not wired into the shell yet: a handful of
-// planned commands (scroll/indent), symmetry helpers exercised only by tests, the
-// clipboard's read path, and render helpers.
-#![allow(dead_code)]
+//! Editing, language intelligence, and source control route through the headless
+//! `karet-session` backend; the remaining direct engine calls (diff rendering,
+//! workspace search, remote-URL reads) are being migrated behind the same seam.
 
 mod app;
 mod cli;
@@ -22,7 +18,6 @@ mod compat;
 mod completion;
 mod desktop;
 mod doctor;
-mod editing;
 mod keymap;
 mod links;
 mod logging;
@@ -42,11 +37,11 @@ use std::path::PathBuf;
 use clap::Parser;
 
 fn main() -> color_eyre::Result<()> {
-    if karet_session::lsp_broker::requested() {
-        std::process::exit(karet_session::lsp_broker::run_from_env());
+    if karet_supervisor::broker::requested() {
+        std::process::exit(karet_supervisor::broker::run_from_env());
     }
-    if karet_session::process_supervisor::requested() {
-        std::process::exit(karet_session::process_supervisor::run_from_env());
+    if karet_supervisor::supervisor::requested() {
+        std::process::exit(karet_supervisor::supervisor::run_from_env());
     }
     color_eyre::install()?;
     let cli = cli::Cli::parse();

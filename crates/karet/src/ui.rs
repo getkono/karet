@@ -96,6 +96,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::App;
 use crate::app::MIN_SCM_REGION;
 use crate::app::OperationBlocker;
+use crate::app::Pending;
 use crate::app::SIDEBAR_MIN_WIDTH;
 use crate::app::TabDrag;
 use crate::app::TabHit;
@@ -105,6 +106,7 @@ use crate::command::Command;
 use crate::keymap::ChordStyle;
 use crate::keymap::Context;
 use crate::keymap::Focus;
+use crate::tab::CommitFiles;
 
 /// Render text-field content with a highlighted selection and an insertion caret.
 pub(super) fn text_field_text(
@@ -144,113 +146,12 @@ pub(super) fn text_field_text(
     Text::from(lines)
 }
 
-/// Render a two-axis scrollable paragraph and overlay indicators for axes whose
-/// content exceeds the viewport.
-pub(super) fn draw_scrollable_lines(
-    f: &mut Frame,
-    theme: &Theme,
-    area: Rect,
-    lines: Vec<Line<'static>>,
-    scroll: &mut u16,
-    column: &mut u16,
-) {
-    let content_height = lines.len();
-    let content_width = lines.iter().map(line_width).max().unwrap_or_default();
-    clamp_viewport(area, content_height, content_width, scroll, column);
-    f.render_widget(Paragraph::new(lines).scroll((*scroll, *column)), area);
-    draw_scroll_indicators(
-        f,
-        theme,
-        area,
-        content_height,
-        content_width,
-        *scroll,
-        *column,
-    );
-}
+pub(crate) use karet_widgets::scroll::draw_horizontally_scrollable_lines;
+pub(crate) use karet_widgets::scroll::draw_scroll_indicators;
+pub(crate) use karet_widgets::scroll::draw_scrollable_lines;
+pub(crate) use karet_widgets::scroll::line_width;
 
-/// Render content whose vertical wheel is reserved for surrounding navigation,
-/// while still exposing horizontal overflow.
-pub(super) fn draw_horizontally_scrollable_lines(
-    f: &mut Frame,
-    theme: &Theme,
-    area: Rect,
-    lines: Vec<Line<'static>>,
-    column: &mut u16,
-) {
-    let content_width = lines.iter().map(line_width).max().unwrap_or_default();
-    let max_column = content_width.saturating_sub(usize::from(area.width));
-    *column = (*column).min(u16::try_from(max_column).unwrap_or(u16::MAX));
-    f.render_widget(Paragraph::new(lines).scroll((0, *column)), area);
-    draw_scroll_indicators(
-        f,
-        theme,
-        area,
-        usize::from(area.height),
-        content_width,
-        0,
-        *column,
-    );
-}
-
-pub(super) fn line_width(line: &Line<'_>) -> usize {
-    line.spans.iter().map(Span::width).sum()
-}
-
-pub(super) fn clamp_viewport(
-    area: Rect,
-    content_height: usize,
-    content_width: usize,
-    scroll: &mut u16,
-    column: &mut u16,
-) {
-    let max_scroll = content_height.saturating_sub(usize::from(area.height));
-    let max_column = content_width.saturating_sub(usize::from(area.width));
-    *scroll = (*scroll).min(u16::try_from(max_scroll).unwrap_or(u16::MAX));
-    *column = (*column).min(u16::try_from(max_column).unwrap_or(u16::MAX));
-}
-
-#[allow(clippy::too_many_arguments)] // content extents and both offsets are independent render inputs
-pub(super) fn draw_scroll_indicators(
-    f: &mut Frame,
-    theme: &Theme,
-    area: Rect,
-    content_height: usize,
-    content_width: usize,
-    scroll: u16,
-    column: u16,
-) {
-    let track = Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui());
-    let thumb = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
-    if content_height > usize::from(area.height) && area.height > 2 {
-        let mut state = ScrollbarState::new(content_height)
-            .position(usize::from(scroll))
-            .viewport_content_length(usize::from(area.height));
-        f.render_stateful_widget(
-            Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None)
-                .track_style(track)
-                .thumb_style(thumb),
-            area,
-            &mut state,
-        );
-    }
-    if content_width > usize::from(area.width) && area.width > 2 {
-        let mut state = ScrollbarState::new(content_width)
-            .position(usize::from(column))
-            .viewport_content_length(usize::from(area.width));
-        f.render_stateful_widget(
-            Scrollbar::new(ScrollbarOrientation::HorizontalBottom)
-                .begin_symbol(None)
-                .end_symbol(None)
-                .track_style(track)
-                .thumb_style(thumb),
-            area,
-            &mut state,
-        );
-    }
-}
+use crate::app::ContextMenuEntryExt;
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
 use crate::overlay::Overlay;
@@ -305,33 +206,33 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // temporarily overlays the right edge and dismisses as soon as the editor is used.
     let mut outline_area = None;
     let mut outline_divider = None;
-    app.outline_overlay = false;
-    if app.outline_visible && app.main_rect.width > app.outline_width + 8 {
+    app.outline.overlay = false;
+    if app.outline.visible && app.main_rect.width > app.outline.width + 8 {
         let region = app.main_rect;
         let cols = Layout::horizontal([
             Constraint::Min(0),
             Constraint::Length(1),
-            Constraint::Length(app.outline_width),
+            Constraint::Length(app.outline.width),
         ])
         .split(region);
         app.main_rect = cols[0];
-        app.outline_rect = cols[2];
+        app.outline.rect = cols[2];
         outline_area = Some(cols[2]);
         outline_divider = Some(cols[1]);
-    } else if app.outline_visible && app.main_rect.width > 0 {
-        let width = app.outline_width.min(app.main_rect.width);
+    } else if app.outline.visible && app.main_rect.width > 0 {
+        let width = app.outline.width.min(app.main_rect.width);
         let rect = Rect::new(
             app.main_rect.right().saturating_sub(width),
             app.main_rect.y,
             width,
             app.main_rect.height,
         );
-        app.outline_rect = rect;
-        app.outline_overlay = true;
+        app.outline.rect = rect;
+        app.outline.overlay = true;
         outline_area = Some(rect);
     } else {
-        app.outline_rect = Rect::default();
-        app.outline_content_rect = Rect::default();
+        app.outline.rect = Rect::default();
+        app.outline.content_rect = Rect::default();
     }
 
     draw_panes(f, app, &theme, app.main_rect);
@@ -369,7 +270,7 @@ fn draw_operation_blocker(f: &mut Frame, blocker: &OperationBlocker, theme: &The
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Finishing source control operation")
-        .border_style(Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui()))
+        .border_style(theme.style(ThemeRole::DiagnosticWarning))
         .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui()));
     let inner = block.inner(rect);
     f.render_widget(Clear, rect);
@@ -393,20 +294,14 @@ fn draw_rev_input(f: &mut Frame, rev: &str, theme: &Theme, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Go to commit")
-        .border_style(Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui()))
+        .border_style(theme.style(ThemeRole::LineNumberActive))
         .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui()));
     let inner = block.inner(rect);
     f.render_widget(Clear, rect);
     f.render_widget(block, rect);
     let line = Line::from(vec![
-        Span::styled(
-            "› ",
-            Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
-        ),
-        Span::styled(
-            rev.to_string(),
-            Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui()),
-        ),
+        Span::styled("› ", theme.style(ThemeRole::LineNumber)),
+        Span::styled(rev.to_string(), theme.style(ThemeRole::Foreground)),
         Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
     ]);
     f.render_widget(Paragraph::new(line), inner);
@@ -499,7 +394,7 @@ fn draw_sidebar_divider(f: &mut Frame, theme: &Theme, area: Rect, active: bool) 
     } else {
         ThemeRole::IndentGuide
     };
-    let style = Style::default().fg(theme.role(role).to_ratatui());
+    let style = theme.style(role);
     let buf = f.buffer_mut();
     for y in area.y..area.bottom() {
         buf.set_string(area.x, y, "\u{2502}", style); // │
@@ -608,17 +503,17 @@ fn pane_actions(tab: &Tab) -> Vec<(UiIcon, Command, bool)> {
 
 fn tab_text_style(theme: &Theme, active: bool, pane_focused: bool, preview: bool) -> Style {
     let mut style = if active && pane_focused {
-        Style::default()
-            .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+        theme
+            .style(ThemeRole::Foreground)
             .add_modifier(Modifier::BOLD | Modifier::REVERSED)
     } else if active {
         // Active tab of an unfocused pane: a distinct accent keeps pane ownership
         // visible without competing with the reversed tab in the focused pane.
-        Style::default()
-            .fg(theme.role(ThemeRole::DiagnosticInfo).to_ratatui())
+        theme
+            .style(ThemeRole::DiagnosticInfo)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())
+        theme.style(ThemeRole::LineNumber)
     };
     // The preview tab (VS Code-style single-reused-slot tab) renders italicized so
     // it reads as provisional until edited or promoted.
@@ -716,32 +611,8 @@ fn save_mark(tab: &Tab) -> char {
     if tab.dirty { '\u{25cf}' } else { ' ' }
 }
 
-/// The separator drawn between breadcrumb segments.
-const BREADCRUMB_SEP: &str = "  \u{203a}  ";
-
-/// The column span (start inclusive, end exclusive) of each of `components` when
-/// joined by [`BREADCRUMB_SEP`], relative to the breadcrumb's left edge. Uses
-/// terminal display width (wide-char aware), matching how the joined line paints.
-/// Separator gaps belong to no segment. Pure, so it is unit-tested.
-fn breadcrumb_segment_spans(components: &[String]) -> Vec<(u16, u16)> {
-    let sep = cell_width(BREADCRUMB_SEP);
-    let mut spans = Vec::with_capacity(components.len());
-    let mut x = 0u16;
-    for (i, comp) in components.iter().enumerate() {
-        if i > 0 {
-            x = x.saturating_add(sep);
-        }
-        let end = x.saturating_add(cell_width(comp));
-        spans.push((x, end));
-        x = end;
-    }
-    spans
-}
-
-/// Draw the pane's breadcrumb (the active tab's path components joined by `›`) and
-/// return the clickable segment regions: each segment's on-screen column span with
-/// the path prefix it resolves to. Segments above the workspace `root` are inert
-/// (not recorded); segments past the pane's right edge are clipped.
+/// Draw the pane's breadcrumb (the active tab's path components joined by `›`)
+/// via the shared widget, and return the clickable segment regions.
 fn draw_pane_breadcrumb(
     f: &mut Frame,
     tab: Option<&Tab>,
@@ -753,36 +624,11 @@ fn draw_pane_breadcrumb(
     let Some(path) = tab.and_then(Tab::path) else {
         return Vec::new();
     };
-    let mut components: Vec<String> = path
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect();
-    if tab.is_some_and(|tab| tab.is_symlink)
-        && let Some(last) = components.last_mut()
-    {
-        last.push(' ');
-        last.push(UiIcon::Symlink.glyph(icon_style));
+    karet_widgets::breadcrumbs::Breadcrumbs {
+        path,
+        root,
+        is_symlink: tab.is_some_and(|tab| tab.is_symlink),
+        icon_style,
     }
-    let crumbs = components.join(BREADCRUMB_SEP);
-    let style = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
-    f.render_widget(Paragraph::new(Line::styled(crumbs, style)), area);
-
-    let mut hits = Vec::new();
-    let mut prefix = PathBuf::new();
-    for (comp, (start, end)) in path.components().zip(breadcrumb_segment_spans(&components)) {
-        prefix.push(comp);
-        if start >= area.width {
-            break;
-        }
-        let end = end.min(area.width);
-        // A segment resolving above the workspace root cannot be revealed: skip it.
-        if end > start && prefix.starts_with(root) {
-            hits.push(crate::app::BreadcrumbHit {
-                start: area.x.saturating_add(start),
-                end: area.x.saturating_add(end),
-                path: prefix.clone(),
-            });
-        }
-    }
-    hits
+    .draw(f, theme, area)
 }

@@ -1,17 +1,5 @@
 use super::*;
 
-pub(crate) fn resolve_folds(folds: &FoldRegions, folded: &BTreeSet<u32>) -> Vec<Fold> {
-    folds
-        .regions()
-        .iter()
-        .map(|r| Fold {
-            start: r.start,
-            end: r.end,
-            collapsed: folded.contains(&r.start),
-        })
-        .collect()
-}
-
 /// Whether the screen point `(x, y)` lies inside `r`.
 pub(super) fn rect_contains(r: Rect, (x, y): (u16, u16)) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
@@ -61,10 +49,6 @@ pub(crate) fn effective_word_wrap(tab: &Tab, override_: Option<bool>) -> bool {
                 if file_type_for_path(path).wrap_mode() == WrapMode::Wrap
         )
     })
-}
-
-pub(super) fn loading_delay_remaining(since: Instant, now: Instant) -> Option<Duration> {
-    LOADING_REVEAL_DELAY.checked_sub(now.saturating_duration_since(since))
 }
 
 /// Recursively copy a file or directory tree.
@@ -234,22 +218,6 @@ pub(super) fn parse_rev_range(input: &str) -> Option<(String, String, bool)> {
     Some((side(base), side(head), merge_base))
 }
 
-/// The text within `range`, sliced from the tab's `source` using byte offsets
-/// derived from `buffer`. Returns `None` if the range cannot be resolved.
-pub(super) fn selection_text(buffer: &TextBuffer, source: &str, range: Range) -> Option<String> {
-    let start = buffer.line_col_to_byte(range.start).ok()?.0;
-    let end = buffer.line_col_to_byte(range.end).ok()?.0;
-    source.get(start..end).map(str::to_string)
-}
-
-/// The (anchor, head) span covering all of `line`.
-pub(super) fn line_span(buffer: &TextBuffer, line: u32) -> (LineCol, LineCol) {
-    let len = buffer
-        .line(line as usize)
-        .map_or(0, |s| s.chars().count() as u32);
-    (LineCol::new(line, 0), LineCol::new(line, len))
-}
-
 /// Pops the kitty keyboard-enhancement flags on drop, so they are cleared even if
 /// the event loop panics (ratatui's panic hook restores the rest of the terminal).
 pub(super) struct KeyboardEnhancementGuard;
@@ -261,7 +229,7 @@ impl Drop for KeyboardEnhancementGuard {
 }
 
 /// Resolve a `workbench.colorTheme` setting to a [`Theme`]: the built-in `"dark"`
-/// (also the empty string), or a path to a `.tmTheme` or VS Code `.json` theme file.
+/// (also the empty string), or a path to a VS Code `.json` theme file.
 /// Returns a human-readable message on a read/parse failure so the caller can warn
 /// and fall back to the default.
 pub(super) fn load_theme(name: &str) -> Result<Theme, String> {
@@ -269,16 +237,17 @@ pub(super) fn load_theme(name: &str) -> Result<Theme, String> {
         return Ok(Theme::dark());
     }
     let path = Path::new(name);
-    let bytes = std::fs::read(path).map_err(|e| format!("theme `{name}`: {e}"))?;
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if ext == "json" {
-        let text = String::from_utf8(bytes).map_err(|e| format!("theme `{name}`: {e}"))?;
-        Theme::load_vscode(&text).map_err(|e| format!("theme `{name}`: {e}"))
-    } else {
-        Theme::load_tmtheme(&bytes).map_err(|e| format!("theme `{name}`: {e}"))
+    if ext != "json" {
+        return Err(format!(
+            "theme `{name}`: only the built-in `dark` theme and VS Code JSON theme files are supported"
+        ));
     }
+    let bytes = std::fs::read(path).map_err(|e| format!("theme `{name}`: {e}"))?;
+    let text = String::from_utf8(bytes).map_err(|e| format!("theme `{name}`: {e}"))?;
+    Theme::load_vscode(&text).map_err(|e| format!("theme `{name}`: {e}"))
 }

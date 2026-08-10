@@ -8,9 +8,10 @@
 [workspace]
 resolver = "3"
 members  = ["crates/*", "xtask"]
+default-members = ["crates/karet"]
 
 [workspace.package]
-version      = "0.4.0"
+version      = "0.5.0"
 edition      = "2024"
 rust-version = "1.92"                  # edition 2024 needs 1.85; pinned deps (gamut 0.3.1,
                                        # ratatui 0.30, ratatui-image→quantette) raise the real floor
@@ -32,33 +33,33 @@ categories   = ["text-editors", "command-line-utilities"]
 # unpublished crate would go stale on the next bump (`karet-cbor = "^0.1.0"` can't match
 # the bumped `0.2.0` package) and break `cargo update`. Path-only keeps them resolvable.
 # (`karet-pdf` keeps its version: it IS published — `karet-fileview` depends on it.)
-karet-core       = { path = "crates/karet-core", version = "0.4.0" }
-karet-filetype   = { path = "crates/karet-filetype", version = "0.4.0" }
-karet-text       = { path = "crates/karet-text", version = "0.4.0" }
-karet-treesitter = { path = "crates/karet-treesitter", version = "0.4.0" }
-karet-syntax     = { path = "crates/karet-syntax", version = "0.4.0" }
-karet-theme      = { path = "crates/karet-theme", version = "0.4.0" }
-karet-diff       = { path = "crates/karet-diff", version = "0.4.0" }
+karet-core       = { path = "crates/karet-core", version = "0.5.0" }
+karet-filetype   = { path = "crates/karet-filetype", version = "0.5.0" }
+karet-text       = { path = "crates/karet-text", version = "0.5.0" }
+karet-treesitter = { path = "crates/karet-treesitter", version = "0.5.0" }
+karet-syntax     = { path = "crates/karet-syntax", version = "0.5.0" }
+karet-theme      = { path = "crates/karet-theme", version = "0.5.0" }
+karet-diff       = { path = "crates/karet-diff", version = "0.5.0" }
 karet-markdown   = { path = "crates/karet-markdown" }
 karet-cbor       = { path = "crates/karet-cbor" }
 karet-docx       = { path = "crates/karet-docx" }
-karet-terminal   = { path = "crates/karet-terminal" }
-karet-lsp        = { path = "crates/karet-lsp", version = "0.4.0" }
-karet-dap        = { path = "crates/karet-dap", version = "0.4.0" }
-karet-vcs        = { path = "crates/karet-vcs", version = "0.4.0" }
-karet-search     = { path = "crates/karet-search", version = "0.4.0" }
+karet-lsp        = { path = "crates/karet-lsp", version = "0.5.0" }
+karet-dap        = { path = "crates/karet-dap", version = "0.5.0" }
+karet-vcs        = { path = "crates/karet-vcs", version = "0.5.0" }
+karet-search     = { path = "crates/karet-search", version = "0.5.0" }
 karet-fuzzy      = { path = "crates/karet-fuzzy" }
 karet-widgets    = { path = "crates/karet-widgets" }
-karet-editor     = { path = "crates/karet-editor", version = "0.4.0" }
-karet-fileview   = { path = "crates/karet-fileview", version = "0.4.0" }
-karet-pdf        = { path = "crates/karet-pdf", version = "0.4.0" }
+karet-editor     = { path = "crates/karet-editor", version = "0.5.0" }
+karet-fileview   = { path = "crates/karet-fileview", version = "0.5.0" }
+karet-pdf        = { path = "crates/karet-pdf", version = "0.5.0" }
 karet-session    = { path = "crates/karet-session" }
+karet-supervisor = { path = "crates/karet-supervisor" }
 karet-watch      = { path = "crates/karet-watch" }
 karet-graph      = { path = "crates/karet-graph" }
 karet-github     = { path = "crates/karet-github" }
 # blameline is a standalone library on its OWN SemVer line (NOT the workspace lockstep);
 # pin its independent version here. See crates/blameline/README.md.
-blameline        = { path = "crates/blameline", version = "1.1.0", default-features = false }
+blameline        = { path = "crates/blameline", version = "2.0.0", default-features = false }
 
 # --- shared external dependencies (versions verified via `cargo add`) ---
 # Foundational
@@ -75,8 +76,6 @@ tar        = "0.4.44"
 bytes      = { version = "1.12.0", features = ["serde"] }
 secrecy    = "0.10.3"
 time       = { version = "0.3.47", features = ["serde-human-readable", "formatting", "parsing"] }
-toml      = "1.1.2"
-smallvec  = "1.15.2"
 # Host-only OpenAPI generator for karet-github. Generated Rust is written to
 # OUT_DIR, so spargen never enters a karet runtime dependency graph.
 spargen   = { version = "=0.2.1", default-features = false }
@@ -87,15 +86,12 @@ crossterm = "0.29.0"
 # here — its build script needs the system C library `chafa`. Wire it in
 # `karet-image` once that system dependency is acceptable.
 unicode-width = "0.2.2"
-unicode-segmentation = "1.13.3"
 url = "2.5.8"
 # Text / rope
 ropey    = "1.6.1"
-memmap2  = "0.9.11"
 tempfile = "3.27"                      # atomic crash-safe file saves (karet-text)
 # Tree-sitter (sole syntax backend)
 tree-sitter           = "0.26.9"
-tree-sitter-highlight = "0.26.9"
 # Tree-sitter grammars (generated ABI 14–15; tree-sitter 0.26.9 accepts ABI 13–15).
 # Grammar crates converge on either `tree-sitter-language` or the workspace's
 # compatible `tree-sitter`, so there is no runtime version clash. Third-party
@@ -178,9 +174,6 @@ ciborium      = "0.2.2"
 # never enter the build. `quick-xml` is a pure-Rust streaming XML parser.
 zip           = { version = "5.1.1", default-features = false, features = ["deflate"] }
 quick-xml     = "0.38.4"
-# Terminal emulation
-vt100        = "0.16.2"
-portable-pty = "0.9.0"
 # Language intelligence
 lsp-types = "0.97.0"
 # Version control
@@ -199,16 +192,12 @@ notify                 = "8.2"
 notify-debouncer-full  = "0.7"
 # Search
 ignore        = "0.4.26"
-grep-searcher = "0.1.16"
-grep-regex    = "0.1.14"
-grep-matcher  = "0.1.8"
 regex         = "1.12.4"
 memchr        = "2.8.2"
 # Fuzzy / misc
 nucleo      = "0.5.0"
 base64      = "0.22.1"
 palette     = "0.7.6"
-plist       = "1.9.0"
 ec4rs       = "1.2.0"
 spellbook   = "0.4.2"
 directories = "6.0.0"
@@ -239,6 +228,8 @@ color-eyre         = "0.6.5"
 missing_docs = "warn"        # every pub item needs a doc comment
 
 [workspace.lints.clippy]
-unwrap_used = "warn"         # surface errors through thiserror types instead
-expect_used = "warn"
-panic       = "warn"
+unwrap_used   = "warn"       # surface errors through thiserror types instead
+expect_used   = "warn"
+panic         = "warn"
+todo          = "warn"       # a stub in library code needs a justified #[allow]
+unimplemented = "warn"

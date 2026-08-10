@@ -33,6 +33,9 @@ pub enum NotificationKind {
     Search,
     /// General application / backend condition.
     System,
+    /// Forward-compatibility fallback: an unrecognized value from a newer peer.
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 /// A user-facing message. Neutral and clock-free: the `timeout` is a lifetime
@@ -73,8 +76,9 @@ pub fn severity_role(severity: Severity) -> ThemeRole {
     match severity {
         Severity::Error => ThemeRole::DiagnosticError,
         Severity::Warning => ThemeRole::DiagnosticWarning,
-        Severity::Information => ThemeRole::DiagnosticInfo,
         Severity::Hint => ThemeRole::DiagnosticHint,
+        // Information is also the graceful floor for unrecognized severities.
+        _ => ThemeRole::DiagnosticInfo,
     }
 }
 

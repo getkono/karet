@@ -81,31 +81,18 @@ impl Session {
         }
     }
 
-    /// Compute the current `(staged, working)` change sets, or `None` when there is
-    /// no repository. A read failure yields empty sets rather than erroring.
-    pub(super) fn compute_vcs(&self) -> Option<(Vec<FileChange>, Vec<FileChange>)> {
-        let repo = self.vcs.as_ref()?;
-        let staged = repo.changes(VcsSelection::Staged, None).unwrap_or_default();
-        let working = repo
-            .changes(VcsSelection::Unstaged, None)
-            .unwrap_or_default();
-        Some((staged, working))
-    }
-
-    /// Recompute the source-control status and emit it. A requested refresh (`id`
-    /// set) always emits; a spontaneous one (from a filesystem event) emits only
-    /// when the status changed, collapsing event bursts and absorbing the feedback
+    /// Ask the VCS worker to recompute the source-control status and emit it. A
+    /// requested refresh (`id` set) always emits; a spontaneous one (from a
+    /// filesystem event) emits only when the status changed (the worker keeps the
+    /// last emitted status), collapsing event bursts and absorbing the feedback
     /// from the session's own index writes.
     pub(super) fn emit_vcs_status(&mut self, id: Option<RequestId>) {
-        let Some(status) = self.compute_vcs() else {
-            return;
-        };
-        if id.is_none() && self.last_vcs.as_ref() == Some(&status) {
+        if self.vcs.is_none() {
             return;
         }
-        let (staged, working) = status.clone();
-        self.last_vcs = Some(status);
-        self.emit(id, Event::VcsStatus { staged, working });
+        let _ = self
+            .vcs_worker
+            .send(crate::vcs_worker::VcsJob::Status { id });
     }
 
     /// Run a write action against the repository, then force a fresh status (so the
@@ -120,10 +107,7 @@ impl Session {
             return;
         };
         match action(repo) {
-            Ok(()) => {
-                self.last_vcs = None;
-                self.emit_vcs_status(Some(id));
-            },
+            Ok(()) => self.emit_vcs_status(Some(id)),
             Err(e) => self.emit(
                 Some(id),
                 Event::Notification {
@@ -144,7 +128,6 @@ impl Session {
         match repo.commit(message) {
             Ok(oid) => {
                 self.emit(Some(id), Event::Committed { oid });
-                self.last_vcs = None;
                 self.emit_vcs_status(Some(id));
             },
             Err(e) => self.emit(

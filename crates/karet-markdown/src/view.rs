@@ -26,9 +26,7 @@ pub fn line_to_ratatui(line: &WrappedLine, theme: &Theme) -> Line<'static> {
         .iter()
         .map(|s| {
             let style = match s.token {
-                Some(token) => Style::default()
-                    .fg(theme.color(token).to_ratatui())
-                    .add_modifier(theme.emphasis(token).to_ratatui()),
+                Some(token) => theme.token_style(token),
                 None => Style::default(),
             };
             Span::styled(s.text.clone(), style)

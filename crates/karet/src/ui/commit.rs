@@ -13,13 +13,13 @@ pub(super) fn draw_commit_loading(
     theme: &Theme,
     area: Rect,
     rev: &str,
-    loading_since: Instant,
+    loading_since: Pending,
     error: Option<&str>,
     scroll: &mut u16,
     column: &mut u16,
 ) {
     *scroll = 0;
-    if error.is_none() && !loading_visible(loading_since) {
+    if error.is_none() && !loading_since.visible() {
         f.render_widget(
             Block::default()
                 .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui())),
@@ -27,12 +27,12 @@ pub(super) fn draw_commit_loading(
         );
         return;
     }
-    let title = Style::default()
-        .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+    let title = theme
+        .style(ThemeRole::Foreground)
         .add_modifier(Modifier::BOLD);
-    let muted = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
-    let error_style = Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui());
-    let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
+    let muted = theme.style(ThemeRole::Muted);
+    let error_style = theme.style(ThemeRole::DiagnosticError);
+    let hash_style = theme.style(ThemeRole::DiagnosticWarning);
     let short = rev.chars().take(12).collect::<String>();
     let lines = if let Some(error) = error {
         vec![
@@ -138,17 +138,14 @@ pub(super) fn format_datetime(secs: i64, offset: i32) -> String {
 #[derive(Clone, Copy)]
 pub(super) enum CommitFileStatus<'a> {
     Ready,
-    Loading(Instant),
+    Loading(Pending),
     Failed(&'a str),
 }
 
-pub(super) fn file_load_status(
-    loading_since: Option<Instant>,
-    error: Option<&str>,
-) -> CommitFileStatus<'_> {
-    if let Some(error) = error {
+pub(super) fn file_load_status(files: &CommitFiles) -> CommitFileStatus<'_> {
+    if let Some(error) = &files.error {
         CommitFileStatus::Failed(error)
-    } else if let Some(since) = loading_since {
+    } else if let Some(since) = files.loading_since {
         CommitFileStatus::Loading(since)
     } else {
         CommitFileStatus::Ready
@@ -162,13 +159,13 @@ pub(super) fn commit_metadata_lines(
     verification: Option<&karet_session::GithubVerification>,
     reveal: bool,
 ) -> (Vec<Line<'static>>, Option<BadgeHit>) {
-    let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
+    let fg = theme.style(ThemeRole::Foreground);
     let subject = fg.add_modifier(Modifier::BOLD);
-    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
-    let muted = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
-    let accent = Style::default().fg(theme.role(ThemeRole::DiffModified).to_ratatui());
-    let label = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
-    let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
+    let dim = theme.style(ThemeRole::LineNumber);
+    let muted = theme.style(ThemeRole::Muted);
+    let accent = theme.style(ThemeRole::DiffModified);
+    let label = theme.style(ThemeRole::LineNumberActive);
+    let hash_style = theme.style(ThemeRole::DiagnosticWarning);
     let bar = || Span::styled("\u{258c} ", accent);
 
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -184,9 +181,7 @@ pub(super) fn commit_metadata_lines(
 
     // Commit hash + verified badge.
     let (glyph, badge, badge_role) = verified_badge(verification, detail.signature.as_ref());
-    let badge_style = Style::default()
-        .fg(theme.role(badge_role).to_ratatui())
-        .add_modifier(Modifier::BOLD);
+    let badge_style = theme.style(badge_role).add_modifier(Modifier::BOLD);
     let mut hash_spans = vec![
         bar(),
         Span::styled(format!("{:<10} ", "commit"), label),
@@ -293,20 +288,20 @@ pub(super) fn commit_metadata_lines(
 pub(super) fn commit_detail_lines(
     theme: &Theme,
     detail: &karet_vcs::CommitDetail,
-    files: &[render::FileView],
-    file_status: CommitFileStatus<'_>,
-    verification: Option<&karet_session::GithubVerification>,
+    files: &CommitFiles,
     reveal: bool,
     width: u16,
 ) -> (Vec<Line<'static>>, Option<BadgeHit>) {
-    let (mut lines, badge) = commit_metadata_lines(theme, detail, verification, reveal);
-    let muted = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
-    let label = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
+    let (mut lines, badge) =
+        commit_metadata_lines(theme, detail, files.verification.as_ref(), reveal);
+    let file_status = file_load_status(files);
+    let muted = theme.style(ThemeRole::Muted);
+    let label = theme.style(ThemeRole::LineNumberActive);
     match file_status {
-        CommitFileStatus::Ready => lines.extend(changed_files_lines(theme, files, width)),
+        CommitFileStatus::Ready => lines.extend(changed_files_lines(theme, &files.files, width)),
         CommitFileStatus::Loading(since) => {
             lines.push(Line::raw(""));
-            if loading_visible(since) {
+            if since.visible() {
                 lines.push(Line::styled(" loading changed files\u{2026}", muted));
             }
         },
@@ -331,10 +326,10 @@ pub(super) fn changed_files_lines(
     files: &[render::FileView],
     width: u16,
 ) -> Vec<Line<'static>> {
-    let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
-    let label = Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui());
-    let add_fg = Style::default().fg(theme.role(ThemeRole::DiagnosticHint).to_ratatui());
-    let rem_fg = Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui());
+    let fg = theme.style(ThemeRole::Foreground);
+    let label = theme.style(ThemeRole::LineNumberActive);
+    let add_fg = theme.style(ThemeRole::DiagnosticHint);
+    let rem_fg = theme.style(ThemeRole::DiagnosticError);
 
     let mut lines: Vec<Line<'static>> = Vec::new();
 
@@ -366,10 +361,7 @@ pub(super) fn changed_files_lines(
         let (a, r) = file.line_stats();
         let (g, role) = status_glyph(file.change.status);
         lines.push(Line::from(vec![
-            Span::styled(
-                format!(" {g}  "),
-                Style::default().fg(theme.role(role).to_ratatui()),
-            ),
+            Span::styled(format!(" {g}  "), theme.style(role)),
             Span::styled(file.change.path.to_string_lossy().into_owned(), fg),
             Span::styled(format!("   +{a}"), add_fg),
             Span::styled(format!(" \u{2212}{r}"), rem_fg),
@@ -412,11 +404,11 @@ pub(super) fn commit_list_items(
         Color::Red,
     ];
     let lane_style = |lane: u8| Style::default().fg(LANE_COLORS[lane as usize % LANE_COLORS.len()]);
-    let header_style = Style::default()
-        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+    let header_style = theme
+        .style(ThemeRole::LineNumberActive)
         .add_modifier(Modifier::BOLD);
-    let hash_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
-    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let hash_style = theme.style(ThemeRole::DiagnosticWarning);
+    let dim = theme.style(ThemeRole::LineNumber);
     let sel_bg = theme.role(ThemeRole::Selection).to_ratatui();
     let inputs: Vec<LaneInput> = entries
         .iter()
@@ -472,14 +464,14 @@ pub(super) fn file_card_header(
     width: u16,
     collapsed: bool,
 ) -> Line<'static> {
-    let border = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
-    let fg = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
-    let add_fg = Style::default().fg(theme.role(ThemeRole::DiagnosticHint).to_ratatui());
-    let rem_fg = Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui());
+    let border = theme.style(ThemeRole::LineNumber);
+    let fg = theme.style(ThemeRole::Foreground);
+    let add_fg = theme.style(ThemeRole::DiagnosticHint);
+    let rem_fg = theme.style(ThemeRole::DiagnosticError);
     let (glyph, role) = status_glyph(file.change.status);
-    let glyph_style = Style::default().fg(theme.role(role).to_ratatui());
-    let toggle_style = Style::default()
-        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+    let glyph_style = theme.style(role);
+    let toggle_style = theme
+        .style(ThemeRole::LineNumberActive)
         .add_modifier(Modifier::BOLD);
     let toggle = if collapsed { "\u{25b8}" } else { "\u{25be}" };
     let (a, r) = file.line_stats();
@@ -552,7 +544,7 @@ pub(super) fn file_card_body(
     count: usize,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let border = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let border = theme.style(ThemeRole::LineNumber);
     let mut out = Vec::new();
     for line in render::unified_lines_window(file, theme, start, count) {
         let style = line.style;
@@ -567,7 +559,7 @@ pub(super) fn file_card_body(
 }
 
 pub(super) fn file_card_footer(theme: &Theme, width: u16) -> Line<'static> {
-    let border = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let border = theme.style(ThemeRole::LineNumber);
     let width = usize::from(width);
     Line::styled(
         format!(
@@ -580,27 +572,7 @@ pub(super) fn file_card_footer(theme: &Theme, width: u16) -> Line<'static> {
 
 /// Keep the right-most, most-specific part of `text` within `max` terminal cells.
 pub(super) fn truncate_start(text: &str, max: usize) -> String {
-    if UnicodeWidthStr::width(text) <= max {
-        return text.to_string();
-    }
-    if max == 0 {
-        return String::new();
-    }
-    if max == 1 {
-        return "\u{2026}".to_string();
-    }
-    let mut used = 1usize;
-    let mut kept = Vec::new();
-    for ch in text.chars().rev() {
-        let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + width > max {
-            break;
-        }
-        kept.push(ch);
-        used += width;
-    }
-    kept.reverse();
-    format!("\u{2026}{}", kept.into_iter().collect::<String>())
+    karet_widgets::text::fit_start(text, max)
 }
 
 /// Draw the full-screen commit graph browser: a DAG commit list on the left and the
@@ -613,13 +585,11 @@ pub(super) fn draw_commit_graph(
     commits: &[karet_vcs::Commit],
     has_more: bool,
     loading: bool,
-    loading_since: Option<Instant>,
+    loading_since: Option<Pending>,
     selected: usize,
-    detail_loading_since: Option<Instant>,
+    detail_loading_since: Option<Pending>,
     detail: Option<&karet_vcs::CommitDetail>,
-    files: &[render::FileView],
-    file_status: CommitFileStatus<'_>,
-    verification: Option<&karet_session::GithubVerification>,
+    files: &CommitFiles,
     list_offset: &mut u16,
     detail_column: &mut u16,
 ) {
@@ -632,7 +602,7 @@ pub(super) fn draw_commit_graph(
     let (list_area, detail_area) = (cols[0], cols[2]);
     f.render_widget(Block::new().borders(Borders::LEFT), cols[1]);
 
-    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    let dim = theme.style(ThemeRole::LineNumber);
     let entries: Vec<CommitListEntry<'_>> = commits
         .iter()
         .enumerate()
@@ -646,7 +616,7 @@ pub(super) fn draw_commit_graph(
         })
         .collect();
     let mut items = commit_list_items(theme, &entries, Some(selected), true);
-    if loading && commits.is_empty() && loading_since.is_some_and(loading_visible) {
+    if loading && commits.is_empty() && loading_since.is_some_and(Pending::visible) {
         items.push(ListItem::new(Line::styled(" loading\u{2026}", dim)));
     } else if has_more {
         items.push(ListItem::new(Line::styled(" \u{22ef} more", dim)));
@@ -674,16 +644,7 @@ pub(super) fn draw_commit_graph(
                 f,
                 theme,
                 detail_area,
-                commit_detail_lines(
-                    theme,
-                    d,
-                    files,
-                    file_status,
-                    verification,
-                    false,
-                    detail_area.width,
-                )
-                .0,
+                commit_detail_lines(theme, d, files, false, detail_area.width).0,
                 detail_column,
             );
         },
@@ -693,7 +654,7 @@ pub(super) fn draw_commit_graph(
             } else {
                 detail_loading_since
             };
-            if pending_since.is_some_and(loading_visible) {
+            if pending_since.is_some_and(Pending::visible) {
                 let msg = if commits.is_empty() {
                     "loading commits\u{2026}"
                 } else {
@@ -714,13 +675,8 @@ pub(super) fn draw_commit_graph(
     }
 }
 
-pub(super) fn loading_visible(since: Instant) -> bool {
-    since.elapsed() >= crate::app::LOADING_REVEAL_DELAY
-}
-
-/// Draw a code-visualization graph as a scrollable indented tree: a DFS from the
-/// graph's roots along dependency edges, with box-drawing depth guides. Cycles and
-/// already-expanded nodes are shown once and marked `⟲` rather than re-expanded.
+/// Draw a code-visualization graph: flatten via the karet-graph tree renderer
+/// (theme mapped onto its plain style slots), then paint scrollably.
 pub(super) fn draw_graph(
     f: &mut Frame,
     theme: &Theme,
@@ -730,54 +686,15 @@ pub(super) fn draw_graph(
     scroll: &mut u16,
     column: &mut u16,
 ) {
-    use karet_core::GraphEdgeKind;
-
-    let header_style = Style::default()
-        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
-        .add_modifier(Modifier::BOLD);
-    let guide = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
-    let name_style = Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui());
-    let badge_style = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
-    let revisit_style = Style::default().fg(theme.role(ThemeRole::DiagnosticWarning).to_ratatui());
-
-    // Flatten the graph to indented rows (DFS from roots, cycle-safe).
-    let mut rows: Vec<Line> = vec![Line::styled(
-        format!(" ⧉ {title} — dependency graph"),
-        header_style,
-    )];
-    let mut expanded: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    let mut stack: Vec<(&str, usize)> = view
-        .roots
-        .iter()
-        .rev()
-        .map(|r| (r.as_str(), 0usize))
-        .collect();
-    while let Some((id, depth)) = stack.pop() {
-        let Some(node) = view.nodes.iter().find(|n| n.id == id) else {
-            continue;
-        };
-        let first_visit = expanded.insert(id);
-        let children = view.successors(id, GraphEdgeKind::Dependency);
-        let mut spans = vec![Span::raw(" ")];
-        for _ in 0..depth {
-            spans.push(Span::styled("\u{2502} ", guide));
-        }
-        spans.push(Span::styled("\u{25CF} ", guide));
-        spans.push(Span::styled(node.label.clone(), name_style));
-        if let Some(badge) = &node.badge {
-            spans.push(Span::styled(format!("  {badge}"), badge_style));
-        }
-        if !first_visit && !children.is_empty() {
-            // Already expanded elsewhere (or a cycle): show but don't recurse again.
-            spans.push(Span::styled("  \u{27F2}", revisit_style));
-        }
-        rows.push(Line::from(spans));
-        if first_visit {
-            for child in children.iter().rev() {
-                stack.push((child, depth + 1));
-            }
-        }
-    }
-
+    let styles = karet_graph::view::TreeStyles {
+        header: theme
+            .style(ThemeRole::LineNumberActive)
+            .add_modifier(Modifier::BOLD),
+        guide: theme.style(ThemeRole::LineNumber),
+        name: theme.style(ThemeRole::Foreground),
+        badge: theme.style(ThemeRole::LineNumber),
+        revisit: theme.style(ThemeRole::DiagnosticWarning),
+    };
+    let rows = karet_graph::view::graph_tree_lines(title, view, &styles);
     draw_scrollable_lines(f, theme, area, rows, scroll, column);
 }

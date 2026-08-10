@@ -117,13 +117,15 @@ fn split_scopes(s: &str) -> Vec<String> {
     s.split(',').map(|p| p.trim().to_string()).collect()
 }
 
-/// Parse a VS Code `fontStyle` string (e.g. `"bold italic"`) into an [`Emphasis`].
+/// Parse a VS Code `fontStyle` string (e.g. `"bold italic"`) into an
+/// [`Emphasis`](karet_core::Emphasis).
 /// An empty string explicitly clears emphasis, which is why this returns a value
 /// rather than an `Option`.
 fn parse_font_style(s: &str) -> Emphasis {
     Emphasis {
         bold: s.split_whitespace().any(|w| w == "bold"),
         italic: s.split_whitespace().any(|w| w == "italic"),
+        underline: s.split_whitespace().any(|w| w == "underline"),
         strikethrough: s.split_whitespace().any(|w| w == "strikethrough"),
     }
 }
@@ -257,11 +259,7 @@ mod tests {
         let t = Theme::load_vscode(json)?;
         assert_eq!(
             t.emphasis(StandardToken::MarkupItalic.id()),
-            Emphasis {
-                bold: false,
-                italic: true,
-                strikethrough: false
-            }
+            Emphasis::ITALIC
         );
         // An entry may carry both a color and a font style.
         assert_eq!(
@@ -273,7 +271,7 @@ mod tests {
             Emphasis {
                 bold: true,
                 italic: true,
-                strikethrough: false
+                ..Emphasis::NONE
             }
         );
         // An explicit empty fontStyle clears the built-in emphasis.

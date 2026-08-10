@@ -19,15 +19,34 @@
         Some((dir, root, PathBuf::from("a.txt")))
     }
 
-    /// Drain the queued events and return the most recent [`Event::VcsStatus`].
-    fn latest_vcs_status(events: &mut EventRx) -> Option<(Vec<FileChange>, Vec<FileChange>)> {
-        let mut found = None;
-        while let Some((_, ev)) = events.try_recv() {
-            if let Event::VcsStatus { staged, working } = ev {
-                found = Some((staged, working));
+    /// Poll the event stream until `pick` yields, or a 5s deadline passes. The
+    /// VCS answers come from the worker thread, so tests must wait, not `try_recv`.
+    fn wait_for<T>(
+        events: &mut EventRx,
+        mut pick: impl FnMut(Event) -> Option<T>,
+    ) -> Option<T> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            while let Some((_, ev)) = events.try_recv() {
+                if let Some(value) = pick(ev) {
+                    return Some(value);
+                }
             }
+            if std::time::Instant::now() > deadline {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        found
+    }
+
+    /// Wait for the next [`Event::VcsStatus`].
+    fn wait_vcs_status(
+        events: &mut EventRx,
+    ) -> Option<(Vec<crate::api::ChangeSummary>, Vec<crate::api::ChangeSummary>)> {
+        wait_for(events, |ev| match ev {
+            Event::VcsStatus { staged, working } => Some((staged, working)),
+            _ => None,
+        })
     }
 
     #[test]
@@ -43,7 +62,7 @@
         session.start();
 
         // The session seeds an initial status: the file is untracked in `working`.
-        let Some((staged, working)) = latest_vcs_status(&mut events) else {
+        let Some((staged, working)) = wait_vcs_status(&mut events) else {
             return;
         };
         assert!(staged.is_empty());
@@ -60,7 +79,7 @@
                 paths: vec![file.clone()],
             },
         );
-        let Some((staged, _working)) = latest_vcs_status(&mut events) else {
+        let Some((staged, _working)) = wait_vcs_status(&mut events) else {
             return;
         };
         assert!(
@@ -108,24 +127,17 @@
                 rev: "HEAD".to_string(),
             },
         );
-        let mut detail_ready = None;
-        let mut ready = None;
-        while let Some((_, ev)) = events.try_recv() {
-            match ev {
-                Event::CommitDetailReady { detail } => {
-                    detail_ready = Some(detail);
-                },
-                Event::CommitReady { detail, changes } => {
-                    ready = Some((detail, changes));
-                },
-                _ => {},
-            }
-        }
-        let Some(detail) = detail_ready else {
+        let Some(detail) = wait_for(&mut events, |ev| match ev {
+            Event::CommitDetailReady { detail } => Some(detail),
+            _ => None,
+        }) else {
             return;
         };
         assert_eq!(detail.summary, "add b");
-        let Some((detail, changes)) = ready else {
+        let Some((detail, changes)) = wait_for(&mut events, |ev| match ev {
+            Event::CommitReady { detail, changes } => Some((detail, changes)),
+            _ => None,
+        }) else {
             return;
         };
         assert_eq!(detail.summary, "add b");
@@ -141,13 +153,10 @@
                 limit: 10,
             },
         );
-        let mut hist = None;
-        while let Some((_, ev)) = events.try_recv() {
-            if let Event::FileHistory { commits, .. } = ev {
-                hist = Some(commits);
-            }
-        }
-        let Some(commits) = hist else {
+        let Some(commits) = wait_for(&mut events, |ev| match ev {
+            Event::FileHistory { commits, .. } => Some(commits),
+            _ => None,
+        }) else {
             return;
         };
         assert_eq!(commits.len(), 1);
@@ -194,19 +203,15 @@
                 },
             },
         );
-        let mut ready = None;
-        while let Some((_, ev)) = events.try_recv() {
-            if let Event::RangeReady {
+        let Some((base_label, head_label, changes)) = wait_for(&mut events, |ev| match ev {
+            Event::RangeReady {
                 base_label,
                 head_label,
                 changes,
                 ..
-            } = ev
-            {
-                ready = Some((base_label, head_label, changes));
-            }
-        }
-        let Some((base_label, head_label, changes)) = ready else {
+            } => Some((base_label, head_label, changes)),
+            _ => None,
+        }) else {
             return;
         };
         assert_eq!(base_label, "HEAD~1");
@@ -222,22 +227,19 @@
                 spec: RangeSpec::Unpushed,
             },
         );
-        let mut notified = false;
-        let mut range_ready = false;
-        while let Some((_, ev)) = events.try_recv() {
-            match ev {
-                Event::Notification {
-                    kind: NotificationKind::Vcs,
-                    ..
-                } => {
-                    notified = true;
-                },
-                Event::RangeReady { .. } => range_ready = true,
-                _ => {},
-            }
-        }
-        assert!(notified, "no upstream yields a VCS notification");
-        assert!(!range_ready, "an unresolvable range emits no RangeReady");
+        let notified = wait_for(&mut events, |ev| match ev {
+            Event::Notification {
+                kind: NotificationKind::Vcs,
+                ..
+            } => Some(true),
+            Event::RangeReady { .. } => Some(false),
+            _ => None,
+        });
+        assert_eq!(
+            notified,
+            Some(true),
+            "no upstream yields a VCS notification, never a RangeReady"
+        );
     }
 
     #[test]
@@ -252,7 +254,7 @@
         // The actor normally calls this; here we drive the session directly.
         session.start();
         // Initial status: just the seeded `a.txt`.
-        let Some((_staged, working)) = latest_vcs_status(&mut events) else {
+        let Some((_staged, working)) = wait_vcs_status(&mut events) else {
             return;
         };
         assert_eq!(working.len(), 1);
@@ -267,11 +269,13 @@
         });
 
         // The recompute re-emits a status that now lists both untracked files.
-        let refreshed = latest_vcs_status(&mut events);
+        let refreshed = wait_for(&mut events, |ev| match ev {
+            Event::VcsStatus { staged, working } if working.len() == 2 => {
+                Some((staged, working))
+            },
+            _ => None,
+        });
         assert!(refreshed.is_some(), "fs event should refresh the status");
-        if let Some((_staged, working)) = refreshed {
-            assert_eq!(working.len(), 2);
-        }
     }
 
     #[test]

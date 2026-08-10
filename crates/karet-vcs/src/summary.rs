@@ -14,6 +14,7 @@ use crate::VcsError;
 
 /// Compact synchronization and uncommitted-line counts for one repository.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RepositorySummary {
     /// Commits present locally but not in the configured upstream.
     pub ahead: usize,

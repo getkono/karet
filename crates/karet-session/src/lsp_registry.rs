@@ -1,7 +1,7 @@
 //! Machine-local language-server installations.
 //!
 //! The registry is shared by every karet process for the current OS user. Live
-//! processes are shared separately by the authenticated [`crate::lsp_broker`],
+//! processes are shared separately by the authenticated [`karet_supervisor::broker`],
 //! keyed by provider launch and exact repository root.
 //!
 //! This module performs network I/O only while handling an explicit
@@ -657,7 +657,7 @@ fn install_release(
                 args.push(format!("{companion}@{version}"));
             }
             args.push(format!("{package}@{}", release.version));
-            let mut command = crate::process_supervisor::blocking_command(
+            let mut command = karet_supervisor::supervisor::blocking_command(
                 supervisor,
                 node.to_string_lossy().into_owned(),
                 args,

@@ -30,6 +30,16 @@ let scoped = blameline::blame_function(Path::new("."), Path::new("src/parser.rs"
 blameline uses [`gix`](https://crates.io/crates/gix) (gitoxide) with its `blame`
 feature — pure Rust, no external `git` process required.
 
+## Features
+
+The **default build is gix-only pure Rust** (no C compiler needed): grouped
+whole-file blame, with `blame_function` degrading to whole-file blame. Function
+narrowing is opt-in behind the `treesitter` feature plus the `lang-*` grammars
+you want (each compiles vendored C via `cc`), or the whole query set via
+`all-narrowing-languages` (deliberately not named `all-languages` —
+karet-treesitter's bundle of that name covers its full grammar catalogue, while
+this one covers only blameline's narrowing queries).
+
 ## Versioning
 
 > **blameline does _not_ share the karet workspace's lockstep version.**

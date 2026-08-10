@@ -1,4 +1,4 @@
-use karet_vcs::FileChange;
+use karet_session::ChangeSummary;
 
 use super::*;
 
@@ -17,7 +17,7 @@ pub(super) fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
     // it, a resizable commit-log region pinned to the bottom with a drag divider.
     let has_log = !app.scm.log.is_empty() || app.scm.log_has_more;
     let (changes_area, commits_area) = if has_log && list_area.height > MIN_SCM_REGION * 2 + 1 {
-        let commits_h = app.scm_commits_h.clamp(
+        let commits_h = app.scm_ui.commits_h.clamp(
             MIN_SCM_REGION,
             list_area.height.saturating_sub(MIN_SCM_REGION + 1),
         );
@@ -27,11 +27,11 @@ pub(super) fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
             Constraint::Length(commits_h),
         ])
         .split(list_area);
-        app.scm_divider_y = parts[1].y;
-        draw_scm_divider(f, theme, parts[1], app.scm_resizing);
+        app.scm_ui.divider_y = parts[1].y;
+        draw_scm_divider(f, theme, parts[1], app.scm_ui.resizing);
         (parts[0], Some(parts[2]))
     } else {
-        app.scm_divider_y = 0;
+        app.scm_ui.divider_y = 0;
         (list_area, None)
     };
 
@@ -40,15 +40,15 @@ pub(super) fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
         draw_scm_commits(f, app, theme, commits_area);
     } else {
         // No pinned region this frame: clear its state so stale hit-testing can't fire.
-        app.scm_commits_rect = Rect::default();
-        app.scm_commits_total = 0;
-        app.scm_more_row = None;
+        app.scm_ui.commits_rect = Rect::default();
+        app.scm_ui.commits_total = 0;
+        app.scm_ui.more_row = None;
     }
 }
 
 /// Draw current branch/divergence plus direct Sync, Commit, and overflow actions.
 pub(super) fn draw_repository_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
-    app.scm_header_hits.clear();
+    app.scm_ui.header_hits.clear();
     if area.height < 2 {
         return;
     }
@@ -57,7 +57,7 @@ pub(super) fn draw_repository_header(f: &mut Frame, app: &mut App, theme: &Theme
         None if app
             .scm
             .repository_loading_since
-            .is_some_and(loading_visible) =>
+            .is_some_and(Pending::visible) =>
         {
             "Loading repository…"
         },
@@ -81,17 +81,14 @@ pub(super) fn draw_repository_header(f: &mut Frame, app: &mut App, theme: &Theme
             format!("  {}", parts.join(" "))
         }
     });
-    let branch_style = Style::default()
-        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+    let branch_style = theme
+        .style(ThemeRole::LineNumberActive)
         .add_modifier(Modifier::BOLD);
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(" ⎇ ", branch_style),
             Span::styled(branch.to_string(), branch_style),
-            Span::styled(
-                divergence,
-                Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
-            ),
+            Span::styled(divergence, theme.style(ThemeRole::LineNumber)),
         ])),
         Rect { height: 1, ..area },
     );
@@ -109,12 +106,13 @@ pub(super) fn draw_repository_header(f: &mut Frame, app: &mut App, theme: &Theme
         if x.saturating_add(width) > area.right() {
             break;
         }
-        app.scm_header_hits
+        app.scm_ui
+            .header_hits
             .push((x, x + width, action_row, command));
         spans.push(Span::styled(
             label,
-            Style::default()
-                .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+            theme
+                .style(ThemeRole::Foreground)
                 .bg(theme.role(ThemeRole::HoverHighlight).to_ratatui()),
         ));
         spans.push(Span::raw(" "));
@@ -137,7 +135,7 @@ pub(super) fn draw_scm_divider(f: &mut Frame, theme: &Theme, area: Rect, active:
     } else {
         ThemeRole::IndentGuide
     };
-    let style = Style::default().fg(theme.role(role).to_ratatui());
+    let style = theme.style(role);
     let rule = "\u{2500}".repeat(area.width as usize); // ─
     f.render_widget(Paragraph::new(Line::styled(rule, style)), area);
 }
@@ -150,10 +148,10 @@ pub(super) fn draw_scm_changes(f: &mut Frame, app: &mut App, theme: &Theme, area
     let hover_bg = theme.role(ThemeRole::HoverHighlight).to_ratatui();
     let hovered = app.hovered_scm_change();
     let cursor = app.scm.selection.cursor();
-    let header_style = Style::default()
-        .fg(theme.role(ThemeRole::LineNumberActive).to_ratatui())
+    let header_style = theme
+        .style(ThemeRole::LineNumberActive)
         .add_modifier(Modifier::BOLD);
-    let placeholder_style = Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui());
+    let placeholder_style = theme.style(ThemeRole::Muted);
     let mut items: Vec<ListItem> = Vec::new();
     let mut row_map: Vec<Option<usize>> = Vec::new();
 
@@ -182,13 +180,7 @@ pub(super) fn draw_scm_changes(f: &mut Frame, app: &mut App, theme: &Theme, area
         }
         for i in range {
             let change = &app.scm.changes[i];
-            let stats = app
-                .scm
-                .change_line_stats
-                .get(i)
-                .copied()
-                .unwrap_or_default();
-            let item = ListItem::new(change_line(theme, change, stats));
+            let item = ListItem::new(change_line(theme, change, (change.added, change.removed)));
             // Every selected row (a contiguous range or a scattered toggle-set) gets
             // the selection background; the cursor row additionally gets a bold
             // highlight. A hovered-but-unselected row gets the secondary hover accent.
@@ -206,21 +198,21 @@ pub(super) fn draw_scm_changes(f: &mut Frame, app: &mut App, theme: &Theme, area
         }
     }
 
-    app.scm_changes_rect = area;
+    app.scm_ui.changes_rect = area;
     let total = items.len();
     let height = area.height as usize;
-    let offset = app.scm_offset.min(total.saturating_sub(height));
+    let offset = app.scm_ui.offset.min(total.saturating_sub(height));
     let mut state = ListState::default();
     *state.offset_mut() = offset;
     f.render_stateful_widget(List::new(items), area, &mut state);
-    app.scm_row_map = row_map;
-    app.scm_offset = state.offset();
-    app.scm_total_rows = total;
+    app.scm_ui.row_map = row_map;
+    app.scm_ui.offset = state.offset();
+    app.scm_ui.total_rows = total;
 }
 
 pub(super) fn change_line(
     theme: &Theme,
-    change: &FileChange,
+    change: &ChangeSummary,
     (added, removed): (usize, usize),
 ) -> Line<'static> {
     let (glyph, role) = status_glyph(change.status);
@@ -236,26 +228,23 @@ pub(super) fn change_line(
         .map(|p| p.to_string_lossy().into_owned())
         .filter(|p| !p.is_empty());
     let mut spans = vec![
-        Span::styled(
-            format!(" {glyph} "),
-            Style::default().fg(theme.role(role).to_ratatui()),
-        ),
+        Span::styled(format!(" {glyph} "), theme.style(role)),
         Span::raw(name),
     ];
     if let Some(parent) = parent {
         spans.push(Span::styled(
             format!("  {parent}"),
-            Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
+            theme.style(ThemeRole::LineNumber),
         ));
     }
     spans.extend([
         Span::styled(
             format!("   +{added}"),
-            Style::default().fg(theme.role(ThemeRole::DiagnosticHint).to_ratatui()),
+            theme.style(ThemeRole::DiagnosticHint),
         ),
         Span::styled(
             format!(" \u{2212}{removed}"),
-            Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui()),
+            theme.style(ThemeRole::DiagnosticError),
         ),
     ]);
     Line::from(spans)
@@ -264,8 +253,8 @@ pub(super) fn change_line(
 /// Draw the pinned commit-log region (header, lazily-loaded commits, "load more").
 /// Its rows aren't selectable; only the "load more" affordance is clickable.
 pub(super) fn draw_scm_commits(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
-    app.scm_more_row = None;
-    let dim = Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui());
+    app.scm_ui.more_row = None;
+    let dim = theme.style(ThemeRole::LineNumber);
     let entries: Vec<CommitListEntry<'_>> = app
         .scm
         .log
@@ -277,14 +266,14 @@ pub(super) fn draw_scm_commits(f: &mut Frame, app: &mut App, theme: &Theme, area
             summary: &commit.summary,
             time: commit.time,
             parents: &commit.parents,
-            head: i == 0 && app.scm_commits_offset == 0,
+            head: i == 0 && app.scm_ui.commits_offset == 0,
         })
         .collect();
     let mut items = commit_list_items(theme, &entries, None, true);
     if app.scm.log_has_more {
         // The "load more" display row is relative to the commit region's top.
-        app.scm_more_row = Some(items.len());
-        let label = if app.scm.log_loading_since.is_some_and(loading_visible) {
+        app.scm_ui.more_row = Some(items.len());
+        let label = if app.scm.log_loading_since.is_some_and(Pending::visible) {
             " loading…"
         } else {
             " ⋯ load more"
@@ -294,13 +283,13 @@ pub(super) fn draw_scm_commits(f: &mut Frame, app: &mut App, theme: &Theme, area
 
     let total = items.len();
     let height = area.height as usize;
-    let offset = app.scm_commits_offset.min(total.saturating_sub(height));
+    let offset = app.scm_ui.commits_offset.min(total.saturating_sub(height));
     let mut state = ListState::default();
     *state.offset_mut() = offset;
     f.render_stateful_widget(List::new(items), area, &mut state);
-    app.scm_commits_offset = state.offset();
-    app.scm_commits_total = total;
-    app.scm_commits_rect = area;
+    app.scm_ui.commits_offset = state.offset();
+    app.scm_ui.commits_total = total;
+    app.scm_ui.commits_rect = area;
 }
 
 /// A terse `git log`-style relative time (e.g. `3d ago`) for a Unix timestamp.
@@ -339,7 +328,7 @@ pub(super) fn relative_time_at(secs: i64, now: i64) -> String {
 /// Draw the permanent multiline commit-message editor above the change list.
 pub(super) fn draw_commit_input(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     if area.width == 0 || area.height == 0 {
-        app.scm_commit_rect = Rect::default();
+        app.scm_ui.commit_rect = Rect::default();
         return;
     }
     let accent = theme.role(ThemeRole::LineNumberActive).to_ratatui();
@@ -359,7 +348,7 @@ pub(super) fn draw_commit_input(f: &mut Frame, app: &mut App, theme: &Theme, are
         }));
     let inner = block.inner(area);
     f.render_widget(block, area);
-    app.scm_commit_rect = inner;
+    app.scm_ui.commit_rect = inner;
     if inner.width == 0 || inner.height == 0 {
         return;
     }

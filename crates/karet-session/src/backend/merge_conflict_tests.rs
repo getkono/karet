@@ -38,7 +38,7 @@ async fn local_backend_reports_both_merge_conflict_sides() {
         roots: vec![dir.path().to_path_buf()],
         ..SessionConfig::default()
     });
-    let backend = local(session);
+    let backend = local_session(session, None);
     let id = backend.next_id();
     assert!(
         backend

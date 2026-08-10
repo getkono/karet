@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-use karet_core::LineCol;
 use karet_core::Range;
 use karet_core::Span;
 use karet_core::Symbol;
@@ -97,7 +96,7 @@ impl OutlineExtractor {
         };
         let capture_names = query.capture_names();
         let dynamic_headings = capture_names.contains(&"definition.heading");
-        let starts = line_starts(text);
+        let starts = karet_core::LineIndex::new(text);
         let mut candidates = Vec::new();
         let mut heading_styles = Vec::new();
         for matched in tree.matches(query, text) {
@@ -266,35 +265,18 @@ fn empty_symbol() -> Symbol {
     }
 }
 
-fn line_starts(text: &str) -> Vec<usize> {
-    std::iter::once(0)
-        .chain(text.match_indices('\n').map(|(index, _)| index + 1))
-        .collect()
-}
-
-fn to_range(starts: &[usize], text: &str, span: Span) -> Range {
+fn to_range(starts: &karet_core::LineIndex, text: &str, span: Span) -> Range {
     Range {
-        start: line_col(starts, text, span.start.0),
-        end: line_col(starts, text, span.end.0),
+        start: starts.line_col(text, span.start),
+        end: starts.line_col(text, span.end),
     }
-}
-
-fn line_col(starts: &[usize], text: &str, byte: usize) -> LineCol {
-    let byte = byte.min(text.len());
-    let line_index = starts
-        .partition_point(|start| *start <= byte)
-        .saturating_sub(1);
-    let line = u32::try_from(line_index).unwrap_or(u32::MAX);
-    let column = text
-        .get(starts[line_index]..byte)
-        .map_or(0, |slice| slice.chars().count());
-    LineCol::new(line, u32::try_from(column).unwrap_or(u32::MAX))
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
+    use karet_core::LineCol;
     use karet_treesitter::ParserPool;
     use karet_treesitter::language_id_from_path;
 

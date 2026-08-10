@@ -26,10 +26,10 @@ mod load;
 mod save;
 
 pub use apply::Applied;
-pub use apply::AppliedEdit;
-pub use history::EditCause;
 pub use history::EditContext;
 use history::History;
+pub use karet_core::AppliedEdit;
+pub use karet_core::EditCause;
 pub use load::Encoding;
 pub use load::Eol;
 pub use load::LoadError;
@@ -200,32 +200,10 @@ impl TextBuffer {
     }
 
     /// The full text as an owned `String` (LF-normalized; allocates the whole
-    /// buffer — prefer line/slice accessors or [`rope`](Self::rope) on hot paths).
+    /// buffer — prefer line/slice accessors on hot paths).
     #[must_use]
     pub fn text(&self) -> String {
         self.rope.to_string()
-    }
-
-    /// Borrow the underlying rope (read-only) for chunk-wise consumers such as an
-    /// incremental parse host.
-    #[must_use]
-    pub fn rope(&self) -> &ropey::Rope {
-        &self.rope
-    }
-
-    /// The buffer bytes starting at `byte`, as one contiguous rope chunk, or an
-    /// empty slice at/after the end.
-    ///
-    /// This is the reader an incremental parser is fed with: call it repeatedly
-    /// with advancing offsets to stream the whole buffer without ever allocating it
-    /// as a single `String`.
-    #[must_use]
-    pub fn byte_chunk(&self, byte: usize) -> &[u8] {
-        if byte >= self.rope.len_bytes() {
-            return &[];
-        }
-        let (chunk, chunk_byte_start, _, _) = self.rope.chunk_at_byte(byte);
-        &chunk.as_bytes()[byte - chunk_byte_start..]
     }
 
     /// A cheap, render-only clone: shares the rope (O(1) structural sharing) but
@@ -243,16 +221,6 @@ impl TextBuffer {
             mixed_eol: self.mixed_eol,
             saved_state: self.saved_state.clone(),
         }
-    }
-
-    /// Discard all undo/redo history and reset the save point to "clean".
-    ///
-    /// The session calls this after replacing the buffer's content with a fresh
-    /// on-disk read (an accepted external reload): the recorded inverse edits no
-    /// longer match the new content, so they must be dropped.
-    pub fn reset_history(&mut self) {
-        self.history = History::default();
-        self.saved_text_hash = text_hash(&self.rope);
     }
 
     /// Replace this buffer's content (and line-ending/encoding/on-disk fingerprint)
@@ -275,9 +243,9 @@ impl TextBuffer {
 
     /// Convert an absolute byte offset to a line/column position.
     ///
-    /// The column is counted in Unicode scalar values (`char`s), matching karet's
-    /// internal [`PositionEncoding::Utf32`](karet_core::PositionEncoding). An offset
-    /// past the end of the buffer is clamped to the buffer end.
+    /// The column is counted in Unicode scalar values (`char`s), karet's canonical
+    /// internal unit. An offset past the end of the buffer is clamped to the
+    /// buffer end.
     #[must_use]
     pub fn byte_to_line_col(&self, byte: BytePos) -> LineCol {
         let b = byte.0.min(self.rope.len_bytes());
@@ -385,11 +353,11 @@ impl TextBuffer {
     /// Tree-sitter columns are byte offsets from the line start — **not** the
     /// `char` columns of [`LineCol`] — so this is the conversion the parse edit
     /// path must use.
-    pub(crate) fn byte_to_point(&self, byte: usize) -> (usize, usize) {
+    pub(crate) fn byte_to_point(&self, byte: usize) -> karet_core::BytePoint {
         let b = byte.min(self.rope.len_bytes());
         let row = self.rope.byte_to_line(b);
         let line_start = self.rope.line_to_byte(row);
-        (row, b - line_start)
+        karet_core::BytePoint::new(row, b - line_start)
     }
 }
 
@@ -534,8 +502,11 @@ mod tests {
     fn byte_to_point_uses_byte_columns() {
         // 'é' is two bytes, so the byte column after it is 2 even though it is one char.
         let b = TextBuffer::from_text("é=1\nx");
-        assert_eq!(b.byte_to_point(0), (0, 0));
-        assert_eq!(b.byte_to_point(2), (0, 2)); // after 'é' — byte column 2, char column 1
-        assert_eq!(b.byte_to_point(5), (1, 0)); // start of line 1 ("é=1\n" = 5 bytes)
+        use karet_core::BytePoint;
+        assert_eq!(b.byte_to_point(0), BytePoint::new(0, 0));
+        // After 'é' — byte column 2, char column 1.
+        assert_eq!(b.byte_to_point(2), BytePoint::new(0, 2));
+        // Start of line 1 ("é=1\n" = 5 bytes).
+        assert_eq!(b.byte_to_point(5), BytePoint::new(1, 0));
     }
 }

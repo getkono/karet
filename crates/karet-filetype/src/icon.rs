@@ -14,6 +14,7 @@
 /// other two are fallbacks selectable at runtime (Nerd Font support is a property
 /// of the configured font and cannot be detected, so it is a deliberate choice).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum IconStyle {
     /// ASCII-only — maximally portable (`>`/`v` for directories, blank files).
     Ascii,
@@ -43,6 +44,7 @@ impl IconStyle {
 /// hint at how content should be presented.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Category {
     /// Source code in a programming language.
     Code,

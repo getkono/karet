@@ -11,6 +11,7 @@
 //! separately.
 
 mod conflict;
+pub mod editing;
 mod state;
 mod text;
 mod view;
@@ -48,7 +49,10 @@ use ratatui::text::Span;
 use ratatui::widgets::StatefulWidget;
 pub use state::EditorState;
 pub use state::Fold;
+pub use state::resolve_folds;
+pub use text::line_span;
 pub use text::next_word_boundary;
 pub use text::previous_word_boundary;
+pub use text::selection_text;
 pub use text::word_bounds;
 pub use view::Editor;

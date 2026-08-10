@@ -24,33 +24,25 @@ pub(crate) fn capture(mut app: App, spec: CaptureSpec) -> color_eyre::Result<()>
     // The live shell gates on kitty keyboard support; a capture has no terminal to
     // ask, and the frame should show the shell's normal state rather than the
     // degraded one, so record the capability as present without probing for it.
-    app.kitty_keyboard_supported = true;
+    app.caps.kitty_keyboard = true;
     // Halfblocks draw images into the buffer itself. Kitty graphics would instead be
     // written out of band by `flush_graphics` (which a capture never calls), leaving
     // a hole in the grid, so pin the in-band protocol regardless of the environment.
-    app.graphics = GraphicsProtocol::Halfblocks;
-    app.kitty_graphics_supported = false;
-    app.pointer_shapes_supported = false;
+    app.caps.graphics = GraphicsProtocol::Halfblocks;
+    app.caps.kitty_graphics = false;
+    app.caps.pointer_shapes = false;
 
     let runtime = tokio::runtime::Runtime::new().map_err(|e| eyre!("tokio runtime: {e}"))?;
-    let (session, events, snaps) = Session::new(SessionConfig {
-        roots: vec![app.root.clone()],
-        settings: app.settings.clone(),
-        loaded_config: app.loaded_config.clone(),
-        // A capture is a throwaway read-only session: never write crash-recovery
-        // swaps into the user's data directory.
-        swap_dir: None,
-        process_supervisor: std::env::current_exe().ok(),
-        lsp_registry_dir: directories::ProjectDirs::from("", "getkono", "karet")
-            .map(|dirs| dirs.data_local_dir().join("language-servers")),
-    });
+    // A capture is a throwaway read-only session: never write crash-recovery
+    // swaps into the user's data directory.
+    let config = super::runtime::session_config(&app, None);
 
     let mut terminal = Terminal::new(TestBackend::new(spec.cols, spec.rows))
         .map_err(|e| eyre!("capture terminal: {e}"))?;
 
     // Borrow rather than move, so the settled buffer and the theme are still here to
     // serialize once the runtime returns.
-    runtime.block_on(drive(&mut terminal, &mut app, session, events, snaps, spec))?;
+    runtime.block_on(drive(&mut terminal, &mut app, config, spec))?;
 
     let ansi = buffer_to_ansi(terminal.backend().buffer(), &app.theme);
     let mut out = io::stdout().lock();
@@ -68,31 +60,17 @@ pub(crate) fn capture(mut app: App, spec: CaptureSpec) -> color_eyre::Result<()>
 async fn drive(
     terminal: &mut Terminal<TestBackend>,
     app: &mut App,
-    session: Session,
-    events: EventRx,
-    snaps: SnapshotRx,
+    config: SessionConfig,
     spec: CaptureSpec,
 ) -> color_eyre::Result<()> {
-    let backend: Arc<dyn Backend> = Arc::new(local(session));
-    app.backend = Some(backend);
-    app.register_open_tabs();
-    for diag in std::mem::take(&mut app.config_diagnostics) {
-        app.notify(
-            diag.severity,
-            NotificationKind::System,
-            format!("config: {}", diag.message),
-        );
-    }
-    let Some(prepared) = app.prepare_rx.take() else {
-        return Err(eyre!("diff preparation result stream is unavailable"));
-    };
-    settle(terminal, app, events, snaps, prepared, spec).await
+    let (events, snaps) = super::runtime::attach_backend(app, config)?;
+    settle(terminal, app, events, snaps, spec).await
 }
 
 /// Draw until the backend stops producing work, then draw one last frame.
 ///
-/// Each backend event, document snapshot, or diff-preparation result restarts the
-/// quiet timer, so a workspace that highlights slowly still captures a settled UI.
+/// Each backend event or document snapshot restarts the quiet timer, so a
+/// workspace that highlights slowly still captures a settled UI.
 /// Returns once nothing has arrived for `spec.settle` or `spec.timeout` has elapsed
 /// — the deadline is a ceiling, not a failure, so a workspace that never falls quiet
 /// still yields a frame.
@@ -101,7 +79,6 @@ async fn settle(
     app: &mut App,
     mut events: EventRx,
     mut snaps: SnapshotRx,
-    mut prepared: tokio::sync::mpsc::UnboundedReceiver<prepare::PrepareResult>,
     spec: CaptureSpec,
 ) -> color_eyre::Result<()> {
     let deadline = Instant::now() + spec.timeout;
@@ -128,10 +105,6 @@ async fn settle(
                 Some((doc, snap)) => { app.on_snapshot(doc, &snap); true },
                 None => false,
             },
-            result = prepared.recv() => match result {
-                Some(result) => { app.on_prepare_result(result); true },
-                None => false,
-            },
             () = tokio::time::sleep(quiet) => false,
         };
         if !progressed {
@@ -144,9 +117,6 @@ async fn settle(
         }
         while let Some((doc, snap)) = snaps.try_recv() {
             app.on_snapshot(doc, &snap);
-        }
-        while let Ok(result) = prepared.try_recv() {
-            app.on_prepare_result(result);
         }
         app.notifications.expire(Instant::now());
     }

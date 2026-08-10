@@ -6,6 +6,7 @@
 
 /// A contiguous run of text from a diff line, tagged as changed or unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Segment {
     /// The run's text.
     pub text: String,
@@ -15,6 +16,7 @@ pub struct Segment {
 
 /// The result of pairing an old line with a new line for inline highlighting.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct HighlightedPair {
     /// Segments of the old line.
     pub old_segments: Vec<Segment>,

@@ -1,28 +1,26 @@
 //! `karet-widgets` — a reusable ratatui widget toolkit for building editors.
 //!
 //! A lightweight (ratatui-only) crate of the UI widgets an editor needs. Widgets
-//! render data fed in by the application — they consume `karet-core` models and a
-//! [`SymbolProvider`], and so do **not** depend on the producers
-//! (`karet-lsp`/`karet-vcs`/`karet-dap`). This crate also hosts the LSP
-//! [`completion`]/[`hover`] popups, which render `karet-core` models supplied over
-//! the backend's event stream. The read-only file-view primitives (hex dump,
+//! render data fed in by the application — they consume `karet-core` models, and
+//! so do **not** depend on the producers (`karet-lsp`/`karet-vcs`). This crate
+//! also hosts the LSP [`completion`] popup, and (behind the `hover` feature) the
+//! LSP hover/doc popup, which render `karet-core` models supplied over the
+//! backend's event stream. The read-only file-view primitives (hex dump,
 //! terminal image, placeholder) live in `karet-fileview`.
-//!
-//! This is the implementation *skeleton*: each widget's data joint (the borrowed
-//! inputs it renders) is defined as a builder struct; the ratatui `Widget` render
-//! impls are filled in separately.
 
-use karet_core::Diagnostic;
-use karet_core::LineCol;
-use karet_core::SymbolProvider;
-use karet_fuzzy::Matcher;
-
+pub mod breadcrumbs;
 pub mod completion;
 pub mod file_tree;
 pub mod glyph;
+pub mod menu;
 pub mod notify;
 pub mod pane;
+pub mod picker;
+pub mod scroll;
 pub mod select;
+pub mod status;
+pub mod text;
+pub mod textfield;
 
 pub use completion::CompletionPopup;
 pub use completion::CompletionState;
@@ -45,44 +43,8 @@ pub use pane::drop_preview_rect;
 pub use pane::drop_zone;
 pub use select::ListSelection;
 
-/// A symbol outline tree over a [`SymbolProvider`].
-pub struct Outline<'a> {
-    /// The symbols to display.
-    pub provider: &'a dyn SymbolProvider,
-}
-
-/// Breadcrumbs showing the symbol path containing a position.
-pub struct Breadcrumbs<'a> {
-    /// The symbols to walk.
-    pub provider: &'a dyn SymbolProvider,
-    /// The cursor position whose containing symbols are shown.
-    pub position: LineCol,
-}
-
-/// A diagnostics ("problems") list.
-pub struct Problems<'a> {
-    /// The diagnostics to list.
-    pub diagnostics: &'a [Diagnostic],
-}
-
-/// A fuzzy quick-open / command-palette picker over arbitrary items.
-pub struct Picker<'a, T> {
-    /// The items to choose from.
-    pub items: &'a [T],
-    /// The matcher used for incremental filtering.
-    pub matcher: &'a mut Matcher,
-}
-
-/// A status bar with a left and right section.
-#[derive(Clone, Debug, Default)]
-pub struct StatusBar {
-    /// Left-aligned text.
-    pub left: String,
-    /// Right-aligned text.
-    pub right: String,
-}
-
 /// The LSP hover / documentation popup (relocated here from `karet-lsp`).
+#[cfg(feature = "hover")]
 pub mod hover {
     use karet_core::Markup;
     use karet_core::MarkupKind;
@@ -122,7 +84,8 @@ pub mod hover {
                     let doc = karet_markdown::parse(&self.markup.value).wrap(width);
                     karet_markdown::view::to_ratatui(&doc, self.theme)
                 },
-                MarkupKind::PlainText => self
+                // An unrecognized kind (a newer peer) degrades to plain text.
+                _ => self
                     .markup
                     .value
                     .lines()
@@ -153,19 +116,8 @@ pub mod hover {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "hover"))]
 mod tests {
-    use karet_core::Symbol;
-
-    use super::*;
-
-    #[test]
-    fn outline_consumes_a_provider() {
-        let syms: Vec<Symbol> = Vec::new();
-        let outline = Outline { provider: &syms };
-        assert!(outline.provider.symbols().is_empty());
-    }
-
     mod hover_render {
         use karet_core::Markup;
         use karet_core::MarkupKind;

@@ -114,22 +114,6 @@ impl App {
         self.reconcile_open_docs();
     }
 
-    /// The visible (pane-active) tab of some *non-focused* pane matching `pred`.
-    pub(super) fn stored_active(&self, pred: impl Fn(&Tab) -> bool) -> Option<&Tab> {
-        self.stored
-            .values()
-            .filter_map(|pane| pane.tabs.get(pane.active))
-            .find(|tab| pred(tab))
-    }
-
-    /// As [`stored_active`](Self::stored_active), mutably.
-    pub(super) fn stored_active_mut(&mut self, pred: impl Fn(&Tab) -> bool) -> Option<&mut Tab> {
-        self.stored
-            .values_mut()
-            .filter_map(|pane| pane.tabs.get_mut(pane.active))
-            .find(|tab| pred(tab))
-    }
-
     /// Toggle a rendered preview inside the active Markdown editor view.
     ///
     /// The preview is view-local state: it does not create another tab, pane, or

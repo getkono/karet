@@ -1,17 +1,13 @@
 //! `karet-vcs` — editor-oriented git integration for karet.
 //!
 //! A `gix`-backed engine for repository reads with argument-safe `git` subprocesses
-//! for mature write operations, emitting
-//! per-line change markers and blame annotations as neutral `karet-core`
-//! [`Decoration`]s. Headless by default; the ratatui source-control panels live
-//! behind the `view` feature (and render `karet-diff` hunk data directly).
+//! for mature write operations (hooks, signing, and credential helpers keep
+//! working). Headless: this crate renders nothing — the source-control panels live
+//! in the presentation layer, which consumes this crate's git facts.
 //!
 //! The write path requires the `git` executable on `PATH`; it never invokes a shell.
 
-use std::path::Path;
 use std::path::PathBuf;
-
-use karet_core::Decoration;
 
 mod branch;
 mod changes;
@@ -62,14 +58,12 @@ pub enum VcsError {
     /// An otherwise valid destructive action requires explicit confirmation.
     #[error("confirmation required: {0}")]
     ConfirmationRequired(String),
-    /// Legacy error retained for source compatibility with the former optional writer.
-    #[error("the requested VCS feature is disabled")]
-    FeatureDisabled,
 }
 
 /// The change state of a file in the working tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum StatusKind {
     /// A newly added (tracked) file.
     Added,
@@ -85,39 +79,11 @@ pub enum StatusKind {
     Conflicted,
 }
 
-/// One file's working-tree status.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FileStatus {
-    /// The file path, relative to the repository root.
-    pub path: PathBuf,
-    /// The change kind.
-    pub kind: StatusKind,
-    /// Whether the change is staged (in the index).
-    pub staged: bool,
-}
-
-/// The working-tree status: the set of changed files.
-#[derive(Clone, Debug, Default)]
-pub struct WorkingTreeStatus {
-    /// The changed files.
-    pub entries: Vec<FileStatus>,
-}
-
-/// One line of blame information.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BlameLine {
-    /// The 0-based line.
-    pub line: u32,
-    /// The commit id (short hash).
-    pub commit: String,
-    /// The commit author.
-    pub author: String,
-}
-
 /// The staged changes rendered as a unified diff, for feeding an external
 /// commit-message generator (`git diff --cached`, without a `git` subprocess).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StagedDiff {
     /// The unified-diff text of every staged change.
     pub patch: String,
@@ -129,6 +95,7 @@ pub struct StagedDiff {
 
 /// A git branch.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Branch {
     /// The branch name.
     pub name: String,
@@ -144,37 +111,6 @@ pub struct Repository {
 }
 
 impl Repository {
-    /// The current working-tree status.
-    ///
-    /// # Errors
-    /// Returns [`VcsError::Git`] on failure.
-    pub fn status(&self) -> Result<WorkingTreeStatus, VcsError> {
-        todo!()
-    }
-
-    /// Per-line change markers for `path`, as gutter decorations.
-    #[must_use]
-    pub fn gutter_decorations(&self, path: &Path) -> Vec<Decoration> {
-        let _ = path;
-        todo!()
-    }
-
-    /// Per-line blame for `path`.
-    ///
-    /// # Errors
-    /// Returns [`VcsError::Git`] on failure.
-    pub fn blame(&self, path: &Path) -> Result<Vec<BlameLine>, VcsError> {
-        let _ = path;
-        todo!()
-    }
-
-    /// Inline, age-shaded blame decorations for `path`.
-    #[must_use]
-    pub fn blame_decorations(&self, path: &Path) -> Vec<Decoration> {
-        let _ = path;
-        todo!()
-    }
-
     /// The repository's local branches, sorted by name. Each carries whether it is the
     /// currently checked-out branch. A branch name is itself a valid revision, so it
     /// can be passed straight to [`file_at_rev`](Self::file_at_rev) or the diff readers.
@@ -288,6 +224,18 @@ impl Repository {
     /// [`VcsError::Git`] if the diff cannot be computed.
     pub fn staged_diff(&self) -> Result<StagedDiff, VcsError> {
         self.git_staged_diff()
+    }
+
+    /// Apply a unified-diff `patch` to the index only (the worktree is
+    /// untouched): `reverse: false` stages the patch's changes, `reverse: true`
+    /// un-stages them. This is the per-hunk staging primitive — feed it one
+    /// hunk's patch (see `karet-diff`'s `format_hunk_patch`).
+    ///
+    /// # Errors
+    /// Returns [`VcsError::GitUnavailable`] when `git` cannot be launched, or
+    /// [`VcsError::Git`] when the patch does not apply to the index.
+    pub fn apply_index_patch(&self, patch: &str, reverse: bool) -> Result<(), VcsError> {
+        self.git_apply_index_patch(patch, reverse)
     }
 }
 

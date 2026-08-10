@@ -203,6 +203,8 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(DiffEditor, false, false, false, Char(']'),  Command::NextChangedFile),
     b(DiffEditor, false, false, false, Char('['),  Command::PrevChangedFile),
     b(DiffEditor, false, false, false, Enter,      Command::OpenDiffFile),
+    b(DiffEditor, false, false, false, Char('s'),  Command::StageHunk),
+    b(DiffEditor, false, false, false, Char('u'),  Command::UnstageHunk),
 
     // Read-only scrollable views (commit / compare / blame / graph / hex): arrows and
     // PageUp/Down scroll, Home/End jump to the edges, `q` closes the tab. No caret.

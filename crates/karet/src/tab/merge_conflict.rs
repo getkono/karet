@@ -11,7 +11,7 @@ pub(crate) struct MergeConflictState {
     /// Independent renderer state for the read-only incoming side.
     pub(crate) incoming_editor: EditorState,
     /// When side loading began, for the shared delayed-loading policy.
-    pub(crate) loading_since: Instant,
+    pub(crate) loading_since: Pending,
     /// Backend load failure, if the path stopped being a text conflict.
     pub(crate) error: Option<String>,
 }
@@ -25,7 +25,7 @@ impl MergeConflictState {
             incoming: None,
             current_editor: EditorState::new(),
             incoming_editor: EditorState::new(),
-            loading_since: Instant::now(),
+            loading_since: Pending::start(),
             error: None,
         }
     }

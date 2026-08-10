@@ -46,8 +46,8 @@ pub(super) struct EditState {
     kind: EditKind,
     parent: PathBuf,
     pub(super) buffer: String,
-    pub(super) cursor: usize,
-    pub(super) selection: Option<(usize, usize)>,
+    /// Cursor/selection mechanics shared with every other single-line field.
+    pub(super) field: crate::textfield::TextFieldState,
 }
 
 /// A committed inline edit for the host to apply on the filesystem.
@@ -308,8 +308,7 @@ impl FileTreeState {
             kind,
             parent,
             buffer: String::new(),
-            cursor: 0,
-            selection: None,
+            field: crate::textfield::TextFieldState::default(),
         });
         self.needs_rebuild = true;
     }
@@ -326,35 +325,37 @@ impl FileTreeState {
                 kind: EditKind::Rename(old.clone()),
                 parent,
                 buffer: file_label(&old),
-                cursor: 0,
-                selection: None,
+                field: crate::textfield::TextFieldState::default(),
             });
             if let Some(edit) = self.editing.as_mut() {
-                edit.cursor = edit.buffer.len();
-                edit.selection = rename_selection(&old, &edit.buffer);
+                // Select the stem (or the full name), ready to be typed over.
+                match rename_selection(&old, &edit.buffer) {
+                    Some((start, end)) => {
+                        edit.field.set_cursor(&edit.buffer, start, false);
+                        edit.field.set_cursor(&edit.buffer, end, true);
+                    },
+                    None => edit
+                        .field
+                        .set_cursor(&edit.buffer, edit.buffer.len(), false),
+                }
             }
             self.needs_rebuild = true;
         }
     }
 
-    /// Append a character to the inline edit buffer (no-op when not editing).
+    /// Insert a character into the inline edit buffer (no-op when not editing).
     pub fn edit_push(&mut self, c: char) {
         if let Some(edit) = self.editing.as_mut() {
-            replace_edit_selection(edit, "");
-            edit.buffer.insert(edit.cursor, c);
-            edit.cursor += c.len_utf8();
+            edit.field
+                .insert(&mut edit.buffer, c.encode_utf8(&mut [0; 4]));
             self.needs_rebuild = true;
         }
     }
 
-    /// Delete the last character of the inline edit buffer (no-op when not editing).
+    /// Delete backward in the inline edit buffer (no-op when not editing).
     pub fn edit_backspace(&mut self) {
         if let Some(edit) = self.editing.as_mut() {
-            if !replace_edit_selection(edit, "") && edit.cursor > 0 {
-                let prev = prev_boundary(&edit.buffer, edit.cursor);
-                edit.buffer.replace_range(prev..edit.cursor, "");
-                edit.cursor = prev;
-            }
+            edit.field.backspace(&mut edit.buffer, false);
             self.needs_rebuild = true;
         }
     }
@@ -362,10 +363,7 @@ impl FileTreeState {
     /// Delete the character after the inline edit cursor (no-op when not editing).
     pub fn edit_delete(&mut self) {
         if let Some(edit) = self.editing.as_mut() {
-            if !replace_edit_selection(edit, "") && edit.cursor < edit.buffer.len() {
-                let next = next_boundary(&edit.buffer, edit.cursor);
-                edit.buffer.replace_range(edit.cursor..next, "");
-            }
+            edit.field.delete(&mut edit.buffer, false);
             self.needs_rebuild = true;
         }
     }
@@ -373,8 +371,7 @@ impl FileTreeState {
     /// Move the inline edit cursor left by one character.
     pub fn edit_left(&mut self) {
         if let Some(edit) = self.editing.as_mut() {
-            edit.selection = None;
-            edit.cursor = prev_boundary(&edit.buffer, edit.cursor);
+            edit.field.move_left(&edit.buffer, false);
             self.needs_rebuild = true;
         }
     }
@@ -382,8 +379,7 @@ impl FileTreeState {
     /// Move the inline edit cursor right by one character.
     pub fn edit_right(&mut self) {
         if let Some(edit) = self.editing.as_mut() {
-            edit.selection = None;
-            edit.cursor = next_boundary(&edit.buffer, edit.cursor);
+            edit.field.move_right(&edit.buffer, false);
             self.needs_rebuild = true;
         }
     }
@@ -391,8 +387,7 @@ impl FileTreeState {
     /// Move the inline edit cursor to the start of the buffer.
     pub fn edit_home(&mut self) {
         if let Some(edit) = self.editing.as_mut() {
-            edit.selection = None;
-            edit.cursor = 0;
+            edit.field.move_start(&edit.buffer, false, false);
             self.needs_rebuild = true;
         }
     }
@@ -400,8 +395,7 @@ impl FileTreeState {
     /// Move the inline edit cursor to the end of the buffer.
     pub fn edit_end(&mut self) {
         if let Some(edit) = self.editing.as_mut() {
-            edit.selection = None;
-            edit.cursor = edit.buffer.len();
+            edit.field.move_end(&edit.buffer, false, false);
             self.needs_rebuild = true;
         }
     }
@@ -409,19 +403,15 @@ impl FileTreeState {
     /// Select the full inline edit buffer.
     pub fn edit_select_all(&mut self) {
         if let Some(edit) = self.editing.as_mut() {
-            edit.selection = Some((0, edit.buffer.len()));
-            edit.cursor = edit.buffer.len();
+            edit.field.select_all(&edit.buffer);
             self.needs_rebuild = true;
         }
     }
 
-    /// Append pasted text to the inline edit buffer (no-op when not editing).
+    /// Insert pasted text at the inline edit cursor (no-op when not editing).
     pub fn edit_paste(&mut self, text: &str) {
         if let Some(edit) = self.editing.as_mut() {
-            if !replace_edit_selection(edit, text) {
-                edit.buffer.insert_str(edit.cursor, text);
-                edit.cursor += text.len();
-            }
+            edit.field.insert(&mut edit.buffer, text);
             self.needs_rebuild = true;
         }
     }
@@ -467,28 +457,34 @@ impl FileTreeState {
     /// [`take_edit`](Self::take_edit) has already consumed the editor state.
     pub fn restore_edit(&mut self, pending: &PendingEdit) {
         self.editing = match pending {
-            PendingEdit::Create { path, folder } => path.parent().map(|parent| EditState {
-                kind: if *folder {
-                    EditKind::NewFolder
-                } else {
-                    EditKind::NewFile
-                },
-                parent: parent.to_path_buf(),
-                buffer: file_label(path),
-                cursor: file_label(path).len(),
-                selection: None,
+            PendingEdit::Create { path, folder } => path.parent().map(|parent| {
+                let buffer = file_label(path);
+                let mut field = crate::textfield::TextFieldState::default();
+                field.set_cursor(&buffer, buffer.len(), false);
+                EditState {
+                    kind: if *folder {
+                        EditKind::NewFolder
+                    } else {
+                        EditKind::NewFile
+                    },
+                    parent: parent.to_path_buf(),
+                    buffer,
+                    field,
+                }
             }),
             PendingEdit::Rename { from, to } => {
                 let parent = from
                     .parent()
                     .map(Path::to_path_buf)
                     .unwrap_or_else(|| self.root.clone());
+                let buffer = file_label(to);
+                let mut field = crate::textfield::TextFieldState::default();
+                field.set_cursor(&buffer, buffer.len(), false);
                 Some(EditState {
                     kind: EditKind::Rename(from.clone()),
                     parent,
-                    buffer: file_label(to),
-                    cursor: file_label(to).len(),
-                    selection: None,
+                    buffer,
+                    field,
                 })
             },
         };

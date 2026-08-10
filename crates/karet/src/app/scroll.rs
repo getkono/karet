@@ -19,12 +19,12 @@ impl App {
             TabKind::Code { buffer, .. } if !word_wrap => {
                 tab.editor.scroll_columns(buffer, delta);
             },
-            TabKind::Diff { column, .. }
-            | TabKind::StashPreview { column, .. }
-            | TabKind::Graph { column, .. }
-            | TabKind::LoadedConfig { column, .. }
-            | TabKind::CommitLoading { column, .. }
-            | TabKind::CommitGraph {
+            TabKind::Diff { pager, .. }
+            | TabKind::StashPreview { pager, .. }
+            | TabKind::Graph { pager, .. }
+            | TabKind::LoadedConfig { pager, .. }
+            | TabKind::CommitLoading { pager, .. } => adjust(&mut pager.column, delta),
+            TabKind::CommitGraph {
                 detail_column: column,
                 ..
             } => adjust(column, delta),

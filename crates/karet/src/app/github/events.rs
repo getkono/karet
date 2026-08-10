@@ -108,20 +108,13 @@ impl App {
                 TabKind::Github(GithubViewState::NewIssue { form, .. }) if form.submitting == id
             );
             if created {
-                let repository = match &tab.kind {
-                    TabKind::Github(GithubViewState::NewIssue { repository, .. }) => {
-                        repository.clone()
-                    },
-                    _ => continue,
-                };
                 tab.title = format!("Issue #{}", issue.number);
                 tab.kind = TabKind::Github(GithubViewState::Issue {
-                    repository,
                     number: issue.number,
                     issue: Some(issue.clone()),
                     comments: comments.clone(),
                     pending: None,
-                    loading_since: Instant::now(),
+                    loading_since: Pending::start(),
                     error: None,
                     scroll: 0,
                 });
@@ -156,18 +149,14 @@ impl App {
             activity_error,
         } = supplement;
         for tab in self.all_tabs_mut() {
-            let created_repository = match &tab.kind {
-                TabKind::Github(GithubViewState::NewPullRequest { repository, form })
-                    if form.submitting == id =>
-                {
-                    Some(repository.clone())
-                },
-                _ => None,
-            };
-            if let Some(repository) = created_repository {
+            let created = matches!(
+                &tab.kind,
+                TabKind::Github(GithubViewState::NewPullRequest { form, .. })
+                    if form.submitting == id
+            );
+            if created {
                 tab.title = format!("Pull Request #{}", pull_request.number);
                 tab.kind = TabKind::Github(GithubViewState::PullRequest(GithubPullRequestView {
-                    repository,
                     pull_request: pull_request.clone(),
                     comments: comments.clone(),
                     commits: commits.clone(),
@@ -177,7 +166,7 @@ impl App {
                     can_write: true,
                     section: GithubPullRequestSection::Conversation,
                     pending: None,
-                    loading_since: Instant::now(),
+                    loading_since: Pending::start(),
                     error: None,
                     scroll: 0,
                     commit_cursor: 0,

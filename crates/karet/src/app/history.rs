@@ -58,7 +58,7 @@ impl App {
             }) = self.active_commit_graph()
             {
                 *loading = true;
-                *loading_since = Some(Instant::now());
+                *loading_since = Some(Pending::start());
             }
             let command = match path {
                 Some(path) => SessionCommand::FileHistory {
@@ -72,7 +72,7 @@ impl App {
                 },
             };
             let view = self.tabs[self.active].view;
-            self.graph_log_req = self.send_command_id(command).map(|id| (id, view));
+            self.graph_log_req = self.send(command).map(|id| (id, view));
         }
     }
 
@@ -97,21 +97,6 @@ impl App {
             self.pending_commit_detail.remove(&request);
             self.cancel_backend_request(request);
         }
-        let stale_preparation: Vec<RequestId> = self
-            .pending_commit_preparation
-            .iter()
-            .filter_map(|(request, pending)| {
-                matches!(pending.destination, CommitDest::Browser { view: owner, .. } if owner == view)
-                    .then_some(*request)
-            })
-            .collect();
-        for request in stale_preparation {
-            if let Some(pending) = self.pending_commit_preparation.remove(&request) {
-                pending
-                    .cancelled
-                    .store(true, std::sync::atomic::Ordering::Release);
-            }
-        }
         let stale_verification: Vec<RequestId> = self
             .pending_commit_verification
             .iter()
@@ -124,21 +109,15 @@ impl App {
         if let Some(TabKind::CommitGraph {
             detail,
             files,
-            files_loading_since,
-            files_error,
-            verification,
             detail_loading_since,
             ..
         }) = self.active_commit_graph()
         {
             *detail = None;
-            files.clear();
-            *files_loading_since = None;
-            *files_error = None;
-            *verification = None;
-            *detail_loading_since = Some(Instant::now());
+            *files = CommitFiles::default();
+            *detail_loading_since = Some(Pending::start());
         }
-        if let Some(id) = self.send_command_id(SessionCommand::CommitDetail { rev: hash.clone() }) {
+        if let Some(id) = self.send(SessionCommand::CommitDetail { rev: hash.clone() }) {
             self.pending_commit_detail
                 .insert(id, CommitDest::Browser { view, hash });
         }
@@ -160,7 +139,7 @@ impl App {
     /// tab, and an unresolvable range answers with a VCS notification instead.
     pub(super) fn open_range(&mut self, command: SessionCommand) {
         self.status = Some("computing diff…".to_string());
-        self.send_vcs(command);
+        self.send_command(command);
     }
 
     /// Mark the browser's selected commit as the base for a two-commit comparison.
@@ -224,9 +203,6 @@ impl App {
                 selected,
                 detail: slot,
                 files,
-                files_loading_since,
-                files_error,
-                verification,
                 detail_loading_since,
                 ..
             } = &mut tab.kind
@@ -236,10 +212,7 @@ impl App {
                     continue;
                 }
                 *slot = Some(detail.clone());
-                files.clear();
-                *files_loading_since = Some(Instant::now());
-                *files_error = None;
-                *verification = None;
+                files.reset_loading();
                 *detail_loading_since = None;
                 filled = true;
             }
@@ -255,10 +228,10 @@ impl App {
         &mut self,
         view: ViewId,
         detail: Box<CommitDetail>,
-        prepared: Vec<FileView>,
+        prepared: Vec<PreparedChange>,
     ) {
         let hash = detail.hash.clone();
-        let mut prepared = Some(prepared);
+        let mut prepared = Some(commit_file_views(prepared));
         let mut filled = false;
         for tab in self.all_tabs_mut() {
             if tab.view != view {
@@ -269,9 +242,6 @@ impl App {
                 selected,
                 detail: slot,
                 files,
-                files_loading_since,
-                files_error,
-                verification,
                 detail_loading_since,
                 ..
             } = &mut tab.kind
@@ -280,15 +250,14 @@ impl App {
                 if selected_hash != Some(hash.as_str()) {
                     continue;
                 }
-                let keep_verification = slot.as_ref().is_some_and(|d| d.hash == hash)
-                    && verification.as_ref().is_some();
-                *files = prepared.take().unwrap_or_default();
+                let verification = (slot.as_ref().is_some_and(|d| d.hash == hash))
+                    .then(|| files.verification.take())
+                    .flatten();
+                *files = CommitFiles {
+                    verification,
+                    ..CommitFiles::ready(prepared.take().unwrap_or_default())
+                };
                 *slot = Some(detail.clone());
-                *files_loading_since = None;
-                *files_error = None;
-                if !keep_verification {
-                    *verification = None;
-                }
                 *detail_loading_since = None;
                 filled = true;
             }
@@ -329,13 +298,15 @@ impl App {
         }
     }
 
-    /// Build and open a commit tab from a resolved [`CommitDetail`] and its changes,
-    /// then fire the lazy GitHub verification fetch to upgrade the signature badge.
-    pub(super) fn open_commit_tab(&mut self, detail: Box<CommitDetail>, changes: Vec<FileChange>) {
-        let files = changes
-            .into_iter()
-            .map(|c| FileView::new(c, Section::Staged, self.syntax))
-            .collect();
+    /// Build and open a commit tab from a resolved [`CommitDetail`] and its
+    /// backend-prepared changes, then fire the lazy GitHub verification fetch to
+    /// upgrade the signature badge.
+    pub(super) fn open_commit_tab(
+        &mut self,
+        detail: Box<CommitDetail>,
+        changes: Vec<PreparedChange>,
+    ) {
+        let files = CommitFiles::ready(commit_file_views(changes));
         let hash = detail.hash.clone();
         self.push_tab(Tab::commit(detail, files));
         let view = self.tabs[self.active].view;
@@ -346,14 +317,7 @@ impl App {
     /// loading. Used for unsolicited commit-detail events.
     pub(super) fn open_commit_metadata_tab(&mut self, detail: Box<CommitDetail>) {
         let hash = detail.hash.clone();
-        self.push_tab(Tab::commit(detail, Vec::new()));
-        if let TabKind::Commit {
-            files_loading_since,
-            ..
-        } = &mut self.tabs[self.active].kind
-        {
-            *files_loading_since = Some(Instant::now());
-        }
+        self.push_tab(Tab::commit(detail, CommitFiles::loading()));
         let view = self.tabs[self.active].view;
         self.request_commit_verification(view, hash);
     }
@@ -372,16 +336,13 @@ impl App {
             tab.title = title;
             if let Some(detail) = detail.take() {
                 let scroll = match &tab.kind {
-                    TabKind::CommitLoading { scroll, .. } => *scroll,
+                    TabKind::CommitLoading { pager, .. } => pager.scroll,
                     TabKind::Commit { view, .. } => view.scroll,
                     _ => 0,
                 };
                 tab.kind = TabKind::Commit {
                     detail,
-                    files: Vec::new(),
-                    files_loading_since: Some(Instant::now()),
-                    files_error: None,
-                    verification: None,
+                    files: CommitFiles::loading(),
                     explain_since: None,
                     view: CommitViewState {
                         scroll,
@@ -404,9 +365,9 @@ impl App {
         &mut self,
         view: ViewId,
         detail: Box<CommitDetail>,
-        prepared: Vec<FileView>,
+        prepared: Vec<PreparedChange>,
     ) {
-        let mut files = Some(prepared);
+        let mut files = Some(commit_file_views(prepared));
         let hash = detail.hash.clone();
         let title = commit_title(&detail.short_hash);
         let mut detail = Some(detail);
@@ -419,22 +380,19 @@ impl App {
                         TabKind::Commit {
                             detail: slot,
                             files: current_files,
-                            files_loading_since,
-                            files_error,
                             ..
                         } if slot.hash == hash => {
                             *slot = detail;
-                            *current_files = files;
-                            *files_loading_since = None;
-                            *files_error = None;
+                            let verification = current_files.verification.take();
+                            *current_files = CommitFiles {
+                                verification,
+                                ..CommitFiles::ready(files)
+                            };
                         },
                         _ => {
                             tab.kind = TabKind::Commit {
                                 detail,
-                                files,
-                                files_loading_since: None,
-                                files_error: None,
-                                verification: None,
+                                files: CommitFiles::ready(files),
                                 explain_since: None,
                                 view: CommitViewState::default(),
                             };
@@ -461,62 +419,10 @@ impl App {
             return;
         }
         if let Some(request) =
-            self.send_command_id(SessionCommand::FetchCommitVerification { hash: hash.clone() })
+            self.send(SessionCommand::FetchCommitVerification { hash: hash.clone() })
         {
             self.pending_commit_verification
                 .insert(request, (view, hash));
-        }
-    }
-
-    /// Hand neutral commit changes to the app-local preparation worker. The originating
-    /// request remains view-owned until the prepared result is adopted or cancelled.
-    pub(super) fn prepare_commit_result(
-        &mut self,
-        request: RequestId,
-        destination: CommitDest,
-        detail: Box<CommitDetail>,
-        changes: Vec<FileChange>,
-    ) {
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let job = prepare::PrepareJob {
-            request,
-            changes,
-            syntax: self.syntax,
-            theme: self.theme.clone(),
-            cancelled: cancelled.clone(),
-        };
-        self.pending_commit_preparation.insert(
-            request,
-            PendingCommitPreparation {
-                destination,
-                detail,
-                cancelled,
-            },
-        );
-        if self.prepare_tx.send(job).is_err() {
-            self.pending_commit_preparation.remove(&request);
-            self.status = Some("commit diff preparation worker is unavailable".to_owned());
-        }
-    }
-
-    /// Adopt one completed preparation only while its exact request and view remain live.
-    pub(super) fn on_prepare_result(&mut self, result: prepare::PrepareResult) {
-        let Some(pending) = self.pending_commit_preparation.remove(&result.request) else {
-            return;
-        };
-        if pending.cancelled.load(std::sync::atomic::Ordering::Acquire) {
-            return;
-        }
-        match pending.destination {
-            CommitDest::Browser { view, hash }
-                if pending.detail.hash == hash && self.all_tabs().any(|tab| tab.view == view) =>
-            {
-                self.fill_graph_detail(view, pending.detail, result.files);
-            },
-            CommitDest::Browser { .. } => {},
-            CommitDest::Tab { view } => {
-                self.fill_commit_tab(view, pending.detail, result.files);
-            },
         }
     }
 
@@ -536,13 +442,9 @@ impl App {
                         TabKind::CommitLoading { error, .. } => {
                             *error = Some(message.to_string());
                         },
-                        TabKind::Commit {
-                            files_loading_since,
-                            files_error,
-                            ..
-                        } => {
-                            *files_loading_since = None;
-                            *files_error = Some(message.to_string());
+                        TabKind::Commit { files, .. } => {
+                            files.loading_since = None;
+                            files.error = Some(message.to_string());
                         },
                         _ => {},
                     }
@@ -556,8 +458,7 @@ impl App {
                         selected,
                         detail,
                         detail_loading_since,
-                        files_loading_since,
-                        files_error,
+                        files,
                         ..
                     } = &mut tab.kind
                     {
@@ -566,8 +467,8 @@ impl App {
                             continue;
                         }
                         if detail.as_ref().is_some_and(|d| d.hash == hash) {
-                            *files_loading_since = None;
-                            *files_error = Some(message.to_string());
+                            files.loading_since = None;
+                            files.error = Some(message.to_string());
                         } else {
                             *detail_loading_since = None;
                         }
@@ -584,15 +485,12 @@ impl App {
         base_label: String,
         head_label: String,
         merge_base: bool,
-        changes: Vec<FileChange>,
+        changes: Vec<PreparedChange>,
     ) {
         if changes.is_empty() {
             self.status = Some(format!("no changes between {base_label} and {head_label}"));
         }
-        let files = changes
-            .into_iter()
-            .map(|c| FileView::new(c, Section::Staged, self.syntax))
-            .collect();
+        let files = CommitFiles::ready(commit_file_views(changes));
         self.push_tab(Tab::compare(base_label, head_label, merge_base, files));
     }
 
@@ -601,18 +499,21 @@ impl App {
     pub(super) fn apply_commit_verification(&mut self, hash: &str, status: GithubVerification) {
         for tab in self.all_tabs_mut() {
             match &mut tab.kind {
-                TabKind::Commit {
-                    detail,
-                    verification,
-                    ..
-                } if detail.hash == hash => *verification = Some(status.clone()),
+                TabKind::Commit { detail, files, .. } if detail.hash == hash => {
+                    files.verification = Some(status.clone());
+                },
                 TabKind::CommitGraph {
                     detail: Some(detail),
-                    verification,
+                    files,
                     ..
-                } if detail.hash == hash => *verification = Some(status.clone()),
+                } if detail.hash == hash => files.verification = Some(status.clone()),
                 _ => {},
             }
         }
     }
+}
+
+/// Wrap backend-prepared commit/range changes for display.
+fn commit_file_views(changes: Vec<PreparedChange>) -> Vec<FileView> {
+    changes.into_iter().map(FileView::new).collect()
 }

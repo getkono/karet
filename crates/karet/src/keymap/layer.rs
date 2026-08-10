@@ -220,7 +220,9 @@ impl Context {
         }
     }
 
-    /// A modal context over `target`.
+    /// A modal context over `target` (test construction helper; production code
+    /// derives contexts from live app state).
+    #[cfg(test)]
     #[must_use]
     pub fn modal(modal: Modal, target: FocusTarget) -> Self {
         Self {

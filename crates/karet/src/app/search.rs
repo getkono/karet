@@ -347,28 +347,16 @@ impl App {
         edit.set_cursor(text, text.len(), false);
     }
 
-    /// Apply the replacement across every match in the workspace, then refresh the
-    /// results. Open buffers pick up the change through the file watcher.
+    /// Ask the backend to apply the replacement across every workspace match;
+    /// [`SessionEvent::SearchReplaced`] answers with the summary and triggers the
+    /// refresh. Open buffers pick up the change through the file watcher.
     pub(super) fn search_replace_all(&mut self) {
         if self.search.query.is_empty() {
             return;
         }
         let query = self.build_search_query();
         let replacement = self.search.replace.clone();
-        let summary = WorkspaceSearch::new()
-            .replace(&self.root, &query, &replacement)
-            .unwrap_or_default();
-        self.notify(
-            Severity::Information,
-            NotificationKind::System,
-            format!(
-                "replaced {} occurrence(s) in {} file(s)",
-                summary.replacements, summary.files_changed
-            ),
-        );
-        // Re-run the search so the (now empty, unless the replacement re-matches)
-        // results reflect the edited files.
-        self.run_global_search();
+        self.send_command(SessionCommand::SearchReplaceAll { query, replacement });
         self.search.input = false;
     }
 
@@ -398,22 +386,30 @@ impl App {
         self.rerun_search();
     }
 
-    /// Run the workspace search for the current query, collecting up to the cap.
+    /// Ask the backend for the workspace search results (the walk runs on the
+    /// backend's search worker, never this thread); [`SessionEvent::SearchResults`]
+    /// answers and fills the panel. A newer query supersedes an unstarted one.
     pub(super) fn run_global_search(&mut self) {
         self.search.results.clear();
-        self.search.selected = 0;
+        self.search.selection.set_len(0);
         if self.search.query.is_empty() {
             self.refresh_search_decorations();
             return;
         }
         let query = self.build_search_query();
-        let mut results = Vec::new();
-        let _ = WorkspaceSearch::new().run(&self.root, &query, |hit| {
-            if results.len() < SEARCH_RESULT_CAP {
-                results.push(hit);
-            }
+        self.send_command(SessionCommand::Search {
+            query,
+            limit: SEARCH_RESULT_CAP,
         });
-        self.search.results = results;
+        self.refresh_search_decorations();
+    }
+
+    /// Adopt the backend's workspace search results into the panel.
+    pub(super) fn apply_search_results(&mut self, hits: Vec<karet_search::FileHit>) {
+        self.search.results = hits;
+        // set_len clamps the cursor into the fresh result list.
+        let len = self.search.results.len();
+        self.search.selection.set_len(len);
         self.refresh_search_decorations();
     }
 
@@ -460,16 +456,12 @@ impl App {
 
     /// Move the selection within the search results.
     pub(super) fn search_select(&mut self, delta: i32) {
-        let len = self.search.results.len();
-        if len > 0 {
-            let next = (self.search.selected as i64 + i64::from(delta)).clamp(0, len as i64 - 1);
-            self.search.selected = next as usize;
-        }
+        self.search.selection.move_by(delta);
     }
 
     /// Open the selected result, scrolling to its first match.
     pub(super) fn open_selected_result(&mut self) {
-        let Some(hit) = self.search.results.get(self.search.selected) else {
+        let Some(hit) = self.search.results.get(self.search.selection.cursor()) else {
             return;
         };
         let path = hit.path.clone();

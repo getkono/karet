@@ -4,6 +4,7 @@
 //! [`EditorState`] used by code tabs for scroll/cursor. Diff and hex tabs keep
 //! their own scroll inside the kind.
 
+mod language_servers;
 mod view_state;
 
 use std::collections::BTreeSet;
@@ -22,21 +23,24 @@ use karet_markdown::WrappedDocument;
 use karet_pdf::Document as PdfDocument;
 use karet_search::SearchQuery;
 use karet_session::DocumentId;
-use karet_session::LanguageServerChange;
-use karet_session::LanguageServerId;
-use karet_session::LanguageServerPlanId;
-use karet_session::LanguageServerStatus;
 use karet_session::LoadedConfig;
 use karet_session::ViewId;
 use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
 use karet_syntax::SemanticBlocks;
 use karet_text::TextBuffer;
+pub(crate) use language_servers::LanguageServerAction;
+pub(crate) use language_servers::LanguageServerActionHit;
+pub(crate) use language_servers::LanguageServerPending;
+pub(crate) use language_servers::LanguageServerPendingKind;
+pub(crate) use language_servers::LanguageServersViewState;
 use ratatui::layout::Rect;
 pub(crate) use view_state::MarkdownPreviewState;
 pub use view_state::ViewMode;
 
+use crate::app::Pending;
 use crate::render::FileView;
+use crate::render::Section;
 
 mod commit;
 mod merge_conflict;
@@ -94,141 +98,56 @@ pub(crate) enum SearchField {
     Replace,
 }
 
-/// A clickable operation in the language-server manager's action strip.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LanguageServerAction {
-    Refresh,
-    CheckAll,
-    Primary,
-    Restart,
-    Uninstall,
-    Filter,
+/// Two-axis scroll state shared by every read-only pager tab (diff, stash
+/// patch, graph, settings inspector, loading commit).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PagerState {
+    /// Vertical scroll offset (display rows).
+    pub scroll: u16,
+    /// Horizontal scroll offset (display columns).
+    pub column: u16,
 }
 
-/// One in-flight registry operation shown by the language-server manager.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LanguageServerPendingKind {
-    CheckSelected,
-    CheckAll,
-    Install,
-    Update,
-    Uninstall,
+/// The lazily-loaded changed-file block shared by the commit-family views
+/// (standalone commit tab, compare tab, and the graph browser's detail pane):
+/// the prepared per-file diffs plus their delayed-loading/error state and the
+/// forge's lazily-fetched signature verdict.
+#[derive(Default)]
+pub struct CommitFiles {
+    /// Each changed file, diffed and highlighted for display.
+    pub files: Vec<FileView>,
+    /// The in-flight changed-file extraction, if metadata is visible but the
+    /// files are not yet.
+    pub loading_since: Option<Pending>,
+    /// A load error for the changed-file block, when metadata resolved but the
+    /// diffs did not.
+    pub error: Option<String>,
+    /// The forge's "Verified" verdict, once fetched (lazily, over the network).
+    pub verification: Option<karet_session::GithubVerification>,
 }
 
-/// Request correlation and presentation state for a registry operation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct LanguageServerPending {
-    pub(crate) request: karet_session::RequestId,
-    pub(crate) server: Option<LanguageServerId>,
-    pub(crate) kind: LanguageServerPendingKind,
-    pub(crate) downloaded: Option<u64>,
-    pub(crate) total: Option<u64>,
-}
-
-/// A clickable manager action from the most recently rendered frame.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct LanguageServerActionHit {
-    pub(crate) rect: Rect,
-    pub(crate) action: LanguageServerAction,
-    pub(crate) server: Option<LanguageServerId>,
-}
-
-/// View-local inventory, selection, update-plan, and hit-testing state.
-pub(crate) struct LanguageServersViewState {
-    pub(crate) servers: Vec<LanguageServerStatus>,
-    pub(crate) selected: usize,
-    pub(crate) offset: usize,
-    pub(crate) filter: String,
-    pub(crate) loading_since: Option<Instant>,
-    pub(crate) inventory_request: Option<karet_session::RequestId>,
-    pub(crate) pending: Vec<LanguageServerPending>,
-    pub(crate) plan: Option<LanguageServerPlanId>,
-    pub(crate) changes: Vec<LanguageServerChange>,
-    pub(crate) error: Option<String>,
-    pub(crate) table_rect: Rect,
-    pub(crate) action_hits: Vec<LanguageServerActionHit>,
-    pub(crate) row_hits: Vec<(Rect, LanguageServerId)>,
-    pub(crate) action_hover: Option<(u16, u16)>,
-}
-
-impl LanguageServersViewState {
+impl CommitFiles {
+    /// A fully loaded block.
     #[must_use]
-    pub(crate) fn loading(inventory_request: Option<karet_session::RequestId>) -> Self {
+    pub fn ready(files: Vec<FileView>) -> Self {
         Self {
-            servers: Vec::new(),
-            selected: 0,
-            offset: 0,
-            filter: String::new(),
-            loading_since: Some(Instant::now()),
-            inventory_request,
-            pending: Vec::new(),
-            plan: None,
-            changes: Vec::new(),
-            error: None,
-            table_rect: Rect::default(),
-            action_hits: Vec::new(),
-            row_hits: Vec::new(),
-            action_hover: None,
+            files,
+            ..Self::default()
         }
     }
 
+    /// An empty block whose extraction is in flight.
     #[must_use]
-    pub(crate) fn visible_indices(&self) -> Vec<usize> {
-        let query = self.filter.trim().to_lowercase();
-        self.servers
-            .iter()
-            .enumerate()
-            .filter_map(|(index, status)| {
-                (query.is_empty()
-                    || status.server.display_name().to_lowercase().contains(&query)
-                    || status
-                        .languages
-                        .iter()
-                        .any(|language| language.to_lowercase().contains(&query)))
-                .then_some(index)
-            })
-            .collect()
-    }
-
-    #[must_use]
-    pub(crate) fn selected_server(&self) -> Option<&LanguageServerStatus> {
-        let index = self.visible_indices().get(self.selected).copied()?;
-        self.servers.get(index)
-    }
-
-    #[must_use]
-    pub(crate) fn selected_id(&self) -> Option<LanguageServerId> {
-        self.selected_server().map(|status| status.server.clone())
-    }
-
-    pub(crate) fn select_relative(&mut self, delta: i32) {
-        let count = self.visible_indices().len();
-        if count == 0 {
-            self.selected = 0;
-            self.offset = 0;
-            return;
+    pub fn loading() -> Self {
+        Self {
+            loading_since: Some(Pending::start()),
+            ..Self::default()
         }
-        self.selected =
-            (self.selected as i64 + i64::from(delta)).clamp(0, (count - 1) as i64) as usize;
     }
 
-    pub(crate) fn set_servers(&mut self, mut servers: Vec<LanguageServerStatus>) {
-        let selected = self.selected_id();
-        servers.sort_by_key(|status| status.server.display_name().to_lowercase());
-        self.servers = servers;
-        self.selected = selected
-            .and_then(|server| {
-                self.visible_indices().iter().position(|&index| {
-                    self.servers
-                        .get(index)
-                        .is_some_and(|status| status.server == server)
-                })
-            })
-            .unwrap_or(0);
-        self.offset = self.offset.min(self.selected);
-        self.loading_since = None;
-        self.inventory_request = None;
-        self.error = None;
+    /// Reset to an in-flight state (a reselection cleared the shown files).
+    pub fn reset_loading(&mut self) {
+        *self = Self::loading();
     }
 }
 
@@ -290,6 +209,9 @@ pub enum TabKind {
         /// The `(document version, wrap width)` `wrapped` was built at, or `None` when it
         /// has never been built. A change in either rebuilds it on the next draw.
         rendered: Option<(u64, u16)>,
+        /// The backend conversion producing this preview's markdown
+        /// (a reserved DOCX preview), or `None` for an ordinary source preview.
+        pending_since: Option<Pending>,
         /// The first visible wrapped line.
         scroll: u16,
     },
@@ -344,32 +266,37 @@ pub enum TabKind {
     LatexPreview {
         /// Editable TeX source that initiated the build.
         source: PathBuf,
-        /// Start time used by the shared delayed-loading policy.
-        loading_since: Instant,
+        /// The in-flight build, driving the shared delayed-loading policy.
+        loading_since: Pending,
         /// Compiler/startup failure, when the preview could not be produced.
         error: Option<String>,
     },
-    /// A single-file diff (opened from the Source Control panel).
+    /// A single-file diff (opened from the Source Control panel). The tab is
+    /// reserved immediately with its identity; the prepared diff fills in when
+    /// the backend answers (the shared delayed-loading policy hides the gap on
+    /// fast paths).
     Diff {
-        /// The prepared file diff.
-        file: Box<FileView>,
+        /// The diffed file's path (the tab's identity while the diff loads).
+        path: PathBuf,
+        /// The Source-Control group the diff belongs to.
+        section: Section,
+        /// The prepared file diff, once the backend has answered.
+        file: Option<Box<FileView>>,
+        /// The in-flight preparation request, if any.
+        loading_since: Option<Pending>,
+        /// A load error, when the diff could not be prepared.
+        error: Option<String>,
         /// The current layout.
         view: ViewMode,
-        /// Vertical scroll offset (display rows).
-        scroll: u16,
-        /// Horizontal scroll offset (display columns).
-        column: u16,
+        /// Two-axis scroll state.
+        pager: PagerState,
     },
     /// A read-only stash patch preview.
     StashPreview {
-        /// Stable stash selector.
-        reference: String,
         /// Unified patch and stat output.
         patch: String,
-        /// Vertical scroll offset.
-        scroll: u16,
-        /// Horizontal scroll offset.
-        column: u16,
+        /// Two-axis scroll state.
+        pager: PagerState,
     },
     /// A read-only code-visualization graph (dependency or usage), rendered as an
     /// indented tree.
@@ -378,48 +305,36 @@ pub enum TabKind {
         title: String,
         /// The neutral graph to render.
         view: karet_core::GraphView,
-        /// Vertical scroll offset (display rows).
-        scroll: u16,
-        /// Horizontal scroll offset (display columns).
-        column: u16,
+        /// Two-axis scroll state.
+        pager: PagerState,
     },
     /// A read-only view of the loaded settings and their provenance.
     LoadedConfig {
         /// The loaded configuration report.
         report: LoadedConfig,
-        /// Vertical scroll offset (display rows).
-        scroll: u16,
-        /// Horizontal scroll offset (display columns).
-        column: u16,
+        /// Two-axis scroll state.
+        pager: PagerState,
     },
     /// A read-only, GitHub-parity commit view: the message, author/committer, parents,
     /// signature badge, changed-file list, and per-file semantic diffs.
     CommitLoading {
         /// The revision/hash being resolved.
         rev: String,
-        /// When the detail request began; drives the delayed loading placeholder.
-        loading_since: Instant,
+        /// The in-flight detail request; drives the delayed loading placeholder.
+        loading_since: Pending,
         /// A load error for the revision, when metadata could not be resolved.
         error: Option<String>,
-        /// Vertical scroll offset (reserved so the loading tab stays in the pager layer).
-        scroll: u16,
-        /// Horizontal scroll offset for a long error message.
-        column: u16,
+        /// Two-axis scroll state (reserved so the loading tab stays in the pager
+        /// layer even while empty).
+        pager: PagerState,
     },
     /// A read-only, GitHub-parity commit view: the message, author/committer, parents,
     /// signature badge, changed-file list, and per-file semantic diffs.
     Commit {
         /// The commit metadata (message, author/committer, parents, signature).
         detail: Box<karet_vcs::CommitDetail>,
-        /// Each changed file (vs the first parent), diffed and highlighted for display.
-        files: Vec<FileView>,
-        /// When changed-file extraction began, if metadata is visible but files are not.
-        files_loading_since: Option<Instant>,
-        /// A load error for the changed-file block, when metadata resolved but diffs did
-        /// not.
-        files_error: Option<String>,
-        /// The forge's "Verified" verdict, once fetched (lazily, over the network).
-        verification: Option<karet_session::GithubVerification>,
+        /// The changed files (vs the first parent) and their load state.
+        files: CommitFiles,
         /// When the signature badge was last double-clicked, if its explanatory
         /// tooltip is being revealed. The reveal auto-hides a few seconds later.
         explain_since: Option<Instant>,
@@ -437,8 +352,8 @@ pub enum TabKind {
         /// Whether the diff was taken from the merge base (three-dot, `base...head`)
         /// rather than the two tips (two-dot, `base..head`).
         merge_base: bool,
-        /// Each changed file between the two points, diffed and highlighted for display.
-        files: Vec<FileView>,
+        /// The changed files between the two points and their load state.
+        files: CommitFiles,
         /// Responsive scrolling, anchor, and file-rail state.
         view: CommitViewState,
     },
@@ -454,23 +369,16 @@ pub enum TabKind {
         has_more: bool,
         /// Whether a history page is currently in flight.
         loading: bool,
-        /// When the history-page request began, if one is in flight.
-        loading_since: Option<Instant>,
+        /// The in-flight history-page request, if any.
+        loading_since: Option<Pending>,
         /// The selected commit's index into `commits`.
         selected: usize,
-        /// When the selected commit's detail request began, if one is in flight.
-        detail_loading_since: Option<Instant>,
+        /// The selected commit's in-flight detail request, if any.
+        detail_loading_since: Option<Pending>,
         /// The selected commit's loaded detail, if the fetch has answered.
         detail: Option<Box<karet_vcs::CommitDetail>>,
-        /// The selected commit's changed files, diffed for the detail pane.
-        files: Vec<FileView>,
-        /// When changed-file extraction began, if metadata is visible but files are not.
-        files_loading_since: Option<Instant>,
-        /// A load error for the changed-file block, when metadata resolved but diffs did
-        /// not.
-        files_error: Option<String>,
-        /// The forge's verdict for the selected commit, once fetched.
-        verification: Option<karet_session::GithubVerification>,
+        /// The selected commit's changed files and their load state.
+        files: CommitFiles,
         /// A commit hash marked as the base for a two-commit comparison, if any. Set by
         /// "mark base"; the next "compare" diffs it against the current selection.
         compare_base: Option<String>,
@@ -578,15 +486,10 @@ impl Tab {
 
     /// A lazily loaded issue detail tab.
     #[must_use]
-    pub(crate) fn github_issue(
-        repository: karet_session::GithubRepository,
-        number: u64,
-        pending: Option<karet_session::RequestId>,
-    ) -> Self {
+    pub(crate) fn github_issue(number: u64, pending: Option<karet_session::RequestId>) -> Self {
         Self::new(
             format!("Issue #{number}"),
             TabKind::Github(crate::app::github::GithubViewState::Issue {
-                repository,
                 number,
                 issue: None,
                 comments: karet_session::GithubPage {
@@ -596,7 +499,7 @@ impl Tab {
                     total_count: None,
                 },
                 pending,
-                loading_since: Instant::now(),
+                loading_since: Pending::start(),
                 error: None,
                 scroll: 0,
             }),
@@ -606,7 +509,6 @@ impl Tab {
     /// A pull-request detail tab seeded from its search result.
     #[must_use]
     pub(crate) fn github_pull_request(
-        repository: karet_session::GithubRepository,
         pull_request: karet_session::GithubPullRequest,
         can_write: bool,
         pending: Option<karet_session::RequestId>,
@@ -615,7 +517,6 @@ impl Tab {
             format!("Pull Request #{}", pull_request.number),
             TabKind::Github(crate::app::github::GithubViewState::PullRequest(
                 crate::app::github::GithubPullRequestView {
-                    repository,
                     pull_request,
                     comments: karet_session::GithubPage {
                         items: Vec::new(),
@@ -630,7 +531,7 @@ impl Tab {
                     can_write,
                     section: crate::app::github::GithubPullRequestSection::Conversation,
                     pending,
-                    loading_since: Instant::now(),
+                    loading_since: Pending::start(),
                     error: None,
                     scroll: 0,
                     commit_cursor: 0,
@@ -698,8 +599,9 @@ impl Tab {
     }
 
     /// A rendered, read-only Markdown view of a converted document (e.g. a Word
-    /// `.docx`) with no editable source tab or session document behind it.
-    #[cfg(feature = "docx")]
+    /// `.docx`) with no editable source tab or session document behind it. The
+    /// conversion itself happens in the backend, so this is plain tab plumbing
+    /// (compiled regardless of the `docx` feature).
     #[must_use]
     pub fn document_preview(path: PathBuf, markdown: &str) -> Self {
         let title = path
@@ -713,9 +615,21 @@ impl Tab {
                 buffer: TextBuffer::from_text(markdown),
                 wrapped: WrappedDocument::default(),
                 rendered: None,
+                pending_since: None,
                 scroll: 0,
             },
         )
+    }
+
+    /// A standalone markdown preview reserved while the backend converts the
+    /// document (DOCX) to markdown; [`Self::document_preview`]'s loading state.
+    #[must_use]
+    pub fn document_converting(path: PathBuf) -> Self {
+        let mut tab = Self::document_preview(path, "");
+        if let TabKind::MarkdownPreview { pending_since, .. } = &mut tab.kind {
+            *pending_since = Some(Pending::start());
+        }
+        tab
     }
 
     /// A read-only visualization tab rendering `view` as an indented tree.
@@ -727,8 +641,7 @@ impl Tab {
             TabKind::Graph {
                 title,
                 view,
-                scroll: 0,
-                column: 0,
+                pager: PagerState::default(),
             },
         )
     }
@@ -740,38 +653,58 @@ impl Tab {
             "Loaded Settings",
             TabKind::LoadedConfig {
                 report,
-                scroll: 0,
-                column: 0,
+                pager: PagerState::default(),
             },
         )
     }
 
     /// A read-only stash patch preview.
     #[must_use]
-    pub fn stash_preview(reference: String, patch: String) -> Self {
+    pub fn stash_preview(reference: &str, patch: String) -> Self {
         Self::new(
             format!("Stash {reference}"),
             TabKind::StashPreview {
-                reference,
                 patch,
-                scroll: 0,
-                column: 0,
+                pager: PagerState::default(),
+            },
+        )
+    }
+
+    /// A single-file diff tab. With `file` present the diff shows immediately;
+    /// without it the tab is reserved in its loading state (the caller has asked
+    /// the backend to prepare the diff).
+    #[must_use]
+    pub fn diff(
+        title: String,
+        path: PathBuf,
+        section: Section,
+        file: Option<Box<FileView>>,
+        view: ViewMode,
+    ) -> Self {
+        let loading_since = file.is_none().then(Pending::start);
+        Self::new(
+            title,
+            TabKind::Diff {
+                path,
+                section,
+                file,
+                loading_since,
+                error: None,
+                view,
+                pager: PagerState::default(),
             },
         )
     }
 
     /// A read-only commit view for `detail` and its changed `files`.
     #[must_use]
-    pub fn commit(detail: Box<karet_vcs::CommitDetail>, files: Vec<FileView>) -> Self {
+    pub fn commit(detail: Box<karet_vcs::CommitDetail>, files: CommitFiles) -> Self {
         let title = commit_title(&detail.short_hash);
         Self::new(
             title,
             TabKind::Commit {
                 detail,
                 files,
-                files_loading_since: None,
-                files_error: None,
-                verification: None,
                 explain_since: None,
                 view: CommitViewState::default(),
             },
@@ -787,10 +720,9 @@ impl Tab {
             title,
             TabKind::CommitLoading {
                 rev,
-                loading_since: Instant::now(),
+                loading_since: Pending::start(),
                 error: None,
-                scroll: 0,
-                column: 0,
+                pager: PagerState::default(),
             },
         )
     }
@@ -806,7 +738,7 @@ impl Tab {
             title,
             TabKind::LatexPreview {
                 source,
-                loading_since: Instant::now(),
+                loading_since: Pending::start(),
                 error: None,
             },
         )
@@ -823,14 +755,11 @@ impl Tab {
                 commits: Vec::new(),
                 has_more: false,
                 loading: true,
-                loading_since: Some(Instant::now()),
+                loading_since: Some(Pending::start()),
                 selected: 0,
                 detail_loading_since: None,
                 detail: None,
-                files: Vec::new(),
-                files_loading_since: None,
-                files_error: None,
-                verification: None,
+                files: CommitFiles::default(),
                 compare_base: None,
                 list_offset: 0,
                 detail_column: 0,
@@ -844,7 +773,7 @@ impl Tab {
         base_label: String,
         head_label: String,
         merge_base: bool,
-        files: Vec<FileView>,
+        files: CommitFiles,
     ) -> Self {
         let sep = if merge_base { "\u{2026}" } else { ".." };
         let title = format!("\u{21c4} {base_label}{sep}{head_label}");
@@ -872,7 +801,7 @@ impl Tab {
             TabKind::Image { path, .. } => Some(path),
             #[cfg(feature = "pdf")]
             TabKind::Document { path, .. } => Some(path),
-            TabKind::Diff { file, .. } => Some(&file.change.path),
+            TabKind::Diff { path, .. } => Some(path),
             TabKind::Welcome
             | TabKind::LanguageServers(_)
             | TabKind::Github(_)
@@ -912,7 +841,7 @@ impl Tab {
             TabKind::Hex { .. } => "binary",
             TabKind::Placeholder { .. } => "preview",
             TabKind::LatexPreview { .. } => "latex preview",
-            TabKind::Diff { file, .. } => file.language,
+            TabKind::Diff { file, .. } => file.as_deref().map_or("diff", FileView::language),
             TabKind::StashPreview { .. } => "stash",
             TabKind::Graph { .. } => "graph",
             TabKind::LoadedConfig { .. } => "settings",
@@ -953,7 +882,7 @@ fn tab_kind_path(kind: &TabKind) -> Option<&Path> {
         TabKind::Image { path, .. } => Some(path),
         #[cfg(feature = "pdf")]
         TabKind::Document { path, .. } => Some(path),
-        TabKind::Diff { file, .. } => Some(&file.change.path),
+        TabKind::Diff { path, .. } => Some(path),
         TabKind::Welcome
         | TabKind::LanguageServers(_)
         | TabKind::Github(_)
@@ -1047,7 +976,7 @@ mod tests {
             signature: None,
         };
 
-        let loaded = Tab::commit(Box::new(detail), Vec::new());
+        let loaded = Tab::commit(Box::new(detail), CommitFiles::default());
         let loading = Tab::commit_loading("bbbbbbb111");
 
         assert_eq!(loaded.title, "Commit aaaaaaa");

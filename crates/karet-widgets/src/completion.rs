@@ -173,7 +173,7 @@ impl<'a> CompletionPopup<'a> {
 /// The glyph and color marking a completion kind, VS Code-style: a single
 /// lowercase letter colored like the token the item would become.
 #[must_use]
-pub fn kind_glyph(kind: CompletionKind) -> (char, Option<TokenId>) {
+fn kind_glyph(kind: CompletionKind) -> (char, Option<TokenId>) {
     match kind {
         CompletionKind::Method => ('m', Some(TokenId::FUNCTION)),
         CompletionKind::Function => ('f', Some(TokenId::FUNCTION)),
@@ -196,25 +196,7 @@ pub fn kind_glyph(kind: CompletionKind) -> (char, Option<TokenId>) {
 /// Fit `text` into `width` columns; when it does not fit, truncate and end
 /// with `…` so the cut is visible.
 fn truncate_to(text: &str, width: u16) -> String {
-    let width = usize::from(width);
-    if text.width() <= width {
-        return text.to_owned();
-    }
-    if width == 0 {
-        return String::new();
-    }
-    let mut out = String::new();
-    let mut used = 0;
-    for ch in text.chars() {
-        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + w > width.saturating_sub(1) {
-            break;
-        }
-        out.push(ch);
-        used += w;
-    }
-    out.push('…');
-    out
+    crate::text::fit_end(text, usize::from(width))
 }
 
 impl StatefulWidget for CompletionPopup<'_> {
@@ -301,6 +283,27 @@ impl StatefulWidget for CompletionPopup<'_> {
             }
         }
     }
+}
+
+/// The span an accept replaces: from the popup's `anchor` to the current
+/// `caret` (the typed prefix). `None` when the caret has wandered somewhere an
+/// accept no longer makes sense (another line, or before the anchor).
+#[must_use]
+pub fn accept_range(
+    anchor: karet_core::LineCol,
+    caret: karet_core::LineCol,
+) -> Option<karet_core::Range> {
+    caret_still_anchored(anchor, caret).then_some(karet_core::Range {
+        start: anchor,
+        end: caret,
+    })
+}
+
+/// Whether the popup (or its pending request) is still valid for `caret` —
+/// the same line as the anchor and not before it. Any other movement dismisses.
+#[must_use]
+pub fn caret_still_anchored(anchor: karet_core::LineCol, caret: karet_core::LineCol) -> bool {
+    caret.line == anchor.line && caret.col >= anchor.col
 }
 
 #[cfg(test)]

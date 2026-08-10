@@ -255,8 +255,12 @@ pub(crate) struct GrammarInfo {
     /// The grammar's stable identifier.
     pub id: LanguageId,
     /// A human-readable display name (e.g. `"Rust"`).
+    #[cfg_attr(not(test), allow(dead_code))] // consistency-test reference data
     pub name: &'static str,
-    /// File extensions (lowercase, without the dot) handled by this grammar.
+    /// File extensions this grammar expects `karet-filetype` to route to it.
+    /// Reference data for the cross-registry consistency test ONLY: runtime
+    /// path→language routing goes exclusively through `karet-filetype`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub extensions: &'static [&'static str],
     /// Lowercase names by which an injection query — or a markdown code-fence info
     /// string — may refer to this grammar (e.g. `rust`, `rs`). Distinct from
@@ -635,7 +639,10 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             id: BASH,
             name: "Bash",
             extensions: &["sh", "bash"],
-            names: &["bash", "sh", "shell", "zsh", "console"],
+            // NOTE: no "zsh" here — the Zsh grammar owns that name; a name must
+            // belong to exactly one grammar or resolution depends on table order
+            // (the consistency test in detect.rs enforces uniqueness).
+            names: &["bash", "sh", "shell", "console"],
             language: || tree_sitter_bash::LANGUAGE.into(),
             highlights: tree_sitter_bash::HIGHLIGHT_QUERY, // singular
             injections: None,

@@ -1,20 +1,8 @@
 //! `karet-fuzzy` — fuzzy matching and ranking for the karet toolkit.
 //!
-//! Standalone (depends on no other karet crate). Wraps `nucleo` with frecency
-//! scoring and quick-open query parsing, shared by the widgets toolkit and
-//! completion ranking so neither has to depend on the other.
-//!
-//! [`Matcher::rank`] is live (nucleo-backed subsequence matching with smart
-//! case); the frecency store is still a skeleton and is filled in separately.
-
-/// Errors produced by the matcher.
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum FuzzyError {
-    /// The pattern could not be parsed.
-    #[error("invalid pattern")]
-    InvalidPattern,
-}
+//! Standalone (depends on no other karet crate). Wraps `nucleo`'s subsequence
+//! matching with smart case, shared by the widgets toolkit and completion
+//! ranking so neither has to depend on the other.
 
 /// A ranked item: a reference to the source item, its score, and the indices of
 /// the matched characters (for highlighting).
@@ -94,78 +82,38 @@ impl Matcher {
         scored.sort_by_key(|s| std::cmp::Reverse(s.score)); // stable: ties keep order
         scored
     }
-}
 
-/// A frequency + recency ("frecency") ranking store keyed by string.
-#[derive(Default)]
-pub struct FrecencyStore {}
-
-impl FrecencyStore {
-    /// Create an empty store.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Record a use of `key`, increasing its future boost.
-    pub fn record(&mut self, key: &str) {
-        let _ = key;
-        todo!()
-    }
-
-    /// The current frecency boost for `key` (0 if never seen).
-    #[must_use]
-    pub fn boost(&self, key: &str) -> u32 {
-        let _ = key;
-        todo!()
-    }
-}
-
-/// The kind of a parsed quick-open query.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum QuickOpenKind {
-    /// A file-path query (the default).
-    Path,
-    /// An `@`-prefixed symbol query.
-    Symbol,
-    /// A `:`-prefixed line-number query.
-    Line,
-    /// A `>`-prefixed command query.
-    Command,
-}
-
-/// Parse a quick-open query into its [`QuickOpenKind`] and the remaining term.
-///
-/// `@` selects symbols, `:` a line, `>` a command; anything else is a path.
-#[must_use]
-pub fn parse_query(input: &str) -> (QuickOpenKind, &str) {
-    match input.as_bytes().first() {
-        Some(b'@') => (QuickOpenKind::Symbol, &input[1..]),
-        Some(b':') => (QuickOpenKind::Line, &input[1..]),
-        Some(b'>') => (QuickOpenKind::Command, &input[1..]),
-        _ => (QuickOpenKind::Path, input),
+    /// Rank `items` against `pattern` and return the **original indices** of the
+    /// matches, best first (ties keep input order). The index-preserving twin of
+    /// [`rank`](Self::rank), for consumers that key rows by position (pickers).
+    /// An empty pattern keeps every index in input order.
+    pub fn rank_indices<T: AsRef<str>>(&mut self, pattern: &str, items: &[T]) -> Vec<usize> {
+        if pattern.is_empty() {
+            return (0..items.len()).collect();
+        }
+        let pattern = nucleo::pattern::Pattern::parse(
+            pattern,
+            nucleo::pattern::CaseMatching::Smart,
+            nucleo::pattern::Normalization::Smart,
+        );
+        let mut haystack_buf = Vec::new();
+        let mut scored: Vec<(usize, u32)> = items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                let haystack = nucleo::Utf32Str::new(item.as_ref(), &mut haystack_buf);
+                let score = pattern.score(haystack, &mut self.inner)?;
+                Some((index, score))
+            })
+            .collect();
+        scored.sort_by_key(|(_, score)| std::cmp::Reverse(*score)); // stable: ties keep order
+        scored.into_iter().map(|(index, _)| index).collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_quick_open_prefixes() {
-        assert_eq!(parse_query("@sym"), (QuickOpenKind::Symbol, "sym"));
-        assert_eq!(parse_query(":42"), (QuickOpenKind::Line, "42"));
-        assert_eq!(parse_query(">cmd"), (QuickOpenKind::Command, "cmd"));
-        assert_eq!(
-            parse_query("src/main.rs"),
-            (QuickOpenKind::Path, "src/main.rs")
-        );
-    }
-
-    #[test]
-    fn error_displays() {
-        assert_eq!(FuzzyError::InvalidPattern.to_string(), "invalid pattern");
-    }
 
     fn labels<'a, T: AsRef<str>>(scored: &[Scored<'a, T>]) -> Vec<&'a str> {
         scored.iter().map(|s| s.item.as_ref()).collect()

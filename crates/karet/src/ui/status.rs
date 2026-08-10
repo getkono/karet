@@ -20,7 +20,8 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     let language = app.tabs.get(app.active).map_or("", Tab::language);
     let language = match app.tabs.get(app.active).and_then(|tab| match &tab.kind {
         TabKind::Code { doc: Some(doc), .. } => app
-            .document_settings
+            .docs
+            .settings
             .get(doc)
             .and_then(|settings| settings.spelling_language),
         _ => None,
@@ -46,9 +47,11 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
         },
         _ => format!(" {language} "),
     };
-    let cols = Layout::horizontal([Constraint::Min(0), Constraint::Length(cell_width(&right))])
-        .split(area);
-    let left = cols[0];
+    let right_width = cell_width(&right);
+    let left = Rect {
+        width: area.width.saturating_sub(right_width),
+        ..area
+    };
 
     // The focus chip, then a gutter, then the responsive hint region.
     let mut spans: Vec<Span<'static>> = Vec::new();
@@ -102,15 +105,16 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
         );
     }
 
-    f.render_widget(Paragraph::new(Line::from(spans)).style(bar), left);
     let right_line = match lsp_badge.zip(lsp_label) {
         Some((badge, label)) => styled_status_right(&right, label, badge, bar, theme),
         None => Line::styled(right, bar),
     };
-    f.render_widget(
-        Paragraph::new(right_line).alignment(Alignment::Right),
-        cols[1],
-    );
+    karet_widgets::status::StatusBar {
+        bar,
+        left: Line::from(spans),
+        right: right_line,
+    }
+    .draw(f, area);
 }
 
 fn language_server_badge_label(badge: LanguageServerBadge) -> &'static str {

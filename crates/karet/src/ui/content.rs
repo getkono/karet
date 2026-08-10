@@ -1,5 +1,4 @@
 use super::*;
-use crate::app::LOADING_REVEAL_DELAY;
 
 /// Draw one pane's active tab into `area`. Returns the rect to reserve for a Kitty
 /// image, if the active tab is an image on a Kitty terminal.
@@ -94,9 +93,9 @@ pub(super) fn draw_pane_content(
                     editor_rect = columns[0];
                     markdown_preview_rect = columns[2];
                     f.render_widget(
-                        Block::default().borders(Borders::LEFT).border_style(
-                            Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui()),
-                        ),
+                        Block::default()
+                            .borders(Borders::LEFT)
+                            .border_style(theme.style(ThemeRole::IndentGuide)),
                         columns[1],
                     );
                 }
@@ -230,55 +229,62 @@ pub(super) fn draw_pane_content(
         },
         TabKind::Diff {
             file,
+            loading_since,
+            error,
             view,
-            scroll,
-            column,
-        } => draw_diff(f, theme, area, file, *view, scroll, column),
-        TabKind::StashPreview {
-            patch,
-            scroll,
-            column,
+            pager,
             ..
-        } => {
+        } => match (file, &*error) {
+            (Some(file), _) => draw_diff(
+                f,
+                theme,
+                area,
+                file,
+                *view,
+                &mut pager.scroll,
+                &mut pager.column,
+            ),
+            (None, Some(error)) => f.render_widget(
+                Paragraph::new(error.as_str()).style(theme.style(ThemeRole::DiagnosticError)),
+                area,
+            ),
+            // The diff is still being prepared: a stable, muted placeholder after
+            // the shared reveal delay; nothing before it (fast paths never flash).
+            (None, None) => {
+                if loading_since.is_some_and(Pending::visible) {
+                    f.render_widget(
+                        Paragraph::new("Loading diff…").style(theme.style(ThemeRole::Muted)),
+                        area,
+                    );
+                }
+            },
+        },
+        TabKind::StashPreview { patch, pager, .. } => {
             let lines: Vec<Line> = patch
                 .lines()
                 .map(|line| Line::raw(line.to_string()))
                 .collect();
-            draw_scrollable_lines(f, theme, area, lines, scroll, column);
+            draw_scrollable_lines(f, theme, area, lines, &mut pager.scroll, &mut pager.column);
         },
-        TabKind::Graph {
+        TabKind::Graph { title, view, pager } => draw_graph(
+            f,
+            theme,
+            area,
             title,
             view,
-            scroll,
-            column,
-        } => draw_graph(f, theme, area, title, view, scroll, column),
-        TabKind::LoadedConfig {
-            report,
-            scroll,
-            column,
-        } => {
-            draw_loaded_config(f, theme, area, report, scroll, column);
+            &mut pager.scroll,
+            &mut pager.column,
+        ),
+        TabKind::LoadedConfig { report, pager } => {
+            draw_loaded_config(f, theme, area, report, &mut pager.scroll, &mut pager.column);
         },
         TabKind::Commit {
             detail,
             files,
-            files_loading_since,
-            files_error,
-            verification,
             explain_since,
             view,
         } => {
-            let painted = draw_commit(
-                f,
-                theme,
-                area,
-                detail,
-                files,
-                file_load_status(*files_loading_since, files_error.as_deref()),
-                verification.as_ref(),
-                *explain_since,
-                view,
-            );
+            let painted = draw_commit(f, theme, area, detail, files, *explain_since, view);
             badge_rect = painted.badge_rect;
             file_hits = painted.file_hits;
             collapse_hits = painted.collapse_hits;
@@ -287,8 +293,7 @@ pub(super) fn draw_pane_content(
             rev,
             loading_since,
             error,
-            scroll,
-            column,
+            pager,
         } => draw_commit_loading(
             f,
             theme,
@@ -296,8 +301,8 @@ pub(super) fn draw_pane_content(
             rev,
             *loading_since,
             error.as_deref(),
-            scroll,
-            column,
+            &mut pager.scroll,
+            &mut pager.column,
         ),
         TabKind::Compare {
             base_label,
@@ -329,9 +334,6 @@ pub(super) fn draw_pane_content(
             detail_loading_since,
             detail,
             files,
-            files_loading_since,
-            files_error,
-            verification,
             compare_base: _,
             list_offset,
             detail_column,
@@ -347,8 +349,6 @@ pub(super) fn draw_pane_content(
             *detail_loading_since,
             detail.as_deref(),
             files,
-            file_load_status(*files_loading_since, files_error.as_deref()),
-            verification.as_ref(),
             list_offset,
             detail_column,
         ),
@@ -426,13 +426,8 @@ pub(super) fn draw_pane_content(
                         Scrollbar::new(ScrollbarOrientation::VerticalRight)
                             .begin_symbol(None)
                             .end_symbol(None)
-                            .track_style(
-                                Style::default()
-                                    .fg(theme.role(ThemeRole::IndentGuide).to_ratatui()),
-                            )
-                            .thumb_style(
-                                Style::default().fg(theme.role(ThemeRole::Foreground).to_ratatui()),
-                            ),
+                            .track_style(theme.style(ThemeRole::IndentGuide))
+                            .thumb_style(theme.style(ThemeRole::Foreground)),
                         track,
                         &mut sb,
                     );
@@ -450,7 +445,7 @@ pub(super) fn draw_pane_content(
                             page_count
                         ))
                         .alignment(Alignment::Center)
-                        .style(Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui())),
+                        .style(theme.style(ThemeRole::LineNumber)),
                         footer,
                     );
                 }
@@ -480,10 +475,9 @@ pub(super) fn draw_pane_content(
             loading_since,
             error,
         } => {
-            let message = error.as_deref().or_else(|| {
-                (loading_since.elapsed() >= LOADING_REVEAL_DELAY)
-                    .then_some("Building LaTeX preview…")
-            });
+            let message = error
+                .as_deref()
+                .or_else(|| loading_since.visible().then_some("Building LaTeX preview…"));
             if let Some(message) = message {
                 let detail = source.file_name().map_or_else(
                     || source.display().to_string(),
@@ -492,7 +486,7 @@ pub(super) fn draw_pane_content(
                 f.render_widget(
                     Paragraph::new(format!("{message}\n{detail}"))
                         .alignment(Alignment::Center)
-                        .style(Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui())),
+                        .style(theme.style(ThemeRole::Muted)),
                     area,
                 );
             }
@@ -543,11 +537,9 @@ fn draw_merge_conflict(
         Constraint::Min(0),
     ])
     .split(rows[0]);
-    let muted = Style::default()
-        .fg(theme.role(ThemeRole::Muted).to_ratatui())
-        .add_modifier(Modifier::BOLD);
-    let active = Style::default()
-        .fg(theme.role(ThemeRole::Foreground).to_ratatui())
+    let muted = theme.style(ThemeRole::Muted).add_modifier(Modifier::BOLD);
+    let active = theme
+        .style(ThemeRole::Foreground)
         .bg(theme.role(ThemeRole::Selection).to_ratatui())
         .add_modifier(Modifier::BOLD);
     f.render_widget(
@@ -562,7 +554,7 @@ fn draw_merge_conflict(
         Paragraph::new(" INCOMING · read-only ").style(muted),
         labels[4],
     );
-    let divider_style = Style::default().fg(theme.role(ThemeRole::IndentGuide).to_ratatui());
+    let divider_style = theme.style(ThemeRole::IndentGuide);
     f.render_widget(
         Block::default()
             .borders(Borders::LEFT)
@@ -625,7 +617,7 @@ fn draw_conflict_side(
     area: Rect,
     buffer: Option<&TextBuffer>,
     editor: &mut EditorState,
-    loading_since: Instant,
+    loading_since: Pending,
     error: Option<&str>,
     word_wrap: bool,
     ctx: &PaneCtx,
@@ -643,14 +635,12 @@ fn draw_conflict_side(
         );
     } else if let Some(error) = error {
         f.render_widget(
-            Paragraph::new(error)
-                .style(Style::default().fg(theme.role(ThemeRole::DiagnosticError).to_ratatui())),
+            Paragraph::new(error).style(theme.style(ThemeRole::DiagnosticError)),
             area,
         );
-    } else if loading_since.elapsed() >= LOADING_REVEAL_DELAY {
+    } else if loading_since.visible() {
         f.render_widget(
-            Paragraph::new("Loading conflict side…")
-                .style(Style::default().fg(theme.role(ThemeRole::Muted).to_ratatui())),
+            Paragraph::new("Loading conflict side…").style(theme.style(ThemeRole::Muted)),
             area,
         );
     }

@@ -60,9 +60,7 @@ use karet_text::TextError;
 use karet_treesitter::LanguageId;
 use karet_treesitter::language_id_from_path;
 use karet_treesitter::language_name_from_path;
-use karet_vcs::FileChange;
 use karet_vcs::Repository;
-use karet_vcs::Selection as VcsSelection;
 use karet_vcs::VcsError;
 use karet_watch::FsEvent;
 use karet_watch::Watcher;
@@ -93,23 +91,15 @@ use crate::lsp::LspUpdate;
 use crate::spell::SpellJob;
 use crate::spell::SpellResult;
 
-/// Errors produced by the backend session.
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum SessionError {
-    /// A command referenced a document that is not open.
-    #[error("unknown document")]
-    UnknownDocument,
-    /// An underlying engine reported an error.
-    #[error("backend error: {0}")]
-    Backend(String),
-}
-
 /// Configuration for a [`Session`].
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SessionConfig {
     /// Workspace root directories.
     pub roots: Vec<PathBuf>,
+    /// Whether prepared diffs include syntax token runs. The client's
+    /// presentation choice (e.g. a `--no-syntax` flag or `NO_COLOR`); defaults
+    /// to `true`.
+    pub diff_syntax: bool,
     /// The loaded, verified settings (see [`crate::config`]). Producers read editing
     /// behaviour (format-on-save, spell-check, …) from here.
     pub settings: crate::config::Settings,
@@ -119,7 +109,7 @@ pub struct SessionConfig {
     /// user data directory ([`crate::backup::default_swap_dir`]); left `None` (as in
     /// tests) the session keeps no backups and never touches the user's data dir.
     pub swap_dir: Option<PathBuf>,
-    /// Executable that can enter [`crate::process_supervisor`] mode.
+    /// Executable that can enter [`karet_supervisor::supervisor`] mode.
     ///
     /// The karet application supplies its own current executable. `None` is the
     /// safe headless/test default: external language servers are not spawned
@@ -130,6 +120,20 @@ pub struct SessionConfig {
     /// A headless embedding may leave this unset to disable built-in providers;
     /// configured custom servers remain available through the process supervisor.
     pub lsp_registry_dir: Option<PathBuf>,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            roots: Vec::new(),
+            diff_syntax: true,
+            settings: crate::config::Settings::default(),
+            loaded_config: crate::config::LoadedConfig::default(),
+            swap_dir: None,
+            process_supervisor: None,
+            lsp_registry_dir: None,
+        }
+    }
 }
 
 impl SessionConfig {
@@ -153,6 +157,7 @@ enum DocFormat {
     Text,
     /// CBOR: the buffer holds diagnostic-notation text; disk holds CBOR bytes.
     /// Decoded on open and re-encoded on save.
+    #[cfg(feature = "cbor")]
     Cbor,
 }
 
@@ -160,6 +165,10 @@ enum DocFormat {
 enum DocumentLoadError {
     #[error("file does not exist")]
     Missing,
+    /// A known binary format whose decode-to-text failed (corrupt CBOR): the
+    /// client should fall back to a read-only byte view, like non-UTF-8 text.
+    #[error("file is not decodable to text")]
+    Undecodable,
     #[error(transparent)]
     Load(#[from] LoadError),
 }
@@ -180,21 +189,24 @@ fn load_document(path: &Path) -> Result<(TextBuffer, DocFormat), DocumentLoadErr
         },
         Err(error) => return Err(LoadError::Io(error.to_string()).into()),
     };
-    let head = &bytes[..bytes.len().min(CLASSIFY_HEAD)];
     // Format detection ignores the size guard: once the session is asked to open a
     // document it must decode it correctly regardless of size (the guard is an
     // app-level *routing* choice), so a large CBOR still decodes rather than being
     // mistaken for plain text.
-    if classify_ignoring_size(path, head) == FileKind::Cbor {
-        let text = karet_cbor::decode_to_text(&bytes).map_err(|e| LoadError::Io(e.to_string()))?;
-        let mut buffer = TextBuffer::from_text(&text);
-        buffer.record_disk_state(path, &bytes);
-        Ok((buffer, DocFormat::Cbor))
-    } else {
-        let mut buffer = TextBuffer::from_bytes(&bytes)?;
-        buffer.record_disk_state(path, &bytes);
-        Ok((buffer, DocFormat::Text))
+    #[cfg(feature = "cbor")]
+    {
+        let head = &bytes[..bytes.len().min(CLASSIFY_HEAD)];
+        if classify_ignoring_size(path, head) == FileKind::Cbor {
+            let text =
+                karet_cbor::decode_to_text(&bytes).map_err(|_| DocumentLoadError::Undecodable)?;
+            let mut buffer = TextBuffer::from_text(&text);
+            buffer.record_disk_state(path, &bytes);
+            return Ok((buffer, DocFormat::Cbor));
+        }
     }
+    let mut buffer = TextBuffer::from_bytes(&bytes)?;
+    buffer.record_disk_state(path, &bytes);
+    Ok((buffer, DocFormat::Text))
 }
 
 fn resolve_document_settings(
@@ -269,6 +281,7 @@ fn save_document(doc: &mut Document) -> Result<(), TextError> {
     let result = match (doc.format, doc.must_create) {
         (DocFormat::Text, false) => doc.buffer.save(&doc.path).map(|_| ()),
         (DocFormat::Text, true) => doc.buffer.save_new(&doc.path).map(|_| ()),
+        #[cfg(feature = "cbor")]
         (DocFormat::Cbor, must_create) => {
             let text = doc.buffer.text();
             let bytes =
@@ -386,14 +399,14 @@ pub struct Session {
     vcs: Option<Repository>,
     /// Ordered background repository actions and network reads.
     vcs_worker: std::sync::mpsc::Sender<crate::vcs_worker::VcsJob>,
+    search_worker: std::sync::mpsc::Sender<crate::search_worker::SearchJob>,
     /// Cancellation registry for safely-droppable repository reads and builds.
     vcs_cancellations: crate::cancellation::CancellationHub,
     /// Serialized external LaTeX builds.
     latex_worker: std::sync::mpsc::Sender<crate::latex::LatexJob>,
-    /// The last emitted `(staged, working)` status. Spontaneous recomputes (from
-    /// filesystem events) emit only when this changes, which absorbs the feedback
-    /// from the session's own index writes.
-    last_vcs: Option<(Vec<FileChange>, Vec<FileChange>)>,
+    /// Whether prepared diffs carry syntax token runs (the client's choice; see
+    /// [`SessionConfig::diff_syntax`]).
+    diff_syntax: bool,
     /// The last observed `HEAD` commit hash. A filesystem event that moves the tip
     /// away from this triggers an incremental commit-log reconciliation.
     last_head: Option<String>,
@@ -451,6 +464,9 @@ impl Session {
             // (LSP at a position, multi-view sync) need it.
             Command::SetCursor { .. } => {},
             Command::Stage { paths } => self.vcs_write(id, |repo| repo.stage(&paths)),
+            Command::ApplyIndexPatch { patch, reverse } => {
+                self.vcs_write(id, |repo| repo.apply_index_patch(&patch, reverse));
+            },
             Command::Unstage { paths } => self.vcs_write(id, |repo| repo.unstage(&paths)),
             Command::Discard { paths } => self.vcs_write(id, |repo| repo.discard(&paths)),
             Command::StageAll => self.vcs_write(id, Repository::stage_all),
@@ -459,16 +475,15 @@ impl Session {
             Command::GenerateCommitMessage => self.generate_commit_message(id),
             Command::RefreshVcs => self.emit_vcs_status(Some(id)),
             Command::RepositorySnapshot => {
-                let cancel = self.vcs_cancellations.register(id);
-                let _ = self
-                    .vcs_worker
-                    .send(crate::vcs_worker::VcsJob::Snapshot { id, cancel });
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::Snapshot {
+                    id,
+                    cancel,
+                });
             },
             Command::NestedRepositoryStatus { path } => {
-                let cancel = self.vcs_cancellations.register(id);
-                let _ = self
-                    .vcs_worker
-                    .send(crate::vcs_worker::VcsJob::NestedRepositoryStatus { id, path, cancel });
+                self.submit_vcs(id, |id, cancel| {
+                    crate::vcs_worker::VcsJob::NestedRepositoryStatus { id, path, cancel }
+                });
             },
             Command::VcsAction { action } => {
                 self.emit(
@@ -486,21 +501,17 @@ impl Session {
                 page,
                 per_page,
             } => {
-                let cancel = self.vcs_cancellations.register(id);
-                let _ = self
-                    .vcs_worker
-                    .send(crate::vcs_worker::VcsJob::PullRequests {
-                        id,
-                        remote,
-                        page,
-                        per_page,
-                        cancel,
-                    });
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::PullRequests {
+                    id,
+                    remote,
+                    page,
+                    per_page,
+                    cancel,
+                });
             },
             Command::Blame { doc, version, line } => self.request_blame(id, doc, version, line),
             Command::VcsLog { skip, limit } => {
-                let cancel = self.vcs_cancellations.register(id);
-                let _ = self.vcs_worker.send(crate::vcs_worker::VcsJob::Log {
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::Log {
                     id,
                     skip,
                     limit,
@@ -508,34 +519,38 @@ impl Session {
                 });
             },
             Command::CommitDetail { rev } => {
-                let cancel = self.vcs_cancellations.register(id);
-                let _ = self
-                    .vcs_worker
-                    .send(crate::vcs_worker::VcsJob::CommitDetail { id, rev, cancel });
+                let syntax = self.diff_syntax;
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::CommitDetail {
+                    id,
+                    rev,
+                    syntax,
+                    cancel,
+                });
             },
             Command::RangeChanges { spec } => {
-                let cancel = self.vcs_cancellations.register(id);
-                let _ = self
-                    .vcs_worker
-                    .send(crate::vcs_worker::VcsJob::RangeChanges { id, spec, cancel });
+                let syntax = self.diff_syntax;
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::RangeChanges {
+                    id,
+                    spec,
+                    syntax,
+                    cancel,
+                });
             },
             Command::MergeConflict { path } => {
-                let cancel = self.vcs_cancellations.register(id);
-                let _ = self
-                    .vcs_worker
-                    .send(crate::vcs_worker::VcsJob::MergeConflict { id, path, cancel });
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::MergeConflict {
+                    id,
+                    path,
+                    cancel,
+                });
             },
             Command::FileHistory { path, skip, limit } => {
-                let cancel = self.vcs_cancellations.register(id);
-                let _ = self
-                    .vcs_worker
-                    .send(crate::vcs_worker::VcsJob::FileHistory {
-                        id,
-                        path,
-                        skip,
-                        limit,
-                        cancel,
-                    });
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::FileHistory {
+                    id,
+                    path,
+                    skip,
+                    limit,
+                    cancel,
+                });
             },
             Command::FetchCommitVerification { hash } => self.fetch_commit_verification(id, hash),
             #[cfg(feature = "github")]
@@ -639,13 +654,94 @@ impl Session {
                 new_name,
             } => self.rename(id, doc, position, new_name),
             Command::FormatOnSave { doc } => self.format_document(id, doc),
-            // The remaining language-intelligence and search commands are wired in
-            // later milestones.
+            Command::RemoteFacts { path } => {
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::RemoteFacts {
+                    id,
+                    path,
+                    cancel,
+                });
+            },
+            Command::PrepareChange { path, staged } => {
+                let syntax = self.diff_syntax;
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::PrepareChange {
+                    id,
+                    path,
+                    staged,
+                    syntax,
+                    cancel,
+                });
+            },
+            Command::ConvertDocument { path } => self.convert_document(id, path),
+            Command::PrepareDiff { path, old, new } => {
+                let syntax = self.diff_syntax;
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::PrepareTexts {
+                    id,
+                    path,
+                    old,
+                    new,
+                    syntax,
+                    cancel,
+                });
+            },
+            Command::DiffWithRev { path, rev, live } => {
+                let syntax = self.diff_syntax;
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::DiffWithRev {
+                    id,
+                    path,
+                    rev,
+                    live,
+                    syntax,
+                    cancel,
+                });
+            },
+            Command::AddDictionaryWord {
+                word,
+                scope,
+                create_project,
+            } => self.add_dictionary_word(id, word, scope, create_project),
+            Command::SetBlameEnabled { enabled } => self.set_blame_enabled(id, enabled),
+            Command::Search { query, limit } => {
+                if let Some(root) = self.config.roots.first().cloned() {
+                    let _ = self
+                        .search_worker
+                        .send(crate::search_worker::SearchJob::Search {
+                            id,
+                            root,
+                            query,
+                            limit,
+                        });
+                }
+            },
+            Command::SearchReplaceAll { query, replacement } => {
+                if let Some(root) = self.config.roots.first().cloned() {
+                    let _ = self
+                        .search_worker
+                        .send(crate::search_worker::SearchJob::ReplaceAll {
+                            id,
+                            root,
+                            query,
+                            replacement,
+                        });
+                }
+            },
+            // Language-server management commands are consumed by the
+            // `handle_lsp_command` pre-dispatch above and never reach this match.
             _ => {},
         }
     }
 
     // --- source control ---------------------------------------------------
+
+    /// Register a cancellation for `id` and hand the worker a job built from it —
+    /// the single submission shape for every cancellable VCS request.
+    fn submit_vcs(
+        &self,
+        id: RequestId,
+        make: impl FnOnce(RequestId, crate::cancellation::Cancellation) -> crate::vcs_worker::VcsJob,
+    ) {
+        let cancel = self.vcs_cancellations.register(id);
+        let _ = self.vcs_worker.send(make(id, cancel));
+    }
 
     fn request_blame(&self, id: RequestId, doc: DocumentId, version: u64, line: u32) {
         let Some(document) = self.store.docs.get(&doc) else {
@@ -778,7 +874,9 @@ fn update_syntax(
                     tags: semantic.tags().to_vec(),
                 })
         },
-        edits: edits.map(|es| es.iter().map(to_edit).collect()),
+        // `karet-text`'s applied edits *are* the parse host's edit type (both are
+        // `karet_core::AppliedEdit`), so they pass through unconverted.
+        edits: edits.map(<[AppliedEdit]>::to_vec),
     };
     // A dead worker only means no highlights; editing carries on.
     highlight_tx.send(HighlightJob::Update(request)).ok();
@@ -809,18 +907,6 @@ fn edit_context(tick_ms: u64, cause: EditCause, change: &Change) -> EditContext 
         tick_ms,
         cause,
         cursor_before,
-    }
-}
-
-/// Convert a `karet-text` applied edit into the parse host's neutral edit.
-fn to_edit(ae: &AppliedEdit) -> karet_treesitter::Edit {
-    karet_treesitter::Edit {
-        start_byte: ae.start_byte,
-        old_end_byte: ae.old_end_byte,
-        new_end_byte: ae.new_end_byte,
-        start_point: ae.start_point,
-        old_end_point: ae.old_end_point,
-        new_end_point: ae.new_end_point,
     }
 }
 
@@ -858,43 +944,6 @@ fn unknown_document(doc: DocumentId) -> Event {
         severity: Severity::Error,
         kind: NotificationKind::System,
         message: format!("unknown document {}", doc.0),
-    }
-}
-
-/// A read-only borrow of a document's renderable state (local mode).
-///
-/// In a future remote split this is replaced by a client-side snapshot replicated
-/// from [`Event`]s; the renderer (`karet-editor`) consumes the same data either way.
-pub struct DocumentView<'a> {
-    buffer: &'a TextBuffer,
-    highlights: &'a Highlights,
-    decorations: &'a [Decoration],
-    version: u64,
-}
-
-impl DocumentView<'_> {
-    /// The document's text buffer.
-    #[must_use]
-    pub fn buffer(&self) -> &TextBuffer {
-        self.buffer
-    }
-
-    /// The document's syntax highlights.
-    #[must_use]
-    pub fn highlights(&self) -> &Highlights {
-        self.highlights
-    }
-
-    /// The document's decorations (merged across producers).
-    #[must_use]
-    pub fn decorations(&self) -> &[Decoration] {
-        self.decorations
-    }
-
-    /// The document's current version.
-    #[must_use]
-    pub fn version(&self) -> u64 {
-        self.version
     }
 }
 

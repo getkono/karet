@@ -1,26 +1,5 @@
-fn responsive_commit_files() -> Vec<FileView> {
-    ["src/first.rs", "src/second.rs", "src/third.rs"]
-        .into_iter()
-        .map(|path| {
-            FileView::new(
-                change(path, StatusKind::Modified),
-                crate::render::Section::Staged,
-                false,
-            )
-        })
-        .collect()
-}
-
-fn responsive_commit_app() -> App {
-    let mut app = app();
-    app.sidebar_visible = false;
-    app.focus = Focus::Editor;
-    app.push_tab(Tab::commit(
-        Box::new(commit_detail(&"a".repeat(40), "responsive commit")),
-        responsive_commit_files(),
-    ));
-    app
-}
+use super::support::*;
+use crate::app::*;
 
 #[test]
 fn commit_view_switches_at_104_columns_and_records_file_rows() {
@@ -41,7 +20,9 @@ fn commit_view_switches_at_104_columns_and_records_file_rows() {
     assert_eq!(view.layout, Some(crate::tab::CommitLayoutMode::Wide));
     assert_eq!(app.pane_frames[0].commit_file_hits.len(), 3);
     assert!(
-        painted.iter().any(|row| row.chars().nth(31) == Some('\u{2502}')),
+        painted
+            .iter()
+            .any(|row| row.chars().nth(31) == Some('\u{2502}')),
         "the 31-column rail is followed by its divider at the breakpoint"
     );
 }
@@ -69,7 +50,10 @@ fn stacked_sticky_header_and_resize_preserve_the_visible_file() {
     };
     assert_eq!(view.layout, Some(crate::tab::CommitLayoutMode::Wide));
     assert_eq!(view.scroll, view.file_anchors[1].saturating_add(1));
-    assert_ne!(view.file_anchors[1], second, "wide layout removes the stacked TOC rows");
+    assert_ne!(
+        view.file_anchors[1], second,
+        "wide layout removes the stacked TOC rows"
+    );
     assert!(
         wide[1].contains("src/second.rs"),
         "the file header also sticks above the wide diff column"
@@ -113,8 +97,15 @@ fn file_header_disclosures_collapse_and_expand_cards_in_both_layouts() {
             },
             _ => (u16::MAX, 0),
         };
-        assert!(after_second < before_second, "card body stayed visible at width {width}");
-        assert!(collapsed.iter().any(|row| row.contains("\u{25b8}") && row.contains("src/first.rs")));
+        assert!(
+            after_second < before_second,
+            "card body stayed visible at width {width}"
+        );
+        assert!(
+            collapsed
+                .iter()
+                .any(|row| row.contains("\u{25b8}") && row.contains("src/first.rs"))
+        );
 
         let expand = app.pane_frames[0]
             .commit_collapse_hits

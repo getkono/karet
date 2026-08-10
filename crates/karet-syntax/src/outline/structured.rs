@@ -10,7 +10,6 @@ use karet_treesitter::language_id_from_injection_name;
 
 use super::Candidate;
 use super::finish;
-use super::line_starts;
 use super::to_range;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,7 +57,7 @@ pub(super) fn analyze(lang: LanguageId, text: &str) -> Option<Vec<Symbol>> {
         return None;
     };
     let tokens = lex(text, syntax);
-    let starts = line_starts(text);
+    let starts = karet_core::LineIndex::new(text);
     let mut candidates = Vec::new();
     let mut index = 0;
     while index < tokens.len() {
@@ -69,7 +68,7 @@ pub(super) fn analyze(lang: LanguageId, text: &str) -> Option<Vec<Symbol>> {
 }
 
 fn analyze_lockfile(text: &str) -> Vec<Symbol> {
-    let starts = line_starts(text);
+    let starts = karet_core::LineIndex::new(text);
     let mut groups = Vec::new();
     let mut offset = 0;
     for line in text.split_inclusive('\n') {
@@ -222,7 +221,7 @@ fn parse_value(
     index: usize,
     text: &str,
     syntax: Syntax,
-    starts: &[usize],
+    starts: &karet_core::LineIndex,
     candidates: &mut Vec<Candidate>,
 ) -> Parsed {
     let Some(token) = tokens.get(index) else {
@@ -249,7 +248,7 @@ fn parse_map(
     index: usize,
     text: &str,
     syntax: Syntax,
-    starts: &[usize],
+    starts: &karet_core::LineIndex,
     candidates: &mut Vec<Candidate>,
 ) -> Parsed {
     let mut cursor = index + 1;
@@ -291,7 +290,7 @@ fn parse_sequence(
     index: usize,
     text: &str,
     syntax: Syntax,
-    starts: &[usize],
+    starts: &karet_core::LineIndex,
     candidates: &mut Vec<Candidate>,
 ) -> Parsed {
     let mut cursor = index + 1;
@@ -340,7 +339,7 @@ fn push_candidate(
     key: Token,
     container: Container,
     text: &str,
-    starts: &[usize],
+    starts: &karet_core::LineIndex,
 ) {
     let Some(raw_name) = text.get(key.start..key.end) else {
         return;

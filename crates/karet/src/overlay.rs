@@ -1,9 +1,9 @@
-//! Centered modal overlays: quick-open (go to file), the command palette, and the
-//! diff-target picker (a revision or branch to diff the active file against).
+//! Centered modal overlays: quick-open (go to file), the command palette, the
+//! diff-target picker, and the branch/stash forms and prompts.
 //!
-//! Each is a [`Picker`] over labeled items with an incremental subsequence filter.
-//! (The richer `karet-fuzzy` ranking / `karet-widgets::Picker` widget is a future
-//! home; this keeps the skeleton dependency-light.)
+//! Every list-style overlay is one shared fuzzy [`Picker`] (from
+//! `karet-widgets`, ranked by `karet-fuzzy`) whose items *are* their
+//! [`OverlayEvent`] outcomes — accepting a row just clones its event.
 
 use std::path::PathBuf;
 
@@ -19,6 +19,7 @@ use crate::command::{self};
 use crate::keymap;
 
 /// The outcome of accepting the highlighted overlay row.
+#[derive(Clone)]
 pub enum OverlayEvent {
     /// Nothing was highlighted; dismiss the overlay.
     Close,
@@ -98,8 +99,6 @@ pub enum TextPurpose {
     },
     /// Replace the language-server manager's filter with the submitted text.
     FilterLanguageServers,
-    /// Restart a session-local process after an installed update.
-    RestartLanguageServer { server: LanguageServerId },
     /// Confirm deactivation of one Karet-managed provider by typing `uninstall`.
     UninstallLanguageServer { server: LanguageServerId },
 }
@@ -252,153 +251,35 @@ pub struct DiffTarget {
     pub label: String,
 }
 
-/// An incremental picker over labeled items of type `T`.
-pub struct Picker<T> {
-    title: String,
-    query: String,
-    items: Vec<(String, T)>,
-    filtered: Vec<usize>,
-    selected: usize,
-}
-
-impl<T> Picker<T> {
-    /// Build a picker titled `title` over `items` (label + value).
-    fn new(title: impl Into<String>, items: Vec<(String, T)>) -> Self {
-        let filtered = (0..items.len()).collect();
-        Self {
-            title: title.into(),
-            query: String::new(),
-            items,
-            filtered,
-            selected: 0,
-        }
-    }
-
-    /// The picker title.
-    #[must_use]
-    pub fn title(&self) -> &str {
-        &self.title
-    }
-
-    /// The current query string.
-    #[must_use]
-    pub fn query(&self) -> &str {
-        &self.query
-    }
-
-    /// The visible (filtered) row labels, in order.
-    #[must_use]
-    pub fn rows(&self) -> Vec<&str> {
-        self.filtered
-            .iter()
-            .map(|&i| self.items[i].0.as_str())
-            .collect()
-    }
-
-    /// The visible (filtered) row values, in order.
-    fn values(&self) -> Vec<&T> {
-        self.filtered.iter().map(|&i| &self.items[i].1).collect()
-    }
-
-    /// The selected row index within the filtered list.
-    #[must_use]
-    pub fn selected(&self) -> usize {
-        self.selected
-    }
-
-    /// Recompute the filtered list for the current query.
-    fn refilter(&mut self) {
-        let needle = self.query.to_ascii_lowercase();
-        self.filtered = self
-            .items
-            .iter()
-            .enumerate()
-            .filter(|(_, (label, _))| subsequence(&needle, &label.to_ascii_lowercase()))
-            .map(|(i, _)| i)
-            .collect();
-        self.selected = 0;
-    }
-
-    /// The currently-selected value, if any.
-    fn accepted(&self) -> Option<&T> {
-        self.filtered.get(self.selected).map(|&i| &self.items[i].1)
-    }
-
-    /// Move the selection up.
-    fn select_up(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
-    }
-
-    /// Move the selection down, clamped to the filtered list.
-    fn select_down(&mut self) {
-        if !self.filtered.is_empty() {
-            self.selected = (self.selected + 1).min(self.filtered.len() - 1);
-        }
-    }
-
-    /// Append a character to the query and refilter.
-    fn push_char(&mut self, c: char) {
-        self.query.push(c);
-        self.refilter();
-    }
-
-    /// Remove the last query character and refilter.
-    fn pop_char(&mut self) {
-        self.query.pop();
-        self.refilter();
-    }
-
-    /// Append pasted text to the query and refilter.
-    fn push_str(&mut self, text: &str) {
-        self.query.push_str(text);
-        self.refilter();
-    }
-}
+pub use karet_widgets::picker::Picker;
 
 /// A modal overlay.
 pub enum Overlay {
-    /// Quick-open: pick a file to open.
-    QuickOpen(Picker<PathBuf>),
-    /// Command palette: pick a command to run.
-    CommandPalette(Picker<Command>),
-    /// Diff-target picker: pick a revision or branch to diff the active file against.
-    DiffTarget(Picker<DiffTarget>),
-    /// Existing local and remote branches.
-    Branch(Picker<BranchTarget>),
+    /// A fuzzy list picker whose rows carry their accept outcomes directly.
+    Picker(Picker<OverlayEvent>),
     /// Full create-branch form.
     CreateBranch(BranchForm),
-    /// Open GitHub pull requests.
-    PullRequest {
-        remote: String,
-        picker: Picker<PullRequestSummary>,
-    },
     /// Stash creation form.
     StashForm(StashForm),
-    /// Actions over existing stash entries.
-    Stash(Picker<StashAction>),
     /// Single-value follow-up prompt.
     Text(TextPrompt),
-    /// Local branches eligible for safe deletion.
-    DeleteLocalBranch(Picker<String>),
-    /// Remote branches eligible for typed-confirmation deletion.
-    DeleteRemoteBranch(Picker<(String, String)>),
 }
 
 impl Overlay {
     /// Build a quick-open overlay over `(display, path)` pairs.
     #[must_use]
     pub fn quick_open(files: Vec<(String, PathBuf)>) -> Self {
-        Self::QuickOpen(Picker::new("Go to File", files))
+        let items = files
+            .into_iter()
+            .map(|(label, path)| (label, OverlayEvent::AcceptFile(path)))
+            .collect();
+        Self::Picker(Picker::new("Go to File", items))
     }
 
     /// Build the command palette.
     #[must_use]
     pub fn command_palette() -> Self {
-        let items = command::palette()
-            .into_iter()
-            .map(|cmd| (cmd.label().to_string(), cmd))
-            .collect();
-        Self::CommandPalette(Picker::new("Command Palette", items))
+        Self::commands("Command Palette", command::palette())
     }
 
     /// Build a command picker over an explicit action subset.
@@ -406,21 +287,42 @@ impl Overlay {
     pub fn commands(title: impl Into<String>, commands: Vec<Command>) -> Self {
         let items = commands
             .into_iter()
-            .map(|command| (command.label().to_string(), command))
+            .map(|command| {
+                (
+                    command.label().to_string(),
+                    OverlayEvent::AcceptCommand(command),
+                )
+            })
             .collect();
-        Self::CommandPalette(Picker::new(title, items))
+        Self::Picker(Picker::new(title, items))
     }
 
     /// Build a diff-target picker titled `title` over `(display, target)` pairs.
     #[must_use]
     pub fn diff_target(title: impl Into<String>, items: Vec<(String, DiffTarget)>) -> Self {
-        Self::DiffTarget(Picker::new(title, items))
+        let items = items
+            .into_iter()
+            .map(|(display, target)| {
+                (
+                    display,
+                    OverlayEvent::AcceptDiffTarget {
+                        rev: target.rev,
+                        label: target.label,
+                    },
+                )
+            })
+            .collect();
+        Self::Picker(Picker::new(title, items))
     }
 
     /// Build a branch picker.
     #[must_use]
     pub fn branches(items: Vec<(String, BranchTarget)>) -> Self {
-        Self::Branch(Picker::new("Switch branch", items))
+        let items = items
+            .into_iter()
+            .map(|(label, target)| (label, OverlayEvent::AcceptBranch(target)))
+            .collect();
+        Self::Picker(Picker::new("Switch branch", items))
     }
 
     /// Build the complete branch-creation form.
@@ -439,14 +341,14 @@ impl Overlay {
                 let author = item.author.as_deref().unwrap_or("unknown");
                 (
                     format!("#{}  {}  {draft}{author}", item.number, item.title),
-                    item,
+                    OverlayEvent::AcceptPullRequest {
+                        remote: remote.clone(),
+                        number: item.number,
+                    },
                 )
             })
             .collect();
-        Self::PullRequest {
-            remote,
-            picker: Picker::new("Open pull requests", rows),
-        }
+        Self::Picker(Picker::new("Open pull requests", rows))
     }
 
     /// Build the stash creation form.
@@ -462,25 +364,29 @@ impl Overlay {
         for entry in entries {
             let reference = entry.reference.clone();
             let base = format!("{}  {}", entry.reference, entry.message);
+            let action = |a: StashAction| OverlayEvent::AcceptStashAction(a);
             items.push((
                 format!("Preview   {base}"),
-                StashAction::Preview(reference.clone()),
+                action(StashAction::Preview(reference.clone())),
             ));
             items.push((
                 format!("Apply     {base}"),
-                StashAction::Apply(reference.clone()),
+                action(StashAction::Apply(reference.clone())),
             ));
             items.push((
                 format!("Pop       {base}"),
-                StashAction::Pop(reference.clone()),
+                action(StashAction::Pop(reference.clone())),
             ));
             items.push((
                 format!("Branch…   {base}"),
-                StashAction::Branch(reference.clone()),
+                action(StashAction::Branch(reference.clone())),
             ));
-            items.push((format!("Drop      {base}"), StashAction::Drop(reference)));
+            items.push((
+                format!("Drop      {base}"),
+                action(StashAction::Drop(reference)),
+            ));
         }
-        Self::Stash(Picker::new("Manage stashes", items))
+        Self::Picker(Picker::new("Manage stashes", items))
     }
 
     /// Build a free-text follow-up prompt.
@@ -496,8 +402,11 @@ impl Overlay {
     /// Build a local-branch deletion picker.
     #[must_use]
     pub fn delete_local_branches(items: Vec<String>) -> Self {
-        let rows = items.into_iter().map(|name| (name.clone(), name)).collect();
-        Self::DeleteLocalBranch(Picker::new("Delete local branch", rows))
+        let rows = items
+            .into_iter()
+            .map(|name| (name.clone(), OverlayEvent::AcceptDeleteLocalBranch(name)))
+            .collect();
+        Self::Picker(Picker::new("Delete local branch", rows))
     }
 
     /// Build a remote-branch deletion picker.
@@ -505,26 +414,24 @@ impl Overlay {
     pub fn delete_remote_branches(items: Vec<(String, String)>) -> Self {
         let rows = items
             .into_iter()
-            .map(|(remote, branch)| (format!("{remote}/{branch}"), (remote, branch)))
+            .map(|(remote, branch)| {
+                (
+                    format!("{remote}/{branch}"),
+                    OverlayEvent::AcceptDeleteRemoteBranch { remote, branch },
+                )
+            })
             .collect();
-        Self::DeleteRemoteBranch(Picker::new("Delete remote branch", rows))
+        Self::Picker(Picker::new("Delete remote branch", rows))
     }
 
     /// The overlay title.
     #[must_use]
     pub fn title(&self) -> &str {
         match self {
-            Self::QuickOpen(p) => p.title(),
-            Self::CommandPalette(p) => p.title(),
-            Self::DiffTarget(p) => p.title(),
-            Self::Branch(p) => p.title(),
+            Self::Picker(p) => p.title(),
             Self::CreateBranch(_) => "Create branch · ↑↓ fields · Space toggles",
-            Self::PullRequest { picker, .. } => picker.title(),
             Self::StashForm(_) => "Stash changes · ↑↓ fields · Space toggles",
-            Self::Stash(p) => p.title(),
             Self::Text(prompt) => &prompt.title,
-            Self::DeleteLocalBranch(p) => p.title(),
-            Self::DeleteRemoteBranch(p) => p.title(),
         }
     }
 
@@ -532,16 +439,9 @@ impl Overlay {
     #[must_use]
     pub fn query(&self) -> &str {
         match self {
-            Self::QuickOpen(p) => p.query(),
-            Self::CommandPalette(p) => p.query(),
-            Self::DiffTarget(p) => p.query(),
-            Self::Branch(p) => p.query(),
+            Self::Picker(p) => p.query(),
             Self::CreateBranch(_) | Self::StashForm(_) => "Edit selected field",
-            Self::PullRequest { picker, .. } => picker.query(),
-            Self::Stash(p) => p.query(),
             Self::Text(prompt) => &prompt.text,
-            Self::DeleteLocalBranch(p) => p.query(),
-            Self::DeleteRemoteBranch(p) => p.query(),
         }
     }
 
@@ -549,40 +449,31 @@ impl Overlay {
     #[must_use]
     pub fn rows(&self) -> Vec<&str> {
         match self {
-            Self::QuickOpen(p) => p.rows(),
-            Self::CommandPalette(p) => p.rows(),
-            Self::DiffTarget(p) => p.rows(),
-            Self::Branch(p) => p.rows(),
+            Self::Picker(p) => p.rows(),
             Self::CreateBranch(form) => form.rows.iter().map(String::as_str).collect(),
-            Self::PullRequest { picker, .. } => picker.rows(),
             Self::StashForm(form) => form.rows.iter().map(String::as_str).collect(),
-            Self::Stash(p) => p.rows(),
             Self::Text(_) => Vec::new(),
-            Self::DeleteLocalBranch(p) => p.rows(),
-            Self::DeleteRemoteBranch(p) => p.rows(),
         }
     }
 
     /// The per-row right-aligned hints (key chords), aligned with [`rows`](Self::rows).
-    /// Only command-palette rows carry hints.
+    /// Only command rows carry hints.
     #[must_use]
     pub fn row_hints(&self) -> Vec<Option<String>> {
         match self {
-            Self::QuickOpen(p) => p.rows().iter().map(|_| None).collect(),
-            Self::CommandPalette(p) => p
+            Self::Picker(p) => p
                 .values()
                 .into_iter()
-                .map(|cmd| keymap::hint_for(*cmd, keymap::ChordStyle::Verbose))
+                .map(|event| match event {
+                    OverlayEvent::AcceptCommand(command) => {
+                        keymap::hint_for(*command, keymap::ChordStyle::Verbose)
+                    },
+                    _ => None,
+                })
                 .collect(),
-            Self::DiffTarget(p) => p.rows().iter().map(|_| None).collect(),
-            Self::Branch(p) => p.rows().iter().map(|_| None).collect(),
             Self::CreateBranch(form) => form.rows.iter().map(|_| None).collect(),
-            Self::PullRequest { picker, .. } => picker.rows().iter().map(|_| None).collect(),
             Self::StashForm(form) => form.rows.iter().map(|_| None).collect(),
-            Self::Stash(p) => p.rows().iter().map(|_| None).collect(),
             Self::Text(_) => Vec::new(),
-            Self::DeleteLocalBranch(p) => p.rows().iter().map(|_| None).collect(),
-            Self::DeleteRemoteBranch(p) => p.rows().iter().map(|_| None).collect(),
         }
     }
 
@@ -590,193 +481,99 @@ impl Overlay {
     #[must_use]
     pub fn selected(&self) -> usize {
         match self {
-            Self::QuickOpen(p) => p.selected(),
-            Self::CommandPalette(p) => p.selected(),
-            Self::DiffTarget(p) => p.selected(),
-            Self::Branch(p) => p.selected(),
+            Self::Picker(p) => p.selected(),
             Self::CreateBranch(form) => form.selected,
-            Self::PullRequest { picker, .. } => picker.selected(),
             Self::StashForm(form) => form.selected,
-            Self::Stash(p) => p.selected(),
             Self::Text(_) => 0,
-            Self::DeleteLocalBranch(p) => p.selected(),
-            Self::DeleteRemoteBranch(p) => p.selected(),
         }
     }
 
     /// Move the selection up.
     pub fn select_up(&mut self) {
         match self {
-            Self::QuickOpen(p) => p.select_up(),
-            Self::CommandPalette(p) => p.select_up(),
-            Self::DiffTarget(p) => p.select_up(),
-            Self::Branch(p) => p.select_up(),
+            Self::Picker(p) => p.select_up(),
             Self::CreateBranch(form) => form.selected = form.selected.saturating_sub(1),
-            Self::PullRequest { picker, .. } => picker.select_up(),
             Self::StashForm(form) => form.selected = form.selected.saturating_sub(1),
-            Self::Stash(p) => p.select_up(),
             Self::Text(_) => {},
-            Self::DeleteLocalBranch(p) => p.select_up(),
-            Self::DeleteRemoteBranch(p) => p.select_up(),
         }
     }
 
     /// Move the selection down.
     pub fn select_down(&mut self) {
         match self {
-            Self::QuickOpen(p) => p.select_down(),
-            Self::CommandPalette(p) => p.select_down(),
-            Self::DiffTarget(p) => p.select_down(),
-            Self::Branch(p) => p.select_down(),
+            Self::Picker(p) => p.select_down(),
             Self::CreateBranch(form) => form.selected = (form.selected + 1).min(4),
-            Self::PullRequest { picker, .. } => picker.select_down(),
             Self::StashForm(form) => form.selected = (form.selected + 1).min(2),
-            Self::Stash(p) => p.select_down(),
             Self::Text(_) => {},
-            Self::DeleteLocalBranch(p) => p.select_down(),
-            Self::DeleteRemoteBranch(p) => p.select_down(),
         }
     }
 
     /// Append a character to the query.
     pub fn push_char(&mut self, c: char) {
         match self {
-            Self::QuickOpen(p) => p.push_char(c),
-            Self::CommandPalette(p) => p.push_char(c),
-            Self::DiffTarget(p) => p.push_char(c),
-            Self::Branch(p) => p.push_char(c),
+            Self::Picker(p) => p.push_char(c),
             Self::CreateBranch(form) => form.push_char(c),
-            Self::PullRequest { picker, .. } => picker.push_char(c),
             Self::StashForm(form) => form.push_char(c),
-            Self::Stash(p) => p.push_char(c),
             Self::Text(prompt) => prompt.text.push(c),
-            Self::DeleteLocalBranch(p) => p.push_char(c),
-            Self::DeleteRemoteBranch(p) => p.push_char(c),
         }
     }
 
     /// Remove the last query character.
     pub fn pop_char(&mut self) {
         match self {
-            Self::QuickOpen(p) => p.pop_char(),
-            Self::CommandPalette(p) => p.pop_char(),
-            Self::DiffTarget(p) => p.pop_char(),
-            Self::Branch(p) => p.pop_char(),
+            Self::Picker(p) => p.pop_char(),
             Self::CreateBranch(form) => form.pop_char(),
-            Self::PullRequest { picker, .. } => picker.pop_char(),
             Self::StashForm(form) => {
                 if form.selected == 0 {
                     form.message.pop();
                     form.refresh();
                 }
             },
-            Self::Stash(p) => p.pop_char(),
             Self::Text(prompt) => {
                 prompt.text.pop();
             },
-            Self::DeleteLocalBranch(p) => p.pop_char(),
-            Self::DeleteRemoteBranch(p) => p.pop_char(),
         }
     }
 
     /// Append pasted text to the query.
     pub fn push_str(&mut self, text: &str) {
         match self {
-            Self::QuickOpen(p) => p.push_str(text),
-            Self::CommandPalette(p) => p.push_str(text),
-            Self::DiffTarget(p) => p.push_str(text),
-            Self::Branch(p) => p.push_str(text),
+            Self::Picker(p) => p.push_str(text),
             Self::CreateBranch(form) => {
                 for character in text.chars() {
                     form.push_char(character);
                 }
             },
-            Self::PullRequest { picker, .. } => picker.push_str(text),
             Self::StashForm(form) => {
                 if form.selected == 0 {
                     form.message.push_str(text);
                     form.refresh();
                 }
             },
-            Self::Stash(p) => p.push_str(text),
             Self::Text(prompt) => prompt.text.push_str(text),
-            Self::DeleteLocalBranch(p) => p.push_str(text),
-            Self::DeleteRemoteBranch(p) => p.push_str(text),
         }
     }
 
-    /// The outcome of accepting the highlighted row (open a file / run a command /
-    /// diff against a revision), or [`OverlayEvent::Close`] when nothing is
-    /// highlighted.
+    /// The outcome of accepting the highlighted row — the row's own event for a
+    /// picker, the assembled form/prompt for the rest — or
+    /// [`OverlayEvent::Close`] when nothing is highlighted.
     #[must_use]
     pub fn accept(&self) -> OverlayEvent {
         match self {
-            Self::QuickOpen(p) => p
-                .accepted()
-                .cloned()
-                .map_or(OverlayEvent::Close, OverlayEvent::AcceptFile),
-            Self::CommandPalette(p) => p
-                .accepted()
-                .copied()
-                .map_or(OverlayEvent::Close, OverlayEvent::AcceptCommand),
-            Self::DiffTarget(p) => p.accepted().cloned().map_or(OverlayEvent::Close, |target| {
-                OverlayEvent::AcceptDiffTarget {
-                    rev: target.rev,
-                    label: target.label,
-                }
-            }),
-            Self::Branch(p) => p
-                .accepted()
-                .cloned()
-                .map_or(OverlayEvent::Close, OverlayEvent::AcceptBranch),
+            Self::Picker(p) => p.accepted().cloned().unwrap_or(OverlayEvent::Close),
             Self::CreateBranch(form) => OverlayEvent::AcceptCreateBranch(form.options()),
-            Self::PullRequest { remote, picker } => {
-                picker.accepted().map_or(OverlayEvent::Close, |item| {
-                    OverlayEvent::AcceptPullRequest {
-                        remote: remote.clone(),
-                        number: item.number,
-                    }
-                })
-            },
             Self::StashForm(form) => OverlayEvent::AcceptStash(form.options()),
-            Self::Stash(p) => p
-                .accepted()
-                .cloned()
-                .map_or(OverlayEvent::Close, OverlayEvent::AcceptStashAction),
             Self::Text(prompt) => OverlayEvent::AcceptText {
                 purpose: prompt.purpose.clone(),
                 text: prompt.text.clone(),
             },
-            Self::DeleteLocalBranch(p) => p
-                .accepted()
-                .cloned()
-                .map_or(OverlayEvent::Close, OverlayEvent::AcceptDeleteLocalBranch),
-            Self::DeleteRemoteBranch(p) => p
-                .accepted()
-                .cloned()
-                .map_or(OverlayEvent::Close, |(remote, branch)| {
-                    OverlayEvent::AcceptDeleteRemoteBranch { remote, branch }
-                }),
         }
     }
-}
-
-/// Whether `needle` is a subsequence of `hay` (both already lowercased).
-fn subsequence(needle: &str, hay: &str) -> bool {
-    let mut chars = hay.chars();
-    needle.chars().all(|c| chars.any(|h| h == c))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn subsequence_matches_in_order() {
-        assert!(subsequence("ap", "app.rs"));
-        assert!(subsequence("ars", "app.rs"));
-        assert!(!subsequence("rsa", "app.rs"));
-    }
 
     #[test]
     fn typing_filters_and_accept_opens() {

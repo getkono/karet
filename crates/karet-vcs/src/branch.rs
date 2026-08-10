@@ -8,6 +8,7 @@ use crate::VcsError;
 /// A branch that can be switched to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BranchTarget {
     /// An existing local branch.
     Local(String),
@@ -25,6 +26,7 @@ pub enum BranchTarget {
 /// Options for creating a branch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CreateBranchOptions {
     /// New local branch name.
     pub name: String,
@@ -52,6 +54,7 @@ impl Default for CreateBranchOptions {
 
 /// Outcome of undoing the last commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct UndoCommitOutcome {
     /// Commit moved out of `HEAD`.
     pub commit: String,

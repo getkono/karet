@@ -5,7 +5,7 @@ use super::*;
 impl App {
     /// Transmit or clear the active tab's Kitty image after a frame is drawn.
     pub(super) fn flush_graphics(&mut self) {
-        if self.graphics != GraphicsProtocol::Kitty {
+        if self.caps.graphics != GraphicsProtocol::Kitty {
             return;
         }
         let mut stdout = io::stdout();

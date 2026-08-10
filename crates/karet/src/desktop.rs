@@ -125,6 +125,7 @@ fn general_escape(s: &str) -> String {
 
 /// Escape text for insertion into an XML/plist `<string>` body: `&`, `<`, `>`.
 /// (`"` and `'` are legal in element text, so they are left alone.)
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // reachable via current_plan on macOS; exercised by tests everywhere
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -133,6 +134,7 @@ fn xml_escape(s: &str) -> String {
 
 /// Wrap a string in single quotes for `/bin/sh`, escaping embedded single quotes as
 /// `'\''` — the only sequence that is unambiguous inside a single-quoted word.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // reachable via current_plan on macOS; exercised by tests everywhere
 fn sh_single_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
@@ -189,6 +191,7 @@ pub(crate) fn icon_svg() -> &'static str {
 /// `getkono`/`karet` qualifier used elsewhere), and the disclaimer rides in
 /// `CFBundleGetInfoString` — the field the Finder's Get Info panel surfaces — so no
 /// separate readme is needed inside the bundle.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // reachable via current_plan on macOS; exercised by tests everywhere
 pub(crate) fn macos_info_plist(version: &str) -> String {
     let version = xml_escape(version);
     let disclaimer = xml_escape(DISCLAIMER);
@@ -230,6 +233,7 @@ pub(crate) fn macos_info_plist(version: &str) -> String {
 /// — is the documented target; a user who prefers another terminal is covered by the
 /// [`DISCLAIMER`]. `open -a Terminal <exe>` hands the executable to Terminal, which
 /// runs it in a new window; the path is single-quoted for the shell.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // reachable via current_plan on macOS; exercised by tests everywhere
 pub(crate) fn macos_launcher_script(exe: &Path) -> String {
     let quoted = sh_single_quote(&exe.to_string_lossy());
     format!(
@@ -248,6 +252,7 @@ pub(crate) fn macos_launcher_script(exe: &Path) -> String {
 /// fully-testable string, it adds no dependency, and it carries the [`DISCLAIMER`]
 /// as a `rem` header. `%*` forwards any arguments; the path is double-quoted (a `"`
 /// is illegal in Windows filenames, so stripping any is a safe no-op).
+#[cfg_attr(not(windows), allow(dead_code))] // reachable via current_plan on Windows; exercised by tests everywhere
 pub(crate) fn windows_cmd_launcher(exe: &Path) -> String {
     let path = exe.to_string_lossy().replace('"', "");
     // Windows text files conventionally use CRLF line endings.
@@ -295,6 +300,7 @@ pub(crate) fn linux_plan(data_home: &Path, exe: &Path) -> Plan {
 /// Plan the macOS install: a minimal `karet.app` bundle under `applications_dir`
 /// (`~/Applications`), holding `Contents/Info.plist` and an executable
 /// `Contents/MacOS/karet-launcher`. Uninstall removes the whole bundle directory.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // reachable via current_plan on macOS; exercised by tests everywhere
 pub(crate) fn macos_plan(applications_dir: &Path, exe: &Path, version: &str) -> Plan {
     let bundle = applications_dir.join("karet.app");
     let contents = bundle.join("Contents");
@@ -317,6 +323,7 @@ pub(crate) fn macos_plan(applications_dir: &Path, exe: &Path, version: &str) -> 
 
 /// Plan the Windows install: a `karet.cmd` launcher in `start_menu_programs`
 /// (`%APPDATA%\Microsoft\Windows\Start Menu\Programs`). Uninstall removes that file.
+#[cfg_attr(not(windows), allow(dead_code))] // reachable via current_plan on Windows; exercised by tests everywhere
 pub(crate) fn windows_plan(start_menu_programs: &Path, exe: &Path) -> Plan {
     let cmd = start_menu_programs.join("karet.cmd");
     Plan {
@@ -338,6 +345,10 @@ pub(crate) fn windows_plan(start_menu_programs: &Path, exe: &Path) -> Plan {
 pub(crate) enum DesktopError {
     /// The host is not one of the supported desktop platforms (Linux/XDG, macOS,
     /// Windows 10/11).
+    #[cfg_attr(
+        any(target_os = "linux", target_os = "macos", windows),
+        allow(dead_code) // constructed only by the other-platform current_plan
+    )]
     #[error("desktop integration is not supported on this platform")]
     Unsupported,
     /// The per-user base directory could not be determined (no home directory).
