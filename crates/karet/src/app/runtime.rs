@@ -37,6 +37,7 @@ pub(super) fn attach_backend(
     app.backend = Some(backend);
     app.register_open_tabs();
     app.request_pending_startup_diffs();
+    app.request_pending_spelling_scan();
     // Surface any configuration-load problems as startup notifications, now that
     // the notification center will render on the first frame.
     for diag in std::mem::take(&mut app.config_diagnostics) {

@@ -283,6 +283,15 @@ impl App {
             },
             SessionEvent::LoadedConfig { report } => self.open_loaded_config(*report),
             SessionEvent::SearchResults { hits } => self.apply_search_results(hits),
+            SessionEvent::SpellingScanProgress {
+                hits,
+                files_scanned,
+            } => self.spelling_scan_progress(id, hits, files_scanned),
+            SessionEvent::SpellingScanFinished {
+                files_scanned,
+                truncated,
+                ..
+            } => self.spelling_scan_finished(id, files_scanned, truncated),
             SessionEvent::RemoteFacts { path, facts } => self.apply_remote_facts(path, facts),
             SessionEvent::ChangePrepared {
                 path,

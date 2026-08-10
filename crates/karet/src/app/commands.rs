@@ -18,6 +18,11 @@ impl App {
                 if panel == SidebarPanel::SourceControl {
                     self.request_repository_snapshot();
                 }
+                // Same lazy-first-load shape: opening Spelling with nothing to show
+                // starts a scan rather than presenting an empty list.
+                if panel == SidebarPanel::Spelling {
+                    self.show_spelling();
+                }
             },
             Command::OpenQuickOpen => self.open_quick_open(),
             Command::OpenCommandPalette => self.overlay = Some(Overlay::command_palette()),
@@ -289,6 +294,7 @@ impl App {
             }),
             Command::CommitGraphMarkBase => self.graph_mark_base(),
             Command::CommitGraphCompare => self.graph_compare(),
+            Command::SpellingScan => self.scan_workspace_spelling(),
             Command::SearchSelectUp => self.search_select(-1),
             Command::SearchSelectDown => self.search_select(1),
             Command::SearchOpen => self.open_selected_result(),

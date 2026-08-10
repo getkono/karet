@@ -37,6 +37,8 @@ pub enum Command {
     ToggleFocus,
     /// Select a sidebar panel.
     SelectPanel(SidebarPanel),
+    /// Re-run the workspace spelling scan behind the Spelling panel.
+    SpellingScan,
     /// Open the quick-open (go-to-file) overlay.
     OpenQuickOpen,
     /// Open the command palette overlay.
@@ -481,6 +483,8 @@ impl Command {
             Self::SelectPanel(SidebarPanel::Explorer) => "View: Show Explorer",
             Self::SelectPanel(SidebarPanel::Search) => "View: Show Search",
             Self::SelectPanel(SidebarPanel::SourceControl) => "View: Show Source Control",
+            Self::SelectPanel(SidebarPanel::Spelling) => "View: Show Spelling",
+            Self::SpellingScan => "Spelling: Scan Workspace",
             Self::OpenQuickOpen => "Go to File…",
             Self::OpenCommandPalette => "Show All Commands",
             Self::OpenFind => "Find in File…",
@@ -709,6 +713,8 @@ impl Command {
             Self::SelectPanel(SidebarPanel::Explorer) => "explorer",
             Self::SelectPanel(SidebarPanel::Search) => "search",
             Self::SelectPanel(SidebarPanel::SourceControl) => "git",
+            Self::SelectPanel(SidebarPanel::Spelling) => "spelling",
+            Self::SpellingScan => "scan",
             Self::OpenQuickOpen => "open",
             Self::OpenCommandPalette => "commands",
             Self::OpenFind => "find",
