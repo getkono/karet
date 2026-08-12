@@ -207,6 +207,12 @@ whole scan takes a couple of seconds. Opening the panel scans if it has nothing 
 show; `⟳ scan` in the panel header re-runs it, superseding any scan still in flight.
 The list is capped at 5000 misspellings, and says so when it stops there.
 
+Once it has results, the panel keeps them true on its own. Any change to a
+`spellcheck` setting — a word added to a dictionary, a scope toggled, the locale
+switched — re-runs the scan, whether the change came from the correction menu or
+from editing a `setting.jsonc` in another window. Unrelated settings do not, and a
+panel you have never opened stays idle: opening it is what asks for the walk.
+
 The panel deliberately shows no replacement suggestions: computing them for a whole
 workspace dominates the scan's cost, and the correction menu and completion popup
 already offer them in the editor, where the fix actually happens.

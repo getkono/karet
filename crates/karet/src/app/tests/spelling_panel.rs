@@ -181,6 +181,85 @@ fn a_click_below_the_last_row_opens_nothing() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A `ConfigChanged` carrying `settings`, as the watcher's reload would deliver it.
+fn config_changed(app: &mut App, settings: karet_session::config::Settings) {
+    app.on_backend_event(
+        None,
+        SessionEvent::ConfigChanged {
+            report: Box::new(LoadedConfig::from_settings(settings)),
+        },
+    );
+}
+
+#[test]
+fn a_spellcheck_settings_change_re_runs_the_scan() {
+    let dir = test_dir("spelling-config-rescan");
+    let path = dir.join("a.md");
+    let mut app = scanned(&dir, vec![hit(&path, 0, 4, "wrld", "the wrld ends")]);
+
+    let mut settings = app.settings.clone();
+    settings.spellcheck.words.push("wrld".to_owned());
+    config_changed(&mut app, settings);
+
+    // There is no backend in this fixture, so a scan attempt clears the list and
+    // leaves `scanning` unset — which is how the re-scan shows up here.
+    assert!(
+        app.spelling.hits.is_empty(),
+        "the stale results were dropped"
+    );
+    assert!(!app.spelling.scanned);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_unrelated_config_change_leaves_the_results_alone() {
+    let dir = test_dir("spelling-config-unrelated");
+    let path = dir.join("a.md");
+    let mut app = scanned(&dir, vec![hit(&path, 0, 4, "wrld", "the wrld ends")]);
+
+    let mut settings = app.settings.clone();
+    settings.editor.tab_size = 8;
+    config_changed(&mut app, settings);
+
+    assert_eq!(app.spelling.hits.len(), 1, "a walk is not free — don't");
+    assert_eq!(app.settings.editor.tab_size, 8);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_panel_that_never_scanned_stays_idle_when_the_dictionary_changes() {
+    let dir = test_dir("spelling-config-idle");
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+
+    let mut settings = app.settings.clone();
+    settings.spellcheck.words.push("wrld".to_owned());
+    config_changed(&mut app, settings);
+
+    assert!(app.spelling.scanning.is_none());
+    assert!(
+        !app.spelling.scanned,
+        "opening the panel is what asks for the walk"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn adding_a_dictionary_word_drops_it_from_the_results() {
+    let dir = test_dir("spelling-dictionary-word");
+    let path = dir.join("a.md");
+    let mut app = scanned(&dir, vec![hit(&path, 0, 4, "wrld", "the wrld ends")]);
+
+    app.dictionary_word_added("wrld", &dir.join(".karet/setting.jsonc"));
+
+    assert!(app.settings.spellcheck.words.iter().any(|w| w == "wrld"));
+    assert!(app.spelling.hits.is_empty(), "the panel re-scans");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn re_showing_the_panel_does_not_rescan_results_it_already_has() {
     let dir = test_dir("spelling-reshow");

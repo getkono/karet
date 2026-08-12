@@ -41,6 +41,19 @@ impl App {
         }
     }
 
+    /// Re-scan because something the results depend on changed (a dictionary
+    /// word, a `spellcheck` setting).
+    ///
+    /// A panel that has never scanned stays idle: opening it is what asks for the
+    /// walk, and this must not turn a background config edit into seconds of work
+    /// nobody is looking at.
+    pub(super) fn invalidate_spelling(&mut self) {
+        if !self.spelling.scanned && self.spelling.scanning.is_none() {
+            return;
+        }
+        self.scan_workspace_spelling();
+    }
+
     /// Start (or restart) the workspace spelling scan.
     pub(super) fn scan_workspace_spelling(&mut self) {
         // A scan already running is superseded, not raced: cancel it so its worker
