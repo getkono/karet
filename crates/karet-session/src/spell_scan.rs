@@ -46,8 +46,8 @@ const HITS_PER_BATCH: usize = 64;
 pub(crate) struct SpellScanJob {
     /// Correlates every answering event.
     pub id: RequestId,
-    /// The workspace root to walk.
-    pub root: PathBuf,
+    /// The workspace roots to walk, in order.
+    pub roots: Vec<PathBuf>,
     /// The workspace's dictionary — the answer for every path an `.editorconfig`
     /// does not override.
     pub spelling_language: SpellingLanguage,
@@ -177,39 +177,48 @@ fn scan(
         locale_overrides: HashMap::new(),
     };
     let mut disconnected = false;
-    let _ = karet_search::walk_text_files(&job.root, &[], &[], |path, text| {
-        if job.cancel.is_cancelled() {
-            state.cancelled = true;
-            return ControlFlow::Break(());
+    // One `ScanState` across every root, so the limit, the batching, and
+    // cancellation stay global to the scan rather than resetting per root.
+    for root in &job.roots {
+        let _ =
+            karet_search::walk_text_files(root, &[], &job.settings.search.exclude, |path, text| {
+                if job.cancel.is_cancelled() {
+                    state.cancelled = true;
+                    return ControlFlow::Break(());
+                }
+                state.files_scanned += 1;
+                state.files_since_flush += 1;
+                if !job.open.contains(&resolve_path(path)) {
+                    check_file(path, &text, job, host, &mut state);
+                }
+                if state.total_hits >= job.limit {
+                    state.truncated = true;
+                    return ControlFlow::Break(());
+                }
+                if state.hits.len() >= HITS_PER_BATCH || state.files_since_flush >= FILES_PER_BATCH
+                {
+                    state.files_since_flush = 0;
+                    let hits = std::mem::take(&mut state.hits);
+                    if send(
+                        events,
+                        job.id,
+                        Event::SpellingScanProgress {
+                            hits,
+                            files_scanned: state.files_scanned,
+                        },
+                    )
+                    .is_break()
+                    {
+                        disconnected = true;
+                        return ControlFlow::Break(());
+                    }
+                }
+                ControlFlow::Continue(())
+            });
+        if disconnected || state.cancelled || state.truncated {
+            break;
         }
-        state.files_scanned += 1;
-        state.files_since_flush += 1;
-        if !job.open.contains(&resolve_path(path)) {
-            check_file(path, &text, job, host, &mut state);
-        }
-        if state.total_hits >= job.limit {
-            state.truncated = true;
-            return ControlFlow::Break(());
-        }
-        if state.hits.len() >= HITS_PER_BATCH || state.files_since_flush >= FILES_PER_BATCH {
-            state.files_since_flush = 0;
-            let hits = std::mem::take(&mut state.hits);
-            if send(
-                events,
-                job.id,
-                Event::SpellingScanProgress {
-                    hits,
-                    files_scanned: state.files_scanned,
-                },
-            )
-            .is_break()
-            {
-                disconnected = true;
-                return ControlFlow::Break(());
-            }
-        }
-        ControlFlow::Continue(())
-    });
+    }
     if disconnected {
         return ControlFlow::Break(());
     }
@@ -399,7 +408,7 @@ mod tests {
         settings.spellcheck.enabled = true;
         let mut request = SpellScanJob {
             id: RequestId(7),
-            root: root.to_path_buf(),
+            roots: vec![root.to_path_buf()],
             spelling_language: SpellingLanguage::EnglishUnitedStates,
             settings,
             open: HashSet::new(),
@@ -599,6 +608,54 @@ mod tests {
             "the comment is checked, the string literal is not: {:?}",
             scanned.hits
         );
+    }
+
+    #[test]
+    fn the_walk_honours_the_workspace_search_excludes() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        write(dir.path(), "notes.md", "the wrld ends\n");
+        write(dir.path(), "vendor/copy.md", "the wrld ends\n");
+        let Some(scanned) = scan_dir(dir.path(), |job| {
+            job.settings.search.exclude = vec!["vendor/**".to_owned()];
+        }) else {
+            return;
+        };
+
+        assert_eq!(
+            scanned.hits.iter().map(|h| &h.path).collect::<Vec<_>>(),
+            vec![&dir.path().join("notes.md")],
+            "a path excluded from search must not fill the panel: {:?}",
+            scanned.hits
+        );
+    }
+
+    #[test]
+    fn every_workspace_root_is_walked_under_one_budget() {
+        let (Ok(first), Ok(second)) = (tempfile::tempdir(), tempfile::tempdir()) else {
+            return;
+        };
+        write(first.path(), "a.md", "the wrld ends\n");
+        write(second.path(), "b.md", "the wrld ends\n");
+        let Some(scanned) = scan_dir(first.path(), |job| {
+            job.roots.push(second.path().to_path_buf());
+        }) else {
+            return;
+        };
+
+        assert_eq!(scanned.hits.len(), 2, "{:?}", scanned.hits);
+        assert_eq!(scanned.files_scanned, 2, "the counter spans both roots");
+
+        // The limit is the scan's, not each root's.
+        let Some(capped) = scan_dir(first.path(), |job| {
+            job.roots.push(second.path().to_path_buf());
+            job.limit = 1;
+        }) else {
+            return;
+        };
+        assert_eq!(capped.hits.len(), 1);
+        assert!(capped.truncated);
     }
 
     #[test]

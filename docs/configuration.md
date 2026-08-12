@@ -195,11 +195,13 @@ Squiggles only show what is on screen, so the **Spelling** sidebar panel (`Ctrl+
 workspace, grouped by file. Selecting a row — <kbd>Enter</kbd> or a click — opens that
 file with the caret on the word, so a pass over the list is a pass over the fixes.
 
-The scan walks the same corpus workspace search does: gitignore-aware, skipping binary
-and oversize files, with `.git`, `target`, and `node_modules` pruned. It applies the
-same scope settings as the editor, so with the defaults it checks prose documents and
-source comments and nothing else. Files you have open are answered from their live
-buffers, so unsaved edits are never reported from stale text on disk.
+The scan walks the same corpus workspace search does, across every workspace root:
+gitignore-aware, honouring your `search.exclude` globs, skipping binary and oversize
+files, with `.git`, `target`, and `node_modules` pruned. It applies the same scope
+settings as the editor, so with the defaults it checks prose documents and source
+comments and nothing else, and it resolves each file's dictionary through
+`.editorconfig` exactly as an open document does. Files you have open are answered
+from their live buffers, so unsaved edits are never reported from stale text on disk.
 
 Results stream in as the walk proceeds rather than appearing all at once — on this
 repository (435 files, ~113k lines) the first rows land in well under a second and the

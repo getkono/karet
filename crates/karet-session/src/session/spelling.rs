@@ -24,9 +24,8 @@ impl Session {
             .enabled
             .then(|| SpellingLanguage::parse(&self.config.settings.spellcheck.language))
             .flatten();
-        let (Some(root), Some(spelling_language)) =
-            (self.config.roots.first().cloned(), spelling_language)
-        else {
+        let roots = self.config.roots.clone();
+        let (false, Some(spelling_language)) = (roots.is_empty(), spelling_language) else {
             // Disabled, unsupported, or root-less: finish immediately rather than
             // leaving the client waiting on a scan that will never run.
             self.emit(
@@ -79,7 +78,7 @@ impl Session {
 
         let job = crate::spell_scan::SpellScanJob {
             id,
-            root,
+            roots,
             spelling_language,
             settings: self.config.settings.clone(),
             open,
