@@ -84,7 +84,7 @@ installing an `en_US` or `en_GB` Hunspell dictionary; the **Spelling** sidebar p
 (`Ctrl+4`) then lists every misspelling across the workspace, and selecting one opens
 its file at the word. The [configuration guide](docs/configuration.md#spellcheck)
 documents dictionary lookup, EditorConfig selection, scopes, and package-size
-tradeoffs.
+trade-offs.
 
 LaTeX source has tree-sitter highlighting and an external-tool workflow: install
 `latexmk`, then run **LaTeX: Build and Open PDF Preview** from the command palette.
