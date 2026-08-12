@@ -242,7 +242,7 @@ fn check_file(
 ) {
     let language = crate::session::language_name_for_path(path);
     let language_selector = crate::session::language_selector_for_path(path);
-    if !scope_can_match(language, &job.settings) {
+    if !crate::spell::scope::can_match(language, &job.settings) {
         return;
     }
     // A file with no compiled grammar still checks as prose; a source file simply
@@ -282,20 +282,6 @@ fn check_file(
         });
         state.total_hits += 1;
     }
-}
-
-/// Whether any scope this file could contribute is enabled — the cheap gate that
-/// skips parsing a source file outright when comments, strings, and identifiers
-/// are all off.
-fn scope_can_match(language: Option<&'static str>, settings: &Spellcheck) -> bool {
-    let prose = matches!(
-        language.map(str::to_ascii_lowercase).as_deref(),
-        Some("markdown" | "plain text" | "asciidoc" | "restructuredtext" | "tex")
-    );
-    if prose {
-        return settings.documents;
-    }
-    settings.comments || settings.strings || settings.identifiers
 }
 
 /// Send one event, mapping a closed stream to [`ControlFlow::Break`].
@@ -516,49 +502,5 @@ mod tests {
         assert!(scanned.hits.is_empty());
         assert_eq!(scanned.batches, 0, "an empty batch is never sent");
         assert_eq!(scanned.files_scanned, 1);
-    }
-
-    fn settings(comments: bool, strings: bool, identifiers: bool, documents: bool) -> Spellcheck {
-        Spellcheck {
-            comments,
-            strings,
-            identifiers,
-            documents,
-            ..Spellcheck::default()
-        }
-    }
-
-    #[test]
-    fn source_files_are_skipped_when_every_source_scope_is_off() {
-        assert!(!scope_can_match(
-            Some("Rust"),
-            &settings(false, false, false, true)
-        ));
-        assert!(scope_can_match(
-            Some("Rust"),
-            &settings(true, false, false, false)
-        ));
-        assert!(scope_can_match(
-            Some("Rust"),
-            &settings(false, true, false, false)
-        ));
-        assert!(scope_can_match(
-            Some("Rust"),
-            &settings(false, false, true, false)
-        ));
-    }
-
-    #[test]
-    fn prose_files_follow_the_documents_toggle_alone() {
-        assert!(scope_can_match(
-            Some("Markdown"),
-            &settings(false, false, false, true)
-        ));
-        assert!(!scope_can_match(
-            Some("Markdown"),
-            &settings(true, true, true, false)
-        ));
-        // An unrecognized language is treated as source, not prose.
-        assert!(!scope_can_match(None, &settings(false, false, false, true)));
     }
 }

@@ -24,6 +24,7 @@ use crate::config::schema::Spellcheck;
 
 pub(crate) mod check;
 mod context;
+pub(crate) mod scope;
 
 use check::SpellInput;
 

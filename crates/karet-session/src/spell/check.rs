@@ -20,6 +20,7 @@ use karet_syntax::Highlights;
 use spellbook::Dictionary;
 
 use super::context::is_non_prose_string;
+use super::scope::is_prose_document;
 use crate::api::SpellingLanguage;
 use crate::config::schema::Spellcheck;
 
@@ -164,15 +165,6 @@ fn char_offset(line: &str, col: u32) -> usize {
     line.char_indices()
         .nth(col as usize)
         .map_or(line.len(), |(offset, _)| offset)
-}
-
-fn is_prose_document(language: Option<&str>) -> bool {
-    language.is_some_and(|language| {
-        matches!(
-            language.to_ascii_lowercase().as_str(),
-            "markdown" | "plain text" | "asciidoc" | "restructuredtext" | "tex"
-        )
-    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -647,20 +639,5 @@ mod tests {
             "",
             "a line past the end is empty, not a panic"
         );
-    }
-
-    #[test]
-    fn prose_document_names_match_the_filetype_registry() {
-        for language in [
-            "Markdown",
-            "Plain Text",
-            "reStructuredText",
-            "AsciiDoc",
-            "TeX",
-        ] {
-            assert!(is_prose_document(Some(language)), "{language}");
-        }
-        assert!(!is_prose_document(Some("Rust")));
-        assert!(!is_prose_document(None));
     }
 }
