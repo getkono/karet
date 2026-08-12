@@ -56,9 +56,11 @@ pub(crate) struct SpellScanJob {
     /// path an open document uses.
     pub settings: crate::config::Settings,
     /// Paths already answered from live buffers; the scan must not re-read their
-    /// (possibly stale) on-disk text.
+    /// (possibly stale) on-disk text. Keyed by [`resolve_path`], since the walk
+    /// need not spell a path the way the client opened it.
     pub open: HashSet<PathBuf>,
-    /// Stop after this many hits and report `truncated`.
+    /// Stop after this many hits and report `truncated`. Already net of whatever
+    /// the session seeded from open documents.
     pub limit: usize,
     /// Cooperative cancellation, checked between files.
     pub cancel: Cancellation,
@@ -182,7 +184,7 @@ fn scan(
         }
         state.files_scanned += 1;
         state.files_since_flush += 1;
-        if !job.open.contains(path) {
+        if !job.open.contains(&resolve_path(path)) {
             check_file(path, &text, job, host, &mut state);
         }
         if state.total_hits >= job.limit {
@@ -302,6 +304,16 @@ fn check_file(
         });
         state.total_hits += 1;
     }
+}
+
+/// The comparable form of `path`, for matching a walked file against the open
+/// documents the scan must not re-read from disk.
+///
+/// Falls back to the path as given when it cannot be resolved (it was deleted
+/// under us, or permissions bite): an unresolvable path is no worse a key than
+/// the raw one, and both sides run through here.
+pub(crate) fn resolve_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// The dictionary this path should be checked against, resolved exactly as an
@@ -492,7 +504,7 @@ mod tests {
         write(dir.path(), "closed.md", "the wrld ends\n");
         let open = dir.path().join("open.md");
         let Some(scanned) = scan_dir(dir.path(), |job| {
-            job.open.insert(open.clone());
+            job.open.insert(resolve_path(&open));
         }) else {
             return;
         };
@@ -505,6 +517,29 @@ mod tests {
         assert_eq!(
             scanned.files_scanned, 2,
             "a skipped file still counts as visited"
+        );
+    }
+
+    #[test]
+    fn an_open_document_spelled_differently_is_still_recognized() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        write(dir.path(), "open.md", "the wrld ends\n");
+        write(dir.path(), "sub/other.md", "hello\n");
+        // The same file by an unnormalized path, as `karet notes.md` or a
+        // symlinked root would hand it to the session.
+        let awkward = dir.path().join("sub").join("..").join("open.md");
+        let Some(scanned) = scan_dir(dir.path(), |job| {
+            job.open.insert(resolve_path(&awkward));
+        }) else {
+            return;
+        };
+
+        assert!(
+            scanned.hits.is_empty(),
+            "the buffer already answered for this file: {:?}",
+            scanned.hits
         );
     }
 

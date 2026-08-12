@@ -7,6 +7,7 @@ use super::*;
 use crate::api::SpellingHit;
 use crate::api::SpellingLanguage;
 use crate::spell::check::word_in_line;
+use crate::spell_scan::resolve_path;
 
 impl Session {
     /// Spell-check the whole workspace on the scan worker, answering
@@ -42,7 +43,12 @@ impl Session {
         let mut open = HashSet::new();
         let mut hits = Vec::new();
         for document in self.store.docs.values() {
-            open.insert(document.path.clone());
+            // The walk yields paths as `ignore` composed them, which need not be
+            // spelled the way the client opened the document (`notes.md` against
+            // `./notes.md`, a symlinked root against its target). Comparing the
+            // resolved form is what keeps a file from being reported twice — once
+            // correctly from the buffer, once from stale disk text.
+            open.insert(resolve_path(&document.path));
             for diagnostic in &document.spell_diagnostics {
                 if hits.len() >= limit {
                     break;
@@ -57,7 +63,11 @@ impl Session {
                 });
             }
         }
-        if !hits.is_empty() {
+        // The seeded hits are part of the same list, so they spend the same
+        // budget; leaving the worker a fresh `limit` let the panel hold twice the
+        // cap and report `truncated: false` for a list that was in fact cut off.
+        let seeded = hits.len();
+        if seeded > 0 {
             self.emit(
                 Some(id),
                 Event::SpellingScanProgress {
@@ -66,6 +76,17 @@ impl Session {
                 },
             );
         }
+        if seeded >= limit {
+            self.emit(
+                Some(id),
+                Event::SpellingScanFinished {
+                    files_scanned: 0,
+                    truncated: true,
+                    cancelled: false,
+                },
+            );
+            return;
+        }
 
         let job = crate::spell_scan::SpellScanJob {
             id,
@@ -73,7 +94,7 @@ impl Session {
             spelling_language,
             settings: self.config.settings.clone(),
             open,
-            limit,
+            limit: limit - seeded,
             cancel: self.cancellations.register(id),
         };
         if self.spell_scan_worker.send(job).is_err() {

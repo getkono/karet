@@ -133,6 +133,64 @@
     }
 
     #[test]
+    fn seeded_open_document_hits_spend_the_same_budget_as_the_walk() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("notes.md");
+        if std::fs::write(&path, "the wrld ends here\n").is_err() {
+            return;
+        }
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![dir.path().to_path_buf()],
+            settings: spellcheck_settings(),
+            ..SessionConfig::default()
+        });
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path,
+                language: None,
+            },
+        );
+        let Some(doc) = opened_doc(&mut events) else {
+            return;
+        };
+        let Some(version) = session.document(doc).map(|view| view.version()) else {
+            return;
+        };
+        session.apply_spell_result(SpellResult {
+            doc,
+            version,
+            diagnostics: vec![
+                spell_diagnostic(0, 4, 8, "wrld"),
+                spell_diagnostic(0, 14, 18, "here"),
+            ],
+            error: None,
+        });
+        while events.try_recv().is_some() {}
+
+        session.handle(RequestId(9), Command::ScanWorkspaceSpelling { limit: 2 });
+
+        let mut seeded = 0;
+        let mut finished = None;
+        while let Some((_, event)) = events.try_recv() {
+            match event {
+                Event::SpellingScanProgress { hits, .. } => seeded += hits.len(),
+                Event::SpellingScanFinished { truncated, .. } => finished = Some(truncated),
+                _ => {},
+            }
+        }
+        assert_eq!(seeded, 2, "the seed filled the cap");
+        assert_eq!(
+            finished,
+            Some(true),
+            "a list cut off at the cap must say so rather than inviting the walk \
+             to add another `limit` hits on top"
+        );
+    }
+
+    #[test]
     fn adding_a_dictionary_word_re_runs_the_spell_layer_of_every_open_document() {
         let Ok(dir) = tempfile::tempdir() else {
             return;
