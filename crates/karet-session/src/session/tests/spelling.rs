@@ -131,3 +131,85 @@
             "the hit carries its line as list context"
         );
     }
+
+    #[test]
+    fn adding_a_dictionary_word_re_runs_the_spell_layer_of_every_open_document() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        // A project write needs a git root with an existing settings file.
+        if std::fs::create_dir(dir.path().join(".git")).is_err()
+            || std::fs::create_dir(dir.path().join(".karet")).is_err()
+            || std::fs::write(dir.path().join(".karet/setting.jsonc"), "{}\n").is_err()
+        {
+            return;
+        }
+        let path = dir.path().join("notes.md");
+        if std::fs::write(&path, "the wrod ends\n").is_err() {
+            return;
+        }
+        // Spell-checking is off, so the re-run resolves no dictionary and the
+        // stale layer is dropped — the observable proof that the document was
+        // rescheduled without any filesystem event arriving.
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![dir.path().to_path_buf()],
+            ..SessionConfig::default()
+        });
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path,
+                language: None,
+            },
+        );
+        let Some(doc) = opened_doc(&mut events) else {
+            return;
+        };
+        let Some(version) = session.document(doc).map(|view| view.version()) else {
+            return;
+        };
+        session.apply_spell_result(SpellResult {
+            doc,
+            version,
+            diagnostics: vec![spell_diagnostic(0, 4, 8, "wrod")],
+            error: None,
+        });
+        while events.try_recv().is_some() {}
+
+        session.handle(
+            RequestId(2),
+            Command::AddDictionaryWord {
+                word: "wrod".to_owned(),
+                scope: crate::api::DictionaryScope::Project,
+                create_project: false,
+            },
+        );
+
+        let mut republished = None;
+        let mut added = false;
+        while let Some((_, event)) = events.try_recv() {
+            match event {
+                Event::DiagnosticsPublished { diagnostics, .. } => {
+                    republished = Some(diagnostics);
+                },
+                Event::DictionaryWordAdded { .. } => added = true,
+                _ => {},
+            }
+        }
+        assert!(added, "the word was written");
+        assert_eq!(
+            republished,
+            Some(Vec::new()),
+            "the open document's spell layer is recomputed, not left stale"
+        );
+        assert!(
+            session
+                .config
+                .settings
+                .spellcheck
+                .words
+                .iter()
+                .any(|word| word == "wrod"),
+            "the word is live for the next check"
+        );
+    }
