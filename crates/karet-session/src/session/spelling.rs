@@ -71,7 +71,7 @@ impl Session {
             id,
             root,
             spelling_language,
-            settings: self.config.settings.spellcheck.clone(),
+            settings: self.config.settings.clone(),
             open,
             limit,
             cancel: self.cancellations.register(id),

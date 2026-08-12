@@ -31,7 +31,6 @@ use crate::api::RequestId;
 use crate::api::SpellingHit;
 use crate::api::SpellingLanguage;
 use crate::cancellation::Cancellation;
-use crate::config::schema::Spellcheck;
 use crate::spell::check::LineIndex;
 use crate::spell::check::SpellInput;
 use crate::spell::check::word_in_line;
@@ -49,10 +48,13 @@ pub(crate) struct SpellScanJob {
     pub id: RequestId,
     /// The workspace root to walk.
     pub root: PathBuf,
-    /// The dictionary to check against.
+    /// The workspace's dictionary — the answer for every path an `.editorconfig`
+    /// does not override.
     pub spelling_language: SpellingLanguage,
-    /// The resolved spell-check settings.
-    pub settings: Spellcheck,
+    /// The live settings. The whole snapshot rather than `spellcheck` alone,
+    /// because resolving a path's dictionary goes through the same EditorConfig
+    /// path an open document uses.
+    pub settings: crate::config::Settings,
     /// Paths already answered from live buffers; the scan must not re-read their
     /// (possibly stale) on-disk text.
     pub open: HashSet<PathBuf>,
@@ -116,6 +118,9 @@ struct ScanState {
     total_hits: usize,
     truncated: bool,
     cancelled: bool,
+    /// Per directory, whether any `.editorconfig` above it selects a spelling
+    /// locale. See [`ancestry_selects_locale`].
+    locale_overrides: HashMap<PathBuf, bool>,
 }
 
 /// Resolve the job's dictionary (cached for the worker's lifetime), then walk.
@@ -124,45 +129,40 @@ fn execute(
     host: &mut ScanHost,
     events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
 ) -> ControlFlow<()> {
-    let ScanHost {
-        parse,
-        dictionaries,
-    } = host;
-    let dictionary = dictionaries
+    // Load the workspace's own dictionary first: a missing one is the user's
+    // environment, not a bug, and saying so once beats a silently empty scan.
+    // Per-file EditorConfig locales are resolved lazily during the walk.
+    let dictionary = host
+        .dictionaries
         .entry(job.spelling_language)
         .or_insert_with(|| crate::spell::load_dictionary(job.spelling_language));
-    match dictionary {
-        Ok(dictionary) => scan(&job, parse, dictionary, events),
-        Err(error) => {
-            // A missing dictionary is the user's environment, not a bug: say so once
-            // and finish cleanly so the client leaves its "scanning" state.
-            send(
-                events,
-                job.id,
-                Event::Notification {
-                    severity: Severity::Warning,
-                    kind: NotificationKind::System,
-                    message: error.clone(),
-                },
-            )?;
-            send(
-                events,
-                job.id,
-                Event::SpellingScanFinished {
-                    files_scanned: 0,
-                    truncated: false,
-                    cancelled: false,
-                },
-            )
-        },
+    if let Err(error) = dictionary {
+        send(
+            events,
+            job.id,
+            Event::Notification {
+                severity: Severity::Warning,
+                kind: NotificationKind::System,
+                message: error.clone(),
+            },
+        )?;
+        return send(
+            events,
+            job.id,
+            Event::SpellingScanFinished {
+                files_scanned: 0,
+                truncated: false,
+                cancelled: false,
+            },
+        );
     }
+    scan(&job, host, events)
 }
 
-/// Walk the workspace with a resolved dictionary, streaming batches as it goes.
+/// Walk the workspace, streaming batches as it goes.
 fn scan(
     job: &SpellScanJob,
-    parse: &mut ParseHost,
-    dictionary: &Dictionary,
+    host: &mut ScanHost,
     events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
 ) -> ControlFlow<()> {
     let mut state = ScanState {
@@ -172,6 +172,7 @@ fn scan(
         total_hits: 0,
         truncated: false,
         cancelled: false,
+        locale_overrides: HashMap::new(),
     };
     let mut disconnected = false;
     let _ = karet_search::walk_text_files(&job.root, &[], &[], |path, text| {
@@ -182,7 +183,7 @@ fn scan(
         state.files_scanned += 1;
         state.files_since_flush += 1;
         if !job.open.contains(path) {
-            check_file(path, &text, job, parse, dictionary, &mut state);
+            check_file(path, &text, job, host, &mut state);
         }
         if state.total_hits >= job.limit {
             state.truncated = true;
@@ -236,34 +237,53 @@ fn check_file(
     path: &Path,
     text: &str,
     job: &SpellScanJob,
-    parse: &mut ParseHost,
-    dictionary: &Dictionary,
+    host: &mut ScanHost,
     state: &mut ScanState,
 ) {
     let language = crate::session::language_name_for_path(path);
     let language_selector = crate::session::language_selector_for_path(path);
-    if !crate::spell::scope::can_match(language, &job.settings) {
+    if !crate::spell::scope::can_match(language, &job.settings.spellcheck) {
         return;
     }
+    // A document resolves its dictionary through EditorConfig; so must a walked
+    // file, or the panel checks against a locale the editor never uses — and a
+    // path EditorConfig leaves without a supported locale is one the editor
+    // never checks at all.
+    let Some(spelling_language) = spelling_language_for(path, language, job, state) else {
+        return;
+    };
+    let ScanHost {
+        parse,
+        dictionaries,
+    } = host;
+    let dictionary = dictionaries
+        .entry(spelling_language)
+        .or_insert_with(|| crate::spell::load_dictionary(spelling_language));
+    let Ok(dictionary) = dictionary else {
+        return; // an EditorConfig locale with no dictionary installed
+    };
     // A file with no compiled grammar still checks as prose; a source file simply
     // has no tokens to classify and so contributes nothing.
-    let highlights = karet_treesitter::language_id_from_path(path)
-        .and_then(|lang| parse.parser.parse(lang, text).ok())
-        .map_or_else(Highlights::default, |tree| {
-            parse.highlighter.highlight(&tree, text)
-        });
+    let tree = karet_treesitter::language_id_from_path(path)
+        .and_then(|lang| parse.parser.parse(lang, text).ok());
+    let (highlights, syntax_error_lines) = tree.as_ref().map_or_else(
+        || (Highlights::default(), Vec::new()),
+        |tree| (parse.highlighter.highlight(tree, text), tree.error_lines()),
+    );
     let diagnostics = crate::spell::check::check(
         &SpellInput {
             text,
             language,
             language_selector,
-            spelling_language: job.spelling_language,
+            spelling_language,
             highlights: &highlights,
-            // A scan reads committed files rather than a half-typed buffer, so the
-            // "pause identifier linting while syntax is broken" guard has nothing
-            // to suppress.
-            syntax_error_lines: &[],
-            settings: &job.settings,
+            // The editor pauses identifier linting while the file does not parse,
+            // because a broken tree mislabels ordinary text as an identifier. A
+            // file on disk is no less capable of not parsing than a half-typed
+            // buffer, so the scan owes the same guard — without it the panel
+            // reports identifiers the editor would never mark.
+            syntax_error_lines: &syntax_error_lines,
+            settings: &job.settings.spellcheck,
             suggest: false,
         },
         dictionary,
@@ -282,6 +302,51 @@ fn check_file(
         });
         state.total_hits += 1;
     }
+}
+
+/// The dictionary this path should be checked against, resolved exactly as an
+/// open document's is.
+///
+/// EditorConfig locale selection is opt-in and rare, so the ancestry is inspected
+/// once per directory: when nothing above the file mentions `spelling_language`,
+/// the workspace locale is the answer by construction and no per-file resolution
+/// runs at all.
+fn spelling_language_for(
+    path: &Path,
+    language: Option<&'static str>,
+    job: &SpellScanJob,
+    state: &mut ScanState,
+) -> Option<SpellingLanguage> {
+    let Some(dir) = path.parent() else {
+        return Some(job.spelling_language);
+    };
+    let overridden = match state.locale_overrides.get(dir) {
+        Some(&overridden) => overridden,
+        None => {
+            let overridden = ancestry_selects_locale(dir);
+            state.locale_overrides.insert(dir.to_path_buf(), overridden);
+            overridden
+        },
+    };
+    if !overridden {
+        return Some(job.spelling_language);
+    }
+    crate::editorconfig::resolve(path, language, &job.settings)
+        .map_or(Some(job.spelling_language), |resolved| {
+            resolved.spelling_language
+        })
+}
+
+/// Whether any `.editorconfig` at or above `dir` mentions `spelling_language`.
+///
+/// Deliberately conservative: a false positive only costs a per-file resolution
+/// that lands on the same answer, so this never needs to model EditorConfig's
+/// `root` or glob semantics — it only decides whether asking is worth it.
+fn ancestry_selects_locale(dir: &Path) -> bool {
+    dir.ancestors().any(|ancestor| {
+        std::fs::read_to_string(ancestor.join(".editorconfig"))
+            .is_ok_and(|text| text.contains("spelling_language"))
+    })
 }
 
 /// Send one event, mapping a closed stream to [`ControlFlow::Break`].
@@ -318,24 +383,36 @@ mod tests {
         let dictionary = Dictionary::new(AFF, DIC).ok()?;
         let (tx, mut rx) = tokio_mpsc::unbounded_channel();
         let hub = CancellationHub::default();
+        let mut settings = crate::config::Settings::default();
+        settings.spellcheck.enabled = true;
         let mut request = SpellScanJob {
             id: RequestId(7),
             root: root.to_path_buf(),
             spelling_language: SpellingLanguage::EnglishUnitedStates,
-            settings: Spellcheck {
-                enabled: true,
-                ..Spellcheck::default()
-            },
+            settings,
             open: HashSet::new(),
             limit: 1000,
             cancel: hub.register(RequestId(7)),
         };
         job(&mut request);
-        let mut parse = ParseHost {
-            parser: LayeredParser::new(),
-            highlighter: LayeredHighlighter::new(),
+        // Both supported locales resolve to the same fixture dictionary, so an
+        // EditorConfig override changes the corpus rather than failing to load.
+        let mut host = ScanHost {
+            parse: ParseHost {
+                parser: LayeredParser::new(),
+                highlighter: LayeredHighlighter::new(),
+            },
+            dictionaries: [
+                (SpellingLanguage::EnglishUnitedStates, Ok(dictionary)),
+                (
+                    SpellingLanguage::EnglishUnitedKingdom,
+                    Dictionary::new(AFF, DIC).map_err(|error| error.to_string()),
+                ),
+            ]
+            .into_iter()
+            .collect(),
         };
-        let _ = scan(&request, &mut parse, &dictionary, &tx);
+        let _ = scan(&request, &mut host, &tx);
 
         let mut scanned = Scanned {
             hits: Vec::new(),
@@ -487,6 +564,109 @@ mod tests {
             "the comment is checked, the string literal is not: {:?}",
             scanned.hits
         );
+    }
+
+    #[test]
+    fn identifier_linting_pauses_on_a_file_that_does_not_parse() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        // Both files name the same identifier; only the second parses cleanly.
+        write(dir.path(), "broken.rs", "fn wrld( {\n");
+        write(dir.path(), "clean.rs", "fn wrld() {}\n");
+        let Some(scanned) = scan_dir(dir.path(), |job| {
+            job.settings.spellcheck.identifiers = true;
+        }) else {
+            return;
+        };
+
+        assert_eq!(
+            scanned
+                .hits
+                .iter()
+                .map(|hit| hit.path.clone())
+                .collect::<Vec<_>>(),
+            vec![dir.path().join("clean.rs")],
+            "a broken tree mislabels text as identifiers; the editor pauses here \
+             and so must the scan: {:?}",
+            scanned.hits
+        );
+    }
+
+    #[test]
+    fn editorconfig_selects_the_dictionary_for_a_walked_file() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        write(
+            dir.path(),
+            ".editorconfig",
+            "root = true\n[*.md]\nspelling_language = en-GB\n",
+        );
+        write(dir.path(), "notes.md", "the wrld ends\n");
+        let Some(scanned) = scan_dir(dir.path(), |_| {}) else {
+            return;
+        };
+
+        assert_eq!(
+            scanned
+                .hits
+                .iter()
+                .map(|h| h.word.as_str())
+                .collect::<Vec<_>>(),
+            vec!["wrld"],
+            "{:?}",
+            scanned.hits
+        );
+        assert_eq!(
+            scanned.hits[0].path,
+            dir.path().join("notes.md"),
+            "the override resolves to a supported locale, so the file is checked"
+        );
+    }
+
+    #[test]
+    fn an_unsupported_editorconfig_locale_skips_the_file_as_the_editor_does() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        // `resolve` yields no spelling language for `de`, which clears an open
+        // document's diagnostics outright — the panel must agree.
+        write(
+            dir.path(),
+            ".editorconfig",
+            "root = true\n[*.md]\nspelling_language = de\n",
+        );
+        write(dir.path(), "notes.md", "the wrld ends\n");
+        let Some(scanned) = scan_dir(dir.path(), |_| {}) else {
+            return;
+        };
+
+        assert!(scanned.hits.is_empty(), "{:?}", scanned.hits);
+        assert_eq!(
+            scanned.files_scanned, 1,
+            "the file was visited and then skipped, not filtered out of the walk"
+        );
+    }
+
+    #[test]
+    fn a_workspace_without_the_property_never_pays_for_editorconfig_resolution() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        write(
+            dir.path(),
+            ".editorconfig",
+            "root = true\n[*]\nindent_size = 2\n",
+        );
+        assert!(!ancestry_selects_locale(dir.path()));
+
+        write(
+            dir.path(),
+            ".editorconfig",
+            "root = true\n[*.md]\nspelling_language = en-GB\n",
+        );
+        assert!(ancestry_selects_locale(dir.path()));
     }
 
     #[test]
