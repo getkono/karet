@@ -181,6 +181,99 @@ fn a_click_below_the_last_row_opens_nothing() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn a_documents_own_layer_replaces_what_the_scan_said_about_that_file() {
+    let dir = test_dir("spelling-reconcile");
+    let a = dir.join("a.md");
+    let b = dir.join("b.md");
+    let mut app = scanned(
+        &dir,
+        vec![
+            hit(&a, 0, 4, "wrld", "the wrld ends"),
+            hit(&a, 3, 0, "teh", "teh end"),
+            hit(&b, 1, 2, "recieve", "  recieve it"),
+        ],
+    );
+
+    // Opening `a.md` re-checks it, and the editor marks only one of the two.
+    app.spelling_updated(&a, vec![hit(&a, 0, 4, "wrld", "the wrld ends")]);
+
+    assert_eq!(
+        app.spelling
+            .hits
+            .iter()
+            .map(|h| (h.path.clone(), h.word.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (a.clone(), "wrld".to_owned()),
+            (b.clone(), "recieve".to_owned()),
+        ],
+        "the other file's hits are untouched and stay grouped"
+    );
+    assert_eq!(
+        app.spelling.rows,
+        vec![
+            SpellingRow::File { hit: 0, count: 1 },
+            SpellingRow::Word { hit: 0 },
+            SpellingRow::File { hit: 1, count: 1 },
+            SpellingRow::Word { hit: 1 },
+        ]
+    );
+
+    // Fixing the last one drops the file's heading with it.
+    app.spelling_updated(&a, Vec::new());
+    assert_eq!(
+        app.spelling.rows,
+        vec![
+            SpellingRow::File { hit: 0, count: 1 },
+            SpellingRow::Word { hit: 0 },
+        ]
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_clean_file_the_scan_never_listed_is_not_appended() {
+    let dir = test_dir("spelling-reconcile-clean");
+    let a = dir.join("a.md");
+    let b = dir.join("b.md");
+    let mut app = scanned(&dir, vec![hit(&a, 0, 4, "wrld", "the wrld ends")]);
+
+    app.spelling_updated(&b, Vec::new());
+    assert_eq!(app.spelling.hits.len(), 1);
+
+    // A file that goes on to acquire a misspelling does get listed.
+    app.spelling_updated(&b, vec![hit(&b, 0, 0, "teh", "teh end")]);
+    assert_eq!(
+        app.spelling
+            .hits
+            .iter()
+            .map(|h| h.word.as_str())
+            .collect::<Vec<_>>(),
+        vec!["wrld", "teh"]
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_panel_that_never_scanned_ignores_document_spelling_updates() {
+    let dir = test_dir("spelling-reconcile-idle");
+    let path = dir.join("a.md");
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+
+    app.spelling_updated(&path, vec![hit(&path, 0, 4, "wrld", "the wrld ends")]);
+
+    assert!(
+        app.spelling.hits.is_empty(),
+        "an unasked-for panel has nothing to correct"
+    );
+    assert!(!app.spelling.scanned);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A `ConfigChanged` carrying `settings`, as the watcher's reload would deliver it.
 fn config_changed(app: &mut App, settings: karet_session::config::Settings) {
     app.on_backend_event(

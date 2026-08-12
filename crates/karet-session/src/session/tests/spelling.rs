@@ -133,6 +133,74 @@
     }
 
     #[test]
+    fn a_changed_spell_layer_publishes_the_documents_hits() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("notes.md");
+        if std::fs::write(&path, "hello world\nthe wrld ends\n").is_err() {
+            return;
+        }
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![dir.path().to_path_buf()],
+            settings: spellcheck_settings(),
+            ..SessionConfig::default()
+        });
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let Some(doc) = opened_doc(&mut events) else {
+            return;
+        };
+        let Some(version) = session.document(doc).map(|view| view.version()) else {
+            return;
+        };
+        while events.try_recv().is_some() {}
+
+        session.apply_spell_result(SpellResult {
+            doc,
+            version,
+            diagnostics: vec![spell_diagnostic(1, 4, 8, "wrld")],
+            error: None,
+        });
+
+        let mut published = None;
+        while let Some((id, event)) = events.try_recv() {
+            if let Event::SpellingUpdated { path, hits } = event {
+                assert_eq!(id, None, "the document is not answering a scan");
+                published = Some((path, hits));
+            }
+        }
+        let Some((updated_path, hits)) = published else {
+            unreachable!("expected a SpellingUpdated event")
+        };
+        assert_eq!(updated_path, path);
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].word, "wrld");
+        assert_eq!(hits[0].line_text, "the wrld ends");
+
+        // Fixing the file publishes the empty layer, so a client's list can drop
+        // the row rather than keeping a word the editor no longer marks.
+        session.apply_spell_result(SpellResult {
+            doc,
+            version,
+            diagnostics: Vec::new(),
+            error: None,
+        });
+        let mut cleared = None;
+        while let Some((_, event)) = events.try_recv() {
+            if let Event::SpellingUpdated { hits, .. } = event {
+                cleared = Some(hits);
+            }
+        }
+        assert_eq!(cleared, Some(Vec::new()));
+    }
+
+    #[test]
     fn seeded_open_document_hits_spend_the_same_budget_as_the_walk() {
         let Ok(dir) = tempfile::tempdir() else {
             return;

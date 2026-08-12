@@ -83,6 +83,42 @@ impl App {
         self.spelling.rebuild_rows();
     }
 
+    /// Replace everything the panel holds for `path` with that document's own
+    /// spelling layer.
+    ///
+    /// A scan is a photograph of the workspace and starts going stale the moment
+    /// it is taken. The document is the authority for a file that is open — it is
+    /// what the editor underlines — so adopting its answer is what stops the panel
+    /// from listing a word the file view plainly is not marking.
+    pub(super) fn spelling_updated(&mut self, path: &Path, hits: Vec<SpellingHit>) {
+        if !self.spelling.scanned && self.spelling.scanning.is_none() {
+            return; // nothing has been asked for, so there is nothing to correct
+        }
+        // Hits arrive grouped by file, so one file's rows are a contiguous run
+        // and splicing in place keeps the grouping intact.
+        let start = self.spelling.hits.iter().position(|hit| hit.path == path);
+        let existing = match start {
+            Some(start) => {
+                let end = start
+                    + self.spelling.hits[start..]
+                        .iter()
+                        .take_while(|hit| hit.path == path)
+                        .count();
+                start..end
+            },
+            // A file the scan found clean, or has not reached yet: appending
+            // would put it out of order and split some other file's run, so a
+            // clean answer is simply nothing to do.
+            None if hits.is_empty() => return,
+            None => self.spelling.hits.len()..self.spelling.hits.len(),
+        };
+        if self.spelling.hits[existing.clone()] == hits[..] {
+            return;
+        }
+        self.spelling.hits.splice(existing, hits);
+        self.spelling.rebuild_rows();
+    }
+
     /// Adopt a scan's terminal state.
     pub(super) fn spelling_scan_finished(
         &mut self,

@@ -287,6 +287,7 @@ impl App {
                 hits,
                 files_scanned,
             } => self.spelling_scan_progress(id, hits, files_scanned),
+            SessionEvent::SpellingUpdated { path, hits } => self.spelling_updated(&path, hits),
             SessionEvent::SpellingScanFinished {
                 files_scanned,
                 truncated,

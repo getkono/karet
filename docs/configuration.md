@@ -213,6 +213,12 @@ switched — re-runs the scan, whether the change came from the correction menu 
 from editing a `setting.jsonc` in another window. Unrelated settings do not, and a
 panel you have never opened stays idle: opening it is what asks for the walk.
 
+Files you open are reconciled continuously rather than by re-scanning: an open
+document's own spelling layer replaces whatever the scan said about that file, so
+its rows track the squiggles as you type and a fixed word leaves the list on the
+keystroke that fixes it. What the panel lists for a file you are looking at is by
+construction what the editor underlines in it.
+
 The panel deliberately shows no replacement suggestions: computing them for a whole
 workspace dominates the scan's cost, and the correction menu and completion popup
 already offer them in the editor, where the fix actually happens.

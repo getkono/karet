@@ -219,6 +219,20 @@ pub enum Event {
         /// How many files the scan has visited so far.
         files_scanned: usize,
     },
+    /// One open document's complete spelling layer, emitted whenever it changes.
+    ///
+    /// Unsolicited: it carries no request id, because it describes the document
+    /// rather than answering a scan. A client holding workspace scan results
+    /// should replace everything it has for `path` with these hits — the document
+    /// is the authority for a file that is open, and this is what keeps a results
+    /// list from claiming a misspelling the editor is not underlining.
+    SpellingUpdated {
+        /// The document's path.
+        path: PathBuf,
+        /// Every misspelling in it now; empty when the file is clean or is no
+        /// longer being checked at all.
+        hits: Vec<SpellingHit>,
+    },
     /// A workspace spelling scan reached a terminal state, answering
     /// [`Command::ScanWorkspaceSpelling`]. Exactly one arrives per scan.
     SpellingScanFinished {

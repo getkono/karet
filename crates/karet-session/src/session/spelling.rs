@@ -49,19 +49,8 @@ impl Session {
             // resolved form is what keeps a file from being reported twice — once
             // correctly from the buffer, once from stale disk text.
             open.insert(resolve_path(&document.path));
-            for diagnostic in &document.spell_diagnostics {
-                if hits.len() >= limit {
-                    break;
-                }
-                let line = diagnostic.range.start.line;
-                let text = document.buffer.line(line as usize).unwrap_or_default();
-                hits.push(SpellingHit {
-                    word: word_in_line(&text, diagnostic.range),
-                    path: document.path.clone(),
-                    range: diagnostic.range,
-                    line_text: text.trim().to_owned(),
-                });
-            }
+            let room = limit.saturating_sub(hits.len());
+            hits.extend(document_hits(document).take(room));
         }
         // The seeded hits are part of the same list, so they spend the same
         // budget; leaving the worker a fresh `limit` let the panel hold twice the
@@ -108,4 +97,38 @@ impl Session {
             );
         }
     }
+
+    /// Publish one document's spelling layer, so a client holding workspace scan
+    /// results can replace what it has for this file.
+    ///
+    /// Called wherever the layer changes. A scan is a photograph of the workspace
+    /// and starts going stale the moment it is taken; this keeps the file the user
+    /// is actually looking at in step with what the editor underlines.
+    pub(crate) fn publish_spelling(&self, doc_id: DocumentId) {
+        let Some(document) = self.store.docs.get(&doc_id) else {
+            return;
+        };
+        self.emit(
+            None,
+            Event::SpellingUpdated {
+                path: document.path.clone(),
+                hits: document_hits(document).collect(),
+            },
+        );
+    }
+}
+
+/// This document's spell diagnostics as [`SpellingHit`]s, each carrying its line
+/// as list context.
+fn document_hits(document: &Document) -> impl Iterator<Item = SpellingHit> + '_ {
+    document.spell_diagnostics.iter().map(|diagnostic| {
+        let line = diagnostic.range.start.line;
+        let text = document.buffer.line(line as usize).unwrap_or_default();
+        SpellingHit {
+            word: word_in_line(&text, diagnostic.range),
+            path: document.path.clone(),
+            range: diagnostic.range,
+            line_text: text.trim().to_owned(),
+        }
+    })
 }
