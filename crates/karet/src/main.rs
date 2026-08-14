@@ -222,6 +222,71 @@ fn startup_target(path: PathBuf) -> (PathBuf, Option<PathBuf>) {
     (root, Some(path))
 }
 
+/// The window/process title's workspace path, resolved against the real
+/// environment.
+///
+/// Falls back to the root as given when the current directory cannot be read (a
+/// deleted cwd), so a cosmetic string never fails startup.
+pub(crate) fn window_title_path(root: &Path) -> String {
+    let Ok(cwd) = std::env::current_dir() else {
+        return root.display().to_string();
+    };
+    let base_dirs = directories::BaseDirs::new();
+    title_path(
+        root,
+        &cwd,
+        base_dirs.as_ref().map(directories::BaseDirs::home_dir),
+    )
+}
+
+/// Render `root` for the window title: absolute, lexically normalized, with `home`
+/// abbreviated to `~`.
+///
+/// The root reaching this point is whatever the user typed — most often the default
+/// `.`, which is useless as a title. `home` is a parameter rather than an ambient
+/// lookup so tests never depend on the machine's real home directory.
+///
+/// Resolution is lexical on purpose: `fs::canonicalize` fails on a path that does not
+/// exist yet (`karet new-project/`) and resolves symlinks, which would title the
+/// window with a path the user never typed.
+fn title_path(root: &Path, cwd: &Path, home: Option<&Path>) -> String {
+    // `join` returns `root` unchanged when it is already absolute.
+    let absolute = lexically_normalize(&cwd.join(root));
+    match home.and_then(|home| absolute.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+        Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+        None => absolute.display().to_string(),
+    }
+}
+
+/// Resolve `.` and `..` components without touching the filesystem.
+fn lexically_normalize(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {},
+            Component::ParentDir => {
+                // Only a real segment can be popped. With nothing to pop, a relative
+                // path keeps the `..` (it still means something) while a filesystem
+                // root swallows it — `/..` is `/`.
+                let poppable = !matches!(
+                    out.components().next_back(),
+                    None | Some(Component::RootDir | Component::Prefix(_) | Component::ParentDir)
+                );
+                if poppable {
+                    out.pop();
+                } else if !out.has_root() {
+                    out.push("..");
+                }
+            },
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
 fn has_trailing_separator(path: &Path) -> bool {
     let last = path.as_os_str().as_encoded_bytes().last();
     last == Some(&(std::path::MAIN_SEPARATOR as u8)) || (cfg!(windows) && last == Some(&b'/'))
@@ -274,6 +339,61 @@ mod tests {
             (dir.path().to_path_buf(), Some(missing))
         );
         Ok(())
+    }
+
+    #[test]
+    fn the_default_root_titles_the_window_with_the_current_directory() {
+        let home = Path::new("/home/ada");
+        let cwd = home.join("dev").join("karet");
+
+        assert_eq!(
+            title_path(Path::new("."), &cwd, Some(home)),
+            format!("~{sep}dev{sep}karet", sep = std::path::MAIN_SEPARATOR)
+        );
+    }
+
+    #[test]
+    fn a_root_outside_the_home_directory_stays_absolute() {
+        let absolute = Path::new("/etc").join("nginx");
+
+        assert_eq!(
+            title_path(&absolute, Path::new("/tmp"), Some(Path::new("/home/ada"))),
+            absolute.display().to_string()
+        );
+    }
+
+    #[test]
+    fn the_home_directory_itself_is_just_a_tilde() {
+        let home = Path::new("/home/ada");
+
+        assert_eq!(title_path(Path::new("."), home, Some(home)), "~");
+        assert_eq!(title_path(home, Path::new("/tmp"), Some(home)), "~");
+    }
+
+    #[test]
+    fn dot_and_dot_dot_components_are_resolved_without_touching_the_filesystem() {
+        let home = Path::new("/home/ada");
+        let cwd = home.join("dev").join("karet").join("crates");
+
+        assert_eq!(
+            title_path(Path::new("../.."), &cwd, Some(home)),
+            format!("~{sep}dev", sep = std::path::MAIN_SEPARATOR)
+        );
+        // A `..` at the filesystem root has nothing to pop and is dropped.
+        assert_eq!(
+            title_path(Path::new("/../.."), &cwd, Some(home)),
+            Path::new("/").display().to_string()
+        );
+    }
+
+    #[test]
+    fn a_machine_without_a_home_directory_still_gets_an_absolute_title() {
+        let cwd = Path::new("/srv/work");
+
+        assert_eq!(
+            title_path(Path::new("."), cwd, None),
+            cwd.display().to_string()
+        );
     }
 
     #[test]
