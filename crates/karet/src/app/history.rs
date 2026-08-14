@@ -26,6 +26,26 @@ impl App {
     /// selected commit's detail if it isn't already shown.
     pub(super) fn graph_select(&mut self, delta: i32) {
         let Some(TabKind::CommitGraph {
+            commits, selected, ..
+        }) = self.active_commit_graph()
+        else {
+            return;
+        };
+        let Some(last) = commits.len().checked_sub(1) else {
+            return;
+        };
+        let next = (*selected as i64 + i64::from(delta)).clamp(0, last as i64) as usize;
+        self.graph_select_to(next);
+    }
+
+    /// Select commit `index` outright, rather than stepping towards it.
+    ///
+    /// The browser's list offset is recomputed from the selection every frame, so a
+    /// dragged scrollbar has to move the selection to move the view — and it has to
+    /// come through here, not by writing `selected`, or the detail pane would keep
+    /// showing whichever commit the selection left behind.
+    pub(super) fn graph_select_to(&mut self, index: usize) {
+        let Some(TabKind::CommitGraph {
             history_path,
             commits,
             selected,
@@ -39,8 +59,7 @@ impl App {
         if commits.is_empty() {
             return;
         }
-        let last = commits.len() - 1;
-        let next = (*selected as i64 + i64::from(delta)).clamp(0, last as i64) as usize;
+        let next = index.min(commits.len() - 1);
         *selected = next;
         // Page in more history when nearing the end, from the same source (whole-repo
         // log or a single file's history).

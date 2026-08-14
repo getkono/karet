@@ -96,3 +96,249 @@ fn a_tall_document_paints_a_vertical_bar_that_tracks_the_scroll() {
         "scrolling down should move the thumb down: {at_top:?} then {scrolled:?}"
     );
 }
+
+/// A left press at `(x, y)`.
+fn press(app: &mut App, x: u16, y: u16) {
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    });
+}
+
+/// A left-button drag to `(x, y)`.
+fn drag(app: &mut App, x: u16, y: u16) {
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    });
+}
+
+/// A wheel notch at `(x, y)`; `down` picks the direction.
+fn wheel(app: &mut App, x: u16, y: u16, down: bool) {
+    app.handle_mouse(MouseEvent {
+        kind: if down {
+            MouseEventKind::ScrollDown
+        } else {
+            MouseEventKind::ScrollUp
+        },
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    });
+}
+
+#[test]
+fn a_wheel_notch_over_the_track_moves_one_line_while_the_text_moves_three() {
+    // The requirement, asserted as a pair: the bar is the app's only fine scroll, so
+    // neither half is allowed to regress without the other noticing.
+    let mut app = app();
+    app.push_tab(text_tab("tall.rs", &"line\n".repeat(200)));
+    screen(&mut app, 40, 12);
+    let rect = app.editor_rect;
+
+    wheel(&mut app, rect.right(), rect.y + 1, true);
+    assert_eq!(
+        app.tabs[app.active].editor.scroll_line, 1,
+        "a notch over the track should step exactly one line"
+    );
+
+    app.tabs[app.active].editor.scroll_line = 0;
+    screen(&mut app, 40, 12);
+    wheel(&mut app, rect.x + 1, rect.y + 1, true);
+    assert_eq!(
+        app.tabs[app.active].editor.scroll_line, 3,
+        "a notch over the text should keep its three lines"
+    );
+}
+
+#[test]
+fn the_wheel_over_a_track_stops_at_the_ends() {
+    let mut app = app();
+    app.push_tab(text_tab("tall.rs", &"line\n".repeat(200)));
+    screen(&mut app, 40, 12);
+    let rect = app.editor_rect;
+
+    wheel(&mut app, rect.right(), rect.y + 1, false);
+    assert_eq!(app.tabs[app.active].editor.scroll_line, 0);
+}
+
+#[test]
+fn dragging_the_thumb_scrolls_the_editor_and_reaches_the_last_line() {
+    let mut app = app();
+    app.push_tab(text_tab("tall.rs", &"line\n".repeat(200)));
+    screen(&mut app, 40, 12);
+    let rect = app.editor_rect;
+    let track_x = rect.right();
+    let hit = app
+        .scroll_hits
+        .at(track_x, rect.y)
+        .expect("the editor's track should be registered");
+    let (start, _) = hit.track.thumb_span().unwrap_or_default();
+
+    // Grabbing without moving must not shift the view by so much as a line.
+    press(&mut app, track_x, rect.y + start);
+    assert!(app.scroll_drag.is_some(), "the press should grab the thumb");
+    assert_eq!(app.tabs[app.active].editor.scroll_line, 0);
+
+    // Dragging to the bottom of the track reaches the end of the document.
+    drag(&mut app, track_x, rect.bottom());
+    let visible = app.tabs[app.active].editor.visible_lines();
+    assert_eq!(
+        app.tabs[app.active].editor.scroll_line,
+        201 - visible,
+        "dragging to the end should land on the last position"
+    );
+
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: track_x,
+        row: rect.bottom(),
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(app.scroll_drag.is_none(), "release should end the drag");
+}
+
+#[test]
+fn a_drag_keeps_scrolling_after_the_pointer_leaves_the_track() {
+    // A track is one column wide; a drag that wanders off it must not be dropped.
+    let mut app = app();
+    app.push_tab(text_tab("tall.rs", &"line\n".repeat(200)));
+    screen(&mut app, 40, 12);
+    let rect = app.editor_rect;
+    let hit = app
+        .scroll_hits
+        .at(rect.right(), rect.y)
+        .expect("the editor's track should be registered");
+    let (start, _) = hit.track.thumb_span().unwrap_or_default();
+
+    press(&mut app, rect.right(), rect.y + start);
+    drag(&mut app, 0, rect.y + start + 3);
+
+    assert!(
+        app.scroll_drag.is_some(),
+        "the drag should still be captured"
+    );
+    assert!(
+        app.tabs[app.active].editor.scroll_line > 0,
+        "a drag off the track should still scroll"
+    );
+}
+
+#[test]
+fn clicking_the_groove_below_the_thumb_pages_down() {
+    let mut app = app();
+    app.push_tab(text_tab("tall.rs", &"line\n".repeat(200)));
+    screen(&mut app, 40, 12);
+    let rect = app.editor_rect;
+
+    press(&mut app, rect.right(), rect.bottom() - 1);
+
+    let visible = app.tabs[app.active].editor.visible_lines();
+    assert_eq!(app.tabs[app.active].editor.scroll_line, visible);
+    assert!(
+        app.scroll_drag.is_none(),
+        "a groove click pages; it does not start a drag"
+    );
+}
+
+#[test]
+fn a_track_for_content_that_fits_is_inert_and_still_swallows_the_click() {
+    // The column belongs to the bar even when no thumb is painted, so a press there
+    // must neither scroll nor fall through to the text beside it.
+    let mut app = app();
+    app.push_tab(text_tab("short.rs", "one\ntwo\nthree\n"));
+    screen(&mut app, 40, 12);
+    let rect = app.editor_rect;
+
+    assert!(
+        app.scroll_hits.at(rect.right(), rect.y).is_none(),
+        "a suppressed bar should not be registered"
+    );
+    press(&mut app, rect.right(), rect.y + 2);
+    assert_eq!(app.tabs[app.active].editor.scroll_line, 0);
+    assert!(app.scroll_drag.is_none());
+}
+
+#[test]
+fn the_registry_is_rebuilt_every_frame() {
+    // Last-frame geometry, like every other hit region: a frame that no longer paints
+    // a bar must not leave a grabbable ghost of it behind.
+    let mut app = app();
+    app.push_tab(text_tab("tall.rs", &"line\n".repeat(200)));
+    screen(&mut app, 40, 12);
+    assert!(app.scroll_hits.of(ScrollSurface::TabRows).is_some());
+
+    app.tabs[app.active] = text_tab("short.rs", "one\n");
+    screen(&mut app, 40, 12);
+    assert!(
+        app.scroll_hits.of(ScrollSurface::TabRows).is_none(),
+        "the previous frame's track should not survive"
+    );
+}
+
+#[test]
+fn dragging_the_explorer_thumb_scrolls_the_tree_without_it_snapping_back() {
+    // The explorer's offset is pinned to its cursor by the render, so an offset
+    // written on its own would be undone before it was ever seen. This is the guard
+    // for the whole cursor-driven family of surfaces.
+    let dir = test_dir("scrollbar-explorer");
+    for i in 0..60 {
+        write_file(&dir, &format!("file-{i:02}.txt"), b"x");
+    }
+    let mut app = App::new(dir, Vec::new(), Vec::new(), false);
+    app.sidebar_visible = true;
+    app.sidebar_panel = SidebarPanel::Explorer;
+    screen(&mut app, 60, 20);
+
+    let hit = app
+        .scroll_hits
+        .of(ScrollSurface::Explorer)
+        .expect("a 60-row tree in a 20-row sidebar should paint a bar");
+    let track = hit.track.rect();
+    let (start, _) = hit.track.thumb_span().unwrap_or_default();
+
+    press(&mut app, track.x, track.y + start);
+    drag(&mut app, track.x, track.bottom() - 1);
+    let dragged = app.explorer.offset();
+    assert!(dragged > 0, "the drag should have scrolled the tree");
+
+    // The next frame is where a naive offset write would be undone.
+    screen(&mut app, 60, 20);
+    assert_eq!(
+        app.explorer.offset(),
+        dragged,
+        "the tree scrolled back on the next frame"
+    );
+}
+
+#[test]
+fn the_sidebar_track_scrolls_the_sidebar_and_not_the_editor() {
+    // The routing the narrowed hit rects made possible: the bar's column sits inside
+    // `sidebar_rect`, so without the registry the click would reach the panel.
+    let dir = test_dir("scrollbar-routing");
+    for i in 0..60 {
+        write_file(&dir, &format!("file-{i:02}.txt"), b"x");
+    }
+    let mut app = App::new(dir, Vec::new(), Vec::new(), false);
+    app.sidebar_visible = true;
+    app.sidebar_panel = SidebarPanel::Explorer;
+    app.push_tab(text_tab("tall.rs", &"line\n".repeat(200)));
+    screen(&mut app, 60, 20);
+
+    let track = app
+        .scroll_hits
+        .of(ScrollSurface::Explorer)
+        .expect("the explorer should paint a bar")
+        .track
+        .rect();
+    wheel(&mut app, track.x, track.y + 1, true);
+
+    assert_eq!(
+        app.tabs[app.active].editor.scroll_line, 0,
+        "a notch over the sidebar's bar must not scroll the editor"
+    );
+}

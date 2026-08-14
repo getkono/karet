@@ -152,6 +152,9 @@ use karet_widgets::PendingEdit;
 use karet_widgets::SplitAxis;
 use karet_widgets::SplitDir;
 use karet_widgets::drop_zone;
+use karet_widgets::scroll::PaintedTracks;
+use karet_widgets::scroll::ScrollTrack;
+use karet_widgets::scroll::TrackHit;
 pub(crate) use karet_widgets::textfield::TextFieldState;
 pub(crate) use language_servers::LanguageServerBadge;
 pub(crate) use pending::Pending;
@@ -387,6 +390,10 @@ pub struct App {
     pub(crate) pane_divider_hover: Option<PaneDivider>,
     /// Active pane-boundary drag.
     pub(crate) pane_resize: Option<PaneResize>,
+    /// Every scrollbar track the last frame painted, in draw order (hit-testing).
+    pub(crate) scroll_hits: ScrollHits,
+    /// The in-progress scrollbar-thumb drag, if one is under way.
+    pub(crate) scroll_drag: Option<ScrollDrag>,
     /// The in-progress tab drag, if the pointer is dragging a tab.
     pub(crate) tab_drag: Option<TabDrag>,
     /// The sidebar's content area (below the header) from the last frame.

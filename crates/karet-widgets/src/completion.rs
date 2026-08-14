@@ -28,6 +28,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::scroll::ScrollAxes;
 use crate::scroll::ScrollExtent;
+use crate::scroll::ScrollTrack;
 use crate::scroll::ScrollbarStyles;
 use crate::scroll::reserve_tracks;
 
@@ -59,6 +60,10 @@ pub struct CompletionState {
     pub selected: usize,
     /// The first visible row (maintained by the render).
     scroll: usize,
+    /// The scrollbar track the last render painted, so the popup's bar can be
+    /// grabbed like every other one. The popup lays itself out inside its own
+    /// `render`, so this is the only way its caller learns where the bar ended up.
+    track: Option<ScrollTrack>,
 }
 
 impl CompletionState {
@@ -83,6 +88,30 @@ impl CompletionState {
     /// Reset selection and scroll (a fresh popup or a changed filter).
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// The scrollbar track the last render painted, if the list overflowed.
+    #[must_use]
+    pub const fn track(&self) -> Option<ScrollTrack> {
+        self.track
+    }
+
+    /// Scroll so `position` is the first visible row of a `visible`-row window.
+    ///
+    /// The selection comes along when it would otherwise fall outside that window.
+    /// The render pins the window to the selection, so a scroll written on its own
+    /// would snap straight back on the next frame.
+    pub fn scroll_to(&mut self, position: usize, visible: usize) {
+        self.scroll = position;
+        if visible == 0 {
+            return;
+        }
+        let bottom = position.saturating_add(visible - 1);
+        if self.selected < position {
+            self.selected = position;
+        } else if self.selected > bottom {
+            self.selected = bottom;
+        }
     }
 }
 
@@ -308,12 +337,14 @@ impl StatefulWidget for CompletionPopup<'_> {
             }
         }
 
-        tracks.paint(
-            buf,
-            ScrollbarStyles::from_theme(self.theme),
-            ScrollExtent::new(ranked.len(), state.scroll, visible),
-            ScrollExtent::default(),
-        );
+        state.track = tracks
+            .paint(
+                buf,
+                ScrollbarStyles::from_theme(self.theme),
+                ScrollExtent::new(ranked.len(), state.scroll, visible),
+                ScrollExtent::default(),
+            )
+            .vertical;
     }
 }
 

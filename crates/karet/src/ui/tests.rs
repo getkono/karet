@@ -744,7 +744,13 @@ fn spelling_rows_render_the_word_its_line_number_and_context()
     let theme = app.theme.clone();
     let _ = terminal.draw(|frame| {
         let area = frame.area();
-        super::sidebar::draw_spelling_panel(frame, &mut app, &theme, area);
+        super::sidebar::draw_spelling_panel(
+            frame,
+            &mut app,
+            &theme,
+            area,
+            &mut ScrollHits::default(),
+        );
     });
     let painted: String = terminal
         .backend()
@@ -780,7 +786,13 @@ fn an_unscanned_panel_invites_a_scan_rather_than_showing_an_empty_list()
     let render = |app: &mut App, terminal: &mut Terminal<TestBackend>| -> String {
         let _ = terminal.draw(|frame| {
             let area = frame.area();
-            super::sidebar::draw_spelling_panel(frame, app, &theme, area);
+            super::sidebar::draw_spelling_panel(
+                frame,
+                app,
+                &theme,
+                area,
+                &mut ScrollHits::default(),
+            );
         });
         terminal
             .backend()

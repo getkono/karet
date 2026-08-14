@@ -29,6 +29,7 @@ pub(in crate::ui) fn draw_commit(
     files: &CommitFiles,
     explain_since: Option<Instant>,
     view: &mut CommitViewState,
+    hits: &mut ScrollHits,
 ) -> CommitPaint {
     let reveal = explain_since.is_some_and(|t| t.elapsed() < crate::app::COMMIT_REVEAL);
     let (header, badge) = commit_metadata_lines(theme, detail, files.verification.as_ref(), reveal);
@@ -41,6 +42,7 @@ pub(in crate::ui) fn draw_commit(
         &files.files,
         file_load_status(files),
         view,
+        hits,
     )
 }
 
@@ -54,6 +56,7 @@ pub(in crate::ui) fn draw_compare(
     merge_base: bool,
     files: &CommitFiles,
     view: &mut CommitViewState,
+    hits: &mut ScrollHits,
 ) -> CommitPaint {
     let header = compare_header_lines(theme, base_label, head_label, merge_base);
     draw_responsive(
@@ -65,6 +68,7 @@ pub(in crate::ui) fn draw_compare(
         &files.files,
         file_load_status(files),
         view,
+        hits,
     )
 }
 
@@ -78,6 +82,7 @@ fn draw_responsive(
     files: &[render::FileView],
     file_status: CommitFileStatus<'_>,
     view: &mut CommitViewState,
+    hits: &mut ScrollHits,
 ) -> CommitPaint {
     let mode = if area.width >= WIDE_COMMIT_WIDTH {
         CommitLayoutMode::Wide
@@ -85,12 +90,28 @@ fn draw_responsive(
         CommitLayoutMode::Stacked
     };
     match mode {
-        CommitLayoutMode::Wide => {
-            draw_wide(f, theme, area, header, badge, files, file_status, view)
-        },
-        CommitLayoutMode::Stacked => {
-            draw_stacked(f, theme, area, header, badge, files, file_status, view)
-        },
+        CommitLayoutMode::Wide => draw_wide(
+            f,
+            theme,
+            area,
+            header,
+            badge,
+            files,
+            file_status,
+            view,
+            hits,
+        ),
+        CommitLayoutMode::Stacked => draw_stacked(
+            f,
+            theme,
+            area,
+            header,
+            badge,
+            files,
+            file_status,
+            view,
+            hits,
+        ),
     }
 }
 
@@ -247,6 +268,7 @@ fn draw_stacked(
     files: &[render::FileView],
     file_status: CommitFileStatus<'_>,
     view: &mut CommitViewState,
+    hits: &mut ScrollHits,
 ) -> CommitPaint {
     // Reserve the tracks first so the file cards below are built to the width they
     // will actually be painted at, and every hit rect derived from `area` lands
@@ -329,11 +351,15 @@ fn draw_stacked(
         ));
     }
     f.render_widget(Paragraph::new(visible).scroll((0, view.column)), body);
-    tracks.paint(
-        f.buffer_mut(),
-        ScrollbarStyles::from_theme(theme),
-        ScrollExtent::new(total.into(), view.scroll.into(), area.height.into()),
-        ScrollExtent::new(content_width, view.column.into(), area.width.into()),
+    hits.record_both(
+        tracks.paint(
+            f.buffer_mut(),
+            ScrollbarStyles::from_theme(theme),
+            ScrollExtent::new(total.into(), view.scroll.into(), area.height.into()),
+            ScrollExtent::new(content_width, view.column.into(), area.width.into()),
+        ),
+        ScrollSurface::TabRows,
+        ScrollSurface::TabColumns,
     );
 
     let row_shift = u16::from(sticky.is_some());
@@ -379,6 +405,7 @@ fn draw_wide(
     files: &[render::FileView],
     file_status: CommitFileStatus<'_>,
     view: &mut CommitViewState,
+    hits: &mut ScrollHits,
 ) -> CommitPaint {
     // Reserved before the rail/diff split, so both columns are laid out at the width
     // they are painted at. The vertical bar reports the whole view's scroll (header
@@ -470,11 +497,15 @@ fn draw_wide(
         );
         f.render_widget(Block::new().borders(Borders::LEFT), cols[1]);
     }
-    tracks.paint(
-        f.buffer_mut(),
-        ScrollbarStyles::from_theme(theme),
-        ScrollExtent::new(total.into(), view.scroll.into(), area.height.into()),
-        ScrollExtent::new(file_doc.columns, view.column.into(), diff_width.into()),
+    hits.record_both(
+        tracks.paint(
+            f.buffer_mut(),
+            ScrollbarStyles::from_theme(theme),
+            ScrollExtent::new(total.into(), view.scroll.into(), area.height.into()),
+            ScrollExtent::new(file_doc.columns, view.column.into(), diff_width.into()),
+        ),
+        ScrollSurface::TabRows,
+        ScrollSurface::TabColumns,
     );
 
     let row_shift = u16::from(sticky.is_some());

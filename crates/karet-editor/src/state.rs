@@ -232,6 +232,33 @@ impl EditorState {
             (i64::from(self.scroll_col) + i64::from(delta)).clamp(0, i64::from(max)) as u32;
     }
 
+    /// Scroll so `line` is the topmost buffer line, without moving the caret.
+    ///
+    /// The absolute counterpart to [`scroll_rows`](Self::scroll_rows), for a
+    /// scrollbar that hands over a position rather than a delta. It is not the same
+    /// as stepping there: in soft-wrap mode `scroll_rows` walks one visual anchor per
+    /// row, so dragging a bar down a long file would re-wrap the whole document on
+    /// every mouse event. Landing on the line directly is O(1), and it is the unit
+    /// [`visible_lines`](Self::visible_lines) already reports the extent in.
+    ///
+    /// The continuation row is cleared: a position expressed in buffer lines says
+    /// nothing about where inside a wrapped line to sit, and keeping a stale subrow
+    /// would leave the view a few rows off wherever the drag landed.
+    pub fn scroll_to_line(&mut self, line: u32) {
+        self.follow_cursor = false;
+        self.scroll_line = line;
+        self.scroll_subrow = 0;
+    }
+
+    /// Scroll so `col` is the leftmost column, without moving the caret.
+    ///
+    /// Soft-wrapped views have no horizontal axis and stay pinned at zero, matching
+    /// [`scroll_columns`](Self::scroll_columns).
+    pub fn scroll_to_column(&mut self, col: u32) {
+        self.follow_cursor = false;
+        self.scroll_col = if self.last_word_wrap { 0 } else { col };
+    }
+
     /// How many distinct buffer lines the last render showed.
     ///
     /// With soft wrapping on this is smaller than the row count, because a wrapped

@@ -18,9 +18,15 @@ use crate::app::github::GithubSection;
 use crate::app::github::GithubViewState;
 use crate::app::github::auth_label;
 
-pub(super) fn draw_github(f: &mut Frame, theme: &Theme, area: Rect, view: &mut GithubViewState) {
+pub(super) fn draw_github(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    view: &mut GithubViewState,
+    hits: &mut ScrollHits,
+) {
     match view {
-        GithubViewState::Dashboard(dashboard) => draw_dashboard(f, theme, area, dashboard),
+        GithubViewState::Dashboard(dashboard) => draw_dashboard(f, theme, area, dashboard, hits),
         GithubViewState::Issue {
             number,
             issue,
@@ -50,6 +56,7 @@ pub(super) fn draw_github(f: &mut Frame, theme: &Theme, area: Rect, view: &mut G
                     comments,
                     error.as_deref(),
                     *scroll,
+                    hits,
                 );
             } else {
                 draw_pending_detail(
@@ -62,7 +69,7 @@ pub(super) fn draw_github(f: &mut Frame, theme: &Theme, area: Rect, view: &mut G
                 );
             }
         },
-        GithubViewState::PullRequest(view) => draw_pull_request_page(f, theme, area, view),
+        GithubViewState::PullRequest(view) => draw_pull_request_page(f, theme, area, view, hits),
         GithubViewState::WorkflowRun {
             repository,
             workflow,
@@ -129,7 +136,13 @@ pub(super) fn draw_github(f: &mut Frame, theme: &Theme, area: Rect, view: &mut G
     }
 }
 
-fn draw_dashboard(f: &mut Frame, theme: &Theme, area: Rect, state: &mut GithubDashboard) {
+fn draw_dashboard(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    state: &mut GithubDashboard,
+    hits: &mut ScrollHits,
+) {
     let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(2),
@@ -193,7 +206,7 @@ fn draw_dashboard(f: &mut Frame, theme: &Theme, area: Rect, state: &mut GithubDa
     };
     f.render_widget(Paragraph::new(muted_line(header, theme)), table[0]);
     state.table_rect = table[1];
-    draw_dashboard_rows(f, theme, table[1], state);
+    draw_dashboard_rows(f, theme, table[1], state, hits);
     let total = match state.section {
         GithubSection::Issues => state.issues.total_count,
         GithubSection::PullRequests => state.pull_requests.total_count,
@@ -247,7 +260,13 @@ fn draw_dashboard(f: &mut Frame, theme: &Theme, area: Rect, state: &mut GithubDa
     f.render_widget(Paragraph::new(status), status_area);
 }
 
-fn draw_dashboard_rows(f: &mut Frame, theme: &Theme, area: Rect, state: &mut GithubDashboard) {
+fn draw_dashboard_rows(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    state: &mut GithubDashboard,
+    hits: &mut ScrollHits,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -293,11 +312,14 @@ fn draw_dashboard_rows(f: &mut Frame, theme: &Theme, area: Rect, state: &mut Git
         };
         f.render_widget(Paragraph::new(lines).style(style), row_area);
     }
-    tracks.paint(
-        f.buffer_mut(),
-        ScrollbarStyles::from_theme(theme),
-        ScrollExtent::new(state.row_count(), state.first_visible, visible),
-        ScrollExtent::default(),
+    hits.record(
+        tracks.paint(
+            f.buffer_mut(),
+            ScrollbarStyles::from_theme(theme),
+            ScrollExtent::new(state.row_count(), state.first_visible, visible),
+            ScrollExtent::default(),
+        ),
+        ScrollSurface::TabRows,
     );
 }
 
