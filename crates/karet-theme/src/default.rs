@@ -111,6 +111,11 @@ pub(crate) fn dark() -> Theme {
     // one that is present but unverified (mirroring the diagnostic hint/warning hues).
     role(ThemeRole::VcsVerified, rgb(0x1a, 0xbc, 0x9c));
     role(ThemeRole::VcsUnverified, rgb(0xe0, 0xaf, 0x68));
+    // Scrollbars: the track is the indent-guide rule (a groove that reads as chrome,
+    // not content), the thumb the plain foreground — the pairing every scrollbar in
+    // the app used before these roles existed.
+    role(ThemeRole::ScrollbarTrack, rgb(0x3b, 0x42, 0x61));
+    role(ThemeRole::ScrollbarThumb, rgb(0xc0, 0xca, 0xf5));
 
     Theme {
         tokens,

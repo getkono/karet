@@ -321,6 +321,10 @@ pub enum ThemeRole {
     VcsVerified,
     /// A commit signature that is present but not verified, or verification failed.
     VcsUnverified,
+    /// The empty part of a scrollbar track — the groove the thumb slides in.
+    ScrollbarTrack,
+    /// A scrollbar thumb: the part standing for the visible slice of the content.
+    ScrollbarThumb,
 }
 
 #[cfg(test)]
