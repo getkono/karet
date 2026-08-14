@@ -246,16 +246,66 @@ pub(crate) fn window_title_path(root: &Path) -> String {
 /// `.`, which is useless as a title. `home` is a parameter rather than an ambient
 /// lookup so tests never depend on the machine's real home directory.
 ///
-/// Resolution is lexical on purpose: `fs::canonicalize` fails on a path that does not
-/// exist yet (`karet new-project/`) and resolves symlinks, which would title the
-/// window with a path the user never typed.
+/// The displayed path stays lexical on purpose: `fs::canonicalize` resolves symlinks,
+/// which would title the window with a path the user never typed, and fails outright
+/// on a path that does not exist yet (`karet new-project/`).
 fn title_path(root: &Path, cwd: &Path, home: Option<&Path>) -> String {
     // `join` returns `root` unchanged when it is already absolute.
     let absolute = lexically_normalize(&cwd.join(root));
-    match home.and_then(|home| absolute.strip_prefix(home).ok()) {
+    // An unusable `$HOME` abbreviates nothing: a relative one would be resolved
+    // against the current directory, and `/` (some containers) would turn every
+    // absolute path into a misleading `~/...`.
+    let home = home
+        .map(lexically_normalize)
+        .filter(|home| home.is_absolute() && home.parent().is_some());
+    match home.as_deref().and_then(|home| strip_home(&absolute, home)) {
         Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
         Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
         None => absolute.display().to_string(),
+    }
+}
+
+/// The part of `absolute` below `home`, or `None` when it lies outside `home`.
+///
+/// Matching is component-wise, so a sibling like `/home/adaline` is never mistaken
+/// for a child of `/home/ada`. When the lexical comparison fails, both sides are
+/// resolved and compared again: `$HOME` and the current directory routinely disagree
+/// about symlinks (`getcwd` reports the resolved path, `$HOME` whatever the login
+/// record says), so `HOME=/mnt/scratch/ada` must still match a cwd of
+/// `/var/mnt/scratch/ada/dev` when `/mnt` links to `/var/mnt`.
+///
+/// The returned remainder always comes from the comparison that matched, keeping the
+/// title free of the resolved prefix.
+fn strip_home(absolute: &Path, home: &Path) -> Option<PathBuf> {
+    if let Ok(rest) = absolute.strip_prefix(home) {
+        return Some(rest.to_path_buf());
+    }
+    let real_home = std::fs::canonicalize(home).ok()?;
+    let (real, unborn) = canonicalize_existing_ancestor(absolute)?;
+    let mut rest = real.strip_prefix(real_home).ok()?.to_path_buf();
+    // A path that does not exist yet contributes its tail verbatim; `extend` (not
+    // `join`) so an empty tail cannot append a trailing separator.
+    rest.extend(unborn.iter().rev());
+    Some(rest)
+}
+
+/// Resolve the longest existing ancestor of `path`, plus the components below it in
+/// reverse order.
+///
+/// `fs::canonicalize` needs every component to exist, but a workspace root may be a
+/// directory the user is about to create. Returns `None` only when nothing along the
+/// path resolves — a path with no readable ancestor cannot be compared through
+/// symlinks at all.
+fn canonicalize_existing_ancestor(path: &Path) -> Option<(PathBuf, Vec<&std::ffi::OsStr>)> {
+    let mut unborn = Vec::new();
+    let mut probe = path;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(probe) {
+            return Some((real, unborn));
+        }
+        // `file_name` is `None` at a root or bare prefix, ending the walk.
+        unborn.push(probe.file_name()?);
+        probe = probe.parent()?;
     }
 }
 
@@ -384,6 +434,107 @@ mod tests {
             title_path(Path::new("/../.."), &cwd, Some(home)),
             Path::new("/").display().to_string()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_home_directory_reached_through_a_symlink_is_still_abbreviated()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        // `HOME=/mnt/scratch/ada` with `/mnt` -> `/var/mnt` leaves `$HOME` and the
+        // current directory (which the kernel reports resolved) spelling the same
+        // directory differently.
+        let dir = tempfile::tempdir()?;
+        let real_home = dir.path().join("var").join("ada");
+        std::fs::create_dir_all(real_home.join("dev"))?;
+        symlink(dir.path().join("var"), dir.path().join("link"))?;
+        let home = dir.path().join("link").join("ada");
+
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            title_path(Path::new("."), &real_home.join("dev"), Some(&home)),
+            format!("~{sep}dev")
+        );
+        assert_eq!(title_path(&real_home, Path::new("/tmp"), Some(&home)), "~");
+        // The other direction too: a root typed through the symlink under a resolved
+        // `$HOME`.
+        assert_eq!(
+            title_path(&home.join("dev"), Path::new("/tmp"), Some(&real_home)),
+            format!("~{sep}dev")
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_that_does_not_exist_yet_is_abbreviated_through_a_symlink()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        // `karet new/project` must title correctly before the directory exists, so the
+        // resolved comparison walks up to the deepest ancestor that does.
+        let dir = tempfile::tempdir()?;
+        let real_home = dir.path().join("var").join("ada");
+        std::fs::create_dir_all(&real_home)?;
+        symlink(dir.path().join("var"), dir.path().join("link"))?;
+        let home = dir.path().join("link").join("ada");
+
+        assert_eq!(
+            title_path(Path::new("new/project"), &real_home, Some(&home)),
+            format!("~{sep}new{sep}project", sep = std::path::MAIN_SEPARATOR)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_sibling_of_the_home_directory_is_never_abbreviated()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let home = dir.path().join("ada");
+        let sibling = dir.path().join("adaline");
+        std::fs::create_dir_all(&home)?;
+        std::fs::create_dir_all(&sibling)?;
+
+        assert_eq!(
+            title_path(Path::new("."), &sibling, Some(&home)),
+            sibling.display().to_string()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_unusable_home_directory_abbreviates_nothing() {
+        let cwd = Path::new("/etc").join("nginx");
+        let absolute = cwd.display().to_string();
+
+        // `HOME=/` would make every absolute path a misleading `~/...`.
+        assert_eq!(
+            title_path(Path::new("."), &cwd, Some(Path::new("/"))),
+            absolute
+        );
+        // A relative `$HOME` would otherwise be resolved against the current directory.
+        assert_eq!(
+            title_path(Path::new("."), &cwd, Some(Path::new("etc"))),
+            absolute
+        );
+        assert_eq!(
+            title_path(Path::new("."), &cwd, Some(Path::new(""))),
+            absolute
+        );
+    }
+
+    #[test]
+    fn an_unnormalized_home_directory_still_abbreviates() {
+        let cwd = Path::new("/home/ada/dev");
+
+        for home in ["/home/ada/", "/home/ada/.", "/home/ada/dev/.."] {
+            assert_eq!(
+                title_path(Path::new("."), cwd, Some(Path::new(home))),
+                format!("~{sep}dev", sep = std::path::MAIN_SEPARATOR),
+                "home: {home}"
+            );
+        }
     }
 
     #[test]
