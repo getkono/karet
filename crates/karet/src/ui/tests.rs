@@ -75,13 +75,20 @@ fn scrollable_lines_clamp_both_axes_and_draw_horizontal_position()
 
     assert_eq!(scroll, 0);
     assert_eq!(column, 3);
-    let visible = (0..6)
+    // Both tracks are reserved out of the 6x3 area, so the text gets 5 columns and
+    // 2 rows — the bars never sit on top of a character.
+    let visible = (0..5)
         .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
         .collect::<String>();
-    assert_eq!(visible, "345678");
+    assert_eq!(visible, "34567");
     assert!(
-        (0..6).any(|x| terminal.backend().buffer()[(x, 2)].symbol() != " "),
-        "overflow should paint a horizontal position indicator"
+        (0..5).any(|x| terminal.backend().buffer()[(x, 2)].symbol() != " "),
+        "horizontal overflow should paint a bar in the reserved bottom row"
+    );
+    // The single line fits the two content rows, so the vertical track stays empty.
+    assert!(
+        (0..3).all(|y| terminal.backend().buffer()[(5, y)].symbol() == " "),
+        "content that fits should not paint a vertical bar"
     );
     Ok(())
 }
@@ -737,7 +744,13 @@ fn spelling_rows_render_the_word_its_line_number_and_context()
     let theme = app.theme.clone();
     let _ = terminal.draw(|frame| {
         let area = frame.area();
-        super::sidebar::draw_spelling_panel(frame, &mut app, &theme, area);
+        super::sidebar::draw_spelling_panel(
+            frame,
+            &mut app,
+            &theme,
+            area,
+            &mut ScrollHits::default(),
+        );
     });
     let painted: String = terminal
         .backend()
@@ -773,7 +786,13 @@ fn an_unscanned_panel_invites_a_scan_rather_than_showing_an_empty_list()
     let render = |app: &mut App, terminal: &mut Terminal<TestBackend>| -> String {
         let _ = terminal.draw(|frame| {
             let area = frame.area();
-            super::sidebar::draw_spelling_panel(frame, app, &theme, area);
+            super::sidebar::draw_spelling_panel(
+                frame,
+                app,
+                &theme,
+                area,
+                &mut ScrollHits::default(),
+            );
         });
         terminal
             .backend()

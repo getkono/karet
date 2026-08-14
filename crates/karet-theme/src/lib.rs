@@ -15,7 +15,7 @@ mod load_vscode;
 /// Number of [`StandardToken`](karet_core::StandardToken) classes (token id space).
 pub(crate) const TOKEN_COUNT: usize = 32;
 /// Number of [`ThemeRole`] variants.
-pub(crate) const ROLE_COUNT: usize = 28;
+pub(crate) const ROLE_COUNT: usize = 30;
 
 /// Errors produced while loading a theme.
 #[derive(Debug, thiserror::Error)]
@@ -348,6 +348,22 @@ mod tests {
         let ratio = contrast_ratio(t.role(ThemeRole::Foreground), t.role(ThemeRole::Background));
         // WCAG AA for normal text is 4.5; a code theme's default fg should clear it.
         assert!(ratio > 4.5, "contrast ratio was {ratio}");
+    }
+
+    #[test]
+    fn the_scrollbar_roles_resolve_to_their_own_colors() {
+        // `role()` indexes a fixed-size array by `role as usize` and silently falls
+        // back to the foreground when the index is out of range, so a role added
+        // without bumping ROLE_COUNT would degrade invisibly. The last-declared
+        // roles are the ones that catch that, and the track must not resolve to the
+        // fallback — a track painted in the foreground color is a solid bar.
+        let theme = Theme::dark();
+        assert!((ThemeRole::ScrollbarThumb as usize) < ROLE_COUNT);
+        assert_eq!(
+            theme.role(ThemeRole::ScrollbarTrack),
+            theme.role(ThemeRole::IndentGuide)
+        );
+        assert_ne!(theme.role(ThemeRole::ScrollbarTrack), theme.fallback_fg);
     }
 
     #[cfg(feature = "view")]

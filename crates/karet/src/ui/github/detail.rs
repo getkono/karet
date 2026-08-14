@@ -15,6 +15,7 @@ pub(super) struct DetailCard<'a> {
     pub(super) body: Option<&'a str>,
 }
 
+#[allow(clippy::too_many_arguments)] // card metadata, comments, load state and the track sink are independent
 pub(super) fn draw_detail_page(
     f: &mut Frame,
     theme: &Theme,
@@ -23,6 +24,7 @@ pub(super) fn draw_detail_page(
     comments: &karet_session::GithubPage<karet_session::GithubComment>,
     error: Option<&str>,
     scroll: u16,
+    hits: &mut ScrollHits,
 ) {
     let rows = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(area);
     let state_style = workflow_result_style(detail.state, theme)
@@ -111,18 +113,7 @@ pub(super) fn draw_detail_page(
         conversation.push(Line::default());
         conversation.push(error_line(error, theme));
     }
-    f.render_widget(
-        Paragraph::new(conversation)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Conversation ")
-                    .border_style(theme.style(ThemeRole::IndentGuide)),
-            )
-            .scroll((scroll, 0))
-            .wrap(Wrap { trim: false }),
-        columns[0],
-    );
+    draw_conversation(f, theme, columns[0], conversation, scroll, hits);
 
     if columns[1].width > 0 {
         let mut details = vec![muted_line(
@@ -195,6 +186,7 @@ pub(super) fn draw_pull_request_page(
     theme: &Theme,
     area: Rect,
     view: &mut GithubPullRequestView,
+    hits: &mut ScrollHits,
 ) {
     if view.section != GithubPullRequestSection::Conversation {
         view.body_rect = Rect::default();
@@ -216,9 +208,11 @@ pub(super) fn draw_pull_request_page(
     draw_pull_request_tabs(f, theme, rows[1], view);
     match view.section {
         GithubPullRequestSection::Conversation => {
-            draw_pull_request_conversation(f, theme, rows[2], view);
+            draw_pull_request_conversation(f, theme, rows[2], view, hits);
         },
-        GithubPullRequestSection::Commits => draw_pull_request_commits(f, theme, rows[2], view),
+        GithubPullRequestSection::Commits => {
+            draw_pull_request_commits(f, theme, rows[2], view, hits);
+        },
         GithubPullRequestSection::FilesChanged => {
             view.commits_rect = Rect::default();
             f.render_widget(
@@ -327,6 +321,7 @@ fn draw_pull_request_conversation(
     theme: &Theme,
     area: Rect,
     view: &mut GithubPullRequestView,
+    hits: &mut ScrollHits,
 ) {
     let footer_height = area.height.min(12);
     let sections = Layout::vertical([
@@ -406,18 +401,7 @@ fn draw_pull_request_conversation(
         lines.push(Line::default());
         lines.push(error_line(error, theme));
     }
-    f.render_widget(
-        Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Conversation ")
-                    .border_style(theme.style(ThemeRole::IndentGuide)),
-            )
-            .scroll((view.scroll, 0))
-            .wrap(Wrap { trim: false }),
-        conversation_area,
-    );
+    draw_conversation(f, theme, conversation_area, lines, view.scroll, hits);
     draw_pull_request_status(f, theme, status_area, view);
     draw_pull_request_comment(f, theme, comment_area, view);
 
@@ -742,6 +726,7 @@ fn draw_pull_request_commits(
     theme: &Theme,
     area: Rect,
     view: &mut GithubPullRequestView,
+    hits: &mut ScrollHits,
 ) {
     view.commits_rect = area;
     let short_hashes: Vec<String> = view
@@ -767,6 +752,8 @@ fn draw_pull_request_commits(
         .collect();
     let items =
         crate::ui::commit::commit_list_items(theme, &entries, Some(view.commit_cursor), false);
+    let total = items.len();
+    let (area, tracks) = reserve_tracks(area, ScrollAxes::VERTICAL);
     let height = usize::from(area.height);
     let mut offset = usize::from(view.commit_offset);
     if view.commit_cursor < offset {
@@ -778,4 +765,52 @@ fn draw_pull_request_commits(
     *state.offset_mut() = offset;
     f.render_stateful_widget(List::new(items), area, &mut state);
     view.commit_offset = u16::try_from(state.offset()).unwrap_or(u16::MAX);
+    hits.record(
+        tracks.paint(
+            f.buffer_mut(),
+            ScrollbarStyles::from_theme(theme),
+            ScrollExtent::new(total, state.offset(), height),
+            ScrollExtent::default(),
+        ),
+        ScrollSurface::GithubPullRequestCommits,
+    );
+}
+
+/// Paint a bordered, soft-wrapped conversation pane with a scrollbar.
+///
+/// The extent counts source lines, not wrapped rows: `Paragraph` wraps internally
+/// and only exposes its rendered row count behind an unstable ratatui feature. The
+/// thumb is therefore optimistic on heavily wrapped text — it still shows that
+/// there is more to read and roughly where you are, which is what the pane lacked.
+fn draw_conversation(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    lines: Vec<Line<'static>>,
+    scroll: u16,
+    hits: &mut ScrollHits,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Conversation ")
+        .border_style(theme.style(ThemeRole::IndentGuide));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let total = lines.len();
+    let (body, tracks) = reserve_tracks(inner, ScrollAxes::VERTICAL);
+    f.render_widget(
+        Paragraph::new(lines)
+            .scroll((scroll, 0))
+            .wrap(Wrap { trim: false }),
+        body,
+    );
+    hits.record(
+        tracks.paint(
+            f.buffer_mut(),
+            ScrollbarStyles::from_theme(theme),
+            ScrollExtent::new(total, scroll.into(), body.height.into()),
+            ScrollExtent::default(),
+        ),
+        ScrollSurface::TabRows,
+    );
 }

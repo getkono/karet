@@ -142,10 +142,41 @@ impl FileTreeState {
         self.offset
     }
 
+    /// How many rows the tree currently has, expanded state included — the
+    /// vertical scroll extent to pair with [`offset`](Self::offset).
+    #[must_use]
+    pub fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+
     /// The absolute row index of the cursor row.
     #[must_use]
     pub fn cursor(&self) -> usize {
         self.selection.cursor()
+    }
+
+    /// Scroll so `row` is the first visible row of a viewport `height` rows tall.
+    ///
+    /// The cursor comes along when it would otherwise fall outside the new viewport.
+    /// That is not a courtesy: the render pins the offset to the cursor, so an offset
+    /// written on its own would snap straight back on the next frame. Moving the
+    /// cursor is also what the wheel already does in this panel
+    /// (`sidebar_wheel` → `sidebar_move`), so a dragged scrollbar behaves the same way
+    /// a rolled wheel does.
+    pub fn scroll_to(&mut self, row: usize, height: usize) {
+        let last = self.rows.len().saturating_sub(1);
+        let offset = row.min(self.rows.len().saturating_sub(height));
+        self.offset = offset;
+        if height == 0 {
+            return;
+        }
+        let cursor = self.cursor();
+        let bottom = offset.saturating_add(height - 1).min(last);
+        if cursor < offset {
+            self.select_index(offset);
+        } else if cursor > bottom {
+            self.select_index(bottom);
+        }
     }
 
     /// The absolute row index for a viewport row, if it currently maps to a row.

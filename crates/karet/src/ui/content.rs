@@ -8,6 +8,7 @@ pub(super) fn draw_pane_content(
     active: usize,
     ctx: &PaneCtx,
     area: Rect,
+    hits: &mut ScrollHits,
 ) -> PaneContent {
     let theme = ctx.theme;
     let Some(tab) = tabs.get_mut(active) else {
@@ -29,8 +30,8 @@ pub(super) fn draw_pane_content(
     let mut markdown_preview_rect = Rect::default();
     match &mut tab.kind {
         TabKind::Welcome => draw_welcome(f, theme, area),
-        TabKind::LanguageServers(view) => draw_language_servers(f, theme, area, view),
-        TabKind::Github(view) => draw_github(f, theme, area, view),
+        TabKind::LanguageServers(view) => draw_language_servers(f, theme, area, view, hits),
+        TabKind::Github(view) => draw_github(f, theme, area, view, hits),
         TabKind::Code {
             path,
             doc,
@@ -81,6 +82,7 @@ pub(super) fn draw_pane_content(
                     &mut tab.editor,
                     conflict,
                     ctx,
+                    hits,
                 );
             } else {
                 if tab.markdown_preview.is_some() && area.width >= 3 {
@@ -154,7 +156,41 @@ pub(super) fn draw_pane_content(
                     .tab_width(ctx.tab_width)
                     .unwrapped_lines(table_lines);
                 let editor = editor.sticky_scroll(ctx.sticky_scroll);
+                // Reserve the tracks before rendering, and keep `editor_rect` as the
+                // reserved rect: it is the single value used both to paint the widget
+                // and to map a click back to a caret, so shrinking it once keeps
+                // render and hit-test in agreement. A soft-wrapped view has no
+                // horizontal axis at all, so it reserves no bottom row.
+                let (text_rect, tracks) = reserve_tracks(
+                    editor_rect,
+                    ScrollAxes {
+                        vertical: true,
+                        horizontal: !word_wrap,
+                    },
+                );
+                editor_rect = text_rect;
                 f.render_stateful_widget(editor, editor_rect, &mut tab.editor);
+                // Read the extents back after the render: the widget clamps the
+                // offsets and measures the viewport as it paints, so the bar is
+                // correct on the very first frame.
+                hits.record_both(
+                    tracks.paint(
+                        f.buffer_mut(),
+                        ScrollbarStyles::from_theme(theme),
+                        ScrollExtent::new(
+                            buffer.line_count(),
+                            tab.editor.scroll_line as usize,
+                            tab.editor.visible_lines() as usize,
+                        ),
+                        ScrollExtent::new(
+                            tab.editor.longest_col() as usize,
+                            tab.editor.scroll_col as usize,
+                            tab.editor.content_width().into(),
+                        ),
+                    ),
+                    ScrollSurface::TabRows,
+                    ScrollSurface::TabColumns,
+                );
                 if ctx.blame_clickable
                     && let Some(Decoration {
                         range,
@@ -199,6 +235,8 @@ pub(super) fn draw_pane_content(
                             root: ctx.root,
                             source_scroll: Some(tab.editor.scroll_line as usize),
                         },
+                        hits,
+                        ScrollSurface::EditorPreview,
                     );
                 }
             }
@@ -225,6 +263,8 @@ pub(super) fn draw_pane_content(
                     root: ctx.root,
                     source_scroll: None,
                 },
+                hits,
+                ScrollSurface::TabRows,
             );
         },
         TabKind::Diff {
@@ -243,6 +283,7 @@ pub(super) fn draw_pane_content(
                 *view,
                 &mut pager.scroll,
                 &mut pager.column,
+                hits,
             ),
             (None, Some(error)) => f.render_widget(
                 Paragraph::new(error.as_str()).style(theme.style(ThemeRole::DiagnosticError)),
@@ -264,7 +305,11 @@ pub(super) fn draw_pane_content(
                 .lines()
                 .map(|line| Line::raw(line.to_string()))
                 .collect();
-            draw_scrollable_lines(f, theme, area, lines, &mut pager.scroll, &mut pager.column);
+            hits.record_both(
+                draw_scrollable_lines(f, theme, area, lines, &mut pager.scroll, &mut pager.column),
+                ScrollSurface::TabRows,
+                ScrollSurface::TabColumns,
+            );
         },
         TabKind::Graph { title, view, pager } => draw_graph(
             f,
@@ -274,9 +319,18 @@ pub(super) fn draw_pane_content(
             view,
             &mut pager.scroll,
             &mut pager.column,
+            hits,
         ),
         TabKind::LoadedConfig { report, pager } => {
-            draw_loaded_config(f, theme, area, report, &mut pager.scroll, &mut pager.column);
+            draw_loaded_config(
+                f,
+                theme,
+                area,
+                report,
+                &mut pager.scroll,
+                &mut pager.column,
+                hits,
+            );
         },
         TabKind::Commit {
             detail,
@@ -284,7 +338,7 @@ pub(super) fn draw_pane_content(
             explain_since,
             view,
         } => {
-            let painted = draw_commit(f, theme, area, detail, files, *explain_since, view);
+            let painted = draw_commit(f, theme, area, detail, files, *explain_since, view, hits);
             badge_rect = painted.badge_rect;
             file_hits = painted.file_hits;
             collapse_hits = painted.collapse_hits;
@@ -303,6 +357,7 @@ pub(super) fn draw_pane_content(
             error.as_deref(),
             &mut pager.scroll,
             &mut pager.column,
+            hits,
         ),
         TabKind::Compare {
             base_label,
@@ -320,6 +375,7 @@ pub(super) fn draw_pane_content(
                 *merge_base,
                 files,
                 view,
+                hits,
             );
             file_hits = painted.file_hits;
             collapse_hits = painted.collapse_hits;
@@ -349,13 +405,24 @@ pub(super) fn draw_pane_content(
             *detail_loading_since,
             detail.as_deref(),
             files,
+            hits,
             list_offset,
             detail_column,
         ),
         TabKind::Hex { bytes, scroll, .. } => {
             let rows = bytes.len().div_ceil(16);
             *scroll = (*scroll).min(rows.saturating_sub(1));
-            f.render_widget(HexView::new(bytes).scroll(*scroll).theme(theme), area);
+            let (dump, tracks) = reserve_tracks(area, ScrollAxes::VERTICAL);
+            f.render_widget(HexView::new(bytes).scroll(*scroll).theme(theme), dump);
+            hits.record(
+                tracks.paint(
+                    f.buffer_mut(),
+                    ScrollbarStyles::from_theme(theme),
+                    ScrollExtent::new(rows, *scroll, dump.height.into()),
+                    ScrollExtent::default(),
+                ),
+                ScrollSurface::TabRows,
+            );
         },
         #[cfg(feature = "images")]
         TabKind::Image { image, .. } => {
@@ -397,15 +464,21 @@ pub(super) fn draw_pane_content(
                         .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui())),
                     area,
                 );
-                // Reserve a one-row footer for the page indicator and a one-column
-                // vertical scroll bar (page position), each only when there is room.
+                // Reserve a one-row footer for the page indicator, then a scroll track
+                // out of what is left. The bar tracks the current page's position in
+                // the document, so one page is the whole "viewport".
                 let footer_h = u16::from(page_count > 1 && area.height > 3);
-                let scrollbar_w = u16::from(page_count > 1 && area.width > 3);
-                let content = Rect {
-                    width: area.width - scrollbar_w,
+                let body = Rect {
                     height: area.height - footer_h,
                     ..area
                 };
+                let (content, tracks) = reserve_tracks(
+                    body,
+                    ScrollAxes {
+                        vertical: page_count > 1,
+                        horizontal: false,
+                    },
+                );
                 if let Some((_, img)) = rendered.as_ref() {
                     // Reserve an aspect-fit sub-rect so the page is not stretched.
                     image_area = Some(fit_rect(content, img.width(), img.height()));
@@ -413,25 +486,15 @@ pub(super) fn draw_pane_content(
                     // Parsed, but this page failed to rasterize — show a neutral note.
                     f.render_widget(Placeholder::new(path, FileKind::Pdf, None, 0), content);
                 }
-                if scrollbar_w == 1 {
-                    // The scroll bar tracks the current page's position in the document.
-                    let track = Rect {
-                        x: area.x + area.width - 1,
-                        y: area.y,
-                        width: 1,
-                        height: area.height - footer_h,
-                    };
-                    let mut sb = ScrollbarState::new(page_count).position(idx);
-                    f.render_stateful_widget(
-                        Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                            .begin_symbol(None)
-                            .end_symbol(None)
-                            .track_style(theme.style(ThemeRole::IndentGuide))
-                            .thumb_style(theme.style(ThemeRole::Foreground)),
-                        track,
-                        &mut sb,
-                    );
-                }
+                hits.record(
+                    tracks.paint(
+                        f.buffer_mut(),
+                        ScrollbarStyles::from_theme(theme),
+                        ScrollExtent::new(page_count, idx, 1),
+                        ScrollExtent::default(),
+                    ),
+                    ScrollSurface::TabRows,
+                );
                 if footer_h == 1 {
                     let footer = Rect {
                         y: area.y + area.height - 1,
@@ -519,6 +582,7 @@ fn draw_merge_conflict(
     merged_editor: &mut EditorState,
     conflict: &mut MergeConflictState,
     ctx: &PaneCtx,
+    hits: &mut ScrollHits,
 ) -> Rect {
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
     let columns = Layout::horizontal([
@@ -582,6 +646,7 @@ fn draw_merge_conflict(
         conflict.error.as_deref(),
         word_wrap,
         ctx,
+        hits,
     );
     draw_conflict_side(
         f,
@@ -593,6 +658,7 @@ fn draw_merge_conflict(
         conflict.error.as_deref(),
         word_wrap,
         ctx,
+        hits,
     );
     let editor = Editor::new(merged)
         .highlights(highlights)
@@ -606,8 +672,25 @@ fn draw_merge_conflict(
         .word_wrap(word_wrap)
         .tab_width(ctx.tab_width)
         .sticky_scroll(ctx.sticky_scroll);
-    f.render_stateful_widget(editor, columns[2], merged_editor);
-    columns[2]
+    // The three panes are already narrow and share one horizontal offset, so this
+    // view reserves vertical tracks only. The merged rect is returned shrunk: it is
+    // the caller's `editor_rect`, and so also its click-to-caret mapping.
+    let (merged_rect, tracks) = reserve_tracks(columns[2], ScrollAxes::VERTICAL);
+    f.render_stateful_widget(editor, merged_rect, merged_editor);
+    hits.record(
+        tracks.paint(
+            f.buffer_mut(),
+            ScrollbarStyles::from_theme(theme),
+            ScrollExtent::new(
+                merged.line_count(),
+                merged_editor.scroll_line as usize,
+                merged_editor.visible_lines() as usize,
+            ),
+            ScrollExtent::default(),
+        ),
+        ScrollSurface::TabRows,
+    );
+    merged_rect
 }
 
 #[allow(clippy::too_many_arguments)] // presentation state and delayed-load state are independent
@@ -621,8 +704,10 @@ fn draw_conflict_side(
     error: Option<&str>,
     word_wrap: bool,
     ctx: &PaneCtx,
+    hits: &mut ScrollHits,
 ) {
     if let Some(buffer) = buffer {
+        let (text_rect, tracks) = reserve_tracks(area, ScrollAxes::VERTICAL);
         f.render_stateful_widget(
             Editor::new(buffer)
                 .theme(theme)
@@ -630,8 +715,23 @@ fn draw_conflict_side(
                 .read_only(true)
                 .word_wrap(word_wrap)
                 .tab_width(ctx.tab_width),
-            area,
+            text_rect,
             editor,
+        );
+        // The side panes copy the merged editor's offset every frame, so their bars
+        // grab the same thing the middle one does.
+        hits.record(
+            tracks.paint(
+                f.buffer_mut(),
+                ScrollbarStyles::from_theme(theme),
+                ScrollExtent::new(
+                    buffer.line_count(),
+                    editor.scroll_line as usize,
+                    editor.visible_lines() as usize,
+                ),
+                ScrollExtent::default(),
+            ),
+            ScrollSurface::TabRows,
         );
     } else if let Some(error) = error {
         f.render_widget(
@@ -646,6 +746,7 @@ fn draw_conflict_side(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // diff model, layout mode, scroll offsets and the track sink are independent
 pub(super) fn draw_diff(
     f: &mut Frame,
     theme: &Theme,
@@ -654,26 +755,35 @@ pub(super) fn draw_diff(
     view: ViewMode,
     scroll: &mut u16,
     column: &mut u16,
+    hits: &mut ScrollHits,
 ) {
     match view {
         ViewMode::Unified => {
             let mut lines = render::unified_lines(file, theme);
             render::pad_diff_lines(&mut lines, area.width);
-            draw_scrollable_lines(f, theme, area, lines, scroll, column);
+            hits.record_both(
+                draw_scrollable_lines(f, theme, area, lines, scroll, column),
+                ScrollSurface::TabRows,
+                ScrollSurface::TabColumns,
+            );
         },
         ViewMode::SideBySide => {
+            // The panes scroll together, so the view carries one vertical track for
+            // the pair — but each pane has its own content width, so the horizontal
+            // track is split to match the panes above it.
+            let (body, tracks) = reserve_tracks(area, ScrollAxes::BOTH);
             let (mut left, mut right) = render::side_by_side_lines(file, theme);
             let height = left.len().max(right.len());
             let max = u16::try_from(height)
                 .unwrap_or(u16::MAX)
-                .saturating_sub(area.height);
+                .saturating_sub(body.height);
             *scroll = (*scroll).min(max);
-            let panes = Layout::horizontal([
+            let constraints = [
                 Constraint::Percentage(50),
                 Constraint::Length(1),
                 Constraint::Min(0),
-            ])
-            .split(area);
+            ];
+            let panes = Layout::horizontal(constraints).split(body);
             let left_width = left.iter().map(line_width).max().unwrap_or_default();
             let right_width = right.iter().map(line_width).max().unwrap_or_default();
             let content_width = left_width.max(right_width);
@@ -685,8 +795,33 @@ pub(super) fn draw_diff(
             f.render_widget(Paragraph::new(left).scroll((*scroll, *column)), panes[0]);
             f.render_widget(Block::new().borders(Borders::LEFT), panes[1]);
             f.render_widget(Paragraph::new(right).scroll((*scroll, *column)), panes[2]);
-            draw_scroll_indicators(f, theme, panes[0], height, left_width, *scroll, *column);
-            draw_scroll_indicators(f, theme, panes[2], height, right_width, *scroll, *column);
+            let styles = ScrollbarStyles::from_theme(theme);
+            if let Some(track) = tracks.vertical {
+                let extent = ScrollExtent::new(height, usize::from(*scroll), body.height.into());
+                f.render_widget(ScrollBar::vertical(extent, styles), track);
+                hits.record_track(
+                    Some(ScrollTrack::new(track, ScrollAxis::Vertical, extent)),
+                    ScrollSurface::TabRows,
+                );
+            }
+            if let Some(track) = tracks.horizontal {
+                let halves = Layout::horizontal(constraints).split(track);
+                let offset = usize::from(*column);
+                for (half, width, pane) in [
+                    (halves[0], left_width, panes[0]),
+                    (halves[2], right_width, panes[2]),
+                ] {
+                    let extent = ScrollExtent::new(width, offset, pane.width.into());
+                    f.render_widget(ScrollBar::horizontal(extent, styles), half);
+                    // Both halves drive the one shared column offset, each at its own
+                    // pane's scale — so a drag on either is measured against the text
+                    // actually under it.
+                    hits.record_track(
+                        Some(ScrollTrack::new(half, ScrollAxis::Horizontal, extent)),
+                        ScrollSurface::TabColumns,
+                    );
+                }
+            }
         },
     }
 }

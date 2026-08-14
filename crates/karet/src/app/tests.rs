@@ -18,6 +18,7 @@ mod preview;
 mod remote;
 mod save;
 mod scm;
+mod scroll;
 mod search_completion;
 mod spellcheck;
 mod spelling_panel;

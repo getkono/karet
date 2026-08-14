@@ -8,6 +8,7 @@ pub(super) fn draw_loaded_config(
     report: &LoadedConfig,
     scroll: &mut u16,
     column: &mut u16,
+    hits: &mut ScrollHits,
 ) {
     let header = theme
         .style(ThemeRole::LineNumberActive)
@@ -79,7 +80,11 @@ pub(super) fn draw_loaded_config(
         _ => lines.push(Line::styled("  settings could not be serialized", warning)),
     }
 
-    draw_scrollable_lines(f, theme, area, lines, scroll, column);
+    hits.record_both(
+        draw_scrollable_lines(f, theme, area, lines, scroll, column),
+        ScrollSurface::TabRows,
+        ScrollSurface::TabColumns,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -175,10 +180,15 @@ pub(super) fn draw_markdown_preview(
     theme: &Theme,
     area: Rect,
     preview: MarkdownPreviewRender<'_>,
+    scroll_hits: &mut ScrollHits,
+    surface: ScrollSurface,
 ) -> Vec<crate::app::MarkdownLinkHit> {
     // Wrap to the padded width, not the pane's: the cache key follows, so a resize that
     // only moves the padding away still re-wraps exactly once.
-    let area = markdown_preview_rect(area);
+    // Reserve the scroll track before the wrap width is read: the cache key is the
+    // wrapped width, so wrapping to the pane and painting to the reserved rect would
+    // re-wrap every frame — and every link hitbox would overhang the bar.
+    let (area, tracks) = reserve_tracks(markdown_preview_rect(area), ScrollAxes::VERTICAL);
     let key = (preview.buffer.version(), area.width);
     if *preview.rendered != Some(key) {
         *preview.wrapped = karet_markdown::parse(&preview.buffer.text()).wrap(area.width);
@@ -195,6 +205,19 @@ pub(super) fn draw_markdown_preview(
     // The widget clamps the scroll to the document; keep the clamped value so a
     // shrinking document doesn't leave the tab scrolled past the end.
     *preview.scroll = state.scroll;
+    scroll_hits.record(
+        tracks.paint(
+            f.buffer_mut(),
+            ScrollbarStyles::from_theme(theme),
+            ScrollExtent::new(
+                preview.wrapped.lines.len(),
+                state.scroll.into(),
+                area.height.into(),
+            ),
+            ScrollExtent::default(),
+        ),
+        surface,
+    );
     let hits = markdown_link_hits(preview.wrapped, area, state.scroll);
     apply_markdown_osc8(f, &hits, preview.source, preview.root);
     if let Some(point) = preview.hover {

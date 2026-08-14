@@ -2,7 +2,13 @@ use karet_session::ChangeSummary;
 
 use super::*;
 
-pub(super) fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+pub(super) fn draw_scm(
+    f: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut ScrollHits,
+) {
     let header_rows = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(area);
     draw_repository_header(f, app, theme, header_rows[0]);
     let area = header_rows[1];
@@ -35,9 +41,9 @@ pub(super) fn draw_scm(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) 
         (list_area, None)
     };
 
-    draw_scm_changes(f, app, theme, changes_area);
+    draw_scm_changes(f, app, theme, changes_area, hits);
     if let Some(commits_area) = commits_area {
-        draw_scm_commits(f, app, theme, commits_area);
+        draw_scm_commits(f, app, theme, commits_area, hits);
     } else {
         // No pinned region this frame: clear its state so stale hit-testing can't fire.
         app.scm_ui.commits_rect = Rect::default();
@@ -143,7 +149,13 @@ pub(super) fn draw_scm_divider(f: &mut Frame, theme: &Theme, area: Rect, active:
 /// Draw the changes region. Both the staged and working sections are always shown;
 /// an empty section renders a greyed placeholder line rather than collapsing, so the
 /// layout stays stable as files move between them.
-pub(super) fn draw_scm_changes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+pub(super) fn draw_scm_changes(
+    f: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut ScrollHits,
+) {
     let selection_bg = theme.role(ThemeRole::Selection).to_ratatui();
     let hover_bg = theme.role(ThemeRole::HoverHighlight).to_ratatui();
     let hovered = app.hovered_scm_change();
@@ -198,6 +210,7 @@ pub(super) fn draw_scm_changes(f: &mut Frame, app: &mut App, theme: &Theme, area
         }
     }
 
+    let (area, tracks) = reserve_tracks(area, ScrollAxes::VERTICAL);
     app.scm_ui.changes_rect = area;
     let total = items.len();
     let height = area.height as usize;
@@ -208,6 +221,15 @@ pub(super) fn draw_scm_changes(f: &mut Frame, app: &mut App, theme: &Theme, area
     app.scm_ui.row_map = row_map;
     app.scm_ui.offset = state.offset();
     app.scm_ui.total_rows = total;
+    hits.record(
+        tracks.paint(
+            f.buffer_mut(),
+            ScrollbarStyles::from_theme(theme),
+            ScrollExtent::new(total, app.scm_ui.offset, height),
+            ScrollExtent::default(),
+        ),
+        ScrollSurface::ScmChanges,
+    );
 }
 
 pub(super) fn change_line(
@@ -252,7 +274,13 @@ pub(super) fn change_line(
 
 /// Draw the pinned commit-log region (header, lazily-loaded commits, "load more").
 /// Its rows aren't selectable; only the "load more" affordance is clickable.
-pub(super) fn draw_scm_commits(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+pub(super) fn draw_scm_commits(
+    f: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut ScrollHits,
+) {
     app.scm_ui.more_row = None;
     let dim = theme.style(ThemeRole::LineNumber);
     let entries: Vec<CommitListEntry<'_>> = app
@@ -281,6 +309,7 @@ pub(super) fn draw_scm_commits(f: &mut Frame, app: &mut App, theme: &Theme, area
         items.push(ListItem::new(Line::styled(label, dim)));
     }
 
+    let (area, tracks) = reserve_tracks(area, ScrollAxes::VERTICAL);
     let total = items.len();
     let height = area.height as usize;
     let offset = app.scm_ui.commits_offset.min(total.saturating_sub(height));
@@ -290,6 +319,15 @@ pub(super) fn draw_scm_commits(f: &mut Frame, app: &mut App, theme: &Theme, area
     app.scm_ui.commits_offset = state.offset();
     app.scm_ui.commits_total = total;
     app.scm_ui.commits_rect = area;
+    hits.record(
+        tracks.paint(
+            f.buffer_mut(),
+            ScrollbarStyles::from_theme(theme),
+            ScrollExtent::new(total, app.scm_ui.commits_offset, height),
+            ScrollExtent::default(),
+        ),
+        ScrollSurface::ScmCommits,
+    );
 }
 
 /// A terse `git log`-style relative time (e.g. `3d ago`) for a Unix timestamp.

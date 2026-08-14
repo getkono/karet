@@ -97,6 +97,132 @@ pub(crate) struct PaneResize {
     pub(crate) divider: PaneDivider,
 }
 
+/// The view a scrollbar drives, naming the offset a pointer gesture writes to.
+///
+/// One variant per *offset*, not per bar: several bars can share one, and they should
+/// — the merge-conflict view paints three, but its side panes copy the merged
+/// editor's offset every frame, so all three grab the same thing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ScrollSurface {
+    /// The focused tab's own content, vertically. Which offset that is depends on
+    /// the tab kind, exactly as it does for the wheel.
+    TabRows,
+    /// The focused tab's own content, horizontally.
+    TabColumns,
+    /// The Markdown preview beside a code tab (not the standalone preview tab,
+    /// which is [`TabRows`](Self::TabRows)).
+    EditorPreview,
+    /// A pull request's commit list, which scrolls independently of its conversation.
+    GithubPullRequestCommits,
+    /// The Explorer file tree.
+    Explorer,
+    /// The symbol outline panel.
+    Outline,
+    /// The workspace-search results list.
+    SearchResults,
+    /// The workspace-spelling results list.
+    SpellingResults,
+    /// The Source-Control changes list.
+    ScmChanges,
+    /// The Source-Control commit log.
+    ScmCommits,
+    /// The completion popup.
+    Completion,
+}
+
+/// A scrollbar track from the last frame, and the view it scrolls.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ScrollHit {
+    /// Where the bar was painted, and the extent it was painted from.
+    pub(crate) track: ScrollTrack,
+    /// What a gesture on it moves.
+    pub(crate) surface: ScrollSurface,
+}
+
+/// Every scrollbar track the last frame painted, in draw order.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ScrollHits(Vec<ScrollHit>);
+
+impl ScrollHits {
+    /// Record what a paint pass put on screen against the view it scrolls.
+    ///
+    /// Both axes are taken at once because that is what [`ScrollTracks::paint`]
+    /// returns; an axis that reserved no track contributes nothing.
+    pub(crate) fn record(&mut self, painted: PaintedTracks, vertical: ScrollSurface) {
+        self.record_axis(painted.vertical, vertical);
+    }
+
+    /// Record a two-axis paint, whose axes move different offsets.
+    pub(crate) fn record_both(
+        &mut self,
+        painted: PaintedTracks,
+        vertical: ScrollSurface,
+        horizontal: ScrollSurface,
+    ) {
+        self.record_axis(painted.vertical, vertical);
+        self.record_axis(painted.horizontal, horizontal);
+    }
+
+    /// Record one track directly — for the side-by-side diff, whose horizontal track
+    /// is two independently scaled halves painted through [`ScrollBar`] by hand.
+    pub(crate) fn record_track(&mut self, track: Option<ScrollTrack>, surface: ScrollSurface) {
+        self.record_axis(track, surface);
+    }
+
+    /// Keep a track only if it has a thumb to grab. A bar for content that fits is
+    /// suppressed, but its column stays reserved — recording it would make a click on
+    /// an empty groove jump the view to the top.
+    fn record_axis(&mut self, track: Option<ScrollTrack>, surface: ScrollSurface) {
+        if let Some(track) = track
+            && track.thumb_span().is_some()
+        {
+            self.0.push(ScrollHit { track, surface });
+        }
+    }
+
+    /// The track under `(x, y)`, topmost first.
+    ///
+    /// Entries arrive in draw order, so searching backwards makes the completion
+    /// popup and the overlaying outline win over the editor bar they float above.
+    pub(crate) fn at(&self, x: u16, y: u16) -> Option<ScrollHit> {
+        self.0
+            .iter()
+            .rev()
+            .find(|hit| hit.track.contains(x, y))
+            .copied()
+    }
+
+    /// The track driving `surface`, if the last frame painted one. Tests reach for a
+    /// bar by what it scrolls; the mouse only ever reaches for one by where it is.
+    #[cfg(test)]
+    pub(crate) fn of(&self, surface: ScrollSurface) -> Option<ScrollHit> {
+        self.0
+            .iter()
+            .rev()
+            .find(|hit| hit.surface == surface)
+            .copied()
+    }
+}
+
+/// An in-progress scrollbar-thumb drag.
+///
+/// The track is captured by value at the grab rather than re-read each event: the
+/// extent shifts under a live drag — a background fetch grows a list, a wrapped view
+/// re-measures — and re-reading would make the thumb wander under a pointer that had
+/// not moved. [`PaneResize`] stores the divider it grabbed for the same reason.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ScrollDrag {
+    /// What the drag scrolls.
+    pub(crate) surface: ScrollSurface,
+    /// The track as it was when the thumb was grabbed.
+    pub(crate) track: ScrollTrack,
+    /// How far along the track the pointer was at the grab.
+    pub(crate) origin_cell: u16,
+    /// The scroll position at that moment — the anchor a motionless press returns to
+    /// exactly, instead of lurching by however many lines a cell stands for.
+    pub(crate) origin_position: usize,
+}
+
 /// A clickable toast card, recorded during the last render for click hit-testing.
 #[derive(Clone, Copy)]
 pub(crate) struct ToastHit {
