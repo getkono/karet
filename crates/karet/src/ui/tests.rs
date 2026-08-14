@@ -1,3 +1,7 @@
+use karet_core::LineCol;
+use karet_core::Range;
+use karet_session::RequestId;
+use karet_session::SpellingHit;
 use karet_widgets::breadcrumbs::breadcrumb_segment_spans;
 
 use super::scm::change_line;
@@ -686,4 +690,171 @@ fn pack_hints_respects_width() {
     assert_eq!(pack_hints(&hints, 0), 0);
     // A narrow bar drops trailing hints (leaving room for the ` +N` marker).
     assert!(pack_hints(&hints, 12) < hints.len());
+}
+
+/// A unique scratch directory for a Spelling render test.
+fn spelling_dir(name: &str) -> PathBuf {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let dir = std::env::temp_dir().join(format!(
+        "karet-spelling-{name}-{}-{unique}",
+        std::process::id()
+    ));
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// One scan hit for `path` at 0-based `line`.
+fn spelling_hit(path: &Path, line: u32, col: u32, word: &str, line_text: &str) -> SpellingHit {
+    SpellingHit {
+        path: path.to_path_buf(),
+        range: Range {
+            start: LineCol::new(line, col),
+            end: LineCol::new(line, col + word.chars().count() as u32),
+        },
+        word: word.to_owned(),
+        line_text: line_text.to_owned(),
+    }
+}
+
+#[test]
+fn spelling_rows_render_the_word_its_line_number_and_context()
+-> Result<(), std::convert::Infallible> {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let dir = spelling_dir("render");
+    let path = dir.join("notes.md");
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.spelling.hits = vec![spelling_hit(&path, 4, 4, "wrld", "the wrld ends")];
+    app.spelling.rebuild_rows();
+    app.spelling.files_scanned = 1;
+    app.spelling.scanned = true;
+
+    let mut terminal = Terminal::new(TestBackend::new(44, 6))?;
+    let theme = app.theme.clone();
+    let _ = terminal.draw(|frame| {
+        let area = frame.area();
+        super::sidebar::draw_spelling_panel(frame, &mut app, &theme, area);
+    });
+    let painted: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
+
+    assert!(painted.contains("notes.md"), "{painted}");
+    assert!(painted.contains("wrld"), "{painted}");
+    // 1-based in the UI, though the model is 0-based.
+    assert!(painted.contains("5:"), "{painted}");
+    assert!(painted.contains("the wrld ends"), "{painted}");
+    assert!(painted.contains("⟳ scan"), "{painted}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+#[test]
+fn an_unscanned_panel_invites_a_scan_rather_than_showing_an_empty_list()
+-> Result<(), std::convert::Infallible> {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let dir = spelling_dir("empty");
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.settings.spellcheck.enabled = true;
+
+    let mut terminal = Terminal::new(TestBackend::new(48, 4))?;
+    let theme = app.theme.clone();
+    let render = |app: &mut App, terminal: &mut Terminal<TestBackend>| -> String {
+        let _ = terminal.draw(|frame| {
+            let area = frame.area();
+            super::sidebar::draw_spelling_panel(frame, app, &theme, area);
+        });
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    };
+
+    assert!(render(&mut app, &mut terminal).contains("press ⟳ to scan"));
+
+    app.spelling.scanning = Some(RequestId(1));
+    assert!(render(&mut app, &mut terminal).contains("scanning"));
+
+    app.spelling.scanning = None;
+    app.spelling.files_scanned = 12;
+    app.spelling.scanned = true;
+    assert!(render(&mut app, &mut terminal).contains("no misspellings"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+#[test]
+fn the_activity_switcher_reserves_a_cell_pair_for_every_panel()
+-> Result<(), std::convert::Infallible> {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let dir = spelling_dir("switcher");
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.settings.spellcheck.enabled = true;
+    let mut terminal = Terminal::new(TestBackend::new(40, 1))?;
+    let theme = app.theme.clone();
+    let mut header = |app: &mut App| {
+        let _ = terminal.draw(|frame| {
+            let area = frame.area();
+            super::sidebar::draw_sidebar_header(frame, app, &theme, area);
+        });
+        app.panel_hits
+            .iter()
+            .map(|&(_, _, panel)| panel)
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        header(&mut app),
+        vec![
+            SidebarPanel::Explorer,
+            SidebarPanel::Search,
+            SidebarPanel::SourceControl,
+            SidebarPanel::Spelling,
+        ],
+        "every panel needs a switcher button, in activity-bar order"
+    );
+
+    // Spell check off retires the Spelling button along with its panel.
+    app.settings.spellcheck.enabled = false;
+    assert_eq!(
+        header(&mut app),
+        vec![
+            SidebarPanel::Explorer,
+            SidebarPanel::Search,
+            SidebarPanel::SourceControl,
+        ],
+    );
+    app.settings.spellcheck.enabled = true;
+    let _ = header(&mut app);
+    // Two cells each, marching left to right and staying inside the header.
+    for window in app.panel_hits.windows(2) {
+        assert_eq!(window[1].0, window[0].1, "{:?}", app.panel_hits);
+    }
+    for &(start, end, _) in &app.panel_hits {
+        assert_eq!(end - start, 2);
+        assert!(
+            end <= 40,
+            "the switcher must fit the header: {start}..{end}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
 }

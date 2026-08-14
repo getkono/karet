@@ -114,6 +114,7 @@ pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
         },
         SidebarPanel::SourceControl => draw_scm(f, app, theme, rows[1]),
         SidebarPanel::Search => draw_search_panel(f, app, theme, rows[1]),
+        SidebarPanel::Spelling => draw_spelling_panel(f, app, theme, rows[1]),
     }
 }
 
@@ -178,6 +179,7 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
         SidebarPanel::Explorer => "EXPLORER",
         SidebarPanel::Search => "SEARCH",
         SidebarPanel::SourceControl => "SOURCE CONTROL",
+        SidebarPanel::Spelling => "SPELLING",
     };
     // Header columns: a compact workspace-root label, the panel title, an
     // optional Explorer toolbar, then the activity-bar switcher (7 cells). The
@@ -185,9 +187,13 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
     // the title and switcher always fit.
     const ROOT_MAX_W: u16 = 24;
     const ACTIONS_W: u16 = 8; // four buttons × 2 cells
+    // The activity-bar switcher: one 2-cell button per shown panel, plus a
+    // trailing cell. Spelling is offered only while spell check is on.
+    let spelling = app.spelling_available();
+    let switcher_w: u16 = if spelling { 9 } else { 7 };
     let icon_style = app.icon_style;
     let explorer = app.sidebar_panel == SidebarPanel::Explorer;
-    let actions_w = if explorer && area.width >= 9 + ACTIONS_W + 7 {
+    let actions_w = if explorer && area.width >= 9 + ACTIONS_W + switcher_w {
         ACTIONS_W
     } else {
         0
@@ -195,7 +201,7 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
     let min_title_w = 9;
     let root_avail = area
         .width
-        .saturating_sub(min_title_w + actions_w + 7)
+        .saturating_sub(min_title_w + actions_w + switcher_w)
         .min(ROOT_MAX_W);
     let root_label = root_header_label(&app.root, root_avail.saturating_sub(1));
     let show_root = root_avail > 6 && !root_label.is_empty();
@@ -208,7 +214,7 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
         Constraint::Length(root_w),
         Constraint::Min(0),
         Constraint::Length(actions_w),
-        Constraint::Length(7),
+        Constraint::Length(switcher_w),
     ])
     .split(area);
     if show_root {
@@ -264,6 +270,10 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
         (switch.x + 2, switch.x + 4, SidebarPanel::Search),
         (switch.x + 4, switch.x + 6, SidebarPanel::SourceControl),
     ];
+    if spelling {
+        app.panel_hits
+            .push((switch.x + 6, switch.x + 8, SidebarPanel::Spelling));
+    }
     let icon = |ui: UiIcon, panel: SidebarPanel| {
         let hovered = app
             .panel_hits
@@ -280,14 +290,15 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
             chrome_button_style(theme, state),
         )
     };
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            icon(UiIcon::Explorer, SidebarPanel::Explorer),
-            icon(UiIcon::Search, SidebarPanel::Search),
-            icon(UiIcon::SourceControl, SidebarPanel::SourceControl),
-        ])),
-        switch,
-    );
+    let mut icons = vec![
+        icon(UiIcon::Explorer, SidebarPanel::Explorer),
+        icon(UiIcon::Search, SidebarPanel::Search),
+        icon(UiIcon::SourceControl, SidebarPanel::SourceControl),
+    ];
+    if spelling {
+        icons.push(icon(UiIcon::Spelling, SidebarPanel::Spelling));
+    }
+    f.render_widget(Paragraph::new(Line::from(icons)), switch);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -337,6 +348,104 @@ pub(super) fn root_header_label(root: &Path, max_width: u16) -> String {
 
 pub(super) fn truncate_left(text: &str, max_width: u16) -> String {
     karet_widgets::text::fit_start(text, usize::from(max_width))
+}
+
+pub(super) fn draw_spelling_panel(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+    use crate::app::SpellingRow;
+
+    // A one-line toolbar (scan status on the left, the ⟳ re-scan action on the
+    // right) over the results list.
+    const ACTION_W: u16 = 8;
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    let cols =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(ACTION_W)]).split(rows[0]);
+    app.spelling_ui.results_rect = rows[1];
+    app.spelling_ui.offset = 0;
+    app.spelling_ui.action_hits = vec![(
+        cols[1].x,
+        cols[1].x + ACTION_W,
+        rows[0].y,
+        Command::SpellingScan,
+    )];
+
+    let accent = theme.role(ThemeRole::LineNumberActive).to_ratatui();
+    let dim = theme.style(ThemeRole::LineNumber);
+    let muted = theme.style(ThemeRole::Muted);
+    let spelling = &app.spelling;
+
+    let status = if spelling.scanning.is_some() {
+        format!(" scanning… {} files", spelling.files_scanned)
+    } else if spelling.truncated {
+        format!(" {} shown (limit reached)", spelling.hits.len())
+    } else if spelling.scanned {
+        format!(
+            " {} in {} files",
+            spelling.hits.len(),
+            spelling.files_scanned
+        )
+    } else {
+        String::new()
+    };
+    f.render_widget(Paragraph::new(Line::styled(status, muted)), cols[0]);
+    f.render_widget(
+        Paragraph::new(Line::styled(" ⟳ scan", Style::default().fg(accent))),
+        cols[1],
+    );
+
+    if spelling.rows.is_empty() {
+        // No "spell check is off" case: the panel is only reachable while
+        // `spellcheck.enabled` is on.
+        let message = if spelling.scanning.is_some() {
+            "  scanning the workspace…"
+        } else if spelling.scanned {
+            "  no misspellings"
+        } else {
+            "  press ⟳ to scan the workspace"
+        };
+        f.render_widget(Paragraph::new(Line::styled(message, dim)), rows[1]);
+        return;
+    }
+
+    let items: Vec<ListItem> = spelling
+        .rows
+        .iter()
+        .map(|row| match *row {
+            SpellingRow::File { hit, count } => {
+                let name = spelling.hits[hit]
+                    .path
+                    .strip_prefix(&app.root)
+                    .unwrap_or(&spelling.hits[hit].path)
+                    .to_string_lossy()
+                    .into_owned();
+                ListItem::new(Line::from(vec![
+                    Span::raw(format!(" {name} ")),
+                    Span::styled(format!("({count})"), dim),
+                ]))
+            },
+            // The word leads (it is what the eye scans for), with its line as
+            // dimmed context and the 1-based line number where a reader expects it.
+            SpellingRow::Word { hit } => {
+                let hit = &spelling.hits[hit];
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!("   {} ", hit.word),
+                        Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(format!("{}: ", hit.range.start.line.saturating_add(1)), dim),
+                    Span::styled(hit.line_text.clone(), muted),
+                ]))
+            },
+        })
+        .collect();
+    let mut state = ListState::default();
+    state.select(Some(spelling.selection.cursor()));
+    let list = List::new(items).highlight_style(
+        Style::default()
+            .bg(theme.role(ThemeRole::Selection).to_ratatui())
+            .add_modifier(Modifier::BOLD),
+    );
+    f.render_stateful_widget(list, rows[1], &mut state);
+    app.spelling_ui.offset = state.offset();
 }
 
 pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {

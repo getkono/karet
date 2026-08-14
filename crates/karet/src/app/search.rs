@@ -465,18 +465,7 @@ impl App {
             return;
         };
         let path = hit.path.clone();
-        let line = hit.matches.first().map(|m| m.line);
-        self.open_path(&path);
-        if let (
-            Some(line),
-            Some(Tab {
-                kind: TabKind::Code { buffer, .. },
-                editor,
-                ..
-            }),
-        ) = (line, self.tabs.get_mut(self.active))
-        {
-            editor.goto(buffer, LineCol::new(line, 0));
-        }
+        let line = hit.matches.first().map_or(0, |m| m.line);
+        self.focus_by_file_line(&path, LineCol::new(line, 0));
     }
 }

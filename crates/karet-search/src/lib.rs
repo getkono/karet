@@ -9,9 +9,11 @@
 //! Search and replace (both in-file and workspace) are implemented via
 //! [`search_in_file`]/[`WorkspaceSearch::run`] and
 //! [`plan_replacements`]/[`apply_replacements`]/[`WorkspaceSearch::replace`]. The
-//! workspace walk is currently single-threaded (a parallel walk is a deferred
-//! optimization).
+//! walk itself is also public as [`walk_text_files`], for consumers that want the
+//! same filtered corpus without a pattern. The workspace walk is currently
+//! single-threaded (a parallel walk is a deferred optimization).
 
+use std::ops::ControlFlow;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -284,19 +286,16 @@ impl WorkspaceSearch {
             return Ok(());
         }
         let matcher = Matcher::build(query)?;
-        for entry in build_walk(root, query)?.flatten() {
-            let Some(text) = read_searchable(&entry) else {
-                continue;
-            };
+        walk_text_files(root, &query.includes, &query.excludes, |path, text| {
             let matches = matcher.find(&text);
             if !matches.is_empty() {
                 sink(FileHit {
-                    path: entry.path().to_path_buf(),
+                    path: path.to_path_buf(),
                     matches,
                 });
             }
-        }
-        Ok(())
+            ControlFlow::Continue(())
+        })
     }
 
     /// Walk `root` and replace every match of `query` with `replacement`, writing
@@ -318,22 +317,50 @@ impl WorkspaceSearch {
         }
         let matcher = Matcher::build(query)?;
         let mut summary = ReplaceSummary::default();
-        for entry in build_walk(root, query)?.flatten() {
-            let Some(text) = read_searchable(&entry) else {
-                continue;
-            };
+        walk_text_files(root, &query.includes, &query.excludes, |path, text| {
             let plan = matcher.plan(&text, replacement, query.regex);
-            if plan.is_empty() {
-                continue;
+            if !plan.is_empty() {
+                let updated = apply_replacements(&text, &plan);
+                if std::fs::write(path, updated).is_ok() {
+                    summary.files_changed += 1;
+                    summary.replacements += plan.len();
+                }
             }
-            let updated = apply_replacements(&text, &plan);
-            if std::fs::write(entry.path(), updated).is_ok() {
-                summary.files_changed += 1;
-                summary.replacements += plan.len();
-            }
-        }
+            ControlFlow::Continue(())
+        })?;
         Ok(summary)
     }
+}
+
+/// Walk `root` gitignore-aware and hand every readable text file to `sink`.
+///
+/// The walk applies exactly the filters [`WorkspaceSearch::run`] does — `.gitignore`
+/// and hidden-file conventions, the pruned [`IGNORED_DIRS`], ripgrep `-g` semantics
+/// for `includes`/`excludes`, and the binary/oversize/non-UTF-8 skips — so a consumer
+/// that needs the *files* rather than pattern matches (a workspace linter, a
+/// spell-check pass, an indexer) sees the same corpus a search would.
+///
+/// `sink` receives each file's path and its full contents, and returns
+/// [`ControlFlow::Break`] to stop the walk early (a result cap, a cancelled request).
+/// The walk is single-threaded, matching [`WorkspaceSearch::run`].
+///
+/// # Errors
+/// Returns [`SearchError::InvalidPattern`] if an include/exclude glob is invalid.
+pub fn walk_text_files(
+    root: &Path,
+    includes: &[String],
+    excludes: &[String],
+    mut sink: impl FnMut(&Path, String) -> ControlFlow<()>,
+) -> Result<(), SearchError> {
+    for entry in build_walk(root, includes, excludes)?.flatten() {
+        let Some(text) = read_searchable(&entry) else {
+            continue;
+        };
+        if sink(entry.path(), text).is_break() {
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// The result of a workspace [`replace`](WorkspaceSearch::replace).
@@ -346,8 +373,12 @@ pub struct ReplaceSummary {
     pub replacements: usize,
 }
 
-/// Build the gitignore-aware workspace walk for `query` (shared by search & replace).
-fn build_walk(root: &Path, query: &SearchQuery) -> Result<ignore::Walk, SearchError> {
+/// Build the gitignore-aware workspace walk (shared by every walking entry point).
+fn build_walk(
+    root: &Path,
+    includes: &[String],
+    excludes: &[String],
+) -> Result<ignore::Walk, SearchError> {
     let mut builder = ignore::WalkBuilder::new(root);
     builder.standard_filters(true);
     // Honor `.gitignore` even outside a git repository (matches editor expectations
@@ -362,14 +393,14 @@ fn build_walk(root: &Path, query: &SearchQuery) -> Result<ignore::Walk, SearchEr
             .to_str()
             .is_none_or(|name| !IGNORED_DIRS.contains(&name))
     });
-    if !query.includes.is_empty() || !query.excludes.is_empty() {
+    if !includes.is_empty() || !excludes.is_empty() {
         let mut overrides = ignore::overrides::OverrideBuilder::new(root);
-        for inc in &query.includes {
+        for inc in includes {
             overrides
                 .add(inc)
                 .map_err(|_| SearchError::InvalidPattern)?;
         }
-        for exc in &query.excludes {
+        for exc in excludes {
             // `!glob` excludes in override syntax.
             overrides
                 .add(&format!("!{exc}"))
@@ -740,6 +771,102 @@ mod tests {
             std::fs::read_to_string(dir.path.join("ignored.txt")).unwrap_or_default(),
             "needle\n"
         );
+    }
+
+    /// Collect every file the walk visits, as root-relative path + contents.
+    fn walked(root: &Path, includes: &[String], excludes: &[String]) -> Vec<(String, String)> {
+        let mut files = Vec::new();
+        let _ = walk_text_files(root, includes, excludes, |path, text| {
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            files.push((rel, text));
+            ControlFlow::Continue(())
+        });
+        files.sort();
+        files
+    }
+
+    #[test]
+    fn walk_visits_text_files_and_honors_gitignore() {
+        let dir = temp_dir();
+        write(&dir.path, "a.txt", b"alpha\n");
+        write(&dir.path, "sub/b.txt", b"beta\n");
+        write(&dir.path, ".gitignore", b"ignored.txt\n");
+        write(&dir.path, "ignored.txt", b"gamma\n");
+
+        let files = walked(&dir.path, &[], &[]);
+        let names: Vec<&str> = files.iter().map(|(rel, _)| rel.as_str()).collect();
+        assert!(names.contains(&"a.txt"), "{names:?}");
+        assert!(names.contains(&"sub/b.txt"), "{names:?}");
+        assert!(!names.contains(&"ignored.txt"), "{names:?}");
+        assert_eq!(
+            files.iter().find(|(rel, _)| rel == "a.txt").map(|(_, t)| t),
+            Some(&"alpha\n".to_owned()),
+            "the walk hands the sink the full file contents"
+        );
+    }
+
+    #[test]
+    fn walk_prunes_heavyweight_dirs_and_binary_files() {
+        let dir = temp_dir();
+        write(&dir.path, "keep.txt", b"text\n");
+        // Pruned by IGNORED_DIRS even with no .gitignore mentioning them.
+        write(&dir.path, "target/built.txt", b"artifact\n");
+        write(&dir.path, "node_modules/dep.txt", b"vendored\n");
+        // A NUL byte in the head marks the file binary.
+        write(&dir.path, "blob.bin", b"pre\0post\n");
+
+        let names: Vec<String> = walked(&dir.path, &[], &[])
+            .into_iter()
+            .map(|(rel, _)| rel)
+            .collect();
+        assert_eq!(names, vec!["keep.txt".to_owned()]);
+    }
+
+    #[test]
+    fn walk_applies_include_and_exclude_globs() {
+        let dir = temp_dir();
+        write(&dir.path, "a.rs", b"rust\n");
+        write(&dir.path, "b.md", b"markdown\n");
+        write(&dir.path, "skip.rs", b"rust\n");
+
+        let names: Vec<String> = walked(&dir.path, &["*.rs".to_owned()], &["skip.rs".to_owned()])
+            .into_iter()
+            .map(|(rel, _)| rel)
+            .collect();
+        assert_eq!(names, vec!["a.rs".to_owned()]);
+    }
+
+    #[test]
+    fn walk_stops_early_on_break() {
+        let dir = temp_dir();
+        for i in 0..5 {
+            write(&dir.path, &format!("f{i}.txt"), b"x\n");
+        }
+        let mut seen = 0_usize;
+        let _ = walk_text_files(&dir.path, &[], &[], |_, _| {
+            seen += 1;
+            // A result cap / cancelled request stops the walk mid-tree.
+            if seen == 2 {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        });
+        assert_eq!(seen, 2);
+    }
+
+    #[test]
+    fn walk_surfaces_an_invalid_glob() {
+        let dir = temp_dir();
+        write(&dir.path, "a.txt", b"x\n");
+        let result = walk_text_files(&dir.path, &["[".to_owned()], &[], |_, _| {
+            ControlFlow::Continue(())
+        });
+        assert_eq!(result, Err(SearchError::InvalidPattern));
     }
 
     #[test]

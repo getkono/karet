@@ -101,10 +101,10 @@ published to crates.io (everything else is `publish = false`).
 | `karet-dap` | engine | — | **unimplemented skeleton** for the future async DAP client; `publish = false`, no consumer |
 | `karet-vcs` | engine | ✓ | git facts engine: status/branches/log/commit detail/stash/staging/remotes — `gix` reads + hardened `git`-CLI writes; headless |
 | `karet-github` | engine | — | headless GitHub REST client (issues, PRs, checks, workflows); generated from a vendored OpenAPI spec at build time; consumed only by `karet-session` |
-| `karet-search` | engine | ✓ | in-file + workspace search/replace (gitignore-aware; no karet deps) |
+| `karet-search` | engine | ✓ | in-file + workspace search/replace, plus the shared gitignore-aware file walk (`walk_text_files`); no karet deps |
 | `karet-watch` | engine | — | debounced cross-platform FS-watch → neutral `FsEvent` Tokio stream; enumerates off-thread (headless) |
 | `karet-fuzzy` | engine | — | fuzzy match + ranking (nucleo-backed, smart case), shared by widgets and completion |
-| `karet-session` | backend | — | headless editor backend: owns documents/workspace, orchestrates producers, applies `Command`s, emits `Event`s; runs layered highlighting on a background worker; holds format-on-save, spell-check, settings/session |
+| `karet-session` | backend | — | headless editor backend: owns documents/workspace, orchestrates producers, applies `Command`s, emits `Event`s; runs layered highlighting on a background worker; holds format-on-save, spell-check (per-document *and* a workspace-wide scan worker), settings/session |
 | `karet-widgets` | widget | — | ratatui UI toolkit: file tree, completion popup, toasts, pane layout + drop zones, multi-select model, UI glyphs; LSP hover popup behind the `hover` feat |
 | `karet-editor` | widget | ✓ | the editor widget: gutter, folds, sticky scroll, word wrap, multi-caret, merge-conflict decorations; `read_only` mode |
 | `karet-fileview` | widget | ✓ | read-only file-view primitives: hex view + terminal image (behind `raster`/`images`) + placeholder, plus `FileKind`/`classify` re-exports; composition is the consumer's |

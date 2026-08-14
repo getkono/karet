@@ -188,6 +188,47 @@ when automatic completion is disabled. Double-clicking a spelling squiggle opens
 same replacements in a correction menu. A warning without close matches instead shows
 a muted `No similar words found` row, while still offering the dictionary action.
 
+#### The Spelling panel
+
+Squiggles only show what is on screen, so the **Spelling** sidebar panel (`Ctrl+4`, or
+**View: Show Spelling** in the command palette) lists every misspelling in the whole
+workspace, grouped by file. Selecting a row — <kbd>Enter</kbd> or a click — opens that
+file with the caret on the word, so a pass over the list is a pass over the fixes.
+
+The panel exists only while `spellcheck.enabled` is on: it appears in the activity bar
+the moment you turn the setting on and is retired the moment you turn it off, rather
+than sitting there as a list that could only ever be empty.
+
+The scan walks the same corpus workspace search does, across every workspace root:
+gitignore-aware, honouring your `search.exclude` globs, skipping binary and oversize
+files, with `.git`, `target`, and `node_modules` pruned. It applies the same scope
+settings as the editor, so with the defaults it checks prose documents and source
+comments and nothing else, and it resolves each file's dictionary through
+`.editorconfig` exactly as an open document does. Files you have open are answered
+from their live buffers, so unsaved edits are never reported from stale text on disk.
+
+Results stream in as the walk proceeds rather than appearing all at once — on this
+repository (435 files, ~113k lines) the first rows land in well under a second and the
+whole scan takes a couple of seconds. Opening the panel scans if it has nothing to
+show; `⟳ scan` in the panel header re-runs it, superseding any scan still in flight.
+The list is capped at 5000 misspellings, and says so when it stops there.
+
+Once it has results, the panel keeps them true on its own. Any change to a
+`spellcheck` setting — a word added to a dictionary, a scope toggled, the locale
+switched — re-runs the scan, whether the change came from the correction menu or
+from editing a `setting.jsonc` in another window. Unrelated settings do not, and a
+panel you have never opened stays idle: opening it is what asks for the walk.
+
+Files you open are reconciled continuously rather than by re-scanning: an open
+document's own spelling layer replaces whatever the scan said about that file, so
+its rows track the squiggles as you type and a fixed word leaves the list on the
+keystroke that fixes it. What the panel lists for a file you are looking at is by
+construction what the editor underlines in it.
+
+The panel deliberately shows no replacement suggestions: computing them for a whole
+workspace dominates the scan's cost, and the correction menu and completion popup
+already offer them in the editor, where the fix actually happens.
+
 `Add “…” to Project Dictionary` appends the word to `spellcheck.words` in the project
 layer. An existing `$GIT_ROOT/.karet/setting.jsonc` is updated in place while retaining
 its comments and unrelated settings. If that file does not exist, karet requires the

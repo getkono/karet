@@ -8,6 +8,11 @@ impl App {
             Command::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
             Command::ToggleFocus => self.toggle_focus(),
             Command::SelectPanel(panel) => {
+                // Spelling is only a panel while spell check is on; naming it by
+                // key or palette entry while it is off selects nothing.
+                if panel == SidebarPanel::Spelling && !self.spelling_available() {
+                    return;
+                }
                 self.sidebar_panel = panel;
                 self.sidebar_visible = true;
                 self.focus = Focus::Sidebar;
@@ -17,6 +22,11 @@ impl App {
                 }
                 if panel == SidebarPanel::SourceControl {
                     self.request_repository_snapshot();
+                }
+                // Same lazy-first-load shape: opening Spelling with nothing to show
+                // starts a scan rather than presenting an empty list.
+                if panel == SidebarPanel::Spelling {
+                    self.show_spelling();
                 }
             },
             Command::OpenQuickOpen => self.open_quick_open(),
@@ -289,6 +299,7 @@ impl App {
             }),
             Command::CommitGraphMarkBase => self.graph_mark_base(),
             Command::CommitGraphCompare => self.graph_compare(),
+            Command::SpellingScan => self.scan_workspace_spelling(),
             Command::SearchSelectUp => self.search_select(-1),
             Command::SearchSelectDown => self.search_select(1),
             Command::SearchOpen => self.open_selected_result(),

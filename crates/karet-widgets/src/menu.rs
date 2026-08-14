@@ -93,6 +93,9 @@ pub struct ContextMenu<A> {
     pub entries: Vec<ContextMenuEntry<A>>,
     /// The selected row index.
     pub selected: usize,
+    /// The activatable row under the pointer, painted with a secondary accent so
+    /// the mouse gets the same live feedback the keyboard cursor has.
+    pub hover: Option<usize>,
     /// The menu rect from the last render (for hit-testing).
     pub rect: Rect,
 }
@@ -108,8 +111,37 @@ impl<A> ContextMenu<A> {
             y,
             entries,
             selected,
+            hover: None,
             rect: Rect::default(),
         }
+    }
+
+    /// The row at terminal point `(x, y)`, using the rect recorded by the last
+    /// [`draw`](Self::draw). Disabled rows are returned too — refusing them is
+    /// the consumer's business, and a click on one still owes the user its note.
+    ///
+    /// Both the click and the hover path resolve rows through here, so what
+    /// lights up under the pointer is the row a click addresses.
+    #[must_use]
+    pub fn row_at(&self, x: u16, y: u16) -> Option<usize> {
+        let rect = self.rect;
+        // The borders bracket the rows: `rect.y` is the top edge, and the row
+        // one past the last entry is the bottom edge.
+        if rect.width == 0 || x < rect.x || x >= rect.right() || y <= rect.y || y >= rect.bottom() {
+            return None;
+        }
+        let index = usize::from(y - rect.y - 1);
+        (index < self.entries.len()).then_some(index)
+    }
+
+    /// Track the pointer, highlighting the row it rests on. `None` (or a point
+    /// outside the menu, or a row that cannot be activated) clears the
+    /// highlight — feedback promising a click that would be refused is worse
+    /// than none.
+    pub fn set_hover(&mut self, point: Option<(u16, u16)>) {
+        self.hover = point
+            .and_then(|(x, y)| self.row_at(x, y))
+            .filter(|&index| self.entries.get(index).is_some_and(|entry| entry.enabled));
     }
 
     /// Move the selection by `delta` rows, skipping disabled entries. When
@@ -194,14 +226,18 @@ impl<A> ContextMenu<A> {
         let inner = block.inner(rect);
         f.render_widget(block, rect);
         let dim = theme.style(ThemeRole::LineNumber);
+        // The hovered row carries a secondary accent; the selected row keeps the
+        // primary one, so a pointer resting elsewhere never hides the cursor.
+        let hover = theme.role(ThemeRole::HoverHighlight).to_ratatui();
         let items: Vec<ListItem> = labels
             .iter()
             .zip(hints.iter())
             .zip(self.entries.iter())
-            .map(|((label, hint), entry)| {
+            .enumerate()
+            .map(|(index, ((label, hint), entry))| {
                 // Disabled rows render fully dimmed (label and hint alike).
                 let label_style = if entry.enabled { Style::default() } else { dim };
-                match hint {
+                let item = match hint {
                     Some(hint) => {
                         let used = width_of(label) + width_of(hint);
                         let pad = inner.width.saturating_sub(used).max(1);
@@ -212,6 +248,11 @@ impl<A> ContextMenu<A> {
                         ]))
                     },
                     None => ListItem::new(Line::from(Span::styled(label.clone(), label_style))),
+                };
+                if self.hover == Some(index) && index != self.selected {
+                    item.style(Style::default().bg(hover))
+                } else {
+                    item
                 }
             })
             .collect();
@@ -228,6 +269,10 @@ impl<A> ContextMenu<A> {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+
     use super::*;
 
     fn menu(enabled: &[bool]) -> ContextMenu<u8> {
@@ -272,5 +317,88 @@ mod tests {
         assert_eq!(m.selected, 1, "overshoot lands on the last enabled row");
         m.select_by(-5);
         assert_eq!(m.selected, 0);
+    }
+
+    /// Draw `m` into a test terminal, returning the painted buffer.
+    fn draw(m: &mut ContextMenu<u8>) -> Option<Buffer> {
+        let theme = Theme::dark();
+        let labels: Vec<String> = (0..m.entries.len()).map(|i| format!("row {i}")).collect();
+        let hints = vec![None; m.entries.len()];
+        let mut terminal = Terminal::new(TestBackend::new(20, 8)).ok()?;
+        terminal
+            .draw(|f| m.draw(f, &theme, f.area(), &labels, &hints))
+            .ok()?;
+        Some(terminal.backend().buffer().clone())
+    }
+
+    #[test]
+    fn the_pointer_resolves_to_the_row_it_rests_on() {
+        let mut m = menu(&[true, false, true]);
+        m.rect = Rect::new(2, 1, 12, 5); // border + three rows + border
+
+        assert_eq!(
+            m.row_at(4, 2),
+            Some(0),
+            "the first row sits under the border"
+        );
+        assert_eq!(
+            m.row_at(4, 3),
+            Some(1),
+            "a disabled row still answers, so a click can explain itself"
+        );
+        assert_eq!(m.row_at(4, 4), Some(2));
+        assert_eq!(m.row_at(4, 1), None, "the top border is not a row");
+        assert_eq!(m.row_at(4, 9), None, "below the menu");
+        assert_eq!(m.row_at(20, 2), None, "right of the menu");
+
+        m.set_hover(Some((4, 4)));
+        assert_eq!(m.hover, Some(2));
+        m.set_hover(Some((4, 3)));
+        assert_eq!(m.hover, None, "a disabled row clears the highlight");
+        m.set_hover(Some((4, 4)));
+        m.set_hover(None);
+        assert_eq!(m.hover, None);
+    }
+
+    #[test]
+    fn the_hovered_row_paints_the_hover_accent() {
+        let theme = Theme::dark();
+        let hover = theme.role(ThemeRole::HoverHighlight).to_ratatui();
+        let selection = theme.role(ThemeRole::Selection).to_ratatui();
+        let mut m = menu(&[true, true, true]);
+        let Some(plain) = draw(&mut m) else {
+            return;
+        };
+        // Row 0 is selected by default, so hovering row 1 keeps the two apart.
+        assert_eq!(plain[(2u16, 1u16)].bg, selection);
+        assert_ne!(plain[(2u16, 2u16)].bg, hover, "nothing is hovered yet");
+
+        m.set_hover(Some((3, 2)));
+        let Some(hovered) = draw(&mut m) else {
+            return;
+        };
+        assert_eq!(hovered[(2u16, 2u16)].bg, hover);
+        assert_eq!(
+            hovered[(2u16, 1u16)].bg,
+            selection,
+            "the keyboard cursor keeps the primary accent"
+        );
+    }
+
+    #[test]
+    fn a_disabled_row_never_paints_the_hover_accent() {
+        let theme = Theme::dark();
+        let hover = theme.role(ThemeRole::HoverHighlight).to_ratatui();
+        let mut m = menu(&[true, false]);
+        if draw(&mut m).is_none() {
+            return; // no rect to hit-test against
+        }
+        m.set_hover(Some((3, 2)));
+        let Some(buffer) = draw(&mut m) else {
+            return;
+        };
+
+        assert_eq!(m.hover, None);
+        assert_ne!(buffer[(2u16, 2u16)].bg, hover);
     }
 }

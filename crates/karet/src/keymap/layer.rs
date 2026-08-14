@@ -27,6 +27,8 @@ pub enum SidebarPanel {
     Search,
     /// Source control (changed files).
     SourceControl,
+    /// Workspace spelling results.
+    Spelling,
 }
 
 /// The content kind of the active editor tab — the third input to
@@ -82,6 +84,8 @@ pub enum FocusTarget {
     Search,
     /// The source-control panel.
     SourceControl,
+    /// The workspace spelling panel.
+    Spelling,
     /// The right-side outline panel.
     Outline,
 }
@@ -106,6 +110,7 @@ impl FocusTarget {
                 SidebarPanel::Explorer => FocusTarget::Explorer,
                 SidebarPanel::Search => FocusTarget::Search,
                 SidebarPanel::SourceControl => FocusTarget::SourceControl,
+                SidebarPanel::Spelling => FocusTarget::Spelling,
             },
         }
     }
@@ -269,6 +274,9 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
             FocusTarget::Oversize => &[L::Oversize, L::Global],
             FocusTarget::Explorer => &[L::Explorer, L::Sidebar, L::Global],
             FocusTarget::Search => &[L::Sidebar, L::Global],
+            // A results list with no text input of its own: the shared sidebar
+            // verbs (up/down/activate) are the whole keymap.
+            FocusTarget::Spelling => &[L::Sidebar, L::Global],
             FocusTarget::SourceControl => &[L::SourceControl, L::Sidebar, L::Global],
         },
     }

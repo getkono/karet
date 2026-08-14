@@ -19,6 +19,7 @@ mod lifecycle;
 mod lsp_commands;
 mod lsp_registry_updates;
 mod persistence;
+mod spelling;
 mod updates;
 mod vcs;
 
@@ -400,8 +401,11 @@ pub struct Session {
     /// Ordered background repository actions and network reads.
     vcs_worker: std::sync::mpsc::Sender<crate::vcs_worker::VcsJob>,
     search_worker: std::sync::mpsc::Sender<crate::search_worker::SearchJob>,
-    /// Cancellation registry for safely-droppable repository reads and builds.
-    vcs_cancellations: crate::cancellation::CancellationHub,
+    /// The workspace spelling scan, which walks every file rather than the open ones.
+    spell_scan_worker: std::sync::mpsc::Sender<crate::spell_scan::SpellScanJob>,
+    /// Cancellation registry for safely-droppable background reads: repository
+    /// reads, LaTeX builds, and the workspace spelling scan.
+    cancellations: crate::cancellation::CancellationHub,
     /// Serialized external LaTeX builds.
     latex_worker: std::sync::mpsc::Sender<crate::latex::LatexJob>,
     /// Whether prepared diffs carry syntax token runs (the client's choice; see
@@ -451,7 +455,7 @@ impl Session {
             return;
         }
         match command {
-            Command::Cancel { request } => self.vcs_cancellations.cancel(request),
+            Command::Cancel { request } => self.cancellations.cancel(request),
             Command::OpenDocument { path, language } => self.open(id, path, language.as_deref()),
             Command::CloseDocument { doc } => self.close(id, doc),
             Command::ApplyChange { doc, change, cause } => self.apply(id, doc, &change, cause),
@@ -712,6 +716,7 @@ impl Session {
                         });
                 }
             },
+            Command::ScanWorkspaceSpelling { limit } => self.scan_workspace_spelling(id, limit),
             Command::SearchReplaceAll { query, replacement } => {
                 if let Some(root) = self.config.roots.first().cloned() {
                     let _ = self
@@ -739,7 +744,7 @@ impl Session {
         id: RequestId,
         make: impl FnOnce(RequestId, crate::cancellation::Cancellation) -> crate::vcs_worker::VcsJob,
     ) {
-        let cancel = self.vcs_cancellations.register(id);
+        let cancel = self.cancellations.register(id);
         let _ = self.vcs_worker.send(make(id, cancel));
     }
 
@@ -765,7 +770,7 @@ impl Session {
             path: document.path.clone(),
             text: document.buffer.text(),
             line,
-            cancel: self.vcs_cancellations.register(id),
+            cancel: self.cancellations.register(id),
         });
     }
 
@@ -812,7 +817,7 @@ impl Session {
                 source,
                 workspace: self.config.roots.first().cloned(),
                 settings: self.config.settings.latex.clone(),
-                cancel: self.vcs_cancellations.register(cancel_id),
+                cancel: self.cancellations.register(cancel_id),
                 supervisor: self.config.process_supervisor.clone(),
             })
             .map_err(|_| ())
@@ -921,7 +926,7 @@ fn name_for_language(_id: &str) -> Option<&'static str> {
 /// Resolve an editor language even when Karet has no Tree-sitter grammar for
 /// it yet. LSP routing follows the broader file-type registry; syntax parsing
 /// remains independently optional.
-fn language_name_for_path(path: &Path) -> Option<&'static str> {
+pub(crate) fn language_name_for_path(path: &Path) -> Option<&'static str> {
     language_name_from_path(path).or_else(|| {
         let file_type = karet_filetype::file_type_for_path(path);
         let name = file_type.name();
@@ -930,7 +935,7 @@ fn language_name_for_path(path: &Path) -> Option<&'static str> {
 }
 
 /// Resolve the stable per-language configuration/server selector for a path.
-fn language_selector_for_path(path: &Path) -> Option<&'static str> {
+pub(crate) fn language_selector_for_path(path: &Path) -> Option<&'static str> {
     karet_filetype::file_type_for_path(path).config_selector()
 }
 

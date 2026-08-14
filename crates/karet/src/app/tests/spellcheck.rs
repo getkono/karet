@@ -126,6 +126,69 @@ fn warning_without_matches_renders_a_clear_empty_message() {
 }
 
 #[test]
+fn moving_the_pointer_over_the_menu_highlights_the_row_it_rests_on() {
+    let mut app = spelling_app(PathBuf::from("."), "Unknown word “wrod”; try word, rod");
+    open_spelling_menu(&mut app);
+    // The menu records its rect when painted; hit-testing needs it.
+    let _ = screen(&mut app, 80, 12);
+    let rect = app
+        .context_menu
+        .as_ref()
+        .map(|menu| menu.rect)
+        .unwrap_or_default();
+
+    let move_to = |app: &mut App, column: u16, row: u16| {
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+    };
+
+    // Row 2 of the menu body is "Add … to Project Dictionary".
+    move_to(&mut app, rect.x + 1, rect.y + 3);
+    assert_eq!(
+        app.context_menu.as_ref().and_then(|menu| menu.hover),
+        Some(2)
+    );
+
+    move_to(&mut app, rect.x + 1, rect.y + 1);
+    assert_eq!(
+        app.context_menu.as_ref().and_then(|menu| menu.hover),
+        Some(0)
+    );
+
+    // Leaving the menu clears the accent rather than stranding it on a row.
+    move_to(&mut app, rect.x + 1, rect.bottom() + 2);
+    assert_eq!(app.context_menu.as_ref().and_then(|menu| menu.hover), None);
+}
+
+#[test]
+fn clicking_a_disabled_menu_row_still_refuses_it_rather_than_running_another() {
+    let mut app = spelling_app(PathBuf::from("."), "Unknown word “wrod”");
+    open_spelling_menu(&mut app);
+    let _ = screen(&mut app, 80, 12);
+    let rect = app
+        .context_menu
+        .as_ref()
+        .map(|menu| menu.rect)
+        .unwrap_or_default();
+
+    // Row 0 is the disabled "No similar words found"; the initial selection sits
+    // on row 1, so a click that fell through would add a dictionary word.
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: rect.x + 1,
+        row: rect.y + 1,
+        modifiers: KeyModifiers::NONE,
+    });
+
+    assert!(app.context_menu.is_some(), "the menu stays open");
+    assert_eq!(app.context_menu.as_ref().map(|menu| menu.selected), Some(0));
+}
+
+#[test]
 fn accepting_a_spelling_suggestion_is_one_atomic_edit() {
     let backend = Arc::new(RecordingBackend::new());
     let mut app = spelling_app(PathBuf::from("."), "Unknown word “wrod”; try word");

@@ -30,6 +30,7 @@ mod search;
 mod sidebar;
 mod snapshot_events;
 mod spellcheck;
+mod spelling;
 mod startup;
 mod state;
 mod tabs;
@@ -125,6 +126,7 @@ use karet_session::RequestId;
 use karet_session::SessionConfig;
 use karet_session::Settings;
 use karet_session::SnapshotRx;
+use karet_session::SpellingHit;
 use karet_session::SwapInfo;
 use karet_session::VcsAction;
 use karet_session::VcsOutcome;
@@ -356,6 +358,8 @@ pub struct App {
     pub(crate) pending: Vec<KeyChord>,
     /// The workspace-search panel state.
     pub(crate) search: SearchPanel,
+    /// The workspace-spelling panel state.
+    pub(crate) spelling: SpellingPanel,
     /// A transient status message.
     pub(crate) status: Option<String>,
     /// The centralized notification stack (errors, out-of-band conditions).
@@ -412,6 +416,8 @@ pub struct App {
     pub(crate) text_field_drag: Option<TextFieldTarget>,
     /// The Search panel's last-frame render chrome.
     pub(crate) search_ui: SearchChrome,
+    /// The Spelling panel's last-frame render chrome.
+    pub(crate) spelling_ui: SpellingChrome,
     /// The status bar rect from the last frame (mouse hit-testing).
     pub(crate) status_rect: Rect,
     /// Clickable status-bar segments `(start, end, command)` from the last frame.

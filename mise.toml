@@ -52,7 +52,9 @@ run = [
   "cargo build -p karet --no-default-features --features images",
   "cargo build -p karet --no-default-features --features docx",
   "cargo build -p karet-fileview --no-default-features",
-  "cargo build -p karet-fileview --no-default-features --features pdf",
+  # `karet-fileview` gates only `raster`/`images`; PDF rasterization lives in
+  # `karet-pdf` and is gated on the app, covered by the `karet` line above.
+  "cargo build -p karet-fileview --no-default-features --features images",
 ]
 
 [tasks.coverage]

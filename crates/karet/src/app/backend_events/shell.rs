@@ -29,7 +29,18 @@ impl App {
     /// Adopt a reloaded configuration: apply it, refresh open inspectors,
     /// surface load diagnostics, and revalidate terminal-dependent settings.
     pub(super) fn on_config_changed(&mut self, report: LoadedConfig) {
+        // The Spelling panel's results are a function of these settings, so a
+        // change to them (a dictionary word, a scope toggle, the locale) makes
+        // the list wrong. Compare before `apply_loaded_config` overwrites them,
+        // and only for `spellcheck` — an unrelated edit must not cost a walk.
+        let spellcheck_changed = report.settings.spellcheck != self.settings.spellcheck;
         self.apply_loaded_config(report.clone(), false);
+        if spellcheck_changed {
+            // Turning the checker off retires the panel; otherwise the list it is
+            // showing is now wrong and has to be walked again.
+            self.sync_spelling_availability();
+            self.invalidate_spelling();
+        }
         for tab in self.all_tabs_mut() {
             if let TabKind::LoadedConfig {
                 report: open_report,

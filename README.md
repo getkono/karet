@@ -80,9 +80,11 @@ font lacks them. See [docs/file-formats.md](docs/file-formats.md) for the catalo
 of recognized file types, icons, and syntax-highlighting support.
 
 Optional spellcheck is disabled by default. Enable it in `setting.jsonc` after
-installing an `en_US` or `en_GB` Hunspell dictionary; the
-[configuration guide](docs/configuration.md#spellcheck) documents dictionary lookup,
-EditorConfig selection, scopes, and package-size tradeoffs.
+installing an `en_US` or `en_GB` Hunspell dictionary; the **Spelling** sidebar panel
+(`Ctrl+4`) then lists every misspelling across the workspace, and selecting one opens
+its file at the word. The [configuration guide](docs/configuration.md#spellcheck)
+documents dictionary lookup, EditorConfig selection, scopes, and package-size
+trade-offs.
 
 LaTeX source has tree-sitter highlighting and an external-tool workflow: install
 `latexmk`, then run **LaTeX: Build and Open PDF Preview** from the command palette.

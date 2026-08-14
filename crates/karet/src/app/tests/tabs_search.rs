@@ -11,6 +11,74 @@ fn toggle_sidebar_and_focus() {
 }
 
 #[test]
+fn focus_by_file_line_opens_at_the_target_and_focuses_the_editor() {
+    let dir = test_dir("focus-by-line");
+    write_file(&dir, "a.rs", b"fn a() {}\nlet x = 1;\nlet y = 2;\n");
+
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.focus_by_file_line(&dir.join("a.rs"), LineCol::new(2, 4));
+
+    assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
+    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(2, 4));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn focus_by_file_line_resolves_a_relative_path_against_the_workspace_root() {
+    let dir = test_dir("focus-by-line-rel");
+    write_file(&dir, "src/main.rs", b"one\ntwo\nthree\n");
+
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    // VCS change paths and search hits both arrive repo-relative.
+    app.focus_by_file_line(Path::new("src/main.rs"), LineCol::new(1, 0));
+
+    assert_eq!(
+        app.tabs[app.active].path(),
+        Some(dir.join("src/main.rs").as_path())
+    );
+    assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(1, 0));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn focus_by_file_line_moves_the_caret_in_an_already_open_tab() {
+    let dir = test_dir("focus-by-line-reuse");
+    write_file(&dir, "a.rs", b"one\ntwo\nthree\nfour\n");
+    let path = dir.join("a.rs");
+
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.focus_by_file_line(&path, LineCol::new(0, 0));
+    let opened = app.tabs.len();
+    app.focus_by_file_line(&path, LineCol::new(3, 2));
+
+    assert_eq!(app.tabs.len(), opened, "the second jump reuses the tab");
+    assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(3, 2));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn focus_by_file_line_clamps_a_target_past_the_end_of_the_buffer() {
+    let dir = test_dir("focus-by-line-clamp");
+    write_file(&dir, "a.txt", b"one\ntwo\n");
+
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.focus_by_file_line(&dir.join("a.txt"), LineCol::new(9999, 9999));
+
+    let caret = app.tabs[app.active].editor.cursor();
+    assert!(
+        caret.line <= 2,
+        "caret line {} should clamp within the 2-line buffer",
+        caret.line
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn opening_same_file_focuses_existing_tab() {
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;

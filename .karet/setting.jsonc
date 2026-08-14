@@ -6,7 +6,7 @@
     "comments": true,
     "strings": true,
     "identifiers": true,
-    "words": ["rustfmt", "plaintext", "karet"],
+    "words": ["rustfmt", "plaintext", "karet", "hk", "pkl", "mise", "ratatui", "tokio", "gix"],
     "debounceMs": 500
   }
 }

@@ -237,6 +237,7 @@ impl App {
                 self.scm_follow_cursor();
             },
             SidebarPanel::Search => self.search_select(delta),
+            SidebarPanel::Spelling => self.spelling_select(delta),
         }
     }
 
@@ -250,7 +251,9 @@ impl App {
             // A directory row leaves the editor area untouched.
             SidebarPanel::Explorer => self.preview_selected_explorer_row(),
             SidebarPanel::SourceControl => self.preview_selected_diff(),
-            SidebarPanel::Search => {},
+            // Neither list previews on a plain move: a spelling row opens a real
+            // editor tab, which browsing must not do on every arrow press.
+            SidebarPanel::Search | SidebarPanel::Spelling => {},
         }
     }
 
@@ -328,6 +331,8 @@ impl App {
         match self.sidebar_panel {
             SidebarPanel::Explorer => self.sidebar_promote_or_open_permanent(),
             SidebarPanel::SourceControl => self.open_selected_diff(),
+            SidebarPanel::Spelling => self.open_selected_spelling(),
+            // The Search panel binds Enter in its own layer (Layer::SearchList).
             SidebarPanel::Search => {},
         }
     }

@@ -7,6 +7,8 @@ static PALETTE: &[Command] = &[
     Command::SelectPanel(SidebarPanel::Explorer),
     Command::SelectPanel(SidebarPanel::Search),
     Command::SelectPanel(SidebarPanel::SourceControl),
+    Command::SelectPanel(SidebarPanel::Spelling),
+    Command::SpellingScan,
     Command::ToggleSidebar,
     Command::ToggleOutline,
     Command::ToggleFocus,

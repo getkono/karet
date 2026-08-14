@@ -572,6 +572,7 @@ impl Session {
         }
         doc.spell_diagnostics = result.diagnostics.clone();
         self.publish_document_diagnostics(result.doc);
+        self.publish_spelling(result.doc);
     }
 
     fn clear_spell_diagnostics(&mut self, doc_id: DocumentId) {
@@ -586,6 +587,7 @@ impl Session {
         });
         if changed {
             self.publish_document_diagnostics(doc_id);
+            self.publish_spelling(doc_id);
         }
     }
 

@@ -4,3 +4,4 @@ include!("tests/missing_documents.rs");
 include!("tests/latex.rs");
 include!("tests/vcs.rs");
 include!("tests/persistence.rs");
+include!("tests/spelling.rs");

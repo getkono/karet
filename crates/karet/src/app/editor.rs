@@ -345,8 +345,9 @@ impl App {
             .and_then(|file| file.first_changed_line())
             .unwrap_or(1);
         let path = path.clone();
-        // Change paths come from the VCS repo-relative; resolve against the
-        // workspace root so the file opens (and dedups) like any explorer open.
+        // Change paths come from the VCS repo-relative; `focus_by_file_line` resolves
+        // them against the workspace root, but the working-tree check has to happen
+        // here — a deleted change must produce a status message, not a new empty file.
         let abs = if path.is_absolute() {
             path
         } else {
@@ -357,17 +358,8 @@ impl App {
             self.status = Some(format!("open file: {name} is not in the working tree"));
             return;
         }
-        self.open_path(&abs);
-        // Land the caret on the first changed line (`goto` clamps into the buffer;
-        // a non-text tab — image, binary — simply has no caret to place).
-        let pos = LineCol::new(line.saturating_sub(1), 0);
-        let buffer = match self.tabs.get(self.active).map(|t| &t.kind) {
-            Some(TabKind::Code { buffer, .. }) => Some(buffer.clone()),
-            _ => None,
-        };
-        if let (Some(buffer), Some(tab)) = (buffer, self.tabs.get_mut(self.active)) {
-            tab.editor.goto(&buffer, pos);
-        }
+        // Land the caret on the diff's first changed line (1-based from the VCS).
+        self.focus_by_file_line(&abs, LineCol::new(line.saturating_sub(1), 0));
     }
     /// Fold or unfold the code region at the cursor: prefer a fold headered on the
     /// cursor line, else the innermost fold containing it. Collapsing a region the

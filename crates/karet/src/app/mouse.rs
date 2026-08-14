@@ -245,18 +245,25 @@ impl App {
         let point = (mouse.column, mouse.row);
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) if rect_contains(menu.rect, point) => {
-                let inner_y = mouse.row.saturating_sub(menu.rect.y).saturating_sub(1);
-                let idx = usize::from(inner_y);
-                if let Some(menu) = self.context_menu.as_mut()
-                    && idx < menu.entries.len()
-                {
-                    menu.selected = idx;
+                // The click and the hover accent resolve rows the same way, so
+                // the row that lit up is the row that runs.
+                let row = menu.row_at(mouse.column, mouse.row);
+                if let (Some(menu), Some(row)) = (self.context_menu.as_mut(), row) {
+                    menu.selected = row;
                 }
                 self.accept_context_menu();
                 true
             },
             MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Down(MouseButton::Right) => {
                 self.close_context_menu();
+                true
+            },
+            // An open menu swallows every other event; spend the pointer motion
+            // on live feedback rather than dropping it.
+            MouseEventKind::Moved | MouseEventKind::Drag(_) => {
+                if let Some(menu) = self.context_menu.as_mut() {
+                    menu.set_hover(Some(point));
+                }
                 true
             },
             _ => true,
@@ -653,6 +660,7 @@ impl App {
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);
         let shift = modifiers.contains(KeyModifiers::SHIFT);
         match self.sidebar_panel {
+            SidebarPanel::Spelling => self.spelling_click(col, row_y),
             SidebarPanel::Explorer => {
                 if !rect_contains(self.sidebar_content_rect, (col, row_y)) {
                     return;

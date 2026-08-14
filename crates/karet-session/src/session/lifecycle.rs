@@ -34,11 +34,12 @@ impl Session {
         };
         // Seed the tip so the first ref change reconciles against a known baseline.
         let last_head = vcs.as_ref().and_then(|r| r.head_hash().ok().flatten());
-        let vcs_cancellations = crate::cancellation::CancellationHub::default();
+        let cancellations = crate::cancellation::CancellationHub::default();
         #[cfg(feature = "github")]
         let github_repository = github::eligible_repository(&config.roots, vcs.as_ref());
         let vcs_worker = crate::vcs_worker::spawn(config.roots.first().cloned(), events.clone());
         let search_worker = crate::search_worker::spawn(events.clone());
+        let spell_scan_worker = crate::spell_scan::spawn(events.clone());
         let latex_worker = crate::latex::spawn(events.clone());
         // Open this session's swap store and scan for swaps a previous run left behind
         // (a crash, or a save that failed). They are offered to the UI for recovery.
@@ -92,7 +93,8 @@ impl Session {
             vcs,
             vcs_worker,
             search_worker,
-            vcs_cancellations,
+            spell_scan_worker,
+            cancellations,
             latex_worker,
             diff_syntax,
             last_head,

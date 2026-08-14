@@ -251,6 +251,14 @@ impl Session {
                 if !words.iter().any(|existing| existing == &word) {
                     words.push(word.clone());
                 }
+                // Re-check now rather than waiting for the settings write to
+                // round-trip through the file watcher: the user just told us the
+                // word is fine, so the squiggle should go on that keystroke — and
+                // a session with no config watcher would never be told at all.
+                let docs: Vec<DocumentId> = self.store.docs.keys().copied().collect();
+                for doc_id in docs {
+                    self.schedule_spell(doc_id);
+                }
                 self.emit(Some(id), Event::DictionaryWordAdded { word, path });
             },
             Err(crate::config::ConfigWriteError::ProjectCreationRequiresConfirmation(path)) => {
