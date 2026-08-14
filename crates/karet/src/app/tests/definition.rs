@@ -358,3 +358,122 @@ fn alt_and_shift_clicks_keep_their_own_gestures() {
 
     assert!(definition_requests(&backend).is_empty());
 }
+
+/// Mark a running language server covering `root`, so the Ctrl-hover gate (which
+/// promises only what a click can deliver) is satisfied.
+fn attach_running_server(app: &mut App, root: &Path) {
+    use karet_session::LanguageServerId;
+    use karet_session::LanguageServerInstanceStatus;
+    use karet_session::LanguageServerRuntimeState;
+    use karet_session::LanguageServerSource;
+    use karet_session::LanguageServerStatus;
+
+    app.show_language_server_status(
+        None,
+        vec![LanguageServerStatus {
+            server: LanguageServerId::new("rust-analyzer"),
+            languages: vec!["rust".to_owned()],
+            enabled: true,
+            managed: true,
+            manual_install_reason: None,
+            installed: Some("1.0".to_owned()),
+            cleanup_pending: false,
+            instances: vec![LanguageServerInstanceStatus {
+                root: root.to_path_buf(),
+                source: LanguageServerSource::Path,
+                command: Some("rust-analyzer".to_owned()),
+                args: Vec::new(),
+                runtime: LanguageServerRuntimeState::Running,
+                open_documents: 1,
+                error: None,
+            }],
+        }],
+    );
+}
+
+/// A hover at `(col, row)` with `mods` held.
+fn hover(col: u16, row: u16, mods: KeyModifiers) -> MouseEvent {
+    MouseEvent {
+        kind: MouseEventKind::Moved,
+        column: col,
+        row,
+        modifiers: mods,
+    }
+}
+
+/// An app with a running server, one pane frame, and the cursor over "target".
+fn hover_app(name: &str) -> Option<(App, Rect)> {
+    let (_backend, mut app, _other) = workspace(name)?;
+    let root = app.root.clone();
+    attach_running_server(&mut app, &root);
+    let rect = Rect::new(0, 0, 40, 5);
+    app.pane_frames = vec![content_frame(&app, rect)];
+    Some((app, rect))
+}
+
+#[test]
+fn ctrl_hover_underlines_the_word_under_the_pointer() {
+    let Some((mut app, _rect)) = hover_app("definition-hover") else {
+        return;
+    };
+    // Screen column 4 is buffer column 1, inside "target" on `target();`.
+    app.update_definition_hover(&hover(4, 0, KeyModifiers::CONTROL));
+
+    let Some(decoration) = app.definition_underline_decoration() else {
+        panic!("a Ctrl-hovered identifier should be underlined");
+    };
+    assert_eq!(decoration.kind, karet_core::DecorationKind::Underline);
+    assert_eq!(decoration.range.start, LineCol::new(0, 0));
+    assert_eq!(decoration.range.end, LineCol::new(0, 6));
+    // No role: the underline takes the token's own colour.
+    assert!(decoration.role.is_none());
+}
+
+#[test]
+fn a_hover_without_ctrl_or_over_the_gutter_underlines_nothing() {
+    let Some((mut app, _rect)) = hover_app("definition-hover-negative") else {
+        return;
+    };
+
+    app.update_definition_hover(&hover(4, 0, KeyModifiers::NONE));
+    assert!(
+        app.definition_underline_decoration().is_none(),
+        "no modifier"
+    );
+
+    // The gutter: `pos_at` clamps it onto column 0, which would underline the first
+    // word of the line; the render round-trip guard rejects it.
+    app.update_definition_hover(&hover(0, 0, KeyModifiers::CONTROL));
+    assert!(app.definition_underline_decoration().is_none(), "gutter");
+
+    // Past the end of the line, likewise.
+    app.update_definition_hover(&hover(30, 0, KeyModifiers::CONTROL));
+    assert!(app.definition_underline_decoration().is_none(), "past eol");
+}
+
+#[test]
+fn ctrl_hover_underlines_nothing_without_a_running_server() {
+    // The underline promises only what a click can deliver, and a click needs a
+    // server that is already running.
+    let Some((_backend, mut app, _other)) = workspace("definition-hover-no-server") else {
+        return;
+    };
+    app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 40, 5))];
+
+    app.update_definition_hover(&hover(4, 0, KeyModifiers::CONTROL));
+    assert!(app.definition_underline_decoration().is_none());
+}
+
+#[test]
+fn a_key_press_clears_the_hover_underline() {
+    let Some((mut app, _rect)) = hover_app("definition-hover-cleared") else {
+        return;
+    };
+    app.update_definition_hover(&hover(4, 0, KeyModifiers::CONTROL));
+    assert!(app.definition_underline_decoration().is_some());
+
+    // Releasing Ctrl without moving the pointer fires no event at all, so typing
+    // is one of the ways a stale underline is dropped.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.definition_underline_decoration().is_none());
+}

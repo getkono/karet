@@ -9,12 +9,6 @@ use karet_core::Location;
 
 use super::*;
 
-/// A definition request awaiting its answer.
-///
-/// `Event::Definitions` carries no document or version, so the request id is the
-/// *only* correlation key: a late answer to a superseded request must not evict the
-/// record for the live one. The view is remembered so a jump is dropped when the
-/// user has moved on, and it survives tab reordering (which an index would not).
 /// How many jump origins to keep. Deep enough to walk back through a chain of
 /// definitions; bounded so a long session cannot grow it without limit.
 const MAX_JUMP_HISTORY: usize = 64;
@@ -30,6 +24,19 @@ pub(crate) struct JumpOrigin {
     pub(crate) position: LineCol,
 }
 
+/// The symbol under a Ctrl-held pointer, to be underlined as navigable.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DefinitionHover {
+    pub(crate) view: ViewId,
+    pub(crate) range: Range,
+}
+
+/// A definition request awaiting its answer.
+///
+/// `Event::Definitions` carries no document or version, so the request id is the
+/// *only* correlation key: a late answer to a superseded request must not evict the
+/// record for the live one. The view is remembered so a jump is dropped when the
+/// user has moved on, and it survives tab reordering (which an index would not).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PendingDefinition {
     pub(crate) id: RequestId,
@@ -176,5 +183,93 @@ impl App {
             return;
         }
         self.status = Some("nothing to go back to".to_string());
+    }
+}
+
+impl App {
+    /// Re-evaluate which symbol, if any, the pointer is Ctrl-hovering.
+    ///
+    /// Called for *every* mouse event, not only motion, so a drag, a click or a
+    /// wheel tick all clear a stale underline. It also runs before the pointer-shape
+    /// hint, which reads this state — updating it afterwards would leave the shape
+    /// one event behind.
+    ///
+    /// Known limitation: releasing Ctrl without moving the pointer produces no event
+    /// at all (the terminal is not asked to report key releases), so the underline
+    /// survives until the next mouse event or key press. Terminal editors generally
+    /// share this.
+    pub(crate) fn update_definition_hover(&mut self, mouse: &MouseEvent) {
+        self.definition_hover = self.hovered_definition_symbol(mouse);
+    }
+
+    /// The word under the pointer, when Ctrl is held over a symbol a click could
+    /// actually resolve.
+    fn hovered_definition_symbol(&self, mouse: &MouseEvent) -> Option<DefinitionHover> {
+        if !mouse
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER)
+        {
+            return None;
+        }
+        // Promise only what a click can deliver: this is the same condition under
+        // which the backend finds a server to ask, so no probe request is needed.
+        if self.active_language_server_badge() != Some(LanguageServerBadge::InSync) {
+            return None;
+        }
+        let point = (mouse.column, mouse.row);
+        let frame = self
+            .pane_frames
+            .iter()
+            .find(|frame| rect_contains(frame.content_rect, point))?;
+        if frame.pane != self.focus_pane() || !rect_contains(frame.editor_rect, point) {
+            return None;
+        }
+        let tab = self.tabs.get(self.active)?;
+        let TabKind::Code {
+            doc: Some(_),
+            buffer,
+            folds,
+            folded,
+            ..
+        } = &tab.kind
+        else {
+            return None;
+        };
+        let fold_lines = resolve_folds(folds, folded);
+        let area = frame.editor_rect;
+        let pos = tab
+            .editor
+            .pos_at(area, buffer, &fold_lines, mouse.column, mouse.row);
+        // Round-trip guard: `pos_at` clamps a point in the gutter, past the end of a
+        // line, or in a reserved scrollbar track onto a real position, which would
+        // underline a word the pointer is not actually over. Asking where that
+        // position *renders* rejects all of those at once, without this code needing
+        // to know the geometry.
+        if tab.editor.screen_cell(area, buffer, &fold_lines, pos) != Some(point) {
+            return None;
+        }
+        let (start, end) = word_at(buffer, pos);
+        // `word_bounds` falls back to a single character off a word; only a real
+        // identifier is navigable.
+        if start == end {
+            return None;
+        }
+        Some(DefinitionHover {
+            view: tab.view,
+            range: Range { start, end },
+        })
+    }
+
+    /// The underline decoration for the Ctrl-hovered symbol in the active tab.
+    pub(crate) fn definition_underline_decoration(&self) -> Option<Decoration> {
+        let hover = self.definition_hover?;
+        let tab = self.tabs.get(self.active)?;
+        (tab.view == hover.view).then_some(Decoration {
+            range: hover.range,
+            kind: DecorationKind::Underline,
+            // No role: the underline takes the token's own foreground, so it can
+            // never come out illegible in a theme that never anticipated it.
+            role: None,
+        })
     }
 }

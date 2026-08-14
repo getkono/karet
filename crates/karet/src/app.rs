@@ -438,6 +438,8 @@ pub struct App {
     pub(crate) pending_definition: Option<definition::PendingDefinition>,
     /// Pre-jump positions, most recent last, for "Go Back" after a definition jump.
     pub(crate) definition_jumps: VecDeque<definition::JumpOrigin>,
+    /// The Ctrl-hovered symbol the editor should underline as navigable.
+    pub(crate) definition_hover: Option<definition::DefinitionHover>,
     /// The focused commit view's signature-badge rect (screen coords) from the last
     /// frame, for double-click hit-testing. `None` when no badge is on screen.
     pub(crate) commit_badge_rect: Option<Rect>,

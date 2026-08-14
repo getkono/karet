@@ -55,6 +55,9 @@ impl App {
     /// active modal's text input when nothing is bound.
     pub(super) fn handle_key(&mut self, key: KeyEvent) {
         self.status = None;
+        // Typing means the pointer is no longer the subject; a Ctrl release that
+        // produces no mouse event would otherwise leave the underline behind.
+        self.definition_hover = None;
         let dismiss_outline_after = self.outline.overlay
             && self.focus == Focus::Editor
             && self.input_context().modal.is_none();
