@@ -1,0 +1,34 @@
+[package]
+name        = "karet-seam"
+description = "A queryable index of a package's seams: what is exposed, substitutable, variable, boundary-crossing, or hazardous."
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+publish = false                       # karet-internal until the query language stabilizes
+
+[features]
+default = []
+# Serialize the model, for the programmatic/agent surface. Off by default so a
+# consumer that only navigates the index never compiles serde.
+#
+# Serialization only, deliberately: the index is always *built* by walking source, never
+# read back from JSON, so `Deserialize` would be a shape nothing produces. That also lets
+# `FacetSubtype` stay a `Copy` `&'static str` (which cannot deserialize) instead of an
+# allocating string on every facet.
+serde = ["dep:serde", "karet-core/serde"]
+
+[dependencies]
+karet-core.workspace = true
+thiserror.workspace  = true
+serde = { workspace = true, optional = true }
+
+[lints]
+workspace = true

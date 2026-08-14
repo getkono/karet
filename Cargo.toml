@@ -47,6 +47,7 @@ karet-lsp        = { path = "crates/karet-lsp", version = "0.5.0" }
 karet-dap        = { path = "crates/karet-dap", version = "0.5.0" }
 karet-vcs        = { path = "crates/karet-vcs", version = "0.5.0" }
 karet-search     = { path = "crates/karet-search", version = "0.5.0" }
+karet-seam       = { path = "crates/karet-seam" }
 karet-fuzzy      = { path = "crates/karet-fuzzy" }
 karet-widgets    = { path = "crates/karet-widgets" }
 karet-editor     = { path = "crates/karet-editor", version = "0.5.0" }
