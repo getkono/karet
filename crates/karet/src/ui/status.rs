@@ -190,8 +190,32 @@ pub(super) fn status_glyph(kind: StatusKind) -> (char, ThemeRole) {
         StatusKind::Modified => ('M', ThemeRole::DiagnosticWarning),
         StatusKind::Deleted => ('D', ThemeRole::DiagnosticError),
         StatusKind::Renamed => ('R', ThemeRole::DiagnosticInfo),
+        StatusKind::Copied => ('C', ThemeRole::DiagnosticInfo),
         StatusKind::Untracked => ('U', ThemeRole::DiffAdded),
         StatusKind::Conflicted => ('!', ThemeRole::DiagnosticError),
         _ => ('•', ThemeRole::Foreground),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_status_kind_has_its_own_glyph() {
+        // `StatusKind` is `#[non_exhaustive]`, so a new variant silently falls into
+        // the `•` arm until it is given a letter here.
+        let kinds = [
+            (StatusKind::Added, 'A'),
+            (StatusKind::Modified, 'M'),
+            (StatusKind::Deleted, 'D'),
+            (StatusKind::Renamed, 'R'),
+            (StatusKind::Copied, 'C'),
+            (StatusKind::Untracked, 'U'),
+            (StatusKind::Conflicted, '!'),
+        ];
+        for (kind, expected) in kinds {
+            assert_eq!(status_glyph(kind).0, expected, "{kind:?}");
+        }
     }
 }

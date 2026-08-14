@@ -132,6 +132,10 @@ impl Repository {
                 // graphical SCM view detects renames for display). `AsConfigured`
                 // would honour an explicit `diff.renames=false` and degrade the
                 // rename to an add + delete pair.
+                //
+                // Copy detection stays off: enabling `Rewrites::copies` makes gix
+                // stop reporting the copy's source as a change of its own, hiding
+                // an edit to it. See `rewrite_status`.
                 gix::status::tree_index::TrackRenames::Given(gix::diff::Rewrites::default()),
                 |change, _, _| {
                     raw.push(change.into_owned());
@@ -235,6 +239,7 @@ impl Repository {
                 source_id,
                 location,
                 id,
+                copy,
                 ..
             } => {
                 let (b1, old) = self.read_object_text(source_id.into_owned())?;
@@ -243,7 +248,7 @@ impl Repository {
                 FileChange {
                     path: bstr_to_path(location.as_ref()),
                     old_path: Some(bstr_to_path(source_location.as_ref())),
-                    status: StatusKind::Renamed,
+                    status: rewrite_status(copy),
                     is_binary,
                     old,
                     new,
@@ -527,8 +532,9 @@ impl Repository {
     }
 
     /// Diff two optional trees (`None` = the empty tree) into sorted [`FileChange`]s,
-    /// reading both blob sides from the object database. Rename detection is forced on
-    /// regardless of the user's `diff.renames` config, so a rename always shows as `R`.
+    /// reading both blob sides from the object database. Rename and copy detection is
+    /// forced on regardless of the user's `diff.renames` config, so a rename always
+    /// shows as `R` and a copy as `C`.
     fn diff_trees(
         &self,
         old: Option<&gix::Tree<'_>>,
@@ -718,6 +724,7 @@ impl Repository {
                 source_id,
                 location,
                 id,
+                copy,
                 ..
             } => {
                 let (b1, old) = self.read_object_text(source_id)?;
@@ -726,7 +733,7 @@ impl Repository {
                 FileChange {
                     path: bstr_to_path(location.as_ref()),
                     old_path: Some(bstr_to_path(source_location.as_ref())),
-                    status: StatusKind::Renamed,
+                    status: rewrite_status(copy),
                     is_binary,
                     old,
                     new,
@@ -734,6 +741,27 @@ impl Repository {
             },
         };
         Ok(Some(fc))
+    }
+}
+
+/// The status of a gix `Rewrite`, which covers both renames and copies.
+///
+/// A copy leaves its source in place, so calling one a rename would claim the
+/// original file had moved away when it is still there.
+///
+/// Copy detection is deliberately *not* forced on (see the `TrackRenames` call in
+/// [`Repository::staged_changes`]): with `Rewrites::copies` enabled, gix folds the
+/// copy's source into the rewrite and stops reporting it as a change of its own,
+/// so a source file that was itself edited disappears from the list entirely. Git
+/// reports both (`C` for the copy *and* `M` for the source). Until gix does the
+/// same, a mislabelled rename is the lesser problem than a vanished file — but the
+/// flag is read here so that any rewrite gix *does* report as a copy is labelled
+/// correctly.
+fn rewrite_status(copy: bool) -> StatusKind {
+    if copy {
+        StatusKind::Copied
+    } else {
+        StatusKind::Renamed
     }
 }
 
