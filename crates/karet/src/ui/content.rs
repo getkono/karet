@@ -138,6 +138,7 @@ pub(super) fn draw_pane_content(
                     .chain(search_decos.iter())
                     .chain(conflict_decorations.iter())
                     .chain(ctx.blame.iter())
+                    .chain(ctx.definition_underline.iter())
                     .cloned()
                     .collect();
                 let diagnostics = doc

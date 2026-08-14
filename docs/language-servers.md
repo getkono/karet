@@ -96,7 +96,8 @@ provider, path, and document version, then sorted and deduplicated.
 | Capability | Owner and behavior |
 |---|---|
 | Parsing, syntax colours, folds, brackets, structural selection, injections | Tree-sitter, always the baseline |
-| Completion, hover, definition, symbols, rename, signature help, code actions, inlay hints | first capable LSP in the language's ordered `servers` list |
+| Completion, hover, symbols, rename, signature help, code actions, inlay hints | first capable LSP in the language's ordered `servers` list |
+| Definition (`F12` / `Ctrl+Click`, with `Ctrl`-hover underline and Go Back) | first capable LSP in the language's ordered `servers` list; a `LocationLink` reply lands the caret on the definition's *name*, a plain `Location` on whatever the server calls its start |
 | Semantic tokens | Tree-sitter owns highlighting today; `semanticTokens` reserves one future LSP overlay owner and is never allowed to replace parsing |
 | Diagnostics | every provider in `diagnostics`, version-gated and merged |
 | Formatting | exactly one `formatter`; a user selection wins, then a repository-native provider, then the language default |

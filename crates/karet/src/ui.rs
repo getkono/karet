@@ -346,6 +346,8 @@ struct PaneCtx<'a> {
     find: Option<FindState>,
     /// Stale-checked virtual text for the focused editor.
     blame: Option<Decoration>,
+    /// The Ctrl-hovered symbol to underline as navigable (focused pane only).
+    definition_underline: Option<Decoration>,
     /// Whether the blame decoration represents an attributed commit.
     blame_clickable: bool,
     /// Mouse position over a link in this pane, used for hover emphasis.

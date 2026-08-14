@@ -93,6 +93,12 @@ pub enum DecorationKind {
     LineBackground,
     /// Highlight the text background within the range.
     TextBackground,
+    /// Underline the text within the range, leaving its colors alone (e.g. a
+    /// Ctrl-hovered symbol a click would navigate to).
+    ///
+    /// The decoration's `role` colors the underline; `None` underlines in the
+    /// text's own foreground, which no theme can render illegibly.
+    Underline,
     /// Inline "ghost" text (e.g. VCS blame, parameter names).
     InlineText {
         /// The text to render.
@@ -407,6 +413,20 @@ mod tests {
             role: Some(ThemeRole::DiagnosticError),
         };
         assert_eq!(dec.kind, DecorationKind::GutterMarker { glyph: '▎' });
+    }
+
+    #[test]
+    fn an_underline_decoration_carries_no_color_of_its_own() {
+        // `role: None` is the case a navigable-symbol underline uses: the
+        // underline takes the text's own foreground, so no theme can render it
+        // illegibly against its own background.
+        let dec = Decoration {
+            range: Range::default(),
+            kind: DecorationKind::Underline,
+            role: None,
+        };
+        assert_eq!(dec.clone(), dec);
+        assert_ne!(dec.kind, DecorationKind::TextBackground);
     }
 
     #[test]

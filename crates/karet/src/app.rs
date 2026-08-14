@@ -7,6 +7,7 @@ mod capture;
 mod change_view;
 mod commands;
 mod completion;
+mod definition;
 mod diffs;
 mod editor;
 mod explorer;
@@ -42,6 +43,7 @@ mod tests;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::io::Write;
 use std::io::{self};
 use std::path::Path;
@@ -439,6 +441,12 @@ pub struct App {
     pub(crate) markdown_link_hits: Vec<MarkdownLinkHit>,
     /// Current mouse position when it rests over a visible Markdown link.
     pub(crate) markdown_link_hover: Option<(u16, u16)>,
+    /// The definition request awaiting an answer, if any.
+    pub(crate) pending_definition: Option<definition::PendingDefinition>,
+    /// Pre-jump positions, most recent last, for "Go Back" after a definition jump.
+    pub(crate) definition_jumps: VecDeque<definition::JumpOrigin>,
+    /// The Ctrl-hovered symbol the editor should underline as navigable.
+    pub(crate) definition_hover: Option<definition::DefinitionHover>,
     /// The focused commit view's signature-badge rect (screen coords) from the last
     /// frame, for double-click hit-testing. `None` when no badge is on screen.
     pub(crate) commit_badge_rect: Option<Rect>,

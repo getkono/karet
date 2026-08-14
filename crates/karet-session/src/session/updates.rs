@@ -135,9 +135,13 @@ impl Session {
                 if document.buffer.version() != version {
                     return;
                 }
+                // A definition usually lands in a *different* file from the one the
+                // request came from, and the server answers in UTF-16 columns for
+                // every one of them — so each location is converted against its own
+                // file, not just the requesting document's buffer.
                 for location in &mut locations {
-                    if location.path == document.path {
-                        location.range = utf16_range_to_buffer(&document.buffer, location.range);
+                    if let Some(buffer) = self.buffer_for_path(&location.path) {
+                        location.range = utf16_range_to_buffer(&buffer, location.range);
                     }
                 }
                 self.emit(Some(request), Event::Definitions { locations });
@@ -150,18 +154,7 @@ impl Session {
             LspUpdate::WorkspaceEdit { request, edit, .. } => {
                 let mut edit = edit;
                 for (path, edits) in &mut edit.changes {
-                    let open = self
-                        .store
-                        .by_path
-                        .get(path)
-                        .and_then(|doc| self.store.docs.get(doc))
-                        .map(|document| document.buffer.clone());
-                    let buffer = open.or_else(|| {
-                        std::fs::read_to_string(path)
-                            .ok()
-                            .map(|text| karet_text::TextBuffer::from_text(&text))
-                    });
-                    if let Some(buffer) = buffer {
+                    if let Some(buffer) = self.buffer_for_path(path) {
                         for edit in edits {
                             edit.range = utf16_range_to_buffer(&buffer, edit.range);
                         }
@@ -790,6 +783,27 @@ impl Session {
                 self.schedule_spell(doc_id);
             }
         }
+    }
+
+    /// The text of `path` for column conversion: the live buffer when the file is
+    /// open, else its contents from disk.
+    ///
+    /// A server answers in UTF-16 columns for whatever file it names, which is often
+    /// not one the client has open — so converting those columns needs the target's
+    /// text, not the requesting document's. `None` when the file cannot be read; the
+    /// caller then leaves the range as the server sent it, since an approximate
+    /// column beats a dropped result.
+    fn buffer_for_path(&self, path: &Path) -> Option<TextBuffer> {
+        self.store
+            .by_path
+            .get(path)
+            .and_then(|doc| self.store.docs.get(doc))
+            .map(|document| document.buffer.clone())
+            .or_else(|| {
+                std::fs::read_to_string(path)
+                    .ok()
+                    .map(|text| TextBuffer::from_text(&text))
+            })
     }
 }
 

@@ -56,6 +56,9 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Tiling-WM-style pane growth. Shift keeps these distinct from multi-cursor
     // Ctrl+Alt+Up/Down in the editor layer.
     b(Global, true, true, true, Left,  Command::ResizePaneLeft),
+    // Go Back lives in the Global layer: a jump can leave focus in the sidebar,
+    // and the way back should still work from there.
+    b(Global, true, false, true, Left, Command::JumpBack),
     b(Global, true, true, true, Right, Command::ResizePaneRight),
     b(Global, true, true, true, Up,    Command::ResizePaneUp),
     b(Global, true, true, true, Down,  Command::ResizePaneDown),
@@ -177,6 +180,7 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Ctrl+Space asks the language server for completions (bypasses the
     // syntax-error auto-trigger gate).
     b(Editor, true,  false, false, Char(' '), Command::TriggerCompletion),
+    b(Editor, false, false, false, F(12),      Command::GoToDefinition),
     b(Editor, false, false, false, Enter,     Command::InsertNewline),
     b(Editor, false, false, false, Backspace, Command::DeleteBackward),
     b(Editor, false, false, false, Delete,    Command::DeleteForward),

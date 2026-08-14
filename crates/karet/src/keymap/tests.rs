@@ -843,3 +843,41 @@ fn ctrl_alt_shift_arrows_resize_panes() {
         assert_eq!(resolve(ctx, &[chord]), Resolved::Command(command));
     }
 }
+
+#[test]
+fn f12_goes_to_definition_from_the_editor_only() {
+    assert_eq!(
+        res(
+            Focus::Editor,
+            false,
+            key(KeyCode::F(12), KeyModifiers::NONE)
+        ),
+        Some(Command::GoToDefinition)
+    );
+    // The Editor layer is not active while the sidebar has focus, so F12 there
+    // must not jump the editor's caret out from under the user.
+    assert_ne!(
+        res(
+            Focus::Sidebar,
+            false,
+            key(KeyCode::F(12), KeyModifiers::NONE)
+        ),
+        Some(Command::GoToDefinition)
+    );
+}
+
+#[test]
+fn ctrl_alt_left_goes_back_from_any_focus() {
+    // Global layer: a jump can leave focus in the sidebar, and the way back
+    // should still work from there.
+    for focus in [Focus::Editor, Focus::Sidebar] {
+        assert_eq!(
+            res(
+                focus,
+                false,
+                key(KeyCode::Left, KeyModifiers::CONTROL | KeyModifiers::ALT)
+            ),
+            Some(Command::JumpBack)
+        );
+    }
+}

@@ -348,7 +348,7 @@ impl App {
             Some("row-resize")
         } else if over_thumb {
             Some("grab")
-        } else if over_blame || over_markdown_link {
+        } else if over_blame || over_markdown_link || self.definition_hover.is_some() {
             Some("pointer")
         } else {
             None
@@ -370,6 +370,7 @@ impl App {
     }
 
     fn handle_mouse_event(&mut self, mouse: MouseEvent) {
+        self.update_definition_hover(&mouse);
         self.update_pointer_shape_hint(&mouse);
         // Toasts float above everything (including the overlay), so hit-test them
         // first: left-click dismisses and right-click copies an error.

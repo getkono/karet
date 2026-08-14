@@ -71,6 +71,7 @@ pub(super) fn draw_panes(
                     .flatten()
                     .and_then(|t| t.find.clone()),
                 blame,
+                definition_underline: app.definition_underline_decoration(),
                 blame_clickable: app
                     .live_blame
                     .as_ref()
@@ -104,6 +105,7 @@ pub(super) fn draw_panes(
                 diagnostics: &app.docs.diagnostics,
                 find: None,
                 blame: None,
+                definition_underline: None,
                 blame_clickable: false,
                 markdown_link_hover: None,
                 pane_action_hover: app.pane_action_hover,

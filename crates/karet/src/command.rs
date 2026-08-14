@@ -222,6 +222,10 @@ pub enum Command {
     UnstageHunk,
     /// Ask the language server for completions at the caret (Ctrl+Space).
     TriggerCompletion,
+    /// Jump to the definition of the symbol at the caret (F12).
+    GoToDefinition,
+    /// Return to the position a definition jump started from (Ctrl+Alt+Left).
+    JumpBack,
     /// Insert a printable character at the caret (replacing any selection).
     InsertChar(char),
     /// Insert a newline with leading-whitespace auto-indent.
@@ -575,6 +579,8 @@ impl Command {
             Self::UnstageHunk => "Diff: Unstage Hunk",
             Self::InsertChar(_) => "Insert Character",
             Self::TriggerCompletion => "Trigger Suggest",
+            Self::GoToDefinition => "Go to Definition",
+            Self::JumpBack => "Go Back",
             Self::InsertNewline => "Insert Newline",
             Self::DeleteBackward => "Delete Backward",
             Self::DeleteForward => "Delete Forward",
@@ -715,6 +721,8 @@ impl Command {
             Self::SelectPanel(SidebarPanel::SourceControl) => "git",
             Self::SelectPanel(SidebarPanel::Spelling) => "spelling",
             Self::SpellingScan => "scan",
+            Self::GoToDefinition => "definition",
+            Self::JumpBack => "back",
             Self::OpenQuickOpen => "open",
             Self::OpenCommandPalette => "commands",
             Self::OpenFind => "find",

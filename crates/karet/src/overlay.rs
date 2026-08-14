@@ -5,8 +5,10 @@
 //! `karet-widgets`, ranked by `karet-fuzzy`) whose items *are* their
 //! [`OverlayEvent`] outcomes — accepting a row just clones its event.
 
+use std::path::Path;
 use std::path::PathBuf;
 
+use karet_core::LineCol;
 use karet_session::LanguageServerId;
 use karet_session::LanguageServerPlanId;
 use karet_session::PullRequestSummary;
@@ -50,6 +52,13 @@ pub enum OverlayEvent {
     AcceptDeleteLocalBranch(String),
     /// Arm typed confirmation for the selected remote branch.
     AcceptDeleteRemoteBranch { remote: String, branch: String },
+    /// Jump to one of several definition locations.
+    AcceptLocation {
+        /// The defining file.
+        path: PathBuf,
+        /// Where in it the caret should land.
+        position: LineCol,
+    },
 }
 
 /// Follow-up action selected for one stash.
@@ -274,6 +283,34 @@ impl Overlay {
             .map(|(label, path)| (label, OverlayEvent::AcceptFile(path)))
             .collect();
         Self::Picker(Picker::new("Go to File", items))
+    }
+
+    /// Build the picker offered when a symbol has several definitions.
+    ///
+    /// Rows are workspace-relative and 1-based, matching every other place the app
+    /// names a position. Server order is preserved — it is best-first — but exact
+    /// duplicates are dropped, since servers do sometimes report a target twice.
+    #[must_use]
+    pub fn definitions(root: &Path, locations: Vec<karet_core::Location>) -> Self {
+        let mut seen = Vec::new();
+        let mut items = Vec::new();
+        for location in locations {
+            let position = location.range.start;
+            let key = (location.path.clone(), position);
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            let relative = location.path.strip_prefix(root).unwrap_or(&location.path);
+            items.push((
+                format!("{}:{}", relative.display(), position.line.saturating_add(1)),
+                OverlayEvent::AcceptLocation {
+                    path: location.path,
+                    position,
+                },
+            ));
+        }
+        Self::Picker(Picker::new("Go to Definition", items))
     }
 
     /// Build the command palette.
