@@ -154,7 +154,37 @@ pub(super) fn draw_pane_content(
                     .tab_width(ctx.tab_width)
                     .unwrapped_lines(table_lines);
                 let editor = editor.sticky_scroll(ctx.sticky_scroll);
+                // Reserve the tracks before rendering, and keep `editor_rect` as the
+                // reserved rect: it is the single value used both to paint the widget
+                // and to map a click back to a caret, so shrinking it once keeps
+                // render and hit-test in agreement. A soft-wrapped view has no
+                // horizontal axis at all, so it reserves no bottom row.
+                let (text_rect, tracks) = reserve_tracks(
+                    editor_rect,
+                    ScrollAxes {
+                        vertical: true,
+                        horizontal: !word_wrap,
+                    },
+                );
+                editor_rect = text_rect;
                 f.render_stateful_widget(editor, editor_rect, &mut tab.editor);
+                // Read the extents back after the render: the widget clamps the
+                // offsets and measures the viewport as it paints, so the bar is
+                // correct on the very first frame.
+                tracks.paint(
+                    f.buffer_mut(),
+                    ScrollbarStyles::from_theme(theme),
+                    ScrollExtent::new(
+                        buffer.line_count(),
+                        tab.editor.scroll_line as usize,
+                        tab.editor.visible_lines() as usize,
+                    ),
+                    ScrollExtent::new(
+                        tab.editor.longest_col() as usize,
+                        tab.editor.scroll_col as usize,
+                        tab.editor.content_width().into(),
+                    ),
+                );
                 if ctx.blame_clickable
                     && let Some(Decoration {
                         range,
@@ -599,8 +629,22 @@ fn draw_merge_conflict(
         .word_wrap(word_wrap)
         .tab_width(ctx.tab_width)
         .sticky_scroll(ctx.sticky_scroll);
-    f.render_stateful_widget(editor, columns[2], merged_editor);
-    columns[2]
+    // The three panes are already narrow and share one horizontal offset, so this
+    // view reserves vertical tracks only. The merged rect is returned shrunk: it is
+    // the caller's `editor_rect`, and so also its click-to-caret mapping.
+    let (merged_rect, tracks) = reserve_tracks(columns[2], ScrollAxes::VERTICAL);
+    f.render_stateful_widget(editor, merged_rect, merged_editor);
+    tracks.paint(
+        f.buffer_mut(),
+        ScrollbarStyles::from_theme(theme),
+        ScrollExtent::new(
+            merged.line_count(),
+            merged_editor.scroll_line as usize,
+            merged_editor.visible_lines() as usize,
+        ),
+        ScrollExtent::default(),
+    );
+    merged_rect
 }
 
 #[allow(clippy::too_many_arguments)] // presentation state and delayed-load state are independent
@@ -616,6 +660,7 @@ fn draw_conflict_side(
     ctx: &PaneCtx,
 ) {
     if let Some(buffer) = buffer {
+        let (text_rect, tracks) = reserve_tracks(area, ScrollAxes::VERTICAL);
         f.render_stateful_widget(
             Editor::new(buffer)
                 .theme(theme)
@@ -623,8 +668,18 @@ fn draw_conflict_side(
                 .read_only(true)
                 .word_wrap(word_wrap)
                 .tab_width(ctx.tab_width),
-            area,
+            text_rect,
             editor,
+        );
+        tracks.paint(
+            f.buffer_mut(),
+            ScrollbarStyles::from_theme(theme),
+            ScrollExtent::new(
+                buffer.line_count(),
+                editor.scroll_line as usize,
+                editor.visible_lines() as usize,
+            ),
+            ScrollExtent::default(),
         );
     } else if let Some(error) = error {
         f.render_widget(
