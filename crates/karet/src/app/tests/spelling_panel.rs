@@ -19,6 +19,7 @@ fn hit(path: &Path, line: u32, col: u32, word: &str, line_text: &str) -> Spellin
 /// An app with `hits` already adopted from a scan tagged `RequestId(1)`.
 fn scanned(root: &Path, hits: Vec<SpellingHit>) -> App {
     let mut app = App::new(root.to_path_buf(), Vec::new(), Vec::new(), false);
+    app.settings.spellcheck.enabled = true;
     app.sidebar_panel = SidebarPanel::Spelling;
     app.spelling.scanning = Some(RequestId(1));
     let count = hits.len();
@@ -349,6 +350,37 @@ fn adding_a_dictionary_word_drops_it_from_the_results() {
 
     assert!(app.settings.spellcheck.words.iter().any(|w| w == "wrld"));
     assert!(app.spelling.hits.is_empty(), "the panel re-scans");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_panel_follows_the_spellcheck_enabled_setting() {
+    let dir = test_dir("spelling-enabled-setting");
+    let path = dir.join("a.md");
+    let mut app = scanned(&dir, vec![hit(&path, 0, 4, "wrld", "the wrld ends")]);
+
+    let mut settings = app.settings.clone();
+    settings.spellcheck.enabled = false;
+    config_changed(&mut app, settings);
+
+    assert_eq!(
+        app.sidebar_panel,
+        SidebarPanel::Explorer,
+        "an open panel is left for one that still exists"
+    );
+    assert!(app.spelling.hits.is_empty(), "and its results go with it");
+
+    // Nothing selects it back while the setting is off.
+    app.dispatch(Command::SelectPanel(SidebarPanel::Spelling));
+    assert_eq!(app.sidebar_panel, SidebarPanel::Explorer);
+
+    let mut settings = app.settings.clone();
+    settings.spellcheck.enabled = true;
+    config_changed(&mut app, settings);
+    app.dispatch(Command::SelectPanel(SidebarPanel::Spelling));
+
+    assert_eq!(app.sidebar_panel, SidebarPanel::Spelling);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

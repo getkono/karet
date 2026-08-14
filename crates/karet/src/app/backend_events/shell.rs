@@ -36,6 +36,9 @@ impl App {
         let spellcheck_changed = report.settings.spellcheck != self.settings.spellcheck;
         self.apply_loaded_config(report.clone(), false);
         if spellcheck_changed {
+            // Turning the checker off retires the panel; otherwise the list it is
+            // showing is now wrong and has to be walked again.
+            self.sync_spelling_availability();
             self.invalidate_spelling();
         }
         for tab in self.all_tabs_mut() {

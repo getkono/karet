@@ -794,10 +794,6 @@ fn an_unscanned_panel_invites_a_scan_rather_than_showing_an_empty_list()
     app.spelling.scanned = true;
     assert!(render(&mut app, &mut terminal).contains("no misspellings"));
 
-    // A disabled feature explains itself rather than claiming a clean workspace.
-    app.settings.spellcheck.enabled = false;
-    assert!(render(&mut app, &mut terminal).contains("spell check is off"));
-
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
@@ -810,16 +806,22 @@ fn the_activity_switcher_reserves_a_cell_pair_for_every_panel()
 
     let dir = spelling_dir("switcher");
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.settings.spellcheck.enabled = true;
     let mut terminal = Terminal::new(TestBackend::new(40, 1))?;
     let theme = app.theme.clone();
-    let _ = terminal.draw(|frame| {
-        let area = frame.area();
-        super::sidebar::draw_sidebar_header(frame, &mut app, &theme, area);
-    });
+    let mut header = |app: &mut App| {
+        let _ = terminal.draw(|frame| {
+            let area = frame.area();
+            super::sidebar::draw_sidebar_header(frame, app, &theme, area);
+        });
+        app.panel_hits
+            .iter()
+            .map(|&(_, _, panel)| panel)
+            .collect::<Vec<_>>()
+    };
 
-    let panels: Vec<SidebarPanel> = app.panel_hits.iter().map(|&(_, _, panel)| panel).collect();
     assert_eq!(
-        panels,
+        header(&mut app),
         vec![
             SidebarPanel::Explorer,
             SidebarPanel::Search,
@@ -828,6 +830,19 @@ fn the_activity_switcher_reserves_a_cell_pair_for_every_panel()
         ],
         "every panel needs a switcher button, in activity-bar order"
     );
+
+    // Spell check off retires the Spelling button along with its panel.
+    app.settings.spellcheck.enabled = false;
+    assert_eq!(
+        header(&mut app),
+        vec![
+            SidebarPanel::Explorer,
+            SidebarPanel::Search,
+            SidebarPanel::SourceControl,
+        ],
+    );
+    app.settings.spellcheck.enabled = true;
+    let _ = header(&mut app);
     // Two cells each, marching left to right and staying inside the header.
     for window in app.panel_hits.windows(2) {
         assert_eq!(window[1].0, window[0].1, "{:?}", app.panel_hits);

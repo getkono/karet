@@ -13,11 +13,42 @@ use super::*;
 pub(crate) const SPELLING_SCAN_RESULT_CAP: usize = 5_000;
 
 impl App {
+    /// Whether the Spelling panel is offered at all.
+    ///
+    /// The panel lists what the spell checker found, so with `spellcheck.enabled`
+    /// off it could only ever be empty — it is left out of the activity bar and
+    /// cannot be selected rather than presented as a dead surface.
+    pub(crate) fn spelling_available(&self) -> bool {
+        self.settings.spellcheck.enabled
+    }
+
+    /// Drop everything the Spelling panel holds once spell check is off.
+    ///
+    /// Called after a config reload: the activity bar follows the setting on its
+    /// own (it is painted from it), but a panel already on screen has to be left
+    /// for one that still exists, and results nothing can reach are just stale
+    /// memory waiting to be shown again if the setting comes back on.
+    pub(super) fn sync_spelling_availability(&mut self) {
+        if self.spelling_available() {
+            return;
+        }
+        if self.sidebar_panel == SidebarPanel::Spelling {
+            self.sidebar_panel = SidebarPanel::Explorer;
+        }
+        if let Some(scanning) = self.spelling.scanning.take() {
+            self.send(SessionCommand::Cancel { request: scanning });
+        }
+        self.spelling.clear();
+    }
+
     /// Show the Spelling panel, scanning if it has nothing to show yet.
     ///
     /// Re-showing a panel that already has results does *not* re-scan: a scan costs
     /// seconds on a large workspace, and the explicit refresh action is one key away.
     pub(super) fn show_spelling(&mut self) {
+        if !self.spelling_available() {
+            return;
+        }
         self.sidebar_visible = true;
         self.sidebar_panel = SidebarPanel::Spelling;
         self.focus = Focus::Sidebar;
@@ -56,6 +87,9 @@ impl App {
 
     /// Start (or restart) the workspace spelling scan.
     pub(super) fn scan_workspace_spelling(&mut self) {
+        if !self.spelling_available() {
+            return; // "Spelling: Scan Workspace" with the checker off has nothing to find
+        }
         // A scan already running is superseded, not raced: cancel it so its worker
         // stops walking, and drop its results so late batches cannot mix into the
         // new list.

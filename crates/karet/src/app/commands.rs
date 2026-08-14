@@ -8,6 +8,11 @@ impl App {
             Command::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
             Command::ToggleFocus => self.toggle_focus(),
             Command::SelectPanel(panel) => {
+                // Spelling is only a panel while spell check is on; naming it by
+                // key or palette entry while it is off selects nothing.
+                if panel == SidebarPanel::Spelling && !self.spelling_available() {
+                    return;
+                }
                 self.sidebar_panel = panel;
                 self.sidebar_visible = true;
                 self.focus = Focus::Sidebar;

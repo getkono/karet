@@ -187,11 +187,13 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
     // the title and switcher always fit.
     const ROOT_MAX_W: u16 = 24;
     const ACTIONS_W: u16 = 8; // four buttons × 2 cells
-    /// The activity-bar switcher: one 2-cell button per panel, plus a trailing cell.
-    const SWITCHER_W: u16 = 9;
+    // The activity-bar switcher: one 2-cell button per shown panel, plus a
+    // trailing cell. Spelling is offered only while spell check is on.
+    let spelling = app.spelling_available();
+    let switcher_w: u16 = if spelling { 9 } else { 7 };
     let icon_style = app.icon_style;
     let explorer = app.sidebar_panel == SidebarPanel::Explorer;
-    let actions_w = if explorer && area.width >= 9 + ACTIONS_W + SWITCHER_W {
+    let actions_w = if explorer && area.width >= 9 + ACTIONS_W + switcher_w {
         ACTIONS_W
     } else {
         0
@@ -199,7 +201,7 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
     let min_title_w = 9;
     let root_avail = area
         .width
-        .saturating_sub(min_title_w + actions_w + SWITCHER_W)
+        .saturating_sub(min_title_w + actions_w + switcher_w)
         .min(ROOT_MAX_W);
     let root_label = root_header_label(&app.root, root_avail.saturating_sub(1));
     let show_root = root_avail > 6 && !root_label.is_empty();
@@ -212,7 +214,7 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
         Constraint::Length(root_w),
         Constraint::Min(0),
         Constraint::Length(actions_w),
-        Constraint::Length(SWITCHER_W),
+        Constraint::Length(switcher_w),
     ])
     .split(area);
     if show_root {
@@ -267,8 +269,11 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
         (switch.x, switch.x + 2, SidebarPanel::Explorer),
         (switch.x + 2, switch.x + 4, SidebarPanel::Search),
         (switch.x + 4, switch.x + 6, SidebarPanel::SourceControl),
-        (switch.x + 6, switch.x + 8, SidebarPanel::Spelling),
     ];
+    if spelling {
+        app.panel_hits
+            .push((switch.x + 6, switch.x + 8, SidebarPanel::Spelling));
+    }
     let icon = |ui: UiIcon, panel: SidebarPanel| {
         let hovered = app
             .panel_hits
@@ -285,15 +290,15 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
             chrome_button_style(theme, state),
         )
     };
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            icon(UiIcon::Explorer, SidebarPanel::Explorer),
-            icon(UiIcon::Search, SidebarPanel::Search),
-            icon(UiIcon::SourceControl, SidebarPanel::SourceControl),
-            icon(UiIcon::Spelling, SidebarPanel::Spelling),
-        ])),
-        switch,
-    );
+    let mut icons = vec![
+        icon(UiIcon::Explorer, SidebarPanel::Explorer),
+        icon(UiIcon::Search, SidebarPanel::Search),
+        icon(UiIcon::SourceControl, SidebarPanel::SourceControl),
+    ];
+    if spelling {
+        icons.push(icon(UiIcon::Spelling, SidebarPanel::Spelling));
+    }
+    f.render_widget(Paragraph::new(Line::from(icons)), switch);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -388,9 +393,9 @@ pub(super) fn draw_spelling_panel(f: &mut Frame, app: &mut App, theme: &Theme, a
     );
 
     if spelling.rows.is_empty() {
-        let message = if !app.settings.spellcheck.enabled {
-            "  spell check is off — set spellcheck.enabled"
-        } else if spelling.scanning.is_some() {
+        // No "spell check is off" case: the panel is only reachable while
+        // `spellcheck.enabled` is on.
+        let message = if spelling.scanning.is_some() {
             "  scanning the workspace…"
         } else if spelling.scanned {
             "  no misspellings"

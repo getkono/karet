@@ -195,6 +195,10 @@ Squiggles only show what is on screen, so the **Spelling** sidebar panel (`Ctrl+
 workspace, grouped by file. Selecting a row — <kbd>Enter</kbd> or a click — opens that
 file with the caret on the word, so a pass over the list is a pass over the fixes.
 
+The panel exists only while `spellcheck.enabled` is on: it appears in the activity bar
+the moment you turn the setting on and is retired the moment you turn it off, rather
+than sitting there as a list that could only ever be empty.
+
 The scan walks the same corpus workspace search does, across every workspace root:
 gitignore-aware, honouring your `search.exclude` globs, skipping binary and oversize
 files, with `.git`, `target`, and `node_modules` pruned. It applies the same scope
