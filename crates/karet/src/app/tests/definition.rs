@@ -182,3 +182,44 @@ fn an_unsolicited_definition_event_is_ignored() {
 
     assert_eq!(app.active, before);
 }
+
+#[test]
+fn several_locations_open_a_picker_with_workspace_relative_rows() {
+    let Some((backend, mut app, other)) = workspace("definition-picker") else {
+        return;
+    };
+    app.dispatch(Command::GoToDefinition);
+    let id = definition_requests(&backend)[0].0;
+
+    app.on_backend_event(
+        Some(id),
+        SessionEvent::Definitions {
+            locations: vec![
+                Location {
+                    path: other.clone(),
+                    range: at(0, 7),
+                },
+                // A duplicate of the first, which servers do sometimes send.
+                Location {
+                    path: other.clone(),
+                    range: at(0, 7),
+                },
+                Location {
+                    path: other.clone(),
+                    range: at(1, 0),
+                },
+            ],
+        },
+    );
+
+    let Some(overlay) = app.overlay.as_ref() else {
+        panic!("several locations should offer a choice");
+    };
+    // Paths are shown relative to the workspace and lines 1-based, as everywhere
+    // else in the UI; the duplicate is dropped and server order is preserved.
+    assert_eq!(overlay.rows(), vec!["other.rs:1", "other.rs:2"]);
+
+    app.overlay_accept();
+    assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));
+    assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 7));
+}

@@ -294,6 +294,9 @@ impl App {
         match event {
             OverlayEvent::Close => {},
             OverlayEvent::AcceptFile(path) => self.open_path(&path),
+            OverlayEvent::AcceptLocation { path, position } => {
+                self.jump_to_location(&path, position);
+            },
             OverlayEvent::AcceptCommand(cmd) => self.dispatch(cmd),
             OverlayEvent::AcceptDiffTarget { rev, label } => {
                 self.open_changes_with(&rev, &label);

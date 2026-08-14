@@ -60,12 +60,14 @@ impl App {
         if !same_view || !same_doc {
             return;
         }
-        match locations.first() {
+        match locations.split_first() {
             None => self.status = Some(self.no_definition_reason().to_string()),
-            Some(first) => {
-                let (path, position) = (first.path.clone(), first.range.start);
+            // One answer never costs a keystroke to accept.
+            Some((only, [])) => {
+                let (path, position) = (only.path.clone(), only.range.start);
                 self.jump_to_location(&path, position);
             },
+            Some(_) => self.overlay = Some(Overlay::definitions(&self.root.clone(), locations)),
         }
     }
 
