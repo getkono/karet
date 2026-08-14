@@ -100,6 +100,15 @@ focus to the sidebar. In a **diff** tab, `\` toggles unified/side-by-side. In di
 commit, and compare tabs, `[` / `]` walk changed files; commit and compare file-index
 rows are also clickable.
 
+**Editor — go to definition.** `F12` (or `Ctrl+Click`) jumps the caret to where the
+symbol under it is defined, opening the defining file when it is elsewhere; holding
+`Ctrl` underlines the symbol under the pointer when a running language server can
+resolve it. When a symbol has several definitions, a filterable picker lists them by
+path and line. `Ctrl+Alt+←` (**Go Back**) returns to the position the jump started
+from. Both commands are in the palette as *Go to Definition* and *Go Back*. Some
+emulators consume `Ctrl+Click` for their own link handling, which is why `F12` also
+exists.
+
 **Editor — multi-cursor.** `Ctrl+Alt+↑`/`Ctrl+Alt+↓` add a caret above / below the
 primary; `Ctrl+D` selects the word under the caret, then adds a caret at the next
 occurrence (wrapping); `Alt+Click` adds or removes a caret and `Alt+Drag` extends the
