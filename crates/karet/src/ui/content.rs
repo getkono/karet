@@ -385,7 +385,14 @@ pub(super) fn draw_pane_content(
         TabKind::Hex { bytes, scroll, .. } => {
             let rows = bytes.len().div_ceil(16);
             *scroll = (*scroll).min(rows.saturating_sub(1));
-            f.render_widget(HexView::new(bytes).scroll(*scroll).theme(theme), area);
+            let (dump, tracks) = reserve_tracks(area, ScrollAxes::VERTICAL);
+            f.render_widget(HexView::new(bytes).scroll(*scroll).theme(theme), dump);
+            tracks.paint(
+                f.buffer_mut(),
+                ScrollbarStyles::from_theme(theme),
+                ScrollExtent::new(rows, *scroll, dump.height.into()),
+                ScrollExtent::default(),
+            );
         },
         #[cfg(feature = "images")]
         TabKind::Image { image, .. } => {
