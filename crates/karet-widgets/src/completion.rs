@@ -26,6 +26,11 @@ use ratatui::style::Style;
 use ratatui::widgets::StatefulWidget;
 use unicode_width::UnicodeWidthStr;
 
+use crate::scroll::ScrollAxes;
+use crate::scroll::ScrollExtent;
+use crate::scroll::ScrollbarStyles;
+use crate::scroll::reserve_tracks;
+
 /// The most candidate rows the popup shows at once; the rest scroll.
 pub const MAX_VISIBLE_ROWS: u16 = 10;
 
@@ -165,9 +170,22 @@ impl<'a> CompletionPopup<'a> {
             .unwrap_or(0);
         let height = u16::try_from(ranked.len())
             .unwrap_or(u16::MAX)
-            .min(MAX_VISIBLE_ROWS);
-        (width.min(max.0), height.min(max.1))
+            .min(MAX_VISIBLE_ROWS)
+            .min(max.1);
+        // Ask for the scrollbar's column too, or the track would eat the widest
+        // label. This is the one place where a reservation may depend on the
+        // content: the popup's rect is recomputed from this method every frame and
+        // its width never feeds back into the ranking, so it cannot oscillate.
+        let track = u16::from(shows_scrollbar(ranked.len(), height));
+        (width.saturating_add(track).min(max.0), height)
     }
+}
+
+/// Whether a popup of `height` rows showing `count` candidates carries a
+/// scrollbar. Shared by [`CompletionPopup::desired_size`] and the render pass so
+/// the column asked for is exactly the column painted.
+const fn shows_scrollbar(count: usize, height: u16) -> bool {
+    count > height as usize && height > 2
 }
 
 /// The glyph and color marking a completion kind, VS Code-style: a single
@@ -210,6 +228,13 @@ impl StatefulWidget for CompletionPopup<'_> {
         if ranked.is_empty() {
             return;
         }
+        let (area, tracks) = reserve_tracks(
+            area,
+            ScrollAxes {
+                vertical: shows_scrollbar(ranked.len(), area.height),
+                horizontal: false,
+            },
+        );
         // Clamp the selection, then scroll the window to keep it visible.
         state.selected = state.selected.min(ranked.len() - 1);
         let visible = usize::from(area.height);
@@ -282,6 +307,13 @@ impl StatefulWidget for CompletionPopup<'_> {
                 }
             }
         }
+
+        tracks.paint(
+            buf,
+            ScrollbarStyles::from_theme(self.theme),
+            ScrollExtent::new(ranked.len(), state.scroll, visible),
+            ScrollExtent::default(),
+        );
     }
 }
 
@@ -470,6 +502,35 @@ mod tests {
         state.select_prev(items.len()); // wraps to the last item
         let buf = render(&items, "", area, &mut state);
         assert!(row_text(&buf, 9).contains("item_24"));
+    }
+
+    #[test]
+    fn a_long_list_paints_a_scrollbar_and_asks_for_its_column() {
+        let items: Vec<CompletionItem> = (0..25)
+            .map(|i| item(&format!("item_{i:02}"), CompletionKind::Text, None))
+            .collect();
+        let mut state = CompletionState::default();
+        let area = Rect::new(0, 0, 12, MAX_VISIBLE_ROWS);
+        let buf = render(&items, "", area, &mut state);
+
+        let track: String = (0..area.height)
+            .map(|y| buf[(area.right() - 1, y)].symbol().to_owned())
+            .collect();
+        assert!(track.contains('\u{2588}'), "track was {track:?}");
+        // The label keeps its full width because `desired_size` asked for the
+        // extra column; both sides must agree or the track eats a character.
+        assert!(row_text(&buf, 0).contains("item_00"));
+
+        let theme = Theme::dark();
+        let mut matcher = Matcher::new();
+        let wide = CompletionPopup::new(&items, &mut matcher, "", &theme).desired_size((80, 80));
+        let narrow: Vec<CompletionItem> = items.iter().take(3).cloned().collect();
+        let thin = CompletionPopup::new(&narrow, &mut matcher, "", &theme).desired_size((80, 80));
+        assert_eq!(
+            wide.0,
+            thin.0 + 1,
+            "only the popup that scrolls should reserve a column"
+        );
     }
 
     #[test]
