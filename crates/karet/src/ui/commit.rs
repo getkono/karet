@@ -623,6 +623,8 @@ pub(super) fn draw_commit_graph(
     }
 
     // Keep the selected row (offset by the header) visible.
+    let total = items.len();
+    let (list_area, tracks) = reserve_tracks(list_area, ScrollAxes::VERTICAL);
     let height = list_area.height as usize;
     let sel_row = selected + 1;
     let mut off = *list_offset as usize;
@@ -635,6 +637,12 @@ pub(super) fn draw_commit_graph(
     let mut state = ListState::default();
     *state.offset_mut() = off;
     f.render_stateful_widget(List::new(items), list_area, &mut state);
+    tracks.paint(
+        f.buffer_mut(),
+        ScrollbarStyles::from_theme(theme),
+        ScrollExtent::new(total, state.offset(), height),
+        ScrollExtent::default(),
+    );
 
     // Right: the selected commit's detail (once its fetch answers).
     let sel_hash = commits.get(selected).map(|c| c.hash.as_str());

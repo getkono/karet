@@ -251,6 +251,9 @@ fn draw_dashboard_rows(f: &mut Frame, theme: &Theme, area: Rect, state: &mut Git
     if area.width == 0 || area.height == 0 {
         return;
     }
+    // Rows are a fixed number of terminal rows tall, so the extent is measured in
+    // items — the unit the cursor and `first_visible` already count in.
+    let (area, tracks) = reserve_tracks(area, ScrollAxes::VERTICAL);
     let visible = usize::from(area.height).div_ceil(DASHBOARD_ROW_HEIGHT);
     if state.cursor < state.first_visible {
         state.first_visible = state.cursor;
@@ -290,6 +293,12 @@ fn draw_dashboard_rows(f: &mut Frame, theme: &Theme, area: Rect, state: &mut Git
         };
         f.render_widget(Paragraph::new(lines).style(style), row_area);
     }
+    tracks.paint(
+        f.buffer_mut(),
+        ScrollbarStyles::from_theme(theme),
+        ScrollExtent::new(state.row_count(), state.first_visible, visible),
+        ScrollExtent::default(),
+    );
 }
 
 fn dashboard_row_lines(
