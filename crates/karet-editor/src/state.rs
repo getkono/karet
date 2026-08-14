@@ -76,6 +76,14 @@ pub struct EditorState {
     pub(super) sticky_rows: Vec<u32>,
     /// Rows reserved above the live document viewport by the last render.
     pub(super) sticky_height: u16,
+    /// Distinct buffer lines the last render painted — see [`visible_lines`].
+    ///
+    /// [`visible_lines`]: EditorState::visible_lines
+    pub(super) last_visible_lines: u32,
+    /// High-water mark of the longest line seen — see [`longest_col`].
+    ///
+    /// [`longest_col`]: EditorState::longest_col
+    pub(super) last_longest_col: u32,
 }
 
 impl Default for EditorState {
@@ -93,6 +101,8 @@ impl Default for EditorState {
             follow_cursor: false,
             sticky_rows: Vec::new(),
             sticky_height: 0,
+            last_visible_lines: 0,
+            last_longest_col: 0,
         }
     }
 }
@@ -213,10 +223,47 @@ impl EditorState {
             .map(|line| line_len(buffer, line as u32))
             .max()
             .unwrap_or(0);
+        // The scan is already paid for here, so keep the answer for the horizontal
+        // scrollbar rather than making the render pay for it again every frame.
+        self.last_longest_col = longest;
         let width = u32::from(self.last_content_width.max(1));
         let max = longest.saturating_add(1).saturating_sub(width);
         self.scroll_col =
             (i64::from(self.scroll_col) + i64::from(delta)).clamp(0, i64::from(max)) as u32;
+    }
+
+    /// How many distinct buffer lines the last render showed.
+    ///
+    /// With soft wrapping on this is smaller than the row count, because a wrapped
+    /// line occupies several rows. Reporting the vertical scroll extent in buffer
+    /// lines — for the total *and* the viewport — is what keeps it O(1): a
+    /// visual-row total would mean re-wrapping the whole document every frame, since
+    /// the wrap depends on the width and the buffer changes on every keystroke.
+    #[must_use]
+    pub const fn visible_lines(&self) -> u32 {
+        self.last_visible_lines
+    }
+
+    /// The text width the last render had after the line-number gutter, in cells.
+    ///
+    /// This is the horizontal *viewport*, the counterpart to
+    /// [`longest_col`](Self::longest_col): the pane's own width includes the gutter,
+    /// which never scrolls.
+    #[must_use]
+    pub const fn content_width(&self) -> u16 {
+        self.last_content_width
+    }
+
+    /// The longest line seen so far, in `char`s — the horizontal scroll extent.
+    ///
+    /// A high-water mark rather than a live measurement: an exact answer costs a
+    /// full-document scan (every line's char count), which is affordable on a scroll
+    /// event but not on every frame. It is exact right after
+    /// [`scroll_columns`](Self::scroll_columns) and never *under*-reports, so a
+    /// scrollbar built on it never claims the whole line is on screen when it is not.
+    #[must_use]
+    pub const fn longest_col(&self) -> u32 {
+        self.last_longest_col
     }
 
     /// The currently-visible line range `[top, top + height)`.

@@ -770,3 +770,52 @@ fn center_on_and_scroll_paging_move_viewport_only() {
     state.center_on(2);
     assert_eq!(state.scroll_line, 0);
 }
+
+#[test]
+fn visible_lines_counts_buffer_lines_not_rows() {
+    // Ten short lines fill ten rows one-for-one...
+    let short = TextBuffer::from_text(&"short\n".repeat(10));
+    let area = Rect::new(0, 0, 40, 10);
+    let mut state = EditorState::new();
+    Editor::new(&short).render(area, &mut Buffer::empty(area), &mut state);
+    assert_eq!(state.visible_lines(), 10);
+
+    // ...but a soft-wrapped line occupies several rows, so the same ten rows show
+    // fewer buffer lines. Measuring both the total and the viewport in buffer lines
+    // is what keeps the vertical extent O(1) instead of re-wrapping the document.
+    let long = TextBuffer::from_text(&format!("{}\n", "word ".repeat(40)).repeat(10));
+    let mut wrapped = EditorState::new();
+    Editor::new(&long)
+        .word_wrap(true)
+        .render(area, &mut Buffer::empty(area), &mut wrapped);
+    assert!(
+        wrapped.visible_lines() < 10,
+        "wrapped view showed {} buffer lines in 10 rows",
+        wrapped.visible_lines()
+    );
+    assert!(wrapped.visible_lines() >= 1);
+}
+
+#[test]
+fn longest_col_is_exact_after_a_horizontal_scroll_and_never_under_reports() {
+    let buffer = TextBuffer::from_text(
+        "short\n{}\nshort\n"
+            .replace("{}", &"x".repeat(200))
+            .as_str(),
+    );
+    let area = Rect::new(0, 0, 40, 3);
+    let mut state = EditorState::new();
+    Editor::new(&buffer).render(area, &mut Buffer::empty(area), &mut state);
+
+    // The render alone sees the long line because it is on screen.
+    assert!(state.longest_col() >= 200);
+
+    // A horizontal scroll scans the whole buffer, so the answer is exact.
+    state.scroll_columns(&buffer, 5);
+    assert_eq!(state.longest_col(), 200);
+
+    // Scrolled right, the extent still covers the visible right edge — a
+    // scrollbar built on it can never claim the line is fully on screen.
+    Editor::new(&buffer).render(area, &mut Buffer::empty(area), &mut state);
+    assert!(state.longest_col() >= state.scroll_col + 40);
+}

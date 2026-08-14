@@ -541,11 +541,19 @@ impl StatefulWidget for Editor<'_> {
             );
         }
 
+        // Measured as the row loop walks anchors, so the scrollbar extents cost a
+        // couple of comparisons per painted row rather than a second pass.
+        let mut last_painted = None;
+        let mut widest_visible = 0;
         for row in 0..state.last_height {
             if anchor.line >= line_count {
                 break;
             }
             let l = anchor.line;
+            last_painted = Some(l);
+            if !self.word_wrap {
+                widest_visible = widest_visible.max(line_len(self.buffer, l));
+            }
             let y = area
                 .y
                 .saturating_add(state.sticky_height)
@@ -649,6 +657,17 @@ impl StatefulWidget for Editor<'_> {
                 break;
             }
             anchor = next;
+        }
+        state.last_visible_lines =
+            last_painted.map_or(0, |last: u32| last.saturating_sub(state.scroll_line) + 1);
+        if !self.word_wrap {
+            // Raise the high-water mark by what this frame could see. The right-edge
+            // term keeps the extent from ever claiming the caret has scrolled past
+            // the end of the content.
+            state.last_longest_col = state
+                .last_longest_col
+                .max(widest_visible)
+                .max(state.scroll_col.saturating_add(u32::from(content_width)));
         }
 
         // Draw a reversed caret cell for every head when focused and editable.
