@@ -101,28 +101,13 @@ mod tests {
     use super::*;
 
     fn ctx(old: u32, new: u32, s: &str) -> DiffLine {
-        DiffLine {
-            kind: LineKind::Context,
-            old_lineno: Some(old),
-            new_lineno: Some(new),
-            content: s.to_string(),
-        }
+        DiffLine::new(LineKind::Context, Some(old), Some(new), s)
     }
     fn rem(old: u32, s: &str) -> DiffLine {
-        DiffLine {
-            kind: LineKind::Remove,
-            old_lineno: Some(old),
-            new_lineno: None,
-            content: s.to_string(),
-        }
+        DiffLine::new(LineKind::Remove, Some(old), None, s)
     }
     fn add(new: u32, s: &str) -> DiffLine {
-        DiffLine {
-            kind: LineKind::Add,
-            old_lineno: None,
-            new_lineno: Some(new),
-            content: s.to_string(),
-        }
+        DiffLine::new(LineKind::Add, None, Some(new), s)
     }
 
     #[test]

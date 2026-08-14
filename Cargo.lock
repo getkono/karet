@@ -2992,6 +2992,7 @@ dependencies = [
  "karet-core",
  "ratatui",
  "serde",
+ "tempfile",
  "thiserror 2.0.19",
  "unicode-width",
 ]

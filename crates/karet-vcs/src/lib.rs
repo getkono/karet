@@ -73,6 +73,8 @@ pub enum StatusKind {
     Deleted,
     /// A renamed file.
     Renamed,
+    /// A file copied from another path, which is still there.
+    Copied,
     /// An untracked file.
     Untracked,
     /// A file with unresolved merge conflicts.

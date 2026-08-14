@@ -268,6 +268,44 @@ fn staged_rename_is_detected_even_when_config_disables_renames() -> Result<(), V
 }
 
 #[test]
+fn staged_copy_is_reported_as_copied_not_renamed() -> Result<(), VcsError> {
+    let repo = init_repo()?;
+    write(&repo.path, "src.txt", b"one\ntwo\nthree\nfour\nfive\n")?;
+    git(&repo.path, &["add", "src.txt"])?;
+    git(&repo.path, &["commit", "-q", "-m", "init"])?;
+    // Copy the file and edit the source, which is the shape copy detection keys on.
+    write(&repo.path, "copy.txt", b"one\ntwo\nthree\nfour\nfive\n")?;
+    write(&repo.path, "src.txt", b"one\nTWO\nthree\nfour\nfive\n")?;
+    git(&repo.path, &["add", "-A"])?;
+    let r = Repository::discover(&repo.path)?;
+
+    let changes = r.changes(Selection::Staged, None)?;
+    let seen: Vec<(&Path, StatusKind)> = changes
+        .iter()
+        .map(|c| (c.path.as_path(), c.status))
+        .collect();
+    // Copy detection is deliberately off. With `Rewrites::copies` enabled gix
+    // reports only `copy.txt: Copied` and drops `src.txt` entirely, hiding a real
+    // edit; git reports both. Losing a changed file is worse than labelling the
+    // copy an addition, so both must be here.
+    assert_eq!(
+        seen,
+        [
+            (Path::new("copy.txt"), StatusKind::Added),
+            (Path::new("src.txt"), StatusKind::Modified),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn rewrite_status_distinguishes_a_copy_from_a_rename() {
+    // A copy leaves its source in place, so the two are not interchangeable.
+    assert_eq!(super::rewrite_status(true), StatusKind::Copied);
+    assert_eq!(super::rewrite_status(false), StatusKind::Renamed);
+}
+
+#[test]
 fn staged_changes_during_a_merge_do_not_error() -> Result<(), VcsError> {
     let repo = init_repo()?;
     write(&repo.path, "a.txt", b"base\n")?;

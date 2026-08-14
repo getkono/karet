@@ -19,6 +19,8 @@ use crate::align_hunk;
 use crate::compute_highlights;
 use crate::intraline::Segment;
 use crate::model::DiffLine;
+use crate::model::FileDiff;
+use crate::model::FileStatus;
 use crate::model::LineKind;
 use crate::prepared::PreparedDiff;
 use crate::prepared::TokenSpan;
@@ -60,6 +62,11 @@ pub fn unified_lines(prepared: &PreparedDiff, palette: &DiffPalette<'_>) -> Vec<
     let mut lines = Vec::new();
     if prepared.is_binary() {
         lines.push(binary_placeholder(palette));
+        lines.push(Line::default());
+        return lines;
+    }
+    if prepared.diff.hunks.is_empty() {
+        lines.push(placeholder(&empty_reason(&prepared.diff), palette));
         lines.push(Line::default());
         return lines;
     }
@@ -154,6 +161,13 @@ pub fn side_by_side_lines(
     let mut right = Vec::new();
     if prepared.is_binary() {
         left.push(binary_placeholder(palette));
+        right.push(Line::default());
+        left.push(Line::default());
+        right.push(Line::default());
+        return (left, right);
+    }
+    if prepared.diff.hunks.is_empty() {
+        left.push(placeholder(&empty_reason(&prepared.diff), palette));
         right.push(Line::default());
         left.push(Line::default());
         right.push(Line::default());
@@ -382,10 +396,40 @@ fn scope_line(scope: &str, palette: &DiffPalette<'_>) -> Line<'static> {
 }
 
 fn binary_placeholder(palette: &DiffPalette<'_>) -> Line<'static> {
+    placeholder("binary file changed", palette)
+}
+
+fn placeholder(text: &str, palette: &DiffPalette<'_>) -> Line<'static> {
     Line::from(Span::styled(
-        "  (binary file changed)",
+        format!("  ({text})"),
         Style::default().fg(palette.dim),
     ))
+}
+
+/// Why a file has no hunks to paint.
+///
+/// A mode-only change, a pure rename or copy, an empty new file, and an unmerged
+/// path all reach the painters with nothing to show. Saying so beats painting a
+/// blank pane, which reads as a failure rather than as "there is nothing here".
+fn empty_reason(file: &FileDiff) -> String {
+    let mut notes: Vec<String> = Vec::new();
+    match file.status {
+        FileStatus::Renamed { .. } => notes.push("renamed, contents identical".to_string()),
+        FileStatus::Copied { .. } => notes.push("copied, contents identical".to_string()),
+        FileStatus::Unmerged => notes.push("unresolved merge conflict".to_string()),
+        FileStatus::Added => notes.push("empty file added".to_string()),
+        FileStatus::Removed => notes.push("empty file removed".to_string()),
+        _ => {},
+    }
+    if file.mode_changed() {
+        let old = file.old_mode.unwrap_or_default();
+        let new = file.new_mode.unwrap_or_default();
+        notes.push(format!("file mode {old:06o} → {new:06o}"));
+    }
+    if notes.is_empty() {
+        return "no content changes".to_string();
+    }
+    notes.join("; ")
 }
 
 #[cfg(test)]
@@ -509,6 +553,47 @@ mod tests {
         p.diff.is_binary = true;
         let text = rendered_text(&unified_lines(&p, &palette(&token_fg)));
         assert!(text.contains("binary"));
+    }
+
+    #[test]
+    fn hunkless_diffs_say_why_instead_of_painting_nothing() {
+        let token_fg = |_: TokenId| Color::White;
+        let palette = palette(&token_fg);
+
+        // A pure rename: identical contents, so there is nothing to diff.
+        let mut renamed = prepared("", "");
+        renamed.diff.status = FileStatus::Renamed { similarity: 100 };
+        let text = rendered_text(&unified_lines(&renamed, &palette));
+        assert!(text.contains("renamed, contents identical"), "{text:?}");
+
+        // A chmod: no hunks at all, but the mode is the story.
+        let mut chmod = prepared("", "");
+        chmod.diff.old_mode = Some(0o100644);
+        chmod.diff.new_mode = Some(0o100755);
+        let text = rendered_text(&unified_lines(&chmod, &palette));
+        assert!(text.contains("file mode 100644 → 100755"), "{text:?}");
+
+        // Both at once are reported together.
+        let mut both = prepared("", "");
+        both.diff.status = FileStatus::Copied { similarity: 100 };
+        both.diff.old_mode = Some(0o100644);
+        both.diff.new_mode = Some(0o100755);
+        let text = rendered_text(&unified_lines(&both, &palette));
+        assert!(text.contains("copied, contents identical"), "{text:?}");
+        assert!(text.contains("file mode"), "{text:?}");
+
+        // Side-by-side gets the same treatment, on the left column.
+        let (left, _) = side_by_side_lines(&renamed, &palette);
+        assert!(rendered_text(&left).contains("renamed"));
+    }
+
+    #[test]
+    fn an_unmerged_file_is_labelled_not_blank() {
+        let token_fg = |_: TokenId| Color::White;
+        let mut p = prepared("", "");
+        p.diff.status = FileStatus::Unmerged;
+        let text = rendered_text(&unified_lines(&p, &palette(&token_fg)));
+        assert!(text.contains("unresolved merge conflict"), "{text:?}");
     }
 
     #[test]
