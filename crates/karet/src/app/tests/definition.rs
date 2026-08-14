@@ -27,12 +27,18 @@ fn at(line: u32, col: u32) -> Range {
     }
 }
 
-/// A workspace with `main.rs` open and `other.rs` on disk beside it.
+/// A workspace with `main.rs` open and `other.rs` beside it, both on disk so the
+/// jump stack (which drops origins whose file has since vanished) sees real files.
 fn workspace(name: &str) -> Option<(Arc<RecordingBackend>, App, PathBuf)> {
     let root = test_dir(name);
     write_file(&root, "other.rs", b"pub fn target() {}\nsecond line\n");
+    write_file(&root, "main.rs", b"target();\n");
     let (backend, mut app) = completion_app("target();\n", LineCol::new(0, 1));
     app.root = root.clone();
+    let active = app.active;
+    if let TabKind::Code { path, .. } = &mut app.tabs[active].kind {
+        *path = root.join("main.rs");
+    }
     Some((backend, app, root.join("other.rs")))
 }
 
@@ -222,4 +228,79 @@ fn several_locations_open_a_picker_with_workspace_relative_rows() {
     app.overlay_accept();
     assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 7));
+}
+
+/// Jump to `other.rs` and return the app positioned there.
+fn jumped(name: &str) -> Option<(App, PathBuf, PathBuf)> {
+    let (backend, mut app, other) = workspace(name)?;
+    let origin = app.tabs[app.active].path()?.to_path_buf();
+    app.dispatch(Command::GoToDefinition);
+    let id = definition_requests(&backend)[0].0;
+    app.on_backend_event(
+        Some(id),
+        SessionEvent::Definitions {
+            locations: vec![Location {
+                path: other.clone(),
+                range: at(1, 0),
+            }],
+        },
+    );
+    Some((app, origin, other))
+}
+
+#[test]
+fn going_back_returns_to_the_position_the_jump_started_from() {
+    let Some((mut app, origin, other)) = jumped("definition-back") else {
+        return;
+    };
+    assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));
+
+    app.dispatch(Command::JumpBack);
+
+    assert_eq!(app.tabs[app.active].path(), Some(origin.as_path()));
+    assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 1));
+    // The stack is spent, so a second Go Back says so rather than bouncing.
+    app.dispatch(Command::JumpBack);
+    assert_eq!(app.status.as_deref(), Some("nothing to go back to"));
+}
+
+#[test]
+fn going_back_skips_an_origin_whose_file_is_gone() {
+    let Some((mut app, origin, _other)) = jumped("definition-back-deleted") else {
+        return;
+    };
+    // `workspace` writes main.rs only in memory, so remove the on-disk origin the
+    // stack recorded and check we do not reopen it as an empty phantom buffer.
+    let _ = std::fs::remove_file(&origin);
+
+    app.dispatch(Command::JumpBack);
+    assert_eq!(app.status.as_deref(), Some("nothing to go back to"));
+}
+
+#[test]
+fn the_jump_stack_stays_bounded() {
+    let Some((backend, mut app, other)) = workspace("definition-back-bounded") else {
+        return;
+    };
+    for line in 0..(64 + 5) {
+        app.dispatch(Command::GoToDefinition);
+        let requests = definition_requests(&backend);
+        let Some(&(id, _)) = requests.last() else {
+            return;
+        };
+        app.on_backend_event(
+            Some(id),
+            SessionEvent::Definitions {
+                locations: vec![Location {
+                    path: other.clone(),
+                    range: at(line % 2, 0),
+                }],
+            },
+        );
+    }
+    assert!(
+        app.definition_jumps.len() <= 64,
+        "stack grew to {}",
+        app.definition_jumps.len()
+    );
 }

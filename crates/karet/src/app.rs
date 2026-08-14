@@ -43,6 +43,7 @@ mod tests;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::io::Write;
 use std::io::{self};
 use std::path::Path;
@@ -435,6 +436,8 @@ pub struct App {
     pub(crate) markdown_link_hover: Option<(u16, u16)>,
     /// The definition request awaiting an answer, if any.
     pub(crate) pending_definition: Option<definition::PendingDefinition>,
+    /// Pre-jump positions, most recent last, for "Go Back" after a definition jump.
+    pub(crate) definition_jumps: VecDeque<definition::JumpOrigin>,
     /// The focused commit view's signature-badge rect (screen coords) from the last
     /// frame, for double-click hit-testing. `None` when no badge is on screen.
     pub(crate) commit_badge_rect: Option<Rect>,

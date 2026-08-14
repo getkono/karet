@@ -105,6 +105,7 @@ impl App {
             blame_rect: None,
             markdown_link_hits: Vec::new(),
             pending_definition: None,
+            definition_jumps: VecDeque::new(),
             markdown_link_hover: None,
             commit_badge_rect: None,
             editor_selecting: false,

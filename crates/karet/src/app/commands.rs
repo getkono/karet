@@ -127,6 +127,7 @@ impl App {
             Command::OpenDiffFile => self.open_diff_file(),
             Command::TriggerCompletion => self.trigger_completion(true),
             Command::GoToDefinition => self.request_definition(),
+            Command::JumpBack => self.jump_back(),
             Command::InsertChar(c) => {
                 if !self.try_inline_macro(karet_syntax::InlineMacroTrigger::Character(c)) {
                     let s = c.to_string();

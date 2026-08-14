@@ -15,6 +15,21 @@ use super::*;
 /// *only* correlation key: a late answer to a superseded request must not evict the
 /// record for the live one. The view is remembered so a jump is dropped when the
 /// user has moved on, and it survives tab reordering (which an index would not).
+/// How many jump origins to keep. Deep enough to walk back through a chain of
+/// definitions; bounded so a long session cannot grow it without limit.
+const MAX_JUMP_HISTORY: usize = 64;
+
+/// Where a definition jump started, so "Go Back" can return there.
+///
+/// The position is stored as a path rather than a [`ViewId`] on purpose: a view id
+/// dies with its tab, while a path can simply be reopened.
+#[derive(Clone, Debug)]
+pub(crate) struct JumpOrigin {
+    pub(crate) pane: PaneId,
+    pub(crate) path: PathBuf,
+    pub(crate) position: LineCol,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PendingDefinition {
     pub(crate) id: RequestId,
@@ -92,6 +107,56 @@ impl App {
     /// character of the definition's *name*; a plain `Location` is whatever the
     /// server calls the start, often the `pub`/`fn` before it.
     pub(crate) fn jump_to_location(&mut self, path: &Path, position: LineCol) {
+        self.push_jump_origin(path, position);
         self.focus_by_file_line(path, position);
+    }
+
+    /// Remember where a jump started, unless it goes nowhere.
+    ///
+    /// Pushing here rather than at the request means a dismissed picker leaves no
+    /// entry behind.
+    fn push_jump_origin(&mut self, target: &Path, position: LineCol) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let Some(path) = tab.path().map(Path::to_path_buf) else {
+            return;
+        };
+        let origin = JumpOrigin {
+            pane: self.focus_pane(),
+            position: tab.editor.cursor(),
+            path,
+        };
+        // A jump that lands on the line it started from, or a repeat of the last
+        // jump, is not worth a step back.
+        let same_line = origin.path == target && origin.position.line == position.line;
+        let repeat = self
+            .definition_jumps
+            .back()
+            .is_some_and(|last| last.path == origin.path && last.position == origin.position);
+        if same_line || repeat {
+            return;
+        }
+        if self.definition_jumps.len() == MAX_JUMP_HISTORY {
+            self.definition_jumps.pop_front();
+        }
+        self.definition_jumps.push_back(origin);
+    }
+
+    /// Return to the position the most recent jump started from.
+    pub(crate) fn jump_back(&mut self) {
+        while let Some(origin) = self.definition_jumps.pop_back() {
+            // Never resurrect a file deleted since the jump: `open_file` would
+            // happily produce an empty phantom buffer for it.
+            if !origin.path.exists() {
+                continue;
+            }
+            self.focus_pane_switch(origin.pane);
+            // Deliberately not `jump_to_location`: pushing a new origin here would
+            // make Go Back bounce between two positions forever.
+            self.focus_by_file_line(&origin.path, origin.position);
+            return;
+        }
+        self.status = Some("nothing to go back to".to_string());
     }
 }
