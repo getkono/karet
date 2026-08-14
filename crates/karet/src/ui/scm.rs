@@ -198,6 +198,7 @@ pub(super) fn draw_scm_changes(f: &mut Frame, app: &mut App, theme: &Theme, area
         }
     }
 
+    let (area, tracks) = reserve_tracks(area, ScrollAxes::VERTICAL);
     app.scm_ui.changes_rect = area;
     let total = items.len();
     let height = area.height as usize;
@@ -208,6 +209,12 @@ pub(super) fn draw_scm_changes(f: &mut Frame, app: &mut App, theme: &Theme, area
     app.scm_ui.row_map = row_map;
     app.scm_ui.offset = state.offset();
     app.scm_ui.total_rows = total;
+    tracks.paint(
+        f.buffer_mut(),
+        ScrollbarStyles::from_theme(theme),
+        ScrollExtent::new(total, app.scm_ui.offset, height),
+        ScrollExtent::default(),
+    );
 }
 
 pub(super) fn change_line(
@@ -281,6 +288,7 @@ pub(super) fn draw_scm_commits(f: &mut Frame, app: &mut App, theme: &Theme, area
         items.push(ListItem::new(Line::styled(label, dim)));
     }
 
+    let (area, tracks) = reserve_tracks(area, ScrollAxes::VERTICAL);
     let total = items.len();
     let height = area.height as usize;
     let offset = app.scm_ui.commits_offset.min(total.saturating_sub(height));
@@ -290,6 +298,12 @@ pub(super) fn draw_scm_commits(f: &mut Frame, app: &mut App, theme: &Theme, area
     app.scm_ui.commits_offset = state.offset();
     app.scm_ui.commits_total = total;
     app.scm_ui.commits_rect = area;
+    tracks.paint(
+        f.buffer_mut(),
+        ScrollbarStyles::from_theme(theme),
+        ScrollExtent::new(total, app.scm_ui.commits_offset, height),
+        ScrollExtent::default(),
+    );
 }
 
 /// A terse `git log`-style relative time (e.g. `3d ago`) for a Unix timestamp.

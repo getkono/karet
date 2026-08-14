@@ -61,9 +61,18 @@ pub(super) fn draw_outline(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
     let mut state = ListState::default();
     *state.offset_mut() = app.outline.scroll;
     state.select(Some(cursor));
-    f.render_stateful_widget(list, content, &mut state);
+    let (rows, tracks) = reserve_tracks(content, ScrollAxes::VERTICAL);
+    f.render_stateful_widget(list, rows, &mut state);
     // Remember where the list settled so a click maps to the right entry next frame.
+    // Reading it back is also what makes the bar agree with the list ratatui drew,
+    // which may have scrolled further to keep the cursor visible.
     app.outline.scroll = state.offset();
+    tracks.paint(
+        f.buffer_mut(),
+        ScrollbarStyles::from_theme(theme),
+        ScrollExtent::new(entries.len(), app.outline.scroll, rows.height.into()),
+        ScrollExtent::default(),
+    );
 }
 
 pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
@@ -98,6 +107,11 @@ pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
             let cut_paths = app.explorer_cut_paths().to_vec();
             app.request_nested_repository_statuses();
             let repository_badges = app.nested_repository_badges(Instant::now());
+            // The tree's rect is also its click target, so narrowing it here is what
+            // makes a click on the track column fall outside the tree instead of
+            // selecting whatever row it happens to sit beside.
+            let (tree, tracks) = reserve_tracks(rows[1], ScrollAxes::VERTICAL);
+            app.sidebar_content_rect = tree;
             f.render_stateful_widget(
                 FileTree::new(&root)
                     .theme(theme)
@@ -108,8 +122,18 @@ pub(super) fn draw_sidebar(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
                     .explorer_focused(explorer_focused)
                     .hover(hover)
                     .badges(&repository_badges),
-                rows[1],
+                tree,
                 &mut app.explorer,
+            );
+            tracks.paint(
+                f.buffer_mut(),
+                ScrollbarStyles::from_theme(theme),
+                ScrollExtent::new(
+                    app.explorer.row_count(),
+                    app.explorer.offset(),
+                    tree.height.into(),
+                ),
+                ScrollExtent::default(),
             );
         },
         SidebarPanel::SourceControl => draw_scm(f, app, theme, rows[1]),
@@ -444,8 +468,17 @@ pub(super) fn draw_spelling_panel(f: &mut Frame, app: &mut App, theme: &Theme, a
             .bg(theme.role(ThemeRole::Selection).to_ratatui())
             .add_modifier(Modifier::BOLD),
     );
-    f.render_stateful_widget(list, rows[1], &mut state);
+    let total = spelling.rows.len();
+    let (results, tracks) = reserve_tracks(rows[1], ScrollAxes::VERTICAL);
+    f.render_stateful_widget(list, results, &mut state);
     app.spelling_ui.offset = state.offset();
+    app.spelling_ui.results_rect = results;
+    tracks.paint(
+        f.buffer_mut(),
+        ScrollbarStyles::from_theme(theme),
+        ScrollExtent::new(total, app.spelling_ui.offset, results.height.into()),
+        ScrollExtent::default(),
+    );
 }
 
 pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
@@ -619,6 +652,15 @@ pub(super) fn draw_search_panel(f: &mut Frame, app: &mut App, theme: &Theme, are
             .bg(theme.role(ThemeRole::Selection).to_ratatui())
             .add_modifier(Modifier::BOLD),
     );
-    f.render_stateful_widget(list, rows[2], &mut state);
+    let total = search.results.len();
+    let (results, tracks) = reserve_tracks(rows[2], ScrollAxes::VERTICAL);
+    f.render_stateful_widget(list, results, &mut state);
     app.search_ui.offset = state.offset();
+    app.search_ui.results_rect = results;
+    tracks.paint(
+        f.buffer_mut(),
+        ScrollbarStyles::from_theme(theme),
+        ScrollExtent::new(total, app.search_ui.offset, results.height.into()),
+        ScrollExtent::default(),
+    );
 }

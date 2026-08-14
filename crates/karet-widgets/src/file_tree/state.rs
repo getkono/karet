@@ -142,6 +142,13 @@ impl FileTreeState {
         self.offset
     }
 
+    /// How many rows the tree currently has, expanded state included — the
+    /// vertical scroll extent to pair with [`offset`](Self::offset).
+    #[must_use]
+    pub fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+
     /// The absolute row index of the cursor row.
     #[must_use]
     pub fn cursor(&self) -> usize {
