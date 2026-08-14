@@ -15,6 +15,7 @@ static PALETTE: &[Command] = &[
     Command::OpenFind,
     Command::OpenGlobalSearch,
     Command::TriggerCompletion,
+    Command::GoToDefinition,
     Command::ToggleInlineBlame,
     Command::ShowCommitGraph,
     Command::OpenCommitByHash,

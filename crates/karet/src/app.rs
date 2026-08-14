@@ -7,6 +7,7 @@ mod capture;
 mod change_view;
 mod commands;
 mod completion;
+mod definition;
 mod diffs;
 mod editor;
 mod explorer;
@@ -432,6 +433,8 @@ pub struct App {
     pub(crate) markdown_link_hits: Vec<MarkdownLinkHit>,
     /// Current mouse position when it rests over a visible Markdown link.
     pub(crate) markdown_link_hover: Option<(u16, u16)>,
+    /// The definition request awaiting an answer, if any.
+    pub(crate) pending_definition: Option<definition::PendingDefinition>,
     /// The focused commit view's signature-badge rect (screen coords) from the last
     /// frame, for double-click hit-testing. `None` when no badge is on screen.
     pub(crate) commit_badge_rect: Option<Rect>,

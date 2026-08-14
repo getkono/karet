@@ -110,6 +110,7 @@ impl App {
                 version,
                 items,
             } => self.on_completions(id, doc, version, items),
+            SessionEvent::Definitions { locations } => self.on_definitions(id, locations),
             SessionEvent::LanguageServerInstallRequired { server } => {
                 self.prompt_language_server_install(server);
             },
@@ -325,8 +326,8 @@ impl App {
                 // results reflect the edited files.
                 self.run_global_search();
             },
-            // Events answering commands this client never sends (hover, definition,
-            // workspace symbols, rename, format-on-save) fall through here until the
+            // Events answering commands this client never sends (hover, workspace
+            // symbols, rename, format-on-save) fall through here until the
             // corresponding UI exists.
             _ => {},
         }

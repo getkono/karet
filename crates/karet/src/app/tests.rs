@@ -7,6 +7,7 @@ mod support;
 mod blame;
 mod commit_navigation;
 mod commit_view;
+mod definition;
 mod diff_view;
 mod editor_mouse;
 mod explorer;

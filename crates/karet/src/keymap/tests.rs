@@ -843,3 +843,25 @@ fn ctrl_alt_shift_arrows_resize_panes() {
         assert_eq!(resolve(ctx, &[chord]), Resolved::Command(command));
     }
 }
+
+#[test]
+fn f12_goes_to_definition_from_the_editor_only() {
+    assert_eq!(
+        res(
+            Focus::Editor,
+            false,
+            key(KeyCode::F(12), KeyModifiers::NONE)
+        ),
+        Some(Command::GoToDefinition)
+    );
+    // The Editor layer is not active while the sidebar has focus, so F12 there
+    // must not jump the editor's caret out from under the user.
+    assert_ne!(
+        res(
+            Focus::Sidebar,
+            false,
+            key(KeyCode::F(12), KeyModifiers::NONE)
+        ),
+        Some(Command::GoToDefinition)
+    );
+}
