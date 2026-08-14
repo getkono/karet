@@ -70,7 +70,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     let mut terminal = ratatui::init();
     let _ = crossterm::execute!(
         io::stdout(),
-        SetTitle(format!("karet - {}", app.root.display()))
+        SetTitle(format!("karet - {}", crate::window_title_path(&app.root)))
     );
     let _keyboard = {
         let _ = crossterm::execute!(
