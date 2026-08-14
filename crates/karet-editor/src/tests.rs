@@ -819,3 +819,72 @@ fn longest_col_is_exact_after_a_horizontal_scroll_and_never_under_reports() {
     Editor::new(&buffer).render(area, &mut Buffer::empty(area), &mut state);
     assert!(state.longest_col() >= state.scroll_col + 40);
 }
+
+#[test]
+fn an_underline_decoration_underlines_exactly_its_range() {
+    let buffer = TextBuffer::from_text("let target = 1;\n");
+    let theme = Theme::dark();
+    let Ok(range) = Range::new(LineCol::new(0, 4), LineCol::new(0, 10)) else {
+        return;
+    };
+    let decoration = Decoration {
+        range,
+        kind: DecorationKind::Underline,
+        role: None,
+    };
+    let area = Rect::new(0, 0, 40, 1);
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .theme(&theme)
+        .decorations(&[decoration])
+        .render(area, &mut target, &mut EditorState::new());
+
+    // A 3-cell gutter precedes the text, so buffer columns 4..10 are screen 7..13.
+    let underlined = |x: u16| target[(x, 0)].modifier.contains(Modifier::UNDERLINED);
+    assert!((7..13).all(underlined), "the range should be underlined");
+    assert!(
+        !underlined(6),
+        "the cell before the range must be untouched"
+    );
+    assert!(
+        !underlined(13),
+        "the cell after the range must be untouched"
+    );
+}
+
+#[test]
+fn a_diagnostic_outranks_an_underline_decoration_on_the_same_cell() {
+    let buffer = TextBuffer::from_text("let target = 1;\n");
+    let theme = Theme::dark();
+    let Ok(range) = Range::new(LineCol::new(0, 4), LineCol::new(0, 10)) else {
+        return;
+    };
+    let decoration = Decoration {
+        range,
+        kind: DecorationKind::Underline,
+        role: None,
+    };
+    let diagnostic = Diagnostic {
+        range,
+        severity: Severity::Error,
+        message: "boom".to_owned(),
+        source: None,
+        code: None,
+        tags: Vec::new(),
+        related: Vec::new(),
+    };
+    let area = Rect::new(0, 0, 40, 1);
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .theme(&theme)
+        .decorations(&[decoration])
+        .diagnostics(&[diagnostic])
+        .render(area, &mut target, &mut EditorState::new());
+
+    // The squiggle keeps its error colour: it carries more information than
+    // "this is navigable", and losing it would hide a real problem.
+    assert_eq!(
+        target[(7, 0)].underline_color,
+        theme.role(ThemeRole::DiagnosticError).to_ratatui()
+    );
+}

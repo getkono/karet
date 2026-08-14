@@ -258,7 +258,12 @@ impl Editor<'_> {
                 break;
             }
             let mut style = token_style(line_start + boff, hl, theme, default_fg);
-            if let Some(color) = self.diagnostic_underline(l, col, theme) {
+            // Diagnostics win an overlap: a squiggle carries more information than
+            // "this is navigable", and losing it would hide a real problem.
+            if let Some(color) = self
+                .diagnostic_underline(l, col, theme)
+                .or_else(|| self.decoration_underline(l, col, theme, default_fg))
+            {
                 style = style
                     .underline_color(color.to_ratatui())
                     .add_modifier(Modifier::UNDERLINED);
@@ -313,6 +318,26 @@ impl Editor<'_> {
                     _ => ThemeRole::DiagnosticInfo,
                 })
             })
+    }
+
+    /// The underline color for column `col` on line `l`, from underline decorations.
+    ///
+    /// A decoration with no role underlines in the text's own foreground, so the
+    /// treatment reads as an underline rather than as a recolouring.
+    fn decoration_underline(
+        &self,
+        l: u32,
+        col: u32,
+        theme: &Theme,
+        default_fg: Rgba,
+    ) -> Option<Rgba> {
+        self.decorations
+            .iter()
+            .find(|decoration| {
+                matches!(decoration.kind, DecorationKind::Underline)
+                    && col_in_range(l, col, decoration.range)
+            })
+            .map(|decoration| decoration.role.map_or(default_fg, |role| theme.role(role)))
     }
 
     /// Draw the caret at buffer position `at` as a reversed cell, when it falls within
