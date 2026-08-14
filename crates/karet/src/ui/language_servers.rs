@@ -14,6 +14,7 @@ pub(super) fn draw_language_servers(
     theme: &Theme,
     area: Rect,
     view: &mut LanguageServersViewState,
+    hits: &mut ScrollHits,
 ) {
     let detail_height = if area.height >= 16 { 7 } else { 4 };
     let sections = Layout::vertical([
@@ -23,7 +24,7 @@ pub(super) fn draw_language_servers(
     ])
     .split(area);
     draw_actions(f, theme, sections[0], view);
-    draw_inventory(f, theme, sections[1], view);
+    draw_inventory(f, theme, sections[1], view, hits);
     draw_detail(f, theme, sections[2], view);
 }
 
@@ -108,7 +109,13 @@ fn draw_actions(f: &mut Frame, theme: &Theme, area: Rect, view: &mut LanguageSer
     );
 }
 
-fn draw_inventory(f: &mut Frame, theme: &Theme, area: Rect, view: &mut LanguageServersViewState) {
+fn draw_inventory(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    view: &mut LanguageServersViewState,
+    hits: &mut ScrollHits,
+) {
     view.table_rect = area;
     view.row_hits.clear();
     let border_style = theme.style(ThemeRole::IndentGuide);
@@ -271,11 +278,16 @@ fn draw_inventory(f: &mut Frame, theme: &Theme, area: Rect, view: &mut LanguageS
         painted += 1;
         y = y.saturating_add(wanted_height);
     }
-    tracks.paint(
-        f.buffer_mut(),
-        ScrollbarStyles::from_theme(theme),
-        ScrollExtent::new(visible.len(), view.offset, painted),
-        ScrollExtent::default(),
+    // The extent counts servers, not rows: the cards are variable height, so
+    // `painted` is the viewport in the same unit `offset` is stored in.
+    hits.record(
+        tracks.paint(
+            f.buffer_mut(),
+            ScrollbarStyles::from_theme(theme),
+            ScrollExtent::new(visible.len(), view.offset, painted),
+            ScrollExtent::default(),
+        ),
+        ScrollSurface::TabRows,
     );
 }
 

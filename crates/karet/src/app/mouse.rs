@@ -333,10 +333,21 @@ impl App {
             .markdown_link_hits
             .iter()
             .any(|hit| rect_contains(hit.rect, (mouse.column, mouse.row)));
-        let shape = if over_sidebar_divider || pane_axis == Some(SplitAxis::Cols) {
+        // A thumb is draggable, and this shell hints every draggable it has. The grab
+        // shape outlives the pointer leaving the track, because the drag does too.
+        let over_thumb = self
+            .scroll_hits
+            .at(mouse.column, mouse.row)
+            .and_then(|hit| hit.track.hit(mouse.column, mouse.row))
+            == Some(TrackHit::Thumb);
+        let shape = if self.scroll_drag.is_some() {
+            Some("grabbing")
+        } else if over_sidebar_divider || pane_axis == Some(SplitAxis::Cols) {
             Some("col-resize")
         } else if over_scm_divider || pane_axis == Some(SplitAxis::Rows) {
             Some("row-resize")
+        } else if over_thumb {
+            Some("grab")
         } else if over_blame || over_markdown_link || self.definition_hover.is_some() {
             Some("pointer")
         } else {
@@ -436,6 +447,18 @@ impl App {
             }
             return;
         }
+        // A thumb drag captures the pointer until release, so it keeps scrolling when
+        // the pointer strays off a one-column track — the standard scrollbar contract.
+        if let Some(drag) = self.scroll_drag {
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    self.scroll_drag_to(drag, mouse.column, mouse.row);
+                },
+                MouseEventKind::Up(MouseButton::Left) => self.scroll_drag = None,
+                _ => {},
+            }
+            return;
+        }
         // Lightweight Search/commit fields capture selection drags independently of
         // the main editor's text-selection state.
         if let Some(target) = self.text_field_drag {
@@ -468,6 +491,12 @@ impl App {
         {
             self.pane_resize = Some(PaneResize { divider });
             self.pane_divider_hover = Some(divider);
+            return;
+        }
+        // Ahead of every region test: a track sits inside the rect of whatever it
+        // scrolls, and those rects were narrowed to exclude it precisely so the bar
+        // could claim the column.
+        if self.scrollbar_mouse(mouse) {
             return;
         }
         if self.handle_tabstrip_mouse(mouse) {

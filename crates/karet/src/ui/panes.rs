@@ -2,7 +2,13 @@ use super::*;
 
 /// Draw every pane (tab strip + breadcrumb + content) tiled across `area`, recording
 /// each pane's clickable regions for mouse routing.
-pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+pub(super) fn draw_panes(
+    f: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut ScrollHits,
+) {
     app.pane_frames.clear();
     app.image_area = None;
     app.editor_rect = Rect::default();
@@ -16,6 +22,15 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
     let graphical_cursor = app.graphical_cursor_enabled();
     for (pane, rect) in app.layout.layout(area) {
         let is_focused = pane == focused;
+        // Only the focused pane's bars are grabbable, for the same reason only its
+        // `editor_rect` is kept: every write-back path here targets the active tab.
+        // A background pane's bars are painted, then dropped on the floor.
+        let mut unfocused = ScrollHits::default();
+        let sink = if is_focused {
+            &mut *hits
+        } else {
+            &mut unfocused
+        };
         let stored_tab_width = (!is_focused)
             .then(|| app.stored.get(&pane))
             .flatten()
@@ -65,7 +80,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
                 markdown_link_hover: app.markdown_link_hover,
                 pane_action_hover: app.pane_action_hover,
             };
-            render_pane(f, &mut app.tabs, app.active, rect, &ctx)
+            render_pane(f, &mut app.tabs, app.active, rect, &ctx, sink)
         } else if let Some(stored) = app.stored.get_mut(&pane) {
             let resolved = stored.tabs.get(stored.active).map(|tab| {
                 app.settings
@@ -95,7 +110,7 @@ pub(super) fn draw_panes(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect
                 markdown_link_hover: None,
                 pane_action_hover: app.pane_action_hover,
             };
-            render_pane(f, &mut stored.tabs, stored.active, rect, &ctx)
+            render_pane(f, &mut stored.tabs, stored.active, rect, &ctx, sink)
         } else {
             continue;
         };
@@ -168,6 +183,7 @@ pub(super) fn render_pane(
     active: usize,
     area: Rect,
     ctx: &PaneCtx,
+    hits: &mut ScrollHits,
 ) -> RenderedPane {
     let has_path = tabs.get(active).is_some_and(|t| t.path().is_some());
     let bc = u16::from(has_path);
@@ -207,7 +223,7 @@ pub(super) fn render_pane(
             ..content
         };
     }
-    let painted = draw_pane_content(f, tabs, active, ctx, content);
+    let painted = draw_pane_content(f, tabs, active, ctx, content, hits);
     RenderedPane {
         tabstrip_rect,
         tab_hits,
@@ -255,7 +271,7 @@ pub(super) fn draw_drop_preview(f: &mut Frame, app: &App, theme: &Theme) {
 /// not enough room below. Sized so the widest label+detail row is fully
 /// visible within the editor area (the widget truncates details with an
 /// ellipsis when the editor itself is too narrow).
-pub(super) fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme) {
+pub(super) fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme, hits: &mut ScrollHits) {
     // The filter doubles as the "popup still applies" check.
     let Some(filter) = app.completion_filter() else {
         return;
@@ -321,6 +337,10 @@ pub(super) fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme) {
     let rect = Rect::new(x, y, width, height);
     f.render_widget(Clear, rect);
     f.render_stateful_widget(popup, rect, list);
+    // The popup lays itself out inside its own render, so the only way to learn
+    // where its bar landed is to read it back afterwards. Recorded last, so it wins
+    // the hit test over the editor bar it floats above.
+    hits.record_track(list.track(), ScrollSurface::Completion);
 }
 
 pub(super) fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {

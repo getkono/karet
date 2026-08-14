@@ -84,6 +84,8 @@ impl App {
             pane_dividers: Vec::new(),
             pane_divider_hover: None,
             pane_resize: None,
+            scroll_hits: ScrollHits::default(),
+            scroll_drag: None,
             tab_drag: None,
             sidebar_content_rect: Rect::default(),
             hover: None,

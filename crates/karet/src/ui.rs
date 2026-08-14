@@ -144,8 +144,10 @@ pub(super) fn text_field_text(
 }
 
 pub(crate) use karet_widgets::scroll::ScrollAxes;
+pub(crate) use karet_widgets::scroll::ScrollAxis;
 pub(crate) use karet_widgets::scroll::ScrollBar;
 pub(crate) use karet_widgets::scroll::ScrollExtent;
+pub(crate) use karet_widgets::scroll::ScrollTrack;
 pub(crate) use karet_widgets::scroll::ScrollbarStyles;
 pub(crate) use karet_widgets::scroll::draw_horizontally_scrollable_lines;
 pub(crate) use karet_widgets::scroll::draw_scrollable_lines;
@@ -153,6 +155,8 @@ pub(crate) use karet_widgets::scroll::line_width;
 pub(crate) use karet_widgets::scroll::reserve_tracks;
 
 use crate::app::ContextMenuEntryExt;
+pub(crate) use crate::app::ScrollHits;
+pub(crate) use crate::app::ScrollSurface;
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
 use crate::overlay::Overlay;
@@ -167,6 +171,11 @@ use crate::tab::ViewMode;
 pub fn draw(f: &mut Frame, app: &mut App) {
     let theme = app.theme.clone();
     let area = f.area();
+    // Collected into a local and handed over at the end rather than cleared on `app`
+    // up front: the panel draws already borrow `app` mutably, so a field sink would
+    // not compile. One assignment is also one clear — no half-rebuilt registry can
+    // survive a frame that returns early.
+    let mut hits = ScrollHits::default();
 
     // Top level: the body (sidebar + panes) over a one-row status bar. Tab strips
     // and breadcrumbs now live *inside* each pane rather than spanning the top.
@@ -199,7 +208,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     };
 
     if let Some((rect, divider)) = sidebar {
-        draw_sidebar(f, app, &theme, rect);
+        draw_sidebar(f, app, &theme, rect, &mut hits);
         draw_sidebar_divider(f, &theme, divider, app.sidebar_resizing);
     }
 
@@ -236,19 +245,19 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.outline.content_rect = Rect::default();
     }
 
-    draw_panes(f, app, &theme, app.main_rect);
+    draw_panes(f, app, &theme, app.main_rect, &mut hits);
     if let Some(divider) = outline_divider {
         draw_sidebar_divider(f, &theme, divider, false);
     }
     if let Some(area) = outline_area {
-        draw_outline(f, app, &theme, area);
+        draw_outline(f, app, &theme, area, &mut hits);
     }
     draw_drop_preview(f, app, &theme);
     draw_status(f, app, &theme, rows[1]);
 
     // The completion popup floats over the editor, anchored at the caret; it
     // sits under modal overlays and toasts.
-    draw_completion(f, app, &theme);
+    draw_completion(f, app, &theme, &mut hits);
 
     if let Some(overlay) = &app.overlay {
         draw_overlay(f, overlay, &theme, area);
@@ -263,6 +272,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     // Toasts float above everything, including the modal overlay.
     draw_toasts(f, app, &theme, area);
+
+    app.scroll_hits = hits;
 }
 
 /// Draw the modal explaining why a destructive operation is delaying shutdown.

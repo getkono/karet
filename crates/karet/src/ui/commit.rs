@@ -17,6 +17,7 @@ pub(super) fn draw_commit_loading(
     error: Option<&str>,
     scroll: &mut u16,
     column: &mut u16,
+    hits: &mut ScrollHits,
 ) {
     *scroll = 0;
     if error.is_none() && !loading_since.visible() {
@@ -54,7 +55,11 @@ pub(super) fn draw_commit_loading(
             ]),
         ]
     };
-    draw_scrollable_lines(f, theme, area, lines, scroll, column);
+    hits.record_both(
+        draw_scrollable_lines(f, theme, area, lines, scroll, column),
+        ScrollSurface::TabRows,
+        ScrollSurface::TabColumns,
+    );
 }
 
 /// Where the signature badge sits within the commit view's line list, so a click can
@@ -590,6 +595,7 @@ pub(super) fn draw_commit_graph(
     detail_loading_since: Option<Pending>,
     detail: Option<&karet_vcs::CommitDetail>,
     files: &CommitFiles,
+    hits: &mut ScrollHits,
     list_offset: &mut u16,
     detail_column: &mut u16,
 ) {
@@ -637,23 +643,32 @@ pub(super) fn draw_commit_graph(
     let mut state = ListState::default();
     *state.offset_mut() = off;
     f.render_stateful_widget(List::new(items), list_area, &mut state);
-    tracks.paint(
-        f.buffer_mut(),
-        ScrollbarStyles::from_theme(theme),
-        ScrollExtent::new(total, state.offset(), height),
-        ScrollExtent::default(),
+    hits.record(
+        tracks.paint(
+            f.buffer_mut(),
+            ScrollbarStyles::from_theme(theme),
+            ScrollExtent::new(total, state.offset(), height),
+            ScrollExtent::default(),
+        ),
+        ScrollSurface::TabRows,
     );
 
     // Right: the selected commit's detail (once its fetch answers).
     let sel_hash = commits.get(selected).map(|c| c.hash.as_str());
     match detail {
         Some(d) if Some(d.hash.as_str()) == sel_hash => {
-            draw_horizontally_scrollable_lines(
-                f,
-                theme,
-                detail_area,
-                commit_detail_lines(theme, d, files, false, detail_area.width).0,
-                detail_column,
+            // Horizontal only: the browser's vertical wheel belongs to the commit
+            // list beside it, so this pane reserves no vertical track.
+            hits.record_track(
+                draw_horizontally_scrollable_lines(
+                    f,
+                    theme,
+                    detail_area,
+                    commit_detail_lines(theme, d, files, false, detail_area.width).0,
+                    detail_column,
+                )
+                .horizontal,
+                ScrollSurface::TabColumns,
             );
         },
         _ => {
@@ -685,6 +700,7 @@ pub(super) fn draw_commit_graph(
 
 /// Draw a code-visualization graph: flatten via the karet-graph tree renderer
 /// (theme mapped onto its plain style slots), then paint scrollably.
+#[allow(clippy::too_many_arguments)] // graph model, scroll offsets and the track sink are independent
 pub(super) fn draw_graph(
     f: &mut Frame,
     theme: &Theme,
@@ -693,6 +709,7 @@ pub(super) fn draw_graph(
     view: &karet_core::GraphView,
     scroll: &mut u16,
     column: &mut u16,
+    hits: &mut ScrollHits,
 ) {
     let styles = karet_graph::view::TreeStyles {
         header: theme
@@ -704,5 +721,9 @@ pub(super) fn draw_graph(
         revisit: theme.style(ThemeRole::DiagnosticWarning),
     };
     let rows = karet_graph::view::graph_tree_lines(title, view, &styles);
-    draw_scrollable_lines(f, theme, area, rows, scroll, column);
+    hits.record_both(
+        draw_scrollable_lines(f, theme, area, rows, scroll, column),
+        ScrollSurface::TabRows,
+        ScrollSurface::TabColumns,
+    );
 }

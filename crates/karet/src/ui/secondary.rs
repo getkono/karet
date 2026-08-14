@@ -8,6 +8,7 @@ pub(super) fn draw_loaded_config(
     report: &LoadedConfig,
     scroll: &mut u16,
     column: &mut u16,
+    hits: &mut ScrollHits,
 ) {
     let header = theme
         .style(ThemeRole::LineNumberActive)
@@ -79,7 +80,11 @@ pub(super) fn draw_loaded_config(
         _ => lines.push(Line::styled("  settings could not be serialized", warning)),
     }
 
-    draw_scrollable_lines(f, theme, area, lines, scroll, column);
+    hits.record_both(
+        draw_scrollable_lines(f, theme, area, lines, scroll, column),
+        ScrollSurface::TabRows,
+        ScrollSurface::TabColumns,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -175,6 +180,8 @@ pub(super) fn draw_markdown_preview(
     theme: &Theme,
     area: Rect,
     preview: MarkdownPreviewRender<'_>,
+    scroll_hits: &mut ScrollHits,
+    surface: ScrollSurface,
 ) -> Vec<crate::app::MarkdownLinkHit> {
     // Wrap to the padded width, not the pane's: the cache key follows, so a resize that
     // only moves the padding away still re-wraps exactly once.
@@ -198,15 +205,18 @@ pub(super) fn draw_markdown_preview(
     // The widget clamps the scroll to the document; keep the clamped value so a
     // shrinking document doesn't leave the tab scrolled past the end.
     *preview.scroll = state.scroll;
-    tracks.paint(
-        f.buffer_mut(),
-        ScrollbarStyles::from_theme(theme),
-        ScrollExtent::new(
-            preview.wrapped.lines.len(),
-            state.scroll.into(),
-            area.height.into(),
+    scroll_hits.record(
+        tracks.paint(
+            f.buffer_mut(),
+            ScrollbarStyles::from_theme(theme),
+            ScrollExtent::new(
+                preview.wrapped.lines.len(),
+                state.scroll.into(),
+                area.height.into(),
+            ),
+            ScrollExtent::default(),
         ),
-        ScrollExtent::default(),
+        surface,
     );
     let hits = markdown_link_hits(preview.wrapped, area, state.scroll);
     apply_markdown_osc8(f, &hits, preview.source, preview.root);
