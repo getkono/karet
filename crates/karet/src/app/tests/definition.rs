@@ -304,3 +304,57 @@ fn the_jump_stack_stays_bounded() {
         app.definition_jumps.len()
     );
 }
+
+/// A left click at `(col, row)` carrying `mods`.
+fn click(col: u16, row: u16, mods: KeyModifiers) -> MouseEvent {
+    MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: col,
+        row,
+        modifiers: mods,
+    }
+}
+
+#[test]
+fn ctrl_click_requests_the_definition_at_the_click_not_the_caret() {
+    let (backend, mut app) = completion_app("let x = target();\n", LineCol::new(0, 0));
+    app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 40, 5))];
+
+    // Screen column 11 is buffer column 8 (a 3-cell gutter), inside "target".
+    app.handle_editor_click(click(11, 0, KeyModifiers::CONTROL));
+
+    let requests = definition_requests(&backend);
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].1, LineCol::new(0, 8));
+    // The caret moved to the click, so Go Back returns to the clicked symbol.
+    assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 8));
+}
+
+#[test]
+fn a_plain_click_sends_no_definition_request() {
+    let (backend, mut app) = completion_app("let x = target();\n", LineCol::new(0, 0));
+    app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 40, 5))];
+
+    app.handle_editor_click(click(11, 0, KeyModifiers::NONE));
+
+    assert!(definition_requests(&backend).is_empty());
+    assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 8));
+}
+
+#[test]
+fn alt_and_shift_clicks_keep_their_own_gestures() {
+    let (backend, mut app) = completion_app("let x = target();\n", LineCol::new(0, 0));
+    app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 40, 5))];
+
+    // Alt+click adds a caret rather than jumping...
+    app.handle_editor_click(click(11, 0, KeyModifiers::ALT));
+    assert!(app.tabs[app.active].editor.has_multiple_cursors());
+    // ...and Ctrl+Alt+click stays out of the way of multi-cursor editing.
+    app.handle_editor_click(click(13, 0, KeyModifiers::ALT | KeyModifiers::CONTROL));
+    // Shift+click extends the selection.
+    app.tabs[app.active].editor.collapse_to_primary();
+    app.handle_editor_click(click(6, 0, KeyModifiers::SHIFT));
+    assert!(app.tabs[app.active].editor.selection_range().is_some());
+
+    assert!(definition_requests(&backend).is_empty());
+}

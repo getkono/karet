@@ -38,6 +38,24 @@ pub(crate) struct PendingDefinition {
 }
 
 impl App {
+    /// Resolve the definition of the symbol at `pos`, placing the caret there first.
+    ///
+    /// Setting the caret makes Ctrl+click on a non-symbol degrade to exactly a plain
+    /// click, and makes the *clicked* symbol — rather than wherever the caret
+    /// happened to be — the position Go Back returns to.
+    pub(crate) fn go_to_definition_at(&mut self, pos: LineCol) {
+        if let Some(Tab {
+            kind: TabKind::Code { buffer, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            let buffer = buffer.clone();
+            editor.set_caret(&buffer, pos);
+        }
+        self.request_definition();
+    }
+
     /// Ask the language server for the definition of the symbol at the caret.
     ///
     /// A new request replaces any in flight, so the last gesture wins. There is no

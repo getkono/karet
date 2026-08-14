@@ -582,6 +582,23 @@ impl App {
                     .pos_at(area, buffer, &fold_lines, mouse.column, mouse.row),
             )
         });
+        // Ctrl/Cmd+click jumps to the definition of the symbol under the pointer.
+        // It is checked before the click-streak gestures below, which test the
+        // streak before any modifier — so a Ctrl+double-click would otherwise
+        // select the word instead of jumping. Alt and Shift keep their multi-caret
+        // and extend-selection meanings.
+        if mouse
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER)
+            && !alt
+            && !shift
+            && let Some(pos) = code_pos
+        {
+            self.go_to_definition_at(pos);
+            // A Ctrl+drag must not turn into a text selection.
+            self.editor_selecting = false;
+            return;
+        }
         if streak == 2
             && let Some(pos) = code_pos
             && self.open_spelling_menu(mouse.column, mouse.row, pos)
