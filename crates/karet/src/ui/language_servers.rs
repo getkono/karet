@@ -118,6 +118,8 @@ fn draw_inventory(f: &mut Frame, theme: &Theme, area: Rect, view: &mut LanguageS
         .border_style(border_style);
     let content = table_block.inner(area);
     f.render_widget(table_block, area);
+    // Reserved inside the border so the box outline stays whole.
+    let (content, tracks) = reserve_tracks(content, ScrollAxes::VERTICAL);
 
     let visible = view.visible_indices();
     if visible.is_empty() {
@@ -202,6 +204,10 @@ fn draw_inventory(f: &mut Frame, theme: &Theme, area: Rect, view: &mut LanguageS
     }
 
     let mut y = content.y.saturating_add(1);
+    // Rows are two or more terminal rows tall depending on how their actions wrap,
+    // so the extent is measured in servers, not rows — and the viewport is however
+    // many the loop actually managed to paint.
+    let mut painted = 0_usize;
     for (visible_index, &server_index) in visible.iter().enumerate().skip(view.offset) {
         let Some(status) = view.servers.get(server_index).cloned() else {
             continue;
@@ -262,8 +268,15 @@ fn draw_inventory(f: &mut Frame, theme: &Theme, area: Rect, view: &mut LanguageS
         }
         render_server_actions(f, theme, view, &status, &actions, action_area);
         view.row_hits.push((row_rect, status.server.clone()));
+        painted += 1;
         y = y.saturating_add(wanted_height);
     }
+    tracks.paint(
+        f.buffer_mut(),
+        ScrollbarStyles::from_theme(theme),
+        ScrollExtent::new(visible.len(), view.offset, painted),
+        ScrollExtent::default(),
+    );
 }
 
 #[derive(Clone)]
