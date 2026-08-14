@@ -51,27 +51,73 @@ pub fn diff_text(old: &str, new: &str, opts: &DiffOptions) -> FileDiff {
     build_file_diff(old, new, path, None, opts.context_lines)
 }
 
+/// How many leading bytes are inspected when deciding whether a file is binary.
+const BINARY_SNIFF_BYTES: usize = 8000;
+
 /// Read two files and diff their contents. The result's `path` reflects the new
 /// file; `old_path` is populated when the paths differ and `detect_rename` is set.
+///
+/// When either side is binary, the result carries
+/// [`is_binary`](FileDiff::is_binary) and no hunks — the same shape
+/// [`crate::parse`] produces for `Binary files … differ`.
 ///
 /// # Errors
 /// Returns [`DiffError::Io`] if either file cannot be read.
 pub fn diff_files(old: &Path, new: &Path, opts: &DiffOptions) -> Result<FileDiff, DiffError> {
-    let old_content = std::fs::read_to_string(old).map_err(|e| DiffError::Io(e.to_string()))?;
-    let new_content = std::fs::read_to_string(new).map_err(|e| DiffError::Io(e.to_string()))?;
+    let old_bytes = std::fs::read(old).map_err(|e| DiffError::Io(e.to_string()))?;
+    let new_bytes = std::fs::read(new).map_err(|e| DiffError::Io(e.to_string()))?;
     let new_path = new.to_string_lossy().into_owned();
     let old_path = if opts.detect_rename && old != new {
         Some(old.to_string_lossy().into_owned())
     } else {
         None
     };
+
+    // Binary content has no lines to diff. Report it as such rather than failing:
+    // "this file is binary" is an answer, an i/o error is not.
+    let (Ok(old_content), Ok(new_content)) = (
+        std::str::from_utf8(&old_bytes),
+        std::str::from_utf8(&new_bytes),
+    ) else {
+        return Ok(binary_file_diff(&old_bytes, &new_bytes, new_path, old_path));
+    };
+    if looks_binary(&old_bytes) || looks_binary(&new_bytes) {
+        return Ok(binary_file_diff(&old_bytes, &new_bytes, new_path, old_path));
+    }
+
     Ok(build_file_diff(
-        &old_content,
-        &new_content,
+        old_content,
+        new_content,
         new_path,
         old_path,
         opts.context_lines,
     ))
+}
+
+/// Whether `bytes` look like binary content: a NUL byte near the start is the
+/// same signal git itself uses.
+fn looks_binary(bytes: &[u8]) -> bool {
+    bytes[..bytes.len().min(BINARY_SNIFF_BYTES)].contains(&0)
+}
+
+/// A hunk-less [`FileDiff`] for binary content, with the status still derived from
+/// which sides are empty.
+fn binary_file_diff(old: &[u8], new: &[u8], path: String, old_path: Option<String>) -> FileDiff {
+    let status = match (old.is_empty(), new.is_empty()) {
+        _ if old_path.is_some() => FileStatus::Renamed { similarity: 100 },
+        (true, false) => FileStatus::Added,
+        (false, true) => FileStatus::Removed,
+        _ => FileStatus::Modified,
+    };
+    FileDiff {
+        path,
+        old_path,
+        status,
+        old_mode: None,
+        new_mode: None,
+        is_binary: true,
+        hunks: Vec::new(),
+    }
 }
 
 fn build_file_diff(
@@ -87,6 +133,10 @@ fn build_file_diff(
         path,
         old_path,
         status,
+        // Diffing two in-memory texts says nothing about how they are stored, so
+        // neither mode is known. Callers that know better set them afterwards.
+        old_mode: None,
+        new_mode: None,
         is_binary: false,
         hunks,
     }
@@ -103,13 +153,36 @@ fn file_status(old: &str, new: &str, old_path: &Option<String>) -> FileStatus {
     }
 }
 
-/// Strip a single trailing line terminator (`\n` or `\r\n`). The last line of a
-/// file may have none. (Plain `trim_end_matches('\n')` would leave a stray `\r`.)
-fn line_content(line: &str) -> &str {
+/// Split a raw source line into its terminator-free content and the two facts a
+/// [`DiffLine`] records about how it ended: whether the terminator was `\r\n`, and
+/// whether there was no terminator at all (the file's last line).
+///
+/// Keeping these separate from `content` means a consumer displays clean text
+/// while [`crate::format_hunk_patch`] can still reproduce the original bytes.
+fn line_parts(line: &str) -> (&str, bool, bool) {
     match line.strip_suffix('\n') {
-        Some(rest) => rest.strip_suffix('\r').unwrap_or(rest),
-        None => line,
+        Some(rest) => match rest.strip_suffix('\r') {
+            Some(rest) => (rest, true, false),
+            None => (rest, false, false),
+        },
+        // An out-of-range lookup yields `""`, which is not a real unterminated line.
+        None if line.is_empty() => (line, false, false),
+        None => (line, false, true),
     }
+}
+
+/// Build a [`DiffLine`] from a raw source line, carrying its terminator facts.
+fn diff_line(
+    kind: LineKind,
+    old_lineno: Option<u32>,
+    new_lineno: Option<u32>,
+    raw: &str,
+) -> DiffLine {
+    let (content, crlf, no_newline) = line_parts(raw);
+    let mut line = DiffLine::new(kind, old_lineno, new_lineno, content);
+    line.crlf = crlf;
+    line.no_newline = no_newline;
+    line
 }
 
 /// Bounds-checked line lookup (returns `""` out of range; never panics).
@@ -190,42 +263,36 @@ fn build_group_hunk(
     for h in group {
         // Leading / inter-change context: old [oi, start) mirrors new [ni, start).
         while oi < h.before.start {
-            lines.push(DiffLine {
-                kind: LineKind::Context,
-                old_lineno: Some(oi + 1),
-                new_lineno: Some(ni + 1),
-                content: line_content(at(old_lines, oi)).to_string(),
-            });
+            let raw = at(old_lines, oi);
+            lines.push(diff_line(
+                LineKind::Context,
+                Some(oi + 1),
+                Some(ni + 1),
+                raw,
+            ));
             oi += 1;
             ni += 1;
         }
         while oi < h.before.end {
-            lines.push(DiffLine {
-                kind: LineKind::Remove,
-                old_lineno: Some(oi + 1),
-                new_lineno: None,
-                content: line_content(at(old_lines, oi)).to_string(),
-            });
+            let raw = at(old_lines, oi);
+            lines.push(diff_line(LineKind::Remove, Some(oi + 1), None, raw));
             oi += 1;
         }
         while ni < h.after.end {
-            lines.push(DiffLine {
-                kind: LineKind::Add,
-                old_lineno: None,
-                new_lineno: Some(ni + 1),
-                content: line_content(at(new_lines, ni)).to_string(),
-            });
+            let raw = at(new_lines, ni);
+            lines.push(diff_line(LineKind::Add, None, Some(ni + 1), raw));
             ni += 1;
         }
     }
     // Trailing context.
     while oi < o1 {
-        lines.push(DiffLine {
-            kind: LineKind::Context,
-            old_lineno: Some(oi + 1),
-            new_lineno: Some(ni + 1),
-            content: line_content(at(old_lines, oi)).to_string(),
-        });
+        let raw = at(old_lines, oi);
+        lines.push(diff_line(
+            LineKind::Context,
+            Some(oi + 1),
+            Some(ni + 1),
+            raw,
+        ));
         oi += 1;
         ni += 1;
     }
@@ -250,8 +317,74 @@ fn build_group_hunk(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::align_hunk;
+
+    /// Write `bytes` to `name` inside `dir` and return the path.
+    fn write(dir: &tempfile::TempDir, name: &str, bytes: &[u8]) -> Result<PathBuf, DiffError> {
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).map_err(|e| DiffError::Io(e.to_string()))?;
+        Ok(path)
+    }
+
+    /// A scratch directory, removed when the test ends.
+    fn scratch() -> Result<tempfile::TempDir, DiffError> {
+        tempfile::tempdir().map_err(|e| DiffError::Io(e.to_string()))
+    }
+
+    #[test]
+    fn diff_files_reports_binary_instead_of_failing() -> Result<(), DiffError> {
+        let dir = scratch()?;
+        // A NUL byte is the same signal git uses to call a file binary.
+        let old = write(&dir, "old.bin", b"\x00\x01binary")?;
+        let new = write(&dir, "new.bin", b"\x00\x09other")?;
+
+        let f = diff_files(&old, &new, &DiffOptions::default())?;
+        assert!(f.is_binary);
+        assert!(f.hunks.is_empty());
+        assert_eq!(f.status, FileStatus::Modified);
+        Ok(())
+    }
+
+    #[test]
+    fn diff_files_reports_invalid_utf8_as_binary() -> Result<(), DiffError> {
+        let dir = scratch()?;
+        // Invalid UTF-8 with no NUL: `read_to_string` used to turn this into an
+        // i/o error, which told the caller nothing useful.
+        let old = write(&dir, "old.dat", b"caf\xe9 latte")?;
+        let new = write(&dir, "new.dat", b"caf\xe9 mocha")?;
+
+        let f = diff_files(&old, &new, &DiffOptions::default())?;
+        assert!(f.is_binary);
+        assert!(f.hunks.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn diff_files_diffs_text_normally() -> Result<(), DiffError> {
+        let dir = scratch()?;
+        let old = write(&dir, "old.txt", b"a\nb\nc\n")?;
+        let new = write(&dir, "new.txt", b"a\nB\nc\n")?;
+
+        let f = diff_files(&old, &new, &DiffOptions::default())?;
+        assert!(!f.is_binary);
+        assert_eq!(f.hunks.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn diff_files_still_errors_when_a_file_is_missing() -> Result<(), DiffError> {
+        let dir = scratch()?;
+        let present = write(&dir, "there.txt", b"x\n")?;
+        let missing = dir.path().join("nope.txt");
+        assert!(matches!(
+            diff_files(&missing, &present, &DiffOptions::default()),
+            Err(DiffError::Io(_))
+        ));
+        Ok(())
+    }
 
     #[test]
     fn identical_inputs_yield_no_hunks() {

@@ -67,10 +67,25 @@ fn tokenize(s: &str) -> Vec<&str> {
     tokens
 }
 
+/// The largest DP table [`lcs_tokens`] will build, in cells.
+///
+/// The table is `(m + 1) * (n + 1)` `u32`s, so this caps it at ~4 MB. Ordinary
+/// source and prose lines are orders of magnitude below it; minified bundles and
+/// generated single-line files are what it exists to stop, since
+/// [`crate::PreparedDiff`] runs this eagerly for every paired change row.
+const MAX_LCS_CELLS: usize = 1_000_000;
+
 /// Standard DP LCS returning matched `(old_idx, new_idx)` pairs in order.
+///
+/// Returns no pairs when the table would exceed [`MAX_LCS_CELLS`], which marks
+/// every token changed — the line pair degrades to a whole-line replacement
+/// instead of exhausting memory.
 fn lcs_tokens(old: &[&str], new: &[&str]) -> Vec<(usize, usize)> {
     let m = old.len();
     let n = new.len();
+    if m.saturating_add(1).saturating_mul(n.saturating_add(1)) > MAX_LCS_CELLS {
+        return Vec::new();
+    }
     let mut dp = vec![vec![0u32; n + 1]; m + 1];
 
     for i in 1..=m {
@@ -181,5 +196,30 @@ mod tests {
     fn tokenize_preserves_content() {
         let s = "  hello world  ";
         assert_eq!(tokenize(s).concat(), s);
+    }
+
+    #[test]
+    fn oversized_pairs_degrade_to_whole_line_replacement() {
+        // Two minified-style lines: the DP table would be ~1.4 billion cells.
+        let old: String = (0..60_000).map(|i| format!("a{i} ")).collect();
+        let new: String = (0..60_000).map(|i| format!("b{i} ")).collect();
+
+        let p = compute_highlights(&old, &new);
+
+        // Everything is reported changed, and the text is still complete.
+        assert!(p.old_segments.iter().all(|s| s.changed));
+        assert!(p.new_segments.iter().all(|s| s.changed));
+        let rebuilt: String = p.old_segments.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(rebuilt, old);
+    }
+
+    #[test]
+    fn pairs_just_under_the_cap_still_diff_normally() {
+        // 500 tokens a side is ~251k cells: well inside the cap, so the shared
+        // prefix must still be recognized as unchanged.
+        let common: String = (0..499).map(|i| format!("t{i} ")).collect();
+        let p = compute_highlights(&format!("{common}old"), &format!("{common}new"));
+        assert_eq!(changed_text(&p.old_segments), "old");
+        assert_eq!(changed_text(&p.new_segments), "new");
     }
 }

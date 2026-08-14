@@ -31,5 +31,9 @@ unicode-width = { workspace = true, optional = true }
 # NOTE: tree-sitter structural diffing (DiffStrategy::Structural) is reserved but not
 # yet implemented; karet-treesitter will be re-added as a dependency when it lands.
 
+[dev-dependencies]
+# Scratch files for the `diff_files` tests (binary sniffing, i/o errors).
+tempfile.workspace = true
+
 [lints]
 workspace = true
