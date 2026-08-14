@@ -82,9 +82,6 @@ use ratatui::widgets::List;
 use ratatui::widgets::ListItem;
 use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
-use ratatui::widgets::Scrollbar;
-use ratatui::widgets::ScrollbarOrientation;
-use ratatui::widgets::ScrollbarState;
 use ratatui::widgets::Wrap;
 use scm::draw_scm;
 pub(crate) use scm::relative_time;
@@ -146,10 +143,14 @@ pub(super) fn text_field_text(
     Text::from(lines)
 }
 
+pub(crate) use karet_widgets::scroll::ScrollAxes;
+pub(crate) use karet_widgets::scroll::ScrollBar;
+pub(crate) use karet_widgets::scroll::ScrollExtent;
+pub(crate) use karet_widgets::scroll::ScrollbarStyles;
 pub(crate) use karet_widgets::scroll::draw_horizontally_scrollable_lines;
-pub(crate) use karet_widgets::scroll::draw_scroll_indicators;
 pub(crate) use karet_widgets::scroll::draw_scrollable_lines;
 pub(crate) use karet_widgets::scroll::line_width;
+pub(crate) use karet_widgets::scroll::reserve_tracks;
 
 use crate::app::ContextMenuEntryExt;
 use crate::keymap::SidebarPanel;

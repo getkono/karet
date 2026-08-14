@@ -236,8 +236,8 @@ impl Widget for ScrollBar {
     }
 }
 
-/// Render a two-axis scrollable paragraph and overlay indicators for axes whose
-/// content exceeds the viewport.
+/// Render a two-axis scrollable paragraph, reserving a track for each axis whose
+/// content can exceed the viewport.
 pub fn draw_scrollable_lines(
     f: &mut Frame,
     theme: &Theme,
@@ -246,18 +246,20 @@ pub fn draw_scrollable_lines(
     scroll: &mut u16,
     column: &mut u16,
 ) {
+    let (area, tracks) = reserve_tracks(area, ScrollAxes::BOTH);
     let content_height = lines.len();
     let content_width = lines.iter().map(line_width).max().unwrap_or_default();
     clamp_viewport(area, content_height, content_width, scroll, column);
     f.render_widget(Paragraph::new(lines).scroll((*scroll, *column)), area);
-    draw_scroll_indicators(
-        f,
-        theme,
-        area,
-        content_height,
-        content_width,
-        *scroll,
-        *column,
+    tracks.paint(
+        f.buffer_mut(),
+        ScrollbarStyles::from_theme(theme),
+        ScrollExtent::new(
+            content_height,
+            usize::from(*scroll),
+            usize::from(area.height),
+        ),
+        ScrollExtent::new(content_width, usize::from(*column), usize::from(area.width)),
     );
 }
 
@@ -270,18 +272,16 @@ pub fn draw_horizontally_scrollable_lines(
     lines: Vec<Line<'static>>,
     column: &mut u16,
 ) {
+    let (area, tracks) = reserve_tracks(area, ScrollAxes::HORIZONTAL);
     let content_width = lines.iter().map(line_width).max().unwrap_or_default();
     let max_column = content_width.saturating_sub(usize::from(area.width));
     *column = (*column).min(u16::try_from(max_column).unwrap_or(u16::MAX));
     f.render_widget(Paragraph::new(lines).scroll((0, *column)), area);
-    draw_scroll_indicators(
-        f,
-        theme,
-        area,
-        usize::from(area.height),
-        content_width,
-        0,
-        *column,
+    tracks.paint(
+        f.buffer_mut(),
+        ScrollbarStyles::from_theme(theme),
+        ScrollExtent::default(),
+        ScrollExtent::new(content_width, usize::from(*column), usize::from(area.width)),
     );
 }
 
@@ -303,49 +303,6 @@ pub fn clamp_viewport(
     let max_column = content_width.saturating_sub(usize::from(area.width));
     *scroll = (*scroll).min(u16::try_from(max_scroll).unwrap_or(u16::MAX));
     *column = (*column).min(u16::try_from(max_column).unwrap_or(u16::MAX));
-}
-
-/// Overlay a scrollbar on each axis whose content exceeds the viewport.
-#[allow(clippy::too_many_arguments)] // content extents and both offsets are independent render inputs
-pub fn draw_scroll_indicators(
-    f: &mut Frame,
-    theme: &Theme,
-    area: Rect,
-    content_height: usize,
-    content_width: usize,
-    scroll: u16,
-    column: u16,
-) {
-    let track = theme.style(ThemeRole::IndentGuide);
-    let thumb = theme.style(ThemeRole::Foreground);
-    if content_height > usize::from(area.height) && area.height > 2 {
-        let mut state = ScrollbarState::new(content_height)
-            .position(usize::from(scroll))
-            .viewport_content_length(usize::from(area.height));
-        f.render_stateful_widget(
-            Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None)
-                .track_style(track)
-                .thumb_style(thumb),
-            area,
-            &mut state,
-        );
-    }
-    if content_width > usize::from(area.width) && area.width > 2 {
-        let mut state = ScrollbarState::new(content_width)
-            .position(usize::from(column))
-            .viewport_content_length(usize::from(area.width));
-        f.render_stateful_widget(
-            Scrollbar::new(ScrollbarOrientation::HorizontalBottom)
-                .begin_symbol(None)
-                .end_symbol(None)
-                .track_style(track)
-                .thumb_style(thumb),
-            area,
-            &mut state,
-        );
-    }
 }
 
 #[cfg(test)]

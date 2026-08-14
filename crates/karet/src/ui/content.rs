@@ -397,15 +397,21 @@ pub(super) fn draw_pane_content(
                         .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui())),
                     area,
                 );
-                // Reserve a one-row footer for the page indicator and a one-column
-                // vertical scroll bar (page position), each only when there is room.
+                // Reserve a one-row footer for the page indicator, then a scroll track
+                // out of what is left. The bar tracks the current page's position in
+                // the document, so one page is the whole "viewport".
                 let footer_h = u16::from(page_count > 1 && area.height > 3);
-                let scrollbar_w = u16::from(page_count > 1 && area.width > 3);
-                let content = Rect {
-                    width: area.width - scrollbar_w,
+                let body = Rect {
                     height: area.height - footer_h,
                     ..area
                 };
+                let (content, tracks) = reserve_tracks(
+                    body,
+                    ScrollAxes {
+                        vertical: page_count > 1,
+                        horizontal: false,
+                    },
+                );
                 if let Some((_, img)) = rendered.as_ref() {
                     // Reserve an aspect-fit sub-rect so the page is not stretched.
                     image_area = Some(fit_rect(content, img.width(), img.height()));
@@ -413,25 +419,12 @@ pub(super) fn draw_pane_content(
                     // Parsed, but this page failed to rasterize — show a neutral note.
                     f.render_widget(Placeholder::new(path, FileKind::Pdf, None, 0), content);
                 }
-                if scrollbar_w == 1 {
-                    // The scroll bar tracks the current page's position in the document.
-                    let track = Rect {
-                        x: area.x + area.width - 1,
-                        y: area.y,
-                        width: 1,
-                        height: area.height - footer_h,
-                    };
-                    let mut sb = ScrollbarState::new(page_count).position(idx);
-                    f.render_stateful_widget(
-                        Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                            .begin_symbol(None)
-                            .end_symbol(None)
-                            .track_style(theme.style(ThemeRole::IndentGuide))
-                            .thumb_style(theme.style(ThemeRole::Foreground)),
-                        track,
-                        &mut sb,
-                    );
-                }
+                tracks.paint(
+                    f.buffer_mut(),
+                    ScrollbarStyles::from_theme(theme),
+                    ScrollExtent::new(page_count, idx, 1),
+                    ScrollExtent::default(),
+                );
                 if footer_h == 1 {
                     let footer = Rect {
                         y: area.y + area.height - 1,
@@ -662,18 +655,22 @@ pub(super) fn draw_diff(
             draw_scrollable_lines(f, theme, area, lines, scroll, column);
         },
         ViewMode::SideBySide => {
+            // The panes scroll together, so the view carries one vertical track for
+            // the pair — but each pane has its own content width, so the horizontal
+            // track is split to match the panes above it.
+            let (body, tracks) = reserve_tracks(area, ScrollAxes::BOTH);
             let (mut left, mut right) = render::side_by_side_lines(file, theme);
             let height = left.len().max(right.len());
             let max = u16::try_from(height)
                 .unwrap_or(u16::MAX)
-                .saturating_sub(area.height);
+                .saturating_sub(body.height);
             *scroll = (*scroll).min(max);
-            let panes = Layout::horizontal([
+            let constraints = [
                 Constraint::Percentage(50),
                 Constraint::Length(1),
                 Constraint::Min(0),
-            ])
-            .split(area);
+            ];
+            let panes = Layout::horizontal(constraints).split(body);
             let left_width = left.iter().map(line_width).max().unwrap_or_default();
             let right_width = right.iter().map(line_width).max().unwrap_or_default();
             let content_width = left_width.max(right_width);
@@ -685,8 +682,22 @@ pub(super) fn draw_diff(
             f.render_widget(Paragraph::new(left).scroll((*scroll, *column)), panes[0]);
             f.render_widget(Block::new().borders(Borders::LEFT), panes[1]);
             f.render_widget(Paragraph::new(right).scroll((*scroll, *column)), panes[2]);
-            draw_scroll_indicators(f, theme, panes[0], height, left_width, *scroll, *column);
-            draw_scroll_indicators(f, theme, panes[2], height, right_width, *scroll, *column);
+            let styles = ScrollbarStyles::from_theme(theme);
+            if let Some(track) = tracks.vertical {
+                let extent = ScrollExtent::new(height, usize::from(*scroll), body.height.into());
+                f.render_widget(ScrollBar::vertical(extent, styles), track);
+            }
+            if let Some(track) = tracks.horizontal {
+                let halves = Layout::horizontal(constraints).split(track);
+                let offset = usize::from(*column);
+                for (half, width, pane) in [
+                    (halves[0], left_width, panes[0]),
+                    (halves[2], right_width, panes[2]),
+                ] {
+                    let extent = ScrollExtent::new(width, offset, pane.width.into());
+                    f.render_widget(ScrollBar::horizontal(extent, styles), half);
+                }
+            }
         },
     }
 }

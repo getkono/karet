@@ -248,6 +248,10 @@ fn draw_stacked(
     file_status: CommitFileStatus<'_>,
     view: &mut CommitViewState,
 ) -> CommitPaint {
+    // Reserve the tracks first so the file cards below are built to the width they
+    // will actually be painted at, and every hit rect derived from `area` lands
+    // inside the content rather than under a bar.
+    let (area, tracks) = reserve_tracks(area, ScrollAxes::BOTH);
     let header_len = u16::try_from(header.len()).unwrap_or(u16::MAX);
     let file_doc = build_files(
         theme,
@@ -325,14 +329,11 @@ fn draw_stacked(
         ));
     }
     f.render_widget(Paragraph::new(visible).scroll((0, view.column)), body);
-    draw_scroll_indicators(
-        f,
-        theme,
-        area,
-        usize::from(total),
-        content_width,
-        view.scroll,
-        view.column,
+    tracks.paint(
+        f.buffer_mut(),
+        ScrollbarStyles::from_theme(theme),
+        ScrollExtent::new(total.into(), view.scroll.into(), area.height.into()),
+        ScrollExtent::new(content_width, view.column.into(), area.width.into()),
     );
 
     let row_shift = u16::from(sticky.is_some());
@@ -379,6 +380,10 @@ fn draw_wide(
     file_status: CommitFileStatus<'_>,
     view: &mut CommitViewState,
 ) -> CommitPaint {
+    // Reserved before the rail/diff split, so both columns are laid out at the width
+    // they are painted at. The vertical bar reports the whole view's scroll (header
+    // and diff move together) rather than hugging the diff column alone.
+    let (area, tracks) = reserve_tracks(area, ScrollAxes::BOTH);
     let header_len = u16::try_from(header.len()).unwrap_or(u16::MAX);
     let rail_width = ((u32::from(area.width) * 30) / 100).clamp(31, 40) as u16;
     let diff_width = area.width.saturating_sub(rail_width.saturating_add(1));
@@ -464,16 +469,13 @@ fn draw_wide(
             diff_body,
         );
         f.render_widget(Block::new().borders(Borders::LEFT), cols[1]);
-        draw_scroll_indicators(
-            f,
-            theme,
-            cols[2],
-            usize::from(file_doc.rows),
-            file_doc.columns,
-            local_scroll,
-            view.column,
-        );
     }
+    tracks.paint(
+        f.buffer_mut(),
+        ScrollbarStyles::from_theme(theme),
+        ScrollExtent::new(total.into(), view.scroll.into(), area.height.into()),
+        ScrollExtent::new(file_doc.columns, view.column.into(), diff_width.into()),
+    );
 
     let row_shift = u16::from(sticky.is_some());
     let mut collapse_hits = visible_collapse_hits(
