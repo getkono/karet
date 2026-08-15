@@ -258,6 +258,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // The completion popup floats over the editor, anchored at the caret; it
     // sits under modal overlays and toasts.
     draw_completion(f, app, &theme, &mut hits);
+    // The hover popup floats the same way (they never overlap in practice —
+    // one follows typing, the other an explicit keystroke).
+    draw_hover(f, app, &theme);
 
     if let Some(overlay) = &app.overlay {
         draw_overlay(f, overlay, &theme, area);

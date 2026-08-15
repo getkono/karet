@@ -15,6 +15,7 @@ pub(crate) mod github;
 mod graphics;
 mod history;
 mod hit;
+mod hover;
 mod inline_macros;
 mod input;
 mod language_servers;
@@ -493,6 +494,10 @@ pub struct App {
     pub(crate) completion: Option<crate::completion::CompletionUi>,
     /// The reusable fuzzy matcher backing the completion popup's filtering.
     pub(crate) completion_matcher: karet_fuzzy::Matcher,
+    /// The in-flight hover request, if any (see [`crate::hover`]).
+    pub(crate) pending_hover: Option<crate::hover::PendingHover>,
+    /// The open hover popup, if any.
+    pub(crate) hover_ui: Option<crate::hover::HoverUi>,
     /// Parser-backed resolver for the seeded inline-macro catalog.
     inline_macro_engine: karet_syntax::InlineMacroEngine,
     /// In-flight commit-detail requests, mapping request id → where its result goes

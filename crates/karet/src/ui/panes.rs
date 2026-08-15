@@ -343,6 +343,67 @@ pub(super) fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme, hits:
     hits.record_track(list.track(), ScrollSurface::Completion);
 }
 
+/// Draw the hover popup floating over the editor, anchored at the caret —
+/// above it when there is room (the line under discussion stays visible),
+/// below otherwise. Content is pre-wrapped to the chosen width; overflow past
+/// the available height is clipped.
+pub(super) fn draw_hover(f: &mut Frame, app: &mut App, theme: &Theme) {
+    let Some(ui) = &app.hover_ui else {
+        return;
+    };
+    let editor = app.editor_rect;
+    if editor.width < 8 || editor.height < 3 {
+        return;
+    }
+    let caret_cell = {
+        let Some(tab) = app.tabs.get(app.active) else {
+            return;
+        };
+        let TabKind::Code {
+            buffer,
+            folds,
+            folded,
+            ..
+        } = &tab.kind
+        else {
+            return;
+        };
+        let fold_lines = crate::app::resolve_folds(folds, folded);
+        tab.editor.primary_caret_cell(editor, buffer, &fold_lines)
+    };
+    let Some((caret_x, caret_y)) = caret_cell else {
+        return; // caret scrolled out of view
+    };
+    let popup = karet_widgets::hover::HoverPopup::new(&ui.markup, theme);
+    let width = editor.width.saturating_sub(2).clamp(8, 72);
+    let lines = popup.lines(width);
+    let content_rows = u16::try_from(lines.len()).unwrap_or(u16::MAX).max(1);
+    let above = caret_y.saturating_sub(editor.top());
+    let below = editor.bottom().saturating_sub(caret_y.saturating_add(1));
+    let (y, height) = if above >= content_rows || above >= below {
+        let height = content_rows.min(above);
+        (caret_y.saturating_sub(height), height)
+    } else {
+        (caret_y.saturating_add(1), content_rows.min(below))
+    };
+    if height == 0 {
+        return;
+    }
+    let x = caret_x.clamp(
+        editor.left(),
+        editor.right().saturating_sub(width).max(editor.left()),
+    );
+    let rect = Rect::new(x, y, width, height);
+    f.render_widget(Clear, rect);
+    f.render_widget(
+        ratatui::widgets::Block::default().style(
+            ratatui::style::Style::default().bg(theme.role(ThemeRole::Background).to_ratatui()),
+        ),
+        rect,
+    );
+    f.render_widget(popup, rect);
+}
+
 pub(super) fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     app.toast_hits.clear();
     if app.notifications.is_empty() {
