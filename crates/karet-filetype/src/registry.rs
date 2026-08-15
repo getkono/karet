@@ -529,6 +529,13 @@ static REGISTRY: &[FileType] = &[
         &["doc", "docx", "odt", "rtf"],
         &[],
     ),
+    wrap(
+        "Jupyter notebook",
+        Document,
+        Some('\u{e678}'),
+        &["ipynb"],
+        &[],
+    ),
     overflow(
         "Spreadsheet",
         Data,
