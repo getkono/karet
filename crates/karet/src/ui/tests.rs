@@ -847,6 +847,7 @@ fn the_activity_switcher_reserves_a_cell_pair_for_every_panel()
             SidebarPanel::SourceControl,
             SidebarPanel::Spelling,
             SidebarPanel::Todos,
+            SidebarPanel::Debug,
         ],
         "every panel needs a switcher button, in activity-bar order"
     );
@@ -861,6 +862,7 @@ fn the_activity_switcher_reserves_a_cell_pair_for_every_panel()
             SidebarPanel::Explorer,
             SidebarPanel::Search,
             SidebarPanel::SourceControl,
+            SidebarPanel::Debug,
         ],
     );
     app.settings.editor.semantic_comments.enabled = true;

@@ -245,6 +245,8 @@ pub enum Command {
     DebugStepIn,
     /// Step out of the current frame (Shift+F11).
     DebugStepOut,
+    /// Prompt for an expression and evaluate it in the debuggee (the REPL).
+    DebugEvaluatePrompt,
     /// Toggle bold (`**`) around the selection or word (Markdown; Ctrl+B).
     ToggleBold,
     /// Toggle italic (`*`) around the selection or word (Markdown; Ctrl+I).
@@ -562,6 +564,7 @@ impl Command {
             Self::SelectPanel(SidebarPanel::SourceControl) => "View: Show Source Control",
             Self::SelectPanel(SidebarPanel::Spelling) => "View: Show Spelling",
             Self::SelectPanel(SidebarPanel::Todos) => "View: Show Todos",
+            Self::SelectPanel(SidebarPanel::Debug) => "View: Show Debug",
             Self::SpellingScan => "Spelling: Scan Workspace",
             Self::TodoScan => "Todos: Scan Workspace",
             Self::TodoToggleGrouping => "Todos: Toggle Grouping (File / Tag)",
@@ -664,6 +667,7 @@ impl Command {
             Self::DebugStepOver => "Debug: Step Over",
             Self::DebugStepIn => "Debug: Step Into",
             Self::DebugStepOut => "Debug: Step Out",
+            Self::DebugEvaluatePrompt => "Debug: Evaluate Expression",
             Self::ToggleBold => "Markdown: Toggle Bold",
             Self::ToggleItalic => "Markdown: Toggle Italic",
             Self::ToggleStrikethrough => "Markdown: Toggle Strikethrough",
@@ -831,6 +835,7 @@ impl Command {
             Self::SelectPanel(SidebarPanel::SourceControl) => "git",
             Self::SelectPanel(SidebarPanel::Spelling) => "spelling",
             Self::SelectPanel(SidebarPanel::Todos) => "todos",
+            Self::SelectPanel(SidebarPanel::Debug) => "debug",
             Self::TodoScan | Self::TodoToggleGrouping => "todos",
             Self::SpellingScan => "scan",
             Self::GoToDefinition => "definition",
@@ -1041,6 +1046,7 @@ impl Command {
             | Self::DebugStepOver
             | Self::DebugStepIn
             | Self::DebugStepOut
+            | Self::DebugEvaluatePrompt
             | Self::ToggleBold
             | Self::ToggleItalic
             | Self::ToggleStrikethrough

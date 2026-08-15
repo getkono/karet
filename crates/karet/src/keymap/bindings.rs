@@ -34,6 +34,7 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Global, true,  false, false, Char('3'), Command::SelectPanel(SidebarPanel::SourceControl)),
     b(Global, true,  false, false, Char('4'), Command::SelectPanel(SidebarPanel::Spelling)),
     b(Global, true,  false, false, Char('5'), Command::SelectPanel(SidebarPanel::Todos)),
+    b(Global, true,  false, false, Char('6'), Command::SelectPanel(SidebarPanel::Debug)),
     b(Global, false, false, false, Tab,       Command::ToggleFocus),
 
     // Tab navigation & reordering (global).

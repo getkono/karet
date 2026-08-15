@@ -124,6 +124,13 @@ impl App {
             SessionEvent::DebugBreakpoints { path, breakpoints } => {
                 self.on_debug_breakpoints(path, &breakpoints);
             },
+            SessionEvent::DebugStack { frames } => self.on_debug_stack(id, frames),
+            SessionEvent::DebugScopes { frame, scopes } => self.on_debug_scopes(id, frame, scopes),
+            SessionEvent::DebugVariables {
+                reference,
+                variables,
+            } => self.on_debug_variables(id, reference, variables),
+            SessionEvent::DebugEvaluated { result, .. } => self.on_debug_evaluated(id, result),
             SessionEvent::ManifestHints {
                 doc,
                 version,

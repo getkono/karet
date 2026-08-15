@@ -437,6 +437,7 @@ impl App {
                         self.status = Some("remote branch deletion cancelled".to_string());
                     }
                 },
+                TextPurpose::DebugEvaluate => self.debug_evaluate(text),
                 TextPurpose::ConfirmOutsideWorkspaceLink { path } => {
                     if text == "open" {
                         self.open_markdown_file_link(&path);

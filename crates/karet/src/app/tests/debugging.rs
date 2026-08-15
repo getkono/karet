@@ -148,3 +148,177 @@ fn debug_output_buffers_and_caps() {
     }
     assert_eq!(app.debug_output.len(), 500);
 }
+
+fn frame(id: i64, name: &str, line: u32) -> karet_session::DebugFrame {
+    karet_session::DebugFrame {
+        id,
+        name: name.to_owned(),
+        line,
+        column: 0,
+        path: Some(PathBuf::from("/w/main.rs")),
+    }
+}
+
+#[test]
+fn the_inspection_waterfall_is_lazy_and_stale_answers_drop() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    // A stop populates: the panel clears and the stack is requested.
+    app.on_debug_state(DebugSessionState::Stopped, "breakpoint".to_owned());
+    app.on_debug_stopped("breakpoint", Some(PathBuf::from("/w/main.rs")), Some(3));
+    let stack_id = backend
+        .sent
+        .lock()
+        .ok()
+        .and_then(|sent| {
+            sent.iter()
+                .find(|(_, c)| matches!(c, SessionCommand::DebugStackTrace))
+                .map(|(id, _)| *id)
+        })
+        .unwrap_or(RequestId(0));
+    // The stack answer auto-selects the top frame and requests its scopes.
+    app.on_debug_stack(
+        Some(stack_id),
+        vec![frame(41, "main", 3), frame(42, "callee", 9)],
+    );
+    assert_eq!(app.debug_panel.selected_frame, Some(41));
+    let scopes_id = backend
+        .sent
+        .lock()
+        .ok()
+        .and_then(|sent| {
+            sent.iter()
+                .find(|(_, c)| matches!(c, SessionCommand::DebugScopes { frame: 41 }))
+                .map(|(id, _)| *id)
+        })
+        .unwrap_or(RequestId(0));
+    // Scopes auto-expand the first cheap scope and fetch its variables.
+    app.on_debug_scopes(
+        Some(scopes_id),
+        41,
+        vec![
+            karet_session::DebugScope {
+                name: "Registers".to_owned(),
+                reference: 7,
+                expensive: true,
+            },
+            karet_session::DebugScope {
+                name: "Locals".to_owned(),
+                reference: 11,
+                expensive: false,
+            },
+        ],
+    );
+    assert!(app.debug_panel.expanded.contains(&11));
+    assert!(
+        !app.debug_panel.expanded.contains(&7),
+        "expensive stays lazy"
+    );
+    let vars_id = backend
+        .sent
+        .lock()
+        .ok()
+        .and_then(|sent| {
+            sent.iter()
+                .find(|(_, c)| matches!(c, SessionCommand::DebugVariables { reference: 11 }))
+                .map(|(id, _)| *id)
+        })
+        .unwrap_or(RequestId(0));
+    // A stale answer (not in pending) is dropped whole.
+    app.on_debug_variables(
+        Some(RequestId(9999)),
+        11,
+        vec![karet_session::DebugVariable {
+            name: "stale".to_owned(),
+            value: "x".to_owned(),
+            ty: None,
+            reference: 0,
+        }],
+    );
+    assert!(app.debug_panel.variables.is_empty());
+    app.on_debug_variables(
+        Some(vars_id),
+        11,
+        vec![karet_session::DebugVariable {
+            name: "answer".to_owned(),
+            value: "42".to_owned(),
+            ty: None,
+            reference: 0,
+        }],
+    );
+    // The tree flattens: Locals expanded shows its child row.
+    assert!(app.debug_panel.rows.iter().any(|row| matches!(
+        row,
+        crate::app::DebugRow::Variable {
+            parent: 11,
+            index: 0,
+            depth: 1
+        }
+    )));
+    // Resuming clears every per-stop artifact.
+    app.on_debug_state(DebugSessionState::Running, String::new());
+    assert!(app.debug_panel.stack.is_empty());
+    assert!(app.debug_panel.variables.is_empty());
+    assert!(app.debug_panel.pending.is_empty());
+    assert_eq!(app.debug_stopped, None);
+}
+
+#[test]
+fn evaluate_logs_the_expression_and_its_answer() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    app.debug_state = DebugSessionState::Stopped;
+    app.debug_evaluate("1 + 41".to_owned());
+    let id = backend
+        .sent
+        .lock()
+        .ok()
+        .and_then(|sent| {
+            sent.iter()
+                .find(|(_, c)| matches!(c, SessionCommand::DebugEvaluate { .. }))
+                .map(|(id, _)| *id)
+        })
+        .unwrap_or(RequestId(0));
+    app.on_debug_evaluated(Some(id), "42".to_owned());
+    assert_eq!(
+        app.debug_panel.repl,
+        vec!["› 1 + 41".to_owned(), "  = 42".to_owned()]
+    );
+    assert!(
+        app.debug_panel
+            .rows
+            .iter()
+            .any(|row| matches!(row, crate::app::DebugRow::Repl(_)))
+    );
+}
+
+#[test]
+fn rebuild_rows_sections_and_console_tail() {
+    let mut panel = crate::app::DebugPanel::default();
+    panel.rebuild_rows(0);
+    assert!(matches!(
+        panel.rows[0],
+        crate::app::DebugRow::Section("CALL STACK")
+    ));
+    assert!(
+        panel
+            .rows
+            .iter()
+            .any(|row| matches!(row, crate::app::DebugRow::Note("not stopped")))
+    );
+    // A long console shows only the tail.
+    panel.rebuild_rows(250);
+    let outputs: Vec<usize> = panel
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            crate::app::DebugRow::Output(index) => Some(*index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(outputs.len(), 100);
+    assert_eq!(outputs.first(), Some(&150));
+    assert_eq!(outputs.last(), Some(&249));
+}

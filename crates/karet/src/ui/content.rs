@@ -137,9 +137,7 @@ pub(super) fn draw_pane_content(
                 // combined only here, at render time.
                 let mut frame_decos =
                     swatches::frame_decorations(ctx, *doc, buffer, tab.editor.scroll_line, area);
-                if let Some(file_breakpoints) = ctx.breakpoints.get(path.as_path()) {
-                    frame_decos.extend(swatches::breakpoint_decorations(file_breakpoints));
-                }
+                frame_decos.extend(swatches::debug_decorations(ctx, path));
                 let combined: Vec<Decoration> = decos
                     .iter()
                     .chain(search_decos.iter())

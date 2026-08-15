@@ -66,9 +66,7 @@ pub(super) fn manifest_hint_decorations(hints: &[karet_session::ManifestHint]) -
 
 /// Gutter markers for one file's armed breakpoints (`●` verified in the
 /// breakpoint red, `○` not-yet-verified in muted).
-pub(super) fn breakpoint_decorations(
-    breakpoints: &std::collections::BTreeMap<u32, bool>,
-) -> Vec<Decoration> {
+fn breakpoint_decorations(breakpoints: &std::collections::BTreeMap<u32, bool>) -> Vec<Decoration> {
     breakpoints
         .iter()
         .map(|(&line, &verified)| Decoration {
@@ -86,6 +84,29 @@ pub(super) fn breakpoint_decorations(
             }),
         })
         .collect()
+}
+
+/// The debugger's per-file decorations: gutter breakpoint markers and the
+/// stopped-line tint.
+pub(super) fn debug_decorations(ctx: &PaneCtx, path: &std::path::Path) -> Vec<Decoration> {
+    let mut out = ctx
+        .breakpoints
+        .get(path)
+        .map(breakpoint_decorations)
+        .unwrap_or_default();
+    if let Some((stop_path, stop_line)) = ctx.debug_stopped
+        && stop_path == path
+    {
+        out.push(Decoration {
+            range: karet_core::Range {
+                start: karet_core::LineCol::new(*stop_line, 0),
+                end: karet_core::LineCol::new(*stop_line, 0),
+            },
+            kind: karet_core::DecorationKind::LineBackground,
+            role: Some(ThemeRole::DebugStoppedLine),
+        });
+    }
+    out
 }
 
 /// The per-frame decorations content assembles fresh each draw: color

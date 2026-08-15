@@ -400,6 +400,8 @@ struct PaneCtx<'a> {
     manifest_hints: &'a HashMap<DocumentId, (u64, Vec<karet_session::ManifestHint>)>,
     /// Armed breakpoints per absolute file path: line → verified.
     breakpoints: &'a HashMap<PathBuf, std::collections::BTreeMap<u32, bool>>,
+    /// The debuggee's stop location, for the stopped-line tint.
+    debug_stopped: Option<&'a (PathBuf, u32)>,
     /// Every ref per commit hash, for log-row decorations.
     ref_labels: &'a HashMap<String, Vec<karet_vcs::RefLabel>>,
 }

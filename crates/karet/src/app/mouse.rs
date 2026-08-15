@@ -423,6 +423,7 @@ impl App {
         match self.sidebar_panel {
             SidebarPanel::Spelling => self.spelling_click(col, row_y),
             SidebarPanel::Todos => self.todos_click(col, row_y),
+            SidebarPanel::Debug => self.debug_click(col, row_y),
             SidebarPanel::Explorer => {
                 if !rect_contains(self.sidebar_content_rect, (col, row_y)) {
                     return;
