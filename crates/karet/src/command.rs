@@ -242,6 +242,8 @@ pub enum Command {
     MarkdownHeadingUp,
     /// Lower the caret line's heading level (Markdown; Ctrl+Shift+[).
     MarkdownHeadingDown,
+    /// Apply every markdownlint autofix in the active Markdown document.
+    MarkdownLintFixAll,
     /// Jump to the definition of the symbol at the caret (F12).
     GoToDefinition,
     /// Return to the position a definition jump started from (Ctrl+Alt+Left).
@@ -609,6 +611,7 @@ impl Command {
             Self::MarkdownTocUpdate => "Markdown: Update Table of Contents",
             Self::MarkdownHeadingUp => "Markdown: Increase Heading Level",
             Self::MarkdownHeadingDown => "Markdown: Decrease Heading Level",
+            Self::MarkdownLintFixAll => "Markdown: Fix All Lint Issues",
             Self::GoToDefinition => "Go to Definition",
             Self::JumpBack => "Go Back",
             Self::InsertNewline => "Insert Newline",
@@ -960,6 +963,7 @@ impl Command {
             | Self::MarkdownTocUpdate
             | Self::MarkdownHeadingUp
             | Self::MarkdownHeadingDown
+            | Self::MarkdownLintFixAll
             | Self::InsertNewline
             | Self::DeleteBackward
             | Self::DeleteForward

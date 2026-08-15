@@ -3093,6 +3093,7 @@ dependencies = [
  "karet-treesitter",
  "pulldown-cmark",
  "ratatui",
+ "serde_json",
  "thiserror 2.0.19",
  "unicode-width",
 ]
@@ -3135,6 +3136,7 @@ dependencies = [
  "karet-filetype",
  "karet-github",
  "karet-lsp",
+ "karet-markdown",
  "karet-search",
  "karet-supervisor",
  "karet-syntax",

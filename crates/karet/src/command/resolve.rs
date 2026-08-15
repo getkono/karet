@@ -25,6 +25,7 @@ static PALETTE: &[Command] = &[
     Command::MarkdownTocUpdate,
     Command::MarkdownHeadingUp,
     Command::MarkdownHeadingDown,
+    Command::MarkdownLintFixAll,
     Command::GoToDefinition,
     Command::JumpBack,
     Command::ToggleInlineBlame,

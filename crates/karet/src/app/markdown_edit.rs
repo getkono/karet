@@ -299,6 +299,53 @@ impl App {
         });
     }
 
+    /// Apply every markdownlint autofix in one undoable edit, honoring the
+    /// workspace's `.markdownlint.json` when present.
+    pub(super) fn markdown_lint_fix_all(&mut self) {
+        if !self.active_is_markdown() {
+            self.status = Some("lint fixes apply to Markdown files".to_owned());
+            return;
+        }
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let TabKind::Code { buffer, .. } = &tab.kind else {
+            return;
+        };
+        let original = buffer.text();
+        let config = [".markdownlint.json", ".markdownlint.jsonc"]
+            .iter()
+            .find_map(|name| {
+                let text = std::fs::read_to_string(self.root.join(name)).ok()?;
+                karet_markdown::lint::Config::from_json(&text).ok()
+            })
+            .unwrap_or_default();
+        let issues = karet_markdown::lint::lint(&original, &config);
+        let fixable = issues.iter().filter(|i| i.fix.is_some()).count();
+        let fixed = karet_markdown::lint::apply_fixes(&original, &issues);
+        if fixable == 0 || fixed == original {
+            self.status = Some("no fixable lint issues".to_owned());
+            return;
+        }
+        let primary = tab.editor.cursor();
+        let cursors = tab.editor.cursors().clone();
+        self.submit_edit(move |caret, _selection, buffer, base| {
+            (caret == primary).then(|| editing::replace_document(buffer, fixed.clone(), base))
+        });
+        if let Some(Tab {
+            kind: TabKind::Code { buffer, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            editor.set_cursor_state(buffer, cursors);
+        }
+        self.status = Some(format!(
+            "fixed {fixable} lint issue{}",
+            if fixable == 1 { "" } else { "s" }
+        ));
+    }
+
     /// Replace the primary cursor with a `start..end` selection on `line`.
     fn select_cols(&mut self, line: u32, start: usize, end: usize) {
         if let Some(Tab {
