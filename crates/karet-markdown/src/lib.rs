@@ -17,6 +17,7 @@
 pub mod edit;
 mod parse;
 mod table;
+pub mod toc;
 mod wrap;
 
 #[cfg(feature = "highlight")]
