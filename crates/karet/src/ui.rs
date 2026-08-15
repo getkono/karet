@@ -362,6 +362,8 @@ struct PaneCtx<'a> {
     mermaid: Option<&'a [String]>,
     /// Whether to tint visible color literals with their own color.
     color_highlight: bool,
+    /// Dependency-freshness hints per open manifest.
+    manifest_hints: &'a HashMap<DocumentId, (u64, Vec<karet_session::ManifestHint>)>,
 }
 
 /// What a rendered pane reported back for hit-testing and image placement.

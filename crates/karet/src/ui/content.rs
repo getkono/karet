@@ -143,6 +143,11 @@ pub(super) fn draw_pane_content(
                 } else {
                     Vec::new()
                 };
+                let dep_hints = doc
+                    .and_then(|doc| ctx.manifest_hints.get(&doc))
+                    .filter(|(checked, _)| *checked == buffer.version())
+                    .map(|(_, hints)| swatches::manifest_hint_decorations(hints))
+                    .unwrap_or_default();
                 let combined: Vec<Decoration> = decos
                     .iter()
                     .chain(search_decos.iter())
@@ -150,6 +155,7 @@ pub(super) fn draw_pane_content(
                     .chain(ctx.blame.iter())
                     .chain(ctx.definition_underline.iter())
                     .chain(swatches.iter())
+                    .chain(dep_hints.iter())
                     .cloned()
                     .collect();
                 let diagnostics = doc

@@ -32,6 +32,8 @@ mod latex;
 pub mod local;
 mod lsp;
 mod lsp_registry;
+#[cfg(feature = "deps")]
+mod manifest_hints;
 mod search_worker;
 pub mod session;
 mod spell;
@@ -75,6 +77,8 @@ pub use api::LanguageServerPlanId;
 pub use api::LanguageServerRuntimeState;
 pub use api::LanguageServerSource;
 pub use api::LanguageServerStatus;
+pub use api::ManifestHint;
+pub use api::ManifestHintState;
 pub use api::PreparedChange;
 pub use api::PullRequestSummary;
 pub use api::RangeSpec;

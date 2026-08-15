@@ -4,6 +4,10 @@
   "description": "The full, validated karet configuration. Load it with\n[`crate::config::load`]; the sane baseline is [`Settings::default`].",
   "type": "object",
   "properties": {
+    "deps": {
+      "description": "Dependency-manifest hints (Cargo.toml freshness and advisories).",
+      "$ref": "#/$defs/Deps"
+    },
     "editor": {
       "description": "Text-editing behaviour (indentation, gutters, on-save fixups).",
       "$ref": "#/$defs/Editor"
@@ -55,7 +59,8 @@
     "git",
     "lsp",
     "markdown",
-    "wakatime"
+    "wakatime",
+    "deps"
   ],
   "$defs": {
     "AiCommit": {
@@ -191,6 +196,18 @@
             "null"
           ],
           "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "Deps": {
+      "description": "`deps.*` — dependency-manifest hints. Checking consults the crates.io\nsparse index and the OSV advisory database over the network (cached\nin-process); air-gapped setups can turn it off.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Annotate open `Cargo.toml` dependencies with their freshness and\nknown advisories.",
+          "type": "boolean",
+          "default": true
         }
       },
       "additionalProperties": false

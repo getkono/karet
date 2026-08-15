@@ -248,6 +248,12 @@ pub enum Command {
     MarkdownHeadingDown,
     /// Apply every markdownlint autofix in the active Markdown document.
     MarkdownLintFixAll,
+    /// Re-run the dependency-freshness check for the active manifest.
+    DepsRefresh,
+    /// Bump the dependency under the caret to its newest version.
+    DepsUpdate,
+    /// Bump every outdated dependency in the active manifest.
+    DepsUpdateAll,
     /// Jump to the definition of the symbol at the caret (F12).
     GoToDefinition,
     /// Return to the position a definition jump started from (Ctrl+Alt+Left).
@@ -619,6 +625,9 @@ impl Command {
             Self::MarkdownHeadingUp => "Markdown: Increase Heading Level",
             Self::MarkdownHeadingDown => "Markdown: Decrease Heading Level",
             Self::MarkdownLintFixAll => "Markdown: Fix All Lint Issues",
+            Self::DepsRefresh => "Dependencies: Re-check Versions",
+            Self::DepsUpdate => "Dependencies: Update Dependency at Caret",
+            Self::DepsUpdateAll => "Dependencies: Update All",
             Self::GoToDefinition => "Go to Definition",
             Self::JumpBack => "Go Back",
             Self::InsertNewline => "Insert Newline",
@@ -973,6 +982,9 @@ impl Command {
             | Self::MarkdownHeadingUp
             | Self::MarkdownHeadingDown
             | Self::MarkdownLintFixAll
+            | Self::DepsRefresh
+            | Self::DepsUpdate
+            | Self::DepsUpdateAll
             | Self::InsertNewline
             | Self::DeleteBackward
             | Self::DeleteForward

@@ -284,6 +284,12 @@ an external prerequisite.
 | `mermaid.enabled` | bool | `true` | Render matching code fences in the preview as Unicode diagrams (flowchart, sequence, class, ER, xychart); unsupported types show their source with a note. |
 | `mermaid.fenceLanguages` | string[] | `["mermaid"]` | Fence info strings treated as mermaid. |
 
+### `deps`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | bool | `true` | Annotate open `Cargo.toml` dependencies with freshness and known advisories (crates.io sparse index + OSV over the network, cached; turn off when air-gapped). Hover a dependency line for details; "Dependencies: Update…" commands bump versions in place. |
+
 ### `wakatime`
 
 **Off by default** — enabling it sends file names, project names, and editing

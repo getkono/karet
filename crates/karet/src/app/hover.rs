@@ -48,7 +48,8 @@ impl App {
         let empty = Vec::new();
         let diagnostics = self.docs.diagnostics.get(&pending.doc).unwrap_or(&empty);
         let at_caret = crate::hover::diagnostics_at(diagnostics, pending.at);
-        match crate::hover::hover_markup(&at_caret, hover.as_ref()) {
+        let hint = self.manifest_hint_markdown(pending.doc, pending.at.line);
+        match crate::hover::hover_markup(&at_caret, hover.as_ref(), hint.as_deref()) {
             Some(markup) => {
                 self.hover_ui = Some(HoverUi {
                     markup,

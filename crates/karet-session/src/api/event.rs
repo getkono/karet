@@ -219,6 +219,17 @@ pub enum Event {
         /// How many files the scan has visited so far.
         files_scanned: usize,
     },
+    /// The dependency-freshness hints for one open manifest (unsolicited;
+    /// re-emitted as the buffer changes, tagged with the checked version so
+    /// stale answers are droppable).
+    ManifestHints {
+        /// The manifest document.
+        doc: DocumentId,
+        /// The buffer version the check ran against.
+        version: u64,
+        /// Per-dependency hints, in line order.
+        hints: Vec<ManifestHint>,
+    },
     /// Today's WakaTime coding-time text for the status bar (unsolicited;
     /// only emitted while `wakatime.enabled` is set and a key is configured).
     WakatimeStatus {

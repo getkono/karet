@@ -135,6 +135,44 @@ pub struct TodoHit {
     pub message: String,
 }
 
+/// The freshness state of one manifest dependency (see
+/// [`Event::ManifestHints`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ManifestHintState {
+    /// The constraint already reaches the newest release.
+    UpToDate,
+    /// A patch release within the constraint exists.
+    Patch,
+    /// A newer release exists outside the constraint.
+    Outdated,
+    /// The current/locked version has known vulnerabilities.
+    Vulnerable,
+    /// The registry check failed for this dependency.
+    Error,
+}
+
+/// One dependency's freshness, positioned at its version value in the
+/// manifest text.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ManifestHint {
+    /// The package name.
+    pub name: String,
+    /// 0-based line of the version value.
+    pub line: u32,
+    /// Character column where the version value starts (no quotes).
+    pub col_start: u32,
+    /// Character column one past the version value.
+    pub col_end: u32,
+    /// The constraint exactly as written.
+    pub current: String,
+    /// The newest release, when known.
+    pub latest: Option<String>,
+    /// The classified state.
+    pub state: ManifestHintState,
+    /// Advisory ids affecting the current/locked version.
+    pub vulnerabilities: Vec<String>,
+}
+
 /// One misspelling located by a workspace spelling scan
 /// ([`Command::ScanWorkspaceSpelling`]).
 ///
@@ -524,6 +562,11 @@ pub enum Command {
         /// Keep at most this many misspellings; the scan stops once it is reached
         /// and reports `truncated`.
         limit: usize,
+    },
+    /// Re-run the dependency-freshness check for one open manifest.
+    RefreshManifestHints {
+        /// The manifest document.
+        doc: DocumentId,
     },
     /// Scan the workspace for codetag comments (`TODO`, `FIXME`, …), streaming
     /// results; cancellable through [`Command::Cancel`]. The tag vocabulary is

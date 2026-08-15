@@ -29,3 +29,41 @@ pub(super) fn color_swatch_decorations(
     }
     out
 }
+
+/// End-of-line annotations for a manifest's dependency hints. Fresh
+/// dependencies stay quiet; the rest carry a state glyph, the newest
+/// version, and an advisory count, role-colored by severity.
+pub(super) fn manifest_hint_decorations(hints: &[karet_session::ManifestHint]) -> Vec<Decoration> {
+    use karet_session::ManifestHintState;
+    hints
+        .iter()
+        .filter_map(|hint| {
+            let (glyph, role) = match hint.state {
+                ManifestHintState::UpToDate => return None,
+                ManifestHintState::Patch => ("↑", ThemeRole::DiagnosticInfo),
+                ManifestHintState::Outdated => ("↑", ThemeRole::DiagnosticWarning),
+                ManifestHintState::Vulnerable => ("✗", ThemeRole::DiagnosticError),
+                ManifestHintState::Error => ("!", ThemeRole::Muted),
+            };
+            let mut text = format!("  {glyph}");
+            if let Some(latest) = &hint.latest {
+                text.push(' ');
+                text.push_str(latest);
+            }
+            if !hint.vulnerabilities.is_empty() {
+                text.push_str(&format!("  {} advisories", hint.vulnerabilities.len()));
+            }
+            Some(Decoration {
+                range: karet_core::Range {
+                    start: karet_core::LineCol::new(hint.line, 0),
+                    end: karet_core::LineCol::new(hint.line, 0),
+                },
+                kind: karet_core::DecorationKind::InlineText {
+                    text,
+                    before: false,
+                },
+                role: Some(role),
+            })
+        })
+        .collect()
+}

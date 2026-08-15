@@ -8,6 +8,7 @@ mod change_view;
 mod commands;
 mod completion;
 mod definition;
+mod deps;
 mod diffs;
 mod editor;
 mod explorer;

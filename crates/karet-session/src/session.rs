@@ -414,6 +414,9 @@ pub struct Session {
     todo_scan_worker: std::sync::mpsc::Sender<crate::todo_scan::TodoScanJob>,
     /// The WakaTime worker, spawned on the first heartbeat while enabled.
     wakatime_worker: Option<std::sync::mpsc::Sender<crate::wakatime::Beat>>,
+    /// The manifest-hints worker, spawned on the first Cargo.toml refresh.
+    #[cfg(feature = "deps")]
+    manifest_hints_worker: Option<std::sync::mpsc::Sender<crate::manifest_hints::HintJob>>,
     /// Cancellation registry for safely-droppable background reads: repository
     /// reads, LaTeX builds, and the workspace spelling scan.
     cancellations: crate::cancellation::CancellationHub,
@@ -729,6 +732,7 @@ impl Session {
             },
             Command::ScanWorkspaceSpelling { limit } => self.scan_workspace_spelling(id, limit),
             Command::ScanWorkspaceTodos { limit } => self.scan_workspace_todos(id, limit),
+            Command::RefreshManifestHints { doc } => self.refresh_manifest_hints(doc),
             Command::SearchReplaceAll { query, replacement } => {
                 if let Some(root) = self.config.roots.first().cloned() {
                     let _ = self
