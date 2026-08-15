@@ -229,6 +229,7 @@ const SECTIONS: &[&str] = &[
     "latex",
     "git",
     "lsp",
+    "markdown",
 ];
 
 /// Load the merged, verified [`Settings`] for a workspace rooted at `roots`, plus any

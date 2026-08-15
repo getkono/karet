@@ -36,6 +36,28 @@ pub struct Settings {
     pub git: Git,
     /// Language-server integration (completions and future language features).
     pub lsp: Lsp,
+    /// Markdown-specific editing behaviour.
+    pub markdown: Markdown,
+}
+
+/// `markdown.*` — Markdown-specific editing behaviour.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct Markdown {
+    /// Continue list items on Enter: repeat the marker, advance ordered
+    /// numbering (renumbering the run), carry task checkboxes, and end the
+    /// list when Enter is pressed on an empty item.
+    pub list_continuation: bool,
+}
+
+impl Default for Markdown {
+    /// List continuation on by default.
+    fn default() -> Self {
+        Self {
+            list_continuation: true,
+        }
+    }
 }
 
 /// `editor.*` — text-editing behaviour.

@@ -24,6 +24,10 @@
       "description": "Language-server integration (completions and future language features).",
       "$ref": "#/$defs/Lsp"
     },
+    "markdown": {
+      "description": "Markdown-specific editing behaviour.",
+      "$ref": "#/$defs/Markdown"
+    },
     "search": {
       "description": "Workspace search behaviour.",
       "$ref": "#/$defs/Search"
@@ -45,7 +49,8 @@
     "spellcheck",
     "latex",
     "git",
-    "lsp"
+    "lsp",
+    "markdown"
   ],
   "$defs": {
     "AiCommit": {
@@ -755,6 +760,18 @@
           "const": "off"
         }
       ]
+    },
+    "Markdown": {
+      "description": "`markdown.*` — Markdown-specific editing behaviour.",
+      "type": "object",
+      "properties": {
+        "listContinuation": {
+          "description": "Continue list items on Enter: repeat the marker, advance ordered\nnumbering (renumbering the run), carry task checkboxes, and end the\nlist when Enter is pressed on an empty item.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
     },
     "Search": {
       "description": "`search.*` — workspace search behaviour.",
