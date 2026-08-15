@@ -20,6 +20,7 @@ mod inline_macros;
 mod input;
 mod language_servers;
 mod lifecycle;
+mod markdown_edit;
 mod mouse;
 mod notifications;
 mod panes;

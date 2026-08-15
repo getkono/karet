@@ -127,6 +127,13 @@ impl App {
             Command::OpenDiffFile => self.open_diff_file(),
             Command::TriggerCompletion => self.trigger_completion(true),
             Command::Hover => self.request_hover(),
+            Command::ToggleBold => {
+                self.toggle_markdown_surround("**", Some(Command::ToggleSidebar));
+            },
+            Command::ToggleItalic => self.toggle_markdown_surround("*", None),
+            Command::ToggleStrikethrough => self.toggle_markdown_surround("~~", None),
+            Command::ToggleInlineCode => self.toggle_markdown_surround("`", None),
+            Command::ToggleTaskCheckbox => self.toggle_task_checkbox(),
             Command::GoToDefinition => self.request_definition(),
             Command::JumpBack => self.jump_back(),
             Command::InsertChar(c) => {
@@ -139,9 +146,13 @@ impl App {
                 }
             },
             Command::InsertNewline => {
-                self.submit_edit_with_cause(EditCause::Newline, |caret, sel, buf, base| {
-                    Some(editing::newline(caret, sel, buf, base))
-                });
+                // Markdown list items continue themselves (marker, numbering,
+                // checkbox); everything else gets the ordinary auto-indent.
+                if !self.markdown_insert_newline() {
+                    self.submit_edit_with_cause(EditCause::Newline, |caret, sel, buf, base| {
+                        Some(editing::newline(caret, sel, buf, base))
+                    });
+                }
             },
             Command::DeleteBackward => {
                 self.submit_edit_with_cause(EditCause::Delete, editing::backspace)

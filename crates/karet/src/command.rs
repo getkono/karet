@@ -224,6 +224,16 @@ pub enum Command {
     TriggerCompletion,
     /// Show hover documentation and diagnostics for the caret (Ctrl+K Ctrl+I).
     Hover,
+    /// Toggle bold (`**`) around the selection or word (Markdown; Ctrl+B).
+    ToggleBold,
+    /// Toggle italic (`*`) around the selection or word (Markdown; Ctrl+I).
+    ToggleItalic,
+    /// Toggle strikethrough (`~~`) around the selection or word (Markdown; Alt+S).
+    ToggleStrikethrough,
+    /// Toggle an inline code span around the selection or word (Markdown).
+    ToggleInlineCode,
+    /// Toggle the task checkbox on the caret's line (Markdown; Alt+C).
+    ToggleTaskCheckbox,
     /// Jump to the definition of the symbol at the caret (F12).
     GoToDefinition,
     /// Return to the position a definition jump started from (Ctrl+Alt+Left).
@@ -582,6 +592,11 @@ impl Command {
             Self::InsertChar(_) => "Insert Character",
             Self::TriggerCompletion => "Trigger Suggest",
             Self::Hover => "Show Hover",
+            Self::ToggleBold => "Markdown: Toggle Bold",
+            Self::ToggleItalic => "Markdown: Toggle Italic",
+            Self::ToggleStrikethrough => "Markdown: Toggle Strikethrough",
+            Self::ToggleInlineCode => "Markdown: Toggle Code Span",
+            Self::ToggleTaskCheckbox => "Markdown: Toggle Task Checkbox",
             Self::GoToDefinition => "Go to Definition",
             Self::JumpBack => "Go Back",
             Self::InsertNewline => "Insert Newline",
@@ -924,6 +939,11 @@ impl Command {
             | Self::InsertChar(_)
             | Self::TriggerCompletion
             | Self::Hover
+            | Self::ToggleBold
+            | Self::ToggleItalic
+            | Self::ToggleStrikethrough
+            | Self::ToggleInlineCode
+            | Self::ToggleTaskCheckbox
             | Self::InsertNewline
             | Self::DeleteBackward
             | Self::DeleteForward
