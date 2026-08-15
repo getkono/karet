@@ -124,13 +124,22 @@ struct FileDocument {
     columns: usize,
 }
 
+/// Whether file `index` renders collapsed: its machine-maintained default,
+/// flipped when the user has toggled that card.
+///
+/// The renderers take the override set rather than the whole view state so they
+/// stay directly testable.
+fn card_collapsed(file: &render::FileView, index: usize, toggled_files: &BTreeSet<usize>) -> bool {
+    auto_collapse_reason(file).is_some() ^ toggled_files.contains(&index)
+}
+
 fn build_files(
     theme: &Theme,
     files: &[render::FileView],
     width: u16,
     stacked: bool,
     file_status: CommitFileStatus<'_>,
-    collapsed_files: &BTreeSet<usize>,
+    toggled_files: &BTreeSet<usize>,
 ) -> FileDocument {
     let muted = theme.style(ThemeRole::Muted);
     let label = theme.style(ThemeRole::LineNumberActive);
@@ -185,14 +194,15 @@ fn build_files(
         .max(usize::from(width));
     let mut rows = doc.prefix.len();
     for (index, file) in files.iter().enumerate() {
-        if !collapsed_files.contains(&index) {
+        let collapsed = card_collapsed(file, index, toggled_files);
+        if !collapsed {
             doc.columns = doc
                 .columns
                 .max(render::unified_max_width(file, theme).saturating_add(2));
         }
         rows = rows.saturating_add(1);
         doc.anchors.push(u16::try_from(rows).unwrap_or(u16::MAX));
-        let card_rows = if width < FILE_CARD_MIN_WIDTH || collapsed_files.contains(&index) {
+        let card_rows = if width < FILE_CARD_MIN_WIDTH || collapsed {
             1
         } else {
             render::unified_line_count(file, theme).saturating_add(2)
@@ -210,7 +220,7 @@ fn visible_file_lines(
     doc: &FileDocument,
     start: u16,
     height: u16,
-    collapsed_files: &BTreeSet<usize>,
+    toggled_files: &BTreeSet<usize>,
 ) -> Vec<Line<'static>> {
     let start = usize::from(start);
     let end = start.saturating_add(usize::from(height));
@@ -228,7 +238,7 @@ fn visible_file_lines(
             lines.push(Line::raw(""));
         }
         row = row.saturating_add(1);
-        let collapsed = collapsed_files.contains(&index);
+        let collapsed = card_collapsed(file, index, toggled_files);
         let body_rows = if width < FILE_CARD_MIN_WIDTH || collapsed {
             0
         } else {
@@ -281,7 +291,7 @@ fn draw_stacked(
         area.width,
         true,
         file_status,
-        &view.collapsed_files,
+        &view.toggled_files,
     );
     let content_width = file_doc
         .columns
@@ -316,7 +326,7 @@ fn draw_stacked(
                 theme,
                 &files[file],
                 area.width,
-                view.collapsed_files.contains(&file),
+                card_collapsed(&files[file], file, &view.toggled_files),
             ))
             .scroll((0, view.column)),
             top,
@@ -347,7 +357,7 @@ fn draw_stacked(
             &file_doc,
             files_scroll,
             remaining,
-            &view.collapsed_files,
+            &view.toggled_files,
         ));
     }
     f.render_widget(Paragraph::new(visible).scroll((0, view.column)), body);
@@ -420,7 +430,7 @@ fn draw_wide(
         diff_width,
         false,
         file_status,
-        &view.collapsed_files,
+        &view.toggled_files,
     );
     let max_column = file_doc.columns.saturating_sub(usize::from(diff_width));
     view.column = view
@@ -467,7 +477,7 @@ fn draw_wide(
                 theme,
                 &files[file],
                 diff_width,
-                view.collapsed_files.contains(&file),
+                card_collapsed(&files[file], file, &view.toggled_files),
             ))
             .scroll((0, view.column)),
             top,
@@ -490,7 +500,7 @@ fn draw_wide(
                 &file_doc,
                 local_scroll,
                 diff_body.height,
-                &view.collapsed_files,
+                &view.toggled_files,
             ))
             .scroll((0, view.column)),
             diff_body,
@@ -694,10 +704,21 @@ fn file_index_line(
     let stats_width = UnicodeWidthStr::width(stats.as_str());
     let show_stats = usize::from(width) >= 4 + stats_width + 4;
     let fixed = if show_stats { 4 + stats_width } else { 3 };
-    let path_width = usize::from(width).saturating_sub(fixed).max(1);
+
+    // Same precedence as the card header: the generated reason yields to the path.
+    let reason = auto_collapse_label(file).map(|label| format!(" {label}"));
+    let reason_width = reason.as_deref().map_or(0, UnicodeWidthStr::width);
+    let show_reason =
+        reason_width > 0 && usize::from(width) >= fixed + reason_width + REASON_MIN_PATH;
+    let reason_width = if show_reason { reason_width } else { 0 };
+
+    let path_width = usize::from(width)
+        .saturating_sub(fixed + reason_width)
+        .max(1);
     let path = truncate_start(&file.change.path.to_string_lossy(), path_width);
     let padding = if show_stats {
-        usize::from(width).saturating_sub(3 + UnicodeWidthStr::width(path.as_str()) + stats_width)
+        usize::from(width)
+            .saturating_sub(3 + UnicodeWidthStr::width(path.as_str()) + reason_width + stats_width)
     } else {
         0
     };
@@ -712,6 +733,9 @@ fn file_index_line(
             },
         ),
     ];
+    if let Some(reason) = reason.filter(|_| show_reason) {
+        spans.push(Span::styled(reason, theme.style(ThemeRole::Muted)));
+    }
     if show_stats {
         spans.push(Span::raw(" ".repeat(padding)));
         spans.push(Span::styled(format!("+{added}"), add));
@@ -757,98 +781,5 @@ fn compare_header_lines(
 }
 
 #[cfg(test)]
-mod tests {
-
-    use super::*;
-
-    fn file(path: &str, old: &str, new: &str) -> render::FileView {
-        crate::render::test_file_view(path, old, new)
-    }
-
-    #[test]
-    fn file_document_windows_match_the_complete_document() {
-        let theme = Theme::dark();
-        let files = vec![
-            file("src/a.rs", "one\ntwo\n", "one\nchanged\n"),
-            file("src/b.rs", "old\n", "new\nmore\n"),
-        ];
-        let width = 72;
-        let collapsed = BTreeSet::new();
-        let doc = build_files(
-            &theme,
-            &files,
-            width,
-            true,
-            CommitFileStatus::Ready,
-            &collapsed,
-        );
-        let mut complete = doc.prefix.clone();
-        for file in &files {
-            complete.push(Line::raw(""));
-            complete.extend(file_card(&theme, file, width));
-        }
-        assert_eq!(usize::from(doc.rows), complete.len());
-        for start in 0..complete.len() {
-            let actual = visible_file_lines(
-                &theme,
-                &files,
-                width,
-                &doc,
-                u16::try_from(start).unwrap_or(u16::MAX),
-                4,
-                &collapsed,
-            );
-            let expected = complete
-                .iter()
-                .skip(start)
-                .take(4)
-                .cloned()
-                .collect::<Vec<_>>();
-            assert_eq!(actual, expected, "window starting at row {start}");
-        }
-    }
-
-    #[test]
-    fn collapsed_file_document_keeps_only_its_disclosure_header() {
-        let theme = Theme::dark();
-        let files = vec![file("src/a.rs", "one\ntwo\n", "one\nchanged\n")];
-        let width = 72;
-        let expanded = build_files(
-            &theme,
-            &files,
-            width,
-            true,
-            CommitFileStatus::Ready,
-            &BTreeSet::new(),
-        );
-        let collapsed_files = BTreeSet::from([0]);
-        let collapsed = build_files(
-            &theme,
-            &files,
-            width,
-            true,
-            CommitFileStatus::Ready,
-            &collapsed_files,
-        );
-        assert!(collapsed.rows < expanded.rows);
-        let lines = visible_file_lines(
-            &theme,
-            &files,
-            width,
-            &collapsed,
-            collapsed.anchors[0],
-            2,
-            &collapsed_files,
-        );
-        assert_eq!(lines.len(), 1);
-        assert!(lines[0].to_string().contains("\u{25b8}"));
-    }
-
-    #[test]
-    fn collapse_hit_tracks_horizontal_scroll() {
-        let area = Rect::new(10, 4, 20, 5);
-        let hit = collapse_hit(area, 2, 6, 2);
-        assert_eq!(hit.map(|hit| hit.rect), Some(Rect::new(11, 6, 1, 1)));
-        assert!(collapse_hit(area, 2, 6, 4).is_none());
-    }
-}
+#[path = "responsive/tests.rs"]
+mod tests;

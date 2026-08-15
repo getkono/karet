@@ -92,7 +92,7 @@ fn file_header_disclosures_collapse_and_expand_cards_in_both_layouts() {
         let collapsed = screen(&mut app, width, 16);
         let (after_second, anchor) = match &app.tabs[app.active].kind {
             TabKind::Commit { view, .. } => {
-                assert!(view.collapsed_files.contains(&0));
+                assert!(view.toggled_files.contains(&0));
                 (view.file_anchors[1], view.file_anchors[0])
             },
             _ => (u16::MAX, 0),
@@ -124,7 +124,7 @@ fn file_header_disclosures_collapse_and_expand_cards_in_both_layouts() {
         assert!(matches!(
             &app.tabs[app.active].kind,
             TabKind::Commit { view, .. }
-                if !view.collapsed_files.contains(&0) && view.scroll == anchor
+                if !view.toggled_files.contains(&0) && view.scroll == anchor
         ));
     }
 }
