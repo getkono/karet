@@ -285,6 +285,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn workspace_todo_scan_streams_codetag_hits() {
+        use crate::api::Event;
+        use crate::session::Session;
+        use crate::session::SessionConfig;
+
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        if std::fs::write(
+            dir.path().join("main.rs"),
+            "// TODO: ship it\nfn main() {}\n",
+        )
+        .is_err()
+        {
+            return;
+        }
+
+        let config = SessionConfig {
+            roots: vec![dir.path().to_path_buf()],
+            ..SessionConfig::default()
+        };
+        let (session, mut events, _snaps) = Session::new(config);
+        let backend = local_session(session, None);
+        let id = backend.next_id();
+        assert!(
+            backend
+                .send(id, Command::ScanWorkspaceTodos { limit: 100 })
+                .is_ok()
+        );
+        let (mut tags, mut finished) = (Vec::new(), false);
+        let _ = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some((event_id, event)) = events.recv().await {
+                if event_id != Some(id) {
+                    continue;
+                }
+                match event {
+                    Event::TodoScanProgress { hits, .. } => {
+                        tags.extend(hits.into_iter().map(|h| (h.tag, h.message)));
+                    },
+                    Event::TodoScanFinished { .. } => {
+                        finished = true;
+                        break;
+                    },
+                    _ => {},
+                }
+            }
+        })
+        .await;
+        assert!(finished, "the scan reports completion");
+        assert!(
+            tags.contains(&("TODO".to_owned(), "ship it".to_owned())),
+            "found: {tags:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn local_backend_reports_an_exact_nested_repository_status() {
         use crate::api::Event;
         use crate::session::Session;

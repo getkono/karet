@@ -219,6 +219,23 @@ pub enum Event {
         /// How many files the scan has visited so far.
         files_scanned: usize,
     },
+    /// A batch of workspace codetag-scan results (see
+    /// [`Command::ScanWorkspaceTodos`]); `files_scanned` is cumulative.
+    TodoScanProgress {
+        /// The codetags found since the previous batch.
+        hits: Vec<TodoHit>,
+        /// How many files the scan has visited so far.
+        files_scanned: usize,
+    },
+    /// The workspace codetag scan ended (complete, truncated, or cancelled).
+    TodoScanFinished {
+        /// Total files visited.
+        files_scanned: usize,
+        /// Whether the hit limit cut the scan short.
+        truncated: bool,
+        /// Whether [`Command::Cancel`] stopped it.
+        cancelled: bool,
+    },
     /// One open document's complete spelling layer, emitted whenever it changes.
     ///
     /// Unsolicited: it carries no request id, because it describes the document
