@@ -47,6 +47,7 @@ impl Matcher {
     /// Unicode normalization. Items that do not match are dropped. An empty
     /// pattern keeps every item, unscored, in input order — the "just opened,
     /// nothing typed yet" state of a picker or completion popup.
+    #[must_use]
     pub fn rank<'a, T: AsRef<str>>(&mut self, pattern: &str, items: &'a [T]) -> Vec<Scored<'a, T>> {
         if pattern.is_empty() {
             return items
@@ -87,6 +88,7 @@ impl Matcher {
     /// matches, best first (ties keep input order). The index-preserving twin of
     /// [`rank`](Self::rank), for consumers that key rows by position (pickers).
     /// An empty pattern keeps every index in input order.
+    #[must_use]
     pub fn rank_indices<T: AsRef<str>>(&mut self, pattern: &str, items: &[T]) -> Vec<usize> {
         if pattern.is_empty() {
             return (0..items.len()).collect();
