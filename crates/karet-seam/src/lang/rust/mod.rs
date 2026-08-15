@@ -16,6 +16,7 @@ use karet_treesitter::LanguageId;
 use karet_treesitter::WalkNode;
 use karet_treesitter::language_id_from_injection_name;
 
+use super::Attribute;
 use super::Classified;
 use super::FacetContext;
 use super::SeamLanguage;
@@ -144,6 +145,42 @@ impl SeamLanguage for Rust {
                 | "enum_item"
                 | "union_item"
         )
+    }
+
+    fn type_parameters(&self, node: &WalkNode<'_>, text: &str) -> Vec<String> {
+        type_parameter_names(node, text)
+    }
+
+    fn decoration(&self, node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Option<Attribute> {
+        if node.kind() != "attribute_item" {
+            return None;
+        }
+        let attribute = node.children().find(|child| child.kind() == "attribute")?;
+        let mut name = attribute
+            .children()
+            .find(|child| matches!(child.kind(), "identifier" | "scoped_identifier"))
+            .and_then(|child| child.text(ctx.text))?
+            .to_owned();
+        let mut arguments = attribute
+            .child_text("arguments", ctx.text)
+            .or_else(|| attribute.child_text("value", ctx.text))
+            .map(|raw| raw.trim_matches(['(', ')', ' ']).to_owned());
+
+        // The edition-2024 `#[unsafe(no_mangle)]` wrapper is unwrapped to the attribute
+        // it carries, so callers match on `no_mangle` whichever spelling was used.
+        if name == "unsafe"
+            && let Some(inner) = arguments.clone()
+        {
+            let (head, rest) = split_attribute(&inner);
+            name = head;
+            arguments = rest;
+        }
+
+        Some(Attribute {
+            name,
+            arguments,
+            range: ctx.range(node.span()),
+        })
     }
 
     fn external_module(&self, node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Option<String> {
@@ -345,6 +382,21 @@ pub(crate) fn type_parameter_names(node: &WalkNode<'_>, text: &str) -> Vec<Strin
                 .map(str::to_owned)
         })
         .collect()
+}
+
+/// Split `no_mangle` / `link_name = "x"` / `link(name = "z")` into name and arguments.
+fn split_attribute(text: &str) -> (String, Option<String>) {
+    let trimmed = text.trim();
+    if let Some((head, rest)) = trimmed.split_once('(') {
+        return (
+            head.trim().to_owned(),
+            Some(rest.trim_end_matches(')').trim().to_owned()),
+        );
+    }
+    if let Some((head, rest)) = trimmed.split_once('=') {
+        return (head.trim().to_owned(), Some(rest.trim().to_owned()));
+    }
+    (trimmed.to_owned(), None)
 }
 
 /// Whether a node carries a modifier token such as `unsafe`, `async`, or `const`.

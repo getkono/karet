@@ -68,6 +68,7 @@ pub use id::SeamPath;
 pub use id::SeamPathError;
 pub use id::SeamSegment;
 pub use index::SeamIndex;
+pub use lang::Attribute;
 pub use lang::Classified;
 pub use lang::FacetContext;
 pub use lang::SeamLanguage;

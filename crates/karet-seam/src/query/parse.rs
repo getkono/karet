@@ -275,18 +275,30 @@ fn edit_distance(a: &str, b: &str) -> usize {
     previous.last().copied().unwrap_or(0)
 }
 
-/// Every facet subtype a registered language can emit, for `<lens>:<subtype>` suggestions.
+/// One language's subtypes for a lens.
+#[allow(dead_code, reason = "unused when no language feature is enabled")]
+fn subtypes_of(language: &dyn SeamLanguage, lens: Lens) -> Vec<String> {
+    language
+        .subtypes()
+        .iter()
+        .filter(|(l, _)| *l == lens)
+        .map(|(_, subtype)| subtype.name().to_owned())
+        .collect()
+}
+
+/// Every facet subtype *any* registered language can emit, for `<lens>:<subtype>`
+/// suggestions and validation.
+///
+/// Unioned across languages, not taken from one: a Python `substitution:protocol` is as
+/// valid a term as a Rust `substitution:dyn`, and validating against Rust alone would
+/// reject the other language's own vocabulary.
 #[must_use]
 pub fn known_subtypes(lens: Lens) -> Vec<String> {
     let mut out = Vec::new();
     #[cfg(feature = "lang-rust")]
-    out.extend(
-        crate::lang::rust::Rust
-            .subtypes()
-            .iter()
-            .filter(|(l, _)| *l == lens)
-            .map(|(_, subtype)| subtype.name().to_owned()),
-    );
+    out.extend(subtypes_of(&crate::lang::rust::Rust, lens));
+    #[cfg(feature = "lang-python")]
+    out.extend(subtypes_of(&crate::lang::python::Python, lens));
     let _ = lens;
     out.sort();
     out.dedup();

@@ -158,26 +158,20 @@ impl Extractor<'_> {
             self.stack.pop();
         }
 
-        if node.kind() == "attribute_item" {
-            if let Some(attribute) = self.parse_attribute(node) {
-                self.pending.push((depth, attribute));
-            }
+        // A decoration is read by the language, since only it knows what one looks
+        // like, and queued for the sibling it decorates.
+        let bare = self.context(&[]);
+        if let Some(attribute) = self.mapping.decoration(node, &bare) {
+            self.pending.push((depth, attribute));
             // Parsed whole; its internals are not entities.
             return WalkControl::SkipSubtree;
         }
 
-        // Attributes bind to the immediately following sibling. Take them for this node,
+        // Decorations bind to the immediately following sibling. Take them for this node,
         // whatever it turns out to be — leaving them queued would let a `#[cfg]` on a
         // discarded construct leak onto the next real declaration.
         let attributes = self.take_pending(depth);
-
-        let ctx = FacetContext {
-            text: self.text,
-            lines: self.lines,
-            attributes: &attributes,
-            container: self.stack.last().map(|f| f.kind),
-            type_parameters: self.stack.last().map_or(&[][..], |f| &f.type_parameters),
-        };
+        let ctx = self.context(&attributes);
 
         match self.mapping.classify(node, &ctx) {
             Some(classified) => {
@@ -203,6 +197,17 @@ impl Extractor<'_> {
             },
         }
         WalkControl::Descend
+    }
+
+    /// Build the context a language sees, over the given decorations.
+    fn context<'a>(&'a self, attributes: &'a [Attribute]) -> FacetContext<'a> {
+        FacetContext {
+            text: self.text,
+            lines: self.lines,
+            attributes,
+            container: self.stack.last().map(|f| f.kind),
+            type_parameters: self.stack.last().map_or(&[][..], |f| &f.type_parameters),
+        }
     }
 
     /// Take every pending attribute queued at `depth`.
@@ -234,7 +239,7 @@ impl Extractor<'_> {
         let segment = self.next_segment(parent_id, classified.segment.clone());
         let path = parent_path.child(segment);
         let id = self.index.intern(path.clone());
-        let type_parameters = super::lang::rust::type_parameter_names(node, self.text);
+        let type_parameters = self.mapping.type_parameters(node, self.text);
 
         let name = classified.name.clone();
         self.index.insert(Node {
@@ -325,69 +330,5 @@ impl Extractor<'_> {
                 None => node.facets.push(facet),
             }
         }
-    }
-
-    /// Read one `#[…]` attribute into its name and raw arguments.
-    ///
-    /// The edition-2024 `#[unsafe(no_mangle)]` wrapper is unwrapped to the attribute it
-    /// carries, so callers match on `no_mangle` regardless of which spelling was used.
-    fn parse_attribute(&self, node: &WalkNode<'_>) -> Option<Attribute> {
-        let attribute = node.children().find(|child| child.kind() == "attribute")?;
-        let mut name = attribute
-            .children()
-            .find(|child| matches!(child.kind(), "identifier" | "scoped_identifier"))
-            .and_then(|child| child.text(self.text))?
-            .to_owned();
-        let mut arguments = attribute
-            .child_text("arguments", self.text)
-            .or_else(|| attribute.child_text("value", self.text))
-            .map(|raw| raw.trim_matches(['(', ')', ' ']).to_owned());
-
-        if name == "unsafe"
-            && let Some(inner) = arguments.clone()
-        {
-            let (head, rest) = split_attribute(&inner);
-            name = head;
-            arguments = rest;
-        }
-
-        Some(Attribute {
-            name,
-            arguments,
-            range: self.lines.range(self.text, node.span()),
-        })
-    }
-}
-
-/// Split `no_mangle` / `link_name = "x"` / `link(name = "z")` into name and arguments.
-fn split_attribute(text: &str) -> (String, Option<String>) {
-    let trimmed = text.trim();
-    if let Some((head, rest)) = trimmed.split_once('(') {
-        return (
-            head.trim().to_owned(),
-            Some(rest.trim_end_matches(')').trim().to_owned()),
-        );
-    }
-    if let Some((head, rest)) = trimmed.split_once('=') {
-        return (head.trim().to_owned(), Some(rest.trim().to_owned()));
-    }
-    (trimmed.to_owned(), None)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn splits_the_three_attribute_shapes() {
-        assert_eq!(split_attribute("no_mangle"), ("no_mangle".to_owned(), None));
-        assert_eq!(
-            split_attribute("link_name = \"c_fn\""),
-            ("link_name".to_owned(), Some("\"c_fn\"".to_owned()))
-        );
-        assert_eq!(
-            split_attribute("link(name = \"z\")"),
-            ("link".to_owned(), Some("name = \"z\"".to_owned()))
-        );
     }
 }

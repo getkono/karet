@@ -22,6 +22,7 @@ use crate::model::NodeKind;
 use crate::model::Visibility;
 use crate::text::LineIndex;
 
+pub mod python;
 pub mod rust;
 
 /// What a language made of one syntax node.
@@ -134,6 +135,26 @@ pub trait SeamLanguage {
     /// A Rust `declaration_list` is a body, not a scope; the `mod_item` around it is.
     fn is_container(&self, node: &WalkNode<'_>) -> bool;
 
+    /// Read this node as a decoration applying to the sibling that follows it.
+    ///
+    /// Rust's `#[cfg(unix)]` and Python's `@decorator` are both decorations written
+    /// before what they decorate, and in both grammars they parse as a *sibling* of it —
+    /// Python's wrapping `decorated_definition` node holds the decorator and the
+    /// definition side by side. So one pairing rule serves both, and the only
+    /// language-specific part is reading the decoration itself, which is this.
+    fn decoration(&self, node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Option<Attribute> {
+        let _ = (node, ctx);
+        None
+    }
+
+    /// The type parameter names this node declares, for blanket-implementation detection.
+    ///
+    /// A language without generics leaves this empty and nothing downstream notices.
+    fn type_parameters(&self, node: &WalkNode<'_>, text: &str) -> Vec<String> {
+        let _ = (node, text);
+        Vec::new()
+    }
+
     /// The name of a module whose body lives in *another file*, when this node declares one.
     ///
     /// Rust's `mod net;` is the case: a containment edge that crosses a file boundary and
@@ -162,6 +183,12 @@ pub fn for_language(language: LanguageId) -> Option<&'static dyn SeamLanguage> {
         && rust == language
     {
         return Some(rust::mapping());
+    }
+    #[cfg(feature = "lang-python")]
+    if let Some(python) = python::language_id()
+        && python == language
+    {
+        return Some(python::mapping());
     }
     let _ = language;
     None

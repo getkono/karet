@@ -533,6 +533,21 @@ fn every_subtype_the_mapping_emits_is_declared() {
 }
 
 #[test]
+fn attribute_arguments_split_across_all_three_written_shapes() {
+    use crate::lang::SeamLanguage;
+    let Some(index) = index(
+        "#[no_mangle]\npub fn a() {}\n#[link_name = \"c\"]\npub fn b() {}\n#[link(name = \"z\")]\npub fn c() {}",
+    ) else {
+        return;
+    };
+    // Bare, `= value`, and `(args)` all have to reach the boundary lens intact.
+    assert!(subtypes(&index, "pkg::a", Lens::Boundary).contains(&"no-mangle".to_owned()));
+    assert!(subtypes(&index, "pkg::b", Lens::Boundary).contains(&"link-name".to_owned()));
+    assert!(subtypes(&index, "pkg::c", Lens::Boundary).contains(&"link".to_owned()));
+    let _ = super::Rust.subtypes();
+}
+
+#[test]
 fn the_mapping_declares_what_its_semantic_tier_can_resolve() {
     use crate::lang::SeamLanguage;
     let capabilities = super::Rust.semantic_capabilities();
