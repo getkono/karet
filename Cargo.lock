@@ -3111,6 +3111,7 @@ version = "0.5.0"
 dependencies = [
  "dependable-core",
  "karet-core",
+ "karet-fuzzy",
  "karet-treesitter",
  "serde",
  "tempfile",

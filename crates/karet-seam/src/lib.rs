@@ -46,6 +46,7 @@ pub mod lang;
 pub mod model;
 pub mod modules;
 pub mod package;
+pub mod query;
 pub mod rollup;
 pub mod text;
 
@@ -86,5 +87,10 @@ pub use package::IndexOptions;
 pub use package::PackageError;
 pub use package::index_package;
 pub use package::reindex_file;
+pub use query::Query;
+pub use query::QueryError;
+pub use query::QueryResult;
+pub use query::Term;
+pub use query::TermKind;
 pub use rollup::Rollups;
 pub use text::LineIndex;

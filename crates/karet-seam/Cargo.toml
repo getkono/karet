@@ -33,6 +33,7 @@ lang-python = ["karet-treesitter/lang-python"]
 
 [dependencies]
 karet-core.workspace       = true
+karet-fuzzy.workspace      = true
 karet-treesitter.workspace = true
 # Manifest reading. Already a workspace dependency, and the crate that owns Cargo
 # manifest parsing — so the package name comes from there rather than a second parser.
