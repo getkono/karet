@@ -33,7 +33,9 @@ pub use inline_macro::InlineMacroEngine;
 pub use inline_macro::InlineMacroExpansion;
 pub use inline_macro::InlineMacroTrigger;
 pub use outline::OutlineExtractor;
+pub use semantic::CodetagHit;
 pub use semantic::SemanticCommentConfig;
+pub use semantic::find_codetags;
 pub use semantic::mark_semantic_comments;
 
 /// Errors produced by syntactic analysis.
