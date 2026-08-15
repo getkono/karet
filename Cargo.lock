@@ -3293,6 +3293,7 @@ name = "karet-session"
 version = "0.5.0"
 dependencies = [
  "aicommit-core",
+ "base64",
  "blameline",
  "command-group",
  "dependable-core",
@@ -3318,6 +3319,7 @@ dependencies = [
  "lzma-rust2",
  "reqwest",
  "schemars",
+ "secrecy",
  "serde",
  "serde_json",
  "sha2 0.10.9",

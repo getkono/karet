@@ -72,6 +72,7 @@ impl App {
             search: SearchPanel::default(),
             spelling: SpellingPanel::default(),
             todos: TodosPanel::default(),
+            wakatime_status: None,
             todos_ui: TodosChrome::default(),
             status: None,
             notifications: NotificationCenter::default(),
