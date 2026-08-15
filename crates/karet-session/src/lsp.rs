@@ -15,6 +15,7 @@
 
 mod connector;
 mod inventory;
+mod jdtls;
 mod lifecycle;
 mod provider;
 mod runtime;
@@ -168,6 +169,16 @@ pub(crate) enum ServerCmd {
 
 /// A result flowing from a server task back to the session actor.
 pub(crate) enum LspUpdate {
+    /// A server-pushed status line (jdtls `language/status`-style), for the
+    /// status bar while a heavyweight server imports/indexes.
+    ServerStatus {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// The language the server serves.
+        server: String,
+        /// The human-readable status message.
+        message: String,
+    },
     /// Completion items answering a [`ServerCmd::Completion`] (ranges still in
     /// UTF-16 columns; the session converts them against the buffer).
     Completions {
@@ -251,6 +262,14 @@ pub(crate) enum LspUpdate {
         /// The executable that failed to start.
         command: String,
     },
+    /// A launch preflight failed with a specific diagnosis (reported once per
+    /// generation); the server is not spawned.
+    PreflightFailed {
+        /// The manager generation the preflight ran under.
+        generation: u64,
+        /// The human-readable diagnosis (what is missing and how to fix it).
+        message: String,
+    },
     /// A running server's connection closed (reported once per language).
     ServerDied {
         /// The manager generation that spawned the server task.
@@ -283,6 +302,10 @@ pub(crate) struct LspManager {
     registry_root: Option<PathBuf>,
     servers: HashMap<String, ServerSlot>,
     missing_reported: HashSet<LanguageServerId>,
+    /// The cached jdtls JDK preflight: `None` until first checked, then the
+    /// diagnosis (`None` = a usable JDK was found). Reset on reconfigure so a
+    /// settings reload re-probes a fixed PATH.
+    jdtls_preflight: Option<Option<String>>,
     updates: mpsc::UnboundedSender<LspUpdate>,
     connector: Connector,
     runtime_states:
@@ -314,6 +337,7 @@ impl LspManager {
                 registry_root: registry_root.clone(),
                 servers: HashMap::new(),
                 missing_reported: HashSet::new(),
+                jdtls_preflight: None,
                 updates,
                 connector: spawn_connector(supervisor, registry_root),
                 runtime_states: HashMap::new(),
@@ -338,6 +362,7 @@ impl LspManager {
         self.generation = self.generation.wrapping_add(1);
         self.servers.clear();
         self.runtime_states.clear();
+        self.jdtls_preflight = None;
         true
     }
 
@@ -352,7 +377,9 @@ impl LspManager {
             | LspUpdate::WorkspaceEdit { generation, .. }
             | LspUpdate::Formatting { generation, .. }
             | LspUpdate::Diagnostics { generation, .. }
+            | LspUpdate::ServerStatus { generation, .. }
             | LspUpdate::SpawnFailed { generation, .. }
+            | LspUpdate::PreflightFailed { generation, .. }
             | LspUpdate::ServerDied { generation, .. }
             | LspUpdate::InstallRequired { generation, .. }
             | LspUpdate::RuntimeState { generation, .. } => *generation,
@@ -443,7 +470,7 @@ impl LspManager {
         }
         let language = language_key(language)?;
         let root = nearest_repository_root(path, self.root.as_deref());
-        let (spec, provider) = match self.spec_for(&language, &root) {
+        let (mut spec, provider) = match self.spec_for(&language, &root) {
             Some(spec) => spec,
             None => {
                 if let Some(provider) = builtin_server(&language)
@@ -457,6 +484,9 @@ impl LspManager {
                 return None;
             },
         };
+        if !self.jdtls_launch_gate(&mut spec, &root) {
+            return None;
+        }
         // Built-in JavaScript and TypeScript share one provider process. Custom
         // entries remain language-keyed because independent config entries may
         // intentionally name different executables.

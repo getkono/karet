@@ -187,6 +187,19 @@ impl Session {
                     },
                 );
             },
+            LspUpdate::ServerStatus {
+                server, message, ..
+            } => {
+                // The transient status line is the right surface: it clears on
+                // the next keystroke and never queues like a notification.
+                self.emit(
+                    None,
+                    Event::Progress {
+                        message: format!("{server}: {message}"),
+                        percent: None,
+                    },
+                );
+            },
             LspUpdate::Diagnostics {
                 server,
                 path,
@@ -262,6 +275,14 @@ impl Session {
                     },
                 );
             },
+            LspUpdate::PreflightFailed { message, .. } => self.emit(
+                None,
+                Event::Notification {
+                    severity: Severity::Warning,
+                    kind: NotificationKind::Lsp,
+                    message,
+                },
+            ),
             LspUpdate::InstallRequired { server, .. } => {
                 match self.config.settings.lsp.managed_downloads {
                     crate::config::schema::ManagedDownloads::Prompt => {

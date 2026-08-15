@@ -306,6 +306,20 @@ fn test_connector(
                             )
                             .await;
                         },
+                        Some("textDocument/didOpen") => {
+                            let uri = msg["params"]["textDocument"]["uri"]
+                                .as_str()
+                                .unwrap_or_default();
+                            if uri.ends_with("Status.java") {
+                                write_msg(
+                                    &mut server_write,
+                                    &json!({"jsonrpc": "2.0", "method": "language/status",
+                                        "params": {"type": "Starting",
+                                            "message": "37% Importing projects"}}),
+                                )
+                                .await;
+                            }
+                        },
                         Some("shutdown") => {
                             write_msg(
                                 &mut server_write,
@@ -808,3 +822,4 @@ async fn crashed_server_restarts_and_replays_open_documents() -> TestResult {
 }
 
 mod inventory_tests;
+mod jdtls_tests;
