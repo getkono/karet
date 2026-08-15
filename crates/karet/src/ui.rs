@@ -261,6 +261,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // The hover popup floats the same way (they never overlap in practice —
     // one follows typing, the other an explicit keystroke).
     draw_hover(f, app, &theme);
+    draw_diagnostic_view(f, app, &theme, area);
 
     if let Some(overlay) = &app.overlay {
         draw_overlay(f, overlay, &theme, area);
@@ -300,6 +301,39 @@ fn draw_operation_blocker(f: &mut Frame, blocker: &OperationBlocker, theme: &The
         Line::raw(format!("Waiting up to {remaining}s · Esc cancels quit")),
     ];
     f.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), inner);
+}
+
+/// Draw the scrollable diagnostic detail view (Ctrl+K Ctrl+M): a centered
+/// modal rendering the composed markdown through `MarkdownView`, so fenced
+/// TypeScript types come out highlighted and long errors scroll.
+fn draw_diagnostic_view(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+    let Some(view) = app.diagnostic_view.as_mut() else {
+        return;
+    };
+    let width = area.width.saturating_sub(8).clamp(24, 100);
+    let height = area.height.saturating_sub(4).clamp(5, 28);
+    let rect = centered(area, width, height);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Diagnostics · ↑↓ scroll · Esc closes")
+        .border_style(theme.style(ThemeRole::LineNumberActive))
+        .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui()));
+    let inner = block.inner(rect);
+    f.render_widget(Clear, rect);
+    f.render_widget(block, rect);
+    if view.wrapped.as_ref().map(|(w, _)| *w) != Some(inner.width) {
+        let doc = karet_markdown::parse(&view.markdown);
+        view.wrapped = Some((inner.width, doc.wrap(inner.width)));
+    }
+    let Some((_, wrapped)) = view.wrapped.as_ref() else {
+        return;
+    };
+    let mut state = MarkdownViewState {
+        scroll: view.scroll,
+    };
+    f.render_stateful_widget(MarkdownView::new(wrapped, theme), inner, &mut state);
+    // The widget clamps the scroll to the document; keep the clamped value.
+    view.scroll = state.scroll;
 }
 
 /// Draw the centered go-to-commit (revision) input prompt.

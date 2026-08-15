@@ -228,6 +228,9 @@ pub enum Command {
     TriggerCompletion,
     /// Show hover documentation and diagnostics for the caret (Ctrl+K Ctrl+I).
     Hover,
+    /// Open the diagnostics under the caret in a scrollable detail view
+    /// (Ctrl+K Ctrl+M) — the surface for long, formatted errors.
+    ShowDiagnostic,
     /// Toggle bold (`**`) around the selection or word (Markdown; Ctrl+B).
     ToggleBold,
     /// Toggle italic (`*`) around the selection or word (Markdown; Ctrl+I).
@@ -639,6 +642,7 @@ impl Command {
             Self::InsertChar(_) => "Insert Character",
             Self::TriggerCompletion => "Trigger Suggest",
             Self::Hover => "Show Hover",
+            Self::ShowDiagnostic => "Show Diagnostic Detail",
             Self::ToggleBold => "Markdown: Toggle Bold",
             Self::ToggleItalic => "Markdown: Toggle Italic",
             Self::ToggleStrikethrough => "Markdown: Toggle Strikethrough",
@@ -1008,6 +1012,7 @@ impl Command {
             | Self::InsertChar(_)
             | Self::TriggerCompletion
             | Self::Hover
+            | Self::ShowDiagnostic
             | Self::ToggleBold
             | Self::ToggleItalic
             | Self::ToggleStrikethrough

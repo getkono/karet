@@ -510,6 +510,8 @@ pub struct App {
     pub(crate) pending_hover: Option<crate::hover::PendingHover>,
     /// The open hover popup, if any.
     pub(crate) hover_ui: Option<crate::hover::HoverUi>,
+    /// The open scrollable diagnostic detail view, if any.
+    pub(crate) diagnostic_view: Option<crate::hover::DiagnosticView>,
     /// Parser-backed resolver for the seeded inline-macro catalog.
     inline_macro_engine: karet_syntax::InlineMacroEngine,
     /// In-flight commit-detail requests, mapping request id → where its result goes

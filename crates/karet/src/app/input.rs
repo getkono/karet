@@ -69,6 +69,10 @@ impl App {
             }
             return;
         }
+        if self.diagnostic_view.is_some() {
+            self.diagnostic_view_key(key);
+            return;
+        }
         if self.input_context().modal.is_none() && self.github_key(key) {
             return;
         }

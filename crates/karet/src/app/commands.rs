@@ -134,6 +134,7 @@ impl App {
             Command::OpenDiffFile => self.open_diff_file(),
             Command::TriggerCompletion => self.trigger_completion(true),
             Command::Hover => self.request_hover(),
+            Command::ShowDiagnostic => self.show_diagnostic(),
             Command::ToggleBold => {
                 self.toggle_markdown_surround("**", Some(Command::ToggleSidebar));
             },

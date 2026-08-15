@@ -207,6 +207,9 @@ pub(super) static BINDINGS: &[Binding] = &[
     // diagnostics under the caret.
     seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('i'))], Command::Hover),
 
+    // The scrollable diagnostic detail view, for errors too long for a popup.
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('m'))], Command::ShowDiagnostic),
+
     // Markdown formatting (markdown-all-in-one parity). On a non-Markdown tab
     // Ctrl+B falls through to the sidebar toggle, mirroring how VS Code scopes
     // the extension's chord to markdown documents.

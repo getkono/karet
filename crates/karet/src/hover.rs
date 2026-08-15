@@ -41,6 +41,19 @@ pub(crate) struct HoverUi {
     pub at: LineCol,
 }
 
+/// The open scrollable diagnostic detail view (Ctrl+K Ctrl+M): the modal
+/// surface for errors too long for the anchored hover popup. The markdown is
+/// wrapped lazily at draw time and cached per width.
+#[derive(Debug, Default)]
+pub(crate) struct DiagnosticView {
+    /// The composed markdown document.
+    pub markdown: String,
+    /// The wrap cache: `(width, wrapped)` for the width last drawn at.
+    pub wrapped: Option<(u16, karet_markdown::WrappedDocument)>,
+    /// The scroll offset, clamped by the view widget on every draw.
+    pub scroll: u16,
+}
+
 /// The diagnostics whose range covers `at` (end-exclusive columns, matching
 /// the editor's underline extent).
 pub(crate) fn diagnostics_at(diagnostics: &[Diagnostic], at: LineCol) -> Vec<&Diagnostic> {
@@ -89,6 +102,7 @@ pub(crate) fn hover_markup(
     diagnostics: &[&Diagnostic],
     hover: Option<&Hover>,
     extra: Option<&str>,
+    pretty: bool,
 ) -> Option<Markup> {
     if diagnostics.is_empty() && extra.is_none() {
         return hover.map(|h| h.contents.clone());
@@ -104,7 +118,7 @@ pub(crate) fn hover_markup(
         value.push_str("**");
         value.push_str(severity_label(d.severity));
         value.push_str("** ");
-        value.push_str(&d.message);
+        value.push_str(&display_message(d, pretty));
         let origin = match (&d.source, &d.code) {
             (Some(source), Some(code)) => Some(format!("{source} {code}")),
             (Some(source), None) => Some(source.clone()),
@@ -132,6 +146,43 @@ pub(crate) fn hover_markup(
         kind: MarkupKind::Markdown,
         value,
     })
+}
+
+/// The message text a surface should render: the formatter's markdown when
+/// pretty rendering is on and a formatter claims the diagnostic, else the raw
+/// message.
+fn display_message(d: &Diagnostic, pretty: bool) -> std::borrow::Cow<'_, str> {
+    if pretty && let Some(formatted) = karet_session::ts_errors::format_diagnostic(d) {
+        return std::borrow::Cow::Owned(formatted.markdown);
+    }
+    std::borrow::Cow::Borrowed(&d.message)
+}
+
+/// Compose the standalone markdown document for the diagnostic detail view:
+/// each diagnostic as a `**severity** _(origin)_` heading paragraph followed
+/// by its (optionally formatted) message.
+pub(crate) fn diagnostic_document(diagnostics: &[&Diagnostic], pretty: bool) -> String {
+    let mut value = String::new();
+    for d in diagnostics {
+        if !value.is_empty() {
+            value.push_str("\n\n---\n\n");
+        }
+        value.push_str("**");
+        value.push_str(severity_label(d.severity));
+        value.push_str("**");
+        let origin = match (&d.source, &d.code) {
+            (Some(source), Some(code)) => Some(format!("{source} {code}")),
+            (Some(source), None) => Some(source.clone()),
+            (None, Some(code)) => Some(code.clone()),
+            (None, None) => None,
+        };
+        if let Some(origin) = origin {
+            value.push_str(&format!(" _({origin})_"));
+        }
+        value.push_str("\n\n");
+        value.push_str(&display_message(d, pretty));
+    }
+    value
 }
 
 #[cfg(test)]
@@ -186,7 +237,7 @@ mod tests {
     #[test]
     fn bare_hover_passes_through_with_its_own_kind() {
         let h = hover(MarkupKind::PlainText, "just text");
-        let markup = hover_markup(&[], Some(&h), None).unwrap_or(Markup {
+        let markup = hover_markup(&[], Some(&h), None, false).unwrap_or(Markup {
             kind: MarkupKind::Markdown,
             value: String::new(),
         });
@@ -196,7 +247,7 @@ mod tests {
 
     #[test]
     fn nothing_at_all_yields_none() {
-        assert!(hover_markup(&[], None, None).is_none());
+        assert!(hover_markup(&[], None, None, false).is_none());
     }
 
     #[test]
@@ -204,7 +255,7 @@ mod tests {
         let diags = [diag((0, 0), (0, 4), Severity::Error, "mismatched types")];
         let refs: Vec<&Diagnostic> = diags.iter().collect();
         let h = hover(MarkupKind::Markdown, "## fn main");
-        let markup = hover_markup(&refs, Some(&h), None).unwrap_or(Markup {
+        let markup = hover_markup(&refs, Some(&h), None, false).unwrap_or(Markup {
             kind: MarkupKind::PlainText,
             value: String::new(),
         });
@@ -219,7 +270,7 @@ mod tests {
         let diags = [diag((0, 0), (0, 4), Severity::Hint, "unused")];
         let refs: Vec<&Diagnostic> = diags.iter().collect();
         let h = hover(MarkupKind::PlainText, "*not markdown*");
-        let markup = hover_markup(&refs, Some(&h), None).unwrap_or(Markup {
+        let markup = hover_markup(&refs, Some(&h), None, false).unwrap_or(Markup {
             kind: MarkupKind::PlainText,
             value: String::new(),
         });
@@ -229,8 +280,8 @@ mod tests {
     #[test]
     fn an_extra_section_leads_and_composes_with_the_hover() {
         let h = hover(MarkupKind::Markdown, "docs");
-        let markup =
-            hover_markup(&[], Some(&h), Some("**serde** `1.0` — up to date")).unwrap_or(Markup {
+        let markup = hover_markup(&[], Some(&h), Some("**serde** `1.0` — up to date"), false)
+            .unwrap_or(Markup {
                 kind: MarkupKind::PlainText,
                 value: String::new(),
             });
@@ -240,10 +291,47 @@ mod tests {
     }
 
     #[test]
+    fn pretty_rendering_reformats_typescript_messages() {
+        let mut d = diag(
+            (0, 0),
+            (0, 4),
+            Severity::Error,
+            "Type 'string' is not assignable to type 'number'.",
+        );
+        d.source = Some("typescript".to_owned());
+        let refs = [&d];
+        let markup = hover_markup(&refs, None, None, true).unwrap_or(Markup {
+            kind: MarkupKind::PlainText,
+            value: String::new(),
+        });
+        assert!(
+            markup
+                .value
+                .contains("`string` is not assignable to type `number`"),
+            "{}",
+            markup.value
+        );
+        let raw = hover_markup(&refs, None, None, false).unwrap_or(Markup {
+            kind: MarkupKind::PlainText,
+            value: String::new(),
+        });
+        assert!(raw.value.contains("'string'"), "{}", raw.value);
+    }
+
+    #[test]
+    fn diagnostic_document_labels_and_separates() {
+        let a = diag((0, 0), (0, 4), Severity::Error, "first");
+        let b = diag((0, 0), (0, 4), Severity::Warning, "second");
+        let doc = diagnostic_document(&[&a, &b], false);
+        assert!(doc.starts_with("**error** _(test-lsp)_\n\nfirst"), "{doc}");
+        assert!(doc.contains("\n\n---\n\n**warning**"), "{doc}");
+    }
+
+    #[test]
     fn diagnostics_alone_still_open_the_popup() {
         let diags = [diag((0, 0), (0, 4), Severity::Warning, "shadowed")];
         let refs: Vec<&Diagnostic> = diags.iter().collect();
-        let markup = hover_markup(&refs, None, None).unwrap_or(Markup {
+        let markup = hover_markup(&refs, None, None, false).unwrap_or(Markup {
             kind: MarkupKind::PlainText,
             value: String::new(),
         });
