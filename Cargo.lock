@@ -3438,6 +3438,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "karet-notebook"
+version = "0.5.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "karet-pdf"
 version = "0.5.0"
 dependencies = [
@@ -3472,12 +3481,14 @@ dependencies = [
  "jsonc-parser",
  "karet-cbor",
  "karet-core",
+ "karet-dap",
  "karet-diff",
  "karet-docx",
  "karet-filetype",
  "karet-github",
  "karet-lsp",
  "karet-markdown",
+ "karet-notebook",
  "karet-search",
  "karet-supervisor",
  "karet-syntax",

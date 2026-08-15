@@ -1,0 +1,22 @@
+[package]
+name        = "karet-notebook"
+description = "Jupyter notebook support for karet TUI editors: parse `.ipynb` (nbformat 4) into a neutral model, round-trip it, and convert it to markdown for display."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+publish = false                       # karet-internal — not published to crates.io
+
+[dependencies]
+serde.workspace = true                # nbformat is JSON; the model round-trips through serde
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

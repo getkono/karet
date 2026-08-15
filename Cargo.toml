@@ -45,6 +45,7 @@ karet-markdown   = { path = "crates/karet-markdown" }
 karet-cbor       = { path = "crates/karet-cbor" }
 karet-docx       = { path = "crates/karet-docx" }
 karet-lsp        = { path = "crates/karet-lsp", version = "0.5.0" }
+karet-notebook   = { path = "crates/karet-notebook" }
 karet-dap        = { path = "crates/karet-dap" }
 karet-vcs        = { path = "crates/karet-vcs", version = "0.5.0" }
 karet-search     = { path = "crates/karet-search", version = "0.5.0" }
