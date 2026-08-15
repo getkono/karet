@@ -80,6 +80,9 @@ tracing-appender = "0.2.3"
 serde     = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha2       = "0.10.9"
+hmac       = "0.12.1"                  # jupyter wire signing (with the sha2 pin)
+zeromq     = { version = "0.6.0", default-features = false, features = ["tokio-runtime", "tcp-transport"] }  # pure-Rust ZMTP sockets (jupyter wire)
+jupyter-protocol = "2.0.0"
 flate2     = "1.1.9"
 lzma-rust2 = { version = "0.18.0", default-features = false, features = ["std", "xz"] }
 tar        = "0.4.44"

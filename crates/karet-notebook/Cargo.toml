@@ -13,10 +13,32 @@ keywords.workspace     = true
 categories.workspace   = true
 publish = false                       # karet-internal — not published to crates.io
 
+[features]
+default = []
+# Kernel lifecycle: discover kernelspecs, spawn-and-drive a kernel over the
+# Jupyter wire protocol (pure-Rust ZMTP; hmac-sha256 signing).
+kernel = [
+  "dep:zeromq",
+  "dep:jupyter-protocol",
+  "dep:bytes",
+  "dep:hmac",
+  "dep:sha2",
+  "dep:tokio",
+]
+
 [dependencies]
 serde.workspace = true                # nbformat is JSON; the model round-trips through serde
 serde_json.workspace = true
 thiserror.workspace = true
+zeromq = { workspace = true, optional = true }            # pure-Rust ZMTP sockets
+jupyter-protocol = { workspace = true, optional = true }  # wire message/type vocabulary
+bytes = { workspace = true, optional = true }             # the wire frame type
+hmac = { workspace = true, optional = true }              # message signing…
+sha2 = { workspace = true, optional = true }              # …with sha256 (workspace pin)
+tokio = { workspace = true, optional = true, features = ["rt", "sync", "macros", "time", "net"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "sync", "macros", "time", "net", "test-util"] }
 
 [lints]
 workspace = true
