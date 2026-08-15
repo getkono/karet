@@ -276,6 +276,11 @@
           "$ref": "#/$defs/LineNumbers",
           "default": "on"
         },
+        "prettyErrors": {
+          "description": "Re-render TypeScript diagnostics as markdown (quoted types lifted into\nhighlighted code blocks) wherever rich rendering is available.",
+          "type": "boolean",
+          "default": true
+        },
         "rulers": {
           "description": "Columns to draw vertical rulers at (empty = none).",
           "type": "array",
