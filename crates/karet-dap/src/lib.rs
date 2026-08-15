@@ -156,19 +156,26 @@ impl DapClient {
     }
 
     fn spawn_stdio(spec: &DapSpec) -> Result<Self, DapError> {
-        let mut child = tokio::process::Command::new(&spec.command)
-            .args(&spec.args)
+        let mut command = tokio::process::Command::new(&spec.command);
+        command.args(&spec.args);
+        Self::spawn_command(command)
+    }
+
+    /// Launch a *prepared* command (e.g. one wrapped by a process supervisor)
+    /// whose child speaks DAP on stdin/stdout.
+    ///
+    /// # Errors
+    /// Returns [`DapError::Launch`] if the process cannot start.
+    pub fn spawn_command(mut command: tokio::process::Command) -> Result<Self, DapError> {
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| DapError::Launch(format!("{}: {e}", spec.command)))?;
+            .map_err(|e| DapError::Launch(e.to_string()))?;
         let (Some(stdout), Some(stdin)) = (child.stdout.take(), child.stdin.take()) else {
-            return Err(DapError::Launch(format!(
-                "{}: no piped standard I/O",
-                spec.command
-            )));
+            return Err(DapError::Launch("no piped standard I/O".to_owned()));
         };
         Ok(Self {
             conn: conn::Connection::start(stdout, stdin),
@@ -177,21 +184,22 @@ impl DapClient {
         })
     }
 
-    async fn spawn_then_tcp(spec: &DapSpec) -> Result<Self, DapError> {
-        let port = free_port().map_err(|e| DapError::Launch(format!("no free port: {e}")))?;
-        let args: Vec<String> = spec
-            .args
-            .iter()
-            .map(|arg| arg.replace("${port}", &port.to_string()))
-            .collect();
-        let child = tokio::process::Command::new(&spec.command)
-            .args(&args)
+    /// Launch a prepared command whose child listens on `port` (already
+    /// substituted into its arguments — see [`substitute_port`]), then
+    /// connect with retries while it boots.
+    ///
+    /// # Errors
+    /// Returns [`DapError::Launch`] if the process cannot start or its socket
+    /// never accepts.
+    pub async fn spawn_command_tcp(
+        mut command: tokio::process::Command,
+        port: u16,
+    ) -> Result<Self, DapError> {
+        let child = command
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| DapError::Launch(format!("{}: {e}", spec.command)))?;
+            .map_err(|e| DapError::Launch(e.to_string()))?;
         let stream = connect_with_retries(port).await?;
         let (read, write) = stream.into_split();
         Ok(Self {
@@ -199,6 +207,16 @@ impl DapClient {
             capabilities: Capabilities::default(),
             _child: Some(child),
         })
+    }
+
+    async fn spawn_then_tcp(spec: &DapSpec) -> Result<Self, DapError> {
+        let port = free_port().map_err(|e| DapError::Launch(format!("no free port: {e}")))?;
+        let mut command = tokio::process::Command::new(&spec.command);
+        command
+            .args(substitute_port(&spec.args, port))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        Self::spawn_command_tcp(command, port).await
     }
 
     /// Perform the `initialize` handshake, storing and returning the
@@ -574,9 +592,20 @@ fn zero_based(value: Option<&Value>) -> u32 {
         .unwrap_or(0)
 }
 
+/// Replace every `${port}` occurrence in `args` (see [`DapTransport::Tcp`]).
+#[must_use]
+pub fn substitute_port(args: &[String], port: u16) -> Vec<String> {
+    args.iter()
+        .map(|arg| arg.replace("${port}", &port.to_string()))
+        .collect()
+}
+
 /// A free loopback port, chosen by binding port 0 and dropping the listener
 /// (the standard race-tolerant approach; the adapter binds it right after).
-fn free_port() -> std::io::Result<u16> {
+///
+/// # Errors
+/// Propagates the bind failure (exotic: no loopback at all).
+pub fn free_port() -> std::io::Result<u16> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
     Ok(listener.local_addr()?.port())
 }
