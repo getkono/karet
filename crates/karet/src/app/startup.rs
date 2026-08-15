@@ -140,6 +140,9 @@ impl App {
             pending_commit_verification: HashMap::new(),
             pending_merge_conflicts: HashMap::new(),
             graph_log_req: None,
+            seam_index_req: None,
+            seam_query_req: None,
+            seam_node_req: None,
             cancelled_requests: HashSet::new(),
             open_docs: HashSet::new(),
             next_view: 1,
@@ -395,6 +398,7 @@ impl App {
             Some(TabKind::Github(_)) => EditorTab::Github,
             Some(TabKind::LanguageServers(_)) => EditorTab::LanguageServers,
             Some(TabKind::CommitGraph { .. }) => EditorTab::CommitGraph,
+            Some(TabKind::Seam(_)) => EditorTab::Seam,
             Some(TabKind::Placeholder {
                 kind: FileKind::TooLarge { .. },
                 ..

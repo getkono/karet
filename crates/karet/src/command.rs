@@ -423,6 +423,46 @@ pub enum Command {
     DiscardSwaps,
     /// Open the workspace package-dependency graph visualization.
     ShowDependencyGraph,
+    /// Open the full-screen Seam view for the workspace package.
+    ShowSeamView,
+    /// Choose which configuration the Seam view reads the package under.
+    SeamConfiguration,
+    /// Copy the selected seam node's identity, which is its citation form.
+    SeamCopyIdentity,
+    /// Copy the query this Seam view is equivalent to.
+    SeamCopyQuery,
+    /// Move the Seam selection down within its column.
+    SeamNextRow,
+    /// Move the Seam selection up within its column.
+    SeamPrevRow,
+    /// Move Seam focus one column deeper.
+    SeamNextColumn,
+    /// Move Seam focus one column back.
+    SeamPrevColumn,
+    /// Reroot the Seam view at the selection, or follow the selected edge.
+    SeamEnter,
+    /// Step back out of the most recent Seam narrowing.
+    SeamWiden,
+    /// Open the selected seam node's source in an editor tab.
+    SeamOpenSource,
+    /// Move focus between the Seam spine and its facet pane.
+    SeamToggleFocus,
+    /// Focus the Seam query box.
+    SeamFocusQuery,
+    /// Leave the Seam query box, or clear the query when already outside it.
+    SeamEscape,
+    /// Toggle the first Seam lens (api).
+    SeamLens1,
+    /// Toggle the second Seam lens (substitution).
+    SeamLens2,
+    /// Toggle the third Seam lens (variation).
+    SeamLens3,
+    /// Toggle the fourth Seam lens (boundary).
+    SeamLens4,
+    /// Toggle the fifth Seam lens (hazard).
+    SeamLens5,
+    /// Clear every Seam lens filter.
+    SeamClearLenses,
     /// Open the full-screen commit graph browser.
     ShowCommitGraph,
     /// Move the commit graph browser's selection to the next (older) commit.
@@ -675,6 +715,28 @@ impl Command {
             Self::RecoverSwaps => "Recover Unsaved Changes",
             Self::DiscardSwaps => "Discard Unsaved Backups",
             Self::ShowDependencyGraph => "Visualize: Dependency Graph",
+            // Key-driven navigation inside the view; deliberately absent from the
+            // palette, but still named so nothing renders as a blank entry.
+            Self::SeamNextRow => "Seam: Next Row",
+            Self::SeamPrevRow => "Seam: Previous Row",
+            Self::SeamNextColumn => "Seam: Next Column",
+            Self::SeamPrevColumn => "Seam: Previous Column",
+            Self::SeamEnter => "Seam: Reroot or Follow",
+            Self::SeamWiden => "Seam: Widen",
+            Self::SeamOpenSource => "Seam: Open Source",
+            Self::SeamToggleFocus => "Seam: Toggle Facet Pane",
+            Self::SeamFocusQuery => "Seam: Filter",
+            Self::SeamEscape => "Seam: Clear Filter",
+            Self::SeamLens1 => "Seam: Toggle API Lens",
+            Self::SeamLens2 => "Seam: Toggle Substitution Lens",
+            Self::SeamLens3 => "Seam: Toggle Variation Lens",
+            Self::SeamLens4 => "Seam: Toggle Boundary Lens",
+            Self::SeamLens5 => "Seam: Toggle Hazard Lens",
+            Self::SeamClearLenses => "Seam: Clear Lenses",
+            Self::ShowSeamView => "Seam: Open Seam View",
+            Self::SeamConfiguration => "Seam: Set Configuration",
+            Self::SeamCopyIdentity => "Seam: Copy Node Identity",
+            Self::SeamCopyQuery => "Seam: Copy Query",
             Self::ShowCommitGraph => "Source Control: Commit Graph",
             Self::CommitGraphNext => "Commit Graph: Next Commit",
             Self::CommitGraphPrev => "Commit Graph: Previous Commit",
@@ -711,6 +773,28 @@ impl Command {
     #[must_use]
     pub fn hint_verb(self) -> Option<&'static str> {
         Some(match self {
+            // Seam view. Motion within it is self-evident; the operations that
+            // change what is shown are the ones worth advertising.
+            Self::SeamNextRow
+            | Self::SeamPrevRow
+            | Self::SeamNextColumn
+            | Self::SeamPrevColumn
+            | Self::SeamToggleFocus => return None,
+            Self::SeamEnter => "reroot",
+            Self::SeamWiden => "widen",
+            Self::SeamOpenSource => "open source",
+            Self::SeamFocusQuery => "filter",
+            Self::SeamEscape => "clear",
+            Self::SeamLens1
+            | Self::SeamLens2
+            | Self::SeamLens3
+            | Self::SeamLens4
+            | Self::SeamLens5 => "lens",
+            Self::SeamClearLenses => "all lenses",
+            Self::ShowSeamView => "seams",
+            Self::SeamConfiguration => "config",
+            Self::SeamCopyIdentity => "copy id",
+            Self::SeamCopyQuery => "copy query",
             // Global.
             Self::Quit => "quit",
             Self::ToggleSidebar => "sidebar",

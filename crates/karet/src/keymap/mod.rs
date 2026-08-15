@@ -117,6 +117,7 @@ use Layer::Overlay;
 use Layer::Oversize;
 use Layer::Pager;
 use Layer::RevInput;
+use Layer::Seam;
 use Layer::SearchInput;
 use Layer::SearchList;
 use Layer::Sidebar;

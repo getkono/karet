@@ -1,0 +1,285 @@
+//! Render tests: what the view actually puts on screen.
+//!
+//! Rendering is the product here, so these assert on cells rather than on state. The
+//! states worth pinning are the ones that are easy to render *almost* right — a
+//! configuration that goes unnamed, an empty view that does not say why it is empty,
+//! a glyph with no legend to decode it.
+
+use karet_core::Range;
+use karet_filetype::IconStyle;
+use karet_session::api::SeamFacetView;
+use karet_session::api::SeamNodeView;
+use karet_session::api::SeamSummary;
+use karet_theme::Theme;
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
+
+use super::*;
+use crate::app::seam::SeamViewState;
+
+/// A node with the given facets and rollups.
+fn node(id: &str, parent: Option<&str>, children: &[&str], rollups: [u32; 5]) -> SeamNodeView {
+    SeamNodeView {
+        id: id.to_owned(),
+        name: id.rsplit("::").next().unwrap_or(id).to_owned(),
+        kind: "module".to_owned(),
+        detail: None,
+        file: std::path::PathBuf::from("src/lib.rs"),
+        range: Range::default(),
+        selection: Range::default(),
+        parent: parent.map(str::to_owned),
+        children: children.iter().map(|c| (*c).to_owned()).collect(),
+        facets: Vec::new(),
+        rollups,
+        visibility: Some("public".to_owned()),
+        membership: "active".to_owned(),
+        provisional: false,
+    }
+}
+
+fn facet(lens: &str, subtype: &str) -> SeamFacetView {
+    SeamFacetView {
+        lens: lens.to_owned(),
+        subtype: subtype.to_owned(),
+        detail: None,
+        sites: Vec::new(),
+        effective: None,
+    }
+}
+
+fn summary() -> SeamSummary {
+    SeamSummary {
+        package: "demo".to_owned(),
+        nodes: 3,
+        files: 1,
+        configuration: "default @ x86_64-linux".to_owned(),
+        available_configurations: vec!["default @ x86_64-linux".to_owned()],
+        variation_complete: true,
+        truncated_after: None,
+        unresolved_modules: Vec::new(),
+    }
+}
+
+/// A small ready view.
+fn view() -> SeamViewState {
+    let mut state = SeamViewState::pending(std::path::PathBuf::from("/tmp/demo"));
+    let mut danger = node("demo::danger", Some("demo"), &[], [1, 0, 0, 0, 1]);
+    danger.facets = vec![facet("api", "pub"), facet("hazard", "unsafe")];
+    danger.kind = "function".to_owned();
+    state.adopt(
+        summary(),
+        vec![
+            node(
+                "demo",
+                None,
+                &["demo::danger", "demo::quiet"],
+                [2, 0, 0, 0, 1],
+            ),
+            danger,
+            node("demo::quiet", Some("demo"), &[], [1, 0, 0, 0, 0]),
+        ],
+    );
+    state
+}
+
+/// Render into a buffer of the given size.
+fn render(state: &mut SeamViewState, width: u16, height: u16) -> Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(width, height));
+    let Ok(terminal) = terminal.as_mut() else {
+        return Buffer::empty(ratatui::layout::Rect::new(0, 0, width, height));
+    };
+    let theme = Theme::dark();
+    let _ = terminal.draw(|f| {
+        draw_seam(f, &theme, f.area(), state, IconStyle::Ascii);
+    });
+    terminal.backend().buffer().clone()
+}
+
+/// The whole buffer as text, one line per row.
+fn text(buf: &Buffer) -> String {
+    let area = buf.area;
+    (area.top()..area.bottom())
+        .map(|y| {
+            (area.left()..area.right())
+                .map(|x| {
+                    buf.cell((x, y))
+                        .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn the_header_always_names_the_configuration() {
+    let mut state = view();
+    let rendered = text(&render(&mut state, 120, 20));
+    // Nothing renders unattributed: a view that does not say which build it is showing
+    // is answering a question the reader did not ask.
+    assert!(rendered.contains("config:"), "{rendered}");
+    assert!(rendered.contains("default"), "{rendered}");
+    assert!(rendered.contains("demo"), "{rendered}");
+}
+
+#[test]
+fn an_incomplete_variation_lens_says_so_in_the_header() {
+    let mut state = view();
+    state.summary.variation_complete = false;
+    let rendered = text(&render(&mut state, 120, 20));
+    assert!(rendered.contains("variation incomplete"), "{rendered}");
+}
+
+#[test]
+fn a_truncated_index_never_looks_complete() {
+    let mut state = view();
+    state.summary.truncated_after = Some(20_000);
+    let rendered = text(&render(&mut state, 120, 20));
+    assert!(rendered.contains("truncated"), "{rendered}");
+}
+
+#[test]
+fn unresolved_modules_are_reported_rather_than_omitted_silently() {
+    let mut state = view();
+    state.summary.unresolved_modules = vec![("demo::absent".to_owned(), Vec::new())];
+    let rendered = text(&render(&mut state, 120, 20));
+    assert!(rendered.contains("unresolved"), "{rendered}");
+}
+
+#[test]
+fn the_legend_is_always_on_screen() {
+    let mut state = view();
+    let rendered = text(&render(&mut state, 140, 20));
+    // A glyph nobody can decode is decoration; the legend is not behind a keypress.
+    for label in ["api", "sub", "var", "bnd", "haz"] {
+        assert!(rendered.contains(label), "missing {label} in:\n{rendered}");
+    }
+}
+
+#[test]
+fn the_spine_lists_the_package_and_its_children() {
+    let mut state = view();
+    state.move_row(0);
+    let rendered = text(&render(&mut state, 120, 20));
+    assert!(rendered.contains("demo"), "{rendered}");
+    assert!(rendered.contains("danger"), "{rendered}");
+    assert!(rendered.contains("quiet"), "{rendered}");
+}
+
+#[test]
+fn a_narrow_terminal_falls_back_to_an_indented_tree() {
+    let mut state = view();
+    state.move_row(0);
+    // Two readable columns need roughly 37 cells; below that the shape changes rather
+    // than the content being crushed.
+    assert!(wide_enough(50), "50 cells carries two columns comfortably");
+    assert!(!wide_enough(30));
+    let rendered = text(&render(&mut state, 30, 20));
+    assert!(rendered.contains("danger"), "{rendered}");
+    assert!(rendered.contains("quiet"), "{rendered}");
+}
+
+#[test]
+fn the_facet_pane_spells_out_every_lens_including_the_empty_ones() {
+    let mut state = view();
+    state.select_path("demo::danger");
+    let rendered = text(&render(&mut state, 120, 24));
+    // A glyph must never be the only place a fact appears.
+    assert!(rendered.contains("hazard"), "{rendered}");
+    assert!(rendered.contains("unsafe"), "{rendered}");
+    // And an absent lens says so, rather than being left off the list.
+    assert!(rendered.contains("boundary"), "{rendered}");
+    assert!(
+        rendered.contains('—'),
+        "an empty lens must read as absent:\n{rendered}"
+    );
+}
+
+#[test]
+fn unresolved_edges_read_as_unresolved_not_as_none() {
+    let mut state = view();
+    state.select_path("demo::danger");
+    let rendered = text(&render(&mut state, 120, 24));
+    // With no semantic tier nothing has looked, so claiming "none" would assert an
+    // absence the index has not established.
+    assert!(rendered.contains("not resolved"), "{rendered}");
+}
+
+#[test]
+fn each_empty_state_says_which_one_it_is() {
+    // Indexing.
+    let mut loading = SeamViewState::pending(std::path::PathBuf::from("/tmp/demo"));
+    let rendered = text(&render(&mut loading, 100, 12));
+    // Before the reveal delay nothing is claimed at all, so a fast index never flashes.
+    assert!(!rendered.contains("no seams"), "{rendered}");
+
+    // A package that could not be indexed.
+    let mut failed = SeamViewState::pending(std::path::PathBuf::from("/tmp/demo"));
+    failed.fail("no Cargo.toml".to_owned());
+    let rendered = text(&render(&mut failed, 100, 12));
+    assert!(rendered.contains("could not be indexed"), "{rendered}");
+    assert!(rendered.contains("no Cargo.toml"), "{rendered}");
+
+    // A package with genuinely nothing in it.
+    let mut empty = SeamViewState::pending(std::path::PathBuf::from("/tmp/demo"));
+    empty.adopt(summary(), Vec::new());
+    let rendered = text(&render(&mut empty, 100, 12));
+    assert!(rendered.contains("no seams"), "{rendered}");
+
+    // Filtered to nothing, which is a different fact again.
+    let mut filtered = view();
+    filtered.query_matches = Some(std::collections::HashSet::new());
+    filtered.lens_filter = crate::app::seam::LensFilter::Hide;
+    let rendered = text(&render(&mut filtered, 100, 12));
+    assert!(
+        rendered.contains("matches the current filters"),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn a_query_error_is_shown_with_its_suggestions() {
+    let mut state = view();
+    state.query = "lens:hazrd".to_owned();
+    state.query_error = Some(karet_session::api::SeamQueryError {
+        message: "unknown lens `hazrd`".to_owned(),
+        start: 0,
+        end: 10,
+        suggestions: vec!["hazard".to_owned()],
+    });
+    let rendered = text(&render(&mut state, 120, 20));
+    assert!(rendered.contains("unknown lens"), "{rendered}");
+    assert!(rendered.contains("did you mean"), "{rendered}");
+    assert!(rendered.contains("hazard"), "{rendered}");
+}
+
+#[test]
+fn the_reversal_path_is_visible_once_narrowed() {
+    let mut state = view();
+    state.select_path("demo");
+    state.reroot();
+    let rendered = text(&render(&mut state, 120, 20));
+    // Reversible is not enough — the way back has to be on screen.
+    assert!(rendered.contains("widen"), "{rendered}");
+}
+
+#[test]
+fn rendering_into_a_tiny_area_does_not_panic() {
+    let mut state = view();
+    let _ = render(&mut state, 4, 2);
+    let _ = render(&mut state, 1, 1);
+    let _ = render(&mut state, 20, 3);
+}
+
+#[test]
+fn lens_glyphs_are_distinct_in_the_ascii_tier() {
+    let glyphs: Vec<char> = LENS_NAMES
+        .iter()
+        .map(|lens| lens_glyph(lens, IconStyle::Ascii))
+        .collect();
+    let mut unique = glyphs.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), glyphs.len(), "{glyphs:?}");
+}

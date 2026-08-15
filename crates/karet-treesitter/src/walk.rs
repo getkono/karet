@@ -15,7 +15,7 @@
 //! # use karet_treesitter::{ParserPool, SyntaxTree, WalkControl, language_id_from_path};
 //! # use std::path::Path;
 //! # fn demo(pool: &mut ParserPool, text: &str) -> Result<(), karet_treesitter::TsError> {
-//! # let lang = language_id_from_path(Path::new("x.rs"));
+//! # let Some(lang) = language_id_from_path(Path::new("x.rs")) else { return Ok(()) };
 //! let tree = SyntaxTree::parse(pool, lang, text)?;
 //! let mut functions = Vec::new();
 //! tree.walk(|node| {

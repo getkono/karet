@@ -24,6 +24,10 @@
       "description": "Language-server integration (completions and future language features).",
       "$ref": "#/$defs/Lsp"
     },
+    "seam": {
+      "description": "The Seam view.",
+      "$ref": "#/$defs/Seam"
+    },
     "search": {
       "description": "Workspace search behaviour.",
       "$ref": "#/$defs/Search"
@@ -42,6 +46,7 @@
     "files",
     "workbench",
     "search",
+    "seam",
     "spellcheck",
     "latex",
     "git",
@@ -734,6 +739,91 @@
           "description": "Never discover or download managed language servers.",
           "type": "string",
           "const": "off"
+        }
+      ]
+    },
+    "Seam": {
+      "description": "`seam.*` — the Seam view.",
+      "type": "object",
+      "properties": {
+        "defaultConfiguration": {
+          "description": "The configuration to read the package under when the view opens.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "defaultLenses": {
+          "description": "Lenses to enable when the view opens.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "hideInactive": {
+          "description": "Whether nodes excluded by the active configuration are hidden rather than dimmed.\n\nOff by default: a package is a family of trees, and hiding the branches this\nbuild excludes makes the one on screen look like the whole of it.",
+          "type": "boolean",
+          "default": false
+        },
+        "indexOnStartup": {
+          "description": "Index the workspace package as soon as the session starts.\n\nOff by default so startup is never delayed by a parse of every file; the index\nbegins when the view is first opened.",
+          "type": "boolean",
+          "default": false
+        },
+        "lensFilter": {
+          "description": "Whether a lens filter dims non-matching rows or removes them.\n\nDemoting keeps the tree's shape stable as filters change, so the reader never\nloses their place to a row that vanished.",
+          "$ref": "#/$defs/SeamLensFilter",
+          "default": "demote"
+        },
+        "maxIndexedFiles": {
+          "description": "Stop indexing after this many files, marking the index truncated.",
+          "type": "integer",
+          "format": "uint",
+          "default": 20000,
+          "minimum": 0
+        },
+        "spine": {
+          "description": "How the containment tree is rendered.",
+          "$ref": "#/$defs/SeamSpine",
+          "default": "auto"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SeamLensFilter": {
+      "description": "How the Seam view's lens filter treats rows that do not match.",
+      "oneOf": [
+        {
+          "description": "Dim them, keeping the tree's shape stable as filters change.",
+          "type": "string",
+          "const": "demote"
+        },
+        {
+          "description": "Remove them.",
+          "type": "string",
+          "const": "hide"
+        }
+      ]
+    },
+    "SeamSpine": {
+      "description": "How the Seam view renders its containment tree.",
+      "oneOf": [
+        {
+          "description": "Cascading columns when the terminal is wide enough, an indented tree below that.",
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "description": "Always cascade, however narrow the terminal.",
+          "type": "string",
+          "const": "columns"
+        },
+        {
+          "description": "Always use the indented tree.",
+          "type": "string",
+          "const": "tree"
         }
       ]
     },

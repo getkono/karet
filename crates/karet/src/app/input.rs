@@ -167,12 +167,23 @@ impl App {
             Resolved::None => {
                 let mid_sequence = self.pending.len() > 1;
                 self.pending.clear();
+                let plain = !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
+                // The Seam view's query box takes raw characters, which its own layer
+                // cannot express — every printable key would need a binding.
+                if !mid_sequence && plain && self.seam_query_focused() {
+                    match key.code {
+                        KeyCode::Char(c) => self.seam_query_char(c),
+                        KeyCode::Backspace => self.seam_query_backspace(),
+                        _ => {},
+                    }
+                    return;
+                }
                 if !mid_sequence
                     && self.focus == Focus::Editor
                     && self.active_code_doc().is_some()
-                    && !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+                    && plain
                     && let KeyCode::Char(c) = key.code
                 {
                     self.dispatch(Command::InsertChar(c));

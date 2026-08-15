@@ -23,6 +23,9 @@ pub use load::ConfigLayerStatus;
 pub use load::LoadedConfig;
 pub use load::load;
 pub use load::load_report;
+pub use schema::Seam;
+pub use schema::SeamLensFilter;
+pub use schema::SeamSpine;
 pub use schema::Settings;
 
 /// Errors while updating a user-owned JSONC setting.
