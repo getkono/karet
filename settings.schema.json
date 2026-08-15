@@ -4,6 +4,10 @@
   "description": "The full, validated karet configuration. Load it with\n[`crate::config::load`]; the sane baseline is [`Settings::default`].",
   "type": "object",
   "properties": {
+    "debug": {
+      "description": "Debugger integration (adapters and launch configurations).",
+      "$ref": "#/$defs/Debugger"
+    },
     "deps": {
       "description": "Dependency-manifest hints (Cargo.toml freshness and advisories).",
       "$ref": "#/$defs/Deps"
@@ -65,7 +69,8 @@
     "markdown",
     "wakatime",
     "deps",
-    "toml"
+    "toml",
+    "debug"
   ],
   "$defs": {
     "AiCommit": {
@@ -201,6 +206,95 @@
             "null"
           ],
           "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "DebugAdapter": {
+      "description": "One `debug.adapters` entry: how to launch a debug adapter.",
+      "type": "object",
+      "properties": {
+        "args": {
+          "description": "Command-line arguments; under the `tcp` transport, `${port}` is\nreplaced with the chosen port.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "command": {
+          "description": "The adapter executable, looked up on `PATH` (or an absolute path).",
+          "type": "string",
+          "default": ""
+        },
+        "transport": {
+          "description": "How the adapter exposes its protocol endpoint.",
+          "$ref": "#/$defs/DebugTransport",
+          "default": "stdio"
+        }
+      },
+      "additionalProperties": false
+    },
+    "DebugConfiguration": {
+      "description": "One `debug.configurations` entry.",
+      "type": "object",
+      "properties": {
+        "adapter": {
+          "description": "The adapter to use: a `debug.adapters` key or a built-in fallback name.",
+          "type": "string",
+          "default": ""
+        },
+        "arguments": {
+          "description": "Adapter-specific launch/attach arguments (`program`, `args`, `cwd`,\n`pid`, …), passed through verbatim — each adapter documents its own.",
+          "default": null
+        },
+        "attach": {
+          "description": "Attach to a running debuggee instead of launching one.",
+          "type": "boolean",
+          "default": false
+        },
+        "name": {
+          "description": "The display name the Debug: Start picker shows.",
+          "type": "string",
+          "default": ""
+        }
+      },
+      "additionalProperties": false
+    },
+    "DebugTransport": {
+      "description": "How a debug adapter speaks DAP.",
+      "oneOf": [
+        {
+          "description": "Over the adapter's stdin/stdout (the common case).",
+          "type": "string",
+          "const": "stdio"
+        },
+        {
+          "description": "The adapter listens on a TCP port passed via a `${port}` argument\n(codelldb style).",
+          "type": "string",
+          "const": "tcp"
+        }
+      ]
+    },
+    "Debugger": {
+      "description": "`debug.*` — debugger integration. karet speaks the Debug Adapter Protocol;\nan adapter entry says how to launch one, and configurations are offered by\nthe Debug: Start command (there is no launch.json compatibility layer).",
+      "type": "object",
+      "properties": {
+        "adapters": {
+          "description": "Debug adapters by name. Names referenced from configurations; the\nbuilt-in fallbacks `codelldb`, `lldb-dap`, `gdb`, and `debugpy` work\nwithout an entry when the executable is on `PATH`.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/DebugAdapter"
+          },
+          "default": {}
+        },
+        "configurations": {
+          "description": "The launch configurations the Debug: Start command offers, first entry\nfirst.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/DebugConfiguration"
+          }
         }
       },
       "additionalProperties": false

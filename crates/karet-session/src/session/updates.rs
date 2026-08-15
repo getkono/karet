@@ -752,6 +752,7 @@ impl Session {
     /// behavior is derived from it. Existing LSP tasks are retired on an LSP change;
     /// their generation-tagged late answers are ignored by [`Self::apply_lsp_update`].
     pub(super) fn apply_config_report(&mut self, report: crate::config::LoadedConfig) {
+        self.debug.reconfigure(report.settings.debug.clone());
         let lsp_changed = self.lsp.reconfigure(report.settings.lsp.clone());
         self.config.settings = report.settings.clone();
         self.config.loaded_config = report.clone();

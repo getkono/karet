@@ -25,6 +25,7 @@ pub mod backend;
 pub mod backup;
 mod cancellation;
 pub mod config;
+mod dap;
 mod diff_prepare;
 mod editorconfig;
 mod highlight;
@@ -49,6 +50,8 @@ mod wakatime;
 
 pub use api::ChangeSummary;
 pub use api::Command;
+pub use api::DebugBreakpoint;
+pub use api::DebugSessionState;
 pub use api::DictionaryScope;
 pub use api::DocumentEncoding;
 pub use api::DocumentId;

@@ -12,6 +12,7 @@
 //! it already has ride each edit via `Highlights::translate`, so the view stays stable
 //! in the frames before the worker answers.
 
+mod debug;
 mod documents;
 #[cfg(feature = "github")]
 mod github;
@@ -433,6 +434,8 @@ pub struct Session {
     swaps: Option<SwapStore>,
     /// Swaps found on startup awaiting the user's recover/discard decision.
     pending_swaps: Vec<SwapRecord>,
+    /// Debugger orchestration (one active DAP session; see [`crate::dap`]).
+    debug: crate::dap::DebugManager,
     /// Language-server orchestration (lazy per-language tasks; see [`crate::lsp`]).
     lsp: LspManager,
     /// The LSP tasks' results, taken by [`crate::backend::local`] for the actor.
@@ -466,6 +469,9 @@ impl Session {
     /// Handle one request. The editing fast paths resolve inline; the answering
     /// [`Event`] is tagged with `id`.
     pub fn handle(&mut self, id: RequestId, command: Command) {
+        if self.handle_debug_command(&command) {
+            return;
+        }
         if self.handle_lsp_command(id, &command) {
             return;
         }

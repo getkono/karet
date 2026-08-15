@@ -34,10 +34,12 @@ use karet_vcs::RepositorySummary;
 use karet_vcs::StashEntry;
 use karet_vcs::StashOptions;
 
+mod debug;
 mod event;
 mod github;
 mod vcs;
 
+pub use debug::*;
 pub use event::Event;
 pub use github::*;
 pub use vcs::*;
@@ -574,6 +576,36 @@ pub enum Command {
     ScanWorkspaceTodos {
         /// Stop after this many hits, reporting truncation.
         limit: usize,
+    },
+    /// Start a debug session from a `debug.configurations` entry (the first
+    /// one when unnamed). Progress and outcomes arrive as unsolicited
+    /// `Debug*` events.
+    DebugStart {
+        /// The configuration name; `None` = the first configuration.
+        configuration: Option<String>,
+    },
+    /// End the debug session, terminating the debuggee when the adapter
+    /// supports it.
+    DebugStop,
+    /// Resume the stopped thread.
+    DebugContinue,
+    /// Step over the current line.
+    DebugStepOver,
+    /// Step into the call at the stop location.
+    DebugStepIn,
+    /// Step out of the current frame.
+    DebugStepOut,
+    /// Pause the running debuggee.
+    DebugPause,
+    /// Replace the breakpoints of one file (the full set, not a delta —
+    /// `setBreakpoints` is full-replace per file by design). Stored so a
+    /// session started later replays them; forwarded live to a running one,
+    /// answered by [`Event::DebugBreakpoints`].
+    DebugSetBreakpoints {
+        /// The source file.
+        path: std::path::PathBuf,
+        /// The 0-based breakpoint lines.
+        lines: Vec<u32>,
     },
     /// Replace across every workspace match on the search worker; answered with
     /// [`Event::SearchReplaced`]. Open buffers pick the edits up through the
