@@ -60,6 +60,7 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 | `formatOnSave` | bool | `false` | Run the formatter on save. |
 | `semanticComments` | object | enabled | Codetag highlighting (`enabled`, `tags`). |
 | `completion` | object | enabled | LSP completion (`enabled`, `autoTrigger`). |
+| `hover` | object | enabled | The hover popup (`Ctrl+K Ctrl+I`): LSP documentation plus the diagnostics under the caret (`enabled`). |
 
 #### Per-language editor settings
 

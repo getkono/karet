@@ -74,6 +74,8 @@ pub struct Editor {
     pub semantic_comments: SemanticComments,
     /// LSP-powered code completion (the popup).
     pub completion: Completion,
+    /// The hover popup (documentation + diagnostics at the caret).
+    pub hover: HoverPopup,
     /// Per-language patches keyed by selectors such as `[rust]`.
     ///
     /// This map is flattened in `setting.jsonc`, so its entries sit beside the
@@ -104,6 +106,7 @@ impl Default for Editor {
             format_on_save: false,
             semantic_comments: SemanticComments::default(),
             completion: Completion::default(),
+            hover: HoverPopup::default(),
             language_overrides: BTreeMap::new(),
         }
     }
@@ -154,6 +157,23 @@ impl Default for Completion {
             enabled: true,
             auto_trigger: true,
         }
+    }
+}
+
+/// `editor.hover.*` — the hover popup showing documentation from the language
+/// server plus the diagnostics under the caret.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct HoverPopup {
+    /// Offer the hover popup at all (Ctrl+K Ctrl+I).
+    pub enabled: bool,
+}
+
+impl Default for HoverPopup {
+    /// On by default.
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 
