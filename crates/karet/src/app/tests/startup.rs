@@ -356,6 +356,7 @@ fn bad_theme_path_becomes_a_diagnostic_and_keeps_default() {
 fn load_theme_resolves_the_builtin_dark() {
     assert!(load_theme("dark").is_ok());
     assert!(load_theme("").is_ok());
+    // Unsupported theme formats (e.g. TextMate) are rejected, not half-loaded.
     assert!(load_theme("/definitely/missing.tmTheme").is_err());
 }
 

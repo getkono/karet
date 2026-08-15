@@ -119,7 +119,7 @@ Zsh, Fish, and EDN have their own selectors.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `colorTheme` | string | `"dark"` | Built-in `"dark"`, or a path to a `.tmTheme` / VS Code `.json` theme. |
+| `colorTheme` | string | `"dark"` | Built-in `"dark"`, or a path to a VS Code `.json` theme (see [scope](scope.md#tui-theming)). |
 | `iconStyle` | `"nerdFont"`\|`"unicode"`\|`"ascii"` | `"nerdFont"` | File-tree / activity-bar glyphs. |
 | `startupPanel` | `"explorer"`\|`"search"`\|`"sourceControl"`\|`"none"` | `"explorer"` | Sidebar panel shown at startup. |
 

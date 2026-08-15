@@ -6,7 +6,7 @@ Color tokens, theme loading, and contrast checking for
 any renderer.
 
 Ships a built-in dark theme (`Theme::dark`, also `Theme::default`). Features:
-`tmtheme` loads TextMate `.tmTheme` files, `vscode` loads VS Code JSON themes, and
-`view` converts colors into ratatui values.
+`vscode` loads VS Code JSON themes, and `view` converts colors into ratatui
+values.
 
 Part of the karet workspace; released in lockstep with the other `karet-*` crates.
