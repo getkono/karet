@@ -482,36 +482,73 @@ impl Session {
         }
     }
 
-    /// Convert a binary document (DOCX) to markdown for a read-only preview.
-    /// Parsing runs off the actor thread; the answer arrives as
-    /// [`Event::DocumentConverted`].
-    #[cfg(feature = "docx")]
+    /// Convert a document (DOCX, or a Jupyter notebook) to markdown for a
+    /// read-only preview. Parsing runs off the actor thread; the answer
+    /// arrives as [`Event::DocumentConverted`].
+    #[cfg(any(feature = "docx", feature = "notebook"))]
     pub(super) fn convert_document(&mut self, id: RequestId, path: PathBuf) {
         let events = self.events.clone();
         std::thread::spawn(move || {
-            let markdown = std::fs::read(&path)
-                .map_err(|error| format!("could not read {}: {error}", path.display()))
-                .and_then(|bytes| {
-                    karet_docx::parse(&bytes)
-                        .map(|document| karet_docx::to_markdown(&document))
-                        .map_err(|error| format!("could not convert {}: {error}", path.display()))
-                });
+            let markdown = convert_document_file(&path);
             let _ = events.send((Some(id), Event::DocumentConverted { path, markdown }));
         });
     }
 
-    /// Without the `docx` feature, document conversion is unavailable — report it.
-    #[cfg(not(feature = "docx"))]
+    /// Without either conversion feature, report the build gap.
+    #[cfg(not(any(feature = "docx", feature = "notebook")))]
     pub(super) fn convert_document(&mut self, id: RequestId, path: PathBuf) {
         self.emit(
             Some(id),
             Event::DocumentConverted {
                 path,
                 markdown: Err(
-                    "this backend was built without DOCX support (`docx` feature)".to_string(),
+                    "this backend was built without document conversion (`docx`/`notebook` \
+                     features)"
+                        .to_string(),
                 ),
             },
         );
+    }
+}
+
+/// One document → markdown, routed by extension (each format behind its
+/// feature so lean builds stay lean).
+#[cfg(any(feature = "docx", feature = "notebook"))]
+fn convert_document_file(path: &std::path::Path) -> Result<String, String> {
+    let is_notebook = path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("ipynb"));
+    if is_notebook {
+        #[cfg(feature = "notebook")]
+        {
+            return std::fs::read_to_string(path)
+                .map_err(|error| format!("could not read {}: {error}", path.display()))
+                .and_then(|text| {
+                    karet_notebook::parse(&text)
+                        .map(|notebook| karet_notebook::to_markdown(&notebook))
+                        .map_err(|error| format!("could not convert {}: {error}", path.display()))
+                });
+        }
+        #[cfg(not(feature = "notebook"))]
+        {
+            return Err(
+                "this backend was built without notebook support (`notebook` feature)".to_owned(),
+            );
+        }
+    }
+    #[cfg(feature = "docx")]
+    {
+        std::fs::read(path)
+            .map_err(|error| format!("could not read {}: {error}", path.display()))
+            .and_then(|bytes| {
+                karet_docx::parse(&bytes)
+                    .map(|document| karet_docx::to_markdown(&document))
+                    .map_err(|error| format!("could not convert {}: {error}", path.display()))
+            })
+    }
+    #[cfg(not(feature = "docx"))]
+    {
+        Err("this backend was built without DOCX support (`docx` feature)".to_owned())
     }
 }
 

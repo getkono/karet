@@ -29,6 +29,8 @@ aicommit = ["dep:aicommit-core"]
 cbor = ["dep:karet-cbor"]
 # Convert `.docx` documents to markdown for read-only previews (via `karet-docx`).
 docx = ["dep:karet-docx"]
+# Convert `.ipynb` notebooks to markdown for read-only previews (via `karet-notebook`).
+notebook = ["dep:karet-notebook"]
 # The Cargo.lock package-dependency graph lens. On by default.
 viz = ["dep:dependable-core"]
 # Markdown linting: the markdownlint-core rules surface as diagnostics.
@@ -52,6 +54,7 @@ taplo = { workspace = true, optional = true } # built-in TOML formatting fallbac
 toml = { workspace = true, optional = true } # read .taplo.toml formatter options
 karet-cbor = { workspace = true, optional = true } # decode/encode CBOR ↔ editable diagnostic text (feature `cbor`)
 karet-docx = { workspace = true, optional = true } # DOCX → markdown for read-only previews (feature `docx`)
+karet-notebook = { workspace = true, optional = true } # .ipynb → markdown for read-only previews (feature `notebook`)
 karet-treesitter.workspace = true
 karet-syntax.workspace = true
 karet-diff = { workspace = true, features = ["serde"] } # displayable diffs prepared on the VCS worker

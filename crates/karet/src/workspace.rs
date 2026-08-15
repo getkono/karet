@@ -92,6 +92,9 @@ fn open_classified(path: &Path, kind: FileKind, bytes: Vec<u8>, len: u64) -> Tab
         // the preview tab is reserved immediately and fills when it answers.
         #[cfg(feature = "docx")]
         FileKind::Docx => Tab::document_converting(path.to_path_buf()),
+        // Same conversion seam: the backend renders the notebook to markdown.
+        #[cfg(feature = "notebook")]
+        FileKind::Notebook => Tab::document_converting(path.to_path_buf()),
         FileKind::TooLarge { .. } => placeholder(path, kind, &bytes, len),
         // DOCX/PDF (without their features) and any future `#[non_exhaustive]`
         // kind route to a placeholder describing them.
