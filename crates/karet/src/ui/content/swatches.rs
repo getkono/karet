@@ -2,11 +2,7 @@ use super::*;
 
 /// Swatch decorations for the color literals on the lines a viewport of
 /// `height` rows starting at `first_line` can show (doubled for wrap slack).
-pub(super) fn color_swatch_decorations(
-    buffer: &TextBuffer,
-    first_line: u32,
-    height: u16,
-) -> Vec<Decoration> {
+fn color_swatch_decorations(buffer: &TextBuffer, first_line: u32, height: u16) -> Vec<Decoration> {
     let mut out = Vec::new();
     let end = first_line.saturating_add(u32::from(height) * 2);
     for line in first_line..=end {

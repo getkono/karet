@@ -1,7 +1,6 @@
 use super::*;
 
 mod swatches;
-use swatches::color_swatch_decorations;
 
 /// Draw one pane's active tab into `area`. Returns the rect to reserve for a Kitty
 /// image, if the active tab is an image on a Kitty terminal.
