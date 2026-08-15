@@ -56,8 +56,34 @@ struct Frame {
     depth: u16,
     id: SeamId,
     kind: NodeKind,
+    name: String,
     path: SeamPath,
     type_parameters: Vec<String>,
+}
+
+/// A module declaration whose body lives in another file.
+///
+/// The package walk resolves these; a single-file extraction cannot, because the file it
+/// would have to read is exactly what it does not have.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalModule {
+    /// The module node already added to the index, awaiting its contents.
+    pub id: SeamId,
+    /// The declared module name.
+    pub name: String,
+    /// The inline modules enclosing the declaration, outermost first.
+    pub inline_path: Vec<String>,
+    /// The `#[path = "…"]` override, when one is written.
+    pub path_attribute: Option<String>,
+}
+
+/// What one file's extraction produced.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExtractOutcome {
+    /// Every node added, in source order.
+    pub added: Vec<SeamId>,
+    /// Module declarations whose bodies live elsewhere.
+    pub external_modules: Vec<ExternalModule>,
 }
 
 /// Extract every entity in `text` into `index`, nested under `parent`.
@@ -78,7 +104,7 @@ pub fn extract_file(
     file: FileId,
     language: LanguageId,
     text: &str,
-) -> Result<Vec<SeamId>, ExtractError> {
+) -> Result<ExtractOutcome, ExtractError> {
     let mapping = for_language(language).ok_or(ExtractError::NoMapping)?;
     let tree = SyntaxTree::parse(pool, language, text).map_err(|_| ExtractError::ParseFailed)?;
     let parent_path = index.path(parent).cloned().unwrap_or_default();
@@ -98,15 +124,16 @@ pub fn extract_file(
             depth: 0,
             id: parent,
             kind: parent_kind,
+            name: String::new(),
             path: parent_path,
             type_parameters: Vec::new(),
         }],
         pending: Vec::new(),
         ordinals: HashMap::new(),
-        added: Vec::new(),
+        outcome: ExtractOutcome::default(),
     };
     tree.walk(|node| extractor.visit(node));
-    Ok(extractor.added)
+    Ok(extractor.outcome)
 }
 
 /// Walk state: the containment stack, pending attributes, and sibling ordinals.
@@ -119,7 +146,7 @@ struct Extractor<'a> {
     stack: Vec<Frame>,
     pending: Vec<(u16, Attribute)>,
     ordinals: HashMap<(SeamId, String), u32>,
-    added: Vec<SeamId>,
+    outcome: ExtractOutcome,
 }
 
 impl Extractor<'_> {
@@ -155,7 +182,20 @@ impl Extractor<'_> {
         match self.mapping.classify(node, &ctx) {
             Some(classified) => {
                 let facets = self.mapping.facets_of(node, &ctx);
-                self.push_entity(node, classified, facets, depth);
+                let external = self.mapping.external_module(node, &ctx);
+                let inline_path = self.inline_module_path();
+                let id = self.push_entity(node, classified, facets, depth);
+                if let (Some(name), Some(id)) = (external, id) {
+                    self.outcome.external_modules.push(ExternalModule {
+                        id,
+                        name,
+                        inline_path,
+                        path_attribute: attributes
+                            .iter()
+                            .find(|attr| attr.name == "path")
+                            .and_then(|attr| attr.arguments.clone()),
+                    });
+                }
             },
             None => {
                 let facets = self.mapping.interior_facets(node, &ctx);
@@ -186,19 +226,17 @@ impl Extractor<'_> {
         classified: crate::lang::Classified,
         facets: Vec<Facet>,
         depth: u16,
-    ) {
-        let Some((parent_id, parent_path)) = self
+    ) -> Option<SeamId> {
+        let (parent_id, parent_path) = self
             .stack
             .last()
-            .map(|frame| (frame.id, frame.path.clone()))
-        else {
-            return;
-        };
+            .map(|frame| (frame.id, frame.path.clone()))?;
         let segment = self.next_segment(parent_id, classified.segment.clone());
         let path = parent_path.child(segment);
         let id = self.index.intern(path.clone());
         let type_parameters = super::lang::rust::type_parameter_names(node, self.text);
 
+        let name = classified.name.clone();
         self.index.insert(Node {
             id,
             kind: classified.kind,
@@ -218,14 +256,30 @@ impl Extractor<'_> {
             membership: ConfigMembership::Active,
             provisional: node.has_error(),
         });
-        self.added.push(id);
+        self.outcome.added.push(id);
         self.stack.push(Frame {
             depth,
             id,
             kind: classified.kind,
+            name,
             path,
             type_parameters,
         });
+        Some(id)
+    }
+
+    /// The inline modules enclosing the current position, outermost first.
+    ///
+    /// Frame 0 is the file's own module, which is not inline — everything above it was
+    /// opened by a `mod … { … }` in this file, and each one deepens where a nested
+    /// `mod x;` looks for its file.
+    fn inline_module_path(&self) -> Vec<String> {
+        self.stack
+            .iter()
+            .skip(1)
+            .filter(|frame| frame.kind == NodeKind::Module)
+            .map(|frame| frame.name.clone())
+            .collect()
     }
 
     /// Disambiguate a segment against its siblings.

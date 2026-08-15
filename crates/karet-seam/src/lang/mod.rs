@@ -134,6 +134,16 @@ pub trait SeamLanguage {
     /// A Rust `declaration_list` is a body, not a scope; the `mod_item` around it is.
     fn is_container(&self, node: &WalkNode<'_>) -> bool;
 
+    /// The name of a module whose body lives in *another file*, when this node declares one.
+    ///
+    /// Rust's `mod net;` is the case: a containment edge that crosses a file boundary and
+    /// has to be followed to build a whole-package tree. A language whose modules never
+    /// span files leaves this at its default and loses nothing.
+    fn external_module(&self, node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Option<String> {
+        let _ = (node, ctx);
+        None
+    }
+
     /// The edge kinds this language's semantic tier can resolve. May be empty.
     fn semantic_capabilities(&self) -> &'static [EdgeKind];
 

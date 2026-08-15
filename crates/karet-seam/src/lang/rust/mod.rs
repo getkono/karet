@@ -146,6 +146,15 @@ impl SeamLanguage for Rust {
         )
     }
 
+    fn external_module(&self, node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Option<String> {
+        // `mod net { … }` carries its body; `mod net;` does not, and that missing body is
+        // the whole signal that another file holds it.
+        if node.kind() != "mod_item" || node.child_span("body").is_some() {
+            return None;
+        }
+        node.child_text("name", ctx.text).map(str::to_owned)
+    }
+
     fn semantic_capabilities(&self) -> &'static [EdgeKind] {
         SEMANTIC
     }

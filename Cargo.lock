@@ -3109,9 +3109,11 @@ dependencies = [
 name = "karet-seam"
 version = "0.5.0"
 dependencies = [
+ "dependable-core",
  "karet-core",
  "karet-treesitter",
  "serde",
+ "tempfile",
  "thiserror 2.0.19",
 ]
 

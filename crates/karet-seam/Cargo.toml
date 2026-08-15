@@ -34,8 +34,17 @@ lang-python = ["karet-treesitter/lang-python"]
 [dependencies]
 karet-core.workspace       = true
 karet-treesitter.workspace = true
+# Manifest reading. Already a workspace dependency, and the crate that owns Cargo
+# manifest parsing — so the package name comes from there rather than a second parser.
+dependable-core.workspace  = true
 thiserror.workspace        = true
 serde = { workspace = true, optional = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile.workspace         = true
+# The workspace integration suite indexes this repo's own crates, which needs the
+# grammar and the parser pool the library only takes as an argument.
+karet-treesitter.workspace = true

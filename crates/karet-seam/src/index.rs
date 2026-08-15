@@ -26,6 +26,7 @@ pub struct SeamIndex {
     files: Vec<PathBuf>,
     file_ids: HashMap<PathBuf, FileId>,
     edges: EdgeStore,
+    unresolved: Vec<(SeamId, Vec<PathBuf>)>,
     truncated: Option<usize>,
 }
 
@@ -185,6 +186,64 @@ impl SeamIndex {
     /// Mutable access to the edge store.
     pub fn edges_mut(&mut self) -> &mut EdgeStore {
         &mut self.edges
+    }
+
+    // --- unresolved modules ---------------------------------------------------
+
+    /// Record that a module's body could not be found, keeping what was tried.
+    ///
+    /// The node stays in the tree. Removing it would say the package has no such module,
+    /// when what actually happened is that its text could not be located — a different
+    /// answer, and the one the reader needs.
+    pub fn mark_module_unresolved(&mut self, id: SeamId, candidates: Vec<PathBuf>) {
+        self.unresolved.push((id, candidates));
+    }
+
+    /// Every module whose body could not be found, with the paths that were tried.
+    #[must_use]
+    pub fn unresolved_modules(&self) -> &[(SeamId, Vec<PathBuf>)] {
+        &self.unresolved
+    }
+
+    // --- incremental ----------------------------------------------------------
+
+    /// The node that owns `file` — the module a re-index of that file should rebuild under.
+    ///
+    /// That is the shallowest node located in the file, since everything else in it hangs
+    /// from that one.
+    #[must_use]
+    pub fn owner_of_file(&self, file: FileId) -> Option<SeamId> {
+        self.nodes
+            .values()
+            .filter(|node| node.location.file == file)
+            .min_by_key(|node| self.ancestors(node.id).len())
+            .and_then(|node| node.parent)
+    }
+
+    /// Remove every node located in `file` that sits under `root`, detaching them from
+    /// their parents and dropping the edges they owned.
+    pub fn remove_nodes_in_file(&mut self, file: FileId, root: SeamId) {
+        let doomed: Vec<SeamId> = self
+            .subtree(root)
+            .into_iter()
+            .filter(|id| {
+                *id != root
+                    && self
+                        .nodes
+                        .get(id)
+                        .is_some_and(|node| node.location.file == file)
+            })
+            .collect();
+        for id in &doomed {
+            self.edges.remove_from(*id);
+            self.nodes.remove(id);
+        }
+        let removed: std::collections::HashSet<SeamId> = doomed.into_iter().collect();
+        for node in self.nodes.values_mut() {
+            node.children.retain(|child| !removed.contains(child));
+        }
+        self.roots.retain(|id| !removed.contains(id));
+        self.unresolved.retain(|(id, _)| !removed.contains(id));
     }
 
     // --- truncation -----------------------------------------------------------
