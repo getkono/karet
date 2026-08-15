@@ -3110,6 +3110,7 @@ name = "karet-seam"
 version = "0.5.0"
 dependencies = [
  "karet-core",
+ "karet-treesitter",
  "serde",
  "thiserror 2.0.19",
 ]

@@ -38,21 +38,29 @@
 //! configuration set. Nothing structural ever waits on anything semantic.
 
 pub mod edge;
+pub mod extract;
 pub mod id;
 pub mod index;
+pub mod lang;
 pub mod model;
 pub mod rollup;
+pub mod text;
 
 pub use edge::Edge;
 pub use edge::EdgeKind;
 pub use edge::EdgeStore;
 pub use edge::Endpoint;
+pub use extract::ExtractError;
+pub use extract::extract_file;
 pub use id::SeamId;
 pub use id::SeamInterner;
 pub use id::SeamPath;
 pub use id::SeamPathError;
 pub use id::SeamSegment;
 pub use index::SeamIndex;
+pub use lang::Classified;
+pub use lang::FacetContext;
+pub use lang::SeamLanguage;
 pub use model::ConfigMembership;
 pub use model::Effective;
 pub use model::Facet;
@@ -65,3 +73,4 @@ pub use model::NodeKind;
 pub use model::SeamLocation;
 pub use model::Visibility;
 pub use rollup::Rollups;
+pub use text::LineIndex;
