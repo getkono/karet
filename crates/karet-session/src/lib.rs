@@ -32,6 +32,7 @@ mod latex;
 pub mod local;
 mod lsp;
 mod lsp_registry;
+mod seam_worker;
 mod search_worker;
 pub mod session;
 mod spell;

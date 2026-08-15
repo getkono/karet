@@ -250,6 +250,42 @@ pub enum Event {
         /// The total number of replacements applied.
         replacements: usize,
     },
+    /// A package's seams were indexed, answering [`Command::IndexSeams`],
+    /// [`Command::ReindexSeams`], or [`Command::SetSeamConfiguration`].
+    ///
+    /// Carries the whole flattened tree rather than a page of it: the presentation layer
+    /// holds a copy so navigation, lens toggles, and rerooting are answered locally,
+    /// which is the only way a cascading navigator stays responsive.
+    SeamIndexed {
+        /// What the index amounts to, for the header and the empty states.
+        summary: SeamSummary,
+        /// Every node, flattened.
+        nodes: Vec<SeamNodeView>,
+    },
+    /// A package could not be indexed, answering [`Command::IndexSeams`].
+    SeamIndexFailed {
+        /// Why, phrased for the reader.
+        message: String,
+    },
+    /// A seam query was evaluated, answering [`Command::SeamQuery`].
+    SeamQueryResult {
+        /// The matching node identities.
+        nodes: Vec<String>,
+        /// The configuration the query asked to be evaluated under, if it named one.
+        configuration: Option<String>,
+        /// The parse failure, when the query did not parse.
+        ///
+        /// Present *instead of* results rather than alongside empty ones, so an
+        /// unreadable query is never mistaken for a query that matched nothing.
+        error: Option<SeamQueryError>,
+    },
+    /// One seam node's edges, answering [`Command::SeamNode`].
+    SeamNodeDetail {
+        /// The node the edges belong to.
+        node: String,
+        /// Its edges, in both directions.
+        edges: Vec<SeamEdgeView>,
+    },
     /// A dictionary word was persisted, answering [`Command::AddDictionaryWord`].
     DictionaryWordAdded {
         /// The accepted word.

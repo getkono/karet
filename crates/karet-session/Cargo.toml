@@ -50,6 +50,9 @@ blameline.workspace = true # current-buffer line blame; workspace disables langu
 karet-github = { workspace = true, optional = true }    # GitHub commit-verification (feature `github`)
 aicommit-core = { workspace = true, optional = true }   # AI commit-message generation (feature `aicommit`)
 karet-search = { workspace = true, features = ["serde"] } # workspace search runs on the backend's worker
+# The seam index is owned by its own worker and projected across the seam; `lang-rust`
+# and `lang-python` are the mappings that exist, so those are the grammars it can use.
+karet-seam = { workspace = true, features = ["lang-rust", "lang-python"] }
 karet-watch.workspace = true          # centralized filesystem watching
 karet-supervisor.workspace = true     # crash-safe process ownership + shared LSP broker
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "macros", "process", "time", "net", "io-util"] }

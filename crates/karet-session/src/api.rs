@@ -36,10 +36,12 @@ use karet_vcs::StashOptions;
 
 mod event;
 mod github;
+mod seam;
 mod vcs;
 
 pub use event::Event;
 pub use github::*;
+pub use seam::*;
 pub use vcs::*;
 
 /// Per-document editing and serialization behavior after application settings and
@@ -565,6 +567,34 @@ pub enum Command {
         path: PathBuf,
         /// `true` for the staged entry, `false` for the working-tree entry.
         staged: bool,
+    },
+    /// Index a package's seams, answering with [`Event::SeamIndexed`].
+    IndexSeams {
+        /// The package root to index. Defaults to the first workspace root when absent.
+        root: Option<PathBuf>,
+    },
+    /// Re-index one file whose text changed, keeping the rest of the tree.
+    ReindexSeams {
+        /// The file that changed.
+        path: PathBuf,
+        /// Its current text, which may be unsaved buffer content.
+        text: String,
+    },
+    /// Evaluate a seam query, answering with [`Event::SeamQueryResult`].
+    SeamQuery {
+        /// The query text, exactly as typed.
+        text: String,
+    },
+    /// Fetch one seam node's edges, answering with [`Event::SeamNodeDetail`].
+    SeamNode {
+        /// The node's identity, as its semantic path.
+        path: String,
+    },
+    /// Switch the active configuration, answering with a re-evaluated
+    /// [`Event::SeamIndexed`].
+    SetSeamConfiguration {
+        /// The configuration to activate.
+        name: String,
     },
     /// Convert a binary document (DOCX) to markdown for a read-only preview;
     /// answered with [`Event::DocumentConverted`].

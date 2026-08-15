@@ -401,6 +401,8 @@ pub struct Session {
     /// Ordered background repository actions and network reads.
     vcs_worker: std::sync::mpsc::Sender<crate::vcs_worker::VcsJob>,
     search_worker: std::sync::mpsc::Sender<crate::search_worker::SearchJob>,
+    /// The seam indexer, which owns its index rather than rebuilding it per request.
+    seam_worker: std::sync::mpsc::Sender<crate::seam_worker::SeamJob>,
     /// The workspace spelling scan, which walks every file rather than the open ones.
     spell_scan_worker: std::sync::mpsc::Sender<crate::spell_scan::SpellScanJob>,
     /// Cancellation registry for safely-droppable background reads: repository
@@ -715,6 +717,35 @@ impl Session {
                             limit,
                         });
                 }
+            },
+            Command::IndexSeams { root } => {
+                if let Some(root) = root.or_else(|| self.config.roots.first().cloned()) {
+                    let _ = self.seam_worker.send(crate::seam_worker::SeamJob::Index {
+                        id,
+                        root,
+                        options: karet_seam::IndexOptions::default(),
+                    });
+                }
+            },
+            Command::ReindexSeams { path, text } => {
+                let _ =
+                    self.seam_worker
+                        .send(crate::seam_worker::SeamJob::Reindex { id, path, text });
+            },
+            Command::SeamQuery { text } => {
+                let _ = self
+                    .seam_worker
+                    .send(crate::seam_worker::SeamJob::Query { id, text });
+            },
+            Command::SeamNode { path } => {
+                let _ = self
+                    .seam_worker
+                    .send(crate::seam_worker::SeamJob::Node { id, path });
+            },
+            Command::SetSeamConfiguration { name } => {
+                let _ = self
+                    .seam_worker
+                    .send(crate::seam_worker::SeamJob::SetConfiguration { id, name });
             },
             Command::ScanWorkspaceSpelling { limit } => self.scan_workspace_spelling(id, limit),
             Command::SearchReplaceAll { query, replacement } => {
