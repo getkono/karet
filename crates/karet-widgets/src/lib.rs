@@ -9,6 +9,7 @@
 //! terminal image, placeholder) live in `karet-fileview`.
 
 pub mod breadcrumbs;
+pub mod columns;
 pub mod completion;
 pub mod file_tree;
 pub mod glyph;
@@ -22,6 +23,11 @@ pub mod status;
 pub mod text;
 pub mod textfield;
 
+pub use columns::Column;
+pub use columns::ColumnRow;
+pub use columns::ColumnStyle;
+pub use columns::Columns;
+pub use columns::RowEmphasis;
 pub use completion::CompletionPopup;
 pub use completion::CompletionState;
 pub use file_tree::FileTree;
