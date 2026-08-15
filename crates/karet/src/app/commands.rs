@@ -134,6 +134,10 @@ impl App {
             Command::ToggleStrikethrough => self.toggle_markdown_surround("~~", None),
             Command::ToggleInlineCode => self.toggle_markdown_surround("`", None),
             Command::ToggleTaskCheckbox => self.toggle_task_checkbox(),
+            Command::MarkdownTocCreate => self.markdown_toc(true),
+            Command::MarkdownTocUpdate => self.markdown_toc(false),
+            Command::MarkdownHeadingUp => self.markdown_heading_shift(1),
+            Command::MarkdownHeadingDown => self.markdown_heading_shift(-1),
             Command::GoToDefinition => self.request_definition(),
             Command::JumpBack => self.jump_back(),
             Command::InsertChar(c) => {

@@ -213,6 +213,8 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Editor, true,  false, false, Char('i'), Command::ToggleItalic),
     b(Editor, false, false, true,  Char('s'), Command::ToggleStrikethrough),
     b(Editor, false, false, true,  Char('c'), Command::ToggleTaskCheckbox),
+    b(Editor, true,  true,  false, Char(']'), Command::MarkdownHeadingUp),
+    b(Editor, true,  true,  false, Char('['), Command::MarkdownHeadingDown),
 
     // Editor focus, diff tab only. Enter drops from the read-only diff into the
     // underlying file ("editor mode"), landing on its first changed line.

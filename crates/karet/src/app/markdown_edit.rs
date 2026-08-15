@@ -206,6 +206,99 @@ impl App {
         }
     }
 
+    /// Create or refresh the `<!-- toc -->` table of contents. `create`
+    /// inserts one at the caret when the document has no markers yet; update
+    /// only rewrites an existing region.
+    pub(super) fn markdown_toc(&mut self, create: bool) {
+        if !self.active_is_markdown() {
+            self.status = Some("the table of contents applies to Markdown files".to_owned());
+            return;
+        }
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let TabKind::Code { buffer, .. } = &tab.kind else {
+            return;
+        };
+        let caret = tab.editor.cursor();
+        let text = buffer.text();
+        let toc = &self.settings.markdown.toc;
+        let (min, max) = (toc.min_level.clamp(1, 6), toc.max_level.clamp(1, 6));
+        let options = karet_markdown::toc::TocOptions {
+            levels: min..=max.max(min),
+        };
+        let Some(rendered) = karet_markdown::toc::render_toc(&text, &options) else {
+            self.status = Some("no headings in the table's level range".to_owned());
+            return;
+        };
+        match karet_markdown::toc::toc_region(&text) {
+            Some((start, end)) => {
+                let end_len = text.lines().nth(end).map_or(0, |l| l.chars().count());
+                let range = Range {
+                    start: LineCol::new(u32::try_from(start).unwrap_or(u32::MAX), 0),
+                    end: LineCol::new(
+                        u32::try_from(end).unwrap_or(u32::MAX),
+                        u32::try_from(end_len).unwrap_or(u32::MAX),
+                    ),
+                };
+                let replacement = rendered.join("\n");
+                self.submit_edit(move |c, _s, _b, base| {
+                    (c == caret)
+                        .then(|| editing::insert(range.start, Some(range), base, &replacement))
+                });
+                self.status = Some("table of contents updated".to_owned());
+            },
+            None if create => {
+                let at = LineCol::new(caret.line, 0);
+                let block = format!("{}\n\n", rendered.join("\n"));
+                self.submit_edit(move |c, _s, _b, base| {
+                    (c == caret).then(|| editing::insert(at, None, base, &block))
+                });
+                self.status = Some("table of contents inserted".to_owned());
+            },
+            None => {
+                self.status = Some(
+                    "no <!-- toc --> markers — use Markdown: Create Table of Contents".to_owned(),
+                );
+            },
+        }
+    }
+
+    /// Shift the caret line's heading level by `delta` (Ctrl+Shift+] / [).
+    pub(super) fn markdown_heading_shift(&mut self, delta: i8) {
+        if !self.active_is_markdown() {
+            self.status = Some("heading levels apply to Markdown files".to_owned());
+            return;
+        }
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let TabKind::Code { buffer, .. } = &tab.kind else {
+            return;
+        };
+        let caret = tab.editor.cursor();
+        let Some(text) = buffer.line(caret.line as usize) else {
+            return;
+        };
+        let Some(new_text) = karet_markdown::toc::heading_shift(&text, delta) else {
+            return;
+        };
+        let range = line_span(caret.line, text.chars().count());
+        let caret_after = LineCol::new(
+            caret.line,
+            caret
+                .col
+                .min(u32::try_from(new_text.chars().count()).unwrap_or(u32::MAX)),
+        );
+        self.submit_edit(move |c, _s, _b, base| {
+            (c == caret).then(|| {
+                let mut edit = editing::insert(range.start, Some(range), base, &new_text);
+                edit.caret = caret_after;
+                edit
+            })
+        });
+    }
+
     /// Replace the primary cursor with a `start..end` selection on `line`.
     fn select_cols(&mut self, line: u32, start: usize, end: usize) {
         if let Some(Tab {

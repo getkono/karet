@@ -234,6 +234,14 @@ pub enum Command {
     ToggleInlineCode,
     /// Toggle the task checkbox on the caret's line (Markdown; Alt+C).
     ToggleTaskCheckbox,
+    /// Insert (or refresh) a `<!-- toc -->` table of contents at the caret.
+    MarkdownTocCreate,
+    /// Refresh the existing `<!-- toc -->` table of contents.
+    MarkdownTocUpdate,
+    /// Raise the caret line's heading level (Markdown; Ctrl+Shift+]).
+    MarkdownHeadingUp,
+    /// Lower the caret line's heading level (Markdown; Ctrl+Shift+[).
+    MarkdownHeadingDown,
     /// Jump to the definition of the symbol at the caret (F12).
     GoToDefinition,
     /// Return to the position a definition jump started from (Ctrl+Alt+Left).
@@ -597,6 +605,10 @@ impl Command {
             Self::ToggleStrikethrough => "Markdown: Toggle Strikethrough",
             Self::ToggleInlineCode => "Markdown: Toggle Code Span",
             Self::ToggleTaskCheckbox => "Markdown: Toggle Task Checkbox",
+            Self::MarkdownTocCreate => "Markdown: Create Table of Contents",
+            Self::MarkdownTocUpdate => "Markdown: Update Table of Contents",
+            Self::MarkdownHeadingUp => "Markdown: Increase Heading Level",
+            Self::MarkdownHeadingDown => "Markdown: Decrease Heading Level",
             Self::GoToDefinition => "Go to Definition",
             Self::JumpBack => "Go Back",
             Self::InsertNewline => "Insert Newline",
@@ -944,6 +956,10 @@ impl Command {
             | Self::ToggleStrikethrough
             | Self::ToggleInlineCode
             | Self::ToggleTaskCheckbox
+            | Self::MarkdownTocCreate
+            | Self::MarkdownTocUpdate
+            | Self::MarkdownHeadingUp
+            | Self::MarkdownHeadingDown
             | Self::InsertNewline
             | Self::DeleteBackward
             | Self::DeleteForward
