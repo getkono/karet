@@ -3,11 +3,12 @@
 
 use super::Session;
 use crate::api::Command;
+use crate::api::RequestId;
 use crate::dap::RunControl;
 
 impl Session {
     /// Consume a debugger command; `false` when `command` is not one.
-    pub(super) fn handle_debug_command(&mut self, command: &Command) -> bool {
+    pub(super) fn handle_debug_command(&mut self, id: RequestId, command: &Command) -> bool {
         match command {
             Command::DebugStart { configuration } => {
                 self.debug.start(configuration.as_deref());
@@ -20,6 +21,12 @@ impl Session {
             Command::DebugPause => self.debug.run_control(RunControl::Pause),
             Command::DebugSetBreakpoints { path, lines } => {
                 self.debug.set_breakpoints(path.clone(), lines.clone());
+            },
+            Command::DebugStackTrace => self.debug.stack_trace(id),
+            Command::DebugScopes { frame } => self.debug.scopes(id, *frame),
+            Command::DebugVariables { reference } => self.debug.variables(id, *reference),
+            Command::DebugEvaluate { expression, frame } => {
+                self.debug.evaluate(id, expression.clone(), *frame);
             },
             _ => return false,
         }

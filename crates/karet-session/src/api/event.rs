@@ -600,6 +600,34 @@ pub enum Event {
         /// The text, possibly multi-line.
         text: String,
     },
+    /// The stopped thread's call stack (answers [`Command::DebugStackTrace`];
+    /// empty when the debuggee is not stopped).
+    DebugStack {
+        /// Top frame first.
+        frames: Vec<DebugFrame>,
+    },
+    /// One frame's variable scopes (answers [`Command::DebugScopes`]).
+    DebugScopes {
+        /// The frame the scopes belong to.
+        frame: i64,
+        /// The scopes, adapter order.
+        scopes: Vec<DebugScope>,
+    },
+    /// One reference's children (answers [`Command::DebugVariables`]).
+    DebugVariables {
+        /// The handle the variables belong to.
+        reference: i64,
+        /// The variables, adapter order.
+        variables: Vec<DebugVariable>,
+    },
+    /// An evaluation result (answers [`Command::DebugEvaluate`]; a rejected
+    /// expression answers with the adapter's error text as the result).
+    DebugEvaluated {
+        /// The rendered result (or error text).
+        result: String,
+        /// Non-zero when the result has fetchable children.
+        reference: i64,
+    },
     /// The acknowledged breakpoints of one file (answers
     /// [`Command::DebugSetBreakpoints`]; also unsolicited on late
     /// verification).

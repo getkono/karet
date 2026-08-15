@@ -597,6 +597,28 @@ pub enum Command {
     DebugStepOut,
     /// Pause the running debuggee.
     DebugPause,
+    /// The stopped thread's call stack; answered by [`Event::DebugStack`].
+    DebugStackTrace,
+    /// The variable scopes of one frame; answered by [`Event::DebugScopes`].
+    DebugScopes {
+        /// The frame id (from [`Event::DebugStack`]).
+        frame: i64,
+    },
+    /// The children of a variables reference (a scope handle or a structured
+    /// variable's); answered by [`Event::DebugVariables`]. Fetch lazily, on
+    /// expand — references can be arbitrarily deep.
+    DebugVariables {
+        /// The `variablesReference` handle.
+        reference: i64,
+    },
+    /// Evaluate an expression in the debuggee (the REPL); answered by
+    /// [`Event::DebugEvaluated`].
+    DebugEvaluate {
+        /// The expression.
+        expression: String,
+        /// The frame to evaluate in, when one is selected.
+        frame: Option<i64>,
+    },
     /// Replace the breakpoints of one file (the full set, not a delta —
     /// `setBreakpoints` is full-replace per file by design). Stored so a
     /// session started later replays them; forwarded live to a running one,
