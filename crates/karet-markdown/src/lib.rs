@@ -15,6 +15,8 @@
 //! markdown it was rendered from.
 
 pub mod edit;
+#[cfg(feature = "lint")]
+pub mod lint;
 mod parse;
 mod table;
 pub mod toc;
