@@ -769,6 +769,37 @@
           "description": "Continue list items on Enter: repeat the marker, advance ordered\nnumbering (renumbering the run), carry task checkboxes, and end the\nlist when Enter is pressed on an empty item.",
           "type": "boolean",
           "default": true
+        },
+        "toc": {
+          "description": "Table-of-contents generation.",
+          "$ref": "#/$defs/MarkdownToc",
+          "default": {
+            "maxLevel": 6,
+            "minLevel": 2
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "MarkdownToc": {
+      "description": "`markdown.toc.*` — table-of-contents generation.",
+      "type": "object",
+      "properties": {
+        "maxLevel": {
+          "description": "The largest heading level included.",
+          "type": "integer",
+          "format": "uint8",
+          "default": 6,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "minLevel": {
+          "description": "The smallest heading level included (GitHub convention keeps the `#`\ndocument title out of its own table).",
+          "type": "integer",
+          "format": "uint8",
+          "default": 2,
+          "maximum": 255,
+          "minimum": 0
         }
       },
       "additionalProperties": false
