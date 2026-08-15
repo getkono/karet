@@ -564,6 +564,8 @@ impl App {
                 Command::CommitGraphResetSoft,
                 Command::CommitGraphResetMixed,
                 Command::CommitGraphResetHard,
+                Command::CommitGraphInteractiveRebase,
+                Command::CommitGraphCopyIssueUrls,
                 Command::CommitGraphMarkBase,
                 Command::CommitGraphCompare,
             ],
@@ -604,6 +606,90 @@ impl App {
         ));
     }
 
+    /// Open the interactive-rebase plan editor for the commits between the
+    /// selection (exclusive, the new base) and `HEAD`, oldest first.
+    pub(super) fn commit_graph_interactive_rebase(&mut self) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let TabKind::CommitGraph {
+            commits, selected, ..
+        } = &tab.kind
+        else {
+            return;
+        };
+        if *selected == 0 {
+            self.status = Some("select the commit to rebase onto (below HEAD)".to_string());
+            return;
+        }
+        let Some(onto) = commits.get(*selected).map(|commit| commit.hash.clone()) else {
+            return;
+        };
+        // The rows above the selection are the commits being replayed; git
+        // applies oldest first, so reverse the newest-first page order.
+        let steps: Vec<(String, String, String)> = commits[..*selected]
+            .iter()
+            .rev()
+            .map(|commit| {
+                (
+                    commit.hash.clone(),
+                    commit.short_hash.clone(),
+                    commit.summary.clone(),
+                )
+            })
+            .collect();
+        self.overlay = Some(Overlay::rebase_todo(onto, steps));
+    }
+
+    /// Copy the issue URLs referenced (`#123`) by the selected commit's
+    /// summary, resolved through `git.issueUrl` or a GitHub origin.
+    pub(super) fn commit_graph_copy_issue_urls(&mut self) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let TabKind::CommitGraph {
+            commits, selected, ..
+        } = &tab.kind
+        else {
+            return;
+        };
+        let Some(summary) = commits.get(*selected).map(|commit| commit.summary.clone()) else {
+            return;
+        };
+        let template = self.settings.git.issue_url.clone().or_else(|| {
+            let origin = self.scm.repository.as_ref().and_then(|snapshot| {
+                snapshot
+                    .remotes
+                    .iter()
+                    .find(|remote| remote.name == "origin")
+                    .or_else(|| snapshot.remotes.first())
+                    .and_then(|remote| remote.url.clone())
+            })?;
+            let remote = crate::remote::parse_remote(&origin)?;
+            matches!(remote.kind, crate::remote::ForgeKind::GitHub)
+                .then(|| format!("https://{}/{}/issues/$1", remote.host, remote.repo_path))
+        });
+        let Some(template) = template else {
+            self.status =
+                Some("no issue URL template (set git.issueUrl or use a GitHub origin)".to_string());
+            return;
+        };
+        let urls: Vec<String> = issue_refs(&summary)
+            .into_iter()
+            .map(|number| template.replace("$1", &number))
+            .collect();
+        if urls.is_empty() {
+            self.status = Some("no #123 issue references in this commit".to_string());
+            return;
+        }
+        let count = urls.len();
+        let _ = self.clipboard.set(&urls.join("\n"));
+        self.status = Some(format!(
+            "copied {count} issue URL{}",
+            if count == 1 { "" } else { "s" }
+        ));
+    }
+
     /// Fetch (and prune) every remote the snapshot knows.
     pub(super) fn scm_fetch(&mut self) {
         let remotes: Vec<String> = self
@@ -628,5 +714,42 @@ impl App {
             });
         }
         self.status = Some("fetching…".to_string());
+    }
+}
+
+/// The `#123` issue numbers referenced in `text`, in order, deduplicated.
+fn issue_refs(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '#'
+            && (i == 0 || !chars[i - 1].is_alphanumeric())
+            && chars.get(i + 1).is_some_and(char::is_ascii_digit)
+        {
+            let digits: String = chars[i + 1..]
+                .iter()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            i += 1 + digits.len();
+            if !out.contains(&digits) {
+                out.push(digits);
+            }
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+#[cfg(test)]
+mod issue_ref_tests {
+    use super::issue_refs;
+
+    #[test]
+    fn refs_parse_with_boundaries_and_dedup() {
+        assert_eq!(issue_refs("fix #12 and #345 (refs #12)"), vec!["12", "345"]);
+        assert!(issue_refs("sha1#123 and c#").is_empty());
+        assert!(issue_refs("no refs").is_empty());
     }
 }

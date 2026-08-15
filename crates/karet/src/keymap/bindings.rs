@@ -235,6 +235,7 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Pager, false, false, false, Home,      Command::Top),
     b(Pager, false, false, false, End,       Command::Bottom),
     b(Pager, false, false, false, Char(']'), Command::NextChangedFile),
+    b(Pager, false, false, false, Char('x'), Command::CommitToggleFileReviewed),
     b(Pager, false, false, false, Char('['), Command::PrevChangedFile),
     b(Pager, false, false, false, Char('q'), Command::CloseTab),
 

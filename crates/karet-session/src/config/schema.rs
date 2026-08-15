@@ -723,6 +723,11 @@ pub struct LspLanguage {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Git {
+    /// URL template for `#123` issue references in commit messages; `$1`
+    /// substitutes the number (e.g.
+    /// `"https://issues.example.com/browse/PROJ-$1"`). Left unset, GitHub
+    /// origins derive `https://github.com/<owner>/<repo>/issues/$1`.
+    pub issue_url: Option<String>,
     /// Show gutter change decorations and file-tree status colouring.
     pub decorations: bool,
     /// Show inline blame for the current line.
@@ -736,6 +741,7 @@ impl Default for Git {
         Self {
             decorations: true,
             blame: true,
+            issue_url: None,
             ai_commit: AiCommit::default(),
         }
     }

@@ -308,6 +308,9 @@ impl App {
                 self.jump_to_location(&path, position);
             },
             OverlayEvent::AcceptCommand(cmd) => self.dispatch(cmd),
+            OverlayEvent::AcceptRebaseTodo { onto, steps } => {
+                self.run_vcs_action(VcsAction::RebaseInteractive { onto, steps });
+            },
             OverlayEvent::AcceptDiffTarget { rev, label } => {
                 self.open_changes_with(&rev, &label);
             },

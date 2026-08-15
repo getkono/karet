@@ -367,6 +367,81 @@ mod tests {
     }
 
     #[test]
+    fn interactive_rebase_reorders_squashes_and_drops() -> Result<(), VcsError> {
+        let dir = init("ops-irebase")?;
+        let base = commit(&dir, "base\n", "base")?;
+        write(&dir.0, "a.txt", b"a\n")?;
+        git(&dir.0, &["add", "a.txt"])?;
+        git(&dir.0, &["commit", "-q", "-m", "add a"])?;
+        let a = git(&dir.0, &["rev-parse", "HEAD"])?;
+        write(&dir.0, "b.txt", b"b\n")?;
+        git(&dir.0, &["add", "b.txt"])?;
+        git(&dir.0, &["commit", "-q", "-m", "add b"])?;
+        let b = git(&dir.0, &["rev-parse", "HEAD"])?;
+        write(&dir.0, "c.txt", b"c\n")?;
+        git(&dir.0, &["add", "c.txt"])?;
+        git(&dir.0, &["commit", "-q", "-m", "add c"])?;
+        let c = git(&dir.0, &["rev-parse", "HEAD"])?;
+        let repo = Repository::discover(&dir.0)?;
+        // Reorder c before a, squash b into it, drop nothing.
+        repo.rebase_interactive(
+            &base,
+            &[
+                RebaseStep {
+                    action: RebaseAction::Pick,
+                    rev: c.clone(),
+                },
+                RebaseStep {
+                    action: RebaseAction::Fixup,
+                    rev: b.clone(),
+                },
+                RebaseStep {
+                    action: RebaseAction::Pick,
+                    rev: a.clone(),
+                },
+            ],
+        )?;
+        let subjects = git(&dir.0, &["log", "--format=%s", &format!("{base}..HEAD")])?;
+        assert_eq!(subjects.lines().collect::<Vec<_>>(), vec!["add a", "add c"]);
+        assert!(dir.0.join("a.txt").exists());
+        assert!(dir.0.join("b.txt").exists(), "fixup keeps b's content");
+        assert!(dir.0.join("c.txt").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn interactive_rebase_drop_removes_a_commit() -> Result<(), VcsError> {
+        let dir = init("ops-irebase-drop")?;
+        let base = commit(&dir, "base\n", "base")?;
+        write(&dir.0, "keep.txt", b"keep\n")?;
+        git(&dir.0, &["add", "keep.txt"])?;
+        git(&dir.0, &["commit", "-q", "-m", "keep"])?;
+        let keep = git(&dir.0, &["rev-parse", "HEAD"])?;
+        write(&dir.0, "gone.txt", b"gone\n")?;
+        git(&dir.0, &["add", "gone.txt"])?;
+        git(&dir.0, &["commit", "-q", "-m", "gone"])?;
+        let gone = git(&dir.0, &["rev-parse", "HEAD"])?;
+        let repo = Repository::discover(&dir.0)?;
+        repo.rebase_interactive(
+            &base,
+            &[
+                RebaseStep {
+                    action: RebaseAction::Pick,
+                    rev: keep,
+                },
+                RebaseStep {
+                    action: RebaseAction::Drop,
+                    rev: gone,
+                },
+            ],
+        )?;
+        assert!(dir.0.join("keep.txt").exists());
+        assert!(!dir.0.join("gone.txt").exists());
+        assert!(repo.rebase_interactive(&base, &[]).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn unresolvable_revisions_refuse_every_operation() -> Result<(), VcsError> {
         let dir = init("ops-badrev")?;
         commit(&dir, "one\n", "first")?;
@@ -376,5 +451,96 @@ mod tests {
         assert!(repo.reset(ResetMode::Hard, "not-a-rev").is_err());
         assert!(repo.checkout_detached("not-a-rev").is_err());
         Ok(())
+    }
+}
+
+/// One step of an interactive-rebase plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum RebaseAction {
+    /// Keep the commit as-is.
+    Pick,
+    /// Keep the commit, stopping to reword its message.
+    Reword,
+    /// Stop at the commit for amending.
+    Edit,
+    /// Meld into the previous commit, keeping both messages.
+    Squash,
+    /// Meld into the previous commit, discarding this message.
+    Fixup,
+    /// Remove the commit.
+    Drop,
+}
+
+impl RebaseAction {
+    /// The verb git's todo file spells this action with.
+    #[must_use]
+    pub const fn verb(self) -> &'static str {
+        match self {
+            Self::Pick => "pick",
+            Self::Reword => "reword",
+            Self::Edit => "edit",
+            Self::Squash => "squash",
+            Self::Fixup => "fixup",
+            Self::Drop => "drop",
+        }
+    }
+}
+
+/// One planned step: the action and the commit it applies to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RebaseStep {
+    /// What to do.
+    pub action: RebaseAction,
+    /// The commit, any resolvable spelling.
+    pub rev: String,
+}
+
+impl Repository {
+    /// Run an interactive rebase onto `onto` with a pre-planned todo list —
+    /// karet is the todo editor, so git never opens one. Steps apply oldest
+    /// first, exactly as a hand-edited todo file reads. `Reword` and `Edit`
+    /// stop the rebase (reword uses the original message; amend then
+    /// continue); conflicts land in the continue/abort/skip flow.
+    ///
+    /// # Errors
+    /// [`VcsError::Git`] on an unresolvable revision, an empty plan, a
+    /// conflict (operation left in progress), or a failed write.
+    pub fn rebase_interactive(&self, onto: &str, steps: &[RebaseStep]) -> Result<(), VcsError> {
+        if steps.is_empty() {
+            return Err(VcsError::Git("empty rebase plan".to_string()));
+        }
+        let onto = self.resolve_commit(onto)?;
+        let mut todo = String::new();
+        for step in steps {
+            let hash = self.resolve_commit(&step.rev)?;
+            todo.push_str(step.action.verb());
+            todo.push(' ');
+            todo.push_str(&hash);
+            todo.push('\n');
+        }
+        let todo_path = self
+            .inner
+            .path()
+            .join(format!("karet-rebase-todo-{}", std::process::id()));
+        std::fs::write(&todo_path, todo).map_err(|error| VcsError::Git(error.to_string()))?;
+        // `GIT_SEQUENCE_EDITOR` runs through sh; single quotes keep an odd
+        // .git path one argument. A quote inside the path cannot be escaped
+        // portably, so refuse rather than mis-execute.
+        let quoted = todo_path.to_string_lossy();
+        if quoted.contains('\'') {
+            let _ = std::fs::remove_file(&todo_path);
+            return Err(VcsError::Git(
+                "repository path contains a quote; interactive rebase unavailable".to_string(),
+            ));
+        }
+        let editor = format!("cp '{quoted}'");
+        let result = self.git_checked_with_env(
+            ["rebase", "--interactive", onto.as_str()],
+            &[("GIT_SEQUENCE_EDITOR", editor.as_str())],
+        );
+        let _ = std::fs::remove_file(&todo_path);
+        result.map(|_| ())
     }
 }

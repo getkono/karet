@@ -38,6 +38,42 @@ impl Repository {
             .map_err(|error| VcsError::GitUnavailable(error.to_string()))
     }
 
+    /// [`git_checked`](Self::git_checked) with extra environment overrides
+    /// (e.g. a prepared `GIT_SEQUENCE_EDITOR` for interactive rebase).
+    pub(crate) fn git_checked_with_env<I, S>(
+        &self,
+        args: I,
+        env: &[(&str, &str)],
+    ) -> Result<Output, VcsError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let mut command = Command::new("git");
+        command
+            .args(args)
+            .current_dir(self.workdir()?)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_EDITOR", "true")
+            .env("GIT_SEQUENCE_EDITOR", "true");
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        let output = command
+            .output()
+            .map_err(|error| VcsError::GitUnavailable(error.to_string()))?;
+        if output.status.success() {
+            Ok(output)
+        } else {
+            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            Err(VcsError::Git(if message.is_empty() {
+                format!("git exited with {}", output.status)
+            } else {
+                message
+            }))
+        }
+    }
+
     pub(crate) fn git_checked<I, S>(&self, args: I) -> Result<Output, VcsError>
     where
         I: IntoIterator<Item = S>,

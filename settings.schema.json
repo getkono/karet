@@ -590,6 +590,14 @@
           "description": "Show gutter change decorations and file-tree status colouring.",
           "type": "boolean",
           "default": true
+        },
+        "issueUrl": {
+          "description": "URL template for `#123` issue references in commit messages; `$1`\nsubstitutes the number (e.g.\n`\"https://issues.example.com/browse/PROJ-$1\"`). Left unset, GitHub\norigins derive `https://github.com/<owner>/<repo>/issues/$1`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         }
       },
       "additionalProperties": false
