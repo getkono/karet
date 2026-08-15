@@ -74,9 +74,16 @@ The explorer keeps its `F5` refresh while it has focus.
   adapters verify late, and the marker updates when they do).
 - The status bar carries the session state (`⏳ debug`, `▶ debug`,
   `⏸ breakpoint`); stops jump the editor to the stopped line.
-- Adapter/debuggee output is buffered (ANSI colors preserved) for the Debug
-  panel; stacks, variables, and the evaluate REPL arrive with it in the
-  debugger-inspection milestone.
+- The **Debug panel** (`Ctrl+6`, or its activity-bar icon) shows the stopped
+  thread's call stack (Enter on a frame jumps to it and loads its scopes), a
+  lazily-fetched variables tree (expand to fetch children; the first cheap
+  scope auto-expands), the evaluate log, and the console tail with ANSI
+  colors preserved. Everything per-stop clears on resume — nothing stale
+  survives a `continue`.
+- The stopped line carries its own background tint until the debuggee resumes.
+- **Evaluate** (palette: `Debug: Evaluate Expression`) prompts for an
+  expression and runs it in the selected frame's context; results (and adapter
+  rejections) append to the panel's evaluate log.
 
 ## Semantics worth knowing
 
