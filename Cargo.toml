@@ -32,7 +32,8 @@ categories   = ["text-editors", "command-line-utilities"]
 # rewrites the `version =` pin here only for crates it releases — so a pin on an
 # unpublished crate would go stale on the next bump (`karet-cbor = "^0.1.0"` can't match
 # the bumped `0.2.0` package) and break `cargo update`. Path-only keeps them resolvable.
-# (`karet-pdf` keeps its version: it IS published — `karet-fileview` depends on it.)
+# (`karet-pdf` keeps its version: it IS published — pure-Rust PDF rasterization has a
+# standalone consumer story; only the app consumes it in-workspace, behind `pdf`.)
 karet-core       = { path = "crates/karet-core", version = "0.5.0" }
 karet-filetype   = { path = "crates/karet-filetype", version = "0.5.0" }
 karet-text       = { path = "crates/karet-text", version = "0.5.0" }
@@ -44,7 +45,7 @@ karet-markdown   = { path = "crates/karet-markdown" }
 karet-cbor       = { path = "crates/karet-cbor" }
 karet-docx       = { path = "crates/karet-docx" }
 karet-lsp        = { path = "crates/karet-lsp", version = "0.5.0" }
-karet-dap        = { path = "crates/karet-dap", version = "0.5.0" }
+karet-dap        = { path = "crates/karet-dap" }
 karet-vcs        = { path = "crates/karet-vcs", version = "0.5.0" }
 karet-search     = { path = "crates/karet-search", version = "0.5.0" }
 karet-fuzzy      = { path = "crates/karet-fuzzy" }
