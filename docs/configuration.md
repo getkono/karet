@@ -131,6 +131,20 @@ Zsh, Fish, and EDN have their own selectors.
 | `useIgnoreFiles` | bool | `true` | Honour `.gitignore` / `.ignore`. |
 | `smartCase` | bool | `true` | Case-insensitive unless the query has an uppercase letter. |
 
+### `seam`
+
+The [Seam view](seam.md).
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `spine` | `"auto"` \| `"columns"` \| `"tree"` | `"auto"` | How the containment tree renders. `auto` cascades when the terminal is wide enough and falls back to an indented tree below that. |
+| `lensFilter` | `"demote"` \| `"hide"` | `"demote"` | Whether a lens filter dims non-matching rows or removes them. Demoting keeps the tree's shape stable as filters change, so you never lose your place to a row that vanished. |
+| `hideInactive` | bool | `false` | Hide nodes the active configuration excludes rather than dimming them. Off by default: a package is a family of trees, and hiding the branches this build excludes makes the one on screen look like the whole of it. |
+| `defaultLenses` | string[] | `[]` | Lenses to enable when the view opens (`api`, `substitution`, `variation`, `boundary`, `hazard`). |
+| `defaultConfiguration` | string \| null | `null` | The configuration to read the package under when the view opens. |
+| `indexOnStartup` | bool | `false` | Index the workspace package at session start. Off by default so startup is never delayed by a parse of every file; indexing begins when the view is first opened. |
+| `maxIndexedFiles` | number | `20000` | Stop indexing after this many files, marking the index truncated in the header. A runaway guard, not a policy. |
+
 ### `spellcheck`
 
 | Key | Type | Default | Meaning |

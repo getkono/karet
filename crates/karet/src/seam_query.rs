@@ -46,10 +46,9 @@ pub(crate) fn run(
 
     // A named configuration changes what the tree even contains, so it is applied
     // before the query rather than filtered afterwards.
-    let active = configuration.map_or_else(
-        karet_seam::Configuration::unconfigured,
-        |name| karet_seam::Configuration::named(name, Vec::new()),
-    );
+    let active = configuration.map_or_else(karet_seam::Configuration::unconfigured, |name| {
+        karet_seam::Configuration::named(name, Vec::new())
+    });
     karet_seam::config::apply(&mut index, &active);
 
     let parsed = karet_seam::query::parse(query).map_err(|error| QueryFailure {
