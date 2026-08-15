@@ -131,6 +131,10 @@ impl App {
                 variables,
             } => self.on_debug_variables(id, reference, variables),
             SessionEvent::DebugEvaluated { result, .. } => self.on_debug_evaluated(id, result),
+            SessionEvent::NotebookKernelStatus { text, .. } => {
+                self.status = Some(format!("notebook: {text}"));
+            },
+            SessionEvent::NotebookCellDone { .. } => {},
             SessionEvent::ManifestHints {
                 doc,
                 version,

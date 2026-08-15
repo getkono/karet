@@ -505,6 +505,24 @@ impl App {
         markdown: Result<String, String>,
     ) {
         let Some(view) = id.and_then(|id| self.pending_conversions.remove(&id)) else {
+            // Unsolicited (a notebook kernel re-rendered its preview):
+            // refresh matching previews in place, keeping their scroll.
+            if let Ok(text) = &markdown {
+                for tab in self.all_tabs_mut() {
+                    if let TabKind::MarkdownPreview {
+                        path: tab_path,
+                        buffer,
+                        rendered,
+                        pending_since: None,
+                        ..
+                    } = &mut tab.kind
+                        && tab_path == path
+                    {
+                        *buffer = karet_text::TextBuffer::from_text(text);
+                        *rendered = None;
+                    }
+                }
+            }
             return;
         };
         let mut failure = None;

@@ -247,6 +247,12 @@ pub enum Command {
     DebugStepOut,
     /// Prompt for an expression and evaluate it in the debuggee (the REPL).
     DebugEvaluatePrompt,
+    /// Run every code cell of the focused notebook preview on its kernel.
+    NotebookRunAll,
+    /// Interrupt the notebook kernel's running cell.
+    NotebookInterrupt,
+    /// Restart the notebook kernel (outputs are marked stale).
+    NotebookRestartKernel,
     /// Toggle bold (`**`) around the selection or word (Markdown; Ctrl+B).
     ToggleBold,
     /// Toggle italic (`*`) around the selection or word (Markdown; Ctrl+I).
@@ -668,6 +674,9 @@ impl Command {
             Self::DebugStepIn => "Debug: Step Into",
             Self::DebugStepOut => "Debug: Step Out",
             Self::DebugEvaluatePrompt => "Debug: Evaluate Expression",
+            Self::NotebookRunAll => "Notebook: Run All Cells",
+            Self::NotebookInterrupt => "Notebook: Interrupt Kernel",
+            Self::NotebookRestartKernel => "Notebook: Restart Kernel",
             Self::ToggleBold => "Markdown: Toggle Bold",
             Self::ToggleItalic => "Markdown: Toggle Italic",
             Self::ToggleStrikethrough => "Markdown: Toggle Strikethrough",
@@ -1047,6 +1056,9 @@ impl Command {
             | Self::DebugStepIn
             | Self::DebugStepOut
             | Self::DebugEvaluatePrompt
+            | Self::NotebookRunAll
+            | Self::NotebookInterrupt
+            | Self::NotebookRestartKernel
             | Self::ToggleBold
             | Self::ToggleItalic
             | Self::ToggleStrikethrough

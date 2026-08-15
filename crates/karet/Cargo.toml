@@ -23,7 +23,7 @@ path = "src/main.rs"
 # `--no-default-features` build compiles without the Gamut codec tree, `hayro`,
 # or the DOCX reader.
 [features]
-default = ["images", "pdf", "docx", "notebook", "mermaid"]
+default = ["images", "pdf", "docx", "notebook", "notebook-kernels", "mermaid"]
 # Decode & render raster image files (pulls the Gamut codec stack via
 # karet-fileview's `images` feature, which implies its shared `raster` primitives).
 images = ["karet-fileview/images"]
@@ -36,6 +36,8 @@ pdf = ["dep:karet-pdf", "karet-fileview/raster"]
 docx = ["karet-session/docx"]
 # Jupyter notebook previews (.ipynb → markdown); routing only, engine in the backend.
 notebook = ["karet-session/notebook"]
+# Run notebook cells on a Jupyter kernel from the preview (backend engine).
+notebook-kernels = ["notebook", "karet-session/notebook-kernel"]
 # Render ```mermaid fences in the markdown preview as Unicode diagrams (pulls
 # the pure-Rust merman engine via karet-markdown's `mermaid` feature).
 mermaid = ["karet-markdown/mermaid"]
