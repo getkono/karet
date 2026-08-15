@@ -21,6 +21,12 @@ through to the existing placeholder ("Image preview unavailable" / "PDF
 document" / "DOCX rendering is not available yet"). See `mise run build-lean`
 and the CI "Lean build" step.
 
+## The `mermaid` feature
+
+`mermaid` (default-on) pulls the pure-Rust `merman` parse/layout engine via
+`karet-markdown`'s `mermaid` feature to render diagram fences in the markdown
+preview; `--no-default-features` drops it with the rest.
+
 ## How to reproduce
 
 ```bash

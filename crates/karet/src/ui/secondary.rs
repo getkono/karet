@@ -175,6 +175,8 @@ pub(super) struct MarkdownPreviewRender<'a> {
     pub(super) root: &'a Path,
     /// Source editor line to align with, for an in-editor preview.
     pub(super) source_scroll: Option<usize>,
+    /// Fence languages to render as mermaid diagrams (`None` = disabled).
+    pub(super) mermaid: Option<&'a [String]>,
 }
 
 pub(super) fn draw_markdown_preview(
@@ -193,7 +195,11 @@ pub(super) fn draw_markdown_preview(
     let (area, tracks) = reserve_tracks(markdown_preview_rect(area), ScrollAxes::VERTICAL);
     let key = (preview.buffer.version(), area.width);
     if *preview.rendered != Some(key) {
-        *preview.wrapped = karet_markdown::parse(&preview.buffer.text()).wrap(area.width);
+        let mut doc = karet_markdown::parse(&preview.buffer.text());
+        if let Some(languages) = preview.mermaid {
+            substitute_mermaid(&mut doc.blocks, languages);
+        }
+        *preview.wrapped = doc.wrap(area.width);
         *preview.rendered = Some(key);
     }
     if let Some(source_line) = preview.source_scroll {
@@ -438,3 +444,51 @@ pub(super) fn render_hints(
         hits.push((start, *x, Command::OpenCommandPalette));
     }
 }
+
+/// Replace mermaid fences with their rendered diagrams, recursing into
+/// quotes and list items. Unsupported or unparsable diagrams keep their
+/// source under a one-line note. The renderer (parser + layout engine) is
+/// reused across fences and frames.
+#[cfg(feature = "mermaid")]
+fn substitute_mermaid(blocks: &mut [karet_markdown::Block], languages: &[String]) {
+    use karet_markdown::Block;
+    use karet_markdown::mermaid::MermaidCharset;
+    use karet_markdown::mermaid::MermaidOutcome;
+    use karet_markdown::mermaid::MermaidRenderer;
+    thread_local! {
+        static RENDERER: MermaidRenderer = MermaidRenderer::new(MermaidCharset::Unicode);
+    }
+    for block in blocks {
+        match block {
+            Block::CodeBlock {
+                lang: lang @ Some(_),
+                code,
+            } if lang
+                .as_deref()
+                .is_some_and(|l| languages.iter().any(|name| name.eq_ignore_ascii_case(l))) =>
+            {
+                match RENDERER.with(|renderer| renderer.render(code)) {
+                    MermaidOutcome::Diagram(lines) => {
+                        *lang = None;
+                        *code = lines.join("\n");
+                    },
+                    MermaidOutcome::Unsupported { reason } => {
+                        *lang = None;
+                        *code = format!("mermaid: {reason} — showing source\n\n{code}");
+                    },
+                }
+            },
+            Block::Quote(inner) => substitute_mermaid(inner, languages),
+            Block::List { items, .. } => {
+                for item in items {
+                    substitute_mermaid(&mut item.blocks, languages);
+                }
+            },
+            _ => {},
+        }
+    }
+}
+
+/// Compiled out: fences pass through untouched.
+#[cfg(not(feature = "mermaid"))]
+fn substitute_mermaid(_blocks: &mut [karet_markdown::Block], _languages: &[String]) {}

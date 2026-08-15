@@ -387,6 +387,9 @@ static REGISTRY: &[FileType] = &[
     // No tree-sitter grammar for Pkl is bundled: recognized (name, LSP id,
     // config selector) but explicitly grammar-less until one exists.
     language("Pkl", Config, None, &["pkl"], &[], (None, "pkl", "pkl")),
+    // Mermaid sources open as plain text; the markdown preview is where
+    // diagrams render (no dedicated grammar is bundled).
+    wrap("Mermaid", Markup, None, &["mmd", "mermaid"], &[]),
     language_named("XML", Markup, None, &["xml"], &[], "xml"),
     language(
         "SVG",

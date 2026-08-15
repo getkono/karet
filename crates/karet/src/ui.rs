@@ -357,6 +357,9 @@ struct PaneCtx<'a> {
     markdown_link_hover: Option<(u16, u16)>,
     /// Mouse position over a format-specific pane action.
     pane_action_hover: Option<(u16, u16)>,
+    /// Fence languages the markdown preview renders as mermaid diagrams
+    /// (`None` = rendering disabled or compiled out).
+    mermaid: Option<&'a [String]>,
 }
 
 /// What a rendered pane reported back for hit-testing and image placement.
