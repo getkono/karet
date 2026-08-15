@@ -476,6 +476,32 @@ impl Session {
             doc.buffer.version(),
             &doc.path,
         ) {
+            // No server offered formatting; TOML falls back to the built-in
+            // taplo formatter (same engine the taplo LSP would use).
+            #[cfg(feature = "toml-format")]
+            if doc.language_selector == Some("toml")
+                && self.config.settings.toml.format
+                && let Some(formatted) =
+                    crate::toml_format::format_toml(&doc.buffer.text(), &self.config.roots)
+            {
+                let version = doc.buffer.version();
+                let end_line = u32::try_from(doc.buffer.text().lines().count()).unwrap_or(u32::MAX);
+                self.emit(
+                    Some(id),
+                    Event::FormattingEdits {
+                        doc: doc_id,
+                        version,
+                        edits: vec![karet_core::TextEdit {
+                            range: karet_core::Range {
+                                start: karet_core::LineCol::new(0, 0),
+                                end: karet_core::LineCol::new(end_line, 0),
+                            },
+                            new_text: formatted,
+                        }],
+                    },
+                );
+                return;
+            }
             self.emit(
                 Some(id),
                 Event::FormattingEdits {

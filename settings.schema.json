@@ -40,6 +40,10 @@
       "description": "Spell-checking of prose and selected source-code tokens.",
       "$ref": "#/$defs/Spellcheck"
     },
+    "toml": {
+      "description": "TOML-specific behaviour.",
+      "$ref": "#/$defs/Toml"
+    },
     "wakatime": {
       "description": "WakaTime time-tracking (opt-in).",
       "$ref": "#/$defs/Wakatime"
@@ -60,7 +64,8 @@
     "lsp",
     "markdown",
     "wakatime",
-    "deps"
+    "deps",
+    "toml"
   ],
   "$defs": {
     "AiCommit": {
@@ -1049,6 +1054,18 @@
           "const": "none"
         }
       ]
+    },
+    "Toml": {
+      "description": "`toml.*` — TOML-specific behaviour.",
+      "type": "object",
+      "properties": {
+        "format": {
+          "description": "Format TOML documents with the built-in taplo formatter (honoring the\nworkspace's `.taplo.toml`) when no language server offers formatting.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
     },
     "Wakatime": {
       "description": "`wakatime.*` — WakaTime time tracking. **Off by default**: enabling it\nsends file names, project names, and editing activity to the configured\nWakaTime-compatible service.",

@@ -290,6 +290,12 @@ an external prerequisite.
 |---|---|---|---|
 | `enabled` | bool | `true` | Annotate open `Cargo.toml` dependencies with freshness and known advisories (crates.io sparse index + OSV over the network, cached; turn off when air-gapped). Hover a dependency line for details; "Dependencies: Update…" commands bump versions in place. |
 
+### `toml`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `format` | bool | `true` | Format TOML with the built-in taplo formatter (honouring the workspace's `.taplo.toml`) when no language server offers formatting; with the `taplo` LSP installed, its formatter wins. |
+
 ### `wakatime`
 
 **Off by default** — enabling it sends file names, project names, and editing

@@ -14,7 +14,7 @@ categories.workspace   = true
 publish = false                       # karet-internal backend — pulls the whole logic tree
 
 [features]
-default = ["github", "cbor", "viz", "mdlint", "deps"]
+default = ["github", "cbor", "viz", "mdlint", "deps", "toml-format"]
 # Lazily fetch a commit's "Verified" status from the GitHub REST API (the commit
 # view's signature badge) and drive the GitHub dashboard. NOTE: turning this off
 # does NOT drop reqwest — the managed-LSP registry uses it unconditionally.
@@ -36,6 +36,8 @@ mdlint = ["dep:karet-markdown"]
 # Cargo.toml dependency hints: latest-version and vulnerability checks via
 # dependable-fetch (network; per-document, cached, opt-out via deps.enabled).
 deps = ["dep:dependable-fetch"]
+# Built-in TOML formatting fallback (taplo), honoring the workspace .taplo.toml.
+toml-format = ["dep:taplo", "dep:toml"]
 # Generate the settings JSON Schema (build/tooling concern — the
 # settings-schema example and its freshness test; never needed at runtime).
 schema = ["dep:schemars"]
@@ -46,6 +48,8 @@ karet-text = { workspace = true, features = ["serde"] }
 karet-filetype = { workspace = true, features = ["serde"] } # classify + serde-ready vocabulary
 karet-markdown = { workspace = true, optional = true, features = ["lint"] } # the mdlint producer
 dependable-fetch = { workspace = true, optional = true } # Cargo.toml dependency hints
+taplo = { workspace = true, optional = true } # built-in TOML formatting fallback
+toml = { workspace = true, optional = true } # read .taplo.toml formatter options
 karet-cbor = { workspace = true, optional = true } # decode/encode CBOR ↔ editable diagnostic text (feature `cbor`)
 karet-docx = { workspace = true, optional = true } # DOCX → markdown for read-only previews (feature `docx`)
 karet-treesitter.workspace = true

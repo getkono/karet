@@ -62,6 +62,10 @@ karet-github     = { path = "crates/karet-github" }
 # `-fetch` (async registry + OSV checking for Cargo.toml hints). Same author,
 # alpha line — pinned to the exact published version karet was built against.
 dependable-fetch = "=0.1.2"
+# TOML formatting for the built-in fallback (taplo the library, not the LSP:
+# lossless CST + the ~20 even-better-toml options; pure Rust, no network).
+taplo = "0.14.0"
+toml  = "1.1.4"                        # read .taplo.toml formatter options
 # blameline is a standalone library on its OWN SemVer line (NOT the workspace lockstep);
 # pin its independent version here. See crates/blameline/README.md.
 blameline        = { path = "crates/blameline", version = "2.0.0", default-features = false }
