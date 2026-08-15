@@ -297,6 +297,16 @@ an external prerequisite.
 |---|---|---|---|
 | `format` | bool | `true` | Format TOML with the built-in taplo formatter (honouring the workspace's `.taplo.toml`) when no language server offers formatting; with the `taplo` LSP installed, its formatter wins. |
 
+### `debug`
+
+karet speaks the Debug Adapter Protocol; see [debugging](debugging.md) for the
+whole story. No launch.json compatibility layer — configurations live here.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `adapters` | object | `{}` | Debug adapters by name: `{ "command", "args", "transport": "stdio" \| "tcp" }`. Under `tcp`, `${port}` in `args` is replaced with a free port. The built-in fallbacks `codelldb`, `lldb-dap`, `gdb`, and `debugpy` need no entry when on `PATH`. |
+| `configurations` | array | `[]` | The Debug: Start (`F5`) entries: `{ "name", "adapter", "attach": false, "arguments": { … } }` — `arguments` passes to the adapter verbatim (`program`, `args`, `cwd`, `pid`, …). |
+
 ### `wakatime`
 
 **Off by default** — enabling it sends file names, project names, and editing
