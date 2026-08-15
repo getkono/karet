@@ -39,6 +39,10 @@ pub enum Command {
     SelectPanel(SidebarPanel),
     /// Re-run the workspace spelling scan behind the Spelling panel.
     SpellingScan,
+    /// Re-run the workspace codetag scan behind the Todos panel.
+    TodoScan,
+    /// Switch the Todos panel between by-file and by-tag grouping.
+    TodoToggleGrouping,
     /// Open the quick-open (go-to-file) overlay.
     OpenQuickOpen,
     /// Open the command palette overlay.
@@ -510,7 +514,10 @@ impl Command {
             Self::SelectPanel(SidebarPanel::Search) => "View: Show Search",
             Self::SelectPanel(SidebarPanel::SourceControl) => "View: Show Source Control",
             Self::SelectPanel(SidebarPanel::Spelling) => "View: Show Spelling",
+            Self::SelectPanel(SidebarPanel::Todos) => "View: Show Todos",
             Self::SpellingScan => "Spelling: Scan Workspace",
+            Self::TodoScan => "Todos: Scan Workspace",
+            Self::TodoToggleGrouping => "Todos: Toggle Grouping (File / Tag)",
             Self::OpenQuickOpen => "Go to File…",
             Self::OpenCommandPalette => "Show All Commands",
             Self::OpenFind => "Find in File…",
@@ -753,6 +760,8 @@ impl Command {
             Self::SelectPanel(SidebarPanel::Search) => "search",
             Self::SelectPanel(SidebarPanel::SourceControl) => "git",
             Self::SelectPanel(SidebarPanel::Spelling) => "spelling",
+            Self::SelectPanel(SidebarPanel::Todos) => "todos",
+            Self::TodoScan | Self::TodoToggleGrouping => "todos",
             Self::SpellingScan => "scan",
             Self::GoToDefinition => "definition",
             Self::JumpBack => "back",

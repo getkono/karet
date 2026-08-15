@@ -289,12 +289,21 @@ impl App {
                 hits,
                 files_scanned,
             } => self.spelling_scan_progress(id, hits, files_scanned),
+            SessionEvent::TodoScanProgress {
+                hits,
+                files_scanned,
+            } => self.todo_scan_progress(id, hits, files_scanned),
             SessionEvent::SpellingUpdated { path, hits } => self.spelling_updated(&path, hits),
             SessionEvent::SpellingScanFinished {
                 files_scanned,
                 truncated,
                 ..
             } => self.spelling_scan_finished(id, files_scanned, truncated),
+            SessionEvent::TodoScanFinished {
+                files_scanned,
+                truncated,
+                ..
+            } => self.todo_scan_finished(id, files_scanned, truncated),
             SessionEvent::RemoteFacts { path, facts } => self.apply_remote_facts(path, facts),
             SessionEvent::ChangePrepared {
                 path,

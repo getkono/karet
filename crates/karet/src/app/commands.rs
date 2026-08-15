@@ -13,6 +13,9 @@ impl App {
                 if panel == SidebarPanel::Spelling && !self.spelling_available() {
                     return;
                 }
+                if panel == SidebarPanel::Todos && !self.todos_available() {
+                    return;
+                }
                 self.sidebar_panel = panel;
                 self.sidebar_visible = true;
                 self.focus = Focus::Sidebar;
@@ -27,6 +30,10 @@ impl App {
                 // starts a scan rather than presenting an empty list.
                 if panel == SidebarPanel::Spelling {
                     self.show_spelling();
+                }
+                // Same lazy-first-load shape for the Todos panel.
+                if panel == SidebarPanel::Todos {
+                    self.show_todos();
                 }
             },
             Command::OpenQuickOpen => self.open_quick_open(),
@@ -139,6 +146,8 @@ impl App {
             Command::MarkdownHeadingUp => self.markdown_heading_shift(1),
             Command::MarkdownHeadingDown => self.markdown_heading_shift(-1),
             Command::MarkdownLintFixAll => self.markdown_lint_fix_all(),
+            Command::TodoScan => self.scan_workspace_todos(),
+            Command::TodoToggleGrouping => self.todos_toggle_grouping(),
             Command::GoToDefinition => self.request_definition(),
             Command::JumpBack => self.jump_back(),
             Command::InsertChar(c) => {

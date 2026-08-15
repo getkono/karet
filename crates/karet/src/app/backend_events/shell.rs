@@ -39,6 +39,7 @@ impl App {
             // Turning the checker off retires the panel; otherwise the list it is
             // showing is now wrong and has to be walked again.
             self.sync_spelling_availability();
+            self.sync_todos_availability();
             self.invalidate_spelling();
         }
         for tab in self.all_tabs_mut() {

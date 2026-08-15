@@ -71,6 +71,8 @@ impl App {
             pending: Vec::new(),
             search: SearchPanel::default(),
             spelling: SpellingPanel::default(),
+            todos: TodosPanel::default(),
+            todos_ui: TodosChrome::default(),
             status: None,
             notifications: NotificationCenter::default(),
             toast_hits: Vec::new(),

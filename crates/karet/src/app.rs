@@ -37,6 +37,7 @@ mod spelling;
 mod startup;
 mod state;
 mod tabs;
+mod todos;
 mod util;
 
 #[cfg(test)]
@@ -429,6 +430,10 @@ pub struct App {
     pub(crate) search_ui: SearchChrome,
     /// The Spelling panel's last-frame render chrome.
     pub(crate) spelling_ui: SpellingChrome,
+    /// The Todos panel state.
+    pub(crate) todos: TodosPanel,
+    /// The Todos panel's per-frame chrome.
+    pub(crate) todos_ui: TodosChrome,
     /// The status bar rect from the last frame (mouse hit-testing).
     pub(crate) status_rect: Rect,
     /// Clickable status-bar segments `(start, end, command)` from the last frame.
