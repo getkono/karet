@@ -93,6 +93,18 @@ On an architecture for which a normally managed provider has no verified upstrea
 artifact, the manager reports that platform-specific reason and treats the provider
 as manual. Currently this applies to clangd on ARM.
 
+### Java (jdtls) specifics
+
+karet launches jdtls with a stable per-project workspace: unless the configured
+args already pass `-data`, it appends `-data <cache dir>/karet/jdtls/<hash of
+the repository root>`, so re-opening a project reuses the previous import
+instead of re-indexing from scratch. Because a JDK 21 or newer is required to
+*run* jdtls, karet probes `java -version` before the first launch and reports a
+specific diagnosis (missing `java`, or an older version) rather than an opaque
+spawn failure; karet never downloads a JDK. During the initial import — which
+can take a minute or two on a large build — jdtls's `language/status`
+notifications are forwarded to the status line so the server never looks hung.
+
 ## Capability ownership and overlap
 
 Only one provider owns a capability that produces edits or navigation results.
