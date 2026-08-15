@@ -150,6 +150,33 @@ impl App {
             Command::DepsRefresh => self.deps_refresh(),
             Command::DepsUpdate => self.deps_update_at_caret(),
             Command::DepsUpdateAll => self.deps_update_all(),
+            Command::CommitGraphMenu => self.commit_graph_menu(),
+            Command::CommitGraphTag => self.commit_graph_tag(),
+            Command::CommitGraphCherryPick => {
+                self.commit_graph_op("cherry-pick", |rev| VcsAction::CherryPick { rev });
+            },
+            Command::CommitGraphRevert => {
+                self.commit_graph_op("revert", |rev| VcsAction::Revert { rev });
+            },
+            Command::CommitGraphResetSoft => {
+                self.commit_graph_op("soft reset", |rev| VcsAction::Reset {
+                    mode: karet_vcs::ResetMode::Soft,
+                    rev,
+                });
+            },
+            Command::CommitGraphResetMixed => {
+                self.commit_graph_op("mixed reset", |rev| VcsAction::Reset {
+                    mode: karet_vcs::ResetMode::Mixed,
+                    rev,
+                });
+            },
+            Command::CommitGraphResetHard => self.commit_graph_reset_hard(),
+            Command::CommitGraphCheckout => {
+                self.commit_graph_op("detached checkout", |rev| VcsAction::CheckoutDetached {
+                    rev,
+                });
+            },
+            Command::ScmFetch => self.scm_fetch(),
             Command::TodoToggleGrouping => self.todos_toggle_grouping(),
             Command::GoToDefinition => self.request_definition(),
             Command::JumpBack => self.jump_back(),

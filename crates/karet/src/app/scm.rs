@@ -70,6 +70,7 @@ impl App {
             Command::ScmDeleteBranch,
             Command::ScmDeleteRemoteBranch,
             Command::ScmRefresh,
+            Command::ScmFetch,
         ];
         if let Some(operation) = self
             .scm

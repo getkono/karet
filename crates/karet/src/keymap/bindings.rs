@@ -251,6 +251,8 @@ pub(super) static BINDINGS: &[Binding] = &[
     // current selection against it.
     b(CommitGraph, false, false, false, Char('m'), Command::CommitGraphMarkBase),
     b(CommitGraph, false, false, false, Char('c'), Command::CommitGraphCompare),
+    b(CommitGraph, false, false, false, Char('.'), Command::CommitGraphMenu),
+    b(CommitGraph, false, false, false, Char('t'), Command::CommitGraphTag),
 
     // Editor focus, a too-large-file placeholder: bypass the size guard on demand.
     // Enter loads it anyway; Esc is intentionally unbound so repeated Esc never

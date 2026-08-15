@@ -366,6 +366,8 @@ pub(crate) struct Scm {
     pub(crate) selection: ListSelection,
     /// The loaded commit-log page(s), newest first (lazily fetched).
     pub(crate) log: Vec<Commit>,
+    /// Every ref per commit hash, refreshed with each log page.
+    pub(crate) ref_labels: HashMap<String, Vec<karet_vcs::RefLabel>>,
     /// Whether more commits exist beyond the loaded ones.
     pub(crate) log_has_more: bool,
     /// Whether a log page request is currently in flight.

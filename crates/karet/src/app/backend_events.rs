@@ -219,7 +219,8 @@ impl App {
                 skip,
                 commits,
                 has_more,
-            } => self.on_vcs_log(id, skip, commits, has_more),
+                labels,
+            } => self.on_vcs_log(id, skip, commits, has_more, labels),
             SessionEvent::FileHistory {
                 skip,
                 commits,

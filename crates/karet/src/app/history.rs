@@ -536,3 +536,97 @@ impl App {
 fn commit_file_views(changes: Vec<PreparedChange>) -> Vec<FileView> {
     changes.into_iter().map(FileView::new).collect()
 }
+
+impl App {
+    /// The hash of the graph browser's selected commit.
+    fn selected_graph_commit(&self) -> Option<String> {
+        match &self.tabs.get(self.active)?.kind {
+            TabKind::CommitGraph {
+                commits, selected, ..
+            } => commits.get(*selected).map(|commit| commit.hash.clone()),
+            _ => None,
+        }
+    }
+
+    /// Open the action menu for the selected commit (`.` in the graph).
+    pub(super) fn commit_graph_menu(&mut self) {
+        let Some(hash) = self.selected_graph_commit() else {
+            return;
+        };
+        let short: String = hash.chars().take(7).collect();
+        self.overlay = Some(Overlay::commands(
+            format!("Commit {short}"),
+            vec![
+                Command::CommitGraphTag,
+                Command::CommitGraphCherryPick,
+                Command::CommitGraphRevert,
+                Command::CommitGraphCheckout,
+                Command::CommitGraphResetSoft,
+                Command::CommitGraphResetMixed,
+                Command::CommitGraphResetHard,
+                Command::CommitGraphMarkBase,
+                Command::CommitGraphCompare,
+            ],
+        ));
+    }
+
+    /// Prompt for a tag name on the selected commit.
+    pub(super) fn commit_graph_tag(&mut self) {
+        let Some(rev) = self.selected_graph_commit() else {
+            return;
+        };
+        let short: String = rev.chars().take(7).collect();
+        self.overlay = Some(Overlay::text(
+            format!("Tag name for {short}"),
+            crate::overlay::TextPurpose::TagCreate { rev },
+        ));
+    }
+
+    /// Run one non-destructive graph operation on the selected commit.
+    pub(super) fn commit_graph_op(&mut self, verb: &str, action: impl FnOnce(String) -> VcsAction) {
+        let Some(rev) = self.selected_graph_commit() else {
+            return;
+        };
+        let short: String = rev.chars().take(7).collect();
+        self.status = Some(format!("{verb}: {short}"));
+        self.run_vcs_action(action(rev));
+    }
+
+    /// Hard reset requires typing `reset` — it discards local changes.
+    pub(super) fn commit_graph_reset_hard(&mut self) {
+        let Some(rev) = self.selected_graph_commit() else {
+            return;
+        };
+        let short: String = rev.chars().take(7).collect();
+        self.overlay = Some(Overlay::text(
+            format!("Type reset to hard-reset to {short} (discards local changes)"),
+            crate::overlay::TextPurpose::ConfirmResetHard { rev },
+        ));
+    }
+
+    /// Fetch (and prune) every remote the snapshot knows.
+    pub(super) fn scm_fetch(&mut self) {
+        let remotes: Vec<String> = self
+            .scm
+            .repository
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .remotes
+                    .iter()
+                    .map(|remote| remote.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if remotes.is_empty() {
+            self.status = Some("fetch: no remotes".to_string());
+            return;
+        }
+        for remote in remotes {
+            self.send(SessionCommand::VcsAction {
+                action: VcsAction::Fetch { remote },
+            });
+        }
+        self.status = Some("fetching…".to_string());
+    }
+}

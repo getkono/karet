@@ -173,7 +173,9 @@ impl App {
         skip: usize,
         commits: Vec<Commit>,
         has_more: bool,
+        labels: std::collections::HashMap<String, Vec<karet_vcs::RefLabel>>,
     ) {
+        self.scm.ref_labels = labels;
         if id.is_some_and(|request| {
             self.graph_log_req
                 .is_some_and(|(pending, _)| pending == request)

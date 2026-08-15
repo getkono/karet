@@ -295,6 +295,12 @@ pub(super) fn draw_scm_commits(
             time: commit.time,
             parents: &commit.parents,
             head: i == 0 && app.scm_ui.commits_offset == 0,
+            labels: app
+                .scm
+                .ref_labels
+                .get(commit.hash.as_str())
+                .map(Vec::as_slice)
+                .unwrap_or_default(),
         })
         .collect();
     let mut items = commit_list_items(theme, &entries, None, true);

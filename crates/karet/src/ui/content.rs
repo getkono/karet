@@ -418,6 +418,7 @@ pub(super) fn draw_pane_content(
             theme,
             area,
             commits,
+            ctx.ref_labels,
             *has_more,
             *loading,
             *loading_since,

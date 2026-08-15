@@ -34,6 +34,7 @@ impl App {
                 changes,
                 staged_count,
                 log: Vec::new(),
+                ref_labels: HashMap::new(),
                 log_has_more: false,
                 log_loading: false,
                 log_loading_since: None,
