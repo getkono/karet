@@ -765,6 +765,13 @@
       "description": "`markdown.*` — Markdown-specific editing behaviour.",
       "type": "object",
       "properties": {
+        "lint": {
+          "description": "Markdown linting (the markdownlint rule core).",
+          "$ref": "#/$defs/MarkdownLint",
+          "default": {
+            "enabled": true
+          }
+        },
         "listContinuation": {
           "description": "Continue list items on Enter: repeat the marker, advance ordered\nnumbering (renumbering the run), carry task checkboxes, and end the\nlist when Enter is pressed on an empty item.",
           "type": "boolean",
@@ -777,6 +784,18 @@
             "maxLevel": 6,
             "minLevel": 2
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "MarkdownLint": {
+      "description": "`markdown.lint.*` — markdown linting.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Lint Markdown documents as they change, surfacing issues as\ndiagnostics. Rule selection follows the workspace's\n`.markdownlint.json` when present.",
+          "type": "boolean",
+          "default": true
         }
       },
       "additionalProperties": false

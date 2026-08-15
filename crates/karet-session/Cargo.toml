@@ -14,7 +14,7 @@ categories.workspace   = true
 publish = false                       # karet-internal backend — pulls the whole logic tree
 
 [features]
-default = ["github", "cbor", "viz"]
+default = ["github", "cbor", "viz", "mdlint"]
 # Lazily fetch a commit's "Verified" status from the GitHub REST API (the commit
 # view's signature badge) and drive the GitHub dashboard. NOTE: turning this off
 # does NOT drop reqwest — the managed-LSP registry uses it unconditionally.
@@ -31,6 +31,8 @@ cbor = ["dep:karet-cbor"]
 docx = ["dep:karet-docx"]
 # The Cargo.lock package-dependency graph lens. On by default.
 viz = ["dep:dependable-core"]
+# Markdown linting: the markdownlint-core rules surface as diagnostics.
+mdlint = ["dep:karet-markdown"]
 # Generate the settings JSON Schema (build/tooling concern — the
 # settings-schema example and its freshness test; never needed at runtime).
 schema = ["dep:schemars"]
@@ -39,6 +41,7 @@ schema = ["dep:schemars"]
 karet-core = { workspace = true, features = ["serde"] }   # serde-ready seam models
 karet-text = { workspace = true, features = ["serde"] }
 karet-filetype = { workspace = true, features = ["serde"] } # classify + serde-ready vocabulary
+karet-markdown = { workspace = true, optional = true, features = ["lint"] } # the mdlint producer
 karet-cbor = { workspace = true, optional = true } # decode/encode CBOR ↔ editable diagnostic text (feature `cbor`)
 karet-docx = { workspace = true, optional = true } # DOCX → markdown for read-only previews (feature `docx`)
 karet-treesitter.workspace = true

@@ -51,6 +51,8 @@ pub struct Markdown {
     pub list_continuation: bool,
     /// Table-of-contents generation.
     pub toc: MarkdownToc,
+    /// Markdown linting (the markdownlint rule core).
+    pub lint: MarkdownLint,
 }
 
 impl Default for Markdown {
@@ -59,7 +61,26 @@ impl Default for Markdown {
         Self {
             list_continuation: true,
             toc: MarkdownToc::default(),
+            lint: MarkdownLint::default(),
         }
+    }
+}
+
+/// `markdown.lint.*` — markdown linting.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct MarkdownLint {
+    /// Lint Markdown documents as they change, surfacing issues as
+    /// diagnostics. Rule selection follows the workspace's
+    /// `.markdownlint.json` when present.
+    pub enabled: bool,
+}
+
+impl Default for MarkdownLint {
+    /// On by default.
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 

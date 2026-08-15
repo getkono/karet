@@ -120,6 +120,7 @@ impl Session {
             syntax_symbols: Arc::default(),
             error_lines: Arc::default(),
             spell_diagnostics: Vec::new(),
+            lint_diagnostics: Vec::new(),
             lsp_diagnostics: HashMap::new(),
             decorations: Vec::new(),
             refs: 1,

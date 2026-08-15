@@ -18,6 +18,8 @@ mod github;
 mod lifecycle;
 mod lsp_commands;
 mod lsp_registry_updates;
+#[cfg(feature = "mdlint")]
+mod mdlint;
 mod persistence;
 mod spelling;
 mod updates;
@@ -330,6 +332,9 @@ struct Document {
     error_lines: Arc<Vec<(u32, u32)>>,
     /// Last spell-check diagnostics emitted for this exact document state.
     spell_diagnostics: Vec<karet_core::Diagnostic>,
+    /// Last markdown-lint diagnostics (empty for non-Markdown documents or
+    /// when the `mdlint` feature is off).
+    lint_diagnostics: Vec<karet_core::Diagnostic>,
     /// Last language-server diagnostics accepted for this document version.
     lsp_diagnostics: HashMap<String, Vec<karet_core::Diagnostic>>,
     decorations: Vec<Decoration>,
@@ -387,6 +392,9 @@ pub struct Session {
     highlight_rx: Option<mpsc::UnboundedReceiver<HighlightResult>>,
     /// Jobs for the debounced token-aware spell worker.
     spell_tx: std::sync::mpsc::Sender<SpellJob>,
+    /// The workspace's markdown-lint configuration, read once at startup.
+    #[cfg(feature = "mdlint")]
+    lint_config: karet_markdown::lint::Config,
     /// Spell results, taken by the local backend actor.
     spell_rx: Option<mpsc::UnboundedReceiver<SpellResult>>,
     /// Last dictionary/load error per document, used to suppress edit-time spam.
