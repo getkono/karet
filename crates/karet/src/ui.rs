@@ -398,6 +398,8 @@ struct PaneCtx<'a> {
     color_highlight: bool,
     /// Dependency-freshness hints per open manifest.
     manifest_hints: &'a HashMap<DocumentId, (u64, Vec<karet_session::ManifestHint>)>,
+    /// Armed breakpoints per absolute file path: line → verified.
+    breakpoints: &'a HashMap<PathBuf, std::collections::BTreeMap<u32, bool>>,
     /// Every ref per commit hash, for log-row decorations.
     ref_labels: &'a HashMap<String, Vec<karet_vcs::RefLabel>>,
 }

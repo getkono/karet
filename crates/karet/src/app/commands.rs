@@ -135,6 +135,13 @@ impl App {
             Command::TriggerCompletion => self.trigger_completion(true),
             Command::Hover => self.request_hover(),
             Command::ShowDiagnostic => self.show_diagnostic(),
+            Command::DebugStart => self.debug_start_or_continue(),
+            Command::DebugStop => self.debug_send(SessionCommand::DebugStop),
+            Command::DebugPause => self.debug_send(SessionCommand::DebugPause),
+            Command::DebugToggleBreakpoint => self.debug_toggle_breakpoint(),
+            Command::DebugStepOver => self.debug_step(SessionCommand::DebugStepOver),
+            Command::DebugStepIn => self.debug_step(SessionCommand::DebugStepIn),
+            Command::DebugStepOut => self.debug_step(SessionCommand::DebugStepOut),
             Command::ToggleBold => {
                 self.toggle_markdown_surround("**", Some(Command::ToggleSidebar));
             },

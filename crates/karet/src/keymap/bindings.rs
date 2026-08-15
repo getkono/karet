@@ -14,6 +14,16 @@ pub(super) static BINDINGS: &[Binding] = &[
     // F1 is a terminal-safe alternate for the command palette: some emulators
     // capture Ctrl+Shift+P before it reaches the app (see the app README).
     b(Global, false, false, false, F(1),      Command::OpenCommandPalette),
+
+    // Debugger run controls (VS Code parity). Explorer keeps its F5 refresh:
+    // its layer outranks Global while the explorer has focus.
+    b(Global, false, false, false, F(5),      Command::DebugStart),
+    b(Global, false, true,  false, F(5),      Command::DebugStop),
+    b(Global, false, false, false, F(6),      Command::DebugPause),
+    b(Global, false, false, false, F(9),      Command::DebugToggleBreakpoint),
+    b(Global, false, false, false, F(10),     Command::DebugStepOver),
+    b(Global, false, false, false, F(11),     Command::DebugStepIn),
+    b(Global, false, true,  false, F(11),     Command::DebugStepOut),
     b(Global, true,  false, false, Char('f'), Command::OpenFind),
     b(Global, true,  true,  false, Char('f'), Command::OpenGlobalSearch),
     b(Global, true,  false, false, Char('b'), Command::ToggleSidebar),

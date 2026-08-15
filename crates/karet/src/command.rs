@@ -231,6 +231,20 @@ pub enum Command {
     /// Open the diagnostics under the caret in a scrollable detail view
     /// (Ctrl+K Ctrl+M) — the surface for long, formatted errors.
     ShowDiagnostic,
+    /// Start a debug session, or continue a stopped one (F5).
+    DebugStart,
+    /// End the debug session (Shift+F5).
+    DebugStop,
+    /// Pause the running debuggee (F6).
+    DebugPause,
+    /// Toggle a breakpoint on the caret line (F9).
+    DebugToggleBreakpoint,
+    /// Step over the current line (F10).
+    DebugStepOver,
+    /// Step into the call at the stop location (F11).
+    DebugStepIn,
+    /// Step out of the current frame (Shift+F11).
+    DebugStepOut,
     /// Toggle bold (`**`) around the selection or word (Markdown; Ctrl+B).
     ToggleBold,
     /// Toggle italic (`*`) around the selection or word (Markdown; Ctrl+I).
@@ -643,6 +657,13 @@ impl Command {
             Self::TriggerCompletion => "Trigger Suggest",
             Self::Hover => "Show Hover",
             Self::ShowDiagnostic => "Show Diagnostic Detail",
+            Self::DebugStart => "Debug: Start / Continue",
+            Self::DebugStop => "Debug: Stop",
+            Self::DebugPause => "Debug: Pause",
+            Self::DebugToggleBreakpoint => "Debug: Toggle Breakpoint",
+            Self::DebugStepOver => "Debug: Step Over",
+            Self::DebugStepIn => "Debug: Step Into",
+            Self::DebugStepOut => "Debug: Step Out",
             Self::ToggleBold => "Markdown: Toggle Bold",
             Self::ToggleItalic => "Markdown: Toggle Italic",
             Self::ToggleStrikethrough => "Markdown: Toggle Strikethrough",
@@ -1013,6 +1034,13 @@ impl Command {
             | Self::TriggerCompletion
             | Self::Hover
             | Self::ShowDiagnostic
+            | Self::DebugStart
+            | Self::DebugStop
+            | Self::DebugPause
+            | Self::DebugToggleBreakpoint
+            | Self::DebugStepOver
+            | Self::DebugStepIn
+            | Self::DebugStepOut
             | Self::ToggleBold
             | Self::ToggleItalic
             | Self::ToggleStrikethrough

@@ -135,8 +135,11 @@ pub(super) fn draw_pane_content(
                 // Local find and global search highlights are kept in separate
                 // fields (so closing/rerunning one can't wipe the other) and
                 // combined only here, at render time.
-                let frame_decos =
+                let mut frame_decos =
                     swatches::frame_decorations(ctx, *doc, buffer, tab.editor.scroll_line, area);
+                if let Some(file_breakpoints) = ctx.breakpoints.get(path.as_path()) {
+                    frame_decos.extend(swatches::breakpoint_decorations(file_breakpoints));
+                }
                 let combined: Vec<Decoration> = decos
                     .iter()
                     .chain(search_decos.iter())
