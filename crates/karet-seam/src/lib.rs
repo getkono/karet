@@ -37,6 +37,7 @@
 //! asynchronously and never gates rendering. The **manifest** tier supplies the
 //! configuration set. Nothing structural ever waits on anything semantic.
 
+pub mod config;
 pub mod edge;
 pub mod extract;
 pub mod id;
@@ -48,6 +49,10 @@ pub mod package;
 pub mod rollup;
 pub mod text;
 
+pub use config::CfgEnv;
+pub use config::CfgPredicate;
+pub use config::Configuration;
+pub use config::Truth;
 pub use edge::Edge;
 pub use edge::EdgeKind;
 pub use edge::EdgeStore;
