@@ -88,6 +88,10 @@ crossterm = "0.29.0"
 # `karet-image` once that system dependency is acceptable.
 unicode-width = "0.2.2"
 url = "2.5.8"
+# Mermaid diagrams (pure Rust; ASCII/Unicode rendering for the markdown preview).
+# Pinned exactly: the crate is alpha with documented API churn, and 0.8.x raises
+# its MSRV past the workspace floor.
+merman = { version = "=0.7.0-alpha.1", default-features = false, features = ["ascii"] }
 # Text / rope
 ropey    = "1.6.1"
 tempfile = "3.27"                      # atomic crash-safe file saves (karet-text)
