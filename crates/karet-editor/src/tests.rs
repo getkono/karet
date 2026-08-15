@@ -33,6 +33,102 @@ fn inline_text_decoration_renders_after_the_line() {
 }
 
 #[test]
+fn color_swatch_paints_the_color_with_a_contrasting_foreground() {
+    let buffer = TextBuffer::from_text("#ffcc00 and #222222\n");
+    let theme = Theme::dark();
+    let Ok(light) = Range::new(LineCol::new(0, 0), LineCol::new(0, 7)) else {
+        return;
+    };
+    let Ok(dark) = Range::new(LineCol::new(0, 12), LineCol::new(0, 19)) else {
+        return;
+    };
+    let decorations = [
+        Decoration {
+            range: light,
+            kind: DecorationKind::ColorSwatch {
+                rgba: [0xff, 0xcc, 0x00, 0xff],
+            },
+            role: None,
+        },
+        Decoration {
+            range: dark,
+            kind: DecorationKind::ColorSwatch {
+                rgba: [0x22, 0x22, 0x22, 0xff],
+            },
+            role: None,
+        },
+    ];
+    let mut state = EditorState::new();
+    let area = Rect::new(0, 0, 30, 1);
+    let mut buf = Buffer::empty(area);
+    Editor::new(&buffer)
+        .theme(&theme)
+        .decorations(&decorations)
+        .render(area, &mut buf, &mut state);
+    let gutter = 3;
+    // A light chip takes the literal's color as background and flips to a black
+    // foreground; a dark chip keeps white text.
+    assert_eq!(
+        buf[(gutter, 0)].bg,
+        Rgba::rgb(0xff, 0xcc, 0x00).to_ratatui()
+    );
+    assert_eq!(buf[(gutter, 0)].fg, Rgba::rgb(0, 0, 0).to_ratatui());
+    assert_eq!(
+        buf[(gutter + 12, 0)].bg,
+        Rgba::rgb(0x22, 0x22, 0x22).to_ratatui()
+    );
+    assert_eq!(
+        buf[(gutter + 12, 0)].fg,
+        Rgba::rgb(255, 255, 255).to_ratatui()
+    );
+    // The undecorated gap between the chips keeps the theme background.
+    assert_ne!(
+        buf[(gutter + 8, 0)].bg,
+        Rgba::rgb(0xff, 0xcc, 0x00).to_ratatui()
+    );
+}
+
+#[test]
+fn color_swatch_yields_to_an_overlapping_selection() {
+    let buffer = TextBuffer::from_text("#ffcc00\n");
+    let theme = Theme::dark();
+    let Ok(range) = Range::new(LineCol::new(0, 0), LineCol::new(0, 7)) else {
+        return;
+    };
+    let decoration = Decoration {
+        range,
+        kind: DecorationKind::ColorSwatch {
+            rgba: [0xff, 0xcc, 0x00, 0xff],
+        },
+        role: None,
+    };
+    let mut state = EditorState::new();
+    state.set_cursor_state(
+        &buffer,
+        CursorState {
+            selections: vec![Selection {
+                anchor: LineCol::new(0, 0),
+                head: LineCol::new(0, 7),
+            }],
+            primary: 0,
+        },
+    );
+    let area = Rect::new(0, 0, 20, 1);
+    let mut buf = Buffer::empty(area);
+    Editor::new(&buffer)
+        .theme(&theme)
+        .focused(true)
+        .decorations(&[decoration])
+        .render(area, &mut buf, &mut state);
+    // Selected text must stay recognizably selected — the selection background
+    // wins over the chip.
+    assert_eq!(
+        buf[(4, 0)].bg,
+        theme.role(ThemeRole::Selection).to_ratatui()
+    );
+}
+
+#[test]
 fn merge_conflict_decorations_render_section_backgrounds() {
     let buffer = TextBuffer::from_text("<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> topic\n");
     let decorations = crate::conflict_decorations(&buffer.text());

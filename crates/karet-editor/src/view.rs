@@ -195,6 +195,31 @@ impl Editor<'_> {
         None
     }
 
+    /// The swatch background + contrasting foreground for column `col` on line
+    /// `l`, when a [`DecorationKind::ColorSwatch`] covers the cell. The
+    /// foreground is whichever of black/white contrasts better, so the chip
+    /// stays legible on any color; alpha is ignored (cells cannot blend).
+    fn swatch_style(&self, l: u32, col: u32) -> Option<(Rgba, Rgba)> {
+        for d in self.decorations {
+            if let DecorationKind::ColorSwatch { rgba } = &d.kind
+                && col_in_range(l, col, d.range)
+            {
+                let bg = Rgba::rgb(rgba[0], rgba[1], rgba[2]);
+                let black = Rgba::rgb(0, 0, 0);
+                let white = Rgba::rgb(255, 255, 255);
+                let fg = if karet_theme::contrast_ratio(black, bg)
+                    >= karet_theme::contrast_ratio(white, bg)
+                {
+                    black
+                } else {
+                    white
+                };
+                return Some((bg, fg));
+            }
+        }
+        None
+    }
+
     /// Inline virtual text attached to `l`, filtered by whether it belongs before or
     /// after the decorated range.
     fn push_inline_spans(
@@ -270,6 +295,9 @@ impl Editor<'_> {
             }
             let bg = if in_any(selections, l, col) {
                 Some(theme.role(ThemeRole::Selection))
+            } else if let Some((swatch_bg, swatch_fg)) = self.swatch_style(l, col) {
+                style = style.fg(swatch_fg.to_ratatui());
+                Some(swatch_bg)
             } else {
                 self.decoration_bg(l, col, theme)
             };
