@@ -401,7 +401,14 @@ static REGISTRY: &[FileType] = &[
     ),
     overflow("CSV", Data, None, &["csv", "tsv"], &[]),
     language_named("SQL", Data, Some('\u{f1c0}'), &["sql"], &[], "sql"),
-    language_named("GraphQL", Data, None, &["graphql", "gql"], &[], "graphql"),
+    language_named(
+        "GraphQL",
+        Data,
+        None,
+        &["graphql", "gql", "graphqls"],
+        &[],
+        "graphql",
+    ),
     language_named("Protobuf", Data, None, &["proto"], &[], "protobuf"),
     language_named("CBOR", Data, None, &["cbor"], &[], "cbor"),
     language(
