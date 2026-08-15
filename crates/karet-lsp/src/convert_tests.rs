@@ -319,6 +319,8 @@ fn nested_document_symbols_preserve_hierarchy_and_details() {
         detail: Some("(&self)".into()),
         kind: lsp_types::SymbolKind::METHOD,
         tags: None,
+        // `DocumentSymbol` still carries its deprecated `deprecated` field, and a
+        // struct literal must fill it.
         #[allow(deprecated)]
         deprecated: None,
         range: lsp_range(2, 0, 4, 1),
@@ -330,6 +332,8 @@ fn nested_document_symbols_preserve_hierarchy_and_details() {
         detail: None,
         kind: lsp_types::SymbolKind::STRUCT,
         tags: None,
+        // `DocumentSymbol` still carries its deprecated `deprecated` field, and a
+        // struct literal must fill it.
         #[allow(deprecated)]
         deprecated: None,
         range: lsp_range(0, 0, 5, 1),

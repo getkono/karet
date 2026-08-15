@@ -49,6 +49,7 @@ pub(super) const PHP_HTML_INJECTION: &str = r#"
  (#set! injection.combined))
 "#;
 
+// The pushes are `#[cfg]`-gated per grammar, which `vec![]` cannot express.
 #[allow(clippy::vec_init_then_push)]
 pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
     #[cfg(not(any(

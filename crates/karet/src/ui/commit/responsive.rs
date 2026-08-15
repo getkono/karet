@@ -258,6 +258,8 @@ fn visible_file_lines(
     lines
 }
 
+// A render helper threads every precomputed section through one call; a
+// one-use bundling struct would only add indirection.
 #[allow(clippy::too_many_arguments)]
 fn draw_stacked(
     f: &mut Frame,
@@ -395,6 +397,8 @@ fn draw_stacked(
     }
 }
 
+// A render helper threads every precomputed section through one call; a
+// one-use bundling struct would only add indirection.
 #[allow(clippy::too_many_arguments)]
 fn draw_wide(
     f: &mut Frame,
