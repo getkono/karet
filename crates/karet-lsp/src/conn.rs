@@ -29,6 +29,7 @@ use tokio::task::JoinHandle;
 
 use crate::LspError;
 use crate::PublishedDiagnostics;
+use crate::RawNotification;
 use crate::codec;
 use crate::convert;
 use crate::jsonrpc;
@@ -45,6 +46,8 @@ pub(crate) const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Diagnostics broadcast capacity; slow subscribers drop the oldest sets.
 const DIAGNOSTICS_CHANNEL_CAPACITY: usize = 64;
+/// Raw-notification broadcast capacity; slow subscribers drop the oldest.
+const RAW_CHANNEL_CAPACITY: usize = 64;
 /// Frames waiting to be written. A buggy producer cannot grow memory without
 /// bound; requests wait for capacity and notifications fail fast.
 const OUTBOUND_CHANNEL_CAPACITY: usize = 256;
@@ -64,6 +67,7 @@ pub(crate) struct Connection {
     pending: Pending,
     next_id: AtomicI64,
     diagnostics: broadcast::Sender<PublishedDiagnostics>,
+    raw: broadcast::Sender<RawNotification>,
     /// Set once either I/O task stops, so requests issued *after* the
     /// connection died fail fast with [`LspError::Closed`] instead of sitting in
     /// the pending map until they time out.
@@ -81,6 +85,7 @@ impl Connection {
     {
         let (outbound, mut outbound_rx) = mpsc::channel::<Outbound>(OUTBOUND_CHANNEL_CAPACITY);
         let (diagnostics, _) = broadcast::channel(DIAGNOSTICS_CHANNEL_CAPACITY);
+        let (raw, _) = broadcast::channel(RAW_CHANNEL_CAPACITY);
         let pending: Pending = Arc::default();
         let closed = Arc::new(AtomicBool::new(false));
 
@@ -103,6 +108,7 @@ impl Connection {
             BufReader::new(read),
             Arc::clone(&pending),
             diagnostics.clone(),
+            raw.clone(),
             outbound.clone(),
             Arc::clone(&closed),
         ));
@@ -112,6 +118,7 @@ impl Connection {
             pending,
             next_id: AtomicI64::new(1),
             diagnostics,
+            raw,
             closed,
             reader_task,
             writer_task,
@@ -194,6 +201,11 @@ impl Connection {
         self.diagnostics.subscribe()
     }
 
+    /// Subscribe to every server-initiated notification, undecoded.
+    pub(crate) fn raw_notifications(&self) -> broadcast::Receiver<RawNotification> {
+        self.raw.subscribe()
+    }
+
     /// Drain the outbound queue (every already-enqueued frame is written and
     /// flushed), then stop both I/O tasks. Bounded by [`SHUTDOWN_TIMEOUT`] in
     /// case the peer stops consuming.
@@ -225,6 +237,7 @@ async fn read_loop<R>(
     mut reader: BufReader<R>,
     pending: Pending,
     diagnostics: broadcast::Sender<PublishedDiagnostics>,
+    raw: broadcast::Sender<RawNotification>,
     outbound: mpsc::Sender<Outbound>,
     closed: Arc<AtomicBool>,
 ) where
@@ -232,7 +245,7 @@ async fn read_loop<R>(
 {
     loop {
         match codec::read_frame(&mut reader).await {
-            Ok(Some(bytes)) => handle_frame(&bytes, &pending, &diagnostics, &outbound),
+            Ok(Some(bytes)) => handle_frame(&bytes, &pending, &diagnostics, &raw, &outbound),
             Ok(None) => break,
             Err(e) => {
                 // A framing error means we lost message-boundary sync; the only
@@ -255,6 +268,7 @@ fn handle_frame(
     bytes: &[u8],
     pending: &Pending,
     diagnostics: &broadcast::Sender<PublishedDiagnostics>,
+    raw: &broadcast::Sender<RawNotification>,
     outbound: &mpsc::Sender<Outbound>,
 ) {
     let value: Value = match serde_json::from_slice(bytes) {
@@ -292,12 +306,21 @@ fn handle_frame(
                 },
             }
         },
-        Some(Incoming::Notification { method, params }) => match method.as_str() {
-            "textDocument/publishDiagnostics" => route_diagnostics(params, diagnostics),
-            // Log/progress/telemetry notifications are safe to ignore headlessly.
-            _ => {
-                tracing::debug!(method, "ignoring server notification");
-            },
+        Some(Incoming::Notification { method, params }) => {
+            // Every notification fans out raw first — the escape hatch that
+            // lets a consumer handle server-specific methods (`language/status`,
+            // `experimental/*`) the typed surface does not model.
+            let _ = raw.send(RawNotification {
+                method: method.clone(),
+                params: params.clone(),
+            }); // no subscribers is fine
+            match method.as_str() {
+                "textDocument/publishDiagnostics" => route_diagnostics(params, diagnostics),
+                // Log/progress/telemetry notifications are safe to ignore headlessly.
+                _ => {
+                    tracing::debug!(method, "raw-only server notification");
+                },
+            }
         },
         None => {
             tracing::warn!("dropping a message with no JSON-RPC shape");

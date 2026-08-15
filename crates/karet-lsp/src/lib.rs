@@ -108,6 +108,21 @@ pub struct PublishedDiagnostics {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// A server-initiated notification, delivered undecoded.
+///
+/// The escape hatch for methods the typed surface does not model — a consumer
+/// subscribes via [`LspClient::raw_notifications`] and decodes the methods it
+/// recognizes (jdtls `language/status`, rust-analyzer `experimental/*`, …).
+/// Notifications the client also handles itself (diagnostics) still fan out
+/// here, so a subscriber sees the complete stream.
+#[derive(Clone, Debug)]
+pub struct RawNotification {
+    /// The JSON-RPC method name.
+    pub method: String,
+    /// The notification parameters, verbatim.
+    pub params: serde_json::Value,
+}
+
 /// An async client for a single language server.
 ///
 /// Dropping the client tears the connection down ungracefully (a spawned
@@ -518,6 +533,49 @@ impl LspClient {
     #[must_use]
     pub fn diagnostics(&self) -> broadcast::Receiver<PublishedDiagnostics> {
         self.conn.diagnostics()
+    }
+
+    /// Subscribe to every server-initiated notification, undecoded (see
+    /// [`RawNotification`]). Slow subscribers drop the oldest entries.
+    #[must_use]
+    pub fn raw_notifications(&self) -> broadcast::Receiver<RawNotification> {
+        self.conn.raw_notifications()
+    }
+
+    /// Issue an arbitrary request and await its typed result.
+    ///
+    /// The escape hatch for server-specific extensions the typed surface does
+    /// not model (jdtls `java/classFileContents`, clangd
+    /// `textDocument/switchSourceHeader`, …). `method` goes on the wire
+    /// verbatim; the standard request timeout applies.
+    ///
+    /// # Errors
+    ///
+    /// [`LspError::Closed`] when the connection is gone, [`LspError::Timeout`]
+    /// when the server does not answer in time, [`LspError::Server`] when it
+    /// answers with an error, and [`LspError::Protocol`] when the result does
+    /// not decode as `T`.
+    pub async fn custom_request<P, T>(&self, method: &str, params: P) -> Result<T, LspError>
+    where
+        P: serde::Serialize,
+        T: serde::de::DeserializeOwned,
+    {
+        self.conn.request(method, params).await
+    }
+
+    /// Send an arbitrary notification (fire-and-forget), `method` verbatim.
+    ///
+    /// # Errors
+    ///
+    /// [`LspError::Closed`] when the connection is gone, or
+    /// [`LspError::Protocol`] when `params` fail to encode or the outbound
+    /// queue is full.
+    pub fn custom_notify<P: serde::Serialize>(
+        &self,
+        method: &str,
+        params: P,
+    ) -> Result<(), LspError> {
+        self.conn.notify(method, params)
     }
 }
 

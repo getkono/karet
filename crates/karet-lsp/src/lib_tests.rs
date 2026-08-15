@@ -521,3 +521,84 @@ fn error_displays() {
         "protocol error: bad frame"
     );
 }
+
+#[tokio::test]
+async fn custom_request_round_trips_an_untyped_method() -> TestResult {
+    let ((read, write), mut server) = wire();
+    let server_task = tokio::spawn(async move {
+        server.handshake().await;
+        let req = server.recv().await;
+        assert_eq!(req["method"], "java/classFileContents");
+        assert_eq!(req["params"]["uri"], json!("jdt://contents/rt.jar"));
+        let id = req["id"].clone();
+        server.respond(&id, json!("class Object {}")).await;
+    });
+    let client = LspClient::connect(read, write, Path::new("/tmp/ws")).await?;
+    let contents: String = client
+        .custom_request(
+            "java/classFileContents",
+            json!({"uri": "jdt://contents/rt.jar"}),
+        )
+        .await?;
+    assert_eq!(contents, "class Object {}");
+    server_task.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn custom_notify_reaches_the_server_verbatim() -> TestResult {
+    let ((read, write), mut server) = wire();
+    let server_task = tokio::spawn(async move {
+        server.handshake().await;
+        let note = server.recv().await;
+        assert_eq!(note["method"], "workspace/didChangeConfiguration");
+        assert_eq!(
+            note["params"]["settings"]["java"]["home"],
+            json!("/opt/jdk")
+        );
+        assert!(note.get("id").is_none(), "a notification carries no id");
+    });
+    let client = LspClient::connect(read, write, Path::new("/tmp/ws")).await?;
+    client.custom_notify(
+        "workspace/didChangeConfiguration",
+        json!({"settings": {"java": {"home": "/opt/jdk"}}}),
+    )?;
+    server_task.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn raw_notifications_fan_out_every_server_notification() -> TestResult {
+    let ((read, write), mut server) = wire();
+    // Handshake concurrently so the subscription exists before anything is
+    // sent — a broadcast with no subscriber drops, which is not under test.
+    let (client, ()) = tokio::join!(
+        LspClient::connect(read, write, Path::new("/tmp/ws")),
+        async {
+            server.handshake().await;
+        }
+    );
+    let client = client?;
+    let mut raw = client.raw_notifications();
+    server
+        .send(&json!({
+            "jsonrpc": "2.0",
+            "method": "language/status",
+            "params": {"type": "Started", "message": "Ready"}
+        }))
+        .await;
+    // The diagnostics the typed path consumes still appear on the raw stream.
+    server
+        .send(&json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {"uri": "file:///tmp/ws/a.rs", "diagnostics": []}
+        }))
+        .await;
+    let first = tokio::time::timeout(Duration::from_secs(5), raw.recv()).await??;
+    assert_eq!(first.method, "language/status");
+    assert_eq!(first.params["message"], json!("Ready"));
+    let second = tokio::time::timeout(Duration::from_secs(5), raw.recv()).await??;
+    assert_eq!(second.method, "textDocument/publishDiagnostics");
+    Ok(())
+}
