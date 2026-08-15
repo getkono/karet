@@ -117,6 +117,26 @@ pub struct Cli {
     #[arg(long = "command", value_name = "NAME")]
     pub command: Vec<String>,
 
+    /// Evaluate a seam query against the package at PATH, print the matching nodes as
+    /// JSON to stdout, and exit — never enter the TUI.
+    ///
+    /// Takes the same query language as the Seam view's filter box, so a narrowing a
+    /// person reached by pressing keys and one a program asks for are the same string.
+    /// Results carry node identities, locations, facets, and rollup counts: enough to
+    /// cite a finding and to navigate back to it.
+    ///
+    /// Unstable automation surface: intended for scripting and analysis, the output
+    /// shape may change between major versions without notice.
+    #[arg(long, value_name = "QUERY")]
+    pub seam_query: Option<String>,
+
+    /// Evaluate `--seam-query` under a named configuration rather than the default.
+    ///
+    /// Unstable automation surface: intended for scripting and analysis, this flag's
+    /// behaviour may change between major versions without notice.
+    #[arg(long, value_name = "NAME", requires = "seam_query")]
+    pub seam_config: Option<String>,
+
     /// Render the shell into an off-screen grid and write it to stdout as truecolor
     /// ANSI, then exit — never enter the alternate screen and never read the
     /// terminal. Every other startup flag still applies, so the captured frame is

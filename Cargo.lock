@@ -2935,6 +2935,7 @@ dependencies = [
  "karet-graph",
  "karet-markdown",
  "karet-pdf",
+ "karet-seam",
  "karet-search",
  "karet-session",
  "karet-supervisor",
