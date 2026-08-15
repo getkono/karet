@@ -777,6 +777,16 @@
           "type": "boolean",
           "default": true
         },
+        "mermaid": {
+          "description": "Mermaid diagram rendering in the preview.",
+          "$ref": "#/$defs/MarkdownMermaid",
+          "default": {
+            "enabled": true,
+            "fenceLanguages": [
+              "mermaid"
+            ]
+          }
+        },
         "toc": {
           "description": "Table-of-contents generation.",
           "$ref": "#/$defs/MarkdownToc",
@@ -796,6 +806,28 @@
           "description": "Lint Markdown documents as they change, surfacing issues as\ndiagnostics. Rule selection follows the workspace's\n`.markdownlint.json` when present.",
           "type": "boolean",
           "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "MarkdownMermaid": {
+      "description": "`markdown.mermaid.*` — mermaid diagram rendering in the preview.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Render matching code fences as Unicode diagrams in the preview\n(unsupported diagram types fall back to showing the fence source).",
+          "type": "boolean",
+          "default": true
+        },
+        "fenceLanguages": {
+          "description": "The fence info strings treated as mermaid.",
+          "type": "array",
+          "default": [
+            "mermaid"
+          ],
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false

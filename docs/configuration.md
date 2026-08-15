@@ -280,6 +280,8 @@ an external prerequisite.
 | `toc.minLevel` | number | `2` | Smallest heading level the generated table of contents includes. |
 | `toc.maxLevel` | number | `6` | Largest heading level the generated table of contents includes. |
 | `lint.enabled` | bool | `true` | Lint Markdown as it changes (a 21-rule markdownlint core), honouring the workspace's `.markdownlint.json`; issues surface as diagnostics, and "Markdown: Fix All Lint Issues" applies every autofix. |
+| `mermaid.enabled` | bool | `true` | Render matching code fences in the preview as Unicode diagrams (flowchart, sequence, class, ER, xychart); unsupported types show their source with a note. |
+| `mermaid.fenceLanguages` | string[] | `["mermaid"]` | Fence info strings treated as mermaid. |
 
 ### `git`
 
