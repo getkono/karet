@@ -133,12 +133,20 @@ pub(super) fn draw_pane_content(
                 // Local find and global search highlights are kept in separate
                 // fields (so closing/rerunning one can't wipe the other) and
                 // combined only here, at render time.
+                // Swatches are recomputed per frame over the visible slice
+                // only — detection is a character scan of ~a screenful.
+                let swatches = if ctx.color_highlight {
+                    color_swatch_decorations(buffer, tab.editor.scroll_line, area.height)
+                } else {
+                    Vec::new()
+                };
                 let combined: Vec<Decoration> = decos
                     .iter()
                     .chain(search_decos.iter())
                     .chain(conflict_decorations.iter())
                     .chain(ctx.blame.iter())
                     .chain(ctx.definition_underline.iter())
+                    .chain(swatches.iter())
                     .cloned()
                     .collect();
                 let diagnostics = doc
@@ -827,4 +835,30 @@ pub(super) fn draw_diff(
             }
         },
     }
+}
+
+/// Swatch decorations for the color literals on the lines a viewport of
+/// `height` rows starting at `first_line` can show (doubled for wrap slack).
+fn color_swatch_decorations(buffer: &TextBuffer, first_line: u32, height: u16) -> Vec<Decoration> {
+    let mut out = Vec::new();
+    let end = first_line.saturating_add(u32::from(height) * 2);
+    for line in first_line..=end {
+        let Some(text) = buffer.line(line as usize) else {
+            break;
+        };
+        for (range, rgba) in karet_syntax::color::detect(&text) {
+            out.push(Decoration {
+                range: karet_core::Range {
+                    start: karet_core::LineCol::new(line, u32::try_from(range.start).unwrap_or(0)),
+                    end: karet_core::LineCol::new(
+                        line,
+                        u32::try_from(range.end).unwrap_or(u32::MAX),
+                    ),
+                },
+                kind: karet_core::DecorationKind::ColorSwatch { rgba },
+                role: None,
+            });
+        }
+    }
+    out
 }

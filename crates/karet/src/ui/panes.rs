@@ -28,6 +28,7 @@ pub(super) fn draw_panes(
         .then_some(app.settings.markdown.mermaid.fence_languages.as_slice());
     #[cfg(not(feature = "mermaid"))]
     let mermaid: Option<&[String]> = None;
+    let color_highlight = app.settings.editor.color_highlight.enabled;
     let editor_focused = app.focus == Focus::Editor;
     let graphics = app.caps.graphics;
     let graphical_cursor = app.graphical_cursor_enabled();
@@ -68,6 +69,7 @@ pub(super) fn draw_panes(
                 theme,
                 root: &app.root,
                 mermaid,
+                color_highlight,
                 icon_style: app.icon_style,
                 graphics,
                 pane_focused: true,
@@ -107,6 +109,7 @@ pub(super) fn draw_panes(
                 theme,
                 root: &app.root,
                 mermaid,
+                color_highlight,
                 icon_style: app.icon_style,
                 graphics,
                 pane_focused: false,
