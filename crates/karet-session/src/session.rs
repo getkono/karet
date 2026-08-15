@@ -15,6 +15,7 @@
 mod documents;
 #[cfg(feature = "github")]
 mod github;
+mod hints;
 mod lifecycle;
 mod lsp_commands;
 mod lsp_registry_updates;
