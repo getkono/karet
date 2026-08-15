@@ -412,6 +412,8 @@ pub struct Session {
     /// The workspace spelling scan, which walks every file rather than the open ones.
     spell_scan_worker: std::sync::mpsc::Sender<crate::spell_scan::SpellScanJob>,
     todo_scan_worker: std::sync::mpsc::Sender<crate::todo_scan::TodoScanJob>,
+    /// The WakaTime worker, spawned on the first heartbeat while enabled.
+    wakatime_worker: Option<std::sync::mpsc::Sender<crate::wakatime::Beat>>,
     /// Cancellation registry for safely-droppable background reads: repository
     /// reads, LaTeX builds, and the workspace spelling scan.
     cancellations: crate::cancellation::CancellationHub,

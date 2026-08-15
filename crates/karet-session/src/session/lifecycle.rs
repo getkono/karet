@@ -100,6 +100,7 @@ impl Session {
             search_worker,
             spell_scan_worker,
             todo_scan_worker,
+            wakatime_worker: None,
             cancellations,
             latex_worker,
             diff_syntax,

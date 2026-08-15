@@ -38,6 +38,32 @@ pub struct Settings {
     pub lsp: Lsp,
     /// Markdown-specific editing behaviour.
     pub markdown: Markdown,
+    /// WakaTime time-tracking (opt-in).
+    pub wakatime: Wakatime,
+}
+
+/// `wakatime.*` — WakaTime time tracking. **Off by default**: enabling it
+/// sends file names, project names, and editing activity to the configured
+/// WakaTime-compatible service.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct Wakatime {
+    /// Send heartbeats. The API key and endpoint come from the standard
+    /// `$WAKATIME_HOME/.wakatime.cfg`, never from this file.
+    pub enabled: bool,
+    /// Show today's coding total in the status bar.
+    pub status_bar: bool,
+}
+
+impl Default for Wakatime {
+    /// Disabled; the status segment shows once enabled.
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            status_bar: true,
+        }
+    }
 }
 
 /// `markdown.*` — Markdown-specific editing behaviour.

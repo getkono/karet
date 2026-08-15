@@ -284,6 +284,16 @@ an external prerequisite.
 | `mermaid.enabled` | bool | `true` | Render matching code fences in the preview as Unicode diagrams (flowchart, sequence, class, ER, xychart); unsupported types show their source with a note. |
 | `mermaid.fenceLanguages` | string[] | `["mermaid"]` | Fence info strings treated as mermaid. |
 
+### `wakatime`
+
+**Off by default** — enabling it sends file names, project names, and editing
+activity to the configured WakaTime-compatible service.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | bool | `false` | Send heartbeats on edits and saves (2-minute per-file throttle, bulk-batched). The API key and endpoint come from the standard `$WAKATIME_HOME/.wakatime.cfg` (`[settings] api_key`, `api_url`) — never from this file — so existing WakaTime/Wakapi/Hackatime installs work unchanged; undelivered batches queue offline. |
+| `statusBar` | bool | `true` | Show today's coding total in the status bar. |
+
 ### `git`
 
 | Key | Type | Default | Meaning |

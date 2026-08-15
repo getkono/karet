@@ -36,6 +36,10 @@
       "description": "Spell-checking of prose and selected source-code tokens.",
       "$ref": "#/$defs/Spellcheck"
     },
+    "wakatime": {
+      "description": "WakaTime time-tracking (opt-in).",
+      "$ref": "#/$defs/Wakatime"
+    },
     "workbench": {
       "description": "UI shell appearance (theme, icons, startup panel).",
       "$ref": "#/$defs/Workbench"
@@ -50,7 +54,8 @@
     "latex",
     "git",
     "lsp",
-    "markdown"
+    "markdown",
+    "wakatime"
   ],
   "$defs": {
     "AiCommit": {
@@ -1027,6 +1032,23 @@
           "const": "none"
         }
       ]
+    },
+    "Wakatime": {
+      "description": "`wakatime.*` — WakaTime time tracking. **Off by default**: enabling it\nsends file names, project names, and editing activity to the configured\nWakaTime-compatible service.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Send heartbeats. The API key and endpoint come from the standard\n`$WAKATIME_HOME/.wakatime.cfg`, never from this file.",
+          "type": "boolean",
+          "default": false
+        },
+        "statusBar": {
+          "description": "Show today's coding total in the status bar.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
     },
     "Workbench": {
       "description": "`workbench.*` — UI shell appearance.",

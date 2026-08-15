@@ -219,6 +219,12 @@ pub enum Event {
         /// How many files the scan has visited so far.
         files_scanned: usize,
     },
+    /// Today's WakaTime coding-time text for the status bar (unsolicited;
+    /// only emitted while `wakatime.enabled` is set and a key is configured).
+    WakatimeStatus {
+        /// e.g. `"2 hrs 15 mins"`.
+        text: String,
+    },
     /// A batch of workspace codetag-scan results (see
     /// [`Command::ScanWorkspaceTodos`]); `files_scanned` is cumulative.
     TodoScanProgress {

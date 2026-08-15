@@ -512,9 +512,10 @@ impl Session {
     /// unsupported settings clear only spell diagnostics, leaving other producers intact.
     pub(crate) fn schedule_spell(&mut self, doc_id: DocumentId) {
         // Every text-change path funnels through here, so the (synchronous,
-        // line-based, sub-millisecond) markdown lint rides along rather than
-        // adding a second hook to each call site.
+        // line-based, sub-millisecond) markdown lint and the WakaTime typing
+        // heartbeat ride along rather than adding hooks to each call site.
         self.refresh_markdown_lint(doc_id);
+        self.wakatime_beat(doc_id, false);
         let Some(doc) = self.store.docs.get(&doc_id) else {
             return;
         };
