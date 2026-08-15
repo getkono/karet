@@ -3314,9 +3314,12 @@ dependencies = [
 name = "karet-dap"
 version = "0.5.0"
 dependencies = [
- "karet-core",
+ "karet-lsp",
+ "serde",
+ "serde_json",
  "thiserror 2.0.19",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

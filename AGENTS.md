@@ -99,7 +99,7 @@ published to crates.io (everything else is `publish = false`).
 | `karet-docx` | engine | — | DOCX (OOXML) parse → neutral document model → markdown text, hand-rolled on deflate-only `zip` + `quick-xml` (pure-Rust, no zstd/bzip2); no presentation |
 | `karet-pdf` | engine | ✓ | pure-Rust PDF page → RGBA rasterization (via `hayro`); no presentation |
 | `karet-lsp` | engine | ✓ | async LSP client → core models (headless; ratatui popups live in `karet-widgets`) |
-| `karet-dap` | engine | — | **unimplemented skeleton** for the future async DAP client; `publish = false`, no consumer |
+| `karet-dap` | engine | — | async DAP client: stdio/spawn-then-TCP transports over the shared `karet-lsp` codec, capability-gated handshake, run controls, threads→stack→scopes→variables, evaluate; `publish = false`, consumed by the debugger backend work |
 | `karet-vcs` | engine | ✓ | git facts engine: status/branches/log/commit detail/stash/staging/remotes — `gix` reads + hardened `git`-CLI writes; headless |
 | `karet-github` | engine | — | headless GitHub REST client (issues, PRs, checks, workflows); generated from a vendored OpenAPI spec at build time; consumed only by `karet-session` |
 | `karet-search` | engine | ✓ | in-file + workspace search/replace, plus the shared gitignore-aware file walk (`walk_text_files`); no karet deps |
