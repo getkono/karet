@@ -22,6 +22,8 @@ mod lsp_commands;
 mod lsp_registry_updates;
 #[cfg(feature = "mdlint")]
 mod mdlint;
+#[cfg(feature = "notebook-kernel")]
+mod notebooks;
 mod persistence;
 mod spelling;
 mod updates;
@@ -436,6 +438,9 @@ pub struct Session {
     pending_swaps: Vec<SwapRecord>,
     /// Debugger orchestration (one active DAP session; see [`crate::dap`]).
     debug: crate::dap::DebugManager,
+    /// Notebook kernel orchestration (see [`crate::notebook_kernel`]).
+    #[cfg(feature = "notebook-kernel")]
+    notebooks: crate::notebook_kernel::NotebookKernels,
     /// Language-server orchestration (lazy per-language tasks; see [`crate::lsp`]).
     lsp: LspManager,
     /// The LSP tasks' results, taken by [`crate::backend::local`] for the actor.
@@ -470,6 +475,10 @@ impl Session {
     /// [`Event`] is tagged with `id`.
     pub fn handle(&mut self, id: RequestId, command: Command) {
         if self.handle_debug_command(id, &command) {
+            return;
+        }
+        #[cfg(feature = "notebook-kernel")]
+        if self.handle_notebook_command(&command) {
             return;
         }
         if self.handle_lsp_command(id, &command) {

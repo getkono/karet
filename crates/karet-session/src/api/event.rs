@@ -628,6 +628,24 @@ pub enum Event {
         /// Non-zero when the result has fetchable children.
         reference: i64,
     },
+    /// The notebook kernel's state, for the status line (unsolicited:
+    /// starting/ready/running/interrupted/failed text).
+    NotebookKernelStatus {
+        /// The notebook whose kernel this is.
+        path: std::path::PathBuf,
+        /// A short human-readable status.
+        text: String,
+    },
+    /// One notebook cell finished (unsolicited; the refreshed preview rides
+    /// [`Event::DocumentConverted`](Self::DocumentConverted) separately).
+    NotebookCellDone {
+        /// The notebook.
+        path: std::path::PathBuf,
+        /// The cell index.
+        cell: usize,
+        /// Whether the cell raised (an errored cell stops a Run All).
+        errored: bool,
+    },
     /// The acknowledged breakpoints of one file (answers
     /// [`Command::DebugSetBreakpoints`]; also unsolicited on late
     /// verification).

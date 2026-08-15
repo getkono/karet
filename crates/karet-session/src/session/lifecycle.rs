@@ -71,6 +71,11 @@ impl Session {
             config.process_supervisor.clone(),
             events.clone(),
         );
+        #[cfg(feature = "notebook-kernel")]
+        let notebooks = crate::notebook_kernel::NotebookKernels::new(
+            config.process_supervisor.clone(),
+            events.clone(),
+        );
         let (lsp, lsp_rx) = LspManager::new(
             config.settings.lsp.clone(),
             config.roots.first().cloned(),
@@ -116,6 +121,8 @@ impl Session {
             swaps,
             pending_swaps,
             debug,
+            #[cfg(feature = "notebook-kernel")]
+            notebooks,
             lsp,
             lsp_rx: Some(lsp_rx),
             lsp_registry,
