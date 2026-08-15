@@ -245,6 +245,25 @@ pub(crate) fn workspace_symbols_from_lsp(
 }
 
 /// Map definition response variants, dropping non-file URIs.
+/// Turn type-hierarchy items into locations, keeping their selection ranges.
+///
+/// The selection range is the one worth navigating to — the name, not the whole body —
+/// which matches how every other location in this crate is anchored.
+pub(crate) fn type_hierarchy_locations(
+    response: Option<Vec<lsp_types::TypeHierarchyItem>>,
+) -> Vec<Location> {
+    response
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| {
+            Some(Location {
+                path: uri_to_path(&item.uri)?,
+                range: range_from_lsp(item.selection_range),
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn locations_from_lsp(
     response: Option<lsp_types::GotoDefinitionResponse>,
 ) -> Vec<Location> {

@@ -383,6 +383,63 @@ impl LspClient {
         Ok(convert::workspace_symbols_from_lsp(response))
     }
 
+    /// Resolve the implementations of the contract at `pos`.
+    ///
+    /// Enrichment, not a prerequisite: a caller that already matched implementations
+    /// structurally uses this to confirm and extend them, and loses precision rather than
+    /// function when no server is running.
+    ///
+    /// # Errors
+    /// Returns [`LspError::Server`] or [`LspError::Timeout`].
+    pub async fn implementations(
+        &self,
+        doc: &Path,
+        pos: LineCol,
+    ) -> Result<Vec<Location>, LspError> {
+        let params = lsp_types::request::GotoImplementationParams {
+            text_document_position_params: text_document_position(doc, pos)?,
+            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+            partial_result_params: lsp_types::PartialResultParams::default(),
+        };
+        let response: Option<lsp_types::request::GotoImplementationResponse> = self
+            .conn
+            .request("textDocument/implementation", params)
+            .await?;
+        Ok(convert::locations_from_lsp(response))
+    }
+
+    /// Resolve the supertypes of the type at `pos` — what it derives from or implements.
+    ///
+    /// Two round trips, as the protocol requires: `prepare` establishes the item, and
+    /// `supertypes` walks upward from it. A server that declines the first returns no
+    /// supertypes rather than an error, since not supporting the request is not a failure.
+    ///
+    /// # Errors
+    /// Returns [`LspError::Server`] or [`LspError::Timeout`].
+    pub async fn supertypes(&self, doc: &Path, pos: LineCol) -> Result<Vec<Location>, LspError> {
+        let prepare = lsp_types::TypeHierarchyPrepareParams {
+            text_document_position_params: text_document_position(doc, pos)?,
+            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+        };
+        let items: Option<Vec<lsp_types::TypeHierarchyItem>> = self
+            .conn
+            .request("textDocument/prepareTypeHierarchy", prepare)
+            .await?;
+        let Some(item) = items.unwrap_or_default().into_iter().next() else {
+            return Ok(Vec::new());
+        };
+        let params = lsp_types::TypeHierarchySupertypesParams {
+            item,
+            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+            partial_result_params: lsp_types::PartialResultParams::default(),
+        };
+        let response: Option<Vec<lsp_types::TypeHierarchyItem>> = self
+            .conn
+            .request("typeHierarchy/supertypes", params)
+            .await?;
+        Ok(convert::type_hierarchy_locations(response))
+    }
+
     /// Resolve the definition location(s) of the symbol at `pos`.
     ///
     /// # Errors
