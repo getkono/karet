@@ -49,10 +49,12 @@ For git review, it shows staged changes if any are staged, otherwise the unstage
 (working-tree) changes — like VS Code's default. It prints a message and exits if
 `PATH` is not in a git repository or there is nothing to show. In the viewer: `j`/`k`
 scroll, `h`/`l` switch file, `Tab` toggles unified / side-by-side, `q` quits.
-Syntax highlighting is tree-sitter-based (Rust, Python, JS/TS, Go, Java, C/C++,
-C#, Ruby, PHP, HTML, CSS, YAML, JSON, TOML, Bash); the detected language is shown
-in the status bar, and unknown/unsupported languages render as plaintext.
-`--no-syntax` (or `NO_COLOR`) disables highlighting.
+Syntax highlighting is tree-sitter-based, with bundled grammars for over fifty
+languages — Rust, Python, JS/TS, Go, Java, C/C++, C#, and the rest of the table
+in [`docs/file-formats.md`](docs/file-formats.md); language-server support per
+language is in [`docs/language-servers.md`](docs/language-servers.md). The
+detected language is shown in the status bar, and unknown/unsupported languages
+render as plaintext. `--no-syntax` (or `NO_COLOR`) disables highlighting.
 
 On a Markdown file, `Ctrl+K V` (or "Markdown: Open Preview to the Side" in the
 command palette) opens a rendered preview in a pane to the right. It re-renders as

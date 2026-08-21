@@ -33,45 +33,102 @@ the default is **Nerd Font**.
 ## Syntax highlighting (bundled tree-sitter grammars)
 
 These extensions highlight via a compiled-in grammar (the `karet` app enables the
-`all-languages` feature):
+`all-languages` feature). This table mirrors the registry in
+`karet-filetype/src/registry.rs` and the grammar catalog in
+`karet-treesitter/src/registry.rs`; changes there must update it in the same
+change.
+
+**Programming languages**
 
 | Language | Extensions |
 |---|---|
 | Rust | `rs` |
 | Python | `py`, `pyi`, `pyw` |
-| JavaScript | `js`, `mjs`, `cjs`, `jsx` |
+| JavaScript / JSX | `js`, `mjs`, `cjs`, `jsx` |
 | TypeScript / TSX | `ts`, `mts`, `cts`, `tsx` |
-| JSON | `json`, `jsonc` |
 | Go | `go` |
 | C | `c`, `h` |
 | C++ | `cc`, `cpp`, `cxx`, `hpp`, `hh`, `hxx` |
 | C# | `cs` |
 | Java | `java` |
+| Kotlin | `kt`, `kts` |
+| Swift | `swift` |
+| Scala | `scala`, `sbt`, `sc` |
 | Ruby | `rb` |
 | PHP | `php` |
-| Bash | `sh`, `bash` |
-| TOML | `toml` |
+| Lua | `lua` |
+| Haskell | `hs`, `lhs` |
+| OCaml | `ml`, `mli` (interface grammar) |
+| Elixir | `ex`, `exs` |
+| Erlang | `erl`, `hrl` |
+| Dart | `dart` |
+| R | `r` |
+| Zig | `zig` |
+| Perl | `pl`, `pm` |
+| Clojure / EDN | `clj`, `cljs`, `cljc`, `edn` |
+| Emacs Lisp | `el` |
+| Vim script | `vim` |
+
+**Web and markup**
+
+| Language | Extensions |
+|---|---|
 | HTML / XHTML | `html`, `htm`, `xhtml` |
 | CSS | `css` |
-| YAML | `yml`, `yaml` |
-| Markdown | `md`, `markdown`, `mdown`, `mkd` — layered block + inline grammar, including fenced-language injection |
+| SCSS / Sass | `scss`, `sass` |
+| Less | `less` |
+| Vue | `vue` |
+| Svelte | `svelte` |
+| Astro | `astro` |
+| ERB | `erb` |
+| XML / SVG | `xml`, `svg` |
+| Markdown | `md`, `markdown`, `mdown`, `mkd`, `README` — layered block + inline grammar, including fenced-language injection |
+| MDX | `mdx` |
+| reStructuredText | `rst` |
+| AsciiDoc | `adoc`, `asciidoc` |
 | TeX / LaTeX | `tex`, `sty`, `cls` |
+
+**Data, config, and build**
+
+| Language | Extensions / filenames |
+|---|---|
+| JSON / JSONC / JSON5 | `json`, `jsonc`, `json5` |
+| YAML | `yml`, `yaml` |
+| TOML | `toml` |
+| INI | `ini`, `cfg`, `conf` |
+| Properties / dotenv | `properties`, `.env` |
+| SQL | `sql` |
+| GraphQL | `graphql`, `gql` |
+| Protobuf | `proto` |
+| CBOR diagnostic | `cbor` (via the CBOR text seam) |
+| Dockerfile | `Dockerfile`, `Containerfile` |
+| Makefile | `mk`, `Makefile`, `GNUmakefile`, `makefile` |
+| CMake | `cmake`, `CMakeLists.txt` |
+| Git config | `.gitmodules` (INI grammar) |
+| EditorConfig | `.editorconfig` (INI grammar) |
+| Lockfiles | `Cargo.lock`, `poetry.lock` (TOML) · `package-lock.json`, `composer.lock`, `Pipfile.lock` (JSON) · `pnpm-lock.yaml` (YAML) · `yarn.lock` (dedicated grammar) |
+
+**Shells**
+
+| Language | Extensions |
+|---|---|
+| Shell | `sh`, `bash` |
+| Zsh | `zsh` |
+| Fish | `fish` |
+| PowerShell | `ps1`, `psm1` |
+| Batch | `bat`, `cmd` |
 
 ## Recognized for icons / labels (no bundled grammar)
 
 These get an icon, a display name, and renderer routing, but open as plain
 (un-highlighted) text. Highlighting can be added later by wiring a grammar.
 
-- **Languages:** Kotlin, Swift, Scala, Lua, Haskell, OCaml, Elixir, Erlang, Dart,
-  R, Zig, Perl, Clojure, Emacs Lisp, Vim script, SQL, GraphQL, Protobuf,
-  PowerShell, Batch.
-- **Config / data:** **Pkl** (no published Rust tree-sitter binding yet — see
-  below), INI/cfg/conf, `.properties`, XML, SVG, CSV/TSV, lockfiles,
-  `Dockerfile`/`Containerfile`, `Makefile`/`GNUmakefile`, `CMakeLists.txt`, git
-  config dotfiles, `.editorconfig`, `.env`.
-- **Web:** Less, Vue, Svelte.
-- **Prose / docs:** reStructuredText, AsciiDoc, plain text, `LICENSE` /
-  `README` / `AUTHORS`.
+- **Pkl** — no published pure-Rust tree-sitter binding yet (see below);
+  recognized with an LSP id and config selector, deliberately grammar-less.
+- **Data:** CSV/TSV, generic `*.lock` files not matched by a known lockfile name.
+- **Config:** git dotfiles (`.gitignore`, `.gitattributes`, `.gitkeep`).
+- **Prose / docs:** plain text, `LICENSE` / `LICENCE` / `COPYING` / `AUTHORS`.
+- **Shells:** Ksh.
 
 ## Non-text renderers
 

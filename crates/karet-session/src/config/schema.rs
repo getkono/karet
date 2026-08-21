@@ -273,8 +273,8 @@ pub enum Eol {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Workbench {
-    /// Colour theme: the built-in name `"dark"`, or a path to a `.tmTheme` /
-    /// VS Code `.json` theme file.
+    /// Colour theme: the built-in name `"dark"`, or a path to a VS Code
+    /// `.json` theme file.
     pub color_theme: String,
     /// Icon glyph set for the file tree and activity bar.
     pub icon_style: IconStyleSetting,

@@ -183,7 +183,7 @@ impl App {
         self.config_diagnostics = loaded.diagnostics.clone();
         self.loaded_config = loaded;
 
-        // Theme: the built-in "dark", or a path to a .tmTheme / VS Code .json theme.
+        // Theme: the built-in "dark", or a path to a VS Code .json theme.
         match load_theme(&settings.workbench.color_theme) {
             Ok(theme) => self.theme = theme,
             Err(message) => self.config_diagnostics.push(ConfigDiagnostic {

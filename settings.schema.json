@@ -896,7 +896,7 @@
       "type": "object",
       "properties": {
         "colorTheme": {
-          "description": "Colour theme: the built-in name `\"dark\"`, or a path to a `.tmTheme` /\nVS Code `.json` theme file.",
+          "description": "Colour theme: the built-in name `\"dark\"`, or a path to a VS Code\n`.json` theme file.",
           "type": "string",
           "default": "dark"
         },
