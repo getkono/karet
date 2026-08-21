@@ -27,6 +27,7 @@ pub(super) const LOCKFILE: LanguageId = LanguageId(64);
 // Pkl deliberately has no entry: no suitable published pure-Rust binding is
 // available, and issue #137 explicitly prefers deferral to a policy violation.
 
+// The pushes are `#[cfg]`-gated per grammar, which `vec![]` cannot express.
 #[allow(clippy::vec_init_then_push)]
 pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
     #[cfg(not(any(

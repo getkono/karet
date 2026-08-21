@@ -486,6 +486,7 @@ const RUST_DOC_COMMENT_INJECTION: &str = r#"
 pub(crate) fn all() -> &'static [GrammarInfo] {
     static REG: OnceLock<Vec<GrammarInfo>> = OnceLock::new();
     REG.get_or_init(|| {
+        // With no `lang-*` feature enabled nothing pushes, and `mut` goes unused.
         #[allow(unused_mut)]
         let mut v: Vec<GrammarInfo> = Vec::new();
 

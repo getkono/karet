@@ -164,7 +164,8 @@ mise run coverage
 
 ### MSRV
 
-Rust 1.90
+Rust 1.92 (the workspace `rust-version`); development and CI compile on the
+toolchain pinned in `rust-toolchain.toml`.
 
 ## Versioning
 
@@ -177,13 +178,13 @@ Version bumps, CHANGELOGs, git tags, and crates.io publishing are automated by
 Two release lines coexist:
 
 - **The `karet-*` crates release in lockstep** under one synchronized workspace version
-  (`version.workspace = true`). Fourteen of them are published to crates.io — `karet-core`,
+  (`version.workspace = true`). Thirteen of them are published to crates.io — `karet-core`,
   `karet-text`, `karet-treesitter`, `karet-syntax`, `karet-theme`, `karet-diff`,
-  `karet-filetype`, `karet-pdf`, `karet-lsp`, `karet-dap`, `karet-vcs`, `karet-search`,
+  `karet-filetype`, `karet-pdf`, `karet-lsp`, `karet-vcs`, `karet-search`,
   `karet-editor`, `karet-fileview` — and the rest are `publish = false`. See the crate
   table in [`AGENTS.md`](AGENTS.md) for the full breakdown.
-- **[`blameline`](crates/blameline) is a standalone library on its own SemVer line** (from
-  `1.0.0`), published on an independent cadence; see [its README](crates/blameline/README.md).
+- **[`blameline`](crates/blameline) is a standalone library on its own SemVer line**,
+  published on an independent cadence; see [its README](crates/blameline/README.md).
 
 ## Contribution Policy
 

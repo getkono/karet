@@ -182,6 +182,10 @@ pub struct RequestId(pub u64);
 #[serde(transparent)]
 pub struct LanguageServerId(Cow<'static, str>);
 
+// The associated constants below are named like enum variants (`RustAnalyzer`,
+// `Pyright`, …) because callers treat them as a closed set of well-known ids;
+// SCREAMING_SNAKE_CASE would misread as configuration keys.
+#[allow(non_upper_case_globals)]
 impl LanguageServerId {
     /// Construct a stable provider ID.
     #[must_use]
@@ -194,52 +198,36 @@ impl LanguageServerId {
     }
 
     /// Rust language intelligence from rust-analyzer.
-    #[allow(non_upper_case_globals)]
     pub const RustAnalyzer: Self = Self::builtin("rust-analyzer");
     /// JavaScript and TypeScript intelligence from TypeScript Language Server.
-    #[allow(non_upper_case_globals)]
     pub const TypeScript: Self = Self::builtin("typescript-language-server");
     /// Python language intelligence from Pyright.
-    #[allow(non_upper_case_globals)]
     pub const Pyright: Self = Self::builtin("pyright");
     /// Python linting and formatting from Ruff.
-    #[allow(non_upper_case_globals)]
     pub const Ruff: Self = Self::builtin("ruff");
     /// TeX and LaTeX language intelligence from texlab.
-    #[allow(non_upper_case_globals)]
     pub const Texlab: Self = Self::builtin("texlab");
     /// C and C++ intelligence from clangd.
-    #[allow(non_upper_case_globals)]
     pub const Clangd: Self = Self::builtin("clangd");
     /// C# intelligence from Roslyn.
-    #[allow(non_upper_case_globals)]
     pub const CSharp: Self = Self::builtin("csharp");
     /// Go intelligence from gopls.
-    #[allow(non_upper_case_globals)]
     pub const Gopls: Self = Self::builtin("gopls");
     /// Java intelligence from Eclipse JDT LS.
-    #[allow(non_upper_case_globals)]
     pub const Jdtls: Self = Self::builtin("jdtls");
     /// Zig intelligence from ZLS.
-    #[allow(non_upper_case_globals)]
     pub const Zls: Self = Self::builtin("zls");
     /// Astro framework intelligence.
-    #[allow(non_upper_case_globals)]
     pub const Astro: Self = Self::builtin("astro-language-server");
     /// Svelte framework intelligence.
-    #[allow(non_upper_case_globals)]
     pub const Svelte: Self = Self::builtin("svelte-language-server");
     /// Vue framework intelligence.
-    #[allow(non_upper_case_globals)]
     pub const Vue: Self = Self::builtin("vue-language-server");
     /// Biome linting and formatting.
-    #[allow(non_upper_case_globals)]
     pub const Biome: Self = Self::builtin("biome");
     /// YAML intelligence.
-    #[allow(non_upper_case_globals)]
     pub const Yaml: Self = Self::builtin("yaml-language-server");
     /// XML intelligence from LemMinX.
-    #[allow(non_upper_case_globals)]
     pub const Xml: Self = Self::builtin("lemminx");
 
     /// Stable registry key used in on-disk paths and manifests.

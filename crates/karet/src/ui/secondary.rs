@@ -87,6 +87,8 @@ pub(super) fn draw_loaded_config(
     );
 }
 
+// A render helper threads every precomputed section through one call; a
+// one-use bundling struct would only add indirection.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn flatten_setting_lines(
     lines: &mut Vec<Line<'static>>,

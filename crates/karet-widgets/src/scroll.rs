@@ -936,14 +936,13 @@ mod tests {
     }
 
     #[test]
-    fn a_painted_panel_reports_the_tracks_it_reserved() {
+    fn a_painted_panel_reports_the_tracks_it_reserved() -> Result<(), std::convert::Infallible> {
         // The helper reserves and paints internally, so its caller only learns the
         // track rect if the helper hands it back — that is what lets the app register
         // these bars for the mouse without threading its own state into the widget.
         let area = Rect::new(0, 0, 12, 6);
         let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))
-                .expect("test terminal");
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))?;
         let theme = Theme::dark();
         let lines: Vec<Line<'static>> = (0..40).map(|i| Line::raw(format!("line {i}"))).collect();
         let (mut scroll, mut column) = (3_u16, 0_u16);
@@ -970,6 +969,7 @@ mod tests {
             tracks.horizontal,
             "both axes are reported, so a caller can register either"
         );
+        Ok(())
     }
 
     #[test]
