@@ -112,8 +112,16 @@ fn detected_jdk_major() -> Option<u32> {
 
 /// Parse the major version out of a `java -version` banner
 /// (`openjdk version "21.0.2"`, `java version "1.8.0_392"`).
+///
+/// Anchored on the `version "…"` line rather than the first quote anywhere in
+/// the output: the JVM prints `Picked up JAVA_TOOL_OPTIONS: …` ahead of the
+/// banner, and a quoted value in those options would otherwise be read as the
+/// version — reporting no working `java` on a perfectly good JDK.
 fn jdk_major(banner: &str) -> Option<u32> {
-    let quoted = banner.split('"').nth(1)?;
+    let quoted = banner
+        .lines()
+        .find_map(|line| line.split_once("version \""))
+        .and_then(|(_, rest)| rest.split('"').next())?;
     let mut parts = quoted.split(['.', '-', '+', '_']);
     let first: u32 = parts.next()?.trim().parse().ok()?;
     // Pre-9 JDKs report as `1.<major>`.
@@ -185,5 +193,29 @@ mod tests {
         assert_eq!(jdk_major("openjdk version \"22-ea\" 2024-03-19"), Some(22));
         assert_eq!(jdk_major("bash: java: command not found"), None);
         assert_eq!(jdk_major(""), None);
+    }
+
+    #[test]
+    fn options_echoed_before_the_banner_do_not_confuse_the_parser() {
+        // The JVM prints these to stderr ahead of the version banner whenever
+        // JAVA_TOOL_OPTIONS/_JAVA_OPTIONS is set — common in CI and container
+        // images. A quote in the echoed value used to be read as the version,
+        // which reported no working `java` and blocked jdtls entirely.
+        assert_eq!(
+            jdk_major(
+                "Picked up JAVA_TOOL_OPTIONS: -Dfile.encoding=UTF-8\nopenjdk version \"21.0.3\" 2024-04-16"
+            ),
+            Some(21)
+        );
+        assert_eq!(
+            jdk_major(
+                "Picked up JAVA_TOOL_OPTIONS: -Dhttp.agent=\"karet\"\nopenjdk version \"21.0.3\" 2024-04-16"
+            ),
+            Some(21)
+        );
+        assert_eq!(
+            jdk_major("Picked up _JAVA_OPTIONS: -Xmx=\"2g\"\njava version \"1.8.0_392\""),
+            Some(8)
+        );
     }
 }
