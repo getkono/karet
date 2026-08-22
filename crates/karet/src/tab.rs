@@ -308,6 +308,11 @@ pub enum TabKind {
         /// Two-axis scroll state.
         pager: PagerState,
     },
+    /// The full-screen Seam view: a package read by its seams rather than its files.
+    ///
+    /// Reserved with its identity the moment it is opened, so the pane switches
+    /// immediately and the index fills in behind it.
+    Seam(Box<crate::app::seam::SeamViewState>),
     /// A read-only view of the loaded settings and their provenance.
     LoadedConfig {
         /// The loaded configuration report.
@@ -805,6 +810,7 @@ impl Tab {
             TabKind::Welcome
             | TabKind::LanguageServers(_)
             | TabKind::Github(_)
+            | TabKind::Seam(_)
             | TabKind::Graph { .. }
             | TabKind::LoadedConfig { .. }
             | TabKind::LatexPreview { .. }
@@ -843,6 +849,7 @@ impl Tab {
             TabKind::LatexPreview { .. } => "latex preview",
             TabKind::Diff { file, .. } => file.as_deref().map_or("diff", FileView::language),
             TabKind::StashPreview { .. } => "stash",
+            TabKind::Seam(_) => "seams",
             TabKind::Graph { .. } => "graph",
             TabKind::LoadedConfig { .. } => "settings",
             TabKind::CommitLoading { .. } => "commit",
@@ -887,6 +894,7 @@ fn tab_kind_path(kind: &TabKind) -> Option<&Path> {
         | TabKind::LanguageServers(_)
         | TabKind::Github(_)
         | TabKind::StashPreview { .. }
+        | TabKind::Seam(_)
         | TabKind::Graph { .. }
         | TabKind::LoadedConfig { .. }
         | TabKind::LatexPreview { .. }

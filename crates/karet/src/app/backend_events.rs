@@ -183,7 +183,10 @@ impl App {
                 state,
                 error,
             } => self.update_language_server_runtime(server, root, state, error),
-            SessionEvent::Saved { doc } => self.on_saved(doc),
+            SessionEvent::Saved { doc } => {
+                self.reindex_saved_seam(doc);
+                self.on_saved(doc);
+            },
             // The fresh content arrives via the snapshot stream; just note it.
             SessionEvent::Reloaded { .. } => {
                 self.notify(
@@ -323,6 +326,12 @@ impl App {
                 self.status = Some(format!("dependency graph: {count} package(s)"));
             },
             SessionEvent::LoadedConfig { report } => self.open_loaded_config(*report),
+            SessionEvent::SeamIndexed { summary, nodes } => self.on_seam_indexed(summary, nodes),
+            SessionEvent::SeamIndexFailed { message } => self.on_seam_index_failed(message),
+            SessionEvent::SeamQueryResult { nodes, error, .. } => {
+                self.on_seam_query_result(nodes, error);
+            },
+            SessionEvent::SeamNodeDetail { node, edges } => self.on_seam_node_detail(node, edges),
             SessionEvent::SearchResults { hits } => self.apply_search_results(hits),
             SessionEvent::SpellingScanProgress {
                 hits,

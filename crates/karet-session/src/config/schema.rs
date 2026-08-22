@@ -28,6 +28,8 @@ pub struct Settings {
     pub workbench: Workbench,
     /// Workspace search behaviour.
     pub search: Search,
+    /// The Seam view.
+    pub seam: Seam,
     /// Spell-checking of prose and selected source-code tokens.
     pub spellcheck: Spellcheck,
     /// External LaTeX build and preview tooling.
@@ -642,6 +644,77 @@ impl Default for Search {
             exclude: Vec::new(),
             use_ignore_files: true,
             smart_case: true,
+        }
+    }
+}
+
+/// How the Seam view's lens filter treats rows that do not match.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum SeamLensFilter {
+    /// Dim them, keeping the tree's shape stable as filters change.
+    #[default]
+    Demote,
+    /// Remove them.
+    Hide,
+}
+
+/// How the Seam view renders its containment tree.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum SeamSpine {
+    /// Cascading columns when the terminal is wide enough, an indented tree below that.
+    #[default]
+    Auto,
+    /// Always cascade, however narrow the terminal.
+    Columns,
+    /// Always use the indented tree.
+    Tree,
+}
+
+/// `seam.*` — the Seam view.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct Seam {
+    /// How the containment tree is rendered.
+    pub spine: SeamSpine,
+    /// Whether a lens filter dims non-matching rows or removes them.
+    ///
+    /// Demoting keeps the tree's shape stable as filters change, so the reader never
+    /// loses their place to a row that vanished.
+    pub lens_filter: SeamLensFilter,
+    /// Whether nodes excluded by the active configuration are hidden rather than dimmed.
+    ///
+    /// Off by default: a package is a family of trees, and hiding the branches this
+    /// build excludes makes the one on screen look like the whole of it.
+    pub hide_inactive: bool,
+    /// Lenses to enable when the view opens.
+    pub default_lenses: Vec<String>,
+    /// The configuration to read the package under when the view opens.
+    pub default_configuration: Option<String>,
+    /// Index the workspace package as soon as the session starts.
+    ///
+    /// Off by default so startup is never delayed by a parse of every file; the index
+    /// begins when the view is first opened.
+    pub index_on_startup: bool,
+    /// Stop indexing after this many files, marking the index truncated.
+    pub max_indexed_files: usize,
+}
+
+impl Default for Seam {
+    fn default() -> Self {
+        Self {
+            spine: SeamSpine::default(),
+            lens_filter: SeamLensFilter::default(),
+            hide_inactive: false,
+            default_lenses: Vec::new(),
+            default_configuration: None,
+            index_on_startup: false,
+            // Far above any real package: a runaway guard, not a policy.
+            max_indexed_files: 20_000,
         }
     }
 }

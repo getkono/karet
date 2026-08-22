@@ -75,6 +75,8 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Global, true, true, true, Up,    Command::ResizePaneUp),
     b(Global, true, true, true, Down,  Command::ResizePaneDown),
 
+    // The Seam view (`Ctrl+K S`), beside the other `Ctrl+K` view chords.
+    seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('s'))], Command::ShowSeamView),
     // Markdown preview to the side (VS Code parity: `Ctrl+K V`). Inert on a non-Markdown tab.
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('v'))], Command::MarkdownPreviewSide),
     // Markdown All in One parity on Linux: format GFM tables in the document.
@@ -255,6 +257,34 @@ pub(super) static BINDINGS: &[Binding] = &[
 
     // The full-screen commit graph browser: j/k or arrows move the selection, Enter
     // opens the selected commit as a standalone view, Esc returns focus to the sidebar.
+    // The Seam view: navigation of its own, since the editor's motion keys mean
+    // nothing in a cascading navigator.
+    b(Seam, false, false, false, Char('j'), Command::SeamNextRow),
+    b(Seam, false, false, false, Down,      Command::SeamNextRow),
+    b(Seam, false, false, false, Char('k'), Command::SeamPrevRow),
+    b(Seam, false, false, false, Up,        Command::SeamPrevRow),
+    b(Seam, false, false, false, Char('l'), Command::SeamNextColumn),
+    b(Seam, false, false, false, Right,     Command::SeamNextColumn),
+    b(Seam, false, false, false, Char('h'), Command::SeamPrevColumn),
+    b(Seam, false, false, false, Left,      Command::SeamPrevColumn),
+    b(Seam, false, false, false, Enter,     Command::SeamEnter),
+    // Both, because "step back out" is Backspace to some hands and `-` to others.
+    b(Seam, false, false, false, Backspace, Command::SeamWiden),
+    b(Seam, false, false, false, Char('-'), Command::SeamWiden),
+    b(Seam, false, false, false, Char('o'), Command::SeamOpenSource),
+    b(Seam, false, false, false, Tab,       Command::SeamToggleFocus),
+    b(Seam, false, false, false, Char('/'), Command::SeamFocusQuery),
+    b(Seam, false, false, false, Esc,       Command::SeamEscape),
+    // The digits match the legend, so the binding never has to be memorized.
+    b(Seam, false, false, false, Char('1'), Command::SeamLens1),
+    b(Seam, false, false, false, Char('2'), Command::SeamLens2),
+    b(Seam, false, false, false, Char('3'), Command::SeamLens3),
+    b(Seam, false, false, false, Char('4'), Command::SeamLens4),
+    b(Seam, false, false, false, Char('5'), Command::SeamLens5),
+    b(Seam, false, false, false, Char('0'), Command::SeamClearLenses),
+    b(Seam, false, false, false, Char('c'), Command::SeamConfiguration),
+    b(Seam, false, false, false, Char('y'), Command::SeamCopyIdentity),
+
     b(CommitGraph, false, false, false, Char('j'), Command::CommitGraphNext),
     b(CommitGraph, false, false, false, Down,      Command::CommitGraphNext),
     b(CommitGraph, false, false, false, Char('k'), Command::CommitGraphPrev),

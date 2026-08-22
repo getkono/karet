@@ -8,6 +8,7 @@ mod github;
 mod language_servers;
 mod panes;
 mod scm;
+mod seam;
 mod secondary;
 mod sidebar;
 mod status;

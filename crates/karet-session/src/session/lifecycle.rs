@@ -39,6 +39,7 @@ impl Session {
         let github_repository = github::eligible_repository(&config.roots, vcs.as_ref());
         let vcs_worker = crate::vcs_worker::spawn(config.roots.first().cloned(), events.clone());
         let search_worker = crate::search_worker::spawn(events.clone());
+        let seam_worker = crate::seam_worker::spawn(events.clone());
         let spell_scan_worker = crate::spell_scan::spawn(events.clone());
         let todo_scan_worker = crate::todo_scan::spawn(events.clone());
         let latex_worker = crate::latex::spawn(events.clone());
@@ -109,6 +110,7 @@ impl Session {
             vcs,
             vcs_worker,
             search_worker,
+            seam_worker,
             spell_scan_worker,
             todo_scan_worker,
             wakatime_worker: None,

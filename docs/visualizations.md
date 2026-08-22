@@ -87,3 +87,10 @@ against the current API meanwhile:
 5. **An offline graph builder in `dependable-core`** (IO-free) so structure-only graphs
    never pull the `dependable-fetch` network stack — which is exactly why karet builds
    the graph from the parsed lockfile itself today.
+
+## See also
+
+The [Seam view](seam.md) is a different kind of reading: not a graph of relationships,
+but a containment tree annotated with where behavior can be observed, substituted, or
+varied. Containment is a tree there and everything else is an edge, followed one at a
+time rather than drawn all at once.

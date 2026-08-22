@@ -37,6 +37,7 @@ mod lsp_registry;
 mod manifest_hints;
 #[cfg(feature = "notebook-kernel")]
 mod notebook_kernel;
+mod seam_worker;
 mod search_worker;
 pub mod session;
 mod spell;

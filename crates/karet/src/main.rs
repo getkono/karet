@@ -27,6 +27,7 @@ mod outline;
 mod overlay;
 mod remote;
 mod render;
+mod seam_query;
 mod tab;
 mod term_caps;
 mod ui;
@@ -83,6 +84,21 @@ fn main() -> color_eyre::Result<()> {
     // loaded settings and exit — never enter the alternate screen or the app loop.
     if cli.doctor {
         std::process::exit(doctor::run(&loaded_config.settings));
+    }
+
+    // `--seam-query` acts like a subcommand: answer one question about the package and
+    // exit, without a session, an event loop, or the alternate screen.
+    if let Some(query) = cli.seam_query.clone() {
+        match seam_query::run(&root, &query, cli.seam_config.as_deref()) {
+            Ok(json) => {
+                println!("{json}");
+                std::process::exit(0);
+            },
+            Err(failure) => {
+                eprintln!("karet: {}", failure.message);
+                std::process::exit(failure.code);
+            },
+        }
     }
 
     // Resolve `--capture*` up front for the same fail-fast reason as `--command`

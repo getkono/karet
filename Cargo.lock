@@ -3309,6 +3309,7 @@ dependencies = [
  "karet-graph",
  "karet-markdown",
  "karet-pdf",
+ "karet-seam",
  "karet-search",
  "karet-session",
  "karet-supervisor",
@@ -3501,6 +3502,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "karet-seam"
+version = "0.5.0"
+dependencies = [
+ "dependable-core",
+ "karet-core",
+ "karet-fuzzy",
+ "karet-treesitter",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "karet-search"
 version = "0.5.0"
 dependencies = [
@@ -3535,6 +3549,7 @@ dependencies = [
  "karet-lsp",
  "karet-markdown",
  "karet-notebook",
+ "karet-seam",
  "karet-search",
  "karet-supervisor",
  "karet-syntax",

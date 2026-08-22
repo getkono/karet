@@ -17,6 +17,7 @@ use karet_core::Span;
 mod detect;
 mod injection;
 mod registry;
+mod walk;
 
 #[cfg(test)]
 mod tests;
@@ -25,6 +26,8 @@ pub use detect::language_id_from_injection_name;
 pub use detect::language_id_from_path;
 pub use detect::language_name_from_path;
 pub use injection::InjectionRegion;
+pub use walk::WalkControl;
+pub use walk::WalkNode;
 
 /// Errors produced by the parse host.
 #[derive(Debug, thiserror::Error)]

@@ -481,6 +481,101 @@ async fn document_symbols_end_to_end() -> TestResult {
 }
 
 #[tokio::test]
+async fn implementations_end_to_end() -> TestResult {
+    let ((read, write), mut server) = wire();
+    let server_task = tokio::spawn(async move {
+        server.handshake().await;
+        let request = server.recv().await;
+        assert_eq!(request["method"], "textDocument/implementation");
+        server
+            .respond(
+                &request["id"],
+                json!([{
+                    "uri": "file:///tmp/ws/impls.rs",
+                    "range": {"start": {"line": 7, "character": 0},
+                              "end": {"line": 9, "character": 1}}
+                }]),
+            )
+            .await;
+    });
+    let client = LspClient::connect(read, write, Path::new("/tmp/ws")).await?;
+    let found = client
+        .implementations(Path::new("/tmp/ws/lib.rs"), LineCol::new(2, 6))
+        .await?;
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].path, Path::new("/tmp/ws/impls.rs"));
+    assert_eq!(found[0].range.start, LineCol::new(7, 0));
+    server_task.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn supertypes_takes_two_round_trips_and_keeps_selection_ranges() -> TestResult {
+    let ((read, write), mut server) = wire();
+    let server_task = tokio::spawn(async move {
+        server.handshake().await;
+        let prepare = server.recv().await;
+        assert_eq!(prepare["method"], "textDocument/prepareTypeHierarchy");
+        server
+            .respond(
+                &prepare["id"],
+                json!([{
+                    "name": "Widget", "kind": 23, "uri": "file:///tmp/ws/lib.rs",
+                    "range": {"start": {"line": 0, "character": 0},
+                              "end": {"line": 5, "character": 1}},
+                    "selectionRange": {"start": {"line": 0, "character": 7},
+                                       "end": {"line": 0, "character": 13}}
+                }]),
+            )
+            .await;
+        let supertypes = server.recv().await;
+        assert_eq!(supertypes["method"], "typeHierarchy/supertypes");
+        server
+            .respond(
+                &supertypes["id"],
+                json!([{
+                    "name": "Render", "kind": 11, "uri": "file:///tmp/ws/render.rs",
+                    "range": {"start": {"line": 1, "character": 0},
+                              "end": {"line": 4, "character": 1}},
+                    "selectionRange": {"start": {"line": 1, "character": 6},
+                                       "end": {"line": 1, "character": 12}}
+                }]),
+            )
+            .await;
+    });
+    let client = LspClient::connect(read, write, Path::new("/tmp/ws")).await?;
+    let found = client
+        .supertypes(Path::new("/tmp/ws/lib.rs"), LineCol::new(0, 7))
+        .await?;
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].path, Path::new("/tmp/ws/render.rs"));
+    // The selection range is the navigable one, not the whole body.
+    assert_eq!(found[0].range.start, LineCol::new(1, 6));
+    server_task.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_server_that_declines_type_hierarchy_yields_no_supertypes() -> TestResult {
+    // Not supporting the request is not a failure — the caller degrades to its
+    // structural answer rather than surfacing an error.
+    let ((read, write), mut server) = wire();
+    let server_task = tokio::spawn(async move {
+        server.handshake().await;
+        let prepare = server.recv().await;
+        assert_eq!(prepare["method"], "textDocument/prepareTypeHierarchy");
+        server.respond(&prepare["id"], json!(null)).await;
+    });
+    let client = LspClient::connect(read, write, Path::new("/tmp/ws")).await?;
+    let found = client
+        .supertypes(Path::new("/tmp/ws/lib.rs"), LineCol::new(0, 7))
+        .await?;
+    assert!(found.is_empty());
+    server_task.await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn shutdown_performs_the_handshake() -> TestResult {
     let ((read, write), mut server) = wire();
     let server_task = tokio::spawn(async move {

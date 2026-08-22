@@ -51,6 +51,8 @@ pub enum EditorTab {
     Pager,
     /// The full-screen commit graph browser.
     CommitGraph,
+    /// The full-screen Seam view.
+    Seam,
     /// GitHub dashboard, detail, or form tab.
     Github,
     /// Language-server inventory and lifecycle manager.
@@ -76,6 +78,8 @@ pub enum FocusTarget {
     Pager,
     /// The full-screen commit graph browser.
     CommitGraph,
+    /// The full-screen Seam view.
+    Seam,
     /// A GitHub dashboard, detail, or form.
     Github,
     /// The language-server inventory and lifecycle manager.
@@ -109,6 +113,7 @@ impl FocusTarget {
                 EditorTab::Diff => FocusTarget::DiffEditor,
                 EditorTab::Pager => FocusTarget::Pager,
                 EditorTab::CommitGraph => FocusTarget::CommitGraph,
+                EditorTab::Seam => FocusTarget::Seam,
                 EditorTab::Github => FocusTarget::Github,
                 EditorTab::LanguageServers => FocusTarget::LanguageServers,
                 EditorTab::Oversize => FocusTarget::Oversize,
@@ -149,6 +154,8 @@ pub enum Layer {
     Pager,
     /// Active when the full-screen commit graph browser has focus.
     CommitGraph,
+    /// Active when the full-screen Seam view has focus.
+    Seam,
     /// Active on GitHub dashboard, detail, and form tabs.
     Github,
     /// Active on the language-server manager tab.
@@ -279,6 +286,9 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
             // The browser is a self-contained list/detail view — its own layer stacks
             // straight onto Global, never the editor's editing/motion keys.
             FocusTarget::CommitGraph => &[L::CommitGraph, L::Global],
+            // Self-contained like the graph browser: navigation keys of its own,
+            // never the editor's motion keys.
+            FocusTarget::Seam => &[L::Seam, L::Global],
             FocusTarget::Github => &[L::Github, L::Global],
             FocusTarget::LanguageServers => &[L::LanguageServers, L::Global],
             FocusTarget::Oversize => &[L::Oversize, L::Global],

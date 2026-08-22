@@ -32,6 +32,7 @@ mod review;
 mod runtime;
 mod scm;
 mod scroll;
+pub(crate) mod seam;
 mod search;
 mod sidebar;
 mod snapshot_events;
@@ -558,6 +559,12 @@ pub struct App {
     /// The graph browser's in-flight history-page request, so its answering
     /// [`SessionEvent::VcsLog`] fills the browser rather than the sidebar log.
     graph_log_req: Option<(RequestId, ViewId)>,
+    /// The in-flight seam index request, so a stale answer can be ignored.
+    pub(crate) seam_index_req: Option<RequestId>,
+    /// The in-flight seam query request.
+    pub(crate) seam_query_req: Option<RequestId>,
+    /// The in-flight seam node-detail request.
+    pub(crate) seam_node_req: Option<RequestId>,
     /// Requests cancelled because their owning view closed. Late queued events
     /// bearing these ids are ignored and cannot resurrect UI.
     cancelled_requests: HashSet<RequestId>,

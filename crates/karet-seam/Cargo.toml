@@ -1,0 +1,51 @@
+[package]
+name        = "karet-seam"
+description = "A queryable index of a package's seams: what is exposed, substitutable, variable, boundary-crossing, or hazardous."
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+publish = false                       # karet-internal until the query language stabilizes
+
+[features]
+default = []
+# Serialize the model, for the programmatic/agent surface. Off by default so a
+# consumer that only navigates the index never compiles serde.
+#
+# Serialization only, deliberately: the index is always *built* by walking source, never
+# read back from JSON, so `Deserialize` would be a shape nothing produces. That also lets
+# `FacetSubtype` stay a `Copy` `&'static str` (which cannot deserialize) instead of an
+# allocating string on every facet.
+serde = ["dep:serde", "karet-core/serde"]
+
+# Grammar pass-through to the single parse host. Only the languages this crate
+# actually maps into the lens vocabulary appear here — a grammar with no facet
+# mapping would parse and then classify nothing.
+lang-rust   = ["karet-treesitter/lang-rust"]
+lang-python = ["karet-treesitter/lang-python"]
+
+[dependencies]
+karet-core.workspace       = true
+karet-fuzzy.workspace      = true
+karet-treesitter.workspace = true
+# Manifest reading. Already a workspace dependency, and the crate that owns Cargo
+# manifest parsing — so the package name comes from there rather than a second parser.
+dependable-core.workspace  = true
+thiserror.workspace        = true
+serde = { workspace = true, optional = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile.workspace         = true
+# The workspace integration suite indexes this repo's own crates, which needs the
+# grammar and the parser pool the library only takes as an argument.
+karet-treesitter.workspace = true

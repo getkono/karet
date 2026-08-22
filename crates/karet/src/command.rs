@@ -12,6 +12,7 @@
 //! [`crate::keymap::Modal`] context is active and is excluded from the palette
 //! (the ordered list in `resolve::palette` is the single palette authority).
 
+mod hints;
 mod resolve;
 
 #[cfg(test)]
@@ -504,6 +505,46 @@ pub enum Command {
     DiscardSwaps,
     /// Open the workspace package-dependency graph visualization.
     ShowDependencyGraph,
+    /// Open the full-screen Seam view for the workspace package.
+    ShowSeamView,
+    /// Choose which configuration the Seam view reads the package under.
+    SeamConfiguration,
+    /// Copy the selected seam node's identity, which is its citation form.
+    SeamCopyIdentity,
+    /// Copy the query this Seam view is equivalent to.
+    SeamCopyQuery,
+    /// Move the Seam selection down within its column.
+    SeamNextRow,
+    /// Move the Seam selection up within its column.
+    SeamPrevRow,
+    /// Move Seam focus one column deeper.
+    SeamNextColumn,
+    /// Move Seam focus one column back.
+    SeamPrevColumn,
+    /// Reroot the Seam view at the selection, or follow the selected edge.
+    SeamEnter,
+    /// Step back out of the most recent Seam narrowing.
+    SeamWiden,
+    /// Open the selected seam node's source in an editor tab.
+    SeamOpenSource,
+    /// Move focus between the Seam spine and its facet pane.
+    SeamToggleFocus,
+    /// Focus the Seam query box.
+    SeamFocusQuery,
+    /// Leave the Seam query box, or clear the query when already outside it.
+    SeamEscape,
+    /// Toggle the first Seam lens (api).
+    SeamLens1,
+    /// Toggle the second Seam lens (substitution).
+    SeamLens2,
+    /// Toggle the third Seam lens (variation).
+    SeamLens3,
+    /// Toggle the fourth Seam lens (boundary).
+    SeamLens4,
+    /// Toggle the fifth Seam lens (hazard).
+    SeamLens5,
+    /// Clear every Seam lens filter.
+    SeamClearLenses,
     /// Open the full-screen commit graph browser.
     ShowCommitGraph,
     /// Move the commit graph browser's selection to the next (older) commit.
@@ -798,6 +839,28 @@ impl Command {
             Self::RecoverSwaps => "Recover Unsaved Changes",
             Self::DiscardSwaps => "Discard Unsaved Backups",
             Self::ShowDependencyGraph => "Visualize: Dependency Graph",
+            // Key-driven navigation inside the view; deliberately absent from the
+            // palette, but still named so nothing renders as a blank entry.
+            Self::SeamNextRow => "Seam: Next Row",
+            Self::SeamPrevRow => "Seam: Previous Row",
+            Self::SeamNextColumn => "Seam: Next Column",
+            Self::SeamPrevColumn => "Seam: Previous Column",
+            Self::SeamEnter => "Seam: Reroot or Follow",
+            Self::SeamWiden => "Seam: Widen",
+            Self::SeamOpenSource => "Seam: Open Source",
+            Self::SeamToggleFocus => "Seam: Toggle Facet Pane",
+            Self::SeamFocusQuery => "Seam: Filter",
+            Self::SeamEscape => "Seam: Clear Filter",
+            Self::SeamLens1 => "Seam: Toggle API Lens",
+            Self::SeamLens2 => "Seam: Toggle Substitution Lens",
+            Self::SeamLens3 => "Seam: Toggle Variation Lens",
+            Self::SeamLens4 => "Seam: Toggle Boundary Lens",
+            Self::SeamLens5 => "Seam: Toggle Hazard Lens",
+            Self::SeamClearLenses => "Seam: Clear Lenses",
+            Self::ShowSeamView => "Seam: Open Seam View",
+            Self::SeamConfiguration => "Seam: Set Configuration",
+            Self::SeamCopyIdentity => "Seam: Copy Node Identity",
+            Self::SeamCopyQuery => "Seam: Copy Query",
             Self::ShowCommitGraph => "Source Control: Commit Graph",
             Self::CommitGraphNext => "Commit Graph: Next Commit",
             Self::CommitGraphPrev => "Commit Graph: Previous Commit",
@@ -824,285 +887,5 @@ impl Command {
             Self::SearchToggleCase => "Search: Toggle Case Sensitivity",
             Self::SearchToggleWord => "Search: Toggle Whole Word",
         }
-    }
-
-    /// The terse verb shown after the chord in the status hints bar, or `None` to
-    /// omit the command entirely. `None` covers the self-evident keys — cursor and
-    /// scroll motion, selection extension, and raw text editing — that need no
-    /// advertising, plus positional tab juggling the palette already covers. The
-    /// match is exhaustive, so a new command must declare its hints-bar treatment.
-    #[must_use]
-    pub fn hint_verb(self) -> Option<&'static str> {
-        Some(match self {
-            // Global.
-            Self::Quit => "quit",
-            Self::ToggleSidebar => "sidebar",
-            Self::ToggleOutline => "outline",
-            Self::ToggleFocus => "focus",
-            Self::SelectPanel(SidebarPanel::Explorer) => "explorer",
-            Self::SelectPanel(SidebarPanel::Search) => "search",
-            Self::SelectPanel(SidebarPanel::SourceControl) => "git",
-            Self::SelectPanel(SidebarPanel::Spelling) => "spelling",
-            Self::SelectPanel(SidebarPanel::Todos) => "todos",
-            Self::SelectPanel(SidebarPanel::Debug) => "debug",
-            Self::TodoScan | Self::TodoToggleGrouping => "todos",
-            Self::SpellingScan => "scan",
-            Self::GoToDefinition => "definition",
-            Self::JumpBack => "back",
-            Self::OpenQuickOpen => "open",
-            Self::OpenCommandPalette => "commands",
-            Self::OpenFind => "find",
-            Self::OpenGlobalSearch => "find in files",
-            Self::CloseTab => "close",
-            Self::NextTab => "next tab",
-            Self::PrevTab => "prev tab",
-            Self::CloseOtherTabs => "close others",
-            Self::CloseAllTabs => "close all",
-            Self::ReopenClosedTab => "reopen",
-            Self::OpenAnyway => "open anyway",
-            Self::DismissNotification => "dismiss",
-            Self::Copy => "copy",
-            // Sidebar.
-            Self::SidebarActivate => "open",
-            Self::SidebarCollapse => "collapse",
-            Self::SidebarToggleExpand => "expand",
-            Self::SelectToggle => "select",
-            Self::SelectAll => "select all",
-            // Outline.
-            Self::OutlineActivate => "go to",
-            // Editor.
-            Self::Undo => "undo",
-            Self::Redo => "redo",
-            Self::Save => "save",
-            Self::Cut => "cut",
-            Self::Paste => "paste",
-            Self::ToggleInlineBlame => "blame",
-            Self::OpenBlameDetail => "blame detail",
-            Self::ShowLoadedConfig => "settings",
-            Self::ManageLanguageServers => "language servers",
-            Self::CheckLanguageServerUpdates => "lsp updates",
-            Self::LanguageServerRefresh => "refresh",
-            Self::LanguageServerCheckSelected => "check",
-            Self::LanguageServerCheckAll => "check all",
-            Self::LanguageServerPrimaryAction => "install/update",
-            Self::LanguageServerRestart => "restart",
-            Self::LanguageServerUninstall => "uninstall",
-            Self::LanguageServerFilter => "filter",
-            Self::ToggleFold => "fold",
-            Self::AddCursorNextOccurrence => "add cursor",
-            // Diff.
-            Self::ToggleDiffLayout => "layout",
-            Self::NextChangedFile => "next change",
-            Self::PrevChangedFile => "prev change",
-            Self::OpenDiffFile => "open file",
-            Self::StageHunk => "stage hunk",
-            Self::UnstageHunk => "unstage hunk",
-            // Source control.
-            Self::ScmStage => "stage",
-            Self::ScmUnstage => "unstage",
-            Self::ScmToggleStage => "toggle",
-            Self::ScmStageAll => "stage all",
-            Self::ScmUnstageAll => "unstage all",
-            Self::ScmDiscard => "discard",
-            Self::ScmCommit => "commit",
-            Self::ScmRefresh => "refresh",
-            Self::ScmSync => "sync",
-            Self::ScmMenu => "more",
-            Self::ScmSwitchBranch => "switch branch",
-            Self::ScmCreateBranch => "create branch",
-            Self::ScmPickPullRequest => "pull requests",
-            Self::ScmUndoCommit => "undo commit",
-            Self::ScmStash => "stash",
-            Self::ScmManageStashes => "stashes",
-            Self::ScmPublish => "publish",
-            Self::ScmRenameBranch => "rename branch",
-            Self::ScmDeleteBranch => "delete branch",
-            Self::ScmDeleteRemoteBranch => "delete remote branch",
-            Self::ScmContinue => "continue",
-            Self::ScmAbort => "abort",
-            Self::ScmSkip => "skip",
-            // Explorer.
-            Self::ExplorerNewFile => "new file",
-            Self::ExplorerNewFolder => "new folder",
-            Self::ExplorerRename => "rename",
-            Self::ExplorerRefresh => "refresh",
-            Self::ExplorerCollapseAll => "collapse all",
-            Self::ExplorerCopy => "copy",
-            Self::ExplorerCut => "cut",
-            Self::ExplorerPaste => "paste",
-            Self::ExplorerDuplicate => "duplicate",
-            Self::ExplorerDelete => "delete",
-            Self::ExplorerCopyPath => "copy path",
-            Self::ExplorerCopyRelativePath => "copy rel path",
-            Self::ExplorerOpenContextMenu => "menu",
-            // Modal-scoped.
-            Self::OverlayAccept => "accept",
-            Self::OverlayCancel => "cancel",
-            Self::FindNext => "next",
-            Self::FindPrev => "prev",
-            Self::FindCancel => "close",
-            Self::FindSubmit => "next",
-            Self::FindReplaceAll => "replace all",
-            Self::FindToggleReplace => "replace",
-            Self::FindToggleField => "field",
-            Self::FindToggleRegex => "regex",
-            Self::FindToggleCase => "case",
-            Self::FindToggleWord => "word",
-            Self::CommitSubmit => "submit",
-            Self::CommitCancel => "keep draft",
-            Self::CommitGenerate => "generate",
-            Self::ExplorerEditSubmit => "confirm",
-            Self::ExplorerEditCancel => "cancel",
-            Self::ConfirmDiscard => "confirm",
-            Self::ConfirmExplorerDelete => "confirm",
-            Self::ContextMenuAccept => "accept",
-            Self::ContextMenuCancel => "cancel",
-            Self::CloseConfirmSave => "save & close",
-            Self::CloseConfirmDiscard => "discard & close",
-            Self::RecoverSwaps => "recover",
-            Self::DiscardSwaps => "discard",
-            Self::ShowDependencyGraph => "deps",
-            Self::ShowCommitGraph => "graph",
-            Self::CommitGraphNext => "next",
-            Self::CommitGraphPrev => "prev",
-            Self::CommitGraphOpen => "open",
-            Self::CommitGraphMarkBase => "mark base",
-            Self::CommitGraphCompare => "compare",
-            Self::RevInputSubmit => "go",
-            Self::RevInputCancel => "cancel",
-            Self::SearchOpen => "open",
-            Self::SearchBeginInput => "edit",
-            Self::SearchQuit => "close",
-            Self::SearchRun => "run",
-            Self::SearchEndInput => "done",
-            Self::SearchToggleReplace => "replace",
-            Self::SearchToggleField => "field",
-            Self::SearchReplaceAll => "replace all",
-            Self::SearchToggleRegex => "regex",
-            Self::SearchToggleCase => "case",
-            Self::SearchToggleWord => "word",
-            Self::MarkdownPreviewSide => "preview",
-            Self::FormatMarkdownTables => "format tables",
-            Self::LatexBuildPreview => "build preview",
-            Self::ResizePaneLeft
-            | Self::ResizePaneRight
-            | Self::ResizePaneUp
-            | Self::ResizePaneDown => "resize pane",
-            // Self-evident motion, selection, and editing — no hint.
-            Self::MoveTabLeft
-            | Self::MoveTabRight
-            | Self::GoToTab(_)
-            | Self::CloseTabsToRight
-            | Self::DismissAllNotifications
-            | Self::SplitRight
-            | Self::SplitDown
-            | Self::FocusNextPane
-            | Self::FocusPrevPane
-            | Self::CopyPath
-            | Self::CopyRelativePath
-            | Self::RevealActiveInExplorer
-            | Self::CopyRemoteFileUrl
-            | Self::CopyGithubPermalink
-            | Self::CopyGithubHeadLink
-            | Self::OpenChangesWithPrevious
-            | Self::OpenChangesWithRevision
-            | Self::OpenChangesWithBranch
-            | Self::SidebarUp
-            | Self::SidebarDown
-            | Self::OutlineUp
-            | Self::OutlineDown
-            | Self::OutlineCollapse
-            | Self::CaretUp
-            | Self::CaretDown
-            | Self::CaretLeft
-            | Self::CaretRight
-            | Self::SelectUp
-            | Self::SelectDown
-            | Self::SelectLeft
-            | Self::SelectRight
-            | Self::CaretWordLeft
-            | Self::CaretWordRight
-            | Self::CaretLineStart
-            | Self::CaretLineEnd
-            | Self::CaretDocStart
-            | Self::CaretDocEnd
-            | Self::SelectWordLeft
-            | Self::SelectWordRight
-            | Self::SelectLineStart
-            | Self::SelectLineEnd
-            | Self::SelectDocStart
-            | Self::SelectDocEnd
-            | Self::SelectPageUp
-            | Self::SelectPageDown
-            | Self::EditorSelectAll
-            | Self::AddCursorAbove
-            | Self::AddCursorBelow
-            | Self::CollapseCarets
-            | Self::ScrollUp
-            | Self::ScrollDown
-            | Self::PageUp
-            | Self::PageDown
-            | Self::Top
-            | Self::Bottom
-            | Self::InsertChar(_)
-            | Self::TriggerCompletion
-            | Self::Hover
-            | Self::ShowDiagnostic
-            | Self::DebugStart
-            | Self::DebugStop
-            | Self::DebugPause
-            | Self::DebugToggleBreakpoint
-            | Self::DebugStepOver
-            | Self::DebugStepIn
-            | Self::DebugStepOut
-            | Self::DebugEvaluatePrompt
-            | Self::NotebookRunAll
-            | Self::NotebookInterrupt
-            | Self::NotebookRestartKernel
-            | Self::ToggleBold
-            | Self::ToggleItalic
-            | Self::ToggleStrikethrough
-            | Self::ToggleInlineCode
-            | Self::ToggleTaskCheckbox
-            | Self::MarkdownTocCreate
-            | Self::MarkdownTocUpdate
-            | Self::MarkdownHeadingUp
-            | Self::MarkdownHeadingDown
-            | Self::MarkdownLintFixAll
-            | Self::DepsRefresh
-            | Self::DepsUpdate
-            | Self::DepsUpdateAll
-            | Self::CommitGraphMenu
-            | Self::CommitGraphTag
-            | Self::CommitGraphCherryPick
-            | Self::CommitGraphRevert
-            | Self::CommitGraphResetSoft
-            | Self::CommitGraphResetMixed
-            | Self::CommitGraphResetHard
-            | Self::CommitGraphCheckout
-            | Self::CommitGraphInteractiveRebase
-            | Self::ScmFetch
-            | Self::CommitToggleFileReviewed
-            | Self::CommitGraphCopyIssueUrls
-            | Self::InsertNewline
-            | Self::DeleteBackward
-            | Self::DeleteForward
-            | Self::DeleteWordBackward
-            | Self::DeleteWordForward
-            | Self::SelectExtendUp
-            | Self::SelectExtendDown
-            | Self::OverlayUp
-            | Self::OverlayDown
-            | Self::SearchSelectUp
-            | Self::SearchSelectDown
-            | Self::ContextMenuUp
-            | Self::ContextMenuDown
-            | Self::OpenCommitByHash
-            | Self::ShowFileHistory
-            | Self::DiffUnpushed
-            | Self::DiffSinceBase
-            | Self::LanguageServerUp
-            | Self::LanguageServerDown => return None,
-        })
     }
 }

@@ -225,6 +225,7 @@ const SECTIONS: &[&str] = &[
     "files",
     "workbench",
     "search",
+    "seam",
     "spellcheck",
     "latex",
     "git",
@@ -397,6 +398,7 @@ fn deserialize_sections(
             "files" => section(value, |v| settings.files = v),
             "workbench" => section(value, |v| settings.workbench = v),
             "search" => section(value, |v| settings.search = v),
+            "seam" => section(value, |v| settings.seam = v),
             "spellcheck" => section(value, |v| settings.spellcheck = v),
             "latex" => section(value, |v| settings.latex = v),
             "git" => section(value, |v| settings.git = v),
@@ -877,6 +879,9 @@ mod tests {
             }),
             ("search", r#"{"exclude": ["probe"]}"#, |s| {
                 s.search.exclude.iter().any(|e| e == "probe")
+            }),
+            ("seam", r#"{"hideInactive": true}"#, |s| {
+                s.seam.hide_inactive
             }),
             ("spellcheck", r#"{"enabled": false}"#, |s| {
                 !s.spellcheck.enabled
