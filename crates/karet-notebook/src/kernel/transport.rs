@@ -163,8 +163,7 @@ pub(crate) fn decode(wire: ZmqMessage, key: &str) -> Result<JupyterMessage, Kern
     let [signature, header, parent, metadata, content, buffers @ ..] = rest else {
         return Err(KernelError::Protocol("truncated wire message".to_owned()));
     };
-    let expected = sign(key, [header.as_ref(), parent, metadata, content]);
-    if signature.as_ref() != expected.as_bytes() {
+    if !verify(key, [header.as_ref(), parent, metadata, content], signature) {
         return Err(KernelError::Transport("signature mismatch".to_owned()));
     }
     let header: Header = serde_json::from_slice(header)
@@ -187,6 +186,38 @@ pub(crate) fn decode(wire: ZmqMessage, key: &str) -> Result<JupyterMessage, Kern
         buffers: buffers.to_vec(),
         channel: None,
     })
+}
+
+/// Whether `signature` (hex) is the hmac-sha256 of the four signed frames.
+///
+/// Compares through `verify_slice`, which is constant-time. Comparing the hex
+/// strings directly would return on the first differing byte, leaking through
+/// timing how much of a guessed signature was right — enough, over a loopback
+/// socket a local process can hammer, to build a valid one byte by byte.
+fn verify(key: &str, frames: [&[u8]; 4], signature: &[u8]) -> bool {
+    let Ok(mut mac) = hmac::Hmac::<sha2::Sha256>::new_from_slice(key.as_bytes()) else {
+        return false;
+    };
+    for frame in frames {
+        mac.update(frame);
+    }
+    let Some(raw) = unhex(signature) else {
+        return false;
+    };
+    mac.verify_slice(&raw).is_ok()
+}
+
+/// Decode an even-length ASCII hex string; `None` if it is not one.
+fn unhex(hex: &[u8]) -> Option<Vec<u8>> {
+    if !hex.len().is_multiple_of(2) {
+        return None;
+    }
+    hex.chunks_exact(2)
+        .map(|pair| {
+            let text = std::str::from_utf8(pair).ok()?;
+            u8::from_str_radix(text, 16).ok()
+        })
+        .collect()
 }
 
 /// The hex hmac-sha256 over the four signed frames.
@@ -293,6 +324,63 @@ mod tests {
         let tampered = encode(&message, "secret")?;
         assert!(matches!(
             decode(tampered, "other-key"),
+            Err(KernelError::Transport(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn a_malformed_or_forged_signature_is_refused() -> Result<(), KernelError> {
+        // Verification decodes the hex before comparing, so anything that is
+        // not a well-formed signature has to be refused rather than panicking
+        // or slipping through.
+        let message = JupyterMessage::new(KernelInfoRequest {}, None);
+        for forged in [
+            String::new(),
+            "zz".repeat(32), // not hex
+            "ab".repeat(31), // right shape, wrong length
+            "a".repeat(63),  // odd length
+            "0".repeat(64),  // all zeroes
+            "ff".repeat(32), // all ones
+        ] {
+            let wire = encode(&message, "secret")?;
+            let mut frames = wire.into_vec();
+            let at = frames
+                .iter()
+                .position(|frame| frame.as_ref() == DELIMITER)
+                .unwrap_or(0)
+                + 1;
+            frames[at] = bytes::Bytes::from(forged.clone().into_bytes());
+            let Ok(tampered) = ZmqMessage::try_from(frames) else {
+                continue;
+            };
+            assert!(
+                matches!(decode(tampered, "secret"), Err(KernelError::Transport(_))),
+                "a forged signature was accepted: {forged:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn tampered_content_does_not_verify() -> Result<(), KernelError> {
+        // The signature covers the content frame, so editing it must break it.
+        let message = JupyterMessage::new(KernelInfoRequest {}, None);
+        let wire = encode(&message, "secret")?;
+        let mut frames = wire.into_vec();
+        let at = frames
+            .iter()
+            .position(|frame| frame.as_ref() == DELIMITER)
+            .unwrap_or(0);
+        // signature, header, parent, metadata, content
+        let content = at + 5;
+        assert!(content < frames.len(), "expected a content frame");
+        frames[content] = bytes::Bytes::from_static(br#"{"evil":true}"#);
+        let Ok(tampered) = ZmqMessage::try_from(frames) else {
+            return Ok(());
+        };
+        assert!(matches!(
+            decode(tampered, "secret"),
             Err(KernelError::Transport(_))
         ));
         Ok(())
