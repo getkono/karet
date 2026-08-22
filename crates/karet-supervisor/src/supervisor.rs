@@ -148,6 +148,32 @@ fn run() -> Result<i32, SupervisorError> {
     supervise(spec, io::stdin(), io::stdout(), io::stderr())
 }
 
+/// Forward everything from `from` to `to`, flushing after each chunk.
+///
+/// Deliberately not [`io::copy`]: the destination here is the supervisor's own
+/// stdout, and Rust wraps that in a `LineWriter`. The protocols carried across
+/// this pipe — LSP and DAP — frame messages as a `Content-Length` header
+/// followed by a raw JSON body with **no trailing newline**, so a `LineWriter`
+/// writes the header (which ends `\r\n\r\n`) and holds the body back until some
+/// later message happens to supply a newline. That delivers every message one
+/// message late: the DAP handshake waits for an `initialized` event that is
+/// already sitting in the buffer, and a quiet language server's reply does not
+/// arrive until it says something else. Flushing each chunk keeps the pipe
+/// honest.
+fn pump(from: &mut impl Read, to: &mut impl Write) {
+    let mut buf = [0u8; 8192];
+    loop {
+        match from.read(&mut buf) {
+            Ok(0) | Err(_) => return,
+            Ok(read) => {
+                if to.write_all(&buf[..read]).is_err() || to.flush().is_err() {
+                    return;
+                }
+            },
+        }
+    }
+}
+
 fn supervise(
     spec: SupervisorSpec,
     mut parent_input: impl Read + Send + 'static,
@@ -189,10 +215,10 @@ fn supervise(
         let _ = parent_gone_tx.send(result.map(|_| ()));
     });
     std::thread::spawn(move || {
-        let _ = io::copy(&mut child_stdout, &mut parent_output);
+        pump(&mut child_stdout, &mut parent_output);
     });
     std::thread::spawn(move || {
-        let _ = io::copy(&mut child_stderr, &mut parent_error);
+        pump(&mut child_stderr, &mut parent_error);
     });
 
     loop {
@@ -235,6 +261,97 @@ mod tests {
     }
 
     #[cfg(unix)]
+    /// A reader that holds the parent's lease open for `for_` before reporting
+    /// EOF. `io::empty()` would report it at once, and EOF is what tells the
+    /// supervisor to kill the child.
+    struct HoldOpen {
+        for_: Duration,
+    }
+
+    impl Read for HoldOpen {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            std::thread::sleep(self.for_);
+            Ok(0)
+        }
+    }
+
+    /// A writer that only reveals bytes once they are flushed, standing in for
+    /// the `LineWriter` Rust wraps the real stdout in.
+    #[derive(Clone, Default)]
+    struct FlushedOnly {
+        pending: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+        visible: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    }
+
+    impl Write for FlushedOnly {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if let Ok(mut pending) = self.pending.lock() {
+                pending.extend_from_slice(buf);
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            let (Ok(mut pending), Ok(mut visible)) = (self.pending.lock(), self.visible.lock())
+            else {
+                return Ok(());
+            };
+            visible.append(&mut pending);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_message_without_a_trailing_newline_still_reaches_the_parent() -> Result<(), SupervisorError>
+    {
+        // LSP and DAP frame a `Content-Length` header — which ends in a
+        // newline — followed by a JSON body that does not. Forwarding with
+        // `io::copy` left that body in the real stdout's `LineWriter` until a
+        // later message supplied a newline, delivering every message one
+        // message late and stalling the DAP handshake outright.
+        let out = FlushedOnly::default();
+        // The header carries the only newlines; the body must arrive anyway.
+        // The trailing sleep keeps the child alive long enough for the
+        // forwarding thread to run, so the assertion is not a race.
+        let script = concat!(
+            r"printf 'Content-Length: 17
+
+'; ",
+            r#"printf '%s' '{"seq":1,"a":"b"}'; "#,
+            "sleep 0.2"
+        );
+        let code = supervise(
+            SupervisorSpec {
+                command: "sh".into(),
+                args: vec!["-c".into(), script.to_owned()],
+                current_dir: std::env::temp_dir(),
+            },
+            HoldOpen {
+                for_: Duration::from_secs(3),
+            },
+            out.clone(),
+            io::sink(),
+        )?;
+        assert_eq!(code, 0);
+
+        // The forwarding threads outlive `supervise`, so give the last chunk a
+        // moment rather than racing it.
+        let mut text = String::new();
+        for _ in 0..200 {
+            let visible = out.visible.lock().map(|v| v.clone()).unwrap_or_default();
+            text = String::from_utf8_lossy(&visible).into_owned();
+            if text.ends_with(r#"{"seq":1,"a":"b"}"#) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            text.ends_with(r#"{"seq":1,"a":"b"}"#),
+            "the newline-free body never made it across: {text:?}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn parent_eof_terminates_a_running_process_group() -> Result<(), SupervisorError> {
         let started = std::time::Instant::now();

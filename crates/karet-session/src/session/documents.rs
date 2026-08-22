@@ -562,6 +562,27 @@ impl Session {
         let Some(doc) = self.store.docs.get(&doc_id) else {
             return;
         };
+        // Apply the per-file throttle here rather than only in the worker: the
+        // fields below cost a whole-buffer `text()` allocation and a git ref
+        // read, and this runs on every text change, so more than 99% of that
+        // work would be built only for the worker to drop it. The worker keeps
+        // its own gate; both call the same pure `keep_beat`, and because the
+        // worker only ever sees what passes here, the two agree.
+        let now = self.wakatime_clock.elapsed();
+        if !crate::wakatime::keep_beat(
+            self.wakatime_last
+                .as_ref()
+                .map(|(path, at)| (path.as_path(), *at)),
+            &doc.path,
+            is_write,
+            now,
+        ) {
+            return;
+        }
+        self.wakatime_last = Some((doc.path.clone(), now));
+        let Some(doc) = self.store.docs.get(&doc_id) else {
+            return;
+        };
         let branch = self
             .vcs
             .as_ref()
