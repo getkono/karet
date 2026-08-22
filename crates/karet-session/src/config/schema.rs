@@ -231,6 +231,9 @@ pub struct Editor {
     pub format_on_save: bool,
     /// Distinct highlighting of codetag comment blocks (`TODO:`, `FIXME:`, …).
     pub semantic_comments: SemanticComments,
+    /// Re-render TypeScript diagnostics as markdown (quoted types lifted into
+    /// highlighted code blocks) wherever rich rendering is available.
+    pub pretty_errors: bool,
     /// LSP-powered code completion (the popup).
     pub completion: Completion,
     /// The hover popup (documentation + diagnostics at the caret).
@@ -266,6 +269,7 @@ impl Default for Editor {
             insert_final_newline: true,
             format_on_save: false,
             semantic_comments: SemanticComments::default(),
+            pretty_errors: true,
             completion: Completion::default(),
             hover: HoverPopup::default(),
             color_highlight: ColorHighlight::default(),

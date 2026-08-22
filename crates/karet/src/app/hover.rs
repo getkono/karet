@@ -49,7 +49,8 @@ impl App {
         let diagnostics = self.docs.diagnostics.get(&pending.doc).unwrap_or(&empty);
         let at_caret = crate::hover::diagnostics_at(diagnostics, pending.at);
         let hint = self.manifest_hint_markdown(pending.doc, pending.at.line);
-        match crate::hover::hover_markup(&at_caret, hover.as_ref(), hint.as_deref()) {
+        let pretty = self.settings.editor.pretty_errors;
+        match crate::hover::hover_markup(&at_caret, hover.as_ref(), hint.as_deref(), pretty) {
             Some(markup) => {
                 self.hover_ui = Some(HoverUi {
                     markup,
@@ -84,5 +85,44 @@ impl App {
     /// consumes the dismissing key).
     pub(super) fn dismiss_hover(&mut self) -> bool {
         self.hover_ui.take().is_some()
+    }
+
+    /// Open the scrollable diagnostic detail view for the caret (Ctrl+K
+    /// Ctrl+M).
+    pub(super) fn show_diagnostic(&mut self) {
+        let Some((doc, at)) = self.completion_target() else {
+            return;
+        };
+        let empty = Vec::new();
+        let diagnostics = self.docs.diagnostics.get(&doc).unwrap_or(&empty);
+        let at_caret = crate::hover::diagnostics_at(diagnostics, at);
+        if at_caret.is_empty() {
+            self.status = Some("no diagnostic under the caret".to_owned());
+            return;
+        }
+        let pretty = self.settings.editor.pretty_errors;
+        self.diagnostic_view = Some(crate::hover::DiagnosticView {
+            markdown: crate::hover::diagnostic_document(&at_caret, pretty),
+            ..Default::default()
+        });
+    }
+
+    /// Key handling while the diagnostic detail view is open: it is modal —
+    /// scroll keys scroll, everything else dismisses it.
+    pub(super) fn diagnostic_view_key(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyCode;
+        let Some(view) = self.diagnostic_view.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => view.scroll = view.scroll.saturating_add(1),
+            KeyCode::Up | KeyCode::Char('k') => view.scroll = view.scroll.saturating_sub(1),
+            KeyCode::PageDown => view.scroll = view.scroll.saturating_add(10),
+            KeyCode::PageUp => view.scroll = view.scroll.saturating_sub(10),
+            KeyCode::Home => view.scroll = 0,
+            _ => {
+                self.diagnostic_view = None;
+            },
+        }
     }
 }

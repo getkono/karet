@@ -41,6 +41,7 @@ mod spell_scan;
 mod todo_scan;
 #[cfg(feature = "toml-format")]
 mod toml_format;
+pub mod ts_errors;
 mod vcs_worker;
 #[cfg(feature = "viz")]
 pub mod viz;

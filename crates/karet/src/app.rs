@@ -510,6 +510,8 @@ pub struct App {
     pub(crate) pending_hover: Option<crate::hover::PendingHover>,
     /// The open hover popup, if any.
     pub(crate) hover_ui: Option<crate::hover::HoverUi>,
+    /// The open scrollable diagnostic detail view, if any.
+    pub(crate) diagnostic_view: Option<crate::hover::DiagnosticView>,
     /// Palette commands from `--command`, queued until the backend is attached.
     ///
     /// They cannot run at construction time: a command like Show Hover or

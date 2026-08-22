@@ -62,6 +62,7 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 | `completion` | object | enabled | LSP completion (`enabled`, `autoTrigger`). |
 | `hover` | object | enabled | The hover popup (`Ctrl+K Ctrl+I`): LSP documentation plus the diagnostics under the caret (`enabled`). |
 | `colorHighlight` | object | enabled | Tint color literals (hex, `rgb()`, `hsl()`) with their own color on visible lines (`enabled`). |
+| `prettyErrors` | bool | `true` | Re-render TypeScript diagnostics as markdown — quoted types become highlighted code blocks — in the hover popup and the diagnostic view (`Ctrl+K Ctrl+M`). |
 
 #### Per-language editor settings
 
