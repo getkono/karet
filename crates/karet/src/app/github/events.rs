@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// The `operation` label the session gives a commit-signature lookup.
+const VERIFICATION_OPERATION: &str = "commit verification";
+
 fn human_github_error(operation: &str, message: &str) -> String {
     let action = match operation {
         "actions" => "Could not load GitHub Actions",
@@ -281,6 +284,14 @@ impl App {
             }
         }
         if !applied {
+            // The commit-signature lookup is a speculative enrichment fired for
+            // whatever commit is on screen. A commit the forge does not know —
+            // unpushed, on a fork, or in a repository with no GitHub remote —
+            // is an ordinary outcome, and the detail pane reads fine without a
+            // verdict, so it must not raise an error the user cannot act on.
+            if operation == VERIFICATION_OPERATION {
+                return;
+            }
             self.notify(Severity::Error, NotificationKind::System, full);
         }
     }
