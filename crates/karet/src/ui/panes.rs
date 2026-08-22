@@ -17,6 +17,17 @@ pub(super) fn draw_panes(
     app.markdown_link_hits.clear();
     app.commit_badge_rect = None;
     let focused = app.focus_pane();
+    // Borrowed straight off the settings field so the reference stays disjoint
+    // from the mutable tab borrows below.
+    #[cfg(feature = "mermaid")]
+    let mermaid = app
+        .settings
+        .markdown
+        .mermaid
+        .enabled
+        .then_some(app.settings.markdown.mermaid.fence_languages.as_slice());
+    #[cfg(not(feature = "mermaid"))]
+    let mermaid: Option<&[String]> = None;
     let editor_focused = app.focus == Focus::Editor;
     let graphics = app.caps.graphics;
     let graphical_cursor = app.graphical_cursor_enabled();
@@ -56,6 +67,7 @@ pub(super) fn draw_panes(
             let ctx = PaneCtx {
                 theme,
                 root: &app.root,
+                mermaid,
                 icon_style: app.icon_style,
                 graphics,
                 pane_focused: true,
@@ -94,6 +106,7 @@ pub(super) fn draw_panes(
             let ctx = PaneCtx {
                 theme,
                 root: &app.root,
+                mermaid,
                 icon_style: app.icon_style,
                 graphics,
                 pane_focused: false,

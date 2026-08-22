@@ -20,6 +20,8 @@ default = []
 highlight = ["dep:karet-syntax", "dep:karet-treesitter"]
 # The markdownlint-core linter (rule engine, .markdownlint.json config, autofixes).
 lint = ["dep:serde_json"]
+# Render `mermaid` code fences as Unicode/ASCII diagrams in the preview.
+mermaid = ["dep:merman"]
 # Curated grammar bundle for typical fence languages (implies `highlight`).
 lang-common = [
     "highlight",
@@ -46,6 +48,7 @@ view = ["dep:ratatui", "dep:karet-theme"]
 
 [dependencies]
 serde_json = { workspace = true, optional = true }
+merman = { workspace = true, optional = true }
 karet-core.workspace = true
 pulldown-cmark.workspace = true
 thiserror.workspace = true

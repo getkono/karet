@@ -53,6 +53,8 @@ pub struct Markdown {
     pub toc: MarkdownToc,
     /// Markdown linting (the markdownlint rule core).
     pub lint: MarkdownLint,
+    /// Mermaid diagram rendering in the preview.
+    pub mermaid: MarkdownMermaid,
 }
 
 impl Default for Markdown {
@@ -62,6 +64,29 @@ impl Default for Markdown {
             list_continuation: true,
             toc: MarkdownToc::default(),
             lint: MarkdownLint::default(),
+            mermaid: MarkdownMermaid::default(),
+        }
+    }
+}
+
+/// `markdown.mermaid.*` — mermaid diagram rendering in the preview.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct MarkdownMermaid {
+    /// Render matching code fences as Unicode diagrams in the preview
+    /// (unsupported diagram types fall back to showing the fence source).
+    pub enabled: bool,
+    /// The fence info strings treated as mermaid.
+    pub fence_languages: Vec<String>,
+}
+
+impl Default for MarkdownMermaid {
+    /// On by default, for ```mermaid fences.
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            fence_languages: vec!["mermaid".to_owned()],
         }
     }
 }

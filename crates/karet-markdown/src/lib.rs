@@ -17,6 +17,8 @@
 pub mod edit;
 #[cfg(feature = "lint")]
 pub mod lint;
+#[cfg(feature = "mermaid")]
+pub mod mermaid;
 mod parse;
 mod table;
 pub mod toc;
