@@ -40,6 +40,7 @@ mod todo_scan;
 mod vcs_worker;
 #[cfg(feature = "viz")]
 pub mod viz;
+mod wakatime;
 
 pub use api::ChangeSummary;
 pub use api::Command;

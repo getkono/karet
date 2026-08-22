@@ -230,6 +230,7 @@ const SECTIONS: &[&str] = &[
     "git",
     "lsp",
     "markdown",
+    "wakatime",
 ];
 
 /// Load the merged, verified [`Settings`] for a workspace rooted at `roots`, plus any

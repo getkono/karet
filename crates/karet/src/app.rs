@@ -432,6 +432,8 @@ pub struct App {
     pub(crate) spelling_ui: SpellingChrome,
     /// The Todos panel state.
     pub(crate) todos: TodosPanel,
+    /// Today's WakaTime total for the status bar, when tracking is enabled.
+    pub(crate) wakatime_status: Option<String>,
     /// The Todos panel's per-frame chrome.
     pub(crate) todos_ui: TodosChrome,
     /// The status bar rect from the last frame (mouse hit-testing).

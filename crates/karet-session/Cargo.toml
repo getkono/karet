@@ -65,6 +65,8 @@ command-group.workspace = true        # crash-safe process groups / Windows Job 
 serde = { workspace = true }          # derive Deserialize/Serialize for the Settings schema
 serde_json.workspace = true           # the merge/deserialize target for JSONC config
 reqwest.workspace = true              # explicitly approved managed-LSP downloads
+base64.workspace = true               # WakaTime Basic auth
+secrecy.workspace = true              # WakaTime API key handling
 sha2.workspace = true                 # release-asset integrity
 flate2.workspace = true               # .gz / .tar.gz managed tool archives
 lzma-rust2.workspace = true            # pure-Rust .tar.xz managed tool archives

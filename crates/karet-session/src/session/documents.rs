@@ -300,6 +300,7 @@ impl Session {
                 }
                 self.publish(doc_id, None);
                 self.emit(Some(id), Event::Saved { doc: doc_id });
+                self.wakatime_beat(doc_id, true);
                 if self.config.settings.latex.build_on_save
                     && self.store.docs.get(&doc_id).is_some_and(|doc| {
                         doc.path
@@ -511,5 +512,61 @@ impl Session {
                 ),
             },
         );
+    }
+}
+
+impl Session {
+    /// Send one WakaTime heartbeat for `doc_id`, spawning the worker on first
+    /// use. Inert unless `wakatime.enabled` is set.
+    pub(super) fn wakatime_beat(&mut self, doc_id: DocumentId, is_write: bool) {
+        if !self.config.settings.wakatime.enabled {
+            return;
+        }
+        let Some(doc) = self.store.docs.get(&doc_id) else {
+            return;
+        };
+        // Apply the per-file throttle here rather than only in the worker: the
+        // fields below cost a whole-buffer `text()` allocation and a git ref
+        // read, and this runs on every text change, so more than 99% of that
+        // work would be built only for the worker to drop it. The worker keeps
+        // its own gate; both call the same pure `keep_beat`, and because the
+        // worker only ever sees what passes here, the two agree.
+        let now = self.wakatime_clock.elapsed();
+        if !crate::wakatime::keep_beat(
+            self.wakatime_last
+                .as_ref()
+                .map(|(path, at)| (path.as_path(), *at)),
+            &doc.path,
+            is_write,
+            now,
+        ) {
+            return;
+        }
+        self.wakatime_last = Some((doc.path.clone(), now));
+        let Some(doc) = self.store.docs.get(&doc_id) else {
+            return;
+        };
+        let branch = self
+            .vcs
+            .as_ref()
+            .and_then(|repo| repo.current_branch().ok().flatten());
+        let project = self
+            .config
+            .roots
+            .first()
+            .and_then(|root| root.file_name())
+            .map(|name| name.to_string_lossy().into_owned());
+        let beat = crate::wakatime::Beat {
+            path: doc.path.clone(),
+            language: doc.language,
+            lines: doc.buffer.text().lines().count(),
+            is_write,
+            branch,
+            project,
+        };
+        let worker = self
+            .wakatime_worker
+            .get_or_insert_with(|| crate::wakatime::spawn(self.events.clone()));
+        let _ = worker.send(beat);
     }
 }
