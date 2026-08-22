@@ -12,6 +12,7 @@ mod diff_view;
 mod editor_mouse;
 mod explorer;
 mod github;
+mod hover;
 mod inline_macros;
 mod language_servers;
 mod lifecycle;
