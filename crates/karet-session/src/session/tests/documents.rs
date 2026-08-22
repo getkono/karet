@@ -307,6 +307,59 @@
     }
 
     #[test]
+    fn wakatime_disabled_never_spawns_a_worker_or_reads_its_config() {
+        // The privacy contract: with `wakatime.enabled` false (the default),
+        // editing must not start the worker thread — which is what reads
+        // `.wakatime.cfg` and opens the network — no matter how much typing
+        // funnels through the heartbeat call site.
+        let Some((_dir, path)) = write_temp("main.rs", "fn main() {}\n") else {
+            return;
+        };
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+        assert!(!session.config.settings.wakatime.enabled, "off by default");
+
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path,
+                language: None,
+            },
+        );
+        let Some(doc) = opened_doc(&mut events) else {
+            return;
+        };
+        for i in 0..5 {
+            let change = Change::new(
+                i,
+                vec![TextEdit {
+                    range: Range {
+                        start: LineCol::new(0, 0),
+                        end: LineCol::new(0, 0),
+                    },
+                    new_text: "x".to_string(),
+                }],
+            );
+            session.handle(
+                RequestId(2 + i),
+                Command::ApplyChange {
+                    doc,
+                    change,
+                    cause: EditCause::Replace,
+                },
+            );
+        }
+
+        assert!(
+            session.wakatime_worker.is_none(),
+            "a disabled tracker must not start its worker"
+        );
+        assert!(
+            session.wakatime_last.is_none(),
+            "a disabled tracker records nothing"
+        );
+    }
+
+    #[test]
     fn open_apply_save_undo_flow() {
         let Some((_dir, path)) = write_temp("main.rs", "fn main() {}\n") else {
             return;

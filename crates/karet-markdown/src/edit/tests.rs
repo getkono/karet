@@ -269,3 +269,31 @@ fn multibyte_text_keeps_character_columns() {
         })
     );
 }
+
+#[test]
+fn the_incremental_fence_scan_agrees_with_the_scanning_helper() {
+    // The scan is what keeps a whole-document pass linear, so it has to answer
+    // exactly what `in_fenced_code_block` would for every line — including
+    // mismatched fence characters, longer closers, and an unterminated fence.
+    let text = "intro\n\
+                ```rust\n\
+                let x = 1;\n\
+                ~~~ not a closer\n\
+                ````\n\
+                after the long closer\n\
+                ~~~\n\
+                inside a tilde fence\n\
+                ~~~~\n\
+                out again\n\
+                ```\n\
+                unterminated to the end\n";
+    let mut scan = super::FenceScan::default();
+    for (i, line) in text.lines().enumerate() {
+        assert_eq!(
+            scan.inside(),
+            in_fenced_code_block(text, i),
+            "line {i} ({line:?}) disagrees"
+        );
+        scan.feed(line);
+    }
+}

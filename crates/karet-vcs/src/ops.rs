@@ -262,6 +262,96 @@ mod tests {
     }
 
     #[test]
+    fn hostile_revisions_never_reach_the_subprocess_as_options() {
+        // Every write resolves its revision to a full hash in-process first, so
+        // an argument that looks like a `git` option — or like shell syntax —
+        // must fail to resolve rather than being handed to the subprocess.
+        let Ok(dir) = init("ops-injection") else {
+            return;
+        };
+        if commit(&dir, "one", "first").is_err() {
+            return;
+        }
+        let Ok(repo) = Repository::discover(&dir.0) else {
+            return;
+        };
+        let canary = dir.0.join("PWNED");
+        for rev in [
+            "--upload-pack=touch PWNED",
+            "-c core.pager=touch PWNED",
+            "--exec=touch PWNED",
+            "--output=PWNED",
+            "; touch PWNED",
+            "$(touch PWNED)",
+            "`touch PWNED`",
+            "HEAD --hard",
+            "--all",
+            "-",
+            "--",
+            "HEAD\ntouch PWNED",
+        ] {
+            assert!(repo.resolve_commit(rev).is_err(), "resolved {rev:?}");
+            assert!(repo.cherry_pick(rev).is_err(), "cherry-picked {rev:?}");
+            assert!(repo.revert(rev).is_err(), "reverted {rev:?}");
+            assert!(repo.rebase_onto(rev).is_err(), "rebased onto {rev:?}");
+            assert!(
+                repo.reset(ResetMode::Soft, rev).is_err(),
+                "reset to {rev:?}"
+            );
+            assert!(repo.checkout_detached(rev).is_err(), "checked out {rev:?}");
+        }
+        assert!(
+            !canary.exists(),
+            "a hostile revision reached the shell and wrote {}",
+            canary.display()
+        );
+    }
+
+    #[test]
+    fn hostile_tag_names_are_refused_before_any_write() {
+        let Ok(dir) = init("ops-tag-injection") else {
+            return;
+        };
+        if commit(&dir, "one", "first").is_err() {
+            return;
+        }
+        let Ok(repo) = Repository::discover(&dir.0) else {
+            return;
+        };
+        for name in [
+            "--upload-pack=x",
+            "-f",
+            "--delete",
+            "a b",
+            "a..b",
+            "a~1",
+            "a^",
+            "a:b",
+            "a?b",
+            "a*b",
+            "a[b",
+            ".lock",
+            "",
+            "a\nb",
+            "/leading",
+            "trailing/",
+            "a//b",
+            "a@{b",
+        ] {
+            assert!(
+                repo.tag_create(name, "HEAD", None).is_err(),
+                "created a tag named {name:?}"
+            );
+            assert!(
+                repo.tag_delete(name).is_err(),
+                "deleted a tag named {name:?}"
+            );
+        }
+        // The guard is not simply refusing everything.
+        assert!(repo.tag_create("v9.9.9", "HEAD", Some("real")).is_ok());
+    }
+
+    #[test]
     fn cherry_pick_applies_a_commit_from_another_branch() -> Result<(), VcsError> {
         let dir = init("ops-pick")?;
         commit(&dir, "base\n", "base")?;
@@ -407,6 +497,97 @@ mod tests {
         assert!(dir.0.join("b.txt").exists(), "fixup keeps b's content");
         assert!(dir.0.join("c.txt").exists());
         Ok(())
+    }
+
+    #[test]
+    fn interactive_rebase_survives_a_shell_hostile_repository_path() {
+        // The todo file is handed to git through `GIT_SEQUENCE_EDITOR`, which
+        // git runs under `sh`. Single quotes must neutralize every metacharacter
+        // a directory name can carry, and the canary proves none of them ran.
+        for hostile in [
+            "with space",
+            "semi;colon",
+            "dollar$(touch PWNED)paren",
+            "back`touch PWNED`tick",
+            "amp&&touch PWNED",
+            "pipe|touch PWNED",
+            "star*glob?q",
+        ] {
+            let Ok(dir) = init(hostile) else {
+                continue;
+            };
+            let Ok(base) = commit(&dir, "base\n", "base") else {
+                continue;
+            };
+            if write(&dir.0, "gone.txt", b"gone\n").is_err()
+                || git(&dir.0, &["add", "gone.txt"]).is_err()
+                || git(&dir.0, &["commit", "-q", "-m", "gone"]).is_err()
+            {
+                continue;
+            }
+            let Ok(gone) = git(&dir.0, &["rev-parse", "HEAD"]) else {
+                continue;
+            };
+            let Ok(repo) = Repository::discover(&dir.0) else {
+                continue;
+            };
+            assert!(
+                repo.rebase_interactive(
+                    &base,
+                    &[RebaseStep {
+                        action: RebaseAction::Drop,
+                        rev: gone,
+                    }],
+                )
+                .is_ok(),
+                "rebase failed in {hostile:?}"
+            );
+            assert!(
+                !dir.0.join("gone.txt").exists(),
+                "the plan did not apply in {hostile:?}"
+            );
+            assert!(
+                !dir.0.join("PWNED").exists(),
+                "a path metacharacter reached the shell in {hostile:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn interactive_rebase_refuses_a_path_it_cannot_quote() {
+        // A single quote inside the path cannot be escaped portably inside the
+        // single-quoted editor command, so the operation must refuse rather
+        // than build a command that means something else.
+        let Ok(dir) = init("quote'inside") else {
+            return;
+        };
+        let Ok(base) = commit(&dir, "base\n", "base") else {
+            return;
+        };
+        if write(&dir.0, "gone.txt", b"gone\n").is_err()
+            || git(&dir.0, &["add", "gone.txt"]).is_err()
+            || git(&dir.0, &["commit", "-q", "-m", "gone"]).is_err()
+        {
+            return;
+        }
+        let Ok(gone) = git(&dir.0, &["rev-parse", "HEAD"]) else {
+            return;
+        };
+        let Ok(repo) = Repository::discover(&dir.0) else {
+            return;
+        };
+        let refused = repo.rebase_interactive(
+            &base,
+            &[RebaseStep {
+                action: RebaseAction::Drop,
+                rev: gone,
+            }],
+        );
+        assert!(refused.is_err(), "a quoted path must be refused");
+        assert!(
+            dir.0.join("gone.txt").exists(),
+            "the refusal must leave the history alone"
+        );
     }
 
     #[test]
