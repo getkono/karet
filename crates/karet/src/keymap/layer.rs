@@ -31,6 +31,8 @@ pub enum SidebarPanel {
     Spelling,
     /// Workspace codetag (TODO) results.
     Todos,
+    /// The debugger: call stack, variables, console.
+    Debug,
 }
 
 /// The content kind of the active editor tab — the third input to
@@ -90,6 +92,8 @@ pub enum FocusTarget {
     Spelling,
     /// The workspace codetag (TODO) panel.
     Todos,
+    /// The debugger panel.
+    Debug,
     /// The right-side outline panel.
     Outline,
 }
@@ -116,6 +120,7 @@ impl FocusTarget {
                 SidebarPanel::SourceControl => FocusTarget::SourceControl,
                 SidebarPanel::Spelling => FocusTarget::Spelling,
                 SidebarPanel::Todos => FocusTarget::Todos,
+                SidebarPanel::Debug => FocusTarget::Debug,
             },
         }
     }
@@ -284,6 +289,8 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
             FocusTarget::Spelling => &[L::Sidebar, L::Global],
             // Same shape as Spelling: a results list with no text input.
             FocusTarget::Todos => &[L::Sidebar, L::Global],
+            // Same shape again: rows, expand/collapse, activate.
+            FocusTarget::Debug => &[L::Sidebar, L::Global],
             FocusTarget::SourceControl => &[L::SourceControl, L::Sidebar, L::Global],
         },
     }

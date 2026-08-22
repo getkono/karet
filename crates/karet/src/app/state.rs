@@ -717,3 +717,129 @@ pub(crate) struct PendingAutoSave {
 pub(crate) struct PendingSave {
     pub(crate) doc: DocumentId,
 }
+
+/// The Debug panel's chrome (same shape as the other list panels).
+pub(crate) type DebugChrome = SpellingChrome;
+
+/// One row of the Debug panel's flattened section list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DebugRow {
+    /// A section heading (`CALL STACK`, `VARIABLES`, …).
+    Section(&'static str),
+    /// A stack frame; indexes [`DebugPanel::stack`].
+    Frame(usize),
+    /// A variables scope; indexes [`DebugPanel::scopes`].
+    Scope(usize),
+    /// One variable of a fetched reference.
+    Variable {
+        /// The parent `variablesReference` whose children hold it.
+        parent: i64,
+        /// The index within that parent's children.
+        index: usize,
+        /// The tree depth (scopes' children are depth 1).
+        depth: u16,
+    },
+    /// One evaluate-log line; indexes [`DebugPanel::repl`].
+    Repl(usize),
+    /// One console-output line; indexes the app's debug output buffer.
+    Output(usize),
+    /// A muted placeholder note.
+    Note(&'static str),
+}
+
+/// How many trailing console lines the panel shows.
+pub(crate) const DEBUG_CONSOLE_TAIL: usize = 100;
+/// The variables tree recursion cap (cyclic references exist in the wild).
+const DEBUG_TREE_DEPTH_CAP: u16 = 8;
+
+/// The Debug sidebar panel: the stopped thread's stack, a lazily-fetched
+/// variables tree, the evaluate log, and the console tail. All inspection
+/// state is per-stop: it clears on resume so nothing stale survives.
+#[derive(Default)]
+pub(crate) struct DebugPanel {
+    /// The stopped thread's frames, top first.
+    pub(crate) stack: Vec<karet_session::DebugFrame>,
+    /// The frame inspection targets (scopes/evaluate context).
+    pub(crate) selected_frame: Option<i64>,
+    /// The selected frame's scopes.
+    pub(crate) scopes: Vec<karet_session::DebugScope>,
+    /// Fetched children per `variablesReference`.
+    pub(crate) variables: HashMap<i64, Vec<karet_session::DebugVariable>>,
+    /// Expanded references (scopes and structured variables).
+    pub(crate) expanded: HashSet<i64>,
+    /// In-flight inspection requests; answers not in here are stale and dropped.
+    pub(crate) pending: HashSet<RequestId>,
+    /// The evaluate log (`expr = result` lines, oldest first).
+    pub(crate) repl: Vec<String>,
+    /// The rendered rows.
+    pub(crate) rows: Vec<DebugRow>,
+    /// The cursor over `rows`.
+    pub(crate) selection: ListSelection,
+}
+
+impl DebugPanel {
+    /// Drop every per-stop artifact (stack, scopes, variables, pending).
+    /// The evaluate log survives — it is a console, not a snapshot.
+    pub(crate) fn clear_inspection(&mut self, output_len: usize) {
+        self.stack.clear();
+        self.selected_frame = None;
+        self.scopes.clear();
+        self.variables.clear();
+        self.expanded.clear();
+        self.pending.clear();
+        self.rebuild_rows(output_len);
+    }
+
+    /// Rebuild the flattened rows, keeping the cursor clamped.
+    pub(crate) fn rebuild_rows(&mut self, output_len: usize) {
+        self.rows.clear();
+        self.rows.push(DebugRow::Section("CALL STACK"));
+        if self.stack.is_empty() {
+            self.rows.push(DebugRow::Note("not stopped"));
+        }
+        self.rows.extend((0..self.stack.len()).map(DebugRow::Frame));
+        self.rows.push(DebugRow::Section("VARIABLES"));
+        if self.scopes.is_empty() {
+            self.rows.push(DebugRow::Note("no frame selected"));
+        }
+        let scope_refs: Vec<i64> = self.scopes.iter().map(|scope| scope.reference).collect();
+        for (index, reference) in scope_refs.into_iter().enumerate() {
+            self.rows.push(DebugRow::Scope(index));
+            if self.expanded.contains(&reference) {
+                self.push_children(reference, 1);
+            }
+        }
+        if !self.repl.is_empty() {
+            self.rows.push(DebugRow::Section("EVALUATE"));
+            self.rows.extend((0..self.repl.len()).map(DebugRow::Repl));
+        }
+        if output_len > 0 {
+            self.rows.push(DebugRow::Section("CONSOLE"));
+            let first = output_len.saturating_sub(DEBUG_CONSOLE_TAIL);
+            self.rows.extend((first..output_len).map(DebugRow::Output));
+        }
+        let cursor = self
+            .selection
+            .cursor()
+            .min(self.rows.len().saturating_sub(1));
+        self.selection = ListSelection::new(self.rows.len());
+        self.selection.move_to(cursor);
+    }
+
+    fn push_children(&mut self, parent: i64, depth: u16) {
+        if depth > DEBUG_TREE_DEPTH_CAP {
+            return;
+        }
+        let children = self.variables.get(&parent).cloned().unwrap_or_default();
+        for (index, child) in children.iter().enumerate() {
+            self.rows.push(DebugRow::Variable {
+                parent,
+                index,
+                depth,
+            });
+            if child.reference > 0 && self.expanded.contains(&child.reference) {
+                self.push_children(child.reference, depth + 1);
+            }
+        }
+    }
+}

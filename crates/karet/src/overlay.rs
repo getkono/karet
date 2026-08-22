@@ -104,6 +104,8 @@ pub enum TextPurpose {
     ConfirmResetHard { rev: String },
     /// Confirm remote deletion by typing the exact branch name.
     ConfirmDeleteRemoteBranch { remote: String, branch: String },
+    /// Evaluate the submitted expression in the debuggee.
+    DebugEvaluate,
     /// Confirm opening a relative file link that escaped the workspace.
     ConfirmOutsideWorkspaceLink { path: PathBuf },
     /// Confirm creating the missing project settings file before adding a word.

@@ -1,3 +1,5 @@
+mod debug;
+
 use super::*;
 
 /// Draw the right-side outline panel: a header over the active tab's navigation
@@ -158,6 +160,7 @@ pub(super) fn draw_sidebar(
         SidebarPanel::Search => draw_search_panel(f, app, theme, rows[1], hits),
         SidebarPanel::Spelling => draw_spelling_panel(f, app, theme, rows[1], hits),
         SidebarPanel::Todos => draw_todos_panel(f, app, theme, rows[1], hits),
+        SidebarPanel::Debug => debug::draw_debug_panel(f, app, theme, rows[1], hits),
     }
 }
 
@@ -224,6 +227,7 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
         SidebarPanel::SourceControl => "SOURCE CONTROL",
         SidebarPanel::Spelling => "SPELLING",
         SidebarPanel::Todos => "TODOS",
+        SidebarPanel::Debug => "DEBUG",
     };
     // Header columns: a compact workspace-root label, the panel title, an
     // optional Explorer toolbar, then the activity-bar switcher (7 cells). The
@@ -236,7 +240,8 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
     // only while codetag highlighting is.
     let spelling = app.spelling_available();
     let todos_shown = app.todos_available();
-    let switcher_w: u16 = 7 + if spelling { 2 } else { 0 } + if todos_shown { 2 } else { 0 };
+    // 3 always-on panels (2 cells each) + Debug + a trailing spacer cell.
+    let switcher_w: u16 = 9 + if spelling { 2 } else { 0 } + if todos_shown { 2 } else { 0 };
     let icon_style = app.icon_style;
     let explorer = app.sidebar_panel == SidebarPanel::Explorer;
     let actions_w = if explorer && area.width >= 9 + ACTIONS_W + switcher_w {
@@ -326,7 +331,10 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
     if todos {
         app.panel_hits
             .push((next_hit, next_hit + 2, SidebarPanel::Todos));
+        next_hit += 2;
     }
+    app.panel_hits
+        .push((next_hit, next_hit + 2, SidebarPanel::Debug));
     let icon = |ui: UiIcon, panel: SidebarPanel| {
         let hovered = app
             .panel_hits
@@ -354,6 +362,7 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
     if todos {
         icons.push(icon(UiIcon::Todos, SidebarPanel::Todos));
     }
+    icons.push(icon(UiIcon::Debug, SidebarPanel::Debug));
     f.render_widget(Paragraph::new(Line::from(icons)), switch);
 }
 

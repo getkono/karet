@@ -9,6 +9,7 @@ static PALETTE: &[Command] = &[
     Command::SelectPanel(SidebarPanel::SourceControl),
     Command::SelectPanel(SidebarPanel::Spelling),
     Command::SelectPanel(SidebarPanel::Todos),
+    Command::SelectPanel(SidebarPanel::Debug),
     Command::SpellingScan,
     Command::TodoScan,
     Command::TodoToggleGrouping,
@@ -33,8 +34,6 @@ static PALETTE: &[Command] = &[
     Command::DepsUpdate,
     Command::DepsUpdateAll,
     Command::ScmFetch,
-    Command::GoToDefinition,
-    Command::JumpBack,
     // Every debugger action is also reachable by name: its F-key is routinely
     // swallowed by terminal emulators, multiplexers, and SSH clients, and a
     // breakpoint no key can set is a breakpoint the user cannot set at all.
@@ -45,6 +44,9 @@ static PALETTE: &[Command] = &[
     Command::DebugStepOver,
     Command::DebugStepIn,
     Command::DebugStepOut,
+    Command::DebugEvaluatePrompt,
+    Command::GoToDefinition,
+    Command::JumpBack,
     Command::ToggleInlineBlame,
     Command::ShowCommitGraph,
     Command::OpenCommitByHash,

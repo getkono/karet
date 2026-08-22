@@ -474,7 +474,7 @@ impl Session {
     /// Handle one request. The editing fast paths resolve inline; the answering
     /// [`Event`] is tagged with `id`.
     pub fn handle(&mut self, id: RequestId, command: Command) {
-        if self.handle_debug_command(&command) {
+        if self.handle_debug_command(id, &command) {
             return;
         }
         if self.handle_lsp_command(id, &command) {

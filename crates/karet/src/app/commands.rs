@@ -142,6 +142,7 @@ impl App {
             Command::DebugStepOver => self.debug_step(SessionCommand::DebugStepOver),
             Command::DebugStepIn => self.debug_step(SessionCommand::DebugStepIn),
             Command::DebugStepOut => self.debug_step(SessionCommand::DebugStepOut),
+            Command::DebugEvaluatePrompt => self.debug_evaluate_prompt(),
             Command::ToggleBold => {
                 self.toggle_markdown_surround("**", Some(Command::ToggleSidebar));
             },

@@ -116,6 +116,9 @@ pub(crate) fn dark() -> Theme {
     // the app used before these roles existed.
     role(ThemeRole::ScrollbarTrack, rgb(0x3b, 0x42, 0x61));
     role(ThemeRole::ScrollbarThumb, rgb(0xc0, 0xca, 0xf5));
+    // A dim amber wash: visible under syntax colors, unmistakably not the
+    // cursor line.
+    role(ThemeRole::DebugStoppedLine, rgb(0x4d, 0x3c, 0x1a));
 
     Theme {
         tokens,

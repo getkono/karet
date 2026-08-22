@@ -307,6 +307,122 @@ impl DebugManager {
         });
     }
 
+    /// The stopped thread's stack, answered on `id` (empty when not stopped).
+    pub(crate) fn stack_trace(&self, id: RequestId) {
+        let thread = self.shared.thread.load(Ordering::SeqCst);
+        let Some(client) = self.shared.client().filter(|_| thread >= 0) else {
+            let _ = self
+                .events
+                .send((Some(id), Event::DebugStack { frames: Vec::new() }));
+            return;
+        };
+        let events = self.events.clone();
+        tokio::spawn(async move {
+            let frames = client
+                .stack_trace(thread)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|frame| crate::api::DebugFrame {
+                    id: frame.id,
+                    name: frame.name,
+                    line: frame.line,
+                    column: frame.column,
+                    path: frame.source_path,
+                })
+                .collect();
+            let _ = events.send((Some(id), Event::DebugStack { frames }));
+        });
+    }
+
+    /// One frame's scopes, answered on `id`.
+    pub(crate) fn scopes(&self, id: RequestId, frame: i64) {
+        let Some(client) = self.shared.client() else {
+            let _ = self.events.send((
+                Some(id),
+                Event::DebugScopes {
+                    frame,
+                    scopes: Vec::new(),
+                },
+            ));
+            return;
+        };
+        let events = self.events.clone();
+        tokio::spawn(async move {
+            let scopes = client
+                .scopes(frame)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|scope| crate::api::DebugScope {
+                    name: scope.name,
+                    reference: scope.variables_reference,
+                    expensive: scope.expensive,
+                })
+                .collect();
+            let _ = events.send((Some(id), Event::DebugScopes { frame, scopes }));
+        });
+    }
+
+    /// One reference's children, answered on `id`.
+    pub(crate) fn variables(&self, id: RequestId, reference: i64) {
+        let Some(client) = self.shared.client() else {
+            let _ = self.events.send((
+                Some(id),
+                Event::DebugVariables {
+                    reference,
+                    variables: Vec::new(),
+                },
+            ));
+            return;
+        };
+        let events = self.events.clone();
+        tokio::spawn(async move {
+            let variables = client
+                .variables(reference)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|variable| crate::api::DebugVariable {
+                    name: variable.name,
+                    value: variable.value,
+                    ty: variable.ty,
+                    reference: variable.variables_reference,
+                })
+                .collect();
+            let _ = events.send((
+                Some(id),
+                Event::DebugVariables {
+                    reference,
+                    variables,
+                },
+            ));
+        });
+    }
+
+    /// Evaluate `expression`, answered on `id`; a rejected expression answers
+    /// with the adapter's error text (the REPL shows it inline).
+    pub(crate) fn evaluate(&self, id: RequestId, expression: String, frame: Option<i64>) {
+        let Some(client) = self.shared.client() else {
+            let _ = self.events.send((
+                Some(id),
+                Event::DebugEvaluated {
+                    result: "no debug session".to_owned(),
+                    reference: 0,
+                },
+            ));
+            return;
+        };
+        let events = self.events.clone();
+        tokio::spawn(async move {
+            let (result, reference) = match client.evaluate(&expression, frame).await {
+                Ok(evaluation) => (evaluation.result, evaluation.variables_reference),
+                Err(error) => (error.to_string(), 0),
+            };
+            let _ = events.send((Some(id), Event::DebugEvaluated { result, reference }));
+        });
+    }
+
     fn emit_state(&self, state: DebugSessionState, detail: &str) {
         let _ = self.events.send((
             None,
@@ -535,278 +651,4 @@ fn production_connector() -> Connector {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use karet_lsp::codec;
-    use serde_json::Value;
-    use serde_json::json;
-    use tokio::io::AsyncWrite;
-    use tokio::io::BufReader;
-
-    use super::*;
-    use crate::config::schema::DebugConfiguration;
-
-    fn settings_with_config() -> Debugger {
-        Debugger {
-            configurations: vec![DebugConfiguration {
-                name: "Run".to_owned(),
-                adapter: "lldb-dap".to_owned(),
-                attach: false,
-                arguments: json!({"program": "/w/a.out"}),
-            }],
-            ..Debugger::default()
-        }
-    }
-
-    fn fake_connector() -> Connector {
-        Arc::new(|_launch| {
-            Box::pin(async move {
-                let (client_end, server_end) = tokio::io::duplex(1 << 20);
-                let (server_read, server_write) = tokio::io::split(server_end);
-                tokio::spawn(fake_adapter(BufReader::new(server_read), server_write));
-                let (read, write) = tokio::io::split(client_end);
-                Ok(DapClient::connect(read, write))
-            })
-        })
-    }
-
-    async fn write_msg<W: AsyncWrite + Unpin>(write: &mut W, msg: &Value) {
-        if let Ok(bytes) = serde_json::to_vec(msg) {
-            let _ = codec::write_frame(write, &bytes).await;
-        }
-    }
-
-    async fn fake_adapter<R, W>(mut read: BufReader<R>, mut write: W)
-    where
-        R: tokio::io::AsyncRead + Send + Unpin + 'static,
-        W: AsyncWrite + Send + Unpin + 'static,
-    {
-        let mut seq = 1000_i64;
-        while let Ok(Some(bytes)) = codec::read_frame(&mut read).await {
-            let Ok(msg): Result<Value, _> = serde_json::from_slice(&bytes) else {
-                break;
-            };
-            let command = msg
-                .get("command")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
-            let mut respond = |body: Value| {
-                let mut response = json!({
-                    "seq": seq,
-                    "type": "response",
-                    "request_seq": msg.get("seq").cloned().unwrap_or(Value::Null),
-                    "command": command.clone(),
-                    "success": true,
-                });
-                if !body.is_null()
-                    && let Some(object) = response.as_object_mut()
-                {
-                    object.insert("body".to_owned(), body);
-                }
-                seq += 1;
-                response
-            };
-            match command.as_str() {
-                "initialize" => {
-                    let frame = respond(json!({"supportsConfigurationDoneRequest": true}));
-                    write_msg(&mut write, &frame).await;
-                    let event = json!({"seq": seq, "type": "event", "event": "initialized"});
-                    write_msg(&mut write, &event).await;
-                },
-                "setBreakpoints" => {
-                    let acked: Vec<Value> = msg
-                        .get("arguments")
-                        .and_then(|a| a.get("breakpoints"))
-                        .and_then(Value::as_array)
-                        .map(|list| {
-                            list.iter()
-                                .map(|bp| {
-                                    json!({"line": bp.get("line").cloned().unwrap_or(Value::Null),
-                                           "verified": true})
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let frame = respond(json!({ "breakpoints": acked }));
-                    write_msg(&mut write, &frame).await;
-                },
-                "configurationDone" => {
-                    let frame = respond(Value::Null);
-                    write_msg(&mut write, &frame).await;
-                    let stopped = json!({"seq": seq, "type": "event", "event": "stopped",
-                        "body": {"reason": "breakpoint", "threadId": 7}});
-                    write_msg(&mut write, &stopped).await;
-                },
-                "stackTrace" => {
-                    let frame = respond(json!({"stackFrames": [
-                        {"id": 1, "name": "main", "line": 5, "column": 1,
-                         "source": {"path": "/w/main.rs"}}]}));
-                    write_msg(&mut write, &frame).await;
-                },
-                "continue" => {
-                    let frame = respond(Value::Null);
-                    write_msg(&mut write, &frame).await;
-                    let continued = json!({"seq": seq, "type": "event", "event": "continued",
-                        "body": {"threadId": 7}});
-                    write_msg(&mut write, &continued).await;
-                },
-                "disconnect" => {
-                    let frame = respond(Value::Null);
-                    write_msg(&mut write, &frame).await;
-                    break;
-                },
-                _ => {
-                    let frame = respond(Value::Null);
-                    write_msg(&mut write, &frame).await;
-                },
-            }
-        }
-    }
-
-    /// Drain events until `pick` accepts one, bounded by a deadline.
-    async fn wait_for<T>(
-        rx: &mut mpsc::UnboundedReceiver<(Option<RequestId>, Event)>,
-        mut pick: impl FnMut(&Event) -> Option<T>,
-    ) -> Option<T> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            let event = tokio::time::timeout_at(deadline, rx.recv()).await.ok()??;
-            if let Some(found) = pick(&event.1) {
-                return Some(found);
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn the_command_event_contract_round_trips() {
-        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
-        let mut manager = DebugManager::new(settings_with_config(), None, None, events_tx);
-        manager.set_connector(fake_connector());
-        // Breakpoints set before any session: stored, echoed unverified.
-        manager.set_breakpoints(PathBuf::from("/w/main.rs"), vec![3]);
-        let echoed = wait_for(&mut events_rx, |event| match event {
-            Event::DebugBreakpoints { breakpoints, .. } => Some(breakpoints.clone()),
-            _ => None,
-        })
-        .await;
-        assert_eq!(
-            echoed,
-            Some(vec![DebugBreakpoint {
-                line: 3,
-                verified: false
-            }])
-        );
-
-        manager.start(None);
-        let starting = wait_for(&mut events_rx, |event| match event {
-            Event::DebugState { state, .. } => Some(*state),
-            _ => None,
-        })
-        .await;
-        assert_eq!(starting, Some(DebugSessionState::Starting));
-        // The fake stops at a breakpoint right after configuration; the stop
-        // carries the top frame's location, 0-based.
-        let stopped = wait_for(&mut events_rx, |event| match event {
-            Event::DebugStopped {
-                reason,
-                thread,
-                path,
-                line,
-            } => Some((reason.clone(), *thread, path.clone(), *line)),
-            _ => None,
-        })
-        .await;
-        assert_eq!(
-            stopped,
-            Some((
-                "breakpoint".to_owned(),
-                7,
-                Some(PathBuf::from("/w/main.rs")),
-                Some(4)
-            ))
-        );
-
-        // Live breakpoint replace: verified by the adapter this time.
-        manager.set_breakpoints(PathBuf::from("/w/main.rs"), vec![3, 9]);
-        let verified = wait_for(&mut events_rx, |event| match event {
-            Event::DebugBreakpoints { breakpoints, .. } => Some(breakpoints.clone()),
-            _ => None,
-        })
-        .await
-        .unwrap_or_default();
-        assert!(verified.iter().all(|bp| bp.verified), "{verified:?}");
-
-        manager.run_control(RunControl::Continue);
-        let continued = wait_for(&mut events_rx, |event| {
-            matches!(event, Event::DebugContinued).then_some(())
-        })
-        .await;
-        assert_eq!(continued, Some(()));
-
-        manager.stop();
-        let idle = wait_for(&mut events_rx, |event| match event {
-            Event::DebugState {
-                state: DebugSessionState::Idle,
-                detail,
-            } => Some(detail.clone()),
-            _ => None,
-        })
-        .await;
-        assert_eq!(idle, Some("stopped".to_owned()));
-    }
-
-    #[tokio::test]
-    async fn start_without_configurations_notifies() {
-        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
-        let mut manager = DebugManager::new(Debugger::default(), None, None, events_tx);
-        manager.set_connector(fake_connector());
-        manager.start(None);
-        let message = wait_for(&mut events_rx, |event| match event {
-            Event::Notification { message, .. } => Some(message.clone()),
-            _ => None,
-        })
-        .await
-        .unwrap_or_default();
-        assert!(
-            message.contains("no matching debug configuration"),
-            "{message}"
-        );
-    }
-
-    #[tokio::test]
-    async fn run_controls_without_a_session_notify() {
-        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
-        let manager = DebugManager::new(Debugger::default(), None, None, events_tx);
-        manager.run_control(RunControl::StepOver);
-        let message = wait_for(&mut events_rx, |event| match event {
-            Event::Notification { message, .. } => Some(message.clone()),
-            _ => None,
-        })
-        .await
-        .unwrap_or_default();
-        assert_eq!(message, "no debug session");
-    }
-
-    #[test]
-    fn adapter_resolution_prefers_user_entries_over_builtins() {
-        let mut settings = Debugger::default();
-        settings.adapters.insert(
-            "gdb".to_owned(),
-            crate::config::schema::DebugAdapter {
-                command: "/opt/gdb".to_owned(),
-                args: vec!["--custom".to_owned()],
-                transport: crate::config::schema::DebugTransport::Stdio,
-            },
-        );
-        let user = resolve_adapter(&settings, "gdb");
-        assert_eq!(user.as_ref().map(|s| s.command.as_str()), Some("/opt/gdb"));
-        let builtin = resolve_adapter(&Debugger::default(), "codelldb");
-        assert_eq!(
-            builtin.map(|s| (s.command, s.transport)),
-            Some(("codelldb".to_owned(), DapTransport::Tcp))
-        );
-        assert!(resolve_adapter(&Debugger::default(), "made-up").is_none());
-    }
-}
+mod tests;

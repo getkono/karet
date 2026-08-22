@@ -522,6 +522,12 @@ pub struct App {
         std::collections::HashMap<PathBuf, std::collections::BTreeMap<u32, bool>>,
     /// Buffered debug-console output (ANSI kept; rendered by the Debug panel).
     pub(crate) debug_output: std::collections::VecDeque<(String, String)>,
+    /// The Debug sidebar panel (stack, variables tree, evaluate log).
+    pub(crate) debug_panel: DebugPanel,
+    /// The Debug panel's last-frame hit-test data.
+    pub(crate) debug_ui: DebugChrome,
+    /// Where the debuggee is stopped, for the stopped-line tint.
+    pub(crate) debug_stopped: Option<(PathBuf, u32)>,
     /// Palette commands from `--command`, queued until the backend is attached.
     ///
     /// They cannot run at construction time: a command like Show Hover or
