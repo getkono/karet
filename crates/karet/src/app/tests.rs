@@ -27,3 +27,4 @@ mod spellcheck;
 mod spelling_panel;
 mod startup;
 mod tabs_search;
+mod todos;
