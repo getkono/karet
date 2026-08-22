@@ -144,6 +144,15 @@ fn loaded_config_is_in_the_palette() {
 }
 
 #[test]
+fn hover_is_in_the_palette_beside_its_lsp_peers() {
+    // Hover is a caret-position LSP command like Trigger Suggest and Go to
+    // Definition; all three are reachable by name, not only by their chord.
+    assert!(palette().contains(&Command::Hover));
+    assert_eq!(Command::Hover.label(), "Show Hover");
+    assert_eq!(resolve_named("Show Hover"), Ok(Command::Hover));
+}
+
+#[test]
 fn hint_verbs_are_terse_and_gate_motion_keys() {
     // Advertised commands carry a non-empty terse verb…
     for cmd in [

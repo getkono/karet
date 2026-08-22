@@ -38,6 +38,13 @@ pub(super) fn attach_backend(
     app.register_open_tabs();
     app.request_pending_startup_diffs();
     app.request_pending_spelling_scan();
+    // `--command` runs last, and only once the backend can answer: a palette
+    // command that talks to it (Show Hover, Trigger Suggest, Go to Definition,
+    // the markdown edits) returns early otherwise, so dispatching these during
+    // startup-flag application silently dropped them. When the active tab is
+    // still waiting for its document id this is a no-op and the answering
+    // event runs them instead.
+    app.run_startup_commands_when_ready();
     // Surface any configuration-load problems as startup notifications, now that
     // the notification center will render on the first frame.
     for diag in std::mem::take(&mut app.config_diagnostics) {
