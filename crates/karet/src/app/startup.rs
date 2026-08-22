@@ -143,6 +143,7 @@ impl App {
             debug_detail: String::new(),
             breakpoints: std::collections::HashMap::new(),
             debug_output: std::collections::VecDeque::new(),
+            startup_commands: Vec::new(),
             inline_macro_engine: karet_syntax::InlineMacroEngine::new(),
             pending_commit_detail: HashMap::new(),
             latex_previews: HashMap::new(),
@@ -370,6 +371,30 @@ impl App {
     /// automation and interactive use cannot drift.
     pub fn apply_startup_command(&mut self, command: Command) {
         self.dispatch(command);
+    }
+
+    /// Run the queued `--command` palette commands, once the backend can serve
+    /// them.
+    ///
+    /// They wait for the active tab's document id. A command that queries or
+    /// edits a document — Show Hover, Trigger Suggest, the markdown edits —
+    /// returns early without one, so running them while the tab is still
+    /// pending silently dropped them. A session whose active tab is not a
+    /// pending code tab has nothing to wait for and runs them at once.
+    pub(super) fn run_startup_commands_when_ready(&mut self) {
+        if self.startup_commands.is_empty() {
+            return;
+        }
+        let pending = matches!(
+            self.tabs.get(self.active).map(|tab| &tab.kind),
+            Some(TabKind::Code { doc: None, .. })
+        );
+        if pending {
+            return;
+        }
+        for command in std::mem::take(&mut self.startup_commands) {
+            self.apply_startup_command(command);
+        }
     }
 
     /// Apply the CLI's startup focus override after startup tabs are opened.

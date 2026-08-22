@@ -542,3 +542,44 @@ fn graphical_cursor_is_suppressed_during_the_hidden_blink_phase() {
         "blink hides a valid caret without losing its placement"
     );
 }
+
+#[test]
+fn queued_startup_commands_wait_for_the_active_document() {
+    // `--command` is queued at construction and drained once the backend can
+    // serve it; a code tab still waiting for its document id holds the queue.
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    app.push_tab(text_tab("main.rs", "fn main() {}\n"));
+    app.focus = Focus::Editor;
+    app.startup_commands = vec![Command::SelectPanel(SidebarPanel::Search)];
+
+    app.run_startup_commands_when_ready();
+    assert_eq!(
+        app.startup_commands.len(),
+        1,
+        "a pending code tab holds the queue"
+    );
+
+    let idx = app.active;
+    if let TabKind::Code { doc, .. } = &mut app.tabs[idx].kind {
+        *doc = Some(DocumentId(9));
+    }
+    app.run_startup_commands_when_ready();
+    assert!(app.startup_commands.is_empty(), "the queue drains once");
+    assert_eq!(app.sidebar_panel, SidebarPanel::Search);
+}
+
+#[test]
+fn queued_startup_commands_run_at_once_without_a_code_tab() {
+    // Nothing to wait for: a session with no open document must not strand its
+    // `--command` work forever.
+    let mut app = app();
+    app.backend = Some(Arc::new(RecordingBackend::new()));
+    app.startup_commands = vec![Command::SelectPanel(SidebarPanel::Search)];
+
+    app.run_startup_commands_when_ready();
+
+    assert!(app.startup_commands.is_empty());
+    assert_eq!(app.sidebar_panel, SidebarPanel::Search);
+}

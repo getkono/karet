@@ -77,18 +77,53 @@ fn prettify_line(line: &str) -> String {
     out
 }
 
+/// The longest run of backticks anywhere in `text`.
+///
+/// A type can carry backticks of its own — a string-literal type spelling a
+/// fence (`"```"`), or a template-literal type — and CommonMark ends a span at
+/// the first delimiter run of matching length. Both markups below pick a run
+/// one longer than anything inside, which is exactly how nested fences work.
+fn longest_backtick_run(text: &str) -> usize {
+    let mut longest = 0;
+    let mut current = 0;
+    for ch in text.chars() {
+        if ch == '`' {
+            current += 1;
+            longest = longest.max(current);
+        } else {
+            current = 0;
+        }
+    }
+    longest
+}
+
 /// Append `quoted` as inline code or a fenced, pretty-printed block.
 fn push_code(out: &mut String, quoted: &str) {
     let structural = quoted.contains('{') || quoted.contains("=>");
     if !structural && quoted.len() <= FENCE_LENGTH {
-        out.push('`');
-        out.push_str(quoted);
-        out.push('`');
+        // A backtick inside the type needs a longer delimiter, and a space so
+        // a leading or trailing backtick is not eaten by the delimiter run.
+        let ticks = "`".repeat(longest_backtick_run(quoted) + 1);
+        out.push_str(&ticks);
+        if quoted.starts_with('`') || quoted.ends_with('`') {
+            out.push(' ');
+            out.push_str(quoted);
+            out.push(' ');
+        } else {
+            out.push_str(quoted);
+        }
+        out.push_str(&ticks);
         return;
     }
-    out.push_str("\n\n```typescript\n");
-    out.push_str(&pretty_type(&repair_balance(quoted)));
-    out.push_str("\n```\n\n");
+    let body = pretty_type(&repair_balance(quoted));
+    let fence = "`".repeat(longest_backtick_run(&body).max(2) + 1);
+    out.push_str("\n\n");
+    out.push_str(&fence);
+    out.push_str("typescript\n");
+    out.push_str(&body);
+    out.push('\n');
+    out.push_str(&fence);
+    out.push_str("\n\n");
 }
 
 /// Append the closers of any `{`/`(`/`[` left open — tsserver truncates long
@@ -244,6 +279,53 @@ mod tests {
         let opens = fence.matches('{').count();
         let closes = fence.matches('}').count();
         assert_eq!(opens, closes, "{got}");
+    }
+
+    #[test]
+    fn a_type_containing_backticks_still_produces_a_closable_fence() {
+        // `type Config = { fence: "```" }` is ordinary TypeScript, and CommonMark
+        // ends a fence at the first run of matching length — so the delimiter has
+        // to be longer than anything inside, or the popup renders broken.
+        let got = prettify(
+            r#"Type 'string' is not assignable to type '{ fence: "```"; lang: string; }'."#,
+        );
+        assert!(got.contains("````typescript"), "{got}");
+        assert!(
+            fences_balanced(&got),
+            "the fence must close after the type:\n{got}"
+        );
+
+        // Deeper runs push the delimiter further out.
+        let deep = prettify(r#"Type 'Y' is not assignable to type '{ f: "`````"; }'."#);
+        assert!(deep.contains("``````typescript"), "{deep}");
+        assert!(fences_balanced(&deep), "{deep}");
+    }
+
+    #[test]
+    fn a_backticked_name_is_wrapped_without_swallowing_its_ticks() {
+        // A template-literal type is short and unstructured, so it takes the
+        // inline-code path; a leading or trailing backtick needs padding.
+        let got = prettify("Type 'A' is not assignable to type '`x`'.");
+        assert!(got.contains("`` `x` ``"), "{got}");
+    }
+
+    /// Walk `md` the way CommonMark does: a fence opens on a run of three or
+    /// more backticks and closes only on a run at least as long.
+    fn fences_balanced(md: &str) -> bool {
+        let mut open: Option<usize> = None;
+        for line in md.lines() {
+            let trimmed = line.trim_start();
+            let run = trimmed.chars().take_while(|&c| c == '`').count();
+            if run < 3 {
+                continue;
+            }
+            match open {
+                None => open = Some(run),
+                Some(n) if run >= n && trimmed[run..].trim().is_empty() => open = None,
+                Some(_) => {},
+            }
+        }
+        open.is_none()
     }
 
     #[test]

@@ -49,6 +49,43 @@ mod tests {
         assert_eq!(format_toml("[package]\nname = \"x\"\n", &[]), None);
     }
 
+    /// Formatting must never change what the document *means*, and a second
+    /// pass must find nothing left to do.
+    #[test]
+    fn formatting_preserves_values_and_settles_in_one_pass() {
+        for case in [
+            "a=1",
+            "[a.b.c]\nx=1",
+            "[[t]]\nx=1\n[[t]]\nx=2",
+            "s='''\nmulti\nline\n'''",
+            "a.b.c = 1",
+            "t = { x = 1, y = [1,2,{z=3}] }",
+            "# only a comment\n",
+            "k = 2026-08-21T00:00:00Z",
+            "'quoted key' = 1",
+            "日本 = \"語\"",
+            "arr = [\n 1, # one\n 2, # two\n]",
+            "[ a . b ]\nx=1",
+            "b = 0b1010\no = 0o755\nh = 0xDEADBEEF",
+        ] {
+            let Ok(before) = case.parse::<toml::Table>() else {
+                continue;
+            };
+            let once = format_toml(case, &[]).unwrap_or_else(|| case.to_owned());
+            let after = once.parse::<toml::Table>();
+            assert!(
+                after.is_ok(),
+                "formatted output no longer parses:\n{case}\n---\n{once}"
+            );
+            assert_eq!(Ok(before), after, "value changed:\n{case}\n---\n{once}");
+            assert_eq!(
+                format_toml(&once, &[]),
+                None,
+                "a second pass still wants changes:\n{once}"
+            );
+        }
+    }
+
     #[test]
     fn comments_and_structure_survive() {
         let text = "# top\n[a]\nx = 1 # keep\n\n[b]\ny = 2\n";

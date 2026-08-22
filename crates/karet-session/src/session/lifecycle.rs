@@ -107,6 +107,8 @@ impl Session {
             spell_scan_worker,
             todo_scan_worker,
             wakatime_worker: None,
+            wakatime_last: None,
+            wakatime_clock: std::time::Instant::now(),
             #[cfg(feature = "deps")]
             manifest_hints_worker: None,
             cancellations,
