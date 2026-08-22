@@ -58,6 +58,10 @@ karet-supervisor = { path = "crates/karet-supervisor" }
 karet-watch      = { path = "crates/karet-watch" }
 karet-graph      = { path = "crates/karet-graph" }
 karet-github     = { path = "crates/karet-github" }
+# The dependable pair: `-core` (pure lockfile→graph, the `viz` lens) and
+# `-fetch` (async registry + OSV checking for Cargo.toml hints). Same author,
+# alpha line — pinned to the exact published version karet was built against.
+dependable-fetch = "=0.1.2"
 # blameline is a standalone library on its OWN SemVer line (NOT the workspace lockstep);
 # pin its independent version here. See crates/blameline/README.md.
 blameline        = { path = "crates/blameline", version = "2.0.0", default-features = false }

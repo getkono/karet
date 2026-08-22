@@ -40,6 +40,8 @@ pub struct Settings {
     pub markdown: Markdown,
     /// WakaTime time-tracking (opt-in).
     pub wakatime: Wakatime,
+    /// Dependency-manifest hints (Cargo.toml freshness and advisories).
+    pub deps: Deps,
 }
 
 /// `wakatime.*` — WakaTime time tracking. **Off by default**: enabling it
@@ -63,6 +65,25 @@ impl Default for Wakatime {
             enabled: false,
             status_bar: true,
         }
+    }
+}
+
+/// `deps.*` — dependency-manifest hints. Checking consults the crates.io
+/// sparse index and the OSV advisory database over the network (cached
+/// in-process); air-gapped setups can turn it off.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct Deps {
+    /// Annotate open `Cargo.toml` dependencies with their freshness and
+    /// known advisories.
+    pub enabled: bool,
+}
+
+impl Default for Deps {
+    /// On by default.
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 

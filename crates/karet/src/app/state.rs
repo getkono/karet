@@ -338,6 +338,7 @@ impl TodosPanel {
 pub(crate) type TodosChrome = SpellingChrome;
 
 /// Per-document caches fed by backend events, keyed by session document.
+/// (Manifest hints live beside diagnostics: both are per-document layers.)
 #[derive(Default)]
 pub(crate) struct DocState {
     /// Editing/save behavior resolved per open session document.
@@ -350,6 +351,8 @@ pub(crate) struct DocState {
     pub(crate) outline_versions: HashMap<DocumentId, u64>,
     /// In-flight symbol request version and start time per document.
     pub(crate) outline_loading: HashMap<DocumentId, (u64, Pending)>,
+    /// Dependency-freshness hints per open manifest, with the checked version.
+    pub(crate) manifest_hints: HashMap<DocumentId, (u64, Vec<karet_session::ManifestHint>)>,
 }
 
 /// The Source-Control panel state: the changed files (staged first) and selection.

@@ -85,11 +85,18 @@ fn severity_label(severity: Severity) -> &'static str {
 /// markdown document: each diagnostic as a `**severity** message (source)`
 /// paragraph, then a rule, then the hover — plain-text hover fenced so its
 /// content cannot be misread as markdown.
-pub(crate) fn hover_markup(diagnostics: &[&Diagnostic], hover: Option<&Hover>) -> Option<Markup> {
-    if diagnostics.is_empty() {
+pub(crate) fn hover_markup(
+    diagnostics: &[&Diagnostic],
+    hover: Option<&Hover>,
+    extra: Option<&str>,
+) -> Option<Markup> {
+    if diagnostics.is_empty() && extra.is_none() {
         return hover.map(|h| h.contents.clone());
     }
     let mut value = String::new();
+    if let Some(extra) = extra {
+        value.push_str(extra);
+    }
     for d in diagnostics {
         if !value.is_empty() {
             value.push_str("\n\n");
@@ -109,7 +116,9 @@ pub(crate) fn hover_markup(diagnostics: &[&Diagnostic], hover: Option<&Hover>) -
         }
     }
     if let Some(h) = hover {
-        value.push_str("\n\n---\n\n");
+        if !value.is_empty() {
+            value.push_str("\n\n---\n\n");
+        }
         match h.contents.kind {
             MarkupKind::Markdown => value.push_str(&h.contents.value),
             _ => {
@@ -177,7 +186,7 @@ mod tests {
     #[test]
     fn bare_hover_passes_through_with_its_own_kind() {
         let h = hover(MarkupKind::PlainText, "just text");
-        let markup = hover_markup(&[], Some(&h)).unwrap_or(Markup {
+        let markup = hover_markup(&[], Some(&h), None).unwrap_or(Markup {
             kind: MarkupKind::Markdown,
             value: String::new(),
         });
@@ -187,7 +196,7 @@ mod tests {
 
     #[test]
     fn nothing_at_all_yields_none() {
-        assert!(hover_markup(&[], None).is_none());
+        assert!(hover_markup(&[], None, None).is_none());
     }
 
     #[test]
@@ -195,7 +204,7 @@ mod tests {
         let diags = [diag((0, 0), (0, 4), Severity::Error, "mismatched types")];
         let refs: Vec<&Diagnostic> = diags.iter().collect();
         let h = hover(MarkupKind::Markdown, "## fn main");
-        let markup = hover_markup(&refs, Some(&h)).unwrap_or(Markup {
+        let markup = hover_markup(&refs, Some(&h), None).unwrap_or(Markup {
             kind: MarkupKind::PlainText,
             value: String::new(),
         });
@@ -210,7 +219,7 @@ mod tests {
         let diags = [diag((0, 0), (0, 4), Severity::Hint, "unused")];
         let refs: Vec<&Diagnostic> = diags.iter().collect();
         let h = hover(MarkupKind::PlainText, "*not markdown*");
-        let markup = hover_markup(&refs, Some(&h)).unwrap_or(Markup {
+        let markup = hover_markup(&refs, Some(&h), None).unwrap_or(Markup {
             kind: MarkupKind::PlainText,
             value: String::new(),
         });
@@ -218,10 +227,23 @@ mod tests {
     }
 
     #[test]
+    fn an_extra_section_leads_and_composes_with_the_hover() {
+        let h = hover(MarkupKind::Markdown, "docs");
+        let markup =
+            hover_markup(&[], Some(&h), Some("**serde** `1.0` — up to date")).unwrap_or(Markup {
+                kind: MarkupKind::PlainText,
+                value: String::new(),
+            });
+        assert_eq!(markup.kind, MarkupKind::Markdown);
+        assert!(markup.value.starts_with("**serde**"));
+        assert!(markup.value.contains("---\n\ndocs"));
+    }
+
+    #[test]
     fn diagnostics_alone_still_open_the_popup() {
         let diags = [diag((0, 0), (0, 4), Severity::Warning, "shadowed")];
         let refs: Vec<&Diagnostic> = diags.iter().collect();
-        let markup = hover_markup(&refs, None).unwrap_or(Markup {
+        let markup = hover_markup(&refs, None, None).unwrap_or(Markup {
             kind: MarkupKind::PlainText,
             value: String::new(),
         });

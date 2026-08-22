@@ -8,6 +8,7 @@ mod blame;
 mod commit_navigation;
 mod commit_view;
 mod definition;
+mod deps;
 mod diff_view;
 mod editor_mouse;
 mod explorer;
