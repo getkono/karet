@@ -56,7 +56,7 @@ language is in [`docs/language-servers.md`](docs/language-servers.md). The
 detected language is shown in the status bar, and unknown/unsupported languages
 render as plaintext. `--no-syntax` (or `NO_COLOR`) disables highlighting.
 
-On a Markdown file, `Ctrl+K V` (or "Markdown: Open Preview to the Side" in the
+On a Markdown file, `Ctrl+K V` (or "Markdown: Toggle Preview to the Side" in the
 command palette) opens a rendered preview in a pane to the right. It re-renders as
 you type, and the two panes scroll together — whichever one has focus leads.
 
