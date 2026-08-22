@@ -528,6 +528,13 @@ pub struct App {
     pub(crate) debug_ui: DebugChrome,
     /// Where the debuggee is stopped, for the stopped-line tint.
     pub(crate) debug_stopped: Option<(PathBuf, u32)>,
+    /// Palette commands from `--command`, queued until the backend is attached.
+    ///
+    /// They cannot run at construction time: a command like Show Hover or
+    /// Trigger Suggest returns early without a backend, so dispatching before
+    /// the attach silently did nothing. [`runtime::attach_backend`] drains
+    /// this, which is the one path both the live shell and `--capture` share.
+    pub(crate) startup_commands: Vec<Command>,
     /// Parser-backed resolver for the seeded inline-macro catalog.
     inline_macro_engine: karet_syntax::InlineMacroEngine,
     /// In-flight commit-detail requests, mapping request id → where its result goes

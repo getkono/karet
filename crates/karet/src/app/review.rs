@@ -22,6 +22,23 @@ pub(crate) struct ReviewStore {
     dirty: bool,
 }
 
+/// A stable digest of `root`, naming its review file.
+///
+/// Deliberately not `DefaultHasher`: the standard library does not promise its
+/// output stays the same across releases, and this names a file that has to be
+/// found again after a toolchain upgrade. FNV-1a is fixed by its definition, so
+/// the same workspace always resolves to the same entry.
+fn workspace_key(root: &Path) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    for byte in root.as_os_str().as_encoded_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -31,13 +48,9 @@ fn now_secs() -> u64 {
 
 impl ReviewStore {
     fn path(root: &Path) -> Option<PathBuf> {
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        use std::hash::Hash as _;
-        use std::hash::Hasher as _;
-        root.hash(&mut hash);
         directories::ProjectDirs::from("", "", "karet").map(|dirs| {
             dirs.cache_dir()
-                .join(format!("review-{:016x}.json", hash.finish()))
+                .join(format!("review-{:016x}.json", workspace_key(root)))
         })
     }
 
@@ -109,7 +122,13 @@ impl App {
         let root = self.root.clone();
         let commit = commit.to_owned();
         let review = &mut self.review;
-        for tab in self.tabs.iter_mut() {
+        // Every pane, not just the focused one: this is stamped from a backend
+        // answer, which can land on a commit view in a background split.
+        for tab in self.tabs.iter_mut().chain(
+            self.stored
+                .values_mut()
+                .flat_map(|pane| pane.tabs.iter_mut()),
+        ) {
             if let TabKind::Commit { detail, files, .. } = &mut tab.kind
                 && detail.hash == commit
             {
@@ -153,5 +172,50 @@ impl App {
             if reviewed { "reviewed" } else { "unreviewed" },
             files.files.len()
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_workspace_key_is_fixed_by_its_definition() {
+        // The key names a file that must still be found after a toolchain
+        // upgrade, so these are golden FNV-1a values, not whatever the
+        // standard library's hasher happens to produce today.
+        assert_eq!(workspace_key(Path::new("")), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(workspace_key(Path::new("a")), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(
+            workspace_key(Path::new("/home/dev/project")),
+            workspace_key(Path::new("/home/dev/project")),
+            "the same workspace always resolves to the same entry"
+        );
+        assert_ne!(
+            workspace_key(Path::new("/home/dev/a")),
+            workspace_key(Path::new("/home/dev/b"))
+        );
+    }
+
+    #[test]
+    fn an_expired_entry_is_dropped_on_load() {
+        let root = std::env::temp_dir().join(format!("karet-review-{}", std::process::id()));
+        let mut store = ReviewStore::default();
+        let stale = now_secs().saturating_sub(EXPIRY_SECS + 1);
+        store.entries.insert(
+            "old".to_owned(),
+            (stale, HashSet::from(["f.rs".to_owned()])),
+        );
+        store.entries.insert(
+            "new".to_owned(),
+            (now_secs(), HashSet::from(["g.rs".to_owned()])),
+        );
+        // `ensure_loaded` prunes what it reads; simulate the same filter.
+        let cutoff = now_secs().saturating_sub(EXPIRY_SECS);
+        store.entries.retain(|_, (touched, _)| *touched >= cutoff);
+
+        assert!(!store.entries.contains_key("old"));
+        assert!(store.entries.contains_key("new"));
+        assert!(!store.is_reviewed(&root, "old", "f.rs"));
     }
 }

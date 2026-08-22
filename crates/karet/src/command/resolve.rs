@@ -34,6 +34,9 @@ static PALETTE: &[Command] = &[
     Command::DepsUpdate,
     Command::DepsUpdateAll,
     Command::ScmFetch,
+    // Every debugger action is also reachable by name: its F-key is routinely
+    // swallowed by terminal emulators, multiplexers, and SSH clients, and a
+    // breakpoint no key can set is a breakpoint the user cannot set at all.
     Command::DebugStart,
     Command::DebugStop,
     Command::DebugPause,
