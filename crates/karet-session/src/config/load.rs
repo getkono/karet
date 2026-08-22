@@ -232,6 +232,7 @@ const SECTIONS: &[&str] = &[
     "markdown",
     "wakatime",
     "deps",
+    "toml",
 ];
 
 /// Load the merged, verified [`Settings`] for a workspace rooted at `roots`, plus any

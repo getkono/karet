@@ -42,6 +42,8 @@ pub struct Settings {
     pub wakatime: Wakatime,
     /// Dependency-manifest hints (Cargo.toml freshness and advisories).
     pub deps: Deps,
+    /// TOML-specific behaviour.
+    pub toml: Toml,
 }
 
 /// `wakatime.*` — WakaTime time tracking. **Off by default**: enabling it
@@ -84,6 +86,23 @@ impl Default for Deps {
     /// On by default.
     fn default() -> Self {
         Self { enabled: true }
+    }
+}
+
+/// `toml.*` — TOML-specific behaviour.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct Toml {
+    /// Format TOML documents with the built-in taplo formatter (honoring the
+    /// workspace's `.taplo.toml`) when no language server offers formatting.
+    pub format: bool,
+}
+
+impl Default for Toml {
+    /// On by default.
+    fn default() -> Self {
+        Self { format: true }
     }
 }
 

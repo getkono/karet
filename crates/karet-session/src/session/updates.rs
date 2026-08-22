@@ -476,6 +476,32 @@ impl Session {
             doc.buffer.version(),
             &doc.path,
         ) {
+            // No server offered formatting; TOML falls back to the built-in
+            // taplo formatter (same engine the taplo LSP would use).
+            #[cfg(feature = "toml-format")]
+            if doc.language_selector == Some("toml")
+                && self.config.settings.toml.format
+                && let Some(formatted) =
+                    crate::toml_format::format_toml(&doc.buffer.text(), &self.config.roots)
+            {
+                let version = doc.buffer.version();
+                let end_line = u32::try_from(doc.buffer.text().lines().count()).unwrap_or(u32::MAX);
+                self.emit(
+                    Some(id),
+                    Event::FormattingEdits {
+                        doc: doc_id,
+                        version,
+                        edits: vec![karet_core::TextEdit {
+                            range: karet_core::Range {
+                                start: karet_core::LineCol::new(0, 0),
+                                end: karet_core::LineCol::new(end_line, 0),
+                            },
+                            new_text: formatted,
+                        }],
+                    },
+                );
+                return;
+            }
             self.emit(
                 Some(id),
                 Event::FormattingEdits {
@@ -847,46 +873,4 @@ fn utf16_caret(doc: &Document, position: LineCol) -> LineCol {
 impl Session {
     /// Without the `mdlint` feature there is no markdown lint layer.
     pub(crate) fn refresh_markdown_lint(&mut self, _doc: crate::api::DocumentId) {}
-}
-
-#[cfg(feature = "deps")]
-impl Session {
-    /// Queue a dependency-freshness check for `doc_id` when it is a
-    /// `Cargo.toml` and `deps.enabled` is on; the worker spawns on first use.
-    pub(crate) fn refresh_manifest_hints(&mut self, doc_id: DocumentId) {
-        if !self.config.settings.deps.enabled {
-            return;
-        }
-        let Some(doc) = self.store.docs.get(&doc_id) else {
-            return;
-        };
-        if doc
-            .path
-            .file_name()
-            .is_none_or(|name| !name.eq_ignore_ascii_case("Cargo.toml"))
-        {
-            return;
-        }
-        let lockfile = doc
-            .path
-            .parent()
-            .map(|dir| dir.join("Cargo.lock"))
-            .and_then(|path| std::fs::read_to_string(path).ok());
-        let job = crate::manifest_hints::HintJob {
-            doc: doc_id,
-            version: doc.buffer.version(),
-            manifest: doc.buffer.text(),
-            lockfile,
-        };
-        let worker = self
-            .manifest_hints_worker
-            .get_or_insert_with(|| crate::manifest_hints::spawn(self.events.clone()));
-        let _ = worker.send(job);
-    }
-}
-
-#[cfg(not(feature = "deps"))]
-impl Session {
-    /// Without the `deps` feature there are no manifest hints.
-    pub(crate) fn refresh_manifest_hints(&mut self, _doc: DocumentId) {}
 }

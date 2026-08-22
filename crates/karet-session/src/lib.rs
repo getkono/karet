@@ -39,6 +39,8 @@ pub mod session;
 mod spell;
 mod spell_scan;
 mod todo_scan;
+#[cfg(feature = "toml-format")]
+mod toml_format;
 mod vcs_worker;
 #[cfg(feature = "viz")]
 pub mod viz;

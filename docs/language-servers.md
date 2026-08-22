@@ -7,6 +7,12 @@ the built-in catalog in `karet-session/src/lsp.rs`, the managed catalog in
 
 ## The built-in experience
 
+TOML formatting never requires a server: karet bundles taplo's formatter as a
+fallback (`toml.format`), honoring the workspace `.taplo.toml`. Installing the
+`taplo` language server additionally brings schema-driven validation,
+completion, and hover (its `#:schema` directives work as documented upstream).
+
+
 karet resolves a provider separately for every open document:
 
 1. `lsp.languages.<language>` and `lsp.servers.<id>` in merged settings;
