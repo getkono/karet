@@ -607,3 +607,81 @@ fn detects_structured_formats_and_ecosystem_lockfiles() {
         );
     }
 }
+
+#[cfg(all(feature = "lang-typescript", feature = "lang-graphql"))]
+fn graphql_regions(host: &str, src: &str) -> Result<Vec<InjectionRegion>, TsError> {
+    let host = language_id_from_injection_name(host).ok_or(TsError::UnknownLanguage)?;
+    let graphql = language_id_from_injection_name("graphql").ok_or(TsError::UnknownLanguage)?;
+    let mut pool = ParserPool::new();
+    let tree = SyntaxTree::parse(&mut pool, host, src)?;
+    let query_src = injections_query(host).ok_or(TsError::UnknownLanguage)?;
+    let query = Query::compile(host, &query_src)?;
+    Ok(tree
+        .injections(&query, src)
+        .into_iter()
+        .filter(|region| region.lang == graphql)
+        .collect())
+}
+
+#[cfg(all(feature = "lang-typescript", feature = "lang-graphql"))]
+#[test]
+fn typescript_gql_tagged_templates_inject_graphql() -> Result<(), TsError> {
+    let src = "const q = gql`query { hero { name } }`;\n";
+    let regions = graphql_regions("typescript", src)?;
+    assert_eq!(regions.len(), 1, "{regions:?}");
+    let span = regions[0]
+        .ranges
+        .first()
+        .copied()
+        .ok_or(TsError::ParseFailed)?;
+    assert_eq!(&src[span.start.0..span.end.0], "query { hero { name } }");
+    Ok(())
+}
+
+#[cfg(all(feature = "lang-typescript", feature = "lang-graphql"))]
+#[test]
+fn tsx_member_tagged_templates_inject_graphql() -> Result<(), TsError> {
+    let src = "const q = graphql.experimental`query { hero }`;\n";
+    assert_eq!(
+        graphql_regions("tsx", src)?.len(),
+        0,
+        "unknown tag stays plain"
+    );
+    let src = "const q = api.gql`query { hero }`;\n";
+    assert_eq!(graphql_regions("tsx", src)?.len(), 1);
+    Ok(())
+}
+
+#[cfg(all(feature = "lang-typescript", feature = "lang-graphql"))]
+#[test]
+fn typescript_graphql_comment_marker_injects() -> Result<(), TsError> {
+    let src = "const q = /* GraphQL */ `query { x }`;\n";
+    assert_eq!(graphql_regions("typescript", src)?.len(), 1);
+    let src = "const q = /* just a note */ `query { x }`;\n";
+    assert_eq!(graphql_regions("typescript", src)?.len(), 0);
+    Ok(())
+}
+
+#[cfg(all(feature = "lang-typescript", feature = "lang-graphql"))]
+#[test]
+fn typescript_hash_graphql_leader_injects() -> Result<(), TsError> {
+    let src = "const q = `\n  #graphql\n  query { x }\n`;\n";
+    assert_eq!(graphql_regions("typescript", src)?.len(), 1);
+    let src = "const q = `plain text`;\n";
+    assert_eq!(graphql_regions("typescript", src)?.len(), 0);
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "lang-javascript",
+    feature = "lang-typescript",
+    feature = "lang-graphql"
+))]
+#[test]
+fn javascript_graphql_markers_inject() -> Result<(), TsError> {
+    let src = "const q = /* GraphQL */ `query { x }`;\n";
+    assert_eq!(graphql_regions("javascript", src)?.len(), 1);
+    let src = "const q = `#graphql\nquery { x }`;\n";
+    assert_eq!(graphql_regions("javascript", src)?.len(), 1);
+    Ok(())
+}

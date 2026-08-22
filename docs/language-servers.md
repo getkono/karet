@@ -93,6 +93,19 @@ On an architecture for which a normally managed provider has no verified upstrea
 artifact, the manager reports that platform-specific reason and treats the provider
 as manual. Currently this applies to clangd on ARM.
 
+### GraphQL specifics
+
+GraphQL highlighting is not limited to `.graphql`/`.gql`/`.graphqls` files
+(`.graphqls` is the conventional schema-definition extension). In JavaScript,
+TypeScript, and TSX, template literals are highlighted as GraphQL when tagged
+(`` gql`…` `` or `` graphql`…` ``, including member tags like
+`` api.gql`…` ``), when preceded by a `/* GraphQL */` comment, or when the
+template body starts with a `#graphql` comment — the marker conventions the
+`graphql-lsp` ecosystem documents. The built-in `graphql-lsp` provider
+(`graphql-lsp server -m stream`, a Node tool) expects a project config file at
+the repository root (`.graphqlrc*` or `graphql.config.*`) to serve schema-aware
+features.
+
 ### Java (jdtls) specifics
 
 karet launches jdtls with a stable per-project workspace: unless the configured
