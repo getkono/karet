@@ -15,6 +15,7 @@ mod github;
 mod inline_macros;
 mod language_servers;
 mod lifecycle;
+mod markdown_edit;
 mod preview;
 mod remote;
 mod save;
