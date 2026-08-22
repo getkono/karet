@@ -22,7 +22,6 @@ static PALETTE: &[Command] = &[
     Command::ToggleInlineCode,
     Command::ToggleTaskCheckbox,
     Command::GoToDefinition,
-    Command::Hover,
     Command::JumpBack,
     Command::ToggleInlineBlame,
     Command::ShowCommitGraph,
