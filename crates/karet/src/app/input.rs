@@ -90,6 +90,12 @@ impl App {
                 Resolved::Pending | Resolved::None => self.modal_text(modal, key),
             },
             None => {
+                // An open hover popup is dismissed by Esc before anything else
+                // sees the key; every other key falls through (and most will
+                // move the caret, which dismisses it anyway).
+                if key.code == KeyCode::Esc && key.modifiers.is_empty() && self.dismiss_hover() {
+                    return;
+                }
                 // The completion popup is a light key layer over the editor:
                 // it consumes only its navigation/accept/dismiss keys and lets
                 // everything else (typing, movement) fall through.
@@ -102,6 +108,7 @@ impl App {
         // Any key may have moved the caret or switched tabs; a popup or pending
         // request whose anchor no longer holds is dismissed.
         self.reconcile_completion();
+        self.reconcile_hover();
         self.request_live_blame();
         if dismiss_outline_after {
             self.dismiss_outline_overlay();

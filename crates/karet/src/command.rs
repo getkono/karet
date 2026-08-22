@@ -222,6 +222,8 @@ pub enum Command {
     UnstageHunk,
     /// Ask the language server for completions at the caret (Ctrl+Space).
     TriggerCompletion,
+    /// Show hover documentation and diagnostics for the caret (Ctrl+K Ctrl+I).
+    Hover,
     /// Jump to the definition of the symbol at the caret (F12).
     GoToDefinition,
     /// Return to the position a definition jump started from (Ctrl+Alt+Left).
@@ -579,6 +581,7 @@ impl Command {
             Self::UnstageHunk => "Diff: Unstage Hunk",
             Self::InsertChar(_) => "Insert Character",
             Self::TriggerCompletion => "Trigger Suggest",
+            Self::Hover => "Show Hover",
             Self::GoToDefinition => "Go to Definition",
             Self::JumpBack => "Go Back",
             Self::InsertNewline => "Insert Newline",
@@ -920,6 +923,7 @@ impl Command {
             | Self::Bottom
             | Self::InsertChar(_)
             | Self::TriggerCompletion
+            | Self::Hover
             | Self::InsertNewline
             | Self::DeleteBackward
             | Self::DeleteForward

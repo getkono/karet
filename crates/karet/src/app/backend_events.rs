@@ -110,6 +110,7 @@ impl App {
                 version,
                 items,
             } => self.on_completions(id, doc, version, items),
+            SessionEvent::HoverResult { hover } => self.on_hover_result(id, hover),
             SessionEvent::Definitions { locations } => self.on_definitions(id, locations),
             SessionEvent::LanguageServerInstallRequired { server } => {
                 self.prompt_language_server_install(server);

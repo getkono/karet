@@ -18,6 +18,7 @@ mod compat;
 mod completion;
 mod desktop;
 mod doctor;
+mod hover;
 mod keymap;
 mod links;
 mod logging;

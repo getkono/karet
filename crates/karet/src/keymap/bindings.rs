@@ -202,6 +202,10 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Code folding (VS Code parity): `Ctrl+K Ctrl+L` toggles the fold at the cursor.
     seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('l'))], Command::ToggleFold),
 
+    // Hover documentation (VS Code parity: `Ctrl+K Ctrl+I`), incl. the
+    // diagnostics under the caret.
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('i'))], Command::Hover),
+
     // Editor focus, diff tab only. Enter drops from the read-only diff into the
     // underlying file ("editor mode"), landing on its first changed line.
     b(DiffEditor, false, false, false, Char('\\'), Command::ToggleDiffLayout),

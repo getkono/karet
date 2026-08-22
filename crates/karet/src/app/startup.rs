@@ -131,6 +131,8 @@ impl App {
             pending_completion: None,
             completion: None,
             completion_matcher: karet_fuzzy::Matcher::new(),
+            pending_hover: None,
+            hover_ui: None,
             inline_macro_engine: karet_syntax::InlineMacroEngine::new(),
             pending_commit_detail: HashMap::new(),
             latex_previews: HashMap::new(),

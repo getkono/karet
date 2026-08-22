@@ -106,6 +106,14 @@ pub enum DecorationKind {
         /// Whether to render before (`true`) or after (`false`) the range.
         before: bool,
     },
+    /// A color chip over the range, carrying an arbitrary color instead of a
+    /// theme role (e.g. a CSS color literal). The renderer paints the range's
+    /// background in this color and picks a contrasting foreground itself.
+    ColorSwatch {
+        /// The color, as straight (un-premultiplied) 8-bit RGBA. Renderers
+        /// that cannot blend may ignore the alpha channel.
+        rgba: [u8; 4],
+    },
 }
 
 /// A presentation-neutral decoration: a range plus a visual treatment.
@@ -413,6 +421,25 @@ mod tests {
             role: Some(ThemeRole::DiagnosticError),
         };
         assert_eq!(dec.kind, DecorationKind::GutterMarker { glyph: '▎' });
+    }
+
+    #[test]
+    fn a_color_swatch_carries_its_color_instead_of_a_role() {
+        // The one decoration whose color is data, not a theme role: a color
+        // literal's own value travels with the decoration.
+        let dec = Decoration {
+            range: Range::default(),
+            kind: DecorationKind::ColorSwatch {
+                rgba: [0x12, 0x34, 0x56, 0xff],
+            },
+            role: None,
+        };
+        assert_eq!(
+            dec.kind,
+            DecorationKind::ColorSwatch {
+                rgba: [0x12, 0x34, 0x56, 0xff],
+            }
+        );
     }
 
     #[test]

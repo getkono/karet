@@ -203,6 +203,13 @@
           ],
           "default": null
         },
+        "hover": {
+          "description": "The hover popup (documentation + diagnostics at the caret).",
+          "$ref": "#/$defs/HoverPopup",
+          "default": {
+            "enabled": true
+          }
+        },
         "insertFinalNewline": {
           "description": "Ensure the file ends with a single trailing newline on save.",
           "type": "boolean",
@@ -530,6 +537,18 @@
         },
         "decorations": {
           "description": "Show gutter change decorations and file-tree status colouring.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "HoverPopup": {
+      "description": "`editor.hover.*` — the hover popup showing documentation from the language\nserver plus the diagnostics under the caret.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Offer the hover popup at all (Ctrl+K Ctrl+I).",
           "type": "boolean",
           "default": true
         }

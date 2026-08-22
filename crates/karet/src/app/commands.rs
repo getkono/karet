@@ -126,6 +126,7 @@ impl App {
             Command::PrevChangedFile => self.step_changed_file(-1),
             Command::OpenDiffFile => self.open_diff_file(),
             Command::TriggerCompletion => self.trigger_completion(true),
+            Command::Hover => self.request_hover(),
             Command::GoToDefinition => self.request_definition(),
             Command::JumpBack => self.jump_back(),
             Command::InsertChar(c) => {
