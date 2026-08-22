@@ -312,7 +312,15 @@ async fn open_changes_with_previous_diffs_head_against_the_live_buffer() {
     app.push_tab(code_tab_with_text(&path, "fn main() { edited }\n"));
 
     app.dispatch(Command::OpenChangesWithPrevious);
-    pump(&mut app, &mut events).await;
+    // Wait for the filled diff tab rather than a fixed quiet window: under a
+    // loaded parallel run the backend's answer can arrive after `pump` gives up.
+    pump_until(&mut app, &mut events, |app| {
+        matches!(
+            app.tabs.last().map(|tab| &tab.kind),
+            Some(TabKind::Diff { file: Some(_), .. })
+        )
+    })
+    .await;
 
     let Some(Tab {
         title,
@@ -357,7 +365,15 @@ async fn open_changes_with_revision_picks_from_the_file_history() {
     // Choose the older commit (the initial content).
     app.dispatch(Command::OverlayDown);
     app.dispatch(Command::OverlayAccept);
-    pump(&mut app, &mut events).await;
+    // Wait for the filled diff tab rather than a fixed quiet window: under a
+    // loaded parallel run the backend's answer can arrive after `pump` gives up.
+    pump_until(&mut app, &mut events, |app| {
+        matches!(
+            app.tabs.last().map(|tab| &tab.kind),
+            Some(TabKind::Diff { file: Some(_), .. })
+        )
+    })
+    .await;
 
     assert!(app.overlay.is_none(), "accept closes the picker");
     let Some(Tab {

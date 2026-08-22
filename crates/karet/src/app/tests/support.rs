@@ -425,3 +425,21 @@ pub(crate) async fn pump(app: &mut App, events: &mut EventRx) {
         app.on_backend_event(id, ev);
     }
 }
+
+/// Drain backend events into `app` until `ready` holds, or five seconds pass.
+///
+/// [`pump`] stops after a 500 ms gap, which is a guess at "nothing more is
+/// coming" — under a loaded parallel test run the answer a test is waiting for
+/// can miss that window, and the assertion then runs against a half-filled
+/// app. Waiting on the state the test actually needs removes the race without
+/// making every other `pump` call sit through a longer timeout.
+pub(crate) async fn pump_until(app: &mut App, events: &mut EventRx, ready: impl Fn(&App) -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !ready(app) && std::time::Instant::now() < deadline {
+        match tokio::time::timeout(std::time::Duration::from_millis(250), events.recv()).await {
+            Ok(Some((id, ev))) => app.on_backend_event(id, ev),
+            Ok(None) => break,
+            Err(_) => {},
+        }
+    }
+}
