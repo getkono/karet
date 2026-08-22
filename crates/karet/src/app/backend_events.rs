@@ -56,6 +56,13 @@ impl App {
 
     /// Handle a backend event: correlate opens to tabs, surface save/progress status.
     pub(super) fn on_backend_event(&mut self, id: Option<RequestId>, event: SessionEvent) {
+        self.on_backend_event_inner(id, event);
+        // An answering event is what assigns the active tab its document id, so
+        // this is where queued `--command` work becomes servable.
+        self.run_startup_commands_when_ready();
+    }
+
+    fn on_backend_event_inner(&mut self, id: Option<RequestId>, event: SessionEvent) {
         if id.is_some_and(|request| self.cancelled_requests.contains(&request)) {
             return;
         }

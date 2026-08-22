@@ -115,31 +115,55 @@ pub fn list_context(line: &str) -> Option<ListContext> {
     })
 }
 
-/// Whether character `line` (0-based) of `text` lies inside a fenced code
-/// block — where list/emphasis editing must stay inert.
-#[must_use]
-pub fn in_fenced_code_block(text: &str, line: usize) -> bool {
-    let mut fence: Option<(char, usize)> = None;
-    for (i, l) in text.lines().enumerate() {
-        if i >= line {
-            break;
-        }
-        let trimmed = l.trim_start();
+/// Incremental fenced-code-block tracker.
+///
+/// Feed the document's lines in order and ask, before each one, whether it
+/// falls inside a fence. A whole-document pass stays linear this way; calling
+/// [`in_fenced_code_block`] per line would rescan from the top every time and
+/// make the same pass quadratic.
+#[derive(Debug, Default)]
+pub(crate) struct FenceScan {
+    /// The open fence's character and length, if one is open.
+    fence: Option<(char, usize)>,
+}
+
+impl FenceScan {
+    /// Whether the next line to be fed lies inside a fenced code block.
+    pub(crate) fn inside(&self) -> bool {
+        self.fence.is_some()
+    }
+
+    /// Advance the scan past `line`.
+    pub(crate) fn feed(&mut self, line: &str) {
+        let trimmed = line.trim_start();
         let (c, len) = if trimmed.starts_with("```") {
             ('`', trimmed.chars().take_while(|&c| c == '`').count())
         } else if trimmed.starts_with("~~~") {
             ('~', trimmed.chars().take_while(|&c| c == '~').count())
         } else {
-            continue;
+            return;
         };
-        match fence {
+        match self.fence {
             // A closing fence must match the opener's character and length.
-            Some((open, open_len)) if c == open && len >= open_len => fence = None,
+            Some((open, open_len)) if c == open && len >= open_len => self.fence = None,
             Some(_) => {},
-            None => fence = Some((c, len)),
+            None => self.fence = Some((c, len)),
         }
     }
-    fence.is_some()
+}
+
+/// Whether character `line` (0-based) of `text` lies inside a fenced code
+/// block — where list/emphasis editing must stay inert.
+///
+/// Scans from the top, so a caller walking every line of a document should
+/// drive a [`FenceScan`] instead of calling this once per line.
+#[must_use]
+pub fn in_fenced_code_block(text: &str, line: usize) -> bool {
+    let mut scan = FenceScan::default();
+    for l in text.lines().take(line) {
+        scan.feed(l);
+    }
+    scan.inside()
 }
 
 /// What pressing Enter at the end of a list line should do.
