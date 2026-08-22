@@ -7,6 +7,7 @@ mod support;
 mod blame;
 mod commit_navigation;
 mod commit_view;
+mod debugging;
 mod definition;
 mod deps;
 mod diff_view;

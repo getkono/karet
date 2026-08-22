@@ -44,6 +44,8 @@ pub struct Settings {
     pub deps: Deps,
     /// TOML-specific behaviour.
     pub toml: Toml,
+    /// Debugger integration (adapters and launch configurations).
+    pub debug: Debugger,
 }
 
 /// `wakatime.*` — WakaTime time tracking. **Off by default**: enabling it
@@ -87,6 +89,65 @@ impl Default for Deps {
     fn default() -> Self {
         Self { enabled: true }
     }
+}
+
+/// `debug.*` — debugger integration. karet speaks the Debug Adapter Protocol;
+/// an adapter entry says how to launch one, and configurations are offered by
+/// the Debug: Start command (there is no launch.json compatibility layer).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct Debugger {
+    /// Debug adapters by name. Names referenced from configurations; the
+    /// built-in fallbacks `codelldb`, `lldb-dap`, `gdb`, and `debugpy` work
+    /// without an entry when the executable is on `PATH`.
+    pub adapters: BTreeMap<String, DebugAdapter>,
+    /// The launch configurations the Debug: Start command offers, first entry
+    /// first.
+    pub configurations: Vec<DebugConfiguration>,
+}
+
+/// One `debug.adapters` entry: how to launch a debug adapter.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct DebugAdapter {
+    /// The adapter executable, looked up on `PATH` (or an absolute path).
+    pub command: String,
+    /// Command-line arguments; under the `tcp` transport, `${port}` is
+    /// replaced with the chosen port.
+    pub args: Vec<String>,
+    /// How the adapter exposes its protocol endpoint.
+    pub transport: DebugTransport,
+}
+
+/// How a debug adapter speaks DAP.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum DebugTransport {
+    /// Over the adapter's stdin/stdout (the common case).
+    #[default]
+    Stdio,
+    /// The adapter listens on a TCP port passed via a `${port}` argument
+    /// (codelldb style).
+    Tcp,
+}
+
+/// One `debug.configurations` entry.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct DebugConfiguration {
+    /// The display name the Debug: Start picker shows.
+    pub name: String,
+    /// The adapter to use: a `debug.adapters` key or a built-in fallback name.
+    pub adapter: String,
+    /// Attach to a running debuggee instead of launching one.
+    pub attach: bool,
+    /// Adapter-specific launch/attach arguments (`program`, `args`, `cwd`,
+    /// `pid`, …), passed through verbatim — each adapter documents its own.
+    pub arguments: serde_json::Value,
 }
 
 /// `toml.*` — TOML-specific behaviour.

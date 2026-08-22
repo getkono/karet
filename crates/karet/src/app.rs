@@ -7,6 +7,7 @@ mod capture;
 mod change_view;
 mod commands;
 mod completion;
+mod debugging;
 mod definition;
 mod deps;
 mod diffs;
@@ -512,6 +513,15 @@ pub struct App {
     pub(crate) hover_ui: Option<crate::hover::HoverUi>,
     /// The open scrollable diagnostic detail view, if any.
     pub(crate) diagnostic_view: Option<crate::hover::DiagnosticView>,
+    /// The debug session's lifecycle, mirrored from `Event::DebugState`.
+    pub(crate) debug_state: karet_session::DebugSessionState,
+    /// The status-line detail for the current debug state.
+    pub(crate) debug_detail: String,
+    /// Armed breakpoints per absolute file path: line → verified.
+    pub(crate) breakpoints:
+        std::collections::HashMap<PathBuf, std::collections::BTreeMap<u32, bool>>,
+    /// Buffered debug-console output (ANSI kept; rendered by the Debug panel).
+    pub(crate) debug_output: std::collections::VecDeque<(String, String)>,
     /// Palette commands from `--command`, queued until the backend is attached.
     ///
     /// They cannot run at construction time: a command like Show Hover or

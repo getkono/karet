@@ -571,4 +571,42 @@ pub enum Event {
         /// The loaded configuration report.
         report: Box<LoadedConfig>,
     },
+    /// The debug session's lifecycle changed (unsolicited).
+    DebugState {
+        /// The new state.
+        state: DebugSessionState,
+        /// A short human-readable detail (configuration name, stop reason,
+        /// error text) for the status line.
+        detail: String,
+    },
+    /// The debuggee stopped; inspection is now valid (unsolicited).
+    DebugStopped {
+        /// The adapter's reason (`"breakpoint"`, `"step"`, `"exception"`, …).
+        reason: String,
+        /// The stopped thread the run controls act on.
+        thread: i64,
+        /// The stop location's file, when the top frame reports one.
+        path: Option<std::path::PathBuf>,
+        /// The 0-based stop line, when known.
+        line: Option<u32>,
+    },
+    /// The debuggee resumed (unsolicited).
+    DebugContinued,
+    /// The adapter or debuggee produced output (unsolicited; text may carry
+    /// ANSI styling — render through `karet_widgets::ansi`).
+    DebugOutput {
+        /// The stream (`"console"`, `"stdout"`, `"stderr"`, …).
+        category: String,
+        /// The text, possibly multi-line.
+        text: String,
+    },
+    /// The acknowledged breakpoints of one file (answers
+    /// [`Command::DebugSetBreakpoints`]; also unsolicited on late
+    /// verification).
+    DebugBreakpoints {
+        /// The source file.
+        path: std::path::PathBuf,
+        /// The acknowledged set, in the submitted order.
+        breakpoints: Vec<DebugBreakpoint>,
+    },
 }

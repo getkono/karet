@@ -3472,6 +3472,7 @@ dependencies = [
  "jsonc-parser",
  "karet-cbor",
  "karet-core",
+ "karet-dap",
  "karet-diff",
  "karet-docx",
  "karet-filetype",

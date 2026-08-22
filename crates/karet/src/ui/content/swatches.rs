@@ -70,6 +70,30 @@ pub(super) fn manifest_hint_decorations(hints: &[karet_session::ManifestHint]) -
         .collect()
 }
 
+/// Gutter markers for one file's armed breakpoints (`●` verified in the
+/// breakpoint red, `○` not-yet-verified in muted).
+pub(super) fn breakpoint_decorations(
+    breakpoints: &std::collections::BTreeMap<u32, bool>,
+) -> Vec<Decoration> {
+    breakpoints
+        .iter()
+        .map(|(&line, &verified)| Decoration {
+            range: karet_core::Range {
+                start: karet_core::LineCol::new(line, 0),
+                end: karet_core::LineCol::new(line, 0),
+            },
+            kind: karet_core::DecorationKind::GutterMarker {
+                glyph: if verified { '●' } else { '○' },
+            },
+            role: Some(if verified {
+                ThemeRole::Breakpoint
+            } else {
+                ThemeRole::Muted
+            }),
+        })
+        .collect()
+}
+
 /// The per-frame decorations content assembles fresh each draw: color
 /// swatches over the visible slice, and the manifest's dependency hints
 /// (version-guarded).

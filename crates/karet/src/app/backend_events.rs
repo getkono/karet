@@ -119,6 +119,18 @@ impl App {
             } => self.on_completions(id, doc, version, items),
             SessionEvent::HoverResult { hover } => self.on_hover_result(id, hover),
             SessionEvent::WakatimeStatus { text } => self.wakatime_status = Some(text),
+            SessionEvent::DebugState { state, detail } => self.on_debug_state(state, detail),
+            SessionEvent::DebugStopped {
+                reason,
+                thread: _,
+                path,
+                line,
+            } => self.on_debug_stopped(&reason, path, line),
+            SessionEvent::DebugContinued => {},
+            SessionEvent::DebugOutput { category, text } => self.on_debug_output(category, text),
+            SessionEvent::DebugBreakpoints { path, breakpoints } => {
+                self.on_debug_breakpoints(path, &breakpoints);
+            },
             SessionEvent::ManifestHints {
                 doc,
                 version,

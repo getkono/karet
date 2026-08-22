@@ -233,6 +233,7 @@ const SECTIONS: &[&str] = &[
     "wakatime",
     "deps",
     "toml",
+    "debug",
 ];
 
 /// Load the merged, verified [`Settings`] for a workspace rooted at `roots`, plus any
@@ -399,6 +400,13 @@ fn deserialize_sections(
             "latex" => section(value, |v| settings.latex = v),
             "git" => section(value, |v| settings.git = v),
             "lsp" => section(value, |v| settings.lsp = v),
+            "markdown" => section(value, |v| settings.markdown = v),
+            "wakatime" => section(value, |v| settings.wakatime = v),
+            "deps" => section(value, |v| settings.deps = v),
+            "toml" => section(value, |v| settings.toml = v),
+            "debug" => section(value, |v| settings.debug = v),
+            // Unreachable: `SECTIONS` gates the loop above, and
+            // `every_section_round_trips_a_value` proves each entry lands.
             _ => Ok(()),
         };
         if let Err(err) = outcome {
@@ -839,6 +847,80 @@ mod tests {
             project_config_path(&[nested]),
             Some(root.join(".karet").join("setting.jsonc"))
         );
+    }
+
+    /// Every entry in [`SECTIONS`] must actually be deserialized into
+    /// [`Settings`].
+    ///
+    /// A section listed there but missing a match arm in
+    /// [`deserialize_sections`] is invisible twice over: it is not "unknown",
+    /// so no diagnostic fires, and it never reaches `Settings`, so the value
+    /// silently stays at its default. Five sections shipped that way. This
+    /// pins each one to a value that differs from the default, so a new
+    /// section cannot be added to the list and forgotten.
+    #[test]
+    fn every_section_round_trips_a_value() {
+        /// One section's probe: its key, a `setting.jsonc` body holding a
+        /// non-default value, and the check that the value landed.
+        type Probe = (&'static str, &'static str, fn(&Settings) -> bool);
+
+        // One non-default value per section, as it appears in `setting.jsonc`.
+        let probes: &[Probe] = &[
+            ("editor", r#"{"tabSize": 7}"#, |s| s.editor.tab_size == 7),
+            ("files", r#"{"autoSave": "afterDelay"}"#, |s| {
+                s.files.auto_save != Settings::default().files.auto_save
+            }),
+            ("workbench", r#"{"colorTheme": "probe"}"#, |s| {
+                s.workbench.color_theme == "probe"
+            }),
+            ("search", r#"{"exclude": ["probe"]}"#, |s| {
+                s.search.exclude.iter().any(|e| e == "probe")
+            }),
+            ("spellcheck", r#"{"enabled": false}"#, |s| {
+                !s.spellcheck.enabled
+            }),
+            ("latex", r#"{"outputDirectory": "probe"}"#, |s| {
+                s.latex.output_directory == "probe"
+            }),
+            ("git", r#"{"issueUrl": "probe"}"#, |s| {
+                s.git.issue_url.as_deref() == Some("probe")
+            }),
+            ("lsp", r#"{"enabled": false}"#, |s| !s.lsp.enabled),
+            ("markdown", r#"{"listContinuation": false}"#, |s| {
+                !s.markdown.list_continuation
+            }),
+            ("wakatime", r#"{"enabled": true}"#, |s| s.wakatime.enabled),
+            ("deps", r#"{"enabled": false}"#, |s| !s.deps.enabled),
+            ("toml", r#"{"format": false}"#, |s| !s.toml.format),
+            ("debug", r#"{"configurations": [{"name": "probe"}]}"#, |s| {
+                s.debug.configurations.iter().any(|c| c.name == "probe")
+            }),
+        ];
+        assert_eq!(
+            probes.len(),
+            SECTIONS.len(),
+            "a section was added to SECTIONS without a probe here"
+        );
+
+        for (name, body, applied) in probes {
+            assert!(
+                SECTIONS.contains(name),
+                "{name} is probed but not in SECTIONS"
+            );
+            let Ok(value) = serde_json::from_str::<Value>(body) else {
+                continue;
+            };
+            let mut merged = Map::new();
+            merged.insert((*name).to_owned(), value);
+            let mut diags = Vec::new();
+            let mut invalid = BTreeSet::new();
+            let settings = deserialize_sections(&merged, &mut diags, &mut invalid);
+            assert!(diags.is_empty(), "{name} reported {diags:?}");
+            assert!(
+                applied(&settings),
+                "`{name}` parsed without complaint but never reached Settings"
+            );
+        }
     }
 
     #[test]

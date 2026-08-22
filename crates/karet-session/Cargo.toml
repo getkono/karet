@@ -55,6 +55,7 @@ karet-docx = { workspace = true, optional = true } # DOCX → markdown for read-
 karet-treesitter.workspace = true
 karet-syntax.workspace = true
 karet-diff = { workspace = true, features = ["serde"] } # displayable diffs prepared on the VCS worker
+karet-dap.workspace = true            # debugger engine (headless)
 karet-lsp.workspace = true            # headless
 karet-vcs = { workspace = true, features = ["serde"] }      # headless; writes use the installed git executable
 blameline.workspace = true # current-buffer line blame; workspace disables language features

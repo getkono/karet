@@ -51,6 +51,9 @@ pub struct Breakpoint {
     pub verified: bool,
     /// The adapter's explanation when unverified.
     pub message: Option<String>,
+    /// The source file, when the adapter attaches one (late `breakpoint`
+    /// change events usually do; `setBreakpoints` answers rarely need to).
+    pub source_path: Option<PathBuf>,
 }
 
 /// A thread reported by `threads`.
@@ -209,6 +212,11 @@ pub(crate) fn breakpoint_from(value: &Value) -> Breakpoint {
             .get("message")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        source_path: value
+            .get("source")
+            .and_then(|source| source.get("path"))
+            .and_then(Value::as_str)
+            .map(PathBuf::from),
     }
 }
 
@@ -282,6 +290,7 @@ mod tests {
                 line: Some(11),
                 verified: true,
                 message: None,
+                source_path: None,
             }))
         );
     }

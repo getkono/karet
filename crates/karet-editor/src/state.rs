@@ -666,6 +666,22 @@ impl EditorState {
         }
     }
 
+    /// The buffer line under `(col, row)` when the cell lies in the gutter's
+    /// leading marker column (the breakpoint lane, left of the line numbers);
+    /// `None` anywhere else. Row math matches [`pos_at`](Self::pos_at), so
+    /// folds, word wrap, and sticky lines resolve identically.
+    #[must_use]
+    pub fn gutter_marker_line_at(
+        &self,
+        area: Rect,
+        buffer: &TextBuffer,
+        folds: &[Fold],
+        col: u16,
+        row: u16,
+    ) -> Option<u32> {
+        (col == area.x).then(|| self.pos_at(area, buffer, folds, col, row).line)
+    }
+
     /// The buffer position under the screen cell `(col, row)`, given the editor's
     /// render `area` and the `folds` in effect. Accounts for the gutter width, the
     /// scroll offsets, and any collapsed folds that hide lines between the viewport

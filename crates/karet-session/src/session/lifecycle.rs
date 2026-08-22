@@ -65,6 +65,12 @@ impl Session {
         #[cfg(feature = "mdlint")]
         let lint_config = super::mdlint::discover_config(&config.roots);
         // Language servers spawn lazily, per language, on the first matching open.
+        let debug = crate::dap::DebugManager::new(
+            config.settings.debug.clone(),
+            config.roots.first().cloned(),
+            config.process_supervisor.clone(),
+            events.clone(),
+        );
         let (lsp, lsp_rx) = LspManager::new(
             config.settings.lsp.clone(),
             config.roots.first().cloned(),
@@ -111,6 +117,7 @@ impl Session {
             last_head,
             swaps,
             pending_swaps,
+            debug,
             lsp,
             lsp_rx: Some(lsp_rx),
             lsp_registry,

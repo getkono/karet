@@ -181,3 +181,26 @@ fn hint_verbs_are_terse_and_gate_motion_keys() {
         );
     }
 }
+
+#[test]
+fn every_debugger_action_is_reachable_by_name() {
+    // The debugger is bound only to F-keys, which terminal emulators,
+    // multiplexers, and SSH clients routinely intercept — so each action needs
+    // a keyboard-independent path.
+    for (command, title) in [
+        (Command::DebugStart, "Debug: Start / Continue"),
+        (Command::DebugStop, "Debug: Stop"),
+        (Command::DebugPause, "Debug: Pause"),
+        (Command::DebugToggleBreakpoint, "Debug: Toggle Breakpoint"),
+        (Command::DebugStepOver, "Debug: Step Over"),
+        (Command::DebugStepIn, "Debug: Step Into"),
+        (Command::DebugStepOut, "Debug: Step Out"),
+    ] {
+        assert!(
+            palette().contains(&command),
+            "{title} is not in the palette"
+        );
+        assert_eq!(command.label(), title);
+        assert_eq!(resolve_named(title), Ok(command));
+    }
+}

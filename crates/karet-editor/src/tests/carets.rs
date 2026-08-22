@@ -171,3 +171,22 @@ fn word_bounds_spans_the_word_under_pos() {
         (LineCol::new(0, 4), LineCol::new(0, 7))
     );
 }
+
+#[test]
+fn gutter_marker_line_hits_only_the_marker_column() {
+    let buffer = TextBuffer::from_text("a\nb\nc\nd\n");
+    let mut state = EditorState::new();
+    state.last_height = 4;
+    let area = Rect::new(0, 0, 20, 4);
+    assert_eq!(
+        state.gutter_marker_line_at(area, &buffer, &[], 0, 2),
+        Some(2)
+    );
+    assert_eq!(state.gutter_marker_line_at(area, &buffer, &[], 1, 2), None);
+    assert_eq!(state.gutter_marker_line_at(area, &buffer, &[], 10, 2), None);
+    state.scroll_line = 1;
+    assert_eq!(
+        state.gutter_marker_line_at(area, &buffer, &[], 0, 0),
+        Some(1)
+    );
+}
