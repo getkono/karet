@@ -310,10 +310,18 @@ fn handle_frame(
             // Every notification fans out raw first — the escape hatch that
             // lets a consumer handle server-specific methods (`language/status`,
             // `experimental/*`) the typed surface does not model.
-            let _ = raw.send(RawNotification {
-                method: method.clone(),
-                params: params.clone(),
-            }); // no subscribers is fine
+            //
+            // Cloning `params` deep-copies the payload, and a `publishDiagnostics`
+            // payload for a large file is not small, so only pay for it when
+            // somebody is listening. A subscriber only ever sees notifications
+            // sent after it subscribed, so skipping the send while the count is
+            // zero is indistinguishable from sending into no receivers.
+            if raw.receiver_count() > 0 {
+                let _ = raw.send(RawNotification {
+                    method: method.clone(),
+                    params: params.clone(),
+                }); // a receiver that dropped between the check and here is fine
+            }
             match method.as_str() {
                 "textDocument/publishDiagnostics" => route_diagnostics(params, diagnostics),
                 // Log/progress/telemetry notifications are safe to ignore headlessly.
