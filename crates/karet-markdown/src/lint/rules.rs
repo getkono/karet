@@ -591,9 +591,19 @@ fn inline_spans(cx: &Context<'_>, issues: &mut Vec<Issue>) {
         // MD037: spaces just inside `**`/`__` emphasis markers.
         for marker in ["**", "__"] {
             let m: Vec<char> = marker.chars().collect();
-            let positions: Vec<usize> = (0..chars.len().saturating_sub(1))
-                .filter(|&p| chars[p] == m[0] && chars[p + 1] == m[1])
-                .collect();
+            // Scan non-overlapping: a run of three (`***`, `___`) must yield one
+            // position, not two adjacent ones — a pair taken from overlapping
+            // matches would ask for the empty-but-inverted range `a + 2..b`.
+            let mut positions: Vec<usize> = Vec::new();
+            let mut p = 0;
+            while p + 1 < chars.len() {
+                if chars[p] == m[0] && chars[p + 1] == m[1] {
+                    positions.push(p);
+                    p += 2;
+                } else {
+                    p += 1;
+                }
+            }
             for pair in positions.chunks(2) {
                 if let [a, b] = pair {
                     let interior: String = chars[a + 2..*b].iter().collect();

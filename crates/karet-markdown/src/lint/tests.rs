@@ -262,3 +262,30 @@ fn md034_skips_a_titled_definition_but_not_a_lookalike_paragraph() {
         "only a real `]:` definition is exempt"
     );
 }
+
+#[test]
+fn md037_survives_odd_runs_of_emphasis_markers() {
+    // Overlapping `**` matches inside `***` used to pair position 0 with
+    // position 1 and slice `2..1`, panicking on ordinary bold-italic text.
+    for text in [
+        "***\n",
+        "***bold italic***\n",
+        "a *** b\n",
+        "___\n",
+        "____\n",
+        "*****\n",
+        "**a** *** **b**\n",
+    ] {
+        let issues = lint(text, &Config::default());
+        // The fixes must round-trip too, not just the scan.
+        let _ = apply_fixes(text, &issues);
+    }
+}
+
+#[test]
+fn md037_still_reports_padded_emphasis() {
+    let text = "this is ** padded ** emphasis\n";
+    let issues = lint(text, &Config::default());
+    assert!(issues.iter().any(|i| i.rule == "MD037"), "{issues:?}");
+    assert_eq!(apply_fixes(text, &issues), "this is **padded** emphasis\n");
+}
