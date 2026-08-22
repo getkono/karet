@@ -22,6 +22,10 @@ pub enum UiIcon {
     SourceControl,
     /// The spelling activity-bar entry.
     Spelling,
+    /// The codetag (TODO) activity-bar entry.
+    Todos,
+    /// The debugger activity-bar entry.
+    Debug,
     /// A close ("×") affordance, e.g. on a tab.
     Close,
     /// A right-pointing chevron, e.g. a breadcrumb separator.
@@ -74,6 +78,8 @@ impl UiIcon {
             Self::Search => '\u{f002}',        // magnifier
             Self::SourceControl => '\u{f126}', // code-fork (branch)
             Self::Spelling => '\u{f02d}',      // book (dictionary)
+            Self::Todos => '\u{f00c}',         // check mark (tasks)
+            Self::Debug => '\u{f188}',         // bug
             Self::Close => '\u{f00d}',         // times
             Self::ChevronRight => '\u{f054}',  // chevron-right
             Self::NewFile => '\u{f15b}',       // file
@@ -102,6 +108,8 @@ impl UiIcon {
             Self::Search => '\u{2315}',           // ⌕ telephone recorder (magnifier-ish)
             Self::SourceControl => '\u{2387}',    // ⎇ alternative key (branch-ish)
             Self::Spelling => '\u{00b6}',         // ¶ pilcrow (prose)
+            Self::Todos => '\u{2713}',            // ✓ check mark (tasks)
+            Self::Debug => '\u{25f4}',            // ◴ (dial: run state)
             Self::Close => '\u{00d7}',            // ×
             Self::ChevronRight => '\u{203a}',     // ›
             Self::NewFile => '\u{25A4}',          // ▤ (file-ish lines)
@@ -128,6 +136,8 @@ impl UiIcon {
             Self::Search => 'S',
             Self::SourceControl => 'B', // branch
             Self::Spelling => 'W',      // words
+            Self::Todos => 'T',         // todos
+            Self::Debug => 'G',         // debuG (D is taken by new directory)
             Self::Close => 'x',
             Self::ChevronRight => '>',
             Self::NewFile => '+',

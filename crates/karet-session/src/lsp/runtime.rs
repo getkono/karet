@@ -151,9 +151,43 @@ fn forward_diagnostics(
     client: &LspClient,
     updates: mpsc::UnboundedSender<LspUpdate>,
     language: String,
+    server: String,
     generation: u64,
 ) -> tokio::task::JoinHandle<()> {
     let mut diagnostic_rx = client.diagnostics();
+    let mut raw_rx = client.raw_notifications();
+    let status_updates = updates.clone();
+    // jdtls-style `language/status` notifications carry the only feedback a
+    // user gets during a 30–120 s first import; forward them for the status
+    // bar rather than leaving the server looking hung.
+    tokio::spawn(async move {
+        loop {
+            match raw_rx.recv().await {
+                Ok(notification) if notification.method == "language/status" => {
+                    let message = notification
+                        .params
+                        .get("message")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_owned();
+                    if !message.is_empty()
+                        && status_updates
+                            .send(LspUpdate::ServerStatus {
+                                generation,
+                                server: server.clone(),
+                                message,
+                            })
+                            .is_err()
+                    {
+                        return;
+                    }
+                },
+                Ok(_) => {},
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {},
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    });
     tokio::spawn(async move {
         loop {
             match diagnostic_rx.recv().await {
@@ -270,6 +304,7 @@ pub(super) async fn server_task(task: ServerTask) {
                         &candidate,
                         updates.clone(),
                         language.clone(),
+                        provider.key().to_owned(),
                         generation,
                     ));
                     client = Some(candidate);

@@ -747,6 +747,8 @@ fn draw_pull_request_commits(
                 time: commit.committed_unix,
                 parents: &commit.parents,
                 head: index + 1 == view.commits.len(),
+                // Pull-request commit lists carry no local ref decorations.
+                labels: &[],
             },
         )
         .collect();

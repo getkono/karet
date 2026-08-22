@@ -580,6 +580,35 @@ impl App {
             self.editor_selecting = false;
             return;
         }
+        // The gutter's leading marker column is the breakpoint lane: a click
+        // there toggles instead of moving the caret (the line numbers keep
+        // their caret-placement behavior).
+        let marker_hit = self.tabs.get(self.active).and_then(|tab| {
+            let TabKind::Code {
+                path,
+                buffer,
+                folds,
+                folded,
+                ..
+            } = &tab.kind
+            else {
+                return None;
+            };
+            let fold_lines = resolve_folds(folds, folded);
+            let line = tab.editor.gutter_marker_line_at(
+                area,
+                buffer,
+                &fold_lines,
+                mouse.column,
+                mouse.row,
+            )?;
+            Some((path.clone(), line))
+        });
+        if let Some((path, line)) = marker_hit {
+            self.debug_toggle_breakpoint_at(path, line);
+            self.editor_selecting = false;
+            return;
+        }
         let code_pos = self.tabs.get(self.active).and_then(|tab| {
             let TabKind::Code {
                 buffer,

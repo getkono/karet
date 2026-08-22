@@ -323,8 +323,16 @@
             }
         }
         assert!(added, "the word was written");
+        // Other producers (markdownlint) may keep their layers; only the
+        // spell layer must have been recomputed away.
+        let spell: Option<Vec<_>> = republished.map(|diagnostics| {
+            diagnostics
+                .into_iter()
+                .filter(|d| d.source.as_deref() == Some("karet-spell"))
+                .collect()
+        });
         assert_eq!(
-            republished,
+            spell,
             Some(Vec::new()),
             "the open document's spell layer is recomputed, not left stale"
         );

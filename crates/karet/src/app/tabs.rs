@@ -528,9 +528,17 @@ impl App {
                 },
                 Err(message) => {
                     let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                    let kind = if path
+                        .extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("ipynb"))
+                    {
+                        FileKind::Notebook
+                    } else {
+                        FileKind::Docx
+                    };
                     tab.kind = TabKind::Placeholder {
                         path: path.to_path_buf(),
-                        kind: FileKind::Docx,
+                        kind,
                         dims: None,
                         len,
                     };

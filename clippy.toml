@@ -1,0 +1,8 @@
+# The workspace lint floor (root Cargo.toml [workspace.lints]) denies
+# unwrap/expect/panic in library code; AGENTS.md promises the same floor for
+# test code ("tests included"). Clippy's default exempts test contexts from
+# those lints, so pin the exemption off here — tests use `?`,
+# `unwrap_or_default()`, or `assert!` instead.
+allow-unwrap-in-tests = false
+allow-expect-in-tests = false
+allow-panic-in-tests = false

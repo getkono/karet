@@ -8,6 +8,7 @@
 //! backend's event stream. The read-only file-view primitives (hex dump,
 //! terminal image, placeholder) live in `karet-fileview`.
 
+pub mod ansi;
 pub mod breadcrumbs;
 pub mod columns;
 pub mod completion;

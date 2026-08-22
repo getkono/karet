@@ -486,6 +486,7 @@ const RUST_DOC_COMMENT_INJECTION: &str = r#"
 pub(crate) fn all() -> &'static [GrammarInfo] {
     static REG: OnceLock<Vec<GrammarInfo>> = OnceLock::new();
     REG.get_or_init(|| {
+        // With no `lang-*` feature enabled nothing pushes, and `mut` goes unused.
         #[allow(unused_mut)]
         let mut v: Vec<GrammarInfo> = Vec::new();
 
@@ -520,7 +521,7 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             language: || tree_sitter_javascript::LANGUAGE.into(),
             highlights: tree_sitter_javascript::HIGHLIGHT_QUERY, // singular
             injections: Some(tree_sitter_javascript::INJECTIONS_QUERY),
-            injections_extra: None,
+            injections_extra: Some(web::JS_GRAPHQL_MARKER_INJECTION),
         });
         #[cfg(feature = "lang-typescript")]
         v.push(GrammarInfo {
@@ -531,7 +532,7 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             language: || tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             highlights: tree_sitter_typescript::HIGHLIGHTS_QUERY,
             injections: None,
-            injections_extra: None,
+            injections_extra: Some(web::TS_INJECTION_EXTRA),
         });
         #[cfg(feature = "lang-typescript")]
         v.push(GrammarInfo {
@@ -542,7 +543,7 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             language: || tree_sitter_typescript::LANGUAGE_TSX.into(),
             highlights: tree_sitter_typescript::HIGHLIGHTS_QUERY,
             injections: None,
-            injections_extra: None,
+            injections_extra: Some(web::TS_INJECTION_EXTRA),
         });
         #[cfg(feature = "lang-json")]
         v.push(GrammarInfo {
@@ -788,7 +789,7 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
         v.push(GrammarInfo {
             id: GRAPHQL,
             name: "GraphQL",
-            extensions: &["graphql", "gql"],
+            extensions: &["graphql", "gql", "graphqls"],
             names: &["graphql", "gql"],
             language: || tree_sitter_graphql::LANGUAGE.into(),
             highlights: GRAPHQL_HIGHLIGHTS,

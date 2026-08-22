@@ -27,6 +27,8 @@ pub enum FileKind {
     Pdf,
     /// A Word (OOXML `.docx`) document.
     Docx,
+    /// A Jupyter notebook (`.ipynb`, nbformat JSON).
+    Notebook,
     /// Binary content (shown as a hex dump).
     Binary,
     /// A file too large to load inline.
@@ -99,6 +101,7 @@ fn classify_content(path: &Path, head: &[u8]) -> FileKind {
             // DOCX is a ZIP container (`PK\x03\x04`, ambiguous with any archive), so it is
             // routed by extension only — there is no cheap magic-byte signal in the head.
             "docx" => return FileKind::Docx,
+            "ipynb" => return FileKind::Notebook,
             "cbor" => return FileKind::Cbor,
             _ => {},
         }

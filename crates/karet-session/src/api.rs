@@ -34,11 +34,13 @@ use karet_vcs::RepositorySummary;
 use karet_vcs::StashEntry;
 use karet_vcs::StashOptions;
 
+mod debug;
 mod event;
 mod github;
 mod seam;
 mod vcs;
 
+pub use debug::*;
 pub use event::Event;
 pub use github::*;
 pub use seam::*;
@@ -123,6 +125,58 @@ impl SpellingLanguage {
     }
 }
 
+/// One codetag comment located by a workspace scan
+/// ([`Command::ScanWorkspaceTodos`]).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TodoHit {
+    /// The absolute path of the file the tag was found in.
+    pub path: std::path::PathBuf,
+    /// The 0-based line the tag opens on.
+    pub line: u32,
+    /// The matched tag (`TODO`, `FIXME`, …), as configured.
+    pub tag: String,
+    /// The comment text after the tag.
+    pub message: String,
+}
+
+/// The freshness state of one manifest dependency (see
+/// [`Event::ManifestHints`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ManifestHintState {
+    /// The constraint already reaches the newest release.
+    UpToDate,
+    /// A patch release within the constraint exists.
+    Patch,
+    /// A newer release exists outside the constraint.
+    Outdated,
+    /// The current/locked version has known vulnerabilities.
+    Vulnerable,
+    /// The registry check failed for this dependency.
+    Error,
+}
+
+/// One dependency's freshness, positioned at its version value in the
+/// manifest text.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ManifestHint {
+    /// The package name.
+    pub name: String,
+    /// 0-based line of the version value.
+    pub line: u32,
+    /// Character column where the version value starts (no quotes).
+    pub col_start: u32,
+    /// Character column one past the version value.
+    pub col_end: u32,
+    /// The constraint exactly as written.
+    pub current: String,
+    /// The newest release, when known.
+    pub latest: Option<String>,
+    /// The classified state.
+    pub state: ManifestHintState,
+    /// Advisory ids affecting the current/locked version.
+    pub vulnerabilities: Vec<String>,
+}
+
 /// One misspelling located by a workspace spelling scan
 /// ([`Command::ScanWorkspaceSpelling`]).
 ///
@@ -184,6 +238,10 @@ pub struct RequestId(pub u64);
 #[serde(transparent)]
 pub struct LanguageServerId(Cow<'static, str>);
 
+// The associated constants below are named like enum variants (`RustAnalyzer`,
+// `Pyright`, …) because callers treat them as a closed set of well-known ids;
+// SCREAMING_SNAKE_CASE would misread as configuration keys.
+#[allow(non_upper_case_globals)]
 impl LanguageServerId {
     /// Construct a stable provider ID.
     #[must_use]
@@ -196,52 +254,36 @@ impl LanguageServerId {
     }
 
     /// Rust language intelligence from rust-analyzer.
-    #[allow(non_upper_case_globals)]
     pub const RustAnalyzer: Self = Self::builtin("rust-analyzer");
     /// JavaScript and TypeScript intelligence from TypeScript Language Server.
-    #[allow(non_upper_case_globals)]
     pub const TypeScript: Self = Self::builtin("typescript-language-server");
     /// Python language intelligence from Pyright.
-    #[allow(non_upper_case_globals)]
     pub const Pyright: Self = Self::builtin("pyright");
     /// Python linting and formatting from Ruff.
-    #[allow(non_upper_case_globals)]
     pub const Ruff: Self = Self::builtin("ruff");
     /// TeX and LaTeX language intelligence from texlab.
-    #[allow(non_upper_case_globals)]
     pub const Texlab: Self = Self::builtin("texlab");
     /// C and C++ intelligence from clangd.
-    #[allow(non_upper_case_globals)]
     pub const Clangd: Self = Self::builtin("clangd");
     /// C# intelligence from Roslyn.
-    #[allow(non_upper_case_globals)]
     pub const CSharp: Self = Self::builtin("csharp");
     /// Go intelligence from gopls.
-    #[allow(non_upper_case_globals)]
     pub const Gopls: Self = Self::builtin("gopls");
     /// Java intelligence from Eclipse JDT LS.
-    #[allow(non_upper_case_globals)]
     pub const Jdtls: Self = Self::builtin("jdtls");
     /// Zig intelligence from ZLS.
-    #[allow(non_upper_case_globals)]
     pub const Zls: Self = Self::builtin("zls");
     /// Astro framework intelligence.
-    #[allow(non_upper_case_globals)]
     pub const Astro: Self = Self::builtin("astro-language-server");
     /// Svelte framework intelligence.
-    #[allow(non_upper_case_globals)]
     pub const Svelte: Self = Self::builtin("svelte-language-server");
     /// Vue framework intelligence.
-    #[allow(non_upper_case_globals)]
     pub const Vue: Self = Self::builtin("vue-language-server");
     /// Biome linting and formatting.
-    #[allow(non_upper_case_globals)]
     pub const Biome: Self = Self::builtin("biome");
     /// YAML intelligence.
-    #[allow(non_upper_case_globals)]
     pub const Yaml: Self = Self::builtin("yaml-language-server");
     /// XML intelligence from LemMinX.
-    #[allow(non_upper_case_globals)]
     pub const Xml: Self = Self::builtin("lemminx");
 
     /// Stable registry key used in on-disk paths and manifests.
@@ -524,6 +566,70 @@ pub enum Command {
         /// Keep at most this many misspellings; the scan stops once it is reached
         /// and reports `truncated`.
         limit: usize,
+    },
+    /// Re-run the dependency-freshness check for one open manifest.
+    RefreshManifestHints {
+        /// The manifest document.
+        doc: DocumentId,
+    },
+    /// Scan the workspace for codetag comments (`TODO`, `FIXME`, …), streaming
+    /// results; cancellable through [`Command::Cancel`]. The tag vocabulary is
+    /// `editor.semanticComments.tags` — the same set the editor tints.
+    ScanWorkspaceTodos {
+        /// Stop after this many hits, reporting truncation.
+        limit: usize,
+    },
+    /// Start a debug session from a `debug.configurations` entry (the first
+    /// one when unnamed). Progress and outcomes arrive as unsolicited
+    /// `Debug*` events.
+    DebugStart {
+        /// The configuration name; `None` = the first configuration.
+        configuration: Option<String>,
+    },
+    /// End the debug session, terminating the debuggee when the adapter
+    /// supports it.
+    DebugStop,
+    /// Resume the stopped thread.
+    DebugContinue,
+    /// Step over the current line.
+    DebugStepOver,
+    /// Step into the call at the stop location.
+    DebugStepIn,
+    /// Step out of the current frame.
+    DebugStepOut,
+    /// Pause the running debuggee.
+    DebugPause,
+    /// The stopped thread's call stack; answered by [`Event::DebugStack`].
+    DebugStackTrace,
+    /// The variable scopes of one frame; answered by [`Event::DebugScopes`].
+    DebugScopes {
+        /// The frame id (from [`Event::DebugStack`]).
+        frame: i64,
+    },
+    /// The children of a variables reference (a scope handle or a structured
+    /// variable's); answered by [`Event::DebugVariables`]. Fetch lazily, on
+    /// expand — references can be arbitrarily deep.
+    DebugVariables {
+        /// The `variablesReference` handle.
+        reference: i64,
+    },
+    /// Evaluate an expression in the debuggee (the REPL); answered by
+    /// [`Event::DebugEvaluated`].
+    DebugEvaluate {
+        /// The expression.
+        expression: String,
+        /// The frame to evaluate in, when one is selected.
+        frame: Option<i64>,
+    },
+    /// Replace the breakpoints of one file (the full set, not a delta —
+    /// `setBreakpoints` is full-replace per file by design). Stored so a
+    /// session started later replays them; forwarded live to a running one,
+    /// answered by [`Event::DebugBreakpoints`].
+    DebugSetBreakpoints {
+        /// The source file.
+        path: std::path::PathBuf,
+        /// The 0-based breakpoint lines.
+        lines: Vec<u32>,
     },
     /// Replace across every workspace match on the search worker; answered with
     /// [`Event::SearchReplaced`]. Open buffers pick the edits up through the

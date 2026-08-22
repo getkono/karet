@@ -259,6 +259,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // The completion popup floats over the editor, anchored at the caret; it
     // sits under modal overlays and toasts.
     draw_completion(f, app, &theme, &mut hits);
+    // The hover popup floats the same way (they never overlap in practice —
+    // one follows typing, the other an explicit keystroke).
+    draw_hover(f, app, &theme);
+    draw_diagnostic_view(f, app, &theme, area);
 
     if let Some(overlay) = &app.overlay {
         draw_overlay(f, overlay, &theme, area);
@@ -298,6 +302,39 @@ fn draw_operation_blocker(f: &mut Frame, blocker: &OperationBlocker, theme: &The
         Line::raw(format!("Waiting up to {remaining}s · Esc cancels quit")),
     ];
     f.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), inner);
+}
+
+/// Draw the scrollable diagnostic detail view (Ctrl+K Ctrl+M): a centered
+/// modal rendering the composed markdown through `MarkdownView`, so fenced
+/// TypeScript types come out highlighted and long errors scroll.
+fn draw_diagnostic_view(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+    let Some(view) = app.diagnostic_view.as_mut() else {
+        return;
+    };
+    let width = area.width.saturating_sub(8).clamp(24, 100);
+    let height = area.height.saturating_sub(4).clamp(5, 28);
+    let rect = centered(area, width, height);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Diagnostics · ↑↓ scroll · Esc closes")
+        .border_style(theme.style(ThemeRole::LineNumberActive))
+        .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui()));
+    let inner = block.inner(rect);
+    f.render_widget(Clear, rect);
+    f.render_widget(block, rect);
+    if view.wrapped.as_ref().map(|(w, _)| *w) != Some(inner.width) {
+        let doc = karet_markdown::parse(&view.markdown);
+        view.wrapped = Some((inner.width, doc.wrap(inner.width)));
+    }
+    let Some((_, wrapped)) = view.wrapped.as_ref() else {
+        return;
+    };
+    let mut state = MarkdownViewState {
+        scroll: view.scroll,
+    };
+    f.render_stateful_widget(MarkdownView::new(wrapped, theme), inner, &mut state);
+    // The widget clamps the scroll to the document; keep the clamped value.
+    view.scroll = state.scroll;
 }
 
 /// Draw the centered go-to-commit (revision) input prompt.
@@ -355,6 +392,19 @@ struct PaneCtx<'a> {
     markdown_link_hover: Option<(u16, u16)>,
     /// Mouse position over a format-specific pane action.
     pane_action_hover: Option<(u16, u16)>,
+    /// Fence languages the markdown preview renders as mermaid diagrams
+    /// (`None` = rendering disabled or compiled out).
+    mermaid: Option<&'a [String]>,
+    /// Whether to tint visible color literals with their own color.
+    color_highlight: bool,
+    /// Dependency-freshness hints per open manifest.
+    manifest_hints: &'a HashMap<DocumentId, (u64, Vec<karet_session::ManifestHint>)>,
+    /// Armed breakpoints per absolute file path: line → verified.
+    breakpoints: &'a HashMap<PathBuf, std::collections::BTreeMap<u32, bool>>,
+    /// The debuggee's stop location, for the stopped-line tint.
+    debug_stopped: Option<&'a (PathBuf, u32)>,
+    /// Every ref per commit hash, for log-row decorations.
+    ref_labels: &'a HashMap<String, Vec<karet_vcs::RefLabel>>,
 }
 
 /// What a rendered pane reported back for hit-testing and image placement.

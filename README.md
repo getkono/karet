@@ -49,12 +49,14 @@ For git review, it shows staged changes if any are staged, otherwise the unstage
 (working-tree) changes — like VS Code's default. It prints a message and exits if
 `PATH` is not in a git repository or there is nothing to show. In the viewer: `j`/`k`
 scroll, `h`/`l` switch file, `Tab` toggles unified / side-by-side, `q` quits.
-Syntax highlighting is tree-sitter-based (Rust, Python, JS/TS, Go, Java, C/C++,
-C#, Ruby, PHP, HTML, CSS, YAML, JSON, TOML, Bash); the detected language is shown
-in the status bar, and unknown/unsupported languages render as plaintext.
-`--no-syntax` (or `NO_COLOR`) disables highlighting.
+Syntax highlighting is tree-sitter-based, with bundled grammars for over fifty
+languages — Rust, Python, JS/TS, Go, Java, C/C++, C#, and the rest of the table
+in [`docs/file-formats.md`](docs/file-formats.md); language-server support per
+language is in [`docs/language-servers.md`](docs/language-servers.md). The
+detected language is shown in the status bar, and unknown/unsupported languages
+render as plaintext. `--no-syntax` (or `NO_COLOR`) disables highlighting.
 
-On a Markdown file, `Ctrl+K V` (or "Markdown: Open Preview to the Side" in the
+On a Markdown file, `Ctrl+K V` (or "Markdown: Toggle Preview to the Side" in the
 command palette) opens a rendered preview in a pane to the right. It re-renders as
 you type, and the two panes scroll together — whichever one has focus leads.
 
@@ -170,7 +172,8 @@ mise run coverage
 
 ### MSRV
 
-Rust 1.90
+Rust 1.92 (the workspace `rust-version`); development and CI compile on the
+toolchain pinned in `rust-toolchain.toml`.
 
 ## Versioning
 
@@ -183,13 +186,13 @@ Version bumps, CHANGELOGs, git tags, and crates.io publishing are automated by
 Two release lines coexist:
 
 - **The `karet-*` crates release in lockstep** under one synchronized workspace version
-  (`version.workspace = true`). Fourteen of them are published to crates.io — `karet-core`,
+  (`version.workspace = true`). Thirteen of them are published to crates.io — `karet-core`,
   `karet-text`, `karet-treesitter`, `karet-syntax`, `karet-theme`, `karet-diff`,
-  `karet-filetype`, `karet-pdf`, `karet-lsp`, `karet-dap`, `karet-vcs`, `karet-search`,
+  `karet-filetype`, `karet-pdf`, `karet-lsp`, `karet-vcs`, `karet-search`,
   `karet-editor`, `karet-fileview` — and the rest are `publish = false`. See the crate
   table in [`AGENTS.md`](AGENTS.md) for the full breakdown.
-- **[`blameline`](crates/blameline) is a standalone library on its own SemVer line** (from
-  `1.0.0`), published on an independent cadence; see [its README](crates/blameline/README.md).
+- **[`blameline`](crates/blameline) is a standalone library on its own SemVer line**,
+  published on an independent cadence; see [its README](crates/blameline/README.md).
 
 ## Contribution Policy
 

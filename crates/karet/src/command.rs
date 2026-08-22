@@ -39,6 +39,10 @@ pub enum Command {
     SelectPanel(SidebarPanel),
     /// Re-run the workspace spelling scan behind the Spelling panel.
     SpellingScan,
+    /// Re-run the workspace codetag scan behind the Todos panel.
+    TodoScan,
+    /// Switch the Todos panel between by-file and by-tag grouping.
+    TodoToggleGrouping,
     /// Open the quick-open (go-to-file) overlay.
     OpenQuickOpen,
     /// Open the command palette overlay.
@@ -222,6 +226,77 @@ pub enum Command {
     UnstageHunk,
     /// Ask the language server for completions at the caret (Ctrl+Space).
     TriggerCompletion,
+    /// Show hover documentation and diagnostics for the caret (Ctrl+K Ctrl+I).
+    Hover,
+    /// Open the diagnostics under the caret in a scrollable detail view
+    /// (Ctrl+K Ctrl+M) — the surface for long, formatted errors.
+    ShowDiagnostic,
+    /// Start a debug session, or continue a stopped one (F5).
+    DebugStart,
+    /// End the debug session (Shift+F5).
+    DebugStop,
+    /// Pause the running debuggee (F6).
+    DebugPause,
+    /// Toggle a breakpoint on the caret line (F9).
+    DebugToggleBreakpoint,
+    /// Step over the current line (F10).
+    DebugStepOver,
+    /// Step into the call at the stop location (F11).
+    DebugStepIn,
+    /// Step out of the current frame (Shift+F11).
+    DebugStepOut,
+    /// Prompt for an expression and evaluate it in the debuggee (the REPL).
+    DebugEvaluatePrompt,
+    /// Toggle bold (`**`) around the selection or word (Markdown; Ctrl+B).
+    ToggleBold,
+    /// Toggle italic (`*`) around the selection or word (Markdown; Ctrl+I).
+    ToggleItalic,
+    /// Toggle strikethrough (`~~`) around the selection or word (Markdown; Alt+S).
+    ToggleStrikethrough,
+    /// Toggle an inline code span around the selection or word (Markdown).
+    ToggleInlineCode,
+    /// Toggle the task checkbox on the caret's line (Markdown; Alt+C).
+    ToggleTaskCheckbox,
+    /// Insert (or refresh) a `<!-- toc -->` table of contents at the caret.
+    MarkdownTocCreate,
+    /// Refresh the existing `<!-- toc -->` table of contents.
+    MarkdownTocUpdate,
+    /// Raise the caret line's heading level (Markdown; Ctrl+Shift+]).
+    MarkdownHeadingUp,
+    /// Lower the caret line's heading level (Markdown; Ctrl+Shift+[).
+    MarkdownHeadingDown,
+    /// Apply every markdownlint autofix in the active Markdown document.
+    MarkdownLintFixAll,
+    /// Re-run the dependency-freshness check for the active manifest.
+    DepsRefresh,
+    /// Bump the dependency under the caret to its newest version.
+    DepsUpdate,
+    /// Bump every outdated dependency in the active manifest.
+    DepsUpdateAll,
+    /// Open the action menu for the selected graph commit.
+    CommitGraphMenu,
+    /// Tag the selected graph commit (prompts for a name).
+    CommitGraphTag,
+    /// Cherry-pick the selected graph commit onto `HEAD`.
+    CommitGraphCherryPick,
+    /// Revert the selected graph commit on top of `HEAD`.
+    CommitGraphRevert,
+    /// Soft-reset the current branch to the selected graph commit.
+    CommitGraphResetSoft,
+    /// Mixed-reset the current branch to the selected graph commit.
+    CommitGraphResetMixed,
+    /// Hard-reset to the selected graph commit (typed confirmation).
+    CommitGraphResetHard,
+    /// Check the selected graph commit out, detaching `HEAD`.
+    CommitGraphCheckout,
+    /// Edit an interactive-rebase plan over the commits above the selection.
+    CommitGraphInteractiveRebase,
+    /// Fetch (and prune) every remote.
+    ScmFetch,
+    /// Toggle the current file's reviewed mark in a commit view.
+    CommitToggleFileReviewed,
+    /// Copy the issue URLs referenced by the selected graph commit.
+    CommitGraphCopyIssueUrls,
     /// Jump to the definition of the symbol at the caret (F12).
     GoToDefinition,
     /// Return to the position a definition jump started from (Ctrl+Alt+Left).
@@ -528,7 +603,11 @@ impl Command {
             Self::SelectPanel(SidebarPanel::Search) => "View: Show Search",
             Self::SelectPanel(SidebarPanel::SourceControl) => "View: Show Source Control",
             Self::SelectPanel(SidebarPanel::Spelling) => "View: Show Spelling",
+            Self::SelectPanel(SidebarPanel::Todos) => "View: Show Todos",
+            Self::SelectPanel(SidebarPanel::Debug) => "View: Show Debug",
             Self::SpellingScan => "Spelling: Scan Workspace",
+            Self::TodoScan => "Todos: Scan Workspace",
+            Self::TodoToggleGrouping => "Todos: Toggle Grouping (File / Tag)",
             Self::OpenQuickOpen => "Go to File…",
             Self::OpenCommandPalette => "Show All Commands",
             Self::OpenFind => "Find in File…",
@@ -619,6 +698,41 @@ impl Command {
             Self::UnstageHunk => "Diff: Unstage Hunk",
             Self::InsertChar(_) => "Insert Character",
             Self::TriggerCompletion => "Trigger Suggest",
+            Self::Hover => "Show Hover",
+            Self::ShowDiagnostic => "Show Diagnostic Detail",
+            Self::DebugStart => "Debug: Start / Continue",
+            Self::DebugStop => "Debug: Stop",
+            Self::DebugPause => "Debug: Pause",
+            Self::DebugToggleBreakpoint => "Debug: Toggle Breakpoint",
+            Self::DebugStepOver => "Debug: Step Over",
+            Self::DebugStepIn => "Debug: Step Into",
+            Self::DebugStepOut => "Debug: Step Out",
+            Self::DebugEvaluatePrompt => "Debug: Evaluate Expression",
+            Self::ToggleBold => "Markdown: Toggle Bold",
+            Self::ToggleItalic => "Markdown: Toggle Italic",
+            Self::ToggleStrikethrough => "Markdown: Toggle Strikethrough",
+            Self::ToggleInlineCode => "Markdown: Toggle Code Span",
+            Self::ToggleTaskCheckbox => "Markdown: Toggle Task Checkbox",
+            Self::MarkdownTocCreate => "Markdown: Create Table of Contents",
+            Self::MarkdownTocUpdate => "Markdown: Update Table of Contents",
+            Self::MarkdownHeadingUp => "Markdown: Increase Heading Level",
+            Self::MarkdownHeadingDown => "Markdown: Decrease Heading Level",
+            Self::MarkdownLintFixAll => "Markdown: Fix All Lint Issues",
+            Self::DepsRefresh => "Dependencies: Re-check Versions",
+            Self::DepsUpdate => "Dependencies: Update Dependency at Caret",
+            Self::DepsUpdateAll => "Dependencies: Update All",
+            Self::CommitGraphMenu => "Commit Graph: Actions",
+            Self::CommitGraphTag => "Commit Graph: Create Tag",
+            Self::CommitGraphCherryPick => "Commit Graph: Cherry-pick",
+            Self::CommitGraphRevert => "Commit Graph: Revert",
+            Self::CommitGraphResetSoft => "Commit Graph: Reset (Soft)",
+            Self::CommitGraphResetMixed => "Commit Graph: Reset (Mixed)",
+            Self::CommitGraphResetHard => "Commit Graph: Reset (Hard)…",
+            Self::CommitGraphCheckout => "Commit Graph: Checkout (Detached)",
+            Self::CommitGraphInteractiveRebase => "Commit Graph: Interactive Rebase from Here",
+            Self::ScmFetch => "Git: Fetch",
+            Self::CommitToggleFileReviewed => "Commit: Toggle File Reviewed",
+            Self::CommitGraphCopyIssueUrls => "Commit Graph: Copy Issue URLs",
             Self::GoToDefinition => "Go to Definition",
             Self::JumpBack => "Go Back",
             Self::InsertNewline => "Insert Newline",
@@ -804,6 +918,9 @@ impl Command {
             Self::SelectPanel(SidebarPanel::Search) => "search",
             Self::SelectPanel(SidebarPanel::SourceControl) => "git",
             Self::SelectPanel(SidebarPanel::Spelling) => "spelling",
+            Self::SelectPanel(SidebarPanel::Todos) => "todos",
+            Self::SelectPanel(SidebarPanel::Debug) => "debug",
+            Self::TodoScan | Self::TodoToggleGrouping => "todos",
             Self::SpellingScan => "scan",
             Self::GoToDefinition => "definition",
             Self::JumpBack => "back",
@@ -1004,6 +1121,41 @@ impl Command {
             | Self::Bottom
             | Self::InsertChar(_)
             | Self::TriggerCompletion
+            | Self::Hover
+            | Self::ShowDiagnostic
+            | Self::DebugStart
+            | Self::DebugStop
+            | Self::DebugPause
+            | Self::DebugToggleBreakpoint
+            | Self::DebugStepOver
+            | Self::DebugStepIn
+            | Self::DebugStepOut
+            | Self::DebugEvaluatePrompt
+            | Self::ToggleBold
+            | Self::ToggleItalic
+            | Self::ToggleStrikethrough
+            | Self::ToggleInlineCode
+            | Self::ToggleTaskCheckbox
+            | Self::MarkdownTocCreate
+            | Self::MarkdownTocUpdate
+            | Self::MarkdownHeadingUp
+            | Self::MarkdownHeadingDown
+            | Self::MarkdownLintFixAll
+            | Self::DepsRefresh
+            | Self::DepsUpdate
+            | Self::DepsUpdateAll
+            | Self::CommitGraphMenu
+            | Self::CommitGraphTag
+            | Self::CommitGraphCherryPick
+            | Self::CommitGraphRevert
+            | Self::CommitGraphResetSoft
+            | Self::CommitGraphResetMixed
+            | Self::CommitGraphResetHard
+            | Self::CommitGraphCheckout
+            | Self::CommitGraphInteractiveRebase
+            | Self::ScmFetch
+            | Self::CommitToggleFileReviewed
+            | Self::CommitGraphCopyIssueUrls
             | Self::InsertNewline
             | Self::DeleteBackward
             | Self::DeleteForward

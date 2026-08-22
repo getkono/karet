@@ -32,6 +32,20 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     let lsp_badge = app.active_language_server_badge();
     let lsp_label = lsp_badge.map(language_server_badge_label);
     let language = lsp_label.map_or(language.clone(), |badge| format!("{language} · {badge}"));
+    // The debug session's state leads the strip while one is live.
+    let language = match app.debug_status_segment() {
+        Some(segment) => format!("{segment} · {language}"),
+        None => language,
+    };
+    // Today's coding total leads the strip while WakaTime tracking is on.
+    let language = match app
+        .wakatime_status
+        .as_deref()
+        .filter(|_| app.settings.wakatime.enabled && app.settings.wakatime.status_bar)
+    {
+        Some(today) => format!("{today} · {language}"),
+        None => language,
+    };
     let right = match app.tabs.get(app.active) {
         Some(
             tab @ Tab {

@@ -322,9 +322,13 @@ mod tests {
         let Ok(on_disk) = std::fs::read_to_string(repo_schema) else {
             return;
         };
-        assert_eq!(
-            on_disk.trim_end(),
-            json_schema().trim_end(),
+        // Compared as parsed values, not strings: JSON object ordering swings
+        // with `serde_json/preserve_order`, which workspace feature
+        // unification toggles depending on which crates are in the build.
+        let on_disk: serde_json::Value = serde_json::from_str(&on_disk).unwrap_or_default();
+        let generated: serde_json::Value = serde_json::from_str(&json_schema()).unwrap_or_default();
+        assert!(
+            on_disk == generated && on_disk != serde_json::Value::default(),
             "settings.schema.json is stale — regenerate it from config::json_schema()"
         );
     }

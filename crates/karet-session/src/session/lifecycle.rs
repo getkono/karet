@@ -41,6 +41,7 @@ impl Session {
         let search_worker = crate::search_worker::spawn(events.clone());
         let seam_worker = crate::seam_worker::spawn(events.clone());
         let spell_scan_worker = crate::spell_scan::spawn(events.clone());
+        let todo_scan_worker = crate::todo_scan::spawn(events.clone());
         let latex_worker = crate::latex::spawn(events.clone());
         // Open this session's swap store and scan for swaps a previous run left behind
         // (a crash, or a save that failed). They are offered to the UI for recovery.
@@ -62,7 +63,15 @@ impl Session {
         // semantic-comment settings, so language overrides can update live.
         let (highlight_tx, highlight_rx) = crate::highlight::spawn();
         let (spell_tx, spell_rx) = crate::spell::spawn();
+        #[cfg(feature = "mdlint")]
+        let lint_config = super::mdlint::discover_config(&config.roots);
         // Language servers spawn lazily, per language, on the first matching open.
+        let debug = crate::dap::DebugManager::new(
+            config.settings.debug.clone(),
+            config.roots.first().cloned(),
+            config.process_supervisor.clone(),
+            events.clone(),
+        );
         let (lsp, lsp_rx) = LspManager::new(
             config.settings.lsp.clone(),
             config.roots.first().cloned(),
@@ -86,6 +95,8 @@ impl Session {
             highlight_tx,
             highlight_rx: Some(highlight_rx),
             spell_tx,
+            #[cfg(feature = "mdlint")]
+            lint_config,
             spell_rx: Some(spell_rx),
             spell_errors: HashMap::new(),
             clock: Instant::now(),
@@ -96,12 +107,19 @@ impl Session {
             search_worker,
             seam_worker,
             spell_scan_worker,
+            todo_scan_worker,
+            wakatime_worker: None,
+            wakatime_last: None,
+            wakatime_clock: std::time::Instant::now(),
+            #[cfg(feature = "deps")]
+            manifest_hints_worker: None,
             cancellations,
             latex_worker,
             diff_syntax,
             last_head,
             swaps,
             pending_swaps,
+            debug,
             lsp,
             lsp_rx: Some(lsp_rx),
             lsp_registry,

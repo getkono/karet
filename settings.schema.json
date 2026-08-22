@@ -4,6 +4,14 @@
   "description": "The full, validated karet configuration. Load it with\n[`crate::config::load`]; the sane baseline is [`Settings::default`].",
   "type": "object",
   "properties": {
+    "debug": {
+      "description": "Debugger integration (adapters and launch configurations).",
+      "$ref": "#/$defs/Debugger"
+    },
+    "deps": {
+      "description": "Dependency-manifest hints (Cargo.toml freshness and advisories).",
+      "$ref": "#/$defs/Deps"
+    },
     "editor": {
       "description": "Text-editing behaviour (indentation, gutters, on-save fixups).",
       "$ref": "#/$defs/Editor"
@@ -24,6 +32,10 @@
       "description": "Language-server integration (completions and future language features).",
       "$ref": "#/$defs/Lsp"
     },
+    "markdown": {
+      "description": "Markdown-specific editing behaviour.",
+      "$ref": "#/$defs/Markdown"
+    },
     "seam": {
       "description": "The Seam view.",
       "$ref": "#/$defs/Seam"
@@ -35,6 +47,14 @@
     "spellcheck": {
       "description": "Spell-checking of prose and selected source-code tokens.",
       "$ref": "#/$defs/Spellcheck"
+    },
+    "toml": {
+      "description": "TOML-specific behaviour.",
+      "$ref": "#/$defs/Toml"
+    },
+    "wakatime": {
+      "description": "WakaTime time-tracking (opt-in).",
+      "$ref": "#/$defs/Wakatime"
     },
     "workbench": {
       "description": "UI shell appearance (theme, icons, startup panel).",
@@ -50,7 +70,12 @@
     "spellcheck",
     "latex",
     "git",
-    "lsp"
+    "lsp",
+    "markdown",
+    "wakatime",
+    "deps",
+    "toml",
+    "debug"
   ],
   "$defs": {
     "AiCommit": {
@@ -138,6 +163,18 @@
         }
       ]
     },
+    "ColorHighlight": {
+      "description": "`editor.colorHighlight.*` — inline swatches on color literals.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Tint color literals (hex 3/4/6/8, `rgb()`/`rgba()`, `hsl()`/`hsla()`)\nwith their own color, on the visible lines of the editor.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
     "Completion": {
       "description": "`editor.completion.*` — LSP-powered code completion.",
       "type": "object",
@@ -178,10 +215,118 @@
       },
       "additionalProperties": false
     },
+    "DebugAdapter": {
+      "description": "One `debug.adapters` entry: how to launch a debug adapter.",
+      "type": "object",
+      "properties": {
+        "args": {
+          "description": "Command-line arguments; under the `tcp` transport, `${port}` is\nreplaced with the chosen port.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "command": {
+          "description": "The adapter executable, looked up on `PATH` (or an absolute path).",
+          "type": "string",
+          "default": ""
+        },
+        "transport": {
+          "description": "How the adapter exposes its protocol endpoint.",
+          "$ref": "#/$defs/DebugTransport",
+          "default": "stdio"
+        }
+      },
+      "additionalProperties": false
+    },
+    "DebugConfiguration": {
+      "description": "One `debug.configurations` entry.",
+      "type": "object",
+      "properties": {
+        "adapter": {
+          "description": "The adapter to use: a `debug.adapters` key or a built-in fallback name.",
+          "type": "string",
+          "default": ""
+        },
+        "arguments": {
+          "description": "Adapter-specific launch/attach arguments (`program`, `args`, `cwd`,\n`pid`, …), passed through verbatim — each adapter documents its own.",
+          "default": null
+        },
+        "attach": {
+          "description": "Attach to a running debuggee instead of launching one.",
+          "type": "boolean",
+          "default": false
+        },
+        "name": {
+          "description": "The display name the Debug: Start picker shows.",
+          "type": "string",
+          "default": ""
+        }
+      },
+      "additionalProperties": false
+    },
+    "DebugTransport": {
+      "description": "How a debug adapter speaks DAP.",
+      "oneOf": [
+        {
+          "description": "Over the adapter's stdin/stdout (the common case).",
+          "type": "string",
+          "const": "stdio"
+        },
+        {
+          "description": "The adapter listens on a TCP port passed via a `${port}` argument\n(codelldb style).",
+          "type": "string",
+          "const": "tcp"
+        }
+      ]
+    },
+    "Debugger": {
+      "description": "`debug.*` — debugger integration. karet speaks the Debug Adapter Protocol;\nan adapter entry says how to launch one, and configurations are offered by\nthe Debug: Start command (there is no launch.json compatibility layer).",
+      "type": "object",
+      "properties": {
+        "adapters": {
+          "description": "Debug adapters by name. Names referenced from configurations; the\nbuilt-in fallbacks `codelldb`, `lldb-dap`, `gdb`, and `debugpy` work\nwithout an entry when the executable is on `PATH`.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/DebugAdapter"
+          },
+          "default": {}
+        },
+        "configurations": {
+          "description": "The launch configurations the Debug: Start command offers, first entry\nfirst.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/DebugConfiguration"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Deps": {
+      "description": "`deps.*` — dependency-manifest hints. Checking consults the crates.io\nsparse index and the OSV advisory database over the network (cached\nin-process); air-gapped setups can turn it off.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Annotate open `Cargo.toml` dependencies with their freshness and\nknown advisories.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
     "Editor": {
       "description": "`editor.*` — text-editing behaviour.",
       "type": "object",
       "properties": {
+        "colorHighlight": {
+          "description": "Inline swatches on color literals (hex, `rgb()`, `hsl()`).",
+          "$ref": "#/$defs/ColorHighlight",
+          "default": {
+            "enabled": true
+          }
+        },
         "completion": {
           "description": "LSP-powered code completion (the popup).",
           "$ref": "#/$defs/Completion",
@@ -208,6 +353,13 @@
           ],
           "default": null
         },
+        "hover": {
+          "description": "The hover popup (documentation + diagnostics at the caret).",
+          "$ref": "#/$defs/HoverPopup",
+          "default": {
+            "enabled": true
+          }
+        },
         "insertFinalNewline": {
           "description": "Ensure the file ends with a single trailing newline on save.",
           "type": "boolean",
@@ -222,6 +374,11 @@
           "description": "How the line-number gutter is numbered.",
           "$ref": "#/$defs/LineNumbers",
           "default": "on"
+        },
+        "prettyErrors": {
+          "description": "Re-render TypeScript diagnostics as markdown (quoted types lifted into\nhighlighted code blocks) wherever rich rendering is available.",
+          "type": "boolean",
+          "default": true
         },
         "rulers": {
           "description": "Columns to draw vertical rulers at (empty = none).",
@@ -537,6 +694,26 @@
           "description": "Show gutter change decorations and file-tree status colouring.",
           "type": "boolean",
           "default": true
+        },
+        "issueUrl": {
+          "description": "URL template for `#123` issue references in commit messages; `$1`\nsubstitutes the number (e.g.\n`\"https://issues.example.com/browse/PROJ-$1\"`). Left unset, GitHub\norigins derive `https://github.com/<owner>/<repo>/issues/$1`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "HoverPopup": {
+      "description": "`editor.hover.*` — the hover popup showing documentation from the language\nserver plus the diagnostics under the caret.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Offer the hover popup at all (Ctrl+K Ctrl+I).",
+          "type": "boolean",
+          "default": true
         }
       },
       "additionalProperties": false
@@ -741,6 +918,100 @@
           "const": "off"
         }
       ]
+    },
+    "Markdown": {
+      "description": "`markdown.*` — Markdown-specific editing behaviour.",
+      "type": "object",
+      "properties": {
+        "lint": {
+          "description": "Markdown linting (the markdownlint rule core).",
+          "$ref": "#/$defs/MarkdownLint",
+          "default": {
+            "enabled": true
+          }
+        },
+        "listContinuation": {
+          "description": "Continue list items on Enter: repeat the marker, advance ordered\nnumbering (renumbering the run), carry task checkboxes, and end the\nlist when Enter is pressed on an empty item.",
+          "type": "boolean",
+          "default": true
+        },
+        "mermaid": {
+          "description": "Mermaid diagram rendering in the preview.",
+          "$ref": "#/$defs/MarkdownMermaid",
+          "default": {
+            "enabled": true,
+            "fenceLanguages": [
+              "mermaid"
+            ]
+          }
+        },
+        "toc": {
+          "description": "Table-of-contents generation.",
+          "$ref": "#/$defs/MarkdownToc",
+          "default": {
+            "maxLevel": 6,
+            "minLevel": 2
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "MarkdownLint": {
+      "description": "`markdown.lint.*` — markdown linting.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Lint Markdown documents as they change, surfacing issues as\ndiagnostics. Rule selection follows the workspace's\n`.markdownlint.json` when present.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "MarkdownMermaid": {
+      "description": "`markdown.mermaid.*` — mermaid diagram rendering in the preview.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Render matching code fences as Unicode diagrams in the preview\n(unsupported diagram types fall back to showing the fence source).",
+          "type": "boolean",
+          "default": true
+        },
+        "fenceLanguages": {
+          "description": "The fence info strings treated as mermaid.",
+          "type": "array",
+          "default": [
+            "mermaid"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "MarkdownToc": {
+      "description": "`markdown.toc.*` — table-of-contents generation.",
+      "type": "object",
+      "properties": {
+        "maxLevel": {
+          "description": "The largest heading level included.",
+          "type": "integer",
+          "format": "uint8",
+          "default": 6,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "minLevel": {
+          "description": "The smallest heading level included (GitHub convention keeps the `#`\ndocument title out of its own table).",
+          "type": "integer",
+          "format": "uint8",
+          "default": 2,
+          "maximum": 255,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
     },
     "Seam": {
       "description": "`seam.*` — the Seam view.",
@@ -981,12 +1252,41 @@
         }
       ]
     },
+    "Toml": {
+      "description": "`toml.*` — TOML-specific behaviour.",
+      "type": "object",
+      "properties": {
+        "format": {
+          "description": "Format TOML documents with the built-in taplo formatter (honoring the\nworkspace's `.taplo.toml`) when no language server offers formatting.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "Wakatime": {
+      "description": "`wakatime.*` — WakaTime time tracking. **Off by default**: enabling it\nsends file names, project names, and editing activity to the configured\nWakaTime-compatible service.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Send heartbeats. The API key and endpoint come from the standard\n`$WAKATIME_HOME/.wakatime.cfg`, never from this file.",
+          "type": "boolean",
+          "default": false
+        },
+        "statusBar": {
+          "description": "Show today's coding total in the status bar.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
     "Workbench": {
       "description": "`workbench.*` — UI shell appearance.",
       "type": "object",
       "properties": {
         "colorTheme": {
-          "description": "Colour theme: the built-in name `\"dark\"`, or a path to a `.tmTheme` /\nVS Code `.json` theme file.",
+          "description": "Colour theme: the built-in name `\"dark\"`, or a path to a VS Code\n`.json` theme file.",
           "type": "string",
           "default": "dark"
         },

@@ -38,6 +38,226 @@ pub struct Settings {
     pub git: Git,
     /// Language-server integration (completions and future language features).
     pub lsp: Lsp,
+    /// Markdown-specific editing behaviour.
+    pub markdown: Markdown,
+    /// WakaTime time-tracking (opt-in).
+    pub wakatime: Wakatime,
+    /// Dependency-manifest hints (Cargo.toml freshness and advisories).
+    pub deps: Deps,
+    /// TOML-specific behaviour.
+    pub toml: Toml,
+    /// Debugger integration (adapters and launch configurations).
+    pub debug: Debugger,
+}
+
+/// `wakatime.*` — WakaTime time tracking. **Off by default**: enabling it
+/// sends file names, project names, and editing activity to the configured
+/// WakaTime-compatible service.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct Wakatime {
+    /// Send heartbeats. The API key and endpoint come from the standard
+    /// `$WAKATIME_HOME/.wakatime.cfg`, never from this file.
+    pub enabled: bool,
+    /// Show today's coding total in the status bar.
+    pub status_bar: bool,
+}
+
+impl Default for Wakatime {
+    /// Disabled; the status segment shows once enabled.
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            status_bar: true,
+        }
+    }
+}
+
+/// `deps.*` — dependency-manifest hints. Checking consults the crates.io
+/// sparse index and the OSV advisory database over the network (cached
+/// in-process); air-gapped setups can turn it off.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct Deps {
+    /// Annotate open `Cargo.toml` dependencies with their freshness and
+    /// known advisories.
+    pub enabled: bool,
+}
+
+impl Default for Deps {
+    /// On by default.
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+/// `debug.*` — debugger integration. karet speaks the Debug Adapter Protocol;
+/// an adapter entry says how to launch one, and configurations are offered by
+/// the Debug: Start command (there is no launch.json compatibility layer).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct Debugger {
+    /// Debug adapters by name. Names referenced from configurations; the
+    /// built-in fallbacks `codelldb`, `lldb-dap`, `gdb`, and `debugpy` work
+    /// without an entry when the executable is on `PATH`.
+    pub adapters: BTreeMap<String, DebugAdapter>,
+    /// The launch configurations the Debug: Start command offers, first entry
+    /// first.
+    pub configurations: Vec<DebugConfiguration>,
+}
+
+/// One `debug.adapters` entry: how to launch a debug adapter.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct DebugAdapter {
+    /// The adapter executable, looked up on `PATH` (or an absolute path).
+    pub command: String,
+    /// Command-line arguments; under the `tcp` transport, `${port}` is
+    /// replaced with the chosen port.
+    pub args: Vec<String>,
+    /// How the adapter exposes its protocol endpoint.
+    pub transport: DebugTransport,
+}
+
+/// How a debug adapter speaks DAP.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum DebugTransport {
+    /// Over the adapter's stdin/stdout (the common case).
+    #[default]
+    Stdio,
+    /// The adapter listens on a TCP port passed via a `${port}` argument
+    /// (codelldb style).
+    Tcp,
+}
+
+/// One `debug.configurations` entry.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct DebugConfiguration {
+    /// The display name the Debug: Start picker shows.
+    pub name: String,
+    /// The adapter to use: a `debug.adapters` key or a built-in fallback name.
+    pub adapter: String,
+    /// Attach to a running debuggee instead of launching one.
+    pub attach: bool,
+    /// Adapter-specific launch/attach arguments (`program`, `args`, `cwd`,
+    /// `pid`, …), passed through verbatim — each adapter documents its own.
+    pub arguments: serde_json::Value,
+}
+
+/// `toml.*` — TOML-specific behaviour.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct Toml {
+    /// Format TOML documents with the built-in taplo formatter (honoring the
+    /// workspace's `.taplo.toml`) when no language server offers formatting.
+    pub format: bool,
+}
+
+impl Default for Toml {
+    /// On by default.
+    fn default() -> Self {
+        Self { format: true }
+    }
+}
+
+/// `markdown.*` — Markdown-specific editing behaviour.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct Markdown {
+    /// Continue list items on Enter: repeat the marker, advance ordered
+    /// numbering (renumbering the run), carry task checkboxes, and end the
+    /// list when Enter is pressed on an empty item.
+    pub list_continuation: bool,
+    /// Table-of-contents generation.
+    pub toc: MarkdownToc,
+    /// Markdown linting (the markdownlint rule core).
+    pub lint: MarkdownLint,
+    /// Mermaid diagram rendering in the preview.
+    pub mermaid: MarkdownMermaid,
+}
+
+impl Default for Markdown {
+    /// List continuation on by default.
+    fn default() -> Self {
+        Self {
+            list_continuation: true,
+            toc: MarkdownToc::default(),
+            lint: MarkdownLint::default(),
+            mermaid: MarkdownMermaid::default(),
+        }
+    }
+}
+
+/// `markdown.mermaid.*` — mermaid diagram rendering in the preview.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct MarkdownMermaid {
+    /// Render matching code fences as Unicode diagrams in the preview
+    /// (unsupported diagram types fall back to showing the fence source).
+    pub enabled: bool,
+    /// The fence info strings treated as mermaid.
+    pub fence_languages: Vec<String>,
+}
+
+impl Default for MarkdownMermaid {
+    /// On by default, for ```mermaid fences.
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            fence_languages: vec!["mermaid".to_owned()],
+        }
+    }
+}
+
+/// `markdown.lint.*` — markdown linting.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct MarkdownLint {
+    /// Lint Markdown documents as they change, surfacing issues as
+    /// diagnostics. Rule selection follows the workspace's
+    /// `.markdownlint.json` when present.
+    pub enabled: bool,
+}
+
+impl Default for MarkdownLint {
+    /// On by default.
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+/// `markdown.toc.*` — table-of-contents generation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct MarkdownToc {
+    /// The smallest heading level included (GitHub convention keeps the `#`
+    /// document title out of its own table).
+    pub min_level: u8,
+    /// The largest heading level included.
+    pub max_level: u8,
+}
+
+impl Default for MarkdownToc {
+    /// Levels 2–6.
+    fn default() -> Self {
+        Self {
+            min_level: 2,
+            max_level: 6,
+        }
+    }
 }
 
 /// `editor.*` — text-editing behaviour.
@@ -74,8 +294,15 @@ pub struct Editor {
     pub format_on_save: bool,
     /// Distinct highlighting of codetag comment blocks (`TODO:`, `FIXME:`, …).
     pub semantic_comments: SemanticComments,
+    /// Re-render TypeScript diagnostics as markdown (quoted types lifted into
+    /// highlighted code blocks) wherever rich rendering is available.
+    pub pretty_errors: bool,
     /// LSP-powered code completion (the popup).
     pub completion: Completion,
+    /// The hover popup (documentation + diagnostics at the caret).
+    pub hover: HoverPopup,
+    /// Inline swatches on color literals (hex, `rgb()`, `hsl()`).
+    pub color_highlight: ColorHighlight,
     /// Per-language patches keyed by selectors such as `[rust]`.
     ///
     /// This map is flattened in `setting.jsonc`, so its entries sit beside the
@@ -105,7 +332,10 @@ impl Default for Editor {
             insert_final_newline: true,
             format_on_save: false,
             semantic_comments: SemanticComments::default(),
+            pretty_errors: true,
             completion: Completion::default(),
+            hover: HoverPopup::default(),
+            color_highlight: ColorHighlight::default(),
             language_overrides: BTreeMap::new(),
         }
     }
@@ -156,6 +386,40 @@ impl Default for Completion {
             enabled: true,
             auto_trigger: true,
         }
+    }
+}
+
+/// `editor.colorHighlight.*` — inline swatches on color literals.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct ColorHighlight {
+    /// Tint color literals (hex 3/4/6/8, `rgb()`/`rgba()`, `hsl()`/`hsla()`)
+    /// with their own color, on the visible lines of the editor.
+    pub enabled: bool,
+}
+
+impl Default for ColorHighlight {
+    /// On by default.
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+/// `editor.hover.*` — the hover popup showing documentation from the language
+/// server plus the diagnostics under the caret.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct HoverPopup {
+    /// Offer the hover popup at all (Ctrl+K Ctrl+I).
+    pub enabled: bool,
+}
+
+impl Default for HoverPopup {
+    /// On by default.
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 
@@ -275,8 +539,8 @@ pub enum Eol {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Workbench {
-    /// Colour theme: the built-in name `"dark"`, or a path to a `.tmTheme` /
-    /// VS Code `.json` theme file.
+    /// Colour theme: the built-in name `"dark"`, or a path to a VS Code
+    /// `.json` theme file.
     pub color_theme: String,
     /// Icon glyph set for the file tree and activity bar.
     pub icon_style: IconStyleSetting,
@@ -597,6 +861,11 @@ pub struct LspLanguage {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Git {
+    /// URL template for `#123` issue references in commit messages; `$1`
+    /// substitutes the number (e.g.
+    /// `"https://issues.example.com/browse/PROJ-$1"`). Left unset, GitHub
+    /// origins derive `https://github.com/<owner>/<repo>/issues/$1`.
+    pub issue_url: Option<String>,
     /// Show gutter change decorations and file-tree status colouring.
     pub decorations: bool,
     /// Show inline blame for the current line.
@@ -610,6 +879,7 @@ impl Default for Git {
         Self {
             decorations: true,
             blame: true,
+            issue_url: None,
             ai_commit: AiCommit::default(),
         }
     }

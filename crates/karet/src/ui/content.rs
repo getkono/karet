@@ -1,5 +1,7 @@
 use super::*;
 
+mod swatches;
+
 /// Draw one pane's active tab into `area`. Returns the rect to reserve for a Kitty
 /// image, if the active tab is an image on a Kitty terminal.
 pub(super) fn draw_pane_content(
@@ -134,12 +136,16 @@ pub(super) fn draw_pane_content(
                 // Local find and global search highlights are kept in separate
                 // fields (so closing/rerunning one can't wipe the other) and
                 // combined only here, at render time.
+                let mut frame_decos =
+                    swatches::frame_decorations(ctx, *doc, buffer, tab.editor.scroll_line, area);
+                frame_decos.extend(swatches::debug_decorations(ctx, path));
                 let combined: Vec<Decoration> = decos
                     .iter()
                     .chain(search_decos.iter())
                     .chain(conflict_decorations.iter())
                     .chain(ctx.blame.iter())
                     .chain(ctx.definition_underline.iter())
+                    .chain(frame_decos.iter())
                     .cloned()
                     .collect();
                 let diagnostics = doc
@@ -236,6 +242,7 @@ pub(super) fn draw_pane_content(
                             source: path,
                             root: ctx.root,
                             source_scroll: Some(tab.editor.scroll_line as usize),
+                            mermaid: ctx.mermaid,
                         },
                         hits,
                         ScrollSurface::EditorPreview,
@@ -264,6 +271,7 @@ pub(super) fn draw_pane_content(
                     source: path,
                     root: ctx.root,
                     source_scroll: None,
+                    mermaid: ctx.mermaid,
                 },
                 hits,
                 ScrollSurface::TabRows,
@@ -400,6 +408,7 @@ pub(super) fn draw_pane_content(
             theme,
             area,
             commits,
+            ctx.ref_labels,
             *has_more,
             *loading,
             *loading_since,

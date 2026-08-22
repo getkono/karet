@@ -11,18 +11,23 @@ homepage.workspace     = true
 readme = "README.md"
 keywords.workspace     = true
 categories.workspace   = true
-# Unimplemented skeleton kept as the future DAP client's landing spot; nothing may
-# publish or depend on it until the debugger UI exists.
+# Internal-but-separate: the debugger engine has no external-consumer story yet,
+# so it stays unpublished until one exists.
 publish = false
 
 [features]
 default = []
 
 [dependencies]
-karet-core.workspace = true
-tokio = { workspace = true, features = ["rt", "io-util", "process", "macros", "sync"] }
+karet-lsp.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "io-util", "net", "process", "macros", "sync", "time"] }
 thiserror.workspace = true
-# TODO: DAP protocol types — hand-roll over serde, or adopt the `dap` crate once it is past alpha.
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [lints]
 workspace = true

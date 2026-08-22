@@ -131,3 +131,51 @@ fn document_hits(document: &Document) -> impl Iterator<Item = SpellingHit> + '_ 
         }
     })
 }
+
+impl Session {
+    /// Start a workspace codetag scan (see [`crate::todo_scan`]). Open
+    /// documents contribute their live text; everything else is walked on
+    /// disk. Disabled semantic comments or a root-less session finish
+    /// immediately.
+    pub(crate) fn scan_workspace_todos(&mut self, id: RequestId, limit: usize) {
+        let roots = self.config.roots.clone();
+        let semantic = &self.config.settings.editor.semantic_comments;
+        if roots.is_empty() || !semantic.enabled || semantic.tags.is_empty() {
+            self.emit(
+                Some(id),
+                Event::TodoScanFinished {
+                    files_scanned: 0,
+                    truncated: false,
+                    cancelled: false,
+                },
+            );
+            return;
+        }
+        let job = crate::todo_scan::TodoScanJob {
+            id,
+            roots,
+            config: karet_syntax::SemanticCommentConfig {
+                tags: semantic.tags.clone(),
+            },
+            excludes: self.config.settings.search.exclude.clone(),
+            open: self
+                .store
+                .docs
+                .values()
+                .map(|document| (document.path.clone(), document.buffer.text()))
+                .collect(),
+            limit,
+            cancel: self.cancellations.register(id),
+        };
+        if self.todo_scan_worker.send(job).is_err() {
+            self.emit(
+                Some(id),
+                Event::TodoScanFinished {
+                    files_scanned: 0,
+                    truncated: false,
+                    cancelled: false,
+                },
+            );
+        }
+    }
+}

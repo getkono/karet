@@ -40,6 +40,7 @@ enum Frame {
     },
     Emphasis(Vec<Inline>),
     Strong(Vec<Inline>),
+    Strikethrough(Vec<Inline>),
     Link {
         href: String,
         text: String,
@@ -74,6 +75,7 @@ fn closes(frame: &Frame, tag: TagEnd) -> bool {
             | (Frame::Item { .. }, TagEnd::Item)
             | (Frame::Emphasis(_), TagEnd::Emphasis)
             | (Frame::Strong(_), TagEnd::Strong)
+            | (Frame::Strikethrough(_), TagEnd::Strikethrough)
             | (Frame::Link { .. }, TagEnd::Link | TagEnd::Image)
             | (Frame::Table { .. }, TagEnd::Table)
             // A header row and a body row share one frame; the two end tags never nest,
@@ -91,7 +93,8 @@ pub(crate) fn parse(source: &str) -> MarkdownDocument {
     //
     // `into_offset_iter` pairs each event with its source byte range, which is what lets
     // a top-level block remember the line it came from (see `Builder::block_lines`).
-    let options = Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS;
+    let options =
+        Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH;
     for (event, span) in Parser::new_ext(source, options).into_offset_iter() {
         builder.event(&event, span.start);
     }
@@ -192,6 +195,7 @@ impl Builder {
             },
             Tag::Emphasis => Frame::Emphasis(Vec::new()),
             Tag::Strong => Frame::Strong(Vec::new()),
+            Tag::Strikethrough => Frame::Strikethrough(Vec::new()),
             Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. } => Frame::Link {
                 href: dest_url.to_string(),
                 text: String::new(),
@@ -255,6 +259,7 @@ impl Builder {
             },
             Frame::Emphasis(content) => self.inline(Inline::Emphasis(content)),
             Frame::Strong(content) => self.inline(Inline::Strong(content)),
+            Frame::Strikethrough(content) => self.inline(Inline::Strikethrough(content)),
             Frame::Link { href, text } => self.inline(Inline::Link { text, href }),
             Frame::Table {
                 alignments,
@@ -302,6 +307,7 @@ impl Builder {
                 | Frame::Heading { content, .. }
                 | Frame::Emphasis(content)
                 | Frame::Strong(content)
+                | Frame::Strikethrough(content)
                 | Frame::TableCell(content),
             ) => content.push(inline),
             // A link's label is flattened to text: the model carries no nested inlines
@@ -342,7 +348,7 @@ impl Builder {
 fn flatten_into(inline: &Inline, out: &mut String) {
     match inline {
         Inline::Text(t) | Inline::Code(t) => out.push_str(t),
-        Inline::Emphasis(children) | Inline::Strong(children) => {
+        Inline::Emphasis(children) | Inline::Strong(children) | Inline::Strikethrough(children) => {
             for child in children {
                 flatten_into(child, out);
             }

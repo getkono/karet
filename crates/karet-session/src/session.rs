@@ -12,12 +12,16 @@
 //! it already has ride each edit via `Highlights::translate`, so the view stays stable
 //! in the frames before the worker answers.
 
+mod debug;
 mod documents;
 #[cfg(feature = "github")]
 mod github;
+mod hints;
 mod lifecycle;
 mod lsp_commands;
 mod lsp_registry_updates;
+#[cfg(feature = "mdlint")]
+mod mdlint;
 mod persistence;
 mod spelling;
 mod updates;
@@ -330,6 +334,9 @@ struct Document {
     error_lines: Arc<Vec<(u32, u32)>>,
     /// Last spell-check diagnostics emitted for this exact document state.
     spell_diagnostics: Vec<karet_core::Diagnostic>,
+    /// Last markdown-lint diagnostics (empty for non-Markdown documents or
+    /// when the `mdlint` feature is off).
+    lint_diagnostics: Vec<karet_core::Diagnostic>,
     /// Last language-server diagnostics accepted for this document version.
     lsp_diagnostics: HashMap<String, Vec<karet_core::Diagnostic>>,
     decorations: Vec<Decoration>,
@@ -387,6 +394,9 @@ pub struct Session {
     highlight_rx: Option<mpsc::UnboundedReceiver<HighlightResult>>,
     /// Jobs for the debounced token-aware spell worker.
     spell_tx: std::sync::mpsc::Sender<SpellJob>,
+    /// The workspace's markdown-lint configuration, read once at startup.
+    #[cfg(feature = "mdlint")]
+    lint_config: karet_markdown::lint::Config,
     /// Spell results, taken by the local backend actor.
     spell_rx: Option<mpsc::UnboundedReceiver<SpellResult>>,
     /// Last dictionary/load error per document, used to suppress edit-time spam.
@@ -405,6 +415,17 @@ pub struct Session {
     seam_worker: std::sync::mpsc::Sender<crate::seam_worker::SeamJob>,
     /// The workspace spelling scan, which walks every file rather than the open ones.
     spell_scan_worker: std::sync::mpsc::Sender<crate::spell_scan::SpellScanJob>,
+    todo_scan_worker: std::sync::mpsc::Sender<crate::todo_scan::TodoScanJob>,
+    /// The WakaTime worker, spawned on the first heartbeat while enabled.
+    wakatime_worker: Option<std::sync::mpsc::Sender<crate::wakatime::Beat>>,
+    /// The last heartbeat kept, so a repeat for the same file inside the
+    /// throttle window is dropped before its payload is built.
+    wakatime_last: Option<(PathBuf, std::time::Duration)>,
+    /// Monotonic origin for `wakatime_last`, matching the worker's own clock.
+    wakatime_clock: std::time::Instant,
+    /// The manifest-hints worker, spawned on the first Cargo.toml refresh.
+    #[cfg(feature = "deps")]
+    manifest_hints_worker: Option<std::sync::mpsc::Sender<crate::manifest_hints::HintJob>>,
     /// Cancellation registry for safely-droppable background reads: repository
     /// reads, LaTeX builds, and the workspace spelling scan.
     cancellations: crate::cancellation::CancellationHub,
@@ -420,6 +441,8 @@ pub struct Session {
     swaps: Option<SwapStore>,
     /// Swaps found on startup awaiting the user's recover/discard decision.
     pending_swaps: Vec<SwapRecord>,
+    /// Debugger orchestration (one active DAP session; see [`crate::dap`]).
+    debug: crate::dap::DebugManager,
     /// Language-server orchestration (lazy per-language tasks; see [`crate::lsp`]).
     lsp: LspManager,
     /// The LSP tasks' results, taken by [`crate::backend::local`] for the actor.
@@ -453,6 +476,9 @@ impl Session {
     /// Handle one request. The editing fast paths resolve inline; the answering
     /// [`Event`] is tagged with `id`.
     pub fn handle(&mut self, id: RequestId, command: Command) {
+        if self.handle_debug_command(id, &command) {
+            return;
+        }
         if self.handle_lsp_command(id, &command) {
             return;
         }
@@ -748,6 +774,8 @@ impl Session {
                     .send(crate::seam_worker::SeamJob::SetConfiguration { id, name });
             },
             Command::ScanWorkspaceSpelling { limit } => self.scan_workspace_spelling(id, limit),
+            Command::ScanWorkspaceTodos { limit } => self.scan_workspace_todos(id, limit),
+            Command::RefreshManifestHints { doc } => self.refresh_manifest_hints(doc),
             Command::SearchReplaceAll { query, replacement } => {
                 if let Some(root) = self.config.roots.first().cloned() {
                     let _ = self

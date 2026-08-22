@@ -15,7 +15,7 @@ mod load_vscode;
 /// Number of [`StandardToken`](karet_core::StandardToken) classes (token id space).
 pub(crate) const TOKEN_COUNT: usize = 32;
 /// Number of [`ThemeRole`] variants.
-pub(crate) const ROLE_COUNT: usize = 30;
+pub(crate) const ROLE_COUNT: usize = 31;
 
 /// Errors produced while loading a theme.
 #[derive(Debug, thiserror::Error)]
@@ -358,7 +358,7 @@ mod tests {
         // roles are the ones that catch that, and the track must not resolve to the
         // fallback — a track painted in the foreground color is a solid bar.
         let theme = Theme::dark();
-        assert!((ThemeRole::ScrollbarThumb as usize) < ROLE_COUNT);
+        assert!((ThemeRole::DebugStoppedLine as usize) < ROLE_COUNT);
         assert_eq!(
             theme.role(ThemeRole::ScrollbarTrack),
             theme.role(ThemeRole::IndentGuide)

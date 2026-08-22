@@ -29,6 +29,13 @@ pub enum OverlayEvent {
     AcceptFile(PathBuf),
     /// Run the chosen command.
     AcceptCommand(Command),
+    /// Run the edited interactive-rebase plan.
+    AcceptRebaseTodo {
+        /// The revision to rebase onto.
+        onto: String,
+        /// The plan, oldest first.
+        steps: Vec<karet_vcs::RebaseStep>,
+    },
     /// Diff the active file against the chosen revision.
     AcceptDiffTarget {
         /// The revision to diff against (a full hash or a branch name).
@@ -91,8 +98,14 @@ pub enum TextPurpose {
     ConfirmPublishedUndo,
     /// Rename `old` to the submitted name.
     RenameBranch { old: String },
+    /// Tag `rev` with the submitted name (lightweight).
+    TagCreate { rev: String },
+    /// Confirm a hard reset to `rev` by typing `reset`.
+    ConfirmResetHard { rev: String },
     /// Confirm remote deletion by typing the exact branch name.
     ConfirmDeleteRemoteBranch { remote: String, branch: String },
+    /// Evaluate the submitted expression in the debuggee.
+    DebugEvaluate,
     /// Confirm opening a relative file link that escaped the workspace.
     ConfirmOutsideWorkspaceLink { path: PathBuf },
     /// Confirm creating the missing project settings file before adding a word.
@@ -264,6 +277,8 @@ pub use karet_widgets::picker::Picker;
 
 /// A modal overlay.
 pub enum Overlay {
+    /// Interactive-rebase plan editor.
+    RebaseTodo(RebaseTodoForm),
     /// A fuzzy list picker whose rows carry their accept outcomes directly.
     Picker(Picker<OverlayEvent>),
     /// Full create-branch form.
@@ -272,6 +287,48 @@ pub enum Overlay {
     StashForm(StashForm),
     /// Single-value follow-up prompt.
     Text(TextPrompt),
+}
+
+/// The interactive-rebase plan being edited: one row per commit, oldest
+/// first, exactly as git's todo file reads.
+#[derive(Clone, Debug)]
+pub struct RebaseTodoForm {
+    /// The (full) revision the branch rebases onto.
+    pub onto: String,
+    /// Steps oldest-first: `(action, full hash, short hash, summary)`.
+    pub steps: Vec<(karet_vcs::RebaseAction, String, String, String)>,
+    /// The selected row.
+    pub selected: usize,
+    /// Rendered rows, kept in step with `steps`.
+    rows: Vec<String>,
+}
+
+impl RebaseTodoForm {
+    fn rebuild_rows(&mut self) {
+        self.rows = self
+            .steps
+            .iter()
+            .map(|(action, _, short, summary)| format!("{:6} {short} {summary}", action.verb()))
+            .collect();
+    }
+
+    /// Set the selected row's action.
+    fn set_action(&mut self, action: karet_vcs::RebaseAction) {
+        if let Some(step) = self.steps.get_mut(self.selected) {
+            step.0 = action;
+            self.rebuild_rows();
+        }
+    }
+
+    /// Swap the selected row with its neighbour (`delta` = ±1).
+    fn reorder(&mut self, delta: i32) {
+        let to = self.selected.saturating_add_signed(delta as isize);
+        if to < self.steps.len() && self.selected < self.steps.len() {
+            self.steps.swap(self.selected, to);
+            self.selected = to;
+            self.rebuild_rows();
+        }
+    }
 }
 
 impl Overlay {
@@ -436,6 +493,23 @@ impl Overlay {
         })
     }
 
+    /// Build the interactive-rebase plan editor. `steps` oldest first as
+    /// `(hash, short, summary)`.
+    #[must_use]
+    pub fn rebase_todo(onto: String, steps: Vec<(String, String, String)>) -> Self {
+        let mut form = RebaseTodoForm {
+            onto,
+            steps: steps
+                .into_iter()
+                .map(|(hash, short, summary)| (karet_vcs::RebaseAction::Pick, hash, short, summary))
+                .collect(),
+            selected: 0,
+            rows: Vec::new(),
+        };
+        form.rebuild_rows();
+        Self::RebaseTodo(form)
+    }
+
     /// Build a local-branch deletion picker.
     #[must_use]
     pub fn delete_local_branches(items: Vec<String>) -> Self {
@@ -466,6 +540,9 @@ impl Overlay {
     pub fn title(&self) -> &str {
         match self {
             Self::Picker(p) => p.title(),
+            Self::RebaseTodo(_) => {
+                "Interactive rebase · p/r/e/s/f/d set action · K/J reorder · Enter runs"
+            },
             Self::CreateBranch(_) => "Create branch · ↑↓ fields · Space toggles",
             Self::StashForm(_) => "Stash changes · ↑↓ fields · Space toggles",
             Self::Text(prompt) => &prompt.title,
@@ -477,6 +554,7 @@ impl Overlay {
     pub fn query(&self) -> &str {
         match self {
             Self::Picker(p) => p.query(),
+            Self::RebaseTodo(_) => "oldest first, as git applies them",
             Self::CreateBranch(_) | Self::StashForm(_) => "Edit selected field",
             Self::Text(prompt) => &prompt.text,
         }
@@ -487,6 +565,7 @@ impl Overlay {
     pub fn rows(&self) -> Vec<&str> {
         match self {
             Self::Picker(p) => p.rows(),
+            Self::RebaseTodo(form) => form.rows.iter().map(String::as_str).collect(),
             Self::CreateBranch(form) => form.rows.iter().map(String::as_str).collect(),
             Self::StashForm(form) => form.rows.iter().map(String::as_str).collect(),
             Self::Text(_) => Vec::new(),
@@ -498,6 +577,7 @@ impl Overlay {
     #[must_use]
     pub fn row_hints(&self) -> Vec<Option<String>> {
         match self {
+            Self::RebaseTodo(form) => vec![None; form.rows.len()],
             Self::Picker(p) => p
                 .values()
                 .into_iter()
@@ -519,6 +599,7 @@ impl Overlay {
     pub fn selected(&self) -> usize {
         match self {
             Self::Picker(p) => p.selected(),
+            Self::RebaseTodo(form) => form.selected,
             Self::CreateBranch(form) => form.selected,
             Self::StashForm(form) => form.selected,
             Self::Text(_) => 0,
@@ -529,6 +610,12 @@ impl Overlay {
     pub fn select_up(&mut self) {
         match self {
             Self::Picker(p) => p.select_up(),
+            Self::RebaseTodo(form) => {
+                form.selected = form
+                    .selected
+                    .saturating_add_signed(-1)
+                    .min(form.steps.len().saturating_sub(1));
+            },
             Self::CreateBranch(form) => form.selected = form.selected.saturating_sub(1),
             Self::StashForm(form) => form.selected = form.selected.saturating_sub(1),
             Self::Text(_) => {},
@@ -539,6 +626,12 @@ impl Overlay {
     pub fn select_down(&mut self) {
         match self {
             Self::Picker(p) => p.select_down(),
+            Self::RebaseTodo(form) => {
+                form.selected = form
+                    .selected
+                    .saturating_add_signed(1)
+                    .min(form.steps.len().saturating_sub(1));
+            },
             Self::CreateBranch(form) => form.selected = (form.selected + 1).min(4),
             Self::StashForm(form) => form.selected = (form.selected + 1).min(2),
             Self::Text(_) => {},
@@ -549,6 +642,20 @@ impl Overlay {
     pub fn push_char(&mut self, c: char) {
         match self {
             Self::Picker(p) => p.push_char(c),
+            Self::RebaseTodo(form) => {
+                use karet_vcs::RebaseAction as A;
+                match c {
+                    'p' => form.set_action(A::Pick),
+                    'r' => form.set_action(A::Reword),
+                    'e' => form.set_action(A::Edit),
+                    's' => form.set_action(A::Squash),
+                    'f' => form.set_action(A::Fixup),
+                    'd' => form.set_action(A::Drop),
+                    'K' => form.reorder(-1),
+                    'J' => form.reorder(1),
+                    _ => {},
+                }
+            },
             Self::CreateBranch(form) => form.push_char(c),
             Self::StashForm(form) => form.push_char(c),
             Self::Text(prompt) => prompt.text.push(c),
@@ -559,6 +666,7 @@ impl Overlay {
     pub fn pop_char(&mut self) {
         match self {
             Self::Picker(p) => p.pop_char(),
+            Self::RebaseTodo(_) => {},
             Self::CreateBranch(form) => form.pop_char(),
             Self::StashForm(form) => {
                 if form.selected == 0 {
@@ -576,6 +684,7 @@ impl Overlay {
     pub fn push_str(&mut self, text: &str) {
         match self {
             Self::Picker(p) => p.push_str(text),
+            Self::RebaseTodo(_) => {},
             Self::CreateBranch(form) => {
                 for character in text.chars() {
                     form.push_char(character);
@@ -598,6 +707,17 @@ impl Overlay {
     pub fn accept(&self) -> OverlayEvent {
         match self {
             Self::Picker(p) => p.accepted().cloned().unwrap_or(OverlayEvent::Close),
+            Self::RebaseTodo(form) => OverlayEvent::AcceptRebaseTodo {
+                onto: form.onto.clone(),
+                steps: form
+                    .steps
+                    .iter()
+                    .map(|(action, hash, ..)| karet_vcs::RebaseStep {
+                        action: *action,
+                        rev: hash.clone(),
+                    })
+                    .collect(),
+            },
             Self::CreateBranch(form) => OverlayEvent::AcceptCreateBranch(form.options()),
             Self::StashForm(form) => OverlayEvent::AcceptStash(form.options()),
             Self::Text(prompt) => OverlayEvent::AcceptText {

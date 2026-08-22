@@ -187,6 +187,19 @@ impl Session {
                     },
                 );
             },
+            LspUpdate::ServerStatus {
+                server, message, ..
+            } => {
+                // The transient status line is the right surface: it clears on
+                // the next keystroke and never queues like a notification.
+                self.emit(
+                    None,
+                    Event::Progress {
+                        message: format!("{server}: {message}"),
+                        percent: None,
+                    },
+                );
+            },
             LspUpdate::Diagnostics {
                 server,
                 path,
@@ -262,6 +275,14 @@ impl Session {
                     },
                 );
             },
+            LspUpdate::PreflightFailed { message, .. } => self.emit(
+                None,
+                Event::Notification {
+                    severity: Severity::Warning,
+                    kind: NotificationKind::Lsp,
+                    message,
+                },
+            ),
             LspUpdate::InstallRequired { server, .. } => {
                 match self.config.settings.lsp.managed_downloads {
                     crate::config::schema::ManagedDownloads::Prompt => {
@@ -476,6 +497,32 @@ impl Session {
             doc.buffer.version(),
             &doc.path,
         ) {
+            // No server offered formatting; TOML falls back to the built-in
+            // taplo formatter (same engine the taplo LSP would use).
+            #[cfg(feature = "toml-format")]
+            if doc.language_selector == Some("toml")
+                && self.config.settings.toml.format
+                && let Some(formatted) =
+                    crate::toml_format::format_toml(&doc.buffer.text(), &self.config.roots)
+            {
+                let version = doc.buffer.version();
+                let end_line = u32::try_from(doc.buffer.text().lines().count()).unwrap_or(u32::MAX);
+                self.emit(
+                    Some(id),
+                    Event::FormattingEdits {
+                        doc: doc_id,
+                        version,
+                        edits: vec![karet_core::TextEdit {
+                            range: karet_core::Range {
+                                start: karet_core::LineCol::new(0, 0),
+                                end: karet_core::LineCol::new(end_line, 0),
+                            },
+                            new_text: formatted,
+                        }],
+                    },
+                );
+                return;
+            }
             self.emit(
                 Some(id),
                 Event::FormattingEdits {
@@ -511,6 +558,12 @@ impl Session {
     /// Queue the current token model after highlighting has settled. Disabled or
     /// unsupported settings clear only spell diagnostics, leaving other producers intact.
     pub(crate) fn schedule_spell(&mut self, doc_id: DocumentId) {
+        // Every text-change path funnels through here, so the (synchronous,
+        // line-based, sub-millisecond) markdown lint and the WakaTime typing
+        // heartbeat ride along rather than adding hooks to each call site.
+        self.refresh_markdown_lint(doc_id);
+        self.wakatime_beat(doc_id, false);
+        self.refresh_manifest_hints(doc_id);
         let Some(doc) = self.store.docs.get(&doc_id) else {
             return;
         };
@@ -584,7 +637,7 @@ impl Session {
         }
     }
 
-    fn publish_document_diagnostics(&self, doc_id: DocumentId) {
+    pub(crate) fn publish_document_diagnostics(&self, doc_id: DocumentId) {
         let Some(document) = self.store.docs.get(&doc_id) else {
             return;
         };
@@ -601,6 +654,7 @@ impl Session {
                 .flat_map(|layer| layer.iter().cloned()),
         );
         diagnostics.extend(document.spell_diagnostics.iter().cloned());
+        diagnostics.extend(document.lint_diagnostics.iter().cloned());
         diagnostics.sort_by(|left, right| {
             left.range
                 .start
@@ -698,6 +752,7 @@ impl Session {
     /// behavior is derived from it. Existing LSP tasks are retired on an LSP change;
     /// their generation-tagged late answers are ignored by [`Self::apply_lsp_update`].
     pub(super) fn apply_config_report(&mut self, report: crate::config::LoadedConfig) {
+        self.debug.reconfigure(report.settings.debug.clone());
         let lsp_changed = self.lsp.reconfigure(report.settings.lsp.clone());
         self.config.settings = report.settings.clone();
         self.config.loaded_config = report.clone();
@@ -834,4 +889,10 @@ fn utf16_range_to_buffer(buffer: &TextBuffer, range: Range) -> Range {
 /// every positional LSP forwarder applies (see the karet-lsp crate docs).
 fn utf16_caret(doc: &Document, position: LineCol) -> LineCol {
     LineCol::new(position.line, doc.buffer.line_col_to_utf16(position))
+}
+
+#[cfg(not(feature = "mdlint"))]
+impl Session {
+    /// Without the `mdlint` feature there is no markdown lint layer.
+    pub(crate) fn refresh_markdown_lint(&mut self, _doc: crate::api::DocumentId) {}
 }

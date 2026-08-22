@@ -13,12 +13,14 @@ impl Session {
             Ok(mut commits) => {
                 let has_more = commits.len() > limit;
                 commits.truncate(limit);
+                let labels = repo.ref_labels().unwrap_or_default();
                 self.emit(
                     id,
                     Event::VcsLog {
                         skip,
                         commits,
                         has_more,
+                        labels,
                     },
                 );
             },

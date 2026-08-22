@@ -238,7 +238,107 @@ impl SpellingPanel {
     }
 }
 
+/// One row of the Todos panel's list: a grouping header (a file, or a tag when
+/// grouped by tag) or one codetag under it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TodoRow {
+    /// A group heading; `hit` is the group's first hit and `count` its total.
+    Group {
+        /// Index into [`TodosPanel::order`] of the group's first hit.
+        hit: usize,
+        /// How many hits the group holds.
+        count: usize,
+    },
+    /// One codetag; `hit` indexes [`TodosPanel::order`].
+    Item {
+        /// Index into [`TodosPanel::order`].
+        hit: usize,
+    },
+}
+
+impl TodoRow {
+    /// The hit this row jumps to when activated.
+    pub(crate) fn hit(self) -> usize {
+        match self {
+            Self::Group { hit, .. } | Self::Item { hit } => hit,
+        }
+    }
+}
+
+/// The workspace codetag (Todos) panel state.
+#[derive(Default)]
+pub(crate) struct TodosPanel {
+    /// Every codetag the current scan has reported, in scan order (grouped by
+    /// file, since the walk visits file by file).
+    pub(crate) hits: Vec<karet_session::TodoHit>,
+    /// Display order: indices into `hits`, regrouped when `by_tag` is set.
+    pub(crate) order: Vec<usize>,
+    /// The rendered rows derived from `order`.
+    pub(crate) rows: Vec<TodoRow>,
+    /// The cursor over `rows`.
+    pub(crate) selection: ListSelection,
+    /// The in-flight scan, if one is running.
+    pub(crate) scanning: Option<RequestId>,
+    /// How many files the running (or last) scan visited.
+    pub(crate) files_scanned: usize,
+    /// The last scan stopped at its result limit.
+    pub(crate) truncated: bool,
+    /// Whether a scan has ever completed.
+    pub(crate) scanned: bool,
+    /// Group rows by tag (`TODO` / `FIXME` / …) instead of by file.
+    pub(crate) by_tag: bool,
+}
+
+impl TodosPanel {
+    /// Rebuild `order` and [`rows`](Self::rows) from `hits`, clamping the cursor.
+    pub(crate) fn rebuild_rows(&mut self) {
+        self.order = (0..self.hits.len()).collect();
+        if self.by_tag {
+            self.order
+                .sort_by(|&a, &b| self.hits[a].tag.cmp(&self.hits[b].tag).then(a.cmp(&b)));
+        }
+        self.rows.clear();
+        let same_group = |a: usize, b: usize| {
+            if self.by_tag {
+                self.hits[a].tag == self.hits[b].tag
+            } else {
+                self.hits[a].path == self.hits[b].path
+            }
+        };
+        let mut index = 0;
+        while index < self.order.len() {
+            let count = self.order[index..]
+                .iter()
+                .take_while(|&&hit| same_group(self.order[index], hit))
+                .count();
+            self.rows.push(TodoRow::Group { hit: index, count });
+            self.rows
+                .extend((index..index + count).map(|hit| TodoRow::Item { hit }));
+            index += count;
+        }
+        let cursor = self.selection.cursor();
+        self.selection = ListSelection::new(self.rows.len());
+        self.selection
+            .move_to(cursor.min(self.rows.len().saturating_sub(1)));
+    }
+
+    /// Drop every result, readying the panel for a fresh scan.
+    pub(crate) fn clear(&mut self) {
+        self.hits.clear();
+        self.order.clear();
+        self.rows.clear();
+        self.selection = ListSelection::new(0);
+        self.files_scanned = 0;
+        self.truncated = false;
+        self.scanned = false;
+    }
+}
+
+/// The Todos panel's per-frame chrome — same shape as the Spelling panel's.
+pub(crate) type TodosChrome = SpellingChrome;
+
 /// Per-document caches fed by backend events, keyed by session document.
+/// (Manifest hints live beside diagnostics: both are per-document layers.)
 #[derive(Default)]
 pub(crate) struct DocState {
     /// Editing/save behavior resolved per open session document.
@@ -251,6 +351,8 @@ pub(crate) struct DocState {
     pub(crate) outline_versions: HashMap<DocumentId, u64>,
     /// In-flight symbol request version and start time per document.
     pub(crate) outline_loading: HashMap<DocumentId, (u64, Pending)>,
+    /// Dependency-freshness hints per open manifest, with the checked version.
+    pub(crate) manifest_hints: HashMap<DocumentId, (u64, Vec<karet_session::ManifestHint>)>,
 }
 
 /// The Source-Control panel state: the changed files (staged first) and selection.
@@ -264,6 +366,8 @@ pub(crate) struct Scm {
     pub(crate) selection: ListSelection,
     /// The loaded commit-log page(s), newest first (lazily fetched).
     pub(crate) log: Vec<Commit>,
+    /// Every ref per commit hash, refreshed with each log page.
+    pub(crate) ref_labels: HashMap<String, Vec<karet_vcs::RefLabel>>,
     /// Whether more commits exist beyond the loaded ones.
     pub(crate) log_has_more: bool,
     /// Whether a log page request is currently in flight.
@@ -612,4 +716,130 @@ pub(crate) struct PendingAutoSave {
 #[derive(Clone, Copy)]
 pub(crate) struct PendingSave {
     pub(crate) doc: DocumentId,
+}
+
+/// The Debug panel's chrome (same shape as the other list panels).
+pub(crate) type DebugChrome = SpellingChrome;
+
+/// One row of the Debug panel's flattened section list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DebugRow {
+    /// A section heading (`CALL STACK`, `VARIABLES`, …).
+    Section(&'static str),
+    /// A stack frame; indexes [`DebugPanel::stack`].
+    Frame(usize),
+    /// A variables scope; indexes [`DebugPanel::scopes`].
+    Scope(usize),
+    /// One variable of a fetched reference.
+    Variable {
+        /// The parent `variablesReference` whose children hold it.
+        parent: i64,
+        /// The index within that parent's children.
+        index: usize,
+        /// The tree depth (scopes' children are depth 1).
+        depth: u16,
+    },
+    /// One evaluate-log line; indexes [`DebugPanel::repl`].
+    Repl(usize),
+    /// One console-output line; indexes the app's debug output buffer.
+    Output(usize),
+    /// A muted placeholder note.
+    Note(&'static str),
+}
+
+/// How many trailing console lines the panel shows.
+pub(crate) const DEBUG_CONSOLE_TAIL: usize = 100;
+/// The variables tree recursion cap (cyclic references exist in the wild).
+const DEBUG_TREE_DEPTH_CAP: u16 = 8;
+
+/// The Debug sidebar panel: the stopped thread's stack, a lazily-fetched
+/// variables tree, the evaluate log, and the console tail. All inspection
+/// state is per-stop: it clears on resume so nothing stale survives.
+#[derive(Default)]
+pub(crate) struct DebugPanel {
+    /// The stopped thread's frames, top first.
+    pub(crate) stack: Vec<karet_session::DebugFrame>,
+    /// The frame inspection targets (scopes/evaluate context).
+    pub(crate) selected_frame: Option<i64>,
+    /// The selected frame's scopes.
+    pub(crate) scopes: Vec<karet_session::DebugScope>,
+    /// Fetched children per `variablesReference`.
+    pub(crate) variables: HashMap<i64, Vec<karet_session::DebugVariable>>,
+    /// Expanded references (scopes and structured variables).
+    pub(crate) expanded: HashSet<i64>,
+    /// In-flight inspection requests; answers not in here are stale and dropped.
+    pub(crate) pending: HashSet<RequestId>,
+    /// The evaluate log (`expr = result` lines, oldest first).
+    pub(crate) repl: Vec<String>,
+    /// The rendered rows.
+    pub(crate) rows: Vec<DebugRow>,
+    /// The cursor over `rows`.
+    pub(crate) selection: ListSelection,
+}
+
+impl DebugPanel {
+    /// Drop every per-stop artifact (stack, scopes, variables, pending).
+    /// The evaluate log survives — it is a console, not a snapshot.
+    pub(crate) fn clear_inspection(&mut self, output_len: usize) {
+        self.stack.clear();
+        self.selected_frame = None;
+        self.scopes.clear();
+        self.variables.clear();
+        self.expanded.clear();
+        self.pending.clear();
+        self.rebuild_rows(output_len);
+    }
+
+    /// Rebuild the flattened rows, keeping the cursor clamped.
+    pub(crate) fn rebuild_rows(&mut self, output_len: usize) {
+        self.rows.clear();
+        self.rows.push(DebugRow::Section("CALL STACK"));
+        if self.stack.is_empty() {
+            self.rows.push(DebugRow::Note("not stopped"));
+        }
+        self.rows.extend((0..self.stack.len()).map(DebugRow::Frame));
+        self.rows.push(DebugRow::Section("VARIABLES"));
+        if self.scopes.is_empty() {
+            self.rows.push(DebugRow::Note("no frame selected"));
+        }
+        let scope_refs: Vec<i64> = self.scopes.iter().map(|scope| scope.reference).collect();
+        for (index, reference) in scope_refs.into_iter().enumerate() {
+            self.rows.push(DebugRow::Scope(index));
+            if self.expanded.contains(&reference) {
+                self.push_children(reference, 1);
+            }
+        }
+        if !self.repl.is_empty() {
+            self.rows.push(DebugRow::Section("EVALUATE"));
+            self.rows.extend((0..self.repl.len()).map(DebugRow::Repl));
+        }
+        if output_len > 0 {
+            self.rows.push(DebugRow::Section("CONSOLE"));
+            let first = output_len.saturating_sub(DEBUG_CONSOLE_TAIL);
+            self.rows.extend((first..output_len).map(DebugRow::Output));
+        }
+        let cursor = self
+            .selection
+            .cursor()
+            .min(self.rows.len().saturating_sub(1));
+        self.selection = ListSelection::new(self.rows.len());
+        self.selection.move_to(cursor);
+    }
+
+    fn push_children(&mut self, parent: i64, depth: u16) {
+        if depth > DEBUG_TREE_DEPTH_CAP {
+            return;
+        }
+        let children = self.variables.get(&parent).cloned().unwrap_or_default();
+        for (index, child) in children.iter().enumerate() {
+            self.rows.push(DebugRow::Variable {
+                parent,
+                index,
+                depth,
+            });
+            if child.reference > 0 && self.expanded.contains(&child.reference) {
+                self.push_children(child.reference, depth + 1);
+            }
+        }
+    }
 }
