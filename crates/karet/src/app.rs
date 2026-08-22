@@ -7,7 +7,9 @@ mod capture;
 mod change_view;
 mod commands;
 mod completion;
+mod debugging;
 mod definition;
+mod deps;
 mod diffs;
 mod editor;
 mod explorer;
@@ -15,15 +17,18 @@ pub(crate) mod github;
 mod graphics;
 mod history;
 mod hit;
+mod hover;
 mod inline_macros;
 mod input;
 mod language_servers;
 mod lifecycle;
+mod markdown_edit;
 mod mouse;
 mod notifications;
 mod panes;
 mod pending;
 mod remote_actions;
+mod review;
 mod runtime;
 mod scm;
 mod scroll;
@@ -35,6 +40,7 @@ mod spelling;
 mod startup;
 mod state;
 mod tabs;
+mod todos;
 mod util;
 
 #[cfg(test)]
@@ -427,6 +433,14 @@ pub struct App {
     pub(crate) search_ui: SearchChrome,
     /// The Spelling panel's last-frame render chrome.
     pub(crate) spelling_ui: SpellingChrome,
+    /// The Todos panel state.
+    pub(crate) todos: TodosPanel,
+    /// Today's WakaTime total for the status bar, when tracking is enabled.
+    pub(crate) wakatime_status: Option<String>,
+    /// Persisted code-review marks (reviewed files per commit).
+    pub(crate) review: review::ReviewStore,
+    /// The Todos panel's per-frame chrome.
+    pub(crate) todos_ui: TodosChrome,
     /// The status bar rect from the last frame (mouse hit-testing).
     pub(crate) status_rect: Rect,
     /// Clickable status-bar segments `(start, end, command)` from the last frame.
@@ -493,6 +507,34 @@ pub struct App {
     pub(crate) completion: Option<crate::completion::CompletionUi>,
     /// The reusable fuzzy matcher backing the completion popup's filtering.
     pub(crate) completion_matcher: karet_fuzzy::Matcher,
+    /// The in-flight hover request, if any (see [`crate::hover`]).
+    pub(crate) pending_hover: Option<crate::hover::PendingHover>,
+    /// The open hover popup, if any.
+    pub(crate) hover_ui: Option<crate::hover::HoverUi>,
+    /// The open scrollable diagnostic detail view, if any.
+    pub(crate) diagnostic_view: Option<crate::hover::DiagnosticView>,
+    /// The debug session's lifecycle, mirrored from `Event::DebugState`.
+    pub(crate) debug_state: karet_session::DebugSessionState,
+    /// The status-line detail for the current debug state.
+    pub(crate) debug_detail: String,
+    /// Armed breakpoints per absolute file path: line → verified.
+    pub(crate) breakpoints:
+        std::collections::HashMap<PathBuf, std::collections::BTreeMap<u32, bool>>,
+    /// Buffered debug-console output (ANSI kept; rendered by the Debug panel).
+    pub(crate) debug_output: std::collections::VecDeque<(String, String)>,
+    /// The Debug sidebar panel (stack, variables tree, evaluate log).
+    pub(crate) debug_panel: DebugPanel,
+    /// The Debug panel's last-frame hit-test data.
+    pub(crate) debug_ui: DebugChrome,
+    /// Where the debuggee is stopped, for the stopped-line tint.
+    pub(crate) debug_stopped: Option<(PathBuf, u32)>,
+    /// Palette commands from `--command`, queued until the backend is attached.
+    ///
+    /// They cannot run at construction time: a command like Show Hover or
+    /// Trigger Suggest returns early without a backend, so dispatching before
+    /// the attach silently did nothing. [`runtime::attach_backend`] drains
+    /// this, which is the one path both the live shell and `--capture` share.
+    pub(crate) startup_commands: Vec<Command>,
     /// Parser-backed resolver for the seeded inline-macro catalog.
     inline_macro_engine: karet_syntax::InlineMacroEngine,
     /// In-flight commit-detail requests, mapping request id → where its result goes

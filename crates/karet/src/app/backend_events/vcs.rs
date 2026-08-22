@@ -173,7 +173,9 @@ impl App {
         skip: usize,
         commits: Vec<Commit>,
         has_more: bool,
+        labels: std::collections::HashMap<String, Vec<karet_vcs::RefLabel>>,
     ) {
+        self.scm.ref_labels = labels;
         if id.is_some_and(|request| {
             self.graph_log_req
                 .is_some_and(|(pending, _)| pending == request)
@@ -254,6 +256,7 @@ impl App {
         detail: Box<CommitDetail>,
         changes: Vec<PreparedChange>,
     ) {
+        let commit_hash = detail.hash.clone();
         match id.and_then(|request| self.pending_commit_detail.remove(&request)) {
             Some(CommitDest::Browser { view, hash })
                 if detail.hash == hash && self.all_tabs().any(|tab| tab.view == view) =>
@@ -267,6 +270,7 @@ impl App {
             None if id.is_none() => self.open_commit_tab(detail, changes),
             _ => {},
         }
+        self.apply_review_flags(&commit_hash);
     }
 
     /// Apply a forge verdict if its owning view still shows the commit.

@@ -164,6 +164,16 @@ impl App {
                 let cursor = window_bottom(position, viewport, len);
                 self.spelling.selection.move_to(cursor);
             },
+            ScrollSurface::TodoResults => {
+                let len = self.todos.rows.len();
+                let cursor = window_bottom(position, viewport, len);
+                self.todos.selection.move_to(cursor);
+            },
+            ScrollSurface::DebugResults => {
+                let len = self.debug_panel.rows.len();
+                let cursor = window_bottom(position, viewport, len);
+                self.debug_panel.selection.move_to(cursor);
+            },
             // Routed as a delta so the commit log keeps its lazy-loading trigger.
             ScrollSurface::ScmChanges => {
                 self.scm_scroll_changes(delta_to(self.scm_ui.offset, position));

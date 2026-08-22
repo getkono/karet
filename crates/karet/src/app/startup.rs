@@ -34,6 +34,7 @@ impl App {
                 changes,
                 staged_count,
                 log: Vec::new(),
+                ref_labels: HashMap::new(),
                 log_has_more: false,
                 log_loading: false,
                 log_loading_since: None,
@@ -71,6 +72,10 @@ impl App {
             pending: Vec::new(),
             search: SearchPanel::default(),
             spelling: SpellingPanel::default(),
+            todos: TodosPanel::default(),
+            wakatime_status: None,
+            review: review::ReviewStore::default(),
+            todos_ui: TodosChrome::default(),
             status: None,
             notifications: NotificationCenter::default(),
             toast_hits: Vec::new(),
@@ -131,6 +136,17 @@ impl App {
             pending_completion: None,
             completion: None,
             completion_matcher: karet_fuzzy::Matcher::new(),
+            pending_hover: None,
+            hover_ui: None,
+            diagnostic_view: None,
+            debug_state: karet_session::DebugSessionState::Idle,
+            debug_detail: String::new(),
+            breakpoints: std::collections::HashMap::new(),
+            debug_output: std::collections::VecDeque::new(),
+            debug_panel: DebugPanel::default(),
+            debug_ui: DebugChrome::default(),
+            debug_stopped: None,
+            startup_commands: Vec::new(),
             inline_macro_engine: karet_syntax::InlineMacroEngine::new(),
             pending_commit_detail: HashMap::new(),
             latex_previews: HashMap::new(),
@@ -183,7 +199,7 @@ impl App {
         self.config_diagnostics = loaded.diagnostics.clone();
         self.loaded_config = loaded;
 
-        // Theme: the built-in "dark", or a path to a .tmTheme / VS Code .json theme.
+        // Theme: the built-in "dark", or a path to a VS Code .json theme.
         match load_theme(&settings.workbench.color_theme) {
             Ok(theme) => self.theme = theme,
             Err(message) => self.config_diagnostics.push(ConfigDiagnostic {
@@ -358,6 +374,30 @@ impl App {
     /// automation and interactive use cannot drift.
     pub fn apply_startup_command(&mut self, command: Command) {
         self.dispatch(command);
+    }
+
+    /// Run the queued `--command` palette commands, once the backend can serve
+    /// them.
+    ///
+    /// They wait for the active tab's document id. A command that queries or
+    /// edits a document — Show Hover, Trigger Suggest, the markdown edits —
+    /// returns early without one, so running them while the tab is still
+    /// pending silently dropped them. A session whose active tab is not a
+    /// pending code tab has nothing to wait for and runs them at once.
+    pub(super) fn run_startup_commands_when_ready(&mut self) {
+        if self.startup_commands.is_empty() {
+            return;
+        }
+        let pending = matches!(
+            self.tabs.get(self.active).map(|tab| &tab.kind),
+            Some(TabKind::Code { doc: None, .. })
+        );
+        if pending {
+            return;
+        }
+        for command in std::mem::take(&mut self.startup_commands) {
+            self.apply_startup_command(command);
+        }
     }
 
     /// Apply the CLI's startup focus override after startup tabs are opened.

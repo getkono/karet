@@ -14,12 +14,20 @@ Cargo features so a build can drop their dependency trees (issue #23):
 - **`docx`** pulls [`karet-docx`] → the deflate-only `zip` + `quick-xml` (a much
   smaller, pure-Rust tree than the two above; gated for consistency and issue #21's
   lean story rather than for its weight).
+- **`notebook`** pulls [`karet-notebook`] → nothing beyond the already-present
+  serde/serde_json (gated for consistency; nearly weightless).
 
 All are **on by default**, so the shipped binary is unchanged. A
 `--no-default-features` build compiles them all out; a disabled file type falls
 through to the existing placeholder ("Image preview unavailable" / "PDF
 document" / "DOCX rendering is not available yet"). See `mise run build-lean`
 and the CI "Lean build" step.
+
+## The `mermaid` feature
+
+`mermaid` (default-on) pulls the pure-Rust `merman` parse/layout engine via
+`karet-markdown`'s `mermaid` feature to render diagram fences in the markdown
+preview; `--no-default-features` drops it with the rest.
 
 ## How to reproduce
 
@@ -95,4 +103,5 @@ DOCX→markdown reader, issue #21, since has).
 
 [`karet-pdf`]: ../crates/karet-pdf
 [`karet-docx`]: ../crates/karet-docx
+[`karet-notebook`]: ../crates/karet-notebook
 [`hayro`]: https://crates.io/crates/hayro

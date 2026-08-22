@@ -23,7 +23,7 @@ path = "src/main.rs"
 # `--no-default-features` build compiles without the Gamut codec tree, `hayro`,
 # or the DOCX reader.
 [features]
-default = ["images", "pdf", "docx"]
+default = ["images", "pdf", "docx", "notebook", "mermaid"]
 # Decode & render raster image files (pulls the Gamut codec stack via
 # karet-fileview's `images` feature, which implies its shared `raster` primitives).
 images = ["karet-fileview/images"]
@@ -34,6 +34,11 @@ pdf = ["dep:karet-pdf", "karet-fileview/raster"]
 # the session backend (pulling the deflate-only `zip` and `quick-xml` via
 # karet-docx there); this feature only enables it and the routing.
 docx = ["karet-session/docx"]
+# Jupyter notebook previews (.ipynb → markdown); routing only, engine in the backend.
+notebook = ["karet-session/notebook"]
+# Render ```mermaid fences in the markdown preview as Unicode diagrams (pulls
+# the pure-Rust merman engine via karet-markdown's `mermaid` feature).
+mermaid = ["karet-markdown/mermaid"]
 
 [dependencies]
 # Presentation/client half + the headless backend it drives through the Command/Event seam.
@@ -46,12 +51,12 @@ karet-treesitter = { workspace = true, features = ["all-languages"] }
 karet-syntax.workspace = true
 karet-theme      = { workspace = true, features = ["view", "vscode"] }
 karet-diff = { workspace = true, features = ["view"] } # paint-only: diffs are prepared by the session
-karet-markdown   = { workspace = true, features = ["view", "highlight"] }
+karet-markdown   = { workspace = true, features = ["view", "highlight", "lint"] }
 karet-vcs.workspace = true
 karet-graph      = { workspace = true, features = ["view"] }
 karet-search.workspace = true
 karet-fuzzy.workspace = true
-karet-widgets.workspace = true
+karet-widgets = { workspace = true, features = ["hover"] }
 karet-editor.workspace = true
 karet-fileview.workspace = true       # read-only "render any file" primitives (hex/image/placeholder)
 karet-pdf = { workspace = true, optional = true }  # rasterize PDF pages (pure-Rust hayro); behind the `pdf` feature

@@ -114,6 +114,54 @@ pub enum VcsAction {
         /// Stable stash selector.
         reference: String,
     },
+    /// Create a tag at a revision (annotated when a message is given).
+    TagCreate {
+        /// The tag name.
+        name: String,
+        /// The revision to tag.
+        rev: String,
+        /// The annotation message, or `None` for a lightweight tag.
+        message: Option<String>,
+    },
+    /// Delete a local tag.
+    TagDelete {
+        /// The tag name.
+        name: String,
+    },
+    /// Cherry-pick a revision onto `HEAD`.
+    CherryPick {
+        /// The revision to pick.
+        rev: String,
+    },
+    /// Revert a revision on top of `HEAD`.
+    Revert {
+        /// The revision to revert.
+        rev: String,
+    },
+    /// Run a pre-planned interactive rebase.
+    RebaseInteractive {
+        /// The revision to rebase onto.
+        onto: String,
+        /// The plan, oldest first.
+        steps: Vec<karet_vcs::RebaseStep>,
+    },
+    /// Rebase the current branch onto a revision.
+    Rebase {
+        /// The new base revision.
+        rev: String,
+    },
+    /// Reset the current branch to a revision.
+    Reset {
+        /// How much state moves with `HEAD`.
+        mode: karet_vcs::ResetMode,
+        /// The target revision.
+        rev: String,
+    },
+    /// Check out a revision directly, detaching `HEAD`.
+    CheckoutDetached {
+        /// The revision to check out.
+        rev: String,
+    },
     /// Fetch and prune a remote.
     Fetch {
         /// Remote to fetch and prune.

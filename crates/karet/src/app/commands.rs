@@ -13,6 +13,9 @@ impl App {
                 if panel == SidebarPanel::Spelling && !self.spelling_available() {
                     return;
                 }
+                if panel == SidebarPanel::Todos && !self.todos_available() {
+                    return;
+                }
                 self.sidebar_panel = panel;
                 self.sidebar_visible = true;
                 self.focus = Focus::Sidebar;
@@ -27,6 +30,10 @@ impl App {
                 // starts a scan rather than presenting an empty list.
                 if panel == SidebarPanel::Spelling {
                     self.show_spelling();
+                }
+                // Same lazy-first-load shape for the Todos panel.
+                if panel == SidebarPanel::Todos {
+                    self.show_todos();
                 }
             },
             Command::OpenQuickOpen => self.open_quick_open(),
@@ -126,6 +133,63 @@ impl App {
             Command::PrevChangedFile => self.step_changed_file(-1),
             Command::OpenDiffFile => self.open_diff_file(),
             Command::TriggerCompletion => self.trigger_completion(true),
+            Command::Hover => self.request_hover(),
+            Command::ShowDiagnostic => self.show_diagnostic(),
+            Command::DebugStart => self.debug_start_or_continue(),
+            Command::DebugStop => self.debug_send(SessionCommand::DebugStop),
+            Command::DebugPause => self.debug_send(SessionCommand::DebugPause),
+            Command::DebugToggleBreakpoint => self.debug_toggle_breakpoint(),
+            Command::DebugStepOver => self.debug_step(SessionCommand::DebugStepOver),
+            Command::DebugStepIn => self.debug_step(SessionCommand::DebugStepIn),
+            Command::DebugStepOut => self.debug_step(SessionCommand::DebugStepOut),
+            Command::DebugEvaluatePrompt => self.debug_evaluate_prompt(),
+            Command::ToggleBold => {
+                self.toggle_markdown_surround("**", Some(Command::ToggleSidebar));
+            },
+            Command::ToggleItalic => self.toggle_markdown_surround("*", None),
+            Command::ToggleStrikethrough => self.toggle_markdown_surround("~~", None),
+            Command::ToggleInlineCode => self.toggle_markdown_surround("`", None),
+            Command::ToggleTaskCheckbox => self.toggle_task_checkbox(),
+            Command::MarkdownTocCreate => self.markdown_toc(true),
+            Command::MarkdownTocUpdate => self.markdown_toc(false),
+            Command::MarkdownHeadingUp => self.markdown_heading_shift(1),
+            Command::MarkdownHeadingDown => self.markdown_heading_shift(-1),
+            Command::MarkdownLintFixAll => self.markdown_lint_fix_all(),
+            Command::TodoScan => self.scan_workspace_todos(),
+            Command::DepsRefresh => self.deps_refresh(),
+            Command::DepsUpdate => self.deps_update_at_caret(),
+            Command::DepsUpdateAll => self.deps_update_all(),
+            Command::CommitGraphMenu => self.commit_graph_menu(),
+            Command::CommitGraphTag => self.commit_graph_tag(),
+            Command::CommitGraphCherryPick => {
+                self.commit_graph_op("cherry-pick", |rev| VcsAction::CherryPick { rev });
+            },
+            Command::CommitGraphRevert => {
+                self.commit_graph_op("revert", |rev| VcsAction::Revert { rev });
+            },
+            Command::CommitGraphResetSoft => {
+                self.commit_graph_op("soft reset", |rev| VcsAction::Reset {
+                    mode: karet_vcs::ResetMode::Soft,
+                    rev,
+                });
+            },
+            Command::CommitGraphResetMixed => {
+                self.commit_graph_op("mixed reset", |rev| VcsAction::Reset {
+                    mode: karet_vcs::ResetMode::Mixed,
+                    rev,
+                });
+            },
+            Command::CommitGraphResetHard => self.commit_graph_reset_hard(),
+            Command::CommitGraphInteractiveRebase => self.commit_graph_interactive_rebase(),
+            Command::CommitGraphCheckout => {
+                self.commit_graph_op("detached checkout", |rev| VcsAction::CheckoutDetached {
+                    rev,
+                });
+            },
+            Command::ScmFetch => self.scm_fetch(),
+            Command::CommitToggleFileReviewed => self.commit_toggle_reviewed(),
+            Command::CommitGraphCopyIssueUrls => self.commit_graph_copy_issue_urls(),
+            Command::TodoToggleGrouping => self.todos_toggle_grouping(),
             Command::GoToDefinition => self.request_definition(),
             Command::JumpBack => self.jump_back(),
             Command::InsertChar(c) => {
@@ -138,9 +202,13 @@ impl App {
                 }
             },
             Command::InsertNewline => {
-                self.submit_edit_with_cause(EditCause::Newline, |caret, sel, buf, base| {
-                    Some(editing::newline(caret, sel, buf, base))
-                });
+                // Markdown list items continue themselves (marker, numbering,
+                // checkbox); everything else gets the ordinary auto-indent.
+                if !self.markdown_insert_newline() {
+                    self.submit_edit_with_cause(EditCause::Newline, |caret, sel, buf, base| {
+                        Some(editing::newline(caret, sel, buf, base))
+                    });
+                }
             },
             Command::DeleteBackward => {
                 self.submit_edit_with_cause(EditCause::Delete, editing::backspace)

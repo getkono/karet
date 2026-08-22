@@ -14,6 +14,16 @@ pub(super) static BINDINGS: &[Binding] = &[
     // F1 is a terminal-safe alternate for the command palette: some emulators
     // capture Ctrl+Shift+P before it reaches the app (see the app README).
     b(Global, false, false, false, F(1),      Command::OpenCommandPalette),
+
+    // Debugger run controls (VS Code parity). Explorer keeps its F5 refresh:
+    // its layer outranks Global while the explorer has focus.
+    b(Global, false, false, false, F(5),      Command::DebugStart),
+    b(Global, false, true,  false, F(5),      Command::DebugStop),
+    b(Global, false, false, false, F(6),      Command::DebugPause),
+    b(Global, false, false, false, F(9),      Command::DebugToggleBreakpoint),
+    b(Global, false, false, false, F(10),     Command::DebugStepOver),
+    b(Global, false, false, false, F(11),     Command::DebugStepIn),
+    b(Global, false, true,  false, F(11),     Command::DebugStepOut),
     b(Global, true,  false, false, Char('f'), Command::OpenFind),
     b(Global, true,  true,  false, Char('f'), Command::OpenGlobalSearch),
     b(Global, true,  false, false, Char('b'), Command::ToggleSidebar),
@@ -23,6 +33,8 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Global, true,  false, false, Char('2'), Command::SelectPanel(SidebarPanel::Search)),
     b(Global, true,  false, false, Char('3'), Command::SelectPanel(SidebarPanel::SourceControl)),
     b(Global, true,  false, false, Char('4'), Command::SelectPanel(SidebarPanel::Spelling)),
+    b(Global, true,  false, false, Char('5'), Command::SelectPanel(SidebarPanel::Todos)),
+    b(Global, true,  false, false, Char('6'), Command::SelectPanel(SidebarPanel::Debug)),
     b(Global, false, false, false, Tab,       Command::ToggleFocus),
 
     // Tab navigation & reordering (global).
@@ -202,6 +214,23 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Code folding (VS Code parity): `Ctrl+K Ctrl+L` toggles the fold at the cursor.
     seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('l'))], Command::ToggleFold),
 
+    // Hover documentation (VS Code parity: `Ctrl+K Ctrl+I`), incl. the
+    // diagnostics under the caret.
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('i'))], Command::Hover),
+
+    // The scrollable diagnostic detail view, for errors too long for a popup.
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('m'))], Command::ShowDiagnostic),
+
+    // Markdown formatting (markdown-all-in-one parity). On a non-Markdown tab
+    // Ctrl+B falls through to the sidebar toggle, mirroring how VS Code scopes
+    // the extension's chord to markdown documents.
+    b(Editor, true,  false, false, Char('b'), Command::ToggleBold),
+    b(Editor, true,  false, false, Char('i'), Command::ToggleItalic),
+    b(Editor, false, false, true,  Char('s'), Command::ToggleStrikethrough),
+    b(Editor, false, false, true,  Char('c'), Command::ToggleTaskCheckbox),
+    b(Editor, true,  true,  false, Char(']'), Command::MarkdownHeadingUp),
+    b(Editor, true,  true,  false, Char('['), Command::MarkdownHeadingDown),
+
     // Editor focus, diff tab only. Enter drops from the read-only diff into the
     // underlying file ("editor mode"), landing on its first changed line.
     b(DiffEditor, false, false, false, Char('\\'), Command::ToggleDiffLayout),
@@ -220,6 +249,7 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Pager, false, false, false, Home,      Command::Top),
     b(Pager, false, false, false, End,       Command::Bottom),
     b(Pager, false, false, false, Char(']'), Command::NextChangedFile),
+    b(Pager, false, false, false, Char('x'), Command::CommitToggleFileReviewed),
     b(Pager, false, false, false, Char('['), Command::PrevChangedFile),
     b(Pager, false, false, false, Char('q'), Command::CloseTab),
 
@@ -236,6 +266,8 @@ pub(super) static BINDINGS: &[Binding] = &[
     // current selection against it.
     b(CommitGraph, false, false, false, Char('m'), Command::CommitGraphMarkBase),
     b(CommitGraph, false, false, false, Char('c'), Command::CommitGraphCompare),
+    b(CommitGraph, false, false, false, Char('.'), Command::CommitGraphMenu),
+    b(CommitGraph, false, false, false, Char('t'), Command::CommitGraphTag),
 
     // Editor focus, a too-large-file placeholder: bypass the size guard on demand.
     // Enter loads it anyway; Esc is intentionally unbound so repeated Esc never

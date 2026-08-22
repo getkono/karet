@@ -325,6 +325,8 @@ pub enum ThemeRole {
     ScrollbarTrack,
     /// A scrollbar thumb: the part standing for the visible slice of the content.
     ScrollbarThumb,
+    /// The line the debuggee is stopped on (a whole-line background tint).
+    DebugStoppedLine,
 }
 
 #[cfg(test)]

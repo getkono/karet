@@ -238,6 +238,8 @@ impl App {
             },
             SidebarPanel::Search => self.search_select(delta),
             SidebarPanel::Spelling => self.spelling_select(delta),
+            SidebarPanel::Todos => self.todos_select(delta),
+            SidebarPanel::Debug => self.debug_select(delta),
         }
     }
 
@@ -253,7 +255,10 @@ impl App {
             SidebarPanel::SourceControl => self.preview_selected_diff(),
             // Neither list previews on a plain move: a spelling row opens a real
             // editor tab, which browsing must not do on every arrow press.
-            SidebarPanel::Search | SidebarPanel::Spelling => {},
+            SidebarPanel::Search
+            | SidebarPanel::Spelling
+            | SidebarPanel::Todos
+            | SidebarPanel::Debug => {},
         }
     }
 
@@ -332,6 +337,8 @@ impl App {
             SidebarPanel::Explorer => self.sidebar_promote_or_open_permanent(),
             SidebarPanel::SourceControl => self.open_selected_diff(),
             SidebarPanel::Spelling => self.open_selected_spelling(),
+            SidebarPanel::Todos => self.open_selected_todo(),
+            SidebarPanel::Debug => self.debug_activate_row(),
             // The Search panel binds Enter in its own layer (Layer::SearchList).
             SidebarPanel::Search => {},
         }

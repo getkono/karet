@@ -18,6 +18,7 @@ mod compat;
 mod completion;
 mod desktop;
 mod doctor;
+mod hover;
 mod keymap;
 mod links;
 mod logging;
@@ -192,9 +193,10 @@ fn main() -> color_eyre::Result<()> {
     if let Some(focus) = cli.focus {
         app.apply_startup_focus(focus);
     }
-    for command in startup_commands {
-        app.apply_startup_command(command);
-    }
+    // Queued rather than dispatched: these run once the session backend is
+    // attached (see `app::runtime::attach_backend`), which both the live shell
+    // and `--capture` go through.
+    app.startup_commands = startup_commands;
     // `--capture` acts like the other automation flags: render the shell off-screen,
     // write the frame to stdout, and return — never enter the alternate screen.
     match capture {

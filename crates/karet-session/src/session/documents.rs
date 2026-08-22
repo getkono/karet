@@ -120,6 +120,7 @@ impl Session {
             syntax_symbols: Arc::default(),
             error_lines: Arc::default(),
             spell_diagnostics: Vec::new(),
+            lint_diagnostics: Vec::new(),
             lsp_diagnostics: HashMap::new(),
             decorations: Vec::new(),
             refs: 1,
@@ -299,6 +300,7 @@ impl Session {
                 }
                 self.publish(doc_id, None);
                 self.emit(Some(id), Event::Saved { doc: doc_id });
+                self.wakatime_beat(doc_id, true);
                 if self.config.settings.latex.build_on_save
                     && self.store.docs.get(&doc_id).is_some_and(|doc| {
                         doc.path
@@ -480,35 +482,128 @@ impl Session {
         }
     }
 
-    /// Convert a binary document (DOCX) to markdown for a read-only preview.
-    /// Parsing runs off the actor thread; the answer arrives as
-    /// [`Event::DocumentConverted`].
-    #[cfg(feature = "docx")]
+    /// Convert a document (DOCX, or a Jupyter notebook) to markdown for a
+    /// read-only preview. Parsing runs off the actor thread; the answer
+    /// arrives as [`Event::DocumentConverted`].
+    #[cfg(any(feature = "docx", feature = "notebook"))]
     pub(super) fn convert_document(&mut self, id: RequestId, path: PathBuf) {
         let events = self.events.clone();
         std::thread::spawn(move || {
-            let markdown = std::fs::read(&path)
-                .map_err(|error| format!("could not read {}: {error}", path.display()))
-                .and_then(|bytes| {
-                    karet_docx::parse(&bytes)
-                        .map(|document| karet_docx::to_markdown(&document))
-                        .map_err(|error| format!("could not convert {}: {error}", path.display()))
-                });
+            let markdown = convert_document_file(&path);
             let _ = events.send((Some(id), Event::DocumentConverted { path, markdown }));
         });
     }
 
-    /// Without the `docx` feature, document conversion is unavailable — report it.
-    #[cfg(not(feature = "docx"))]
+    /// Without either conversion feature, report the build gap.
+    #[cfg(not(any(feature = "docx", feature = "notebook")))]
     pub(super) fn convert_document(&mut self, id: RequestId, path: PathBuf) {
         self.emit(
             Some(id),
             Event::DocumentConverted {
                 path,
                 markdown: Err(
-                    "this backend was built without DOCX support (`docx` feature)".to_string(),
+                    "this backend was built without document conversion (`docx`/`notebook` \
+                     features)"
+                        .to_string(),
                 ),
             },
         );
+    }
+}
+
+/// One document → markdown, routed by extension (each format behind its
+/// feature so lean builds stay lean).
+#[cfg(any(feature = "docx", feature = "notebook"))]
+fn convert_document_file(path: &std::path::Path) -> Result<String, String> {
+    let is_notebook = path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("ipynb"));
+    if is_notebook {
+        #[cfg(feature = "notebook")]
+        {
+            return std::fs::read_to_string(path)
+                .map_err(|error| format!("could not read {}: {error}", path.display()))
+                .and_then(|text| {
+                    karet_notebook::parse(&text)
+                        .map(|notebook| karet_notebook::to_markdown(&notebook))
+                        .map_err(|error| format!("could not convert {}: {error}", path.display()))
+                });
+        }
+        #[cfg(not(feature = "notebook"))]
+        {
+            return Err(
+                "this backend was built without notebook support (`notebook` feature)".to_owned(),
+            );
+        }
+    }
+    #[cfg(feature = "docx")]
+    {
+        std::fs::read(path)
+            .map_err(|error| format!("could not read {}: {error}", path.display()))
+            .and_then(|bytes| {
+                karet_docx::parse(&bytes)
+                    .map(|document| karet_docx::to_markdown(&document))
+                    .map_err(|error| format!("could not convert {}: {error}", path.display()))
+            })
+    }
+    #[cfg(not(feature = "docx"))]
+    {
+        Err("this backend was built without DOCX support (`docx` feature)".to_owned())
+    }
+}
+
+impl Session {
+    /// Send one WakaTime heartbeat for `doc_id`, spawning the worker on first
+    /// use. Inert unless `wakatime.enabled` is set.
+    pub(super) fn wakatime_beat(&mut self, doc_id: DocumentId, is_write: bool) {
+        if !self.config.settings.wakatime.enabled {
+            return;
+        }
+        let Some(doc) = self.store.docs.get(&doc_id) else {
+            return;
+        };
+        // Apply the per-file throttle here rather than only in the worker: the
+        // fields below cost a whole-buffer `text()` allocation and a git ref
+        // read, and this runs on every text change, so more than 99% of that
+        // work would be built only for the worker to drop it. The worker keeps
+        // its own gate; both call the same pure `keep_beat`, and because the
+        // worker only ever sees what passes here, the two agree.
+        let now = self.wakatime_clock.elapsed();
+        if !crate::wakatime::keep_beat(
+            self.wakatime_last
+                .as_ref()
+                .map(|(path, at)| (path.as_path(), *at)),
+            &doc.path,
+            is_write,
+            now,
+        ) {
+            return;
+        }
+        self.wakatime_last = Some((doc.path.clone(), now));
+        let Some(doc) = self.store.docs.get(&doc_id) else {
+            return;
+        };
+        let branch = self
+            .vcs
+            .as_ref()
+            .and_then(|repo| repo.current_branch().ok().flatten());
+        let project = self
+            .config
+            .roots
+            .first()
+            .and_then(|root| root.file_name())
+            .map(|name| name.to_string_lossy().into_owned());
+        let beat = crate::wakatime::Beat {
+            path: doc.path.clone(),
+            language: doc.language,
+            lines: doc.buffer.text().lines().count(),
+            is_write,
+            branch,
+            project,
+        };
+        let worker = self
+            .wakatime_worker
+            .get_or_insert_with(|| crate::wakatime::spawn(self.events.clone()));
+        let _ = worker.send(beat);
     }
 }

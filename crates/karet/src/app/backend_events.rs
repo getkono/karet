@@ -56,6 +56,13 @@ impl App {
 
     /// Handle a backend event: correlate opens to tabs, surface save/progress status.
     pub(super) fn on_backend_event(&mut self, id: Option<RequestId>, event: SessionEvent) {
+        self.on_backend_event_inner(id, event);
+        // An answering event is what assigns the active tab its document id, so
+        // this is where queued `--command` work becomes servable.
+        self.run_startup_commands_when_ready();
+    }
+
+    fn on_backend_event_inner(&mut self, id: Option<RequestId>, event: SessionEvent) {
         if id.is_some_and(|request| self.cancelled_requests.contains(&request)) {
             return;
         }
@@ -110,6 +117,34 @@ impl App {
                 version,
                 items,
             } => self.on_completions(id, doc, version, items),
+            SessionEvent::HoverResult { hover } => self.on_hover_result(id, hover),
+            SessionEvent::WakatimeStatus { text } => self.wakatime_status = Some(text),
+            SessionEvent::DebugState { state, detail } => self.on_debug_state(state, detail),
+            SessionEvent::DebugStopped {
+                reason,
+                thread: _,
+                path,
+                line,
+            } => self.on_debug_stopped(&reason, path, line),
+            SessionEvent::DebugContinued => {},
+            SessionEvent::DebugOutput { category, text } => self.on_debug_output(category, text),
+            SessionEvent::DebugBreakpoints { path, breakpoints } => {
+                self.on_debug_breakpoints(path, &breakpoints);
+            },
+            SessionEvent::DebugStack { frames } => self.on_debug_stack(id, frames),
+            SessionEvent::DebugScopes { frame, scopes } => self.on_debug_scopes(id, frame, scopes),
+            SessionEvent::DebugVariables {
+                reference,
+                variables,
+            } => self.on_debug_variables(id, reference, variables),
+            SessionEvent::DebugEvaluated { result, .. } => self.on_debug_evaluated(id, result),
+            SessionEvent::ManifestHints {
+                doc,
+                version,
+                hints,
+            } => {
+                self.docs.manifest_hints.insert(doc, (version, hints));
+            },
             SessionEvent::Definitions { locations } => self.on_definitions(id, locations),
             SessionEvent::LanguageServerInstallRequired { server } => {
                 self.prompt_language_server_install(server);
@@ -210,7 +245,8 @@ impl App {
                 skip,
                 commits,
                 has_more,
-            } => self.on_vcs_log(id, skip, commits, has_more),
+                labels,
+            } => self.on_vcs_log(id, skip, commits, has_more, labels),
             SessionEvent::FileHistory {
                 skip,
                 commits,
@@ -288,12 +324,21 @@ impl App {
                 hits,
                 files_scanned,
             } => self.spelling_scan_progress(id, hits, files_scanned),
+            SessionEvent::TodoScanProgress {
+                hits,
+                files_scanned,
+            } => self.todo_scan_progress(id, hits, files_scanned),
             SessionEvent::SpellingUpdated { path, hits } => self.spelling_updated(&path, hits),
             SessionEvent::SpellingScanFinished {
                 files_scanned,
                 truncated,
                 ..
             } => self.spelling_scan_finished(id, files_scanned, truncated),
+            SessionEvent::TodoScanFinished {
+                files_scanned,
+                truncated,
+                ..
+            } => self.todo_scan_finished(id, files_scanned, truncated),
             SessionEvent::RemoteFacts { path, facts } => self.apply_remote_facts(path, facts),
             SessionEvent::ChangePrepared {
                 path,

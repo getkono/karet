@@ -846,20 +846,26 @@ fn the_activity_switcher_reserves_a_cell_pair_for_every_panel()
             SidebarPanel::Search,
             SidebarPanel::SourceControl,
             SidebarPanel::Spelling,
+            SidebarPanel::Todos,
+            SidebarPanel::Debug,
         ],
         "every panel needs a switcher button, in activity-bar order"
     );
 
-    // Spell check off retires the Spelling button along with its panel.
+    // Spell check off retires the Spelling button along with its panel; the
+    // codetag setting does the same for Todos.
     app.settings.spellcheck.enabled = false;
+    app.settings.editor.semantic_comments.enabled = false;
     assert_eq!(
         header(&mut app),
         vec![
             SidebarPanel::Explorer,
             SidebarPanel::Search,
             SidebarPanel::SourceControl,
+            SidebarPanel::Debug,
         ],
     );
+    app.settings.editor.semantic_comments.enabled = true;
     app.settings.spellcheck.enabled = true;
     let _ = header(&mut app);
     // Two cells each, marching left to right and staying inside the header.

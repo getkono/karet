@@ -32,7 +32,8 @@ categories   = ["text-editors", "command-line-utilities"]
 # rewrites the `version =` pin here only for crates it releases — so a pin on an
 # unpublished crate would go stale on the next bump (`karet-cbor = "^0.1.0"` can't match
 # the bumped `0.2.0` package) and break `cargo update`. Path-only keeps them resolvable.
-# (`karet-pdf` keeps its version: it IS published — `karet-fileview` depends on it.)
+# (`karet-pdf` keeps its version: it IS published — pure-Rust PDF rasterization has a
+# standalone consumer story; only the app consumes it in-workspace, behind `pdf`.)
 karet-core       = { path = "crates/karet-core", version = "0.5.0" }
 karet-filetype   = { path = "crates/karet-filetype", version = "0.5.0" }
 karet-text       = { path = "crates/karet-text", version = "0.5.0" }
@@ -44,7 +45,8 @@ karet-markdown   = { path = "crates/karet-markdown" }
 karet-cbor       = { path = "crates/karet-cbor" }
 karet-docx       = { path = "crates/karet-docx" }
 karet-lsp        = { path = "crates/karet-lsp", version = "0.5.0" }
-karet-dap        = { path = "crates/karet-dap", version = "0.5.0" }
+karet-notebook   = { path = "crates/karet-notebook" }
+karet-dap        = { path = "crates/karet-dap" }
 karet-vcs        = { path = "crates/karet-vcs", version = "0.5.0" }
 karet-search     = { path = "crates/karet-search", version = "0.5.0" }
 karet-fuzzy      = { path = "crates/karet-fuzzy" }
@@ -57,6 +59,14 @@ karet-supervisor = { path = "crates/karet-supervisor" }
 karet-watch      = { path = "crates/karet-watch" }
 karet-graph      = { path = "crates/karet-graph" }
 karet-github     = { path = "crates/karet-github" }
+# The dependable pair: `-core` (pure lockfile→graph, the `viz` lens) and
+# `-fetch` (async registry + OSV checking for Cargo.toml hints). Same author,
+# alpha line — pinned to the exact published version karet was built against.
+dependable-fetch = "=0.1.2"
+# TOML formatting for the built-in fallback (taplo the library, not the LSP:
+# lossless CST + the ~20 even-better-toml options; pure Rust, no network).
+taplo = "0.14.0"
+toml  = "1.1.4"                        # read .taplo.toml formatter options
 # blameline is a standalone library on its OWN SemVer line (NOT the workspace lockstep);
 # pin its independent version here. See crates/blameline/README.md.
 blameline        = { path = "crates/blameline", version = "2.0.0", default-features = false }
@@ -87,6 +97,10 @@ crossterm = "0.29.0"
 # `karet-image` once that system dependency is acceptable.
 unicode-width = "0.2.2"
 url = "2.5.8"
+# Mermaid diagrams (pure Rust; ASCII/Unicode rendering for the markdown preview).
+# Pinned exactly: the crate is alpha with documented API churn, and 0.8.x raises
+# its MSRV past the workspace floor.
+merman = { version = "=0.7.0-alpha.1", default-features = false, features = ["ascii"] }
 # Text / rope
 ropey    = "1.6.1"
 tempfile = "3.27"                      # atomic crash-safe file saves (karet-text)

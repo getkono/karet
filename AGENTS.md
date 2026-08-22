@@ -37,12 +37,13 @@ and we refuse to relitigate the axes where choice only adds surface area.
   and a `Backend` trait. Presentation talks to it only through that seam. The
   remote client-server split is deferred, but the seams (serde-ready core models,
   in-proc `Backend`) are pre-placed so it lands as an *additive* change, not a rewrite.
-- **No system dependencies** — nothing links a system C library (`*-sys`) or needs
-  `pkg-config`; verify with `cargo tree`. The one scoped exception to "pure Rust"
-  is deliberate: tree-sitter (our sole syntax backend) and its grammar crates
-  compile vendored C via `cc`, so a C compiler (and, for cross-builds, a cross C
-  toolchain) is required whenever any `lang-*` feature is on. Everything else
-  (PDF, DOCX, images, TLS) is pure Rust by policy.
+- **No system dependencies** — nothing needs `pkg-config` or links a third-party
+  system C library (OS-syscall shims like `inotify-sys`/`windows-sys` are fine;
+  `openssl-sys`-style bindings are not); verify with `cargo tree`. The one scoped
+  exception to "pure Rust" is deliberate: tree-sitter (our sole syntax backend)
+  and its grammar crates compile vendored C via `cc`, so a C compiler (and, for
+  cross-builds, a cross C toolchain) is required whenever any `lang-*` feature is
+  on. Everything else (PDF, DOCX, images, TLS) is pure Rust by policy.
 
 **Opinionated where sane defaults** — one blessed way; shrink the decision surface:
 
@@ -75,7 +76,7 @@ edition, …) and all dependency versions are centralized in `[workspace.package
 and `[workspace.dependencies]`.
 
 The lone exception is **`blameline`**, a standalone library on its own SemVer line
-(from `1.0.0`) published on an independent cadence — it is not `karet`-branded and
+published on an independent cadence — it is not `karet`-branded and
 carries no `karet` coupling in its public API, so lockstep would only get in its way.
 
 ## Crates
@@ -96,31 +97,44 @@ published to crates.io (everything else is `publish = false`).
 | `karet-markdown` | engine | — | markdown parse → wrap → render model, with source-line anchors for scroll sync; `highlight` colours code fences (`lang-common`/`all-languages` bundle the grammars), `view` paints ratatui (incl. a scrollable `MarkdownView`) |
 | `karet-cbor` | engine | — | CBOR decode/encode ↔ editable diagnostic-notation text (via `ciborium`); no presentation |
 | `karet-docx` | engine | — | DOCX (OOXML) parse → neutral document model → markdown text, hand-rolled on deflate-only `zip` + `quick-xml` (pure-Rust, no zstd/bzip2); no presentation |
+| `karet-notebook` | engine | — | Jupyter `.ipynb` (nbformat 4) parse → round-trip-preserving model → markdown text, hand-rolled over serde_json; no presentation |
 | `karet-pdf` | engine | ✓ | pure-Rust PDF page → RGBA rasterization (via `hayro`); no presentation |
 | `karet-lsp` | engine | ✓ | async LSP client → core models (headless; ratatui popups live in `karet-widgets`) |
-| `karet-dap` | engine | — | **unimplemented skeleton** for the future async DAP client; `publish = false`, no consumer |
+| `karet-dap` | engine | — | async DAP client: stdio/spawn-then-TCP transports over the shared `karet-lsp` codec, capability-gated handshake, run controls, threads→stack→scopes→variables, evaluate; `publish = false`, consumed by the debugger backend work |
 | `karet-vcs` | engine | ✓ | git facts engine: status/branches/log/commit detail/stash/staging/remotes — `gix` reads + hardened `git`-CLI writes; headless |
 | `karet-github` | engine | — | headless GitHub REST client (issues, PRs, checks, workflows); generated from a vendored OpenAPI spec at build time; consumed only by `karet-session` |
 | `karet-search` | engine | ✓ | in-file + workspace search/replace, plus the shared gitignore-aware file walk (`walk_text_files`); no karet deps |
 | `karet-watch` | engine | — | debounced cross-platform FS-watch → neutral `FsEvent` Tokio stream; enumerates off-thread (headless) |
 | `karet-fuzzy` | engine | — | fuzzy match + ranking (nucleo-backed, smart case), shared by widgets and completion |
 | `karet-session` | backend | — | headless editor backend: owns documents/workspace, orchestrates producers, applies `Command`s, emits `Event`s; runs layered highlighting on a background worker; holds format-on-save, spell-check (per-document *and* a workspace-wide scan worker), settings/session |
+| `karet-supervisor` | infra | — | hidden alternate entry points of the `karet` binary: a process-group supervisor that outlives-and-kills external process trees with the editor, and the cross-process LSP broker (one per server+root, shared by editor windows over an authenticated loopback socket); consumed only by the app |
 | `karet-widgets` | widget | — | ratatui UI toolkit: file tree, completion popup, toasts, pane layout + drop zones, multi-select model, UI glyphs; LSP hover popup behind the `hover` feat |
 | `karet-editor` | widget | ✓ | the editor widget: gutter, folds, sticky scroll, word wrap, multi-caret, merge-conflict decorations; `read_only` mode |
 | `karet-fileview` | widget | ✓ | read-only file-view primitives: hex view + terminal image (behind `raster`/`images`) + placeholder, plus `FileKind`/`classify` re-exports; composition is the consumer's |
 | `karet` | app | — | composition root / TUI client (local mode); merges the clipboard + input (keymap) modules; default-on `images`/`pdf`/`docx` features gate the optional media/document deps (`--no-default-features` → lean build, see `docs/binary-size.md`); `publish = false` |
 | `blameline` | standalone | ✓ | semantic git-blame (via `gix`): grouped whole-file blame by default (pure Rust, no C compiler); tree-sitter function narrowing opt-in behind `treesitter` + `lang-*` (`all-narrowing-languages`); serde/JSON output; on its **own** SemVer line (see [Versioning](#versioning)) |
+| `xtask` | dev tool | — | repo verification tasks run by `mise`/CI (`file-lines` code-line ceiling, `publish-closure`, `publish-ready`); version `0.0.0`, never shipped |
 
 ## Quality
 
-Validate changes (tasks run workspace-wide):
+The merge gate is one composite task — CI and the pre-push hook both run it, so
+they cannot drift:
 
 ```bash
-mise run test        # cargo test --workspace --all-features
-cargo fmt -- --check # formatting
-mise run lint        # cargo clippy --workspace --all-targets --all-features -D warnings
-mise run coverage    # cargo llvm-cov --workspace
+mise run verify
 ```
+
+`verify` = `file-lines` (800 code-line ceiling per `.rs`, via `xtask` + tokei) →
+`publish-closure` (publishable crates only depend on versioned, publishable
+workspace crates) → `publish-ready` (builds `.crate` archives against release-time
+dep sources) → `format-check` (**nightly** rustfmt, pinned in `rust-nightly.txt` —
+plain `cargo fmt` uses the wrong toolchain) → `lint` (`cargo clippy --workspace
+--all-targets --all-features -- -D warnings`) → `test` (`cargo test --workspace
+--all-features`) → `build-lean` (app/fileview builds across feature subsets) →
+`coverage` (`cargo llvm-cov`, uploaded, no threshold). The individual tasks
+(`mise run test`, `mise run lint`, `mise run format-check`, …) exist for quick
+iteration; CI additionally checks Conventional Commits (`convco`) on pull
+requests and `cargo check`s a few grammar feature subsets.
 
 ## Conventions
 
@@ -133,9 +147,13 @@ mise run coverage    # cargo llvm-cov --workspace
 - ratatui rendering goes behind the `view` feature; never make a headless engine
   depend on `ratatui` unconditionally.
 - Content engines expose their entry point as `parse(input) -> Result<Model, Error>`
-  (`karet_markdown::parse`, `karet_diff::parse`, …) — the one blessed verb for
+  (`karet_diff::parse`, `karet_docx::parse`, …) — the one blessed verb for
   "bytes/text in, neutral model out". New engines follow it; published types keep
-  their names (no breaking renames just to satisfy the convention).
+  their names (no breaking renames just to satisfy the convention). Grandfathered
+  exceptions, documented rather than churned: `karet_markdown::parse` is
+  infallible by design (markdown has no invalid input), `karet-cbor` exposes the
+  editor seam `decode_to_text`/`encode_from_text`, and `karet-pdf`/`karet-theme`
+  keep their published `Document::load`/`Theme::load_vscode` constructors.
 
 ## UI loading states
 
@@ -158,8 +176,8 @@ correctness and stay light where it would only tax velocity.
 
 - **Baseline (every crate):** tests live in-file under `#[cfg(test)] mod tests`;
   **test every new public item**. Reach for a `tests/` integration dir only to
-  exercise a public API across the crate boundary (as `blameline` and `karet-cbor`
-  do). `tempfile` is the sanctioned scratch-tree dev-dep — no snapshot/property
+  exercise a public API across the crate boundary (as `blameline`, `karet-cbor`,
+  and `karet-docx` do). `tempfile` is the sanctioned scratch-tree dev-dep — no snapshot/property
   framework is mandated; adding `insta`/`proptest` is a case-by-case call.
 - **Headless engines** (`karet-core`, `karet-text`, `karet-diff`, `karet-syntax`,
   `karet-vcs`, …): the primary test investment. Logic is pure and cheap to cover —

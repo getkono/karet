@@ -25,7 +25,7 @@
 //!   [`Selection`], [`CursorState`].
 //! - Highlighting & folds: [`HighlightSpan`], [`Highlights`], [`FoldRegion`],
 //!   [`FoldRegions`].
-//! - Interop traits: [`SymbolProvider`].
+//! - Interop traits: [`SymbolProvider`], [`DiagnosticFormatter`].
 //! - Theme vocabulary: [`TokenId`], [`StandardToken`], [`ThemeRole`], [`Emphasis`].
 //! - Notifications: [`Notification`], [`NotificationKind`], [`severity_role`].
 
@@ -91,6 +91,8 @@ pub use notify::Notification;
 pub use notify::NotificationId;
 pub use notify::NotificationKind;
 pub use notify::severity_role;
+pub use provider::DiagnosticFormatter;
+pub use provider::FormattedDiagnostic;
 pub use provider::SymbolProvider;
 pub use token::Emphasis;
 pub use token::StandardToken;

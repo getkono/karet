@@ -14,8 +14,14 @@
 //! source line it came from, so a rendered preview can be scrolled in step with the
 //! markdown it was rendered from.
 
+pub mod edit;
+#[cfg(feature = "lint")]
+pub mod lint;
+#[cfg(feature = "mermaid")]
+pub mod mermaid;
 mod parse;
 mod table;
+pub mod toc;
 mod wrap;
 
 #[cfg(feature = "highlight")]
@@ -41,6 +47,8 @@ pub enum Inline {
     Emphasis(Vec<Inline>),
     /// Strong (bold) content.
     Strong(Vec<Inline>),
+    /// Struck-through content (GFM `~~…~~`).
+    Strikethrough(Vec<Inline>),
     /// A hyperlink.
     Link {
         /// The link text.

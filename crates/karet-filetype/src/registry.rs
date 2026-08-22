@@ -387,6 +387,9 @@ static REGISTRY: &[FileType] = &[
     // No tree-sitter grammar for Pkl is bundled: recognized (name, LSP id,
     // config selector) but explicitly grammar-less until one exists.
     language("Pkl", Config, None, &["pkl"], &[], (None, "pkl", "pkl")),
+    // Mermaid sources open as plain text; the markdown preview is where
+    // diagrams render (no dedicated grammar is bundled).
+    wrap("Mermaid", Markup, None, &["mmd", "mermaid"], &[]),
     language_named("XML", Markup, None, &["xml"], &[], "xml"),
     language(
         "SVG",
@@ -398,7 +401,14 @@ static REGISTRY: &[FileType] = &[
     ),
     overflow("CSV", Data, None, &["csv", "tsv"], &[]),
     language_named("SQL", Data, Some('\u{f1c0}'), &["sql"], &[], "sql"),
-    language_named("GraphQL", Data, None, &["graphql", "gql"], &[], "graphql"),
+    language_named(
+        "GraphQL",
+        Data,
+        None,
+        &["graphql", "gql", "graphqls"],
+        &[],
+        "graphql",
+    ),
     language_named("Protobuf", Data, None, &["proto"], &[], "protobuf"),
     language_named("CBOR", Data, None, &["cbor"], &[], "cbor"),
     language(
@@ -517,6 +527,13 @@ static REGISTRY: &[FileType] = &[
         Document,
         Some('\u{f1c2}'),
         &["doc", "docx", "odt", "rtf"],
+        &[],
+    ),
+    wrap(
+        "Jupyter notebook",
+        Document,
+        Some('\u{e678}'),
+        &["ipynb"],
         &[],
     ),
     overflow(

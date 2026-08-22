@@ -219,6 +219,40 @@ pub enum Event {
         /// How many files the scan has visited so far.
         files_scanned: usize,
     },
+    /// The dependency-freshness hints for one open manifest (unsolicited;
+    /// re-emitted as the buffer changes, tagged with the checked version so
+    /// stale answers are droppable).
+    ManifestHints {
+        /// The manifest document.
+        doc: DocumentId,
+        /// The buffer version the check ran against.
+        version: u64,
+        /// Per-dependency hints, in line order.
+        hints: Vec<ManifestHint>,
+    },
+    /// Today's WakaTime coding-time text for the status bar (unsolicited;
+    /// only emitted while `wakatime.enabled` is set and a key is configured).
+    WakatimeStatus {
+        /// e.g. `"2 hrs 15 mins"`.
+        text: String,
+    },
+    /// A batch of workspace codetag-scan results (see
+    /// [`Command::ScanWorkspaceTodos`]); `files_scanned` is cumulative.
+    TodoScanProgress {
+        /// The codetags found since the previous batch.
+        hits: Vec<TodoHit>,
+        /// How many files the scan has visited so far.
+        files_scanned: usize,
+    },
+    /// The workspace codetag scan ended (complete, truncated, or cancelled).
+    TodoScanFinished {
+        /// Total files visited.
+        files_scanned: usize,
+        /// Whether the hit limit cut the scan short.
+        truncated: bool,
+        /// Whether [`Command::Cancel`] stopped it.
+        cancelled: bool,
+    },
     /// One open document's complete spelling layer, emitted whenever it changes.
     ///
     /// Unsolicited: it carries no request id, because it describes the document
@@ -400,6 +434,9 @@ pub enum Event {
         commits: Vec<Commit>,
         /// Whether more commits exist beyond this page.
         has_more: bool,
+        /// Every ref per commit hash (branches, remotes, tags, detached
+        /// `HEAD`), refreshed with each page.
+        labels: std::collections::HashMap<String, Vec<karet_vcs::RefLabel>>,
     },
     /// New commits appeared at the tip (an external `git commit`, amend, or small
     /// rebase detected via file-watching). These should be prepended to the loaded
@@ -533,5 +570,71 @@ pub enum Event {
     LoadedConfig {
         /// The loaded configuration report.
         report: Box<LoadedConfig>,
+    },
+    /// The debug session's lifecycle changed (unsolicited).
+    DebugState {
+        /// The new state.
+        state: DebugSessionState,
+        /// A short human-readable detail (configuration name, stop reason,
+        /// error text) for the status line.
+        detail: String,
+    },
+    /// The debuggee stopped; inspection is now valid (unsolicited).
+    DebugStopped {
+        /// The adapter's reason (`"breakpoint"`, `"step"`, `"exception"`, …).
+        reason: String,
+        /// The stopped thread the run controls act on.
+        thread: i64,
+        /// The stop location's file, when the top frame reports one.
+        path: Option<std::path::PathBuf>,
+        /// The 0-based stop line, when known.
+        line: Option<u32>,
+    },
+    /// The debuggee resumed (unsolicited).
+    DebugContinued,
+    /// The adapter or debuggee produced output (unsolicited; text may carry
+    /// ANSI styling — render through `karet_widgets::ansi`).
+    DebugOutput {
+        /// The stream (`"console"`, `"stdout"`, `"stderr"`, …).
+        category: String,
+        /// The text, possibly multi-line.
+        text: String,
+    },
+    /// The stopped thread's call stack (answers [`Command::DebugStackTrace`];
+    /// empty when the debuggee is not stopped).
+    DebugStack {
+        /// Top frame first.
+        frames: Vec<DebugFrame>,
+    },
+    /// One frame's variable scopes (answers [`Command::DebugScopes`]).
+    DebugScopes {
+        /// The frame the scopes belong to.
+        frame: i64,
+        /// The scopes, adapter order.
+        scopes: Vec<DebugScope>,
+    },
+    /// One reference's children (answers [`Command::DebugVariables`]).
+    DebugVariables {
+        /// The handle the variables belong to.
+        reference: i64,
+        /// The variables, adapter order.
+        variables: Vec<DebugVariable>,
+    },
+    /// An evaluation result (answers [`Command::DebugEvaluate`]; a rejected
+    /// expression answers with the adapter's error text as the result).
+    DebugEvaluated {
+        /// The rendered result (or error text).
+        result: String,
+        /// Non-zero when the result has fetchable children.
+        reference: i64,
+    },
+    /// The acknowledged breakpoints of one file (answers
+    /// [`Command::DebugSetBreakpoints`]; also unsolicited on late
+    /// verification).
+    DebugBreakpoints {
+        /// The source file.
+        path: std::path::PathBuf,
+        /// The acknowledged set, in the submitted order.
+        breakpoints: Vec<DebugBreakpoint>,
     },
 }

@@ -40,6 +40,58 @@ unsafe extern "C" {
 #[cfg(feature = "lang-mdx")]
 const MDX_LANGUAGE: LanguageFn = unsafe { LanguageFn::from_raw(tree_sitter_mdx) };
 
+/// GraphQL marker injections for JavaScript: a `/* GraphQL */` comment before
+/// a template string, or a leading `#graphql` comment inside one. The tagged
+/// ``gql`…` `` form is already covered by the grammar's bundled query.
+#[cfg(feature = "lang-javascript")]
+pub(super) const JS_GRAPHQL_MARKER_INJECTION: &str = r#"
+((comment) @_graphql_marker
+ .
+ (template_string (string_fragment) @injection.content)
+ (#any-of? @_graphql_marker "/* GraphQL */" "/* graphql */")
+ (#set! injection.language "graphql")
+ (#set! injection.combined)
+ (#set! injection.include-children))
+
+((template_string (string_fragment) @injection.content)
+ (#match? @injection.content "^\\s*#graphql")
+ (#set! injection.language "graphql")
+ (#set! injection.combined)
+ (#set! injection.include-children))
+"#;
+
+/// Injections for TypeScript/TSX, whose grammars ship no query of their own:
+/// the tag-inferred template-literal pattern mirrored from
+/// tree-sitter-javascript's bundled query, plus the same GraphQL markers as
+/// [`JS_GRAPHQL_MARKER_INJECTION`] (duplicated because query sources are
+/// `&'static str` — keep the marker patterns in sync).
+#[cfg(feature = "lang-typescript")]
+pub(super) const TS_INJECTION_EXTRA: &str = r#"
+(call_expression
+  function: [
+    (identifier) @injection.language
+    (member_expression
+      property: (property_identifier) @injection.language)
+  ]
+  arguments: (template_string (string_fragment) @injection.content)
+  (#set! injection.combined)
+  (#set! injection.include-children))
+
+((comment) @_graphql_marker
+ .
+ (template_string (string_fragment) @injection.content)
+ (#any-of? @_graphql_marker "/* GraphQL */" "/* graphql */")
+ (#set! injection.language "graphql")
+ (#set! injection.combined)
+ (#set! injection.include-children))
+
+((template_string (string_fragment) @injection.content)
+ (#match? @injection.content "^\\s*#graphql")
+ (#set! injection.language "graphql")
+ (#set! injection.combined)
+ (#set! injection.include-children))
+"#;
+
 /// Parse non-PHP `text` ranges as one HTML layer. The upstream PHP query only
 /// covers doc comments and heredocs, despite the grammar accepting mixed files.
 #[cfg(feature = "lang-php")]
@@ -49,6 +101,7 @@ pub(super) const PHP_HTML_INJECTION: &str = r#"
  (#set! injection.combined))
 "#;
 
+// The pushes are `#[cfg]`-gated per grammar, which `vec![]` cannot express.
 #[allow(clippy::vec_init_then_push)]
 pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
     #[cfg(not(any(

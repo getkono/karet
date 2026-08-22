@@ -60,6 +60,9 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 | `formatOnSave` | bool | `false` | Run the formatter on save. |
 | `semanticComments` | object | enabled | Codetag highlighting (`enabled`, `tags`). |
 | `completion` | object | enabled | LSP completion (`enabled`, `autoTrigger`). |
+| `hover` | object | enabled | The hover popup (`Ctrl+K Ctrl+I`): LSP documentation plus the diagnostics under the caret (`enabled`). |
+| `colorHighlight` | object | enabled | Tint color literals (hex, `rgb()`, `hsl()`) with their own color on visible lines (`enabled`). |
+| `prettyErrors` | bool | `true` | Re-render TypeScript diagnostics as markdown — quoted types become highlighted code blocks — in the hover popup and the diagnostic view (`Ctrl+K Ctrl+M`). |
 
 #### Per-language editor settings
 
@@ -119,7 +122,7 @@ Zsh, Fish, and EDN have their own selectors.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `colorTheme` | string | `"dark"` | Built-in `"dark"`, or a path to a `.tmTheme` / VS Code `.json` theme. |
+| `colorTheme` | string | `"dark"` | Built-in `"dark"`, or a path to a VS Code `.json` theme (see [scope](scope.md#tui-theming)). |
 | `iconStyle` | `"nerdFont"`\|`"unicode"`\|`"ascii"` | `"nerdFont"` | File-tree / activity-bar glyphs. |
 | `startupPanel` | `"explorer"`\|`"search"`\|`"sourceControl"`\|`"none"` | `"explorer"` | Sidebar panel shown at startup. |
 
@@ -271,10 +274,54 @@ See [Managed language servers](language-servers.md) for install approval,
 explicit-only updates, and crash-safe process ownership. The TeX compiler remains
 an external prerequisite.
 
+### `markdown`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `listContinuation` | bool | `true` | Enter inside a list item repeats the marker, advances ordered numbering (renumbering the run), carries task checkboxes, and ends the list on an empty item. |
+| `toc.minLevel` | number | `2` | Smallest heading level the generated table of contents includes. |
+| `toc.maxLevel` | number | `6` | Largest heading level the generated table of contents includes. |
+| `lint.enabled` | bool | `true` | Lint Markdown as it changes (a 21-rule markdownlint core), honouring the workspace's `.markdownlint.json`; issues surface as diagnostics, and "Markdown: Fix All Lint Issues" applies every autofix. |
+| `mermaid.enabled` | bool | `true` | Render matching code fences in the preview as Unicode diagrams (flowchart, sequence, class, ER, xychart); unsupported types show their source with a note. |
+| `mermaid.fenceLanguages` | string[] | `["mermaid"]` | Fence info strings treated as mermaid. |
+
+### `deps`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | bool | `true` | Annotate open `Cargo.toml` dependencies with freshness and known advisories (crates.io sparse index + OSV over the network, cached; turn off when air-gapped). Hover a dependency line for details; "Dependencies: Update…" commands bump versions in place. |
+
+### `toml`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `format` | bool | `true` | Format TOML with the built-in taplo formatter (honouring the workspace's `.taplo.toml`) when no language server offers formatting; with the `taplo` LSP installed, its formatter wins. |
+
+### `debug`
+
+karet speaks the Debug Adapter Protocol; see [debugging](debugging.md) for the
+whole story. No launch.json compatibility layer — configurations live here.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `adapters` | object | `{}` | Debug adapters by name: `{ "command", "args", "transport": "stdio" \| "tcp" }`. Under `tcp`, `${port}` in `args` is replaced with a free port. The built-in fallbacks `codelldb`, `lldb-dap`, `gdb`, and `debugpy` need no entry when on `PATH`. |
+| `configurations` | array | `[]` | The Debug: Start (`F5`) entries: `{ "name", "adapter", "attach": false, "arguments": { … } }` — `arguments` passes to the adapter verbatim (`program`, `args`, `cwd`, `pid`, …). |
+
+### `wakatime`
+
+**Off by default** — enabling it sends file names, project names, and editing
+activity to the configured WakaTime-compatible service.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | bool | `false` | Send heartbeats on edits and saves (2-minute per-file throttle, bulk-batched). The API key and endpoint come from the standard `$WAKATIME_HOME/.wakatime.cfg` (`[settings] api_key`, `api_url`) — never from this file — so existing WakaTime/Wakapi/Hackatime installs work unchanged; undelivered batches queue offline. |
+| `statusBar` | bool | `true` | Show today's coding total in the status bar. |
+
 ### `git`
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
+| `issueUrl` | string\|null | `null` | URL template for `#123` refs in commit messages (`$1` = number); GitHub origins auto-derive when unset. "Commit Graph: Copy Issue URLs" resolves through it. |
 | `decorations` | bool | `true` | Gutter change decorations + file-tree status colouring. |
 | `blame` | bool | `true` | Muted cursor-line attribution; click it or press `Alt+B` to open the commit. |
 

@@ -69,6 +69,10 @@ impl App {
             }
             return;
         }
+        if self.diagnostic_view.is_some() {
+            self.diagnostic_view_key(key);
+            return;
+        }
         if self.input_context().modal.is_none() && self.github_key(key) {
             return;
         }
@@ -90,6 +94,12 @@ impl App {
                 Resolved::Pending | Resolved::None => self.modal_text(modal, key),
             },
             None => {
+                // An open hover popup is dismissed by Esc before anything else
+                // sees the key; every other key falls through (and most will
+                // move the caret, which dismisses it anyway).
+                if key.code == KeyCode::Esc && key.modifiers.is_empty() && self.dismiss_hover() {
+                    return;
+                }
                 // The completion popup is a light key layer over the editor:
                 // it consumes only its navigation/accept/dismiss keys and lets
                 // everything else (typing, movement) fall through.
@@ -102,6 +112,7 @@ impl App {
         // Any key may have moved the caret or switched tabs; a popup or pending
         // request whose anchor no longer holds is dismissed.
         self.reconcile_completion();
+        self.reconcile_hover();
         self.request_live_blame();
         if dismiss_outline_after {
             self.dismiss_outline_overlay();
@@ -301,6 +312,9 @@ impl App {
                 self.jump_to_location(&path, position);
             },
             OverlayEvent::AcceptCommand(cmd) => self.dispatch(cmd),
+            OverlayEvent::AcceptRebaseTodo { onto, steps } => {
+                self.run_vcs_action(VcsAction::RebaseInteractive { onto, steps });
+            },
             OverlayEvent::AcceptDiffTarget { rev, label } => {
                 self.open_changes_with(&rev, &label);
             },
@@ -395,6 +409,27 @@ impl App {
                         self.run_vcs_action(VcsAction::RenameBranch { old, new: text });
                     }
                 },
+                TextPurpose::TagCreate { rev } => {
+                    if text.trim().is_empty() {
+                        self.status = Some("tag: enter a name".to_string());
+                    } else {
+                        self.run_vcs_action(VcsAction::TagCreate {
+                            name: text.trim().to_string(),
+                            rev,
+                            message: None,
+                        });
+                    }
+                },
+                TextPurpose::ConfirmResetHard { rev } => {
+                    if text == "reset" {
+                        self.run_vcs_action(VcsAction::Reset {
+                            mode: karet_vcs::ResetMode::Hard,
+                            rev,
+                        });
+                    } else {
+                        self.status = Some("hard reset cancelled".to_string());
+                    }
+                },
                 TextPurpose::ConfirmDeleteRemoteBranch { remote, branch } => {
                     if text == branch {
                         self.run_vcs_action(VcsAction::DeleteRemoteBranch { remote, branch });
@@ -402,6 +437,7 @@ impl App {
                         self.status = Some("remote branch deletion cancelled".to_string());
                     }
                 },
+                TextPurpose::DebugEvaluate => self.debug_evaluate(text),
                 TextPurpose::ConfirmOutsideWorkspaceLink { path } => {
                     if text == "open" {
                         self.open_markdown_file_link(&path);
