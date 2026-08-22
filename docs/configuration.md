@@ -279,6 +279,7 @@ an external prerequisite.
 | `listContinuation` | bool | `true` | Enter inside a list item repeats the marker, advances ordered numbering (renumbering the run), carries task checkboxes, and ends the list on an empty item. |
 | `toc.minLevel` | number | `2` | Smallest heading level the generated table of contents includes. |
 | `toc.maxLevel` | number | `6` | Largest heading level the generated table of contents includes. |
+| `lint.enabled` | bool | `true` | Lint Markdown as it changes (a 21-rule markdownlint core), honouring the workspace's `.markdownlint.json`; issues surface as diagnostics, and "Markdown: Fix All Lint Issues" applies every autofix. |
 
 ### `git`
 

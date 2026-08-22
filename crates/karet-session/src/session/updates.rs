@@ -511,6 +511,10 @@ impl Session {
     /// Queue the current token model after highlighting has settled. Disabled or
     /// unsupported settings clear only spell diagnostics, leaving other producers intact.
     pub(crate) fn schedule_spell(&mut self, doc_id: DocumentId) {
+        // Every text-change path funnels through here, so the (synchronous,
+        // line-based, sub-millisecond) markdown lint rides along rather than
+        // adding a second hook to each call site.
+        self.refresh_markdown_lint(doc_id);
         let Some(doc) = self.store.docs.get(&doc_id) else {
             return;
         };
@@ -584,7 +588,7 @@ impl Session {
         }
     }
 
-    fn publish_document_diagnostics(&self, doc_id: DocumentId) {
+    pub(crate) fn publish_document_diagnostics(&self, doc_id: DocumentId) {
         let Some(document) = self.store.docs.get(&doc_id) else {
             return;
         };
@@ -601,6 +605,7 @@ impl Session {
                 .flat_map(|layer| layer.iter().cloned()),
         );
         diagnostics.extend(document.spell_diagnostics.iter().cloned());
+        diagnostics.extend(document.lint_diagnostics.iter().cloned());
         diagnostics.sort_by(|left, right| {
             left.range
                 .start
@@ -834,4 +839,10 @@ fn utf16_range_to_buffer(buffer: &TextBuffer, range: Range) -> Range {
 /// every positional LSP forwarder applies (see the karet-lsp crate docs).
 fn utf16_caret(doc: &Document, position: LineCol) -> LineCol {
     LineCol::new(position.line, doc.buffer.line_col_to_utf16(position))
+}
+
+#[cfg(not(feature = "mdlint"))]
+impl Session {
+    /// Without the `mdlint` feature there is no markdown lint layer.
+    pub(crate) fn refresh_markdown_lint(&mut self, _doc: crate::api::DocumentId) {}
 }

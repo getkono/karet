@@ -46,7 +46,7 @@ karet-treesitter = { workspace = true, features = ["all-languages"] }
 karet-syntax.workspace = true
 karet-theme      = { workspace = true, features = ["view", "vscode"] }
 karet-diff = { workspace = true, features = ["view"] } # paint-only: diffs are prepared by the session
-karet-markdown   = { workspace = true, features = ["view", "highlight"] }
+karet-markdown   = { workspace = true, features = ["view", "highlight", "lint"] }
 karet-vcs.workspace = true
 karet-graph      = { workspace = true, features = ["view"] }
 karet-search.workspace = true

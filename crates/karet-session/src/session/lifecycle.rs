@@ -61,6 +61,8 @@ impl Session {
         // semantic-comment settings, so language overrides can update live.
         let (highlight_tx, highlight_rx) = crate::highlight::spawn();
         let (spell_tx, spell_rx) = crate::spell::spawn();
+        #[cfg(feature = "mdlint")]
+        let lint_config = super::mdlint::discover_config(&config.roots);
         // Language servers spawn lazily, per language, on the first matching open.
         let (lsp, lsp_rx) = LspManager::new(
             config.settings.lsp.clone(),
@@ -85,6 +87,8 @@ impl Session {
             highlight_tx,
             highlight_rx: Some(highlight_rx),
             spell_tx,
+            #[cfg(feature = "mdlint")]
+            lint_config,
             spell_rx: Some(spell_rx),
             spell_errors: HashMap::new(),
             clock: Instant::now(),

@@ -138,6 +138,7 @@ impl App {
             Command::MarkdownTocUpdate => self.markdown_toc(false),
             Command::MarkdownHeadingUp => self.markdown_heading_shift(1),
             Command::MarkdownHeadingDown => self.markdown_heading_shift(-1),
+            Command::MarkdownLintFixAll => self.markdown_lint_fix_all(),
             Command::GoToDefinition => self.request_definition(),
             Command::JumpBack => self.jump_back(),
             Command::InsertChar(c) => {

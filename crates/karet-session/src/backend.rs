@@ -234,6 +234,56 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "mdlint")]
+    #[tokio::test]
+    async fn opening_markdown_publishes_markdownlint_diagnostics() {
+        use crate::api::Event;
+        use crate::session::Session;
+        use crate::session::SessionConfig;
+
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("doc.md");
+        // Trailing spaces (MD009) and a bare URL (MD034) under a proper title.
+        if std::fs::write(&path, "# Title\n\ntext \nhttps://example.com\n").is_err() {
+            return;
+        }
+
+        let (session, mut events, _snaps) = Session::new(SessionConfig::default());
+        let backend = local_session(session, None);
+        let id = backend.next_id();
+        assert!(
+            backend
+                .send(
+                    id,
+                    Command::OpenDocument {
+                        path,
+                        language: None
+                    }
+                )
+                .is_ok()
+        );
+        let rules = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some((_, event)) = events.recv().await {
+                if let Event::DiagnosticsPublished { diagnostics, .. } = event
+                    && !diagnostics.is_empty()
+                {
+                    return diagnostics
+                        .iter()
+                        .filter(|d| d.source.as_deref() == Some("markdownlint"))
+                        .filter_map(|d| d.code.clone())
+                        .collect::<Vec<_>>();
+                }
+            }
+            Vec::new()
+        })
+        .await
+        .unwrap_or_default();
+        assert!(rules.contains(&"MD009".to_owned()), "found: {rules:?}");
+        assert!(rules.contains(&"MD034".to_owned()), "found: {rules:?}");
+    }
+
     #[tokio::test]
     async fn local_backend_reports_an_exact_nested_repository_status() {
         use crate::api::Event;

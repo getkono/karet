@@ -18,6 +18,8 @@ default = []
 # Syntax-highlight code fences via karet-syntax (a fence's info string resolves to a
 # grammar through karet-treesitter's shared injection-name resolver).
 highlight = ["dep:karet-syntax", "dep:karet-treesitter"]
+# The markdownlint-core linter (rule engine, .markdownlint.json config, autofixes).
+lint = ["dep:serde_json"]
 # Curated grammar bundle for typical fence languages (implies `highlight`).
 lang-common = [
     "highlight",
@@ -43,6 +45,7 @@ all-languages = ["highlight", "karet-syntax?/all-languages"]
 view = ["dep:ratatui", "dep:karet-theme"]
 
 [dependencies]
+serde_json = { workspace = true, optional = true }
 karet-core.workspace = true
 pulldown-cmark.workspace = true
 thiserror.workspace = true
