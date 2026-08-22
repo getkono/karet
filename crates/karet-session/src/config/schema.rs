@@ -49,6 +49,8 @@ pub struct Markdown {
     /// numbering (renumbering the run), carry task checkboxes, and end the
     /// list when Enter is pressed on an empty item.
     pub list_continuation: bool,
+    /// Table-of-contents generation.
+    pub toc: MarkdownToc,
 }
 
 impl Default for Markdown {
@@ -56,6 +58,29 @@ impl Default for Markdown {
     fn default() -> Self {
         Self {
             list_continuation: true,
+            toc: MarkdownToc::default(),
+        }
+    }
+}
+
+/// `markdown.toc.*` — table-of-contents generation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct MarkdownToc {
+    /// The smallest heading level included (GitHub convention keeps the `#`
+    /// document title out of its own table).
+    pub min_level: u8,
+    /// The largest heading level included.
+    pub max_level: u8,
+}
+
+impl Default for MarkdownToc {
+    /// Levels 2–6.
+    fn default() -> Self {
+        Self {
+            min_level: 2,
+            max_level: 6,
         }
     }
 }

@@ -277,6 +277,8 @@ an external prerequisite.
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `listContinuation` | bool | `true` | Enter inside a list item repeats the marker, advances ordered numbering (renumbering the run), carries task checkboxes, and ends the list on an empty item. |
+| `toc.minLevel` | number | `2` | Smallest heading level the generated table of contents includes. |
+| `toc.maxLevel` | number | `6` | Largest heading level the generated table of contents includes. |
 
 ### `git`
 
