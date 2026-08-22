@@ -126,6 +126,7 @@ fn describe(kind: FileKind) -> &'static str {
         // it is, a PDF either renders or shows the requires-Kitty placeholder.
         FileKind::Pdf => "PDF document",
         FileKind::Docx => "DOCX rendering is not available yet",
+        FileKind::Notebook => "Notebook rendering is not available yet",
         FileKind::Binary => "Binary file",
         FileKind::TooLarge { .. } => "File too large to open",
         FileKind::Text | FileKind::Markdown => "Text file",
