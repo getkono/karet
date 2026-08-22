@@ -500,6 +500,97 @@ mod tests {
     }
 
     #[test]
+    fn interactive_rebase_survives_a_shell_hostile_repository_path() {
+        // The todo file is handed to git through `GIT_SEQUENCE_EDITOR`, which
+        // git runs under `sh`. Single quotes must neutralize every metacharacter
+        // a directory name can carry, and the canary proves none of them ran.
+        for hostile in [
+            "with space",
+            "semi;colon",
+            "dollar$(touch PWNED)paren",
+            "back`touch PWNED`tick",
+            "amp&&touch PWNED",
+            "pipe|touch PWNED",
+            "star*glob?q",
+        ] {
+            let Ok(dir) = init(hostile) else {
+                continue;
+            };
+            let Ok(base) = commit(&dir, "base\n", "base") else {
+                continue;
+            };
+            if write(&dir.0, "gone.txt", b"gone\n").is_err()
+                || git(&dir.0, &["add", "gone.txt"]).is_err()
+                || git(&dir.0, &["commit", "-q", "-m", "gone"]).is_err()
+            {
+                continue;
+            }
+            let Ok(gone) = git(&dir.0, &["rev-parse", "HEAD"]) else {
+                continue;
+            };
+            let Ok(repo) = Repository::discover(&dir.0) else {
+                continue;
+            };
+            assert!(
+                repo.rebase_interactive(
+                    &base,
+                    &[RebaseStep {
+                        action: RebaseAction::Drop,
+                        rev: gone,
+                    }],
+                )
+                .is_ok(),
+                "rebase failed in {hostile:?}"
+            );
+            assert!(
+                !dir.0.join("gone.txt").exists(),
+                "the plan did not apply in {hostile:?}"
+            );
+            assert!(
+                !dir.0.join("PWNED").exists(),
+                "a path metacharacter reached the shell in {hostile:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn interactive_rebase_refuses_a_path_it_cannot_quote() {
+        // A single quote inside the path cannot be escaped portably inside the
+        // single-quoted editor command, so the operation must refuse rather
+        // than build a command that means something else.
+        let Ok(dir) = init("quote'inside") else {
+            return;
+        };
+        let Ok(base) = commit(&dir, "base\n", "base") else {
+            return;
+        };
+        if write(&dir.0, "gone.txt", b"gone\n").is_err()
+            || git(&dir.0, &["add", "gone.txt"]).is_err()
+            || git(&dir.0, &["commit", "-q", "-m", "gone"]).is_err()
+        {
+            return;
+        }
+        let Ok(gone) = git(&dir.0, &["rev-parse", "HEAD"]) else {
+            return;
+        };
+        let Ok(repo) = Repository::discover(&dir.0) else {
+            return;
+        };
+        let refused = repo.rebase_interactive(
+            &base,
+            &[RebaseStep {
+                action: RebaseAction::Drop,
+                rev: gone,
+            }],
+        );
+        assert!(refused.is_err(), "a quoted path must be refused");
+        assert!(
+            dir.0.join("gone.txt").exists(),
+            "the refusal must leave the history alone"
+        );
+    }
+
+    #[test]
     fn interactive_rebase_drop_removes_a_commit() -> Result<(), VcsError> {
         let dir = init("ops-irebase-drop")?;
         let base = commit(&dir, "base\n", "base")?;
