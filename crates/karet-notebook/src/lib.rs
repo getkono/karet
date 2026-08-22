@@ -7,10 +7,13 @@
 //! document preview. Hand-rolled over serde (the `nbformat` crate carries
 //! `anyhow` in its public API and stale deps).
 //!
-//! No presentation, no kernel: execution arrives behind the optional kernel
-//! work, and rendering is the consumer's.
+//! No presentation. Execution lives behind the off-by-default **`kernel`**
+//! feature ([`kernel`]): kernelspec discovery, connection files, and a
+//! client driving one kernel over the Jupyter wire protocol.
 
 mod convert;
+#[cfg(feature = "kernel")]
+pub mod kernel;
 mod model;
 
 pub use convert::to_markdown;

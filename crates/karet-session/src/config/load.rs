@@ -235,6 +235,7 @@ const SECTIONS: &[&str] = &[
     "deps",
     "toml",
     "debug",
+    "notebook",
 ];
 
 /// Load the merged, verified [`Settings`] for a workspace rooted at `roots`, plus any
@@ -407,6 +408,7 @@ fn deserialize_sections(
             "deps" => section(value, |v| settings.deps = v),
             "toml" => section(value, |v| settings.toml = v),
             "debug" => section(value, |v| settings.debug = v),
+            "notebook" => section(value, |v| settings.notebook = v),
             // Unreachable: `SECTIONS` gates the loop above, and
             // `every_section_round_trips_a_value` proves each entry lands.
             _ => Ok(()),
@@ -899,6 +901,9 @@ mod tests {
             ("toml", r#"{"format": false}"#, |s| !s.toml.format),
             ("debug", r#"{"configurations": [{"name": "probe"}]}"#, |s| {
                 s.debug.configurations.iter().any(|c| c.name == "probe")
+            }),
+            ("notebook", r#"{"kernel": {"autoStart": true}}"#, |s| {
+                s.notebook.kernel.auto_start
             }),
         ];
         assert_eq!(

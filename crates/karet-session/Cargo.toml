@@ -31,6 +31,8 @@ cbor = ["dep:karet-cbor"]
 docx = ["dep:karet-docx"]
 # Convert `.ipynb` notebooks to markdown for read-only previews (via `karet-notebook`).
 notebook = ["dep:karet-notebook"]
+# Run notebook cells on a Jupyter kernel (adds the wire-protocol deps).
+notebook-kernel = ["notebook", "karet-notebook/kernel"]
 # The Cargo.lock package-dependency graph lens. On by default.
 viz = ["dep:dependable-core"]
 # Markdown linting: the markdownlint-core rules surface as diagnostics.

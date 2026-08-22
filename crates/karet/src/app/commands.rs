@@ -143,6 +143,9 @@ impl App {
             Command::DebugStepIn => self.debug_step(SessionCommand::DebugStepIn),
             Command::DebugStepOut => self.debug_step(SessionCommand::DebugStepOut),
             Command::DebugEvaluatePrompt => self.debug_evaluate_prompt(),
+            Command::NotebookRunAll => self.notebook_run_all(),
+            Command::NotebookInterrupt => self.debug_send(SessionCommand::NotebookInterrupt),
+            Command::NotebookRestartKernel => self.debug_send(SessionCommand::NotebookRestart),
             Command::ToggleBold => {
                 self.toggle_markdown_surround("**", Some(Command::ToggleSidebar));
             },

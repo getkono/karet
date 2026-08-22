@@ -467,6 +467,28 @@ pub(super) fn commit_list_items(
 /// narrow pane from producing a degenerate box).
 pub(super) const FILE_CARD_MIN_WIDTH: u16 = 13;
 
+/// Why this file's diff is folded away by default, when it is machine-maintained.
+///
+/// A lockfile or a minified bundle is real content nobody reads line by line, so
+/// the card starts collapsed and names the reason. The classification is
+/// `karet-filetype`'s, so the commit view, the file rail, and any future consumer
+/// agree on what counts as generated.
+pub(super) fn auto_collapse_reason(file: &render::FileView) -> Option<karet_filetype::Generated> {
+    karet_filetype::generated_for_path(&file.change.path)
+}
+
+/// The parenthesized label shown beside a machine-maintained file, e.g.
+/// `"(lockfile)"`. Matches the lowercase, parenthesized phrasing `karet-diff`
+/// already uses for its own placeholders.
+pub(super) fn auto_collapse_label(file: &render::FileView) -> Option<String> {
+    auto_collapse_reason(file).map(|kind| format!("({})", kind.reason()))
+}
+
+/// The narrowest path a card header will show before the generated reason is
+/// dropped. The path identifies the file; the reason only explains it, so the
+/// reason yields first.
+const REASON_MIN_PATH: usize = 12;
+
 pub(super) fn file_card(theme: &Theme, file: &render::FileView, width: u16) -> Vec<Line<'static>> {
     let mut out = vec![file_card_header(theme, file, width, false)];
     if width < FILE_CARD_MIN_WIDTH {
@@ -530,11 +552,23 @@ pub(super) fn file_card_header(
         plain_suffix
     };
     let suffix_width = UnicodeWidthStr::width(suffix);
-    let path_budget = w.saturating_sub(prefix_width + suffix_width + 2).max(1);
+
+    // The generated reason sits between the path and the dash filler, and is the
+    // first thing dropped when the pane narrows — it explains the card, while the
+    // path identifies it.
+    let reason = auto_collapse_label(file).map(|label| format!(" {label}"));
+    let reason_width = reason.as_deref().map_or(0, UnicodeWidthStr::width);
+    let show_reason =
+        reason_width > 0 && w >= prefix_width + suffix_width + 2 + reason_width + REASON_MIN_PATH;
+    let reason_width = if show_reason { reason_width } else { 0 };
+
+    let path_budget = w
+        .saturating_sub(prefix_width + suffix_width + reason_width + 2)
+        .max(1);
     path = truncate_start(&path, path_budget);
     let path_width = UnicodeWidthStr::width(path.as_str());
     let dashes = w
-        .saturating_sub(prefix_width + path_width + suffix_width + 1)
+        .saturating_sub(prefix_width + path_width + reason_width + suffix_width + 1)
         .max(1);
 
     let mut top: Vec<Span<'static>> = vec![
@@ -549,8 +583,14 @@ pub(super) fn file_card_header(
                 .style(ThemeRole::DiagnosticHint)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!(" {}", "\u{2500}".repeat(dashes)), border),
     ];
+    if let Some(reason) = reason.filter(|_| show_reason) {
+        top.push(Span::styled(reason, theme.style(ThemeRole::Muted)));
+    }
+    top.push(Span::styled(
+        format!(" {}", "\u{2500}".repeat(dashes)),
+        border,
+    ));
     if show_stats {
         top.push(Span::raw(" "));
         top.push(Span::styled(format!("+{a}"), add_fg));

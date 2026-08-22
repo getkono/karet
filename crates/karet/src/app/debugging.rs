@@ -324,6 +324,23 @@ impl App {
         self.debug_panel.rebuild_rows(self.debug_output.len());
     }
 
+    /// Run every code cell of the focused notebook preview (palette:
+    /// Notebook: Run All Cells).
+    pub(super) fn notebook_run_all(&mut self) {
+        let Some(path) = self.tabs.get(self.active).and_then(|tab| {
+            tab.path()
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("ipynb"))
+                })
+                .map(std::path::Path::to_path_buf)
+        }) else {
+            self.status = Some("open a notebook (.ipynb) first".to_owned());
+            return;
+        };
+        self.debug_send(SessionCommand::NotebookRunAll { path });
+    }
+
     /// The status-bar debug segment, `None` while idle.
     pub(crate) fn debug_status_segment(&self) -> Option<String> {
         match self.debug_state {

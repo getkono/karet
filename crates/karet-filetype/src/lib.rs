@@ -11,11 +11,16 @@
 //!   `Ascii`).
 //! - **Routing** — [`classify`] returns a [`FileKind`] deciding which widget opens
 //!   a file, using extension plus magic-byte sniffing.
+//! - **Provenance** — [`generated_for_path`] / [`generated_for_content`] return a
+//!   [`Generated`] saying why a path is machine-maintained (a lockfile, a
+//!   minified bundle, a vendored tree), so renderers can fold it away by default
+//!   and name the reason.
 //!
 //! The crate is headless and dependency-free (only `std`), so any consumer can
 //! depend on it without pulling in ratatui, tree-sitter, or `karet-core`.
 
 mod classify;
+mod generated;
 mod icon;
 mod registry;
 
@@ -24,6 +29,10 @@ pub use classify::SIZE_GUARD;
 pub use classify::classify;
 pub use classify::classify_ignoring_size;
 pub use classify::classify_with_guard;
+pub use generated::BANNER_GUARD;
+pub use generated::Generated;
+pub use generated::generated_for_content;
+pub use generated::generated_for_path;
 pub use icon::Category;
 pub use icon::IconStyle;
 pub use icon::chevron;

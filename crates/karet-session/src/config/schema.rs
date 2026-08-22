@@ -48,6 +48,8 @@ pub struct Settings {
     pub toml: Toml,
     /// Debugger integration (adapters and launch configurations).
     pub debug: Debugger,
+    /// Jupyter-notebook behaviour (kernel execution).
+    pub notebook: NotebookSettings,
 }
 
 /// `wakatime.*` — WakaTime time tracking. **Off by default**: enabling it
@@ -91,6 +93,26 @@ impl Default for Deps {
     fn default() -> Self {
         Self { enabled: true }
     }
+}
+
+/// `notebook.*` — Jupyter-notebook behaviour.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct NotebookSettings {
+    /// Kernel execution.
+    pub kernel: NotebookKernel,
+}
+
+/// `notebook.kernel.*` — the kernel lifecycle behind Run All / Run Cell.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct NotebookKernel {
+    /// Start the notebook's kernel as soon as its preview opens, instead of
+    /// on the first run command. **Off by default** — a kernel is an
+    /// arbitrary-code process.
+    pub auto_start: bool,
 }
 
 /// `debug.*` — debugger integration. karet speaks the Debug Adapter Protocol;

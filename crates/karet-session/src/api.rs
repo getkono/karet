@@ -631,6 +631,25 @@ pub enum Command {
         /// The 0-based breakpoint lines.
         lines: Vec<u32>,
     },
+    /// Run every code cell of a notebook, top to bottom, on its kernel
+    /// (started on first use; `notebook.kernel.autoStart` starts it at open).
+    /// Progress arrives as unsolicited `Notebook*` events plus refreshed
+    /// [`Event::DocumentConverted`] previews; an errored cell stops the run.
+    NotebookRunAll {
+        /// The `.ipynb` path.
+        path: std::path::PathBuf,
+    },
+    /// Run one code cell (by its index among the notebook's cells).
+    NotebookRunCell {
+        /// The `.ipynb` path.
+        path: std::path::PathBuf,
+        /// The cell index (all cells, not only code cells).
+        cell: usize,
+    },
+    /// Interrupt the running cell (out-of-band, on the control channel).
+    NotebookInterrupt,
+    /// Restart the kernel; every cell's outputs are marked stale (cleared).
+    NotebookRestart,
     /// Replace across every workspace match on the search worker; answered with
     /// [`Event::SearchReplaced`]. Open buffers pick the edits up through the
     /// file watcher.

@@ -321,6 +321,12 @@ whole story. No launch.json compatibility layer — configurations live here.
 | `adapters` | object | `{}` | Debug adapters by name: `{ "command", "args", "transport": "stdio" \| "tcp" }`. Under `tcp`, `${port}` in `args` is replaced with a free port. The built-in fallbacks `codelldb`, `lldb-dap`, `gdb`, and `debugpy` need no entry when on `PATH`. |
 | `configurations` | array | `[]` | The Debug: Start (`F5`) entries: `{ "name", "adapter", "attach": false, "arguments": { … } }` — `arguments` passes to the adapter verbatim (`program`, `args`, `cwd`, `pid`, …). |
 
+### `notebook`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `kernel.autoStart` | bool | `false` | Start a notebook's Jupyter kernel as soon as its preview opens, instead of on the first `Notebook: Run All Cells`. Off by default — a kernel is an arbitrary-code process. |
+
 ### `wakatime`
 
 **Off by default** — enabling it sends file names, project names, and editing

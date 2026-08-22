@@ -20,8 +20,14 @@ pub(crate) struct CommitViewState {
     pub(crate) layout: Option<CommitLayoutMode>,
     /// Per-file card-header offsets from the previous frame.
     pub(crate) file_anchors: Vec<u16>,
-    /// File cards whose diff bodies are hidden in this view.
-    pub(crate) collapsed_files: BTreeSet<usize>,
+    /// File cards the user has flipped away from their default collapse state.
+    ///
+    /// Storing the *overrides* rather than the collapsed set is what lets a
+    /// machine-maintained file start folded: the effective state is derived per
+    /// file where it is painted (`ui::commit::responsive::card_collapsed`), so
+    /// files arriving after the tab exists need no seeding pass, and a refresh
+    /// cannot silently re-fold a card the user just opened.
+    pub(crate) toggled_files: BTreeSet<usize>,
 }
 
 /// Human-readable title for standalone commit tabs.

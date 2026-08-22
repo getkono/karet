@@ -16,6 +16,8 @@ Cargo features so a build can drop their dependency trees (issue #23):
   lean story rather than for its weight).
 - **`notebook`** pulls [`karet-notebook`] → nothing beyond the already-present
   serde/serde_json (gated for consistency; nearly weightless).
+- **`notebook-kernels`** adds the Jupyter wire stack: pure-Rust `zeromq`
+  (ZMTP), `jupyter-protocol`, and `hmac` over the workspace `sha2`.
 
 All are **on by default**, so the shipped binary is unchanged. A
 `--no-default-features` build compiles them all out; a disabled file type falls

@@ -257,6 +257,9 @@ impl Command {
             | Self::DebugStepIn
             | Self::DebugStepOut
             | Self::DebugEvaluatePrompt
+            | Self::NotebookRunAll
+            | Self::NotebookInterrupt
+            | Self::NotebookRestartKernel
             | Self::ToggleBold
             | Self::ToggleItalic
             | Self::ToggleStrikethrough
