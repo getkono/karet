@@ -3481,6 +3481,7 @@ name = "karet-notebook"
 version = "0.5.0"
 dependencies = [
  "bytes",
+ "getrandom 0.4.3",
  "hmac",
  "jupyter-protocol",
  "serde",

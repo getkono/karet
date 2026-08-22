@@ -23,6 +23,7 @@ kernel = [
   "dep:bytes",
   "dep:hmac",
   "dep:sha2",
+  "dep:getrandom",
   "dep:tokio",
 ]
 
@@ -34,7 +35,8 @@ zeromq = { workspace = true, optional = true }            # pure-Rust ZMTP socke
 jupyter-protocol = { workspace = true, optional = true }  # wire message/type vocabulary
 bytes = { workspace = true, optional = true }             # the wire frame type
 hmac = { workspace = true, optional = true }              # message signing…
-sha2 = { workspace = true, optional = true }              # …with sha256 (workspace pin)
+sha2 = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }        # …keyed from OS entropy              # …with sha256 (workspace pin)
 tokio = { workspace = true, optional = true, features = ["rt", "sync", "macros", "time", "net"] }
 
 [dev-dependencies]
