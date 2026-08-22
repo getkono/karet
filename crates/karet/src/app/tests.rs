@@ -20,6 +20,7 @@ mod lifecycle;
 mod markdown_edit;
 mod preview;
 mod remote;
+mod review;
 mod save;
 mod scm;
 mod scroll;
