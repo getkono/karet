@@ -62,8 +62,14 @@ fn headings(text: &str, options: &TocOptions) -> Vec<TocHeading> {
     let lines: Vec<&str> = text.lines().collect();
     let mut seen: HashMap<String, usize> = HashMap::new();
     let mut out = Vec::new();
+    // One incremental fence scan for the whole document: asking
+    // `in_fenced_code_block` per line would rescan from the top each time and
+    // make this pass quadratic (visibly so on a long document).
+    let mut fences = crate::edit::FenceScan::default();
     for (i, line) in lines.iter().enumerate() {
-        if crate::edit::in_fenced_code_block(text, i) {
+        let fenced = fences.inside();
+        fences.feed(line);
+        if fenced {
             continue;
         }
         let trimmed = line.trim_start();

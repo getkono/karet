@@ -777,6 +777,9 @@ pub(super) fn draw_todos_panel(
         return;
     }
 
+    // The list reserves a scrollbar track, so the text budget is one cell short
+    // of the pane (`reserve_tracks` below carves the same column off).
+    let list_width = rows[1].width.saturating_sub(1);
     let items: Vec<ListItem> = todos
         .rows
         .iter()
@@ -799,6 +802,10 @@ pub(super) fn draw_todos_panel(
                 ]))
             },
             // The tag leads in accent, then the message, then the location.
+            //
+            // Grouped by tag, the tag is dropped: the group header above already
+            // names it, and the sidebar is narrow enough that repeating it costs
+            // the `file:line` its place — the one part telling the rows apart.
             TodoRow::Item { hit } => {
                 let hit = &todos.hits[todos.order[hit]];
                 let location = if todos.by_tag {
@@ -811,14 +818,32 @@ pub(super) fn draw_todos_panel(
                 } else {
                     format!("{}", hit.line.saturating_add(1))
                 };
-                ListItem::new(Line::from(vec![
-                    Span::styled(
-                        format!("   {} ", hit.tag),
+                let lead = if todos.by_tag {
+                    "   ".to_owned()
+                } else {
+                    format!("   {} ", hit.tag)
+                };
+                // Budget the row so the location survives a long message: it is
+                // what tells two rows apart, so the message yields to it rather
+                // than pushing it off the edge.
+                let spent =
+                    karet_widgets::text::width(&lead) + karet_widgets::text::width(&location);
+                let message = karet_widgets::text::fit_end(
+                    &hit.message,
+                    usize::from(list_width).saturating_sub(spent + 1),
+                );
+                let mut spans = Vec::with_capacity(3);
+                if todos.by_tag {
+                    spans.push(Span::raw(lead));
+                } else {
+                    spans.push(Span::styled(
+                        lead,
                         Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(format!("{} ", hit.message), muted),
-                    Span::styled(location, dim),
-                ]))
+                    ));
+                }
+                spans.push(Span::styled(format!("{message} "), muted));
+                spans.push(Span::styled(location, dim));
+                ListItem::new(Line::from(spans))
             },
         })
         .collect();

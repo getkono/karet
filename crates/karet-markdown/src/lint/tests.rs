@@ -220,3 +220,72 @@ fn malformed_config_reports_an_error() {
     assert!(Config::from_json("not json").is_err());
     assert!(Config::from_json("[1, 2]").is_err());
 }
+
+#[test]
+fn md034_leaves_link_reference_definitions_alone() {
+    // `[label]: https://…` is a link destination, not a bare URL — upstream
+    // markdownlint does not flag it, and "fixing" it rewrites a good definition.
+    let text = "See [ratatui].\n\n[ratatui]: https://crates.io/crates/ratatui\n";
+    let issues = lint(text, &Config::default());
+    assert!(
+        !issues.iter().any(|i| i.rule == "MD034"),
+        "a definition must not be reported: {issues:?}"
+    );
+    assert_eq!(apply_fixes(text, &issues), text);
+}
+
+#[test]
+fn md034_still_reports_a_genuinely_bare_url() {
+    let text = "Visit https://example.com for more.\n";
+    let issues = lint(text, &Config::default());
+    assert!(issues.iter().any(|i| i.rule == "MD034"), "{issues:?}");
+    assert_eq!(
+        apply_fixes(text, &issues),
+        "Visit <https://example.com> for more.\n"
+    );
+}
+
+#[test]
+fn md034_skips_a_titled_definition_but_not_a_lookalike_paragraph() {
+    let definition = "[a]: https://example.com \"Title\"\n";
+    assert!(
+        !lint(definition, &Config::default())
+            .iter()
+            .any(|i| i.rule == "MD034")
+    );
+    // A bracketed phrase that is not a definition (no colon) still gets linted.
+    let paragraph = "[not a label] https://example.com\n";
+    assert!(
+        lint(paragraph, &Config::default())
+            .iter()
+            .any(|i| i.rule == "MD034"),
+        "only a real `]:` definition is exempt"
+    );
+}
+
+#[test]
+fn md037_survives_odd_runs_of_emphasis_markers() {
+    // Overlapping `**` matches inside `***` used to pair position 0 with
+    // position 1 and slice `2..1`, panicking on ordinary bold-italic text.
+    for text in [
+        "***\n",
+        "***bold italic***\n",
+        "a *** b\n",
+        "___\n",
+        "____\n",
+        "*****\n",
+        "**a** *** **b**\n",
+    ] {
+        let issues = lint(text, &Config::default());
+        // The fixes must round-trip too, not just the scan.
+        let _ = apply_fixes(text, &issues);
+    }
+}
+
+#[test]
+fn md037_still_reports_padded_emphasis() {
+    let text = "this is ** padded ** emphasis\n";
+    let issues = lint(text, &Config::default());
+    assert!(issues.iter().any(|i| i.rule == "MD037"), "{issues:?}");
+    assert_eq!(apply_fixes(text, &issues), "this is **padded** emphasis\n");
+}
