@@ -91,6 +91,10 @@ pub enum TextPurpose {
     ConfirmPublishedUndo,
     /// Rename `old` to the submitted name.
     RenameBranch { old: String },
+    /// Tag `rev` with the submitted name (lightweight).
+    TagCreate { rev: String },
+    /// Confirm a hard reset to `rev` by typing `reset`.
+    ConfirmResetHard { rev: String },
     /// Confirm remote deletion by typing the exact branch name.
     ConfirmDeleteRemoteBranch { remote: String, branch: String },
     /// Confirm opening a relative file link that escaped the workspace.

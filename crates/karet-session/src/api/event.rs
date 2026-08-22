@@ -434,6 +434,9 @@ pub enum Event {
         commits: Vec<Commit>,
         /// Whether more commits exist beyond this page.
         has_more: bool,
+        /// Every ref per commit hash (branches, remotes, tags, detached
+        /// `HEAD`), refreshed with each page.
+        labels: std::collections::HashMap<String, Vec<karet_vcs::RefLabel>>,
     },
     /// New commits appeared at the tip (an external `git commit`, amend, or small
     /// rebase detected via file-watching). These should be prepended to the loaded

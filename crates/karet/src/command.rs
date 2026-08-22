@@ -254,6 +254,24 @@ pub enum Command {
     DepsUpdate,
     /// Bump every outdated dependency in the active manifest.
     DepsUpdateAll,
+    /// Open the action menu for the selected graph commit.
+    CommitGraphMenu,
+    /// Tag the selected graph commit (prompts for a name).
+    CommitGraphTag,
+    /// Cherry-pick the selected graph commit onto `HEAD`.
+    CommitGraphCherryPick,
+    /// Revert the selected graph commit on top of `HEAD`.
+    CommitGraphRevert,
+    /// Soft-reset the current branch to the selected graph commit.
+    CommitGraphResetSoft,
+    /// Mixed-reset the current branch to the selected graph commit.
+    CommitGraphResetMixed,
+    /// Hard-reset to the selected graph commit (typed confirmation).
+    CommitGraphResetHard,
+    /// Check the selected graph commit out, detaching `HEAD`.
+    CommitGraphCheckout,
+    /// Fetch (and prune) every remote.
+    ScmFetch,
     /// Jump to the definition of the symbol at the caret (F12).
     GoToDefinition,
     /// Return to the position a definition jump started from (Ctrl+Alt+Left).
@@ -628,6 +646,15 @@ impl Command {
             Self::DepsRefresh => "Dependencies: Re-check Versions",
             Self::DepsUpdate => "Dependencies: Update Dependency at Caret",
             Self::DepsUpdateAll => "Dependencies: Update All",
+            Self::CommitGraphMenu => "Commit Graph: Actions",
+            Self::CommitGraphTag => "Commit Graph: Create Tag",
+            Self::CommitGraphCherryPick => "Commit Graph: Cherry-pick",
+            Self::CommitGraphRevert => "Commit Graph: Revert",
+            Self::CommitGraphResetSoft => "Commit Graph: Reset (Soft)",
+            Self::CommitGraphResetMixed => "Commit Graph: Reset (Mixed)",
+            Self::CommitGraphResetHard => "Commit Graph: Reset (Hard)…",
+            Self::CommitGraphCheckout => "Commit Graph: Checkout (Detached)",
+            Self::ScmFetch => "Git: Fetch",
             Self::GoToDefinition => "Go to Definition",
             Self::JumpBack => "Go Back",
             Self::InsertNewline => "Insert Newline",
@@ -985,6 +1012,15 @@ impl Command {
             | Self::DepsRefresh
             | Self::DepsUpdate
             | Self::DepsUpdateAll
+            | Self::CommitGraphMenu
+            | Self::CommitGraphTag
+            | Self::CommitGraphCherryPick
+            | Self::CommitGraphRevert
+            | Self::CommitGraphResetSoft
+            | Self::CommitGraphResetMixed
+            | Self::CommitGraphResetHard
+            | Self::CommitGraphCheckout
+            | Self::ScmFetch
             | Self::InsertNewline
             | Self::DeleteBackward
             | Self::DeleteForward

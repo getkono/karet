@@ -32,6 +32,7 @@ static PALETTE: &[Command] = &[
     Command::DepsRefresh,
     Command::DepsUpdate,
     Command::DepsUpdateAll,
+    Command::ScmFetch,
     Command::GoToDefinition,
     Command::JumpBack,
     Command::ToggleInlineBlame,

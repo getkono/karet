@@ -1,7 +1,6 @@
 use super::*;
 
 mod swatches;
-use swatches::color_swatch_decorations;
 
 /// Draw one pane's active tab into `area`. Returns the rect to reserve for a Kitty
 /// image, if the active tab is an image on a Kitty terminal.
@@ -136,26 +135,15 @@ pub(super) fn draw_pane_content(
                 // Local find and global search highlights are kept in separate
                 // fields (so closing/rerunning one can't wipe the other) and
                 // combined only here, at render time.
-                // Swatches are recomputed per frame over the visible slice
-                // only — detection is a character scan of ~a screenful.
-                let swatches = if ctx.color_highlight {
-                    color_swatch_decorations(buffer, tab.editor.scroll_line, area.height)
-                } else {
-                    Vec::new()
-                };
-                let dep_hints = doc
-                    .and_then(|doc| ctx.manifest_hints.get(&doc))
-                    .filter(|(checked, _)| *checked == buffer.version())
-                    .map(|(_, hints)| swatches::manifest_hint_decorations(hints))
-                    .unwrap_or_default();
+                let frame_decos =
+                    swatches::frame_decorations(ctx, *doc, buffer, tab.editor.scroll_line, area);
                 let combined: Vec<Decoration> = decos
                     .iter()
                     .chain(search_decos.iter())
                     .chain(conflict_decorations.iter())
                     .chain(ctx.blame.iter())
                     .chain(ctx.definition_underline.iter())
-                    .chain(swatches.iter())
-                    .chain(dep_hints.iter())
+                    .chain(frame_decos.iter())
                     .cloned()
                     .collect();
                 let diagnostics = doc
@@ -418,6 +406,7 @@ pub(super) fn draw_pane_content(
             theme,
             area,
             commits,
+            ctx.ref_labels,
             *has_more,
             *loading,
             *loading_since,

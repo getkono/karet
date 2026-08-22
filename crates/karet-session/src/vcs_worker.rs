@@ -490,6 +490,17 @@ fn execute(repo: &Repository, action: &VcsAction) -> Result<VcsOutcome, String> 
         VcsAction::StashBranch { name, reference } => repo
             .stash_branch(name, reference)
             .map(|()| VcsOutcome::Completed),
+        VcsAction::TagCreate { name, rev, message } => repo
+            .tag_create(name, rev, message.as_deref())
+            .map(|()| VcsOutcome::Completed),
+        VcsAction::TagDelete { name } => repo.tag_delete(name).map(|()| VcsOutcome::Completed),
+        VcsAction::CherryPick { rev } => repo.cherry_pick(rev).map(|()| VcsOutcome::Completed),
+        VcsAction::Revert { rev } => repo.revert(rev).map(|()| VcsOutcome::Completed),
+        VcsAction::Rebase { rev } => repo.rebase_onto(rev).map(|()| VcsOutcome::Completed),
+        VcsAction::Reset { mode, rev } => repo.reset(*mode, rev).map(|()| VcsOutcome::Completed),
+        VcsAction::CheckoutDetached { rev } => {
+            repo.checkout_detached(rev).map(|()| VcsOutcome::Completed)
+        },
         VcsAction::Fetch { remote } => repo.fetch(remote).map(|()| VcsOutcome::Completed),
         VcsAction::Sync => repo.sync().map(|outcome| match outcome {
             SyncOutcome::Synced => VcsOutcome::Completed,

@@ -389,6 +389,8 @@ pub(super) struct CommitListEntry<'a> {
     pub(super) time: i64,
     pub(super) parents: &'a [String],
     pub(super) head: bool,
+    /// Refs decorating this commit (branch/remote/tag chips before the summary).
+    pub(super) labels: &'a [karet_vcs::RefLabel],
 }
 
 /// Render the commit rows shared by Source Control, the graph browser, and GitHub
@@ -432,6 +434,19 @@ pub(super) fn commit_list_items(
         let mut spans = vec![Span::raw(" ")];
         spans.extend(render_rail(rail, lane_style).spans);
         spans.push(Span::styled(format!(" {} ", entry.short_hash), hash_style));
+        for label in entry.labels {
+            let (glyph, role) = match label.kind {
+                karet_vcs::RefKind::Local => ("", ThemeRole::DiffAdded),
+                karet_vcs::RefKind::Remote => ("", ThemeRole::DiagnosticInfo),
+                karet_vcs::RefKind::Tag => ("⌂ ", ThemeRole::DiagnosticWarning),
+                karet_vcs::RefKind::Head => ("", ThemeRole::LineNumberActive),
+                _ => ("", ThemeRole::Muted),
+            };
+            spans.push(Span::styled(
+                format!("[{glyph}{}] ", label.name),
+                theme.style(role).add_modifier(Modifier::BOLD),
+            ));
+        }
         spans.push(Span::raw(entry.summary.to_string()));
         spans.push(Span::styled(
             format!("  {}", relative_time(entry.time)),
@@ -588,6 +603,7 @@ pub(super) fn draw_commit_graph(
     theme: &Theme,
     area: Rect,
     commits: &[karet_vcs::Commit],
+    labels: &std::collections::HashMap<String, Vec<karet_vcs::RefLabel>>,
     has_more: bool,
     loading: bool,
     loading_since: Option<Pending>,
@@ -619,6 +635,10 @@ pub(super) fn draw_commit_graph(
             time: commit.time,
             parents: &commit.parents,
             head: i == 0,
+            labels: labels
+                .get(commit.hash.as_str())
+                .map(Vec::as_slice)
+                .unwrap_or_default(),
         })
         .collect();
     let mut items = commit_list_items(theme, &entries, Some(selected), true);

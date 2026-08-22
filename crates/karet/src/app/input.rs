@@ -402,6 +402,27 @@ impl App {
                         self.run_vcs_action(VcsAction::RenameBranch { old, new: text });
                     }
                 },
+                TextPurpose::TagCreate { rev } => {
+                    if text.trim().is_empty() {
+                        self.status = Some("tag: enter a name".to_string());
+                    } else {
+                        self.run_vcs_action(VcsAction::TagCreate {
+                            name: text.trim().to_string(),
+                            rev,
+                            message: None,
+                        });
+                    }
+                },
+                TextPurpose::ConfirmResetHard { rev } => {
+                    if text == "reset" {
+                        self.run_vcs_action(VcsAction::Reset {
+                            mode: karet_vcs::ResetMode::Hard,
+                            rev,
+                        });
+                    } else {
+                        self.status = Some("hard reset cancelled".to_string());
+                    }
+                },
                 TextPurpose::ConfirmDeleteRemoteBranch { remote, branch } => {
                     if text == branch {
                         self.run_vcs_action(VcsAction::DeleteRemoteBranch { remote, branch });

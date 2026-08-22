@@ -22,10 +22,13 @@ pub(super) fn run_log(
             .map_err(|error| error.to_string())?;
         let has_more = commits.len() > limit;
         commits.truncate(limit);
-        Ok((commits, has_more))
+        // Decorations ride the page: a mutation that lands a new tag or moves
+        // a branch is followed by a log refresh anyway.
+        let labels = repo.ref_labels().unwrap_or_default();
+        Ok((commits, has_more, labels))
     });
     match result {
-        Ok((commits, has_more)) => emit_cancellable(
+        Ok((commits, has_more, labels)) => emit_cancellable(
             events,
             id,
             cancel,
@@ -33,6 +36,7 @@ pub(super) fn run_log(
                 skip,
                 commits,
                 has_more,
+                labels,
             },
         ),
         Err(message) => notify_cancellable(events, id, cancel, message),

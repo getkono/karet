@@ -2,11 +2,7 @@ use super::*;
 
 /// Swatch decorations for the color literals on the lines a viewport of
 /// `height` rows starting at `first_line` can show (doubled for wrap slack).
-pub(super) fn color_swatch_decorations(
-    buffer: &TextBuffer,
-    first_line: u32,
-    height: u16,
-) -> Vec<Decoration> {
+fn color_swatch_decorations(buffer: &TextBuffer, first_line: u32, height: u16) -> Vec<Decoration> {
     let mut out = Vec::new();
     let end = first_line.saturating_add(u32::from(height) * 2);
     for line in first_line..=end {
@@ -72,6 +68,29 @@ pub(super) fn manifest_hint_decorations(hints: &[karet_session::ManifestHint]) -
             })
         })
         .collect()
+}
+
+/// The per-frame decorations content assembles fresh each draw: color
+/// swatches over the visible slice, and the manifest's dependency hints
+/// (version-guarded).
+pub(super) fn frame_decorations(
+    ctx: &PaneCtx,
+    doc: Option<DocumentId>,
+    buffer: &TextBuffer,
+    scroll_line: u32,
+    area: Rect,
+) -> Vec<Decoration> {
+    let mut out = if ctx.color_highlight {
+        color_swatch_decorations(buffer, scroll_line, area.height)
+    } else {
+        Vec::new()
+    };
+    if let Some((checked, hints)) = doc.and_then(|doc| ctx.manifest_hints.get(&doc))
+        && *checked == buffer.version()
+    {
+        out.extend(manifest_hint_decorations(hints));
+    }
+    out
 }
 
 #[cfg(test)]

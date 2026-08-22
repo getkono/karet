@@ -364,6 +364,8 @@ struct PaneCtx<'a> {
     color_highlight: bool,
     /// Dependency-freshness hints per open manifest.
     manifest_hints: &'a HashMap<DocumentId, (u64, Vec<karet_session::ManifestHint>)>,
+    /// Every ref per commit hash, for log-row decorations.
+    ref_labels: &'a HashMap<String, Vec<karet_vcs::RefLabel>>,
 }
 
 /// What a rendered pane reported back for hit-testing and image placement.
