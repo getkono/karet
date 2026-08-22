@@ -878,6 +878,9 @@ mod tests {
             ("search", r#"{"exclude": ["probe"]}"#, |s| {
                 s.search.exclude.iter().any(|e| e == "probe")
             }),
+            ("seam", r#"{"hideInactive": true}"#, |s| {
+                s.seam.hide_inactive
+            }),
             ("spellcheck", r#"{"enabled": false}"#, |s| {
                 !s.spellcheck.enabled
             }),
