@@ -36,6 +36,10 @@
       "description": "Markdown-specific editing behaviour.",
       "$ref": "#/$defs/Markdown"
     },
+    "notebook": {
+      "description": "Jupyter-notebook behaviour (kernel execution).",
+      "$ref": "#/$defs/NotebookSettings"
+    },
     "search": {
       "description": "Workspace search behaviour.",
       "$ref": "#/$defs/Search"
@@ -70,7 +74,8 @@
     "wakatime",
     "deps",
     "toml",
-    "debug"
+    "debug",
+    "notebook"
   ],
   "$defs": {
     "AiCommit": {
@@ -1004,6 +1009,32 @@
           "default": 2,
           "maximum": 255,
           "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "NotebookKernel": {
+      "description": "`notebook.kernel.*` — the kernel lifecycle behind Run All / Run Cell.",
+      "type": "object",
+      "properties": {
+        "autoStart": {
+          "description": "Start the notebook's kernel as soon as its preview opens, instead of\non the first run command. **Off by default** — a kernel is an\narbitrary-code process.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "NotebookSettings": {
+      "description": "`notebook.*` — Jupyter-notebook behaviour.",
+      "type": "object",
+      "properties": {
+        "kernel": {
+          "description": "Kernel execution.",
+          "$ref": "#/$defs/NotebookKernel",
+          "default": {
+            "autoStart": false
+          }
         }
       },
       "additionalProperties": false

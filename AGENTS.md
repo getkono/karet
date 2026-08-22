@@ -97,7 +97,7 @@ published to crates.io (everything else is `publish = false`).
 | `karet-markdown` | engine | — | markdown parse → wrap → render model, with source-line anchors for scroll sync; `highlight` colours code fences (`lang-common`/`all-languages` bundle the grammars), `view` paints ratatui (incl. a scrollable `MarkdownView`) |
 | `karet-cbor` | engine | — | CBOR decode/encode ↔ editable diagnostic-notation text (via `ciborium`); no presentation |
 | `karet-docx` | engine | — | DOCX (OOXML) parse → neutral document model → markdown text, hand-rolled on deflate-only `zip` + `quick-xml` (pure-Rust, no zstd/bzip2); no presentation |
-| `karet-notebook` | engine | — | Jupyter `.ipynb` (nbformat 4) parse → round-trip-preserving model → markdown text, hand-rolled over serde_json; no presentation |
+| `karet-notebook` | engine | — | Jupyter `.ipynb` (nbformat 4) parse → round-trip-preserving model → markdown text; `kernel` feat adds kernelspec discovery + a kernel client over pure-Rust ZMTP (`zeromq`/`jupyter-protocol`/`hmac`); no presentation |
 | `karet-pdf` | engine | ✓ | pure-Rust PDF page → RGBA rasterization (via `hayro`); no presentation |
 | `karet-lsp` | engine | ✓ | async LSP client → core models (headless; ratatui popups live in `karet-widgets`) |
 | `karet-dap` | engine | — | async DAP client: stdio/spawn-then-TCP transports over the shared `karet-lsp` codec, capability-gated handshake, run controls, threads→stack→scopes→variables, evaluate; `publish = false`, consumed by the debugger backend work |
