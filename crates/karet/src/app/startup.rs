@@ -74,6 +74,7 @@ impl App {
             spelling: SpellingPanel::default(),
             todos: TodosPanel::default(),
             wakatime_status: None,
+            review: review::ReviewStore::default(),
             todos_ui: TodosChrome::default(),
             status: None,
             notifications: NotificationCenter::default(),

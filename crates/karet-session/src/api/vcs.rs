@@ -138,6 +138,13 @@ pub enum VcsAction {
         /// The revision to revert.
         rev: String,
     },
+    /// Run a pre-planned interactive rebase.
+    RebaseInteractive {
+        /// The revision to rebase onto.
+        onto: String,
+        /// The plan, oldest first.
+        steps: Vec<karet_vcs::RebaseStep>,
+    },
     /// Rebase the current branch onto a revision.
     Rebase {
         /// The new base revision.

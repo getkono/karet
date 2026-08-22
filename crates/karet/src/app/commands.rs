@@ -171,12 +171,15 @@ impl App {
                 });
             },
             Command::CommitGraphResetHard => self.commit_graph_reset_hard(),
+            Command::CommitGraphInteractiveRebase => self.commit_graph_interactive_rebase(),
             Command::CommitGraphCheckout => {
                 self.commit_graph_op("detached checkout", |rev| VcsAction::CheckoutDetached {
                     rev,
                 });
             },
             Command::ScmFetch => self.scm_fetch(),
+            Command::CommitToggleFileReviewed => self.commit_toggle_reviewed(),
+            Command::CommitGraphCopyIssueUrls => self.commit_graph_copy_issue_urls(),
             Command::TodoToggleGrouping => self.todos_toggle_grouping(),
             Command::GoToDefinition => self.request_definition(),
             Command::JumpBack => self.jump_back(),

@@ -270,8 +270,14 @@ pub enum Command {
     CommitGraphResetHard,
     /// Check the selected graph commit out, detaching `HEAD`.
     CommitGraphCheckout,
+    /// Edit an interactive-rebase plan over the commits above the selection.
+    CommitGraphInteractiveRebase,
     /// Fetch (and prune) every remote.
     ScmFetch,
+    /// Toggle the current file's reviewed mark in a commit view.
+    CommitToggleFileReviewed,
+    /// Copy the issue URLs referenced by the selected graph commit.
+    CommitGraphCopyIssueUrls,
     /// Jump to the definition of the symbol at the caret (F12).
     GoToDefinition,
     /// Return to the position a definition jump started from (Ctrl+Alt+Left).
@@ -654,7 +660,10 @@ impl Command {
             Self::CommitGraphResetMixed => "Commit Graph: Reset (Mixed)",
             Self::CommitGraphResetHard => "Commit Graph: Reset (Hard)…",
             Self::CommitGraphCheckout => "Commit Graph: Checkout (Detached)",
+            Self::CommitGraphInteractiveRebase => "Commit Graph: Interactive Rebase from Here",
             Self::ScmFetch => "Git: Fetch",
+            Self::CommitToggleFileReviewed => "Commit: Toggle File Reviewed",
+            Self::CommitGraphCopyIssueUrls => "Commit Graph: Copy Issue URLs",
             Self::GoToDefinition => "Go to Definition",
             Self::JumpBack => "Go Back",
             Self::InsertNewline => "Insert Newline",
@@ -1020,7 +1029,10 @@ impl Command {
             | Self::CommitGraphResetMixed
             | Self::CommitGraphResetHard
             | Self::CommitGraphCheckout
+            | Self::CommitGraphInteractiveRebase
             | Self::ScmFetch
+            | Self::CommitToggleFileReviewed
+            | Self::CommitGraphCopyIssueUrls
             | Self::InsertNewline
             | Self::DeleteBackward
             | Self::DeleteForward

@@ -310,6 +310,7 @@ activity to the configured WakaTime-compatible service.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
+| `issueUrl` | string\|null | `null` | URL template for `#123` refs in commit messages (`$1` = number); GitHub origins auto-derive when unset. "Commit Graph: Copy Issue URLs" resolves through it. |
 | `decorations` | bool | `true` | Gutter change decorations + file-tree status colouring. |
 | `blame` | bool | `true` | Muted cursor-line attribution; click it or press `Alt+B` to open the commit. |
 

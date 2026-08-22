@@ -542,6 +542,13 @@ pub(super) fn file_card_header(
         Span::styled(format!("{toggle} "), toggle_style),
         Span::styled(format!("{glyph} "), glyph_style),
         Span::styled(path, fg.add_modifier(Modifier::BOLD)),
+        // A reviewed file wears its check right after the path.
+        Span::styled(
+            if file.reviewed { " \u{2713}" } else { "" },
+            theme
+                .style(ThemeRole::DiagnosticHint)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(format!(" {}", "\u{2500}".repeat(dashes)), border),
     ];
     if show_stats {

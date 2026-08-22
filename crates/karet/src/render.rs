@@ -32,6 +32,9 @@ pub struct FileView {
     /// Unified rows cached per theme snapshot, so scrolling does not re-assemble
     /// spans every frame. Live theme reloads rebuild correctly.
     unified_cache: RefCell<Option<(Theme, Vec<Line<'static>>)>>,
+    /// Whether the code-review store marks this file reviewed (see
+    /// `crate::app::review`).
+    pub reviewed: bool,
 }
 
 impl FileView {
@@ -40,6 +43,7 @@ impl FileView {
         Self {
             change,
             unified_cache: RefCell::new(None),
+            reviewed: false,
         }
     }
 

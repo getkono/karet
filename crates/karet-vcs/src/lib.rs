@@ -33,6 +33,8 @@ pub use detail::CommitSignature;
 pub use detail::Identity;
 pub use detail::SignatureKind;
 pub use log::Commit;
+pub use ops::RebaseAction;
+pub use ops::RebaseStep;
 pub use ops::RefKind;
 pub use ops::RefLabel;
 pub use ops::ResetMode;
