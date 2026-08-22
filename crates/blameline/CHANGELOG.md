@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1](https://github.com/getkono/karet/compare/blameline-v2.0.0...blameline-v2.0.1) - 2026-08-22
+
+### Other
+
+- *(blameline)* use the workspace tempfile version
+
 ## [1.1.0](https://github.com/getkono/karet/compare/blameline-v1.0.4...blameline-v1.1.0) - 2026-08-06
 
 ### Added

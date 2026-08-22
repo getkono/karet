@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/getkono/karet/compare/karet-core-v0.5.0...karet-core-v0.6.0) - 2026-08-22
+
+### Added
+
+- *(core)* a stopped-line theme role
+- *(core)* add the diagnostic-formatter interop trait
+- *(core)* a color-swatch decoration carrying its own color
+- *(core)* add an underline decoration kind
+- *(theme)* add scrollbar track and thumb theme roles
+
 ## [0.4.0](https://github.com/getkono/karet/compare/karet-core-v0.3.0...karet-core-v0.4.0) - 2026-08-06
 
 ### Added

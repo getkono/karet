@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/getkono/karet/compare/karet-filetype-v0.5.0...karet-filetype-v0.6.0) - 2026-08-22
+
+### Added
+
+- *(filetype)* classify jupyter notebooks
+- *(filetype)* recognize the .graphqls schema extension
+- *(app)* mermaid diagrams in the markdown preview
+
+### Other
+
+- Merge remote-tracking branch 'origin/master' into feat/commit-collapse-generated
+
 ## [0.4.0](https://github.com/getkono/karet/compare/karet-filetype-v0.3.0...karet-filetype-v0.4.0) - 2026-08-06
 
 ### Added

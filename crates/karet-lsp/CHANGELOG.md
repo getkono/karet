@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/getkono/karet/compare/karet-lsp-v0.5.0...karet-lsp-v0.6.0) - 2026-08-22
+
+### Added
+
+- *(lsp)* a generic request and notification escape hatch
+
+### Other
+
+- Merge remote-tracking branch 'origin/master' into feat/seam-view
+- *(lsp)* only clone a notification for the raw fan-out when someone listens
+- justify the remaining bare allows
+
 ## [0.4.0](https://github.com/getkono/karet/compare/karet-lsp-v0.2.2...karet-lsp-v0.4.0) - 2026-08-06
 
 ### Added

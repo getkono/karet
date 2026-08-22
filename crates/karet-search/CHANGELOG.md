@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/getkono/karet/compare/karet-search-v0.5.0...karet-search-v0.6.0) - 2026-08-22
+
+### Other
+
+- *(search)* expose the gitignore-aware text-file walk
+
 ## [0.2.0](https://github.com/getkono/karet/compare/karet-search-v0.1.0...karet-search-v0.2.0) - 2026-07-04
 
 ### Added

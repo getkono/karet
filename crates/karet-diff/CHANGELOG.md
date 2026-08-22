@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/getkono/karet/compare/karet-diff-v0.5.0...karet-diff-v0.6.0) - 2026-08-22
+
+### Added
+
+- *(diff)* say why a file has no hunks instead of painting nothing
+
+### Fixed
+
+- *(diff)* bound the intra-line LCS and detect binary in diff_files
+- *(diff)* reproduce original bytes when rebuilding a patch
+- *(diff)* parse every block shape git emits
+
 ## [0.1.0](https://github.com/getkono/karet/releases/tag/karet-diff-v0.1.0) - 2026-07-02
 
 ### Added
