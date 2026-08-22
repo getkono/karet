@@ -544,7 +544,7 @@ impl App {
                 self.explorer.select_extend(delta);
             },
             SidebarPanel::SourceControl => self.scm.selection.extend_by(delta),
-            SidebarPanel::Search | SidebarPanel::Spelling => {},
+            SidebarPanel::Search | SidebarPanel::Spelling | SidebarPanel::Todos => {},
         }
     }
 
@@ -556,7 +556,7 @@ impl App {
                 self.explorer.mark_toggle();
             },
             SidebarPanel::SourceControl => self.scm.selection.toggle_cursor(),
-            SidebarPanel::Search | SidebarPanel::Spelling => {},
+            SidebarPanel::Search | SidebarPanel::Spelling | SidebarPanel::Todos => {},
         }
     }
 
@@ -568,7 +568,7 @@ impl App {
                 self.explorer.select_all();
             },
             SidebarPanel::SourceControl => self.scm.selection.select_all(),
-            SidebarPanel::Search | SidebarPanel::Spelling => {},
+            SidebarPanel::Search | SidebarPanel::Spelling | SidebarPanel::Todos => {},
         }
     }
 

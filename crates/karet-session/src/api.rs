@@ -121,6 +121,20 @@ impl SpellingLanguage {
     }
 }
 
+/// One codetag comment located by a workspace scan
+/// ([`Command::ScanWorkspaceTodos`]).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TodoHit {
+    /// The absolute path of the file the tag was found in.
+    pub path: std::path::PathBuf,
+    /// The 0-based line the tag opens on.
+    pub line: u32,
+    /// The matched tag (`TODO`, `FIXME`, …), as configured.
+    pub tag: String,
+    /// The comment text after the tag.
+    pub message: String,
+}
+
 /// One misspelling located by a workspace spelling scan
 /// ([`Command::ScanWorkspaceSpelling`]).
 ///
@@ -509,6 +523,13 @@ pub enum Command {
     ScanWorkspaceSpelling {
         /// Keep at most this many misspellings; the scan stops once it is reached
         /// and reports `truncated`.
+        limit: usize,
+    },
+    /// Scan the workspace for codetag comments (`TODO`, `FIXME`, …), streaming
+    /// results; cancellable through [`Command::Cancel`]. The tag vocabulary is
+    /// `editor.semanticComments.tags` — the same set the editor tints.
+    ScanWorkspaceTodos {
+        /// Stop after this many hits, reporting truncation.
         limit: usize,
     },
     /// Replace across every workspace match on the search worker; answered with

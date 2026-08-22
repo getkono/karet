@@ -226,6 +226,66 @@ fn tag_opens(content: &str, tag: &str) -> bool {
     }
 }
 
+/// One codetag occurrence: a comment line that opens a tag block.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodetagHit {
+    /// The 0-based line the tag opens on.
+    pub line: u32,
+    /// The matched tag, exactly as configured (`TODO`, `FIXME`, …).
+    pub tag: String,
+    /// The comment text after the tag, separators stripped.
+    pub message: String,
+}
+
+/// Find every codetag opener in `text`, under the same rules
+/// [`mark_semantic_comments`] uses to tint them — a panel built on this can
+/// never disagree with the in-buffer highlight.
+#[must_use]
+pub fn find_codetags(
+    text: &str,
+    highlights: &Highlights,
+    config: &SemanticCommentConfig,
+) -> Vec<CodetagHit> {
+    if config.tags.is_empty() {
+        return Vec::new();
+    }
+    let lines = line_spans(text);
+    let mut seen = vec![false; lines.len()];
+    let mut hits = Vec::new();
+    for s in highlights.all().iter().filter(|s| is_comment(s.token)) {
+        let mut line = line_of(&lines, s.span.start.0);
+        while let Some(l) = lines.get(line).filter(|l| l.start < s.span.end.0) {
+            if seen[line] {
+                line += 1;
+                continue;
+            }
+            let start = s.span.start.0.max(l.start);
+            let end = s.span.end.0.min(l.content_end);
+            let content = if start < end {
+                text.get(start..end).unwrap_or("")
+            } else {
+                ""
+            };
+            let stripped = content.trim_start_matches(|c: char| !c.is_alphanumeric());
+            if let Some(tag) = config.tags.iter().find(|t| tag_opens(stripped, t)) {
+                let message = stripped[tag.len()..]
+                    .trim_start_matches([':', ' '])
+                    .trim_end()
+                    .to_owned();
+                seen[line] = true;
+                hits.push(CodetagHit {
+                    line: u32::try_from(line).unwrap_or(u32::MAX),
+                    tag: tag.clone(),
+                    message,
+                });
+            }
+            line += 1;
+        }
+    }
+    hits.sort_by_key(|h| h.line);
+    hits
+}
+
 /// Whether `token` is a comment class the pass may restamp.
 fn is_comment(token: TokenId) -> bool {
     token == TokenId::COMMENT || token == StandardToken::CommentDoc.id()
@@ -543,5 +603,41 @@ fn main() {}
         assert_eq!(token_at(&out, text, "fn main"), Some(TokenId::KEYWORD));
         assert_sorted_non_overlapping(&out);
         Ok(())
+    }
+
+    #[test]
+    fn find_codetags_reports_opener_lines_with_tag_and_message() {
+        let text = "let x = 1; // TODO: fix rounding\n// plain comment\n// FIXME(bob) overflow\n";
+        let hits = find_codetags(
+            text,
+            &line_comment_spans(text),
+            &SemanticCommentConfig::default(),
+        );
+        assert_eq!(
+            hits,
+            vec![
+                CodetagHit {
+                    line: 0,
+                    tag: "TODO".to_owned(),
+                    message: "fix rounding".to_owned(),
+                },
+                CodetagHit {
+                    line: 2,
+                    tag: "FIXME".to_owned(),
+                    message: "(bob) overflow".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn find_codetags_ignores_non_comments_and_mid_sentence_tags() {
+        let text = "let todo = 1; // we should TODO nothing\nlet s = \"TODO in a string\";\n";
+        let hits = find_codetags(
+            text,
+            &line_comment_spans(text),
+            &SemanticCommentConfig::default(),
+        );
+        assert!(hits.is_empty());
     }
 }

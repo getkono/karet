@@ -40,6 +40,7 @@ impl Session {
         let vcs_worker = crate::vcs_worker::spawn(config.roots.first().cloned(), events.clone());
         let search_worker = crate::search_worker::spawn(events.clone());
         let spell_scan_worker = crate::spell_scan::spawn(events.clone());
+        let todo_scan_worker = crate::todo_scan::spawn(events.clone());
         let latex_worker = crate::latex::spawn(events.clone());
         // Open this session's swap store and scan for swaps a previous run left behind
         // (a crash, or a save that failed). They are offered to the UI for recovery.
@@ -98,6 +99,7 @@ impl Session {
             vcs_worker,
             search_worker,
             spell_scan_worker,
+            todo_scan_worker,
             cancellations,
             latex_worker,
             diff_syntax,

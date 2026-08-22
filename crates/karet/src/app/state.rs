@@ -238,6 +238,105 @@ impl SpellingPanel {
     }
 }
 
+/// One row of the Todos panel's list: a grouping header (a file, or a tag when
+/// grouped by tag) or one codetag under it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TodoRow {
+    /// A group heading; `hit` is the group's first hit and `count` its total.
+    Group {
+        /// Index into [`TodosPanel::order`] of the group's first hit.
+        hit: usize,
+        /// How many hits the group holds.
+        count: usize,
+    },
+    /// One codetag; `hit` indexes [`TodosPanel::order`].
+    Item {
+        /// Index into [`TodosPanel::order`].
+        hit: usize,
+    },
+}
+
+impl TodoRow {
+    /// The hit this row jumps to when activated.
+    pub(crate) fn hit(self) -> usize {
+        match self {
+            Self::Group { hit, .. } | Self::Item { hit } => hit,
+        }
+    }
+}
+
+/// The workspace codetag (Todos) panel state.
+#[derive(Default)]
+pub(crate) struct TodosPanel {
+    /// Every codetag the current scan has reported, in scan order (grouped by
+    /// file, since the walk visits file by file).
+    pub(crate) hits: Vec<karet_session::TodoHit>,
+    /// Display order: indices into `hits`, regrouped when `by_tag` is set.
+    pub(crate) order: Vec<usize>,
+    /// The rendered rows derived from `order`.
+    pub(crate) rows: Vec<TodoRow>,
+    /// The cursor over `rows`.
+    pub(crate) selection: ListSelection,
+    /// The in-flight scan, if one is running.
+    pub(crate) scanning: Option<RequestId>,
+    /// How many files the running (or last) scan visited.
+    pub(crate) files_scanned: usize,
+    /// The last scan stopped at its result limit.
+    pub(crate) truncated: bool,
+    /// Whether a scan has ever completed.
+    pub(crate) scanned: bool,
+    /// Group rows by tag (`TODO` / `FIXME` / …) instead of by file.
+    pub(crate) by_tag: bool,
+}
+
+impl TodosPanel {
+    /// Rebuild `order` and [`rows`](Self::rows) from `hits`, clamping the cursor.
+    pub(crate) fn rebuild_rows(&mut self) {
+        self.order = (0..self.hits.len()).collect();
+        if self.by_tag {
+            self.order
+                .sort_by(|&a, &b| self.hits[a].tag.cmp(&self.hits[b].tag).then(a.cmp(&b)));
+        }
+        self.rows.clear();
+        let same_group = |a: usize, b: usize| {
+            if self.by_tag {
+                self.hits[a].tag == self.hits[b].tag
+            } else {
+                self.hits[a].path == self.hits[b].path
+            }
+        };
+        let mut index = 0;
+        while index < self.order.len() {
+            let count = self.order[index..]
+                .iter()
+                .take_while(|&&hit| same_group(self.order[index], hit))
+                .count();
+            self.rows.push(TodoRow::Group { hit: index, count });
+            self.rows
+                .extend((index..index + count).map(|hit| TodoRow::Item { hit }));
+            index += count;
+        }
+        let cursor = self.selection.cursor();
+        self.selection = ListSelection::new(self.rows.len());
+        self.selection
+            .move_to(cursor.min(self.rows.len().saturating_sub(1)));
+    }
+
+    /// Drop every result, readying the panel for a fresh scan.
+    pub(crate) fn clear(&mut self) {
+        self.hits.clear();
+        self.order.clear();
+        self.rows.clear();
+        self.selection = ListSelection::new(0);
+        self.files_scanned = 0;
+        self.truncated = false;
+        self.scanned = false;
+    }
+}
+
+/// The Todos panel's per-frame chrome — same shape as the Spelling panel's.
+pub(crate) type TodosChrome = SpellingChrome;
+
 /// Per-document caches fed by backend events, keyed by session document.
 #[derive(Default)]
 pub(crate) struct DocState {

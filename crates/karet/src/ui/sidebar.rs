@@ -157,6 +157,7 @@ pub(super) fn draw_sidebar(
         SidebarPanel::SourceControl => draw_scm(f, app, theme, rows[1], hits),
         SidebarPanel::Search => draw_search_panel(f, app, theme, rows[1], hits),
         SidebarPanel::Spelling => draw_spelling_panel(f, app, theme, rows[1], hits),
+        SidebarPanel::Todos => draw_todos_panel(f, app, theme, rows[1], hits),
     }
 }
 
@@ -222,6 +223,7 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
         SidebarPanel::Search => "SEARCH",
         SidebarPanel::SourceControl => "SOURCE CONTROL",
         SidebarPanel::Spelling => "SPELLING",
+        SidebarPanel::Todos => "TODOS",
     };
     // Header columns: a compact workspace-root label, the panel title, an
     // optional Explorer toolbar, then the activity-bar switcher (7 cells). The
@@ -230,9 +232,11 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
     const ROOT_MAX_W: u16 = 24;
     const ACTIONS_W: u16 = 8; // four buttons × 2 cells
     // The activity-bar switcher: one 2-cell button per shown panel, plus a
-    // trailing cell. Spelling is offered only while spell check is on.
+    // trailing cell. Spelling is offered only while spell check is on, Todos
+    // only while codetag highlighting is.
     let spelling = app.spelling_available();
-    let switcher_w: u16 = if spelling { 9 } else { 7 };
+    let todos_shown = app.todos_available();
+    let switcher_w: u16 = 7 + if spelling { 2 } else { 0 } + if todos_shown { 2 } else { 0 };
     let icon_style = app.icon_style;
     let explorer = app.sidebar_panel == SidebarPanel::Explorer;
     let actions_w = if explorer && area.width >= 9 + ACTIONS_W + switcher_w {
@@ -312,9 +316,16 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
         (switch.x + 2, switch.x + 4, SidebarPanel::Search),
         (switch.x + 4, switch.x + 6, SidebarPanel::SourceControl),
     ];
+    let mut next_hit = switch.x + 6;
     if spelling {
         app.panel_hits
-            .push((switch.x + 6, switch.x + 8, SidebarPanel::Spelling));
+            .push((next_hit, next_hit + 2, SidebarPanel::Spelling));
+        next_hit += 2;
+    }
+    let todos = app.todos_available();
+    if todos {
+        app.panel_hits
+            .push((next_hit, next_hit + 2, SidebarPanel::Todos));
     }
     let icon = |ui: UiIcon, panel: SidebarPanel| {
         let hovered = app
@@ -339,6 +350,9 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
     ];
     if spelling {
         icons.push(icon(UiIcon::Spelling, SidebarPanel::Spelling));
+    }
+    if todos {
+        icons.push(icon(UiIcon::Todos, SidebarPanel::Todos));
     }
     f.render_widget(Paragraph::new(Line::from(icons)), switch);
 }
@@ -698,5 +712,160 @@ pub(super) fn draw_search_panel(
             ScrollExtent::default(),
         ),
         ScrollSurface::SearchResults,
+    );
+}
+
+/// Draw the Todos panel: a status/action toolbar over the grouped codetag list.
+pub(super) fn draw_todos_panel(
+    f: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut ScrollHits,
+) {
+    use crate::app::TodoRow;
+
+    const ACTION_W: u16 = 16;
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    let cols =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(ACTION_W)]).split(rows[0]);
+    app.todos_ui.results_rect = rows[1];
+    app.todos_ui.offset = 0;
+    app.todos_ui.action_hits = vec![
+        (cols[1].x, cols[1].x + 8, rows[0].y, Command::TodoScan),
+        (
+            cols[1].x + 8,
+            cols[1].x + ACTION_W,
+            rows[0].y,
+            Command::TodoToggleGrouping,
+        ),
+    ];
+
+    let accent = theme.role(ThemeRole::LineNumberActive).to_ratatui();
+    let dim = theme.style(ThemeRole::LineNumber);
+    let muted = theme.style(ThemeRole::Muted);
+    let todos = &app.todos;
+
+    let status = if todos.scanning.is_some() {
+        format!(" scanning… {} files", todos.files_scanned)
+    } else if todos.truncated {
+        format!(" {} shown (limit reached)", todos.hits.len())
+    } else if todos.scanned {
+        format!(" {} in {} files", todos.hits.len(), todos.files_scanned)
+    } else {
+        String::new()
+    };
+    f.render_widget(Paragraph::new(Line::styled(status, muted)), cols[0]);
+    let grouping = if todos.by_tag { "by tag" } else { "by file" };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" ⟳ scan ", Style::default().fg(accent)),
+            Span::styled(grouping.to_owned(), dim),
+        ])),
+        cols[1],
+    );
+
+    if todos.rows.is_empty() {
+        let message = if todos.scanning.is_some() {
+            "  scanning the workspace…"
+        } else if todos.scanned {
+            "  no codetags"
+        } else {
+            "  press ⟳ to scan the workspace"
+        };
+        f.render_widget(Paragraph::new(Line::styled(message, dim)), rows[1]);
+        return;
+    }
+
+    // The list reserves a scrollbar track, so the text budget is one cell short
+    // of the pane (`reserve_tracks` below carves the same column off).
+    let list_width = rows[1].width.saturating_sub(1);
+    let items: Vec<ListItem> = todos
+        .rows
+        .iter()
+        .map(|row| match *row {
+            TodoRow::Group { hit, count } => {
+                let first = &todos.hits[todos.order[hit]];
+                let name = if todos.by_tag {
+                    first.tag.clone()
+                } else {
+                    first
+                        .path
+                        .strip_prefix(&app.root)
+                        .unwrap_or(&first.path)
+                        .to_string_lossy()
+                        .into_owned()
+                };
+                ListItem::new(Line::from(vec![
+                    Span::raw(format!(" {name} ")),
+                    Span::styled(format!("({count})"), dim),
+                ]))
+            },
+            // The tag leads in accent, then the message, then the location.
+            //
+            // Grouped by tag, the tag is dropped: the group header above already
+            // names it, and the sidebar is narrow enough that repeating it costs
+            // the `file:line` its place — the one part telling the rows apart.
+            TodoRow::Item { hit } => {
+                let hit = &todos.hits[todos.order[hit]];
+                let location = if todos.by_tag {
+                    let file = hit
+                        .path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    format!("{file}:{}", hit.line.saturating_add(1))
+                } else {
+                    format!("{}", hit.line.saturating_add(1))
+                };
+                let lead = if todos.by_tag {
+                    "   ".to_owned()
+                } else {
+                    format!("   {} ", hit.tag)
+                };
+                // Budget the row so the location survives a long message: it is
+                // what tells two rows apart, so the message yields to it rather
+                // than pushing it off the edge.
+                let spent =
+                    karet_widgets::text::width(&lead) + karet_widgets::text::width(&location);
+                let message = karet_widgets::text::fit_end(
+                    &hit.message,
+                    usize::from(list_width).saturating_sub(spent + 1),
+                );
+                let mut spans = Vec::with_capacity(3);
+                if todos.by_tag {
+                    spans.push(Span::raw(lead));
+                } else {
+                    spans.push(Span::styled(
+                        lead,
+                        Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                    ));
+                }
+                spans.push(Span::styled(format!("{message} "), muted));
+                spans.push(Span::styled(location, dim));
+                ListItem::new(Line::from(spans))
+            },
+        })
+        .collect();
+    let mut state = ListState::default();
+    state.select(Some(todos.selection.cursor()));
+    let list = List::new(items).highlight_style(
+        Style::default()
+            .bg(theme.role(ThemeRole::Selection).to_ratatui())
+            .add_modifier(Modifier::BOLD),
+    );
+    let total = todos.rows.len();
+    let (results, tracks) = reserve_tracks(rows[1], ScrollAxes::VERTICAL);
+    f.render_stateful_widget(list, results, &mut state);
+    app.todos_ui.offset = state.offset();
+    app.todos_ui.results_rect = results;
+    hits.record(
+        tracks.paint(
+            f.buffer_mut(),
+            ScrollbarStyles::from_theme(theme),
+            ScrollExtent::new(total, state.offset(), results.height.into()),
+            ScrollExtent::default(),
+        ),
+        ScrollSurface::TodoResults,
     );
 }

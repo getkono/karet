@@ -411,6 +411,7 @@ pub struct Session {
     search_worker: std::sync::mpsc::Sender<crate::search_worker::SearchJob>,
     /// The workspace spelling scan, which walks every file rather than the open ones.
     spell_scan_worker: std::sync::mpsc::Sender<crate::spell_scan::SpellScanJob>,
+    todo_scan_worker: std::sync::mpsc::Sender<crate::todo_scan::TodoScanJob>,
     /// Cancellation registry for safely-droppable background reads: repository
     /// reads, LaTeX builds, and the workspace spelling scan.
     cancellations: crate::cancellation::CancellationHub,
@@ -725,6 +726,7 @@ impl Session {
                 }
             },
             Command::ScanWorkspaceSpelling { limit } => self.scan_workspace_spelling(id, limit),
+            Command::ScanWorkspaceTodos { limit } => self.scan_workspace_todos(id, limit),
             Command::SearchReplaceAll { query, replacement } => {
                 if let Some(root) = self.config.roots.first().cloned() {
                     let _ = self

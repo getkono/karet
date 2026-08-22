@@ -36,6 +36,7 @@ mod search_worker;
 pub mod session;
 mod spell;
 mod spell_scan;
+mod todo_scan;
 mod vcs_worker;
 #[cfg(feature = "viz")]
 pub mod viz;
@@ -82,6 +83,7 @@ pub use api::RequestId;
 pub use api::SpellingHit;
 pub use api::SpellingLanguage;
 pub use api::SwapInfo;
+pub use api::TodoHit;
 pub use api::VcsAction;
 pub use api::VcsOutcome;
 pub use api::ViewId;

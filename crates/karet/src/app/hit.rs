@@ -122,6 +122,8 @@ pub(crate) enum ScrollSurface {
     SearchResults,
     /// The workspace-spelling results list.
     SpellingResults,
+    /// The Todos results list.
+    TodoResults,
     /// The Source-Control changes list.
     ScmChanges,
     /// The Source-Control commit log.
