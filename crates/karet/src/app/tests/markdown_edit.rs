@@ -240,3 +240,141 @@ fn enter_on_a_plain_paragraph_is_an_ordinary_newline() {
     app.dispatch(Command::InsertNewline);
     assert_eq!(code_tab_text(&app), "just prose\n\n");
 }
+
+#[test]
+fn create_inserts_a_toc_block_at_the_caret() {
+    let mut app = markdown_app("# Title\n\n## Alpha\n\n## Beta\n", LineCol::new(1, 0));
+    app.dispatch(Command::MarkdownTocCreate);
+
+    assert_eq!(
+        code_tab_text(&app),
+        "# Title\n<!-- toc -->\n- [Alpha](#alpha)\n- [Beta](#beta)\n<!-- /toc -->\n\n\n## Alpha\n\n## Beta\n"
+    );
+    assert_eq!(app.status.as_deref(), Some("table of contents inserted"));
+}
+
+#[test]
+fn update_rewrites_an_existing_region_in_place() {
+    let text = "# Title\n\
+                <!-- toc -->\n\
+                - [Stale](#stale)\n\
+                <!-- /toc -->\n\
+                \n\
+                ## Alpha\n\
+                \n\
+                ## Beta\n";
+    let mut app = markdown_app(text, LineCol::new(0, 0));
+    app.dispatch(Command::MarkdownTocUpdate);
+
+    assert_eq!(
+        code_tab_text(&app),
+        "# Title\n\
+         <!-- toc -->\n\
+         - [Alpha](#alpha)\n\
+         - [Beta](#beta)\n\
+         <!-- /toc -->\n\
+         \n\
+         ## Alpha\n\
+         \n\
+         ## Beta\n"
+    );
+    assert_eq!(app.status.as_deref(), Some("table of contents updated"));
+}
+
+#[test]
+fn update_without_markers_points_at_the_create_command() {
+    let mut app = markdown_app("# Title\n\n## Alpha\n", LineCol::new(0, 0));
+    app.dispatch(Command::MarkdownTocUpdate);
+
+    assert_eq!(code_tab_text(&app), "# Title\n\n## Alpha\n");
+    assert_eq!(
+        app.status.as_deref(),
+        Some("no <!-- toc --> markers — use Markdown: Create Table of Contents")
+    );
+}
+
+#[test]
+fn a_document_with_no_headings_in_range_says_so() {
+    let mut app = markdown_app("# Only an h1\n\nprose\n", LineCol::new(0, 0));
+    app.dispatch(Command::MarkdownTocCreate);
+    // The default range is 2..=6, so a lone h1 yields nothing to list.
+    assert_eq!(code_tab_text(&app), "# Only an h1\n\nprose\n");
+    assert_eq!(
+        app.status.as_deref(),
+        Some("no headings in the table's level range")
+    );
+}
+
+#[test]
+fn nested_headings_indent_under_their_parent() {
+    let mut app = markdown_app("## Top\n\n### Nested\n", LineCol::new(0, 0));
+    app.dispatch(Command::MarkdownTocCreate);
+    let text = code_tab_text(&app);
+    assert!(text.contains("- [Top](#top)"), "{text}");
+    assert!(text.contains("  - [Nested](#nested)"), "{text}");
+}
+
+#[test]
+fn increasing_the_level_adds_a_hash_and_decreasing_removes_one() {
+    let mut app = markdown_app("## Section\n", LineCol::new(0, 4));
+    app.dispatch(Command::MarkdownHeadingUp);
+    assert_eq!(code_tab_text(&app), "### Section\n");
+
+    app.dispatch(Command::MarkdownHeadingDown);
+    assert_eq!(code_tab_text(&app), "## Section\n");
+}
+
+#[test]
+fn decreasing_past_h1_demotes_the_title_back_to_prose() {
+    let mut app = markdown_app("# Title\n", LineCol::new(0, 3));
+    app.dispatch(Command::MarkdownHeadingDown);
+    assert_eq!(code_tab_text(&app), "Title\n");
+}
+
+#[test]
+fn the_heading_level_clamps_at_six() {
+    let mut app = markdown_app("###### Deep\n", LineCol::new(0, 8));
+    app.dispatch(Command::MarkdownHeadingUp);
+    assert_eq!(
+        code_tab_text(&app),
+        "###### Deep\n",
+        "there is no h7 to shift into"
+    );
+}
+
+#[test]
+fn the_toc_commands_stay_out_of_non_markdown_files() {
+    let mut app = rust_app("fn main() {}\n");
+    app.dispatch(Command::MarkdownTocCreate);
+    assert_eq!(code_tab_text(&app), "fn main() {}\n");
+    assert_eq!(
+        app.status.as_deref(),
+        Some("the table of contents applies to Markdown files")
+    );
+
+    app.dispatch(Command::MarkdownHeadingUp);
+    assert_eq!(code_tab_text(&app), "fn main() {}\n");
+    assert_eq!(
+        app.status.as_deref(),
+        Some("heading levels apply to Markdown files")
+    );
+}
+
+#[test]
+fn a_heading_inside_a_fence_never_reaches_the_toc() {
+    let text = "## Real\n\n```\n## Not a heading\n```\n\n## Also real\n";
+    let mut app = markdown_app(text, LineCol::new(0, 0));
+    app.dispatch(Command::MarkdownTocCreate);
+    let out = code_tab_text(&app);
+    // The fenced line stays in the document; what matters is that the generated
+    // block between the markers does not link it.
+    let toc: String = out
+        .lines()
+        .skip_while(|l| l.trim() != karet_markdown::toc::TOC_START)
+        .take_while(|l| l.trim() != karet_markdown::toc::TOC_END)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(toc.contains("- [Real](#real)"), "{toc}");
+    assert!(toc.contains("- [Also real](#also-real)"), "{toc}");
+    assert!(!toc.contains("Not a heading"), "{toc}");
+}
