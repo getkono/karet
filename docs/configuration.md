@@ -61,6 +61,7 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 | `semanticComments` | object | enabled | Codetag highlighting (`enabled`, `tags`). |
 | `completion` | object | enabled | LSP completion (`enabled`, `autoTrigger`). |
 | `hover` | object | enabled | The hover popup (`Ctrl+K Ctrl+I`): LSP documentation plus the diagnostics under the caret (`enabled`). |
+| `colorHighlight` | object | enabled | Tint color literals (hex, `rgb()`, `hsl()`) with their own color on visible lines (`enabled`). |
 
 #### Per-language editor settings
 

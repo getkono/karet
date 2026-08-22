@@ -169,6 +169,8 @@ pub struct Editor {
     pub completion: Completion,
     /// The hover popup (documentation + diagnostics at the caret).
     pub hover: HoverPopup,
+    /// Inline swatches on color literals (hex, `rgb()`, `hsl()`).
+    pub color_highlight: ColorHighlight,
     /// Per-language patches keyed by selectors such as `[rust]`.
     ///
     /// This map is flattened in `setting.jsonc`, so its entries sit beside the
@@ -200,6 +202,7 @@ impl Default for Editor {
             semantic_comments: SemanticComments::default(),
             completion: Completion::default(),
             hover: HoverPopup::default(),
+            color_highlight: ColorHighlight::default(),
             language_overrides: BTreeMap::new(),
         }
     }
@@ -250,6 +253,23 @@ impl Default for Completion {
             enabled: true,
             auto_trigger: true,
         }
+    }
+}
+
+/// `editor.colorHighlight.*` — inline swatches on color literals.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct ColorHighlight {
+    /// Tint color literals (hex 3/4/6/8, `rgb()`/`rgba()`, `hsl()`/`hsla()`)
+    /// with their own color, on the visible lines of the editor.
+    pub enabled: bool,
+}
+
+impl Default for ColorHighlight {
+    /// On by default.
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 

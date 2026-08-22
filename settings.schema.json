@@ -138,6 +138,18 @@
         }
       ]
     },
+    "ColorHighlight": {
+      "description": "`editor.colorHighlight.*` — inline swatches on color literals.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Tint color literals (hex 3/4/6/8, `rgb()`/`rgba()`, `hsl()`/`hsla()`)\nwith their own color, on the visible lines of the editor.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
     "Completion": {
       "description": "`editor.completion.*` — LSP-powered code completion.",
       "type": "object",
@@ -182,6 +194,13 @@
       "description": "`editor.*` — text-editing behaviour.",
       "type": "object",
       "properties": {
+        "colorHighlight": {
+          "description": "Inline swatches on color literals (hex, `rgb()`, `hsl()`).",
+          "$ref": "#/$defs/ColorHighlight",
+          "default": {
+            "enabled": true
+          }
+        },
         "completion": {
           "description": "LSP-powered code completion (the popup).",
           "$ref": "#/$defs/Completion",

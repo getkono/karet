@@ -17,6 +17,8 @@ use std::collections::BTreeMap;
 
 use karet_treesitter::SyntaxTree;
 
+pub mod color;
+
 mod blocks;
 mod highlight;
 mod inline_macro;

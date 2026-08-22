@@ -360,6 +360,8 @@ struct PaneCtx<'a> {
     /// Fence languages the markdown preview renders as mermaid diagrams
     /// (`None` = rendering disabled or compiled out).
     mermaid: Option<&'a [String]>,
+    /// Whether to tint visible color literals with their own color.
+    color_highlight: bool,
 }
 
 /// What a rendered pane reported back for hit-testing and image placement.
