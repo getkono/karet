@@ -30,7 +30,7 @@ pub(super) fn draw_wide(
         diff_width,
         false,
         file_status,
-        &view.collapsed_files,
+        &view.toggled_files,
     );
     let max_column = file_doc.columns.saturating_sub(usize::from(diff_width));
     view.column = view
@@ -77,7 +77,7 @@ pub(super) fn draw_wide(
                 theme,
                 &files[file],
                 diff_width,
-                view.collapsed_files.contains(&file),
+                card_collapsed(&files[file], file, &view.toggled_files),
             ))
             .scroll((0, view.column)),
             top,
@@ -100,7 +100,7 @@ pub(super) fn draw_wide(
                 &file_doc,
                 local_scroll,
                 diff_body.height,
-                &view.collapsed_files,
+                &view.toggled_files,
             ))
             .scroll((0, view.column)),
             diff_body,

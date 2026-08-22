@@ -7,8 +7,8 @@ impl App {
         else {
             return false;
         };
-        if !view.collapsed_files.remove(&file) {
-            view.collapsed_files.insert(file);
+        if !view.toggled_files.remove(&file) {
+            view.toggled_files.insert(file);
         }
         if let Some(anchor) = view.file_anchors.get(file) {
             view.scroll = *anchor;
