@@ -13,7 +13,6 @@
 //! strict UTF-8 with line-ending/BOM detection; saving ([`save`](TextBuffer::save))
 //! is atomic and round-trips the detected encoding.
 
-use std::hash::Hasher;
 use std::io::Read;
 
 use karet_core::BytePos;
@@ -364,12 +363,23 @@ impl TextBuffer {
 /// Fingerprint the editor's normalized text content, independent of history
 /// position and independent of on-disk bytes for encoded formats such as CBOR.
 fn text_hash(rope: &ropey::Rope) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    hasher.write_usize(rope.len_bytes());
+    // Same fixed algorithm as the on-disk fingerprint: this value is compared
+    // against one recorded by an earlier run, so it cannot move with the
+    // toolchain. The length is folded in first so a chunk boundary cannot
+    // collide with a different split of the same bytes.
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    let mut fold = |bytes: &[u8]| {
+        for byte in bytes {
+            hash = (hash ^ u64::from(*byte)).wrapping_mul(PRIME);
+        }
+    };
+    fold(&rope.len_bytes().to_le_bytes());
     for chunk in rope.chunks() {
-        hasher.write(chunk.as_bytes());
+        fold(chunk.as_bytes());
     }
-    hasher.finish()
+    hash
 }
 
 /// The number of `char`s in `line`, excluding a trailing `\n` or `\r\n`.

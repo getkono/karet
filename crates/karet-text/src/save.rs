@@ -6,8 +6,6 @@
 //! renamed over the target. A fingerprint of the bytes written is returned so a
 //! file-watcher can recognize the editor's own write.
 
-use std::hash::Hash;
-use std::hash::Hasher;
 use std::io::Write;
 use std::path::Path;
 use std::time::SystemTime;
@@ -222,9 +220,46 @@ fn write_atomic_noclobber(dir: &Path, target: &Path, bytes: &[u8]) -> Result<(),
 /// [`crate::content_fingerprint`] so callers can recompute a file's fingerprint and
 /// compare it against a recorded one (e.g. backup/swap conflict detection).
 pub(crate) fn hash_bytes(bytes: &[u8]) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    hasher.finish()
+    fnv1a(bytes)
+}
+
+/// FNV-1a over `bytes` — a fixed, specified algorithm.
+///
+/// Deliberately not `DefaultHasher`: these fingerprints are written to disk in
+/// crash-recovery swap files and recompared on a later run, and the standard
+/// library does not promise its hasher's output stays the same across
+/// releases. A toolchain upgrade would therefore make an untouched file look
+/// modified, warning the user that recovering their swap discards newer
+/// content — exactly when they can least judge it.
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    bytes.iter().fold(OFFSET, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(PRIME)
+    })
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use super::*;
+
+    /// The fingerprint is written into crash-recovery swap files and compared
+    /// against a value recomputed on a later run, possibly by a binary built
+    /// with a different toolchain. These are golden FNV-1a values: if they
+    /// ever change, every saved swap starts reporting a false conflict.
+    #[test]
+    fn the_fingerprint_is_fixed_by_its_definition() {
+        assert_eq!(hash_bytes(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(hash_bytes(b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(hash_bytes(b"foobar"), 0x85944171_f73967e8);
+    }
+
+    #[test]
+    fn different_content_fingerprints_differently() {
+        assert_ne!(hash_bytes(b"on disk\n"), hash_bytes(b"on disk!\n"));
+        assert_ne!(hash_bytes(b"ab"), hash_bytes(b"ba"));
+        assert_eq!(hash_bytes(b"same"), hash_bytes(b"same"));
+    }
 }
 
 #[cfg(test)]
