@@ -272,6 +272,12 @@ See [Managed language servers](language-servers.md) for install approval,
 explicit-only updates, and crash-safe process ownership. The TeX compiler remains
 an external prerequisite.
 
+### `markdown`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `listContinuation` | bool | `true` | Enter inside a list item repeats the marker, advances ordered numbering (renumbering the run), carries task checkboxes, and ends the list on an empty item. |
+
 ### `git`
 
 | Key | Type | Default | Meaning |

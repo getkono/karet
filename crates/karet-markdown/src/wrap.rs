@@ -546,6 +546,13 @@ fn flatten(inlines: &[Inline], token: Option<TokenId>, out: &mut Vec<TextSpan>) 
                     out,
                 );
             },
+            Inline::Strikethrough(children) => {
+                flatten(
+                    children,
+                    token.or(Some(StandardToken::MarkupStrikethrough.id())),
+                    out,
+                );
+            },
             Inline::Link { text, href } => out.push(TextSpan {
                 text: text.clone(),
                 token: Some(StandardToken::MarkupLink.id()),

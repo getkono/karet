@@ -206,6 +206,14 @@ pub(super) static BINDINGS: &[Binding] = &[
     // diagnostics under the caret.
     seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('i'))], Command::Hover),
 
+    // Markdown formatting (markdown-all-in-one parity). On a non-Markdown tab
+    // Ctrl+B falls through to the sidebar toggle, mirroring how VS Code scopes
+    // the extension's chord to markdown documents.
+    b(Editor, true,  false, false, Char('b'), Command::ToggleBold),
+    b(Editor, true,  false, false, Char('i'), Command::ToggleItalic),
+    b(Editor, false, false, true,  Char('s'), Command::ToggleStrikethrough),
+    b(Editor, false, false, true,  Char('c'), Command::ToggleTaskCheckbox),
+
     // Editor focus, diff tab only. Enter drops from the read-only diff into the
     // underlying file ("editor mode"), landing on its first changed line.
     b(DiffEditor, false, false, false, Char('\\'), Command::ToggleDiffLayout),
