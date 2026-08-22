@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/getkono/karet/compare/karet-editor-v0.5.0...karet-editor-v0.6.0) - 2026-08-22
+
+### Added
+
+- *(editor)* hit-test the gutter marker column
+- *(core)* a color-swatch decoration carrying its own color
+- *(ui)* drag, page and step the scrollbars
+- *(editor)* report the last render's scroll extents
+
+### Other
+
+- split the files that outgrew the code-line ceiling
+- point shadowed crate readmes at their local files
+- Merge branch 'master' into feat/goto-definition-187
+
 ## [0.4.0](https://github.com/getkono/karet/compare/karet-editor-v0.3.0...karet-editor-v0.4.0) - 2026-08-06
 
 ### Added
