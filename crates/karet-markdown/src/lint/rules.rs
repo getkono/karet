@@ -201,7 +201,10 @@ fn per_line(cx: &Context<'_>, issues: &mut Vec<Issue>) {
                 None,
             ));
         }
-        if cx.prose(i) {
+        // A link reference definition's destination is a link, not a bare URL;
+        // upstream MD034 leaves them alone, and wrapping one in angle brackets
+        // would rewrite a perfectly good definition.
+        if cx.prose(i) && !is_link_definition(line) {
             for (col, url_len) in bare_urls(line) {
                 let url: String = chars[col..col + url_len].iter().collect();
                 issues.push(issue(
@@ -225,6 +228,31 @@ fn per_line(cx: &Context<'_>, issues: &mut Vec<Issue>) {
             }
         }
     }
+}
+
+/// Whether `line` is a link reference definition — `[label]: destination`,
+/// optionally indented up to three spaces, as CommonMark defines it.
+fn is_link_definition(line: &str) -> bool {
+    let indent = line.len() - line.trim_start().len();
+    if indent > 3 {
+        return false;
+    }
+    let rest = line.trim_start();
+    let Some(inner) = rest.strip_prefix('[') else {
+        return false;
+    };
+    // The label runs to the first unescaped `]`, which must be followed by `:`.
+    let mut escaped = false;
+    for (offset, c) in inner.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '[' => return false, // labels do not nest
+            ']' => return inner[offset + 1..].starts_with(':'),
+            _ => {},
+        }
+    }
+    false
 }
 
 /// Bare `http(s)://` URLs outside code spans, autolinks, and link syntax.
