@@ -414,6 +414,11 @@ pub struct Session {
     todo_scan_worker: std::sync::mpsc::Sender<crate::todo_scan::TodoScanJob>,
     /// The WakaTime worker, spawned on the first heartbeat while enabled.
     wakatime_worker: Option<std::sync::mpsc::Sender<crate::wakatime::Beat>>,
+    /// The last heartbeat kept, so a repeat for the same file inside the
+    /// throttle window is dropped before its payload is built.
+    wakatime_last: Option<(PathBuf, std::time::Duration)>,
+    /// Monotonic origin for `wakatime_last`, matching the worker's own clock.
+    wakatime_clock: std::time::Instant,
     /// Cancellation registry for safely-droppable background reads: repository
     /// reads, LaTeX builds, and the workspace spelling scan.
     cancellations: crate::cancellation::CancellationHub,
