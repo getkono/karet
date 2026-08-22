@@ -370,4 +370,33 @@ mod tests {
                 .is_some_and(|ua| ua.starts_with("karet/"))
         );
     }
+    #[test]
+    fn a_secret_key_is_redacted_by_debug() {
+        // `WakaConfig` derives Debug and is reachable from tracing/panic output,
+        // so the key must never render.
+        let config = WakaConfig::parse("[settings]\napi_key = waka_supersecret_value\n");
+        let rendered = format!("{config:?}");
+        assert!(
+            !rendered.contains("waka_supersecret_value"),
+            "the key leaked into Debug output: {rendered}"
+        );
+    }
+
+    #[test]
+    fn the_persisted_queue_carries_heartbeats_not_credentials() {
+        // The offline queue lands on disk, so it must hold only payloads.
+        let beat = Beat {
+            path: PathBuf::from("/repo/src/main.rs"),
+            language: Some("Rust"),
+            lines: 12,
+            is_write: false,
+            branch: Some("main".to_owned()),
+            project: Some("repo".to_owned()),
+        };
+        let json = heartbeat_json(&beat, 1.0);
+        let text = json.to_string();
+        assert!(!text.contains("api_key"), "{text}");
+        assert!(!text.contains("Authorization"), "{text}");
+        assert!(text.contains("main.rs"), "{text}");
+    }
 }

@@ -551,3 +551,39 @@ fn pull_request_conversation_renders_github_familiar_controls_and_success_colour
     assert_eq!(buffer[(merge_rect.x, merge_rect.y)].bg, Color::Green);
     Ok(())
 }
+
+#[test]
+fn a_failed_commit_verification_stays_quiet() {
+    // The signature lookup fires for whatever commit is on screen, so a commit
+    // the forge does not know — unpushed, a fork, no GitHub remote — is an
+    // ordinary outcome and must not raise an error toast.
+    let mut app = app();
+    app.apply_github_error(
+        Some(RequestId(1)),
+        "commit verification".to_owned(),
+        "GitHub returned HTTP 422: No commit found for SHA: deadbeef".to_owned(),
+    );
+    assert!(
+        app.notifications.is_empty(),
+        "a speculative enrichment must not notify"
+    );
+}
+
+#[test]
+fn other_github_failures_still_reach_the_user() {
+    // The quiet path is scoped to verification; an action the user asked for
+    // must still report when it fails.
+    let mut app = app();
+    app.apply_github_error(
+        Some(RequestId(1)),
+        "merge pull request".to_owned(),
+        "GitHub returned HTTP 405: not mergeable".to_owned(),
+    );
+    let active = app.notifications.active();
+    assert_eq!(active.len(), 1);
+    let rendered = format!("{active:?}");
+    assert!(
+        rendered.contains("Could not merge the pull request"),
+        "{rendered}"
+    );
+}
