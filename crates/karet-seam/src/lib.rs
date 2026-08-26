@@ -93,6 +93,7 @@ pub use modules::python::PyModule;
 pub use package::IndexOptions;
 pub use package::PackageError;
 pub use package::index_package;
+pub use package::index_workspace;
 pub use package::reindex_file;
 pub use query::Query;
 pub use query::QueryError;
