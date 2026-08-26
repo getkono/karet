@@ -55,6 +55,12 @@ run = [
   # `karet-fileview` gates only `raster`/`images`; PDF rasterization lives in
   # `karet-pdf` and is gated on the app, covered by the `karet` line above.
   "cargo build -p karet-fileview --no-default-features --features images",
+  # `lint`/`test` run `--all-features`, so nothing else here ever compiles
+  # `karet-widgets` without `markdown`. Both arms of the dialog body — the
+  # plain-text one that must build with no optional features, and the
+  # `DialogBody::Markdown` one — are checked explicitly.
+  "cargo check -p karet-widgets --no-default-features",
+  "cargo check -p karet-widgets --features markdown",
 ]
 
 [tasks.coverage]

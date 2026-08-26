@@ -93,13 +93,13 @@ impl Toasts<'_> {
     fn card_height(note: &Notification, width: u16) -> u16 {
         let inner_w = width.saturating_sub(2);
         let title_width = usize::from(inner_w.saturating_sub(4)).max(1);
-        let title_lines = wrap_display(&note.title, title_width).len().max(1);
+        let title_lines = crate::text::wrap(&note.title, title_width).len().max(1);
         let body_lines = note
             .body
             .as_deref()
             .filter(|body| !body.is_empty())
             .map_or(0, |body| {
-                wrap_display(body, usize::from(inner_w).max(1)).len()
+                crate::text::wrap(body, usize::from(inner_w).max(1)).len()
             });
         2_u16.saturating_add(
             u16::try_from(title_lines.saturating_add(body_lines)).unwrap_or(u16::MAX),
@@ -185,52 +185,6 @@ impl Toasts<'_> {
     }
 }
 
-fn wrap_display(text: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return Vec::new();
-    }
-    let mut lines = Vec::new();
-    for source in text.lines() {
-        if source.is_empty() {
-            lines.push(String::new());
-            continue;
-        }
-        let mut current = String::new();
-        for word in source.split_whitespace() {
-            let separator = usize::from(!current.is_empty());
-            if current
-                .width()
-                .saturating_add(separator)
-                .saturating_add(word.width())
-                <= width
-            {
-                if separator == 1 {
-                    current.push(' ');
-                }
-                current.push_str(word);
-                continue;
-            }
-            if !current.is_empty() {
-                lines.push(std::mem::take(&mut current));
-            }
-            for character in word.chars() {
-                let character_width = UnicodeWidthStr::width(character.to_string().as_str());
-                if !current.is_empty() && current.width().saturating_add(character_width) > width {
-                    lines.push(std::mem::take(&mut current));
-                }
-                current.push(character);
-            }
-        }
-        if !current.is_empty() {
-            lines.push(current);
-        }
-    }
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-    lines
-}
-
 /// Truncate `s` to `max` display columns, appending `…` when it overflows.
 fn fit(s: &str, max: usize) -> String {
     crate::text::fit_end(s, max)
@@ -269,12 +223,12 @@ impl Widget for Toasts<'_> {
             }
             let inner_w = inner.width as usize;
             let title_width = inner_w.saturating_sub(4).max(1);
-            let title_lines = wrap_display(&note.title, title_width);
+            let title_lines = crate::text::wrap(&note.title, title_width);
             let body_lines = note
                 .body
                 .as_deref()
                 .filter(|body| !body.is_empty())
-                .map_or_else(Vec::new, |body| wrap_display(body, inner_w));
+                .map_or_else(Vec::new, |body| crate::text::wrap(body, inner_w));
             let total_lines = title_lines.len().saturating_add(body_lines.len());
             let visible_lines = usize::from(inner.height).min(total_lines);
             let truncated = visible_lines < total_lines;

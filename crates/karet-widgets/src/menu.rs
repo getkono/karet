@@ -4,100 +4,65 @@
 //! that skips disabled rows) and the painting (anchored placement, clamping,
 //! dimmed disabled rows, right-aligned hints). Resolving what a row *says*
 //! (labels, key hints) and what accepting it *does* stays with the consumer.
+//!
+//! The rows themselves are the shared [`ChoiceList`](crate::choice::ChoiceList)
+//! model, which the [dialog](crate::dialog) widget uses too; this module adds
+//! only what makes a menu a menu — anchoring at a point and clamping into view.
+
+use std::ops::Deref;
+use std::ops::DerefMut;
 
 use karet_core::ThemeRole;
 use karet_theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
 use ratatui::style::Style;
-use ratatui::text::Line;
-use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Clear;
-use ratatui::widgets::List;
-use ratatui::widgets::ListItem;
-use ratatui::widgets::ListState;
 use unicode_width::UnicodeWidthStr;
+
+use crate::choice::Choice;
+use crate::choice::ChoiceList;
 
 /// One row of a positioned context menu: its action, whether it can run right
 /// now, and an optional note explaining why not.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ContextMenuEntry<A> {
-    /// The action this row yields when accepted.
-    pub action: A,
-    /// An action-specific label. `None` lets the consumer resolve a default.
-    pub label: Option<String>,
-    /// Whether the row can be activated. A disabled row renders dimmed, is
-    /// skipped by keyboard navigation, and should refuse Accept.
-    pub enabled: bool,
-    /// Why the row is disabled, surfaced when the user tries to activate it
-    /// anyway (e.g. by clicking it).
-    pub note: Option<String>,
-}
-
-impl<A> ContextMenuEntry<A> {
-    /// An enabled entry yielding `action` (labeled by the consumer's default).
-    pub fn enabled(action: impl Into<A>) -> Self {
-        Self {
-            action: action.into(),
-            label: None,
-            enabled: true,
-            note: None,
-        }
-    }
-
-    /// A disabled entry for `action`, greyed out with an explanatory `note`.
-    pub fn disabled(action: impl Into<A>, note: impl Into<String>) -> Self {
-        Self {
-            action: action.into(),
-            label: None,
-            enabled: false,
-            note: Some(note.into()),
-        }
-    }
-
-    /// An enabled contextual action with a label supplied by its producer.
-    pub fn custom(label: impl Into<String>, action: impl Into<A>) -> Self {
-        Self {
-            action: action.into(),
-            label: Some(label.into()),
-            enabled: true,
-            note: None,
-        }
-    }
-
-    /// A disabled contextual row carrying an explanatory note.
-    pub fn disabled_custom(
-        label: impl Into<String>,
-        action: impl Into<A>,
-        note: impl Into<String>,
-    ) -> Self {
-        Self {
-            action: action.into(),
-            label: Some(label.into()),
-            enabled: false,
-            note: Some(note.into()),
-        }
-    }
-}
+///
+/// The menu's rows are the shared [`Choice`] model; the name is kept for the
+/// consumers that speak in menus.
+pub type ContextMenuEntry<A> = Choice<A>;
 
 /// A positioned context menu (opened from a tree row, a pane, a word, …).
+///
+/// Dereferences to its [`ChoiceList`], so the row model — `entries`,
+/// `selected`, `hover`, [`select_by`](ChoiceList::select_by),
+/// [`selected_entry`](ChoiceList::selected_entry) — is reached directly on the
+/// menu. `Clone` is derived so `menu.clone()` copies the placement too, rather
+/// than resolving through the deref to a bare `ChoiceList`.
+#[derive(Clone)]
 pub struct ContextMenu<A> {
     /// The column where the menu should be anchored.
     pub x: u16,
     /// The row where the menu should be anchored.
     pub y: u16,
-    /// The rows shown in the menu, in display order.
-    pub entries: Vec<ContextMenuEntry<A>>,
-    /// The selected row index.
-    pub selected: usize,
-    /// The activatable row under the pointer, painted with a secondary accent so
-    /// the mouse gets the same live feedback the keyboard cursor has.
-    pub hover: Option<usize>,
     /// The menu rect from the last render (for hit-testing).
     pub rect: Rect,
+    /// The rows and the cursor over them.
+    rows: ChoiceList<A>,
+}
+
+impl<A> Deref for ContextMenu<A> {
+    type Target = ChoiceList<A>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.rows
+    }
+}
+
+impl<A> DerefMut for ContextMenu<A> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.rows
+    }
 }
 
 impl<A> ContextMenu<A> {
@@ -105,14 +70,28 @@ impl<A> ContextMenu<A> {
     /// activatable row.
     #[must_use]
     pub fn new(x: u16, y: u16, entries: Vec<ContextMenuEntry<A>>) -> Self {
-        let selected = entries.iter().position(|e| e.enabled).unwrap_or(0);
         Self {
             x,
             y,
-            entries,
-            selected,
-            hover: None,
             rect: Rect::default(),
+            rows: ChoiceList::new(entries),
+        }
+    }
+
+    /// The rows' click target: the borders bracket them, so the first row sits
+    /// one line below the menu's top edge.
+    ///
+    /// `y`/`height` are the painted rows' own, as
+    /// [`ChoiceList::row_at`] requires. `x`/`width` are deliberately the whole
+    /// box's — a menu is a small floating target and a click that lands on the
+    /// border column beside a row plainly means that row, so the target is
+    /// widened by the one border cell either side of the painted rows.
+    fn rows_rect(&self) -> Rect {
+        Rect {
+            x: self.rect.x,
+            y: self.rect.y.saturating_add(1),
+            width: self.rect.width,
+            height: self.rect.height.saturating_sub(2),
         }
     }
 
@@ -121,17 +100,24 @@ impl<A> ContextMenu<A> {
     /// the consumer's business, and a click on one still owes the user its note.
     ///
     /// Both the click and the hover path resolve rows through here, so what
-    /// lights up under the pointer is the row a click addresses.
+    /// lights up under the pointer is the row a click addresses — including
+    /// when the menu was clamped shorter than its list and scrolled.
     #[must_use]
     pub fn row_at(&self, x: u16, y: u16) -> Option<usize> {
-        let rect = self.rect;
-        // The borders bracket the rows: `rect.y` is the top edge, and the row
-        // one past the last entry is the bottom edge.
-        if rect.width == 0 || x < rect.x || x >= rect.right() || y <= rect.y || y >= rect.bottom() {
-            return None;
-        }
-        let index = usize::from(y - rect.y - 1);
-        (index < self.entries.len()).then_some(index)
+        self.rows.row_at(self.rows_rect(), x, y)
+    }
+
+    /// Move the selection by `delta` rows, skipping disabled entries. When
+    /// fewer enabled rows exist in that direction, the selection lands on the
+    /// last one found (or stays put).
+    pub fn select_by(&mut self, delta: i32) {
+        self.rows.select_by(delta);
+    }
+
+    /// The currently selected row, if any.
+    #[must_use]
+    pub fn selected_entry(&self) -> Option<&ContextMenuEntry<A>> {
+        self.rows.selected_entry()
     }
 
     /// Track the pointer, highlighting the row it rests on. `None` (or a point
@@ -139,47 +125,13 @@ impl<A> ContextMenu<A> {
     /// highlight — feedback promising a click that would be refused is worse
     /// than none.
     pub fn set_hover(&mut self, point: Option<(u16, u16)>) {
-        self.hover = point
-            .and_then(|(x, y)| self.row_at(x, y))
-            .filter(|&index| self.entries.get(index).is_some_and(|entry| entry.enabled));
-    }
-
-    /// Move the selection by `delta` rows, skipping disabled entries. When
-    /// fewer enabled rows exist in that direction, the selection lands on the
-    /// last one found (or stays put).
-    pub fn select_by(&mut self, delta: i32) {
-        if self.entries.is_empty() || delta == 0 {
-            return;
-        }
-        let step: i64 = if delta > 0 { 1 } else { -1 };
-        let mut remaining = i64::from(delta).abs();
-        let mut idx = self.selected as i64;
-        let mut landed = self.selected as i64;
-        loop {
-            idx += step;
-            if idx < 0 || idx >= self.entries.len() as i64 {
-                break;
-            }
-            if self.entries[idx as usize].enabled {
-                landed = idx;
-                remaining -= 1;
-                if remaining == 0 {
-                    break;
-                }
-            }
-        }
-        self.selected = landed as usize;
-    }
-
-    /// The currently selected row, if any.
-    #[must_use]
-    pub fn selected_entry(&self) -> Option<&ContextMenuEntry<A>> {
-        self.entries.get(self.selected)
+        let row = point.and_then(|(x, y)| self.row_at(x, y));
+        self.rows.set_hover_row(row);
     }
 
     /// Draw the menu into `area`, clamping it inside, and record its rect for
     /// hit-testing. `labels` and `hints` are the consumer-resolved row texts,
-    /// index-aligned with [`entries`](Self::entries).
+    /// index-aligned with [`entries`](ChoiceList::entries).
     pub fn draw(
         &mut self,
         f: &mut Frame,
@@ -188,7 +140,7 @@ impl<A> ContextMenu<A> {
         labels: &[String],
         hints: &[Option<String>],
     ) {
-        if self.entries.is_empty() {
+        if self.rows.is_empty() {
             self.rect = Rect::default();
             return;
         }
@@ -205,7 +157,7 @@ impl<A> ContextMenu<A> {
             .max()
             .unwrap_or(0);
         let width = (label_w + hint_w + 6).clamp(18, 46).min(area.width.max(1));
-        let height = (self.entries.len() as u16 + 2).min(area.height.max(1));
+        let height = (self.rows.len() as u16 + 2).min(area.height.max(1));
         let x = self.x.min(area.right().saturating_sub(width));
         let y = self.y.min(area.bottom().saturating_sub(height));
         let rect = Rect {
@@ -225,45 +177,7 @@ impl<A> ContextMenu<A> {
             .border_style(theme.style(ThemeRole::IndentGuide));
         let inner = block.inner(rect);
         f.render_widget(block, rect);
-        let dim = theme.style(ThemeRole::LineNumber);
-        // The hovered row carries a secondary accent; the selected row keeps the
-        // primary one, so a pointer resting elsewhere never hides the cursor.
-        let hover = theme.role(ThemeRole::HoverHighlight).to_ratatui();
-        let items: Vec<ListItem> = labels
-            .iter()
-            .zip(hints.iter())
-            .zip(self.entries.iter())
-            .enumerate()
-            .map(|(index, ((label, hint), entry))| {
-                // Disabled rows render fully dimmed (label and hint alike).
-                let label_style = if entry.enabled { Style::default() } else { dim };
-                let item = match hint {
-                    Some(hint) => {
-                        let used = width_of(label) + width_of(hint);
-                        let pad = inner.width.saturating_sub(used).max(1);
-                        ListItem::new(Line::from(vec![
-                            Span::styled(label.clone(), label_style),
-                            Span::raw(" ".repeat(pad as usize)),
-                            Span::styled(hint.clone(), dim),
-                        ]))
-                    },
-                    None => ListItem::new(Line::from(Span::styled(label.clone(), label_style))),
-                };
-                if self.hover == Some(index) && index != self.selected {
-                    item.style(Style::default().bg(hover))
-                } else {
-                    item
-                }
-            })
-            .collect();
-        let mut state = ListState::default();
-        state.select(Some(self.selected));
-        let list = List::new(items).highlight_style(
-            Style::default()
-                .bg(theme.role(ThemeRole::Selection).to_ratatui())
-                .add_modifier(Modifier::BOLD),
-        );
-        f.render_stateful_widget(list, inner, &mut state);
+        self.rows.render(f, theme, inner, labels, hints);
     }
 }
 
@@ -400,5 +314,63 @@ mod tests {
 
         assert_eq!(m.hover, None);
         assert_ne!(buffer[(2u16, 2u16)].bg, hover);
+    }
+
+    /// The text painted on row `y` of the 20-cell-wide test buffer.
+    fn painted(buffer: &Buffer, y: u16) -> String {
+        (0..20u16)
+            .map(|x| buffer[(x, y)].symbol().to_owned())
+            .collect()
+    }
+
+    /// Every painted row hit-tests to the entry whose label is printed on it.
+    fn assert_rows_agree(m: &ContextMenu<u8>, buffer: &Buffer) {
+        assert!(m.rect.height > 2, "the menu painted at least one row");
+        for offset in 0..m.rect.height - 2 {
+            let y = m.rect.y + 1 + offset;
+            let text = painted(buffer, y);
+            let hit = m.row_at(m.rect.x, y).map(|index| format!("row {index}"));
+            assert!(
+                hit.as_ref()
+                    .is_some_and(|label| text.contains(label.as_str())),
+                "the row painted at y={y} reads {text:?} but hit-tests to {hit:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_drawn_menu_hit_tests_the_rows_it_painted() {
+        let mut m = menu(&[true, false, true]);
+        // Anchored away from the origin, so a rect derived wrong would show.
+        m.x = 4;
+        m.y = 2;
+        let Some(buffer) = draw(&mut m) else {
+            return;
+        };
+        assert!(m.rect.x > 0 && m.rect.y > 0, "not drawn at the origin");
+        assert_rows_agree(&m, &buffer);
+    }
+
+    #[test]
+    fn a_menu_clamped_shorter_than_its_list_hit_tests_what_it_paints() {
+        // Ten rows into an eight-row terminal: the box is clamped and the
+        // `List` scrolls the selection into view.
+        let mut m = menu(&[true; 10]);
+        m.select_by(9);
+        assert_eq!(m.selected, 9);
+        let Some(buffer) = draw(&mut m) else {
+            return;
+        };
+        assert!(
+            usize::from(m.rect.height - 2) < m.entries.len(),
+            "fewer painted rows than entries"
+        );
+        assert_eq!(m.first_visible(), 4, "the list scrolled off the top");
+        assert_rows_agree(&m, &buffer);
+        assert_ne!(
+            m.row_at(m.rect.x, m.rect.y + 1),
+            Some(0),
+            "row 0 scrolled away"
+        );
     }
 }
