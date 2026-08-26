@@ -7,7 +7,9 @@
 //! LSP hover/doc popup, which render `karet-core` models supplied over the
 //! backend's event stream. The [`menu`] and [`dialog`] widgets share one row
 //! model ([`choice`]), so a context menu and a modal confirmation navigate
-//! identically. The read-only file-view primitives (hex dump,
+//! identically. The [`transcript`] widget is the live-conversation surface: an
+//! append-only, wrapping, stick-to-bottom view with a post-wrap scroll extent.
+//! The read-only file-view primitives (hex dump,
 //! terminal image, placeholder) live in `karet-fileview`.
 
 pub mod ansi;
@@ -29,6 +31,7 @@ pub mod status;
 pub mod text;
 pub mod textarea;
 pub mod textfield;
+pub mod transcript;
 
 pub use choice::Choice;
 pub use choice::ChoiceList;
@@ -60,6 +63,9 @@ pub use pane::drop_preview_rect;
 pub use pane::drop_zone;
 pub use select::ListSelection;
 pub use spinner::Spinner;
+pub use transcript::Transcript;
+pub use transcript::TranscriptBody;
+pub use transcript::TranscriptMessage;
 
 /// The LSP hover / documentation popup (relocated here from `karet-lsp`).
 #[cfg(feature = "hover")]
