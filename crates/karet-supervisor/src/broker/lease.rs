@@ -82,7 +82,7 @@ pub(crate) async fn connect<P: BrokerProtocol>(
     let directory = state_root.join(P::STATE_DIR);
     std::fs::create_dir_all(&directory).map_err(io_error)?;
     endpoint::set_private_directory(&directory)?;
-    let key = key::broker_key(P::PROTOCOL_VERSION, launch);
+    let key = key::broker_key(P::PRELUDE, P::PROTOCOL_VERSION, launch);
     let metadata = directory.join(format!("{key}.json"));
     let lock = directory.join(format!("{key}.lock"));
 

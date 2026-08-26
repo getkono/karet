@@ -58,14 +58,27 @@ pub trait BrokerProtocol: Sized + Send + Sync + 'static {
     type Framing: Framing;
 
     /// Directory under the state root holding endpoint and lock files.
+    ///
+    /// Must be unique per protocol: two protocols sharing a directory would
+    /// read each other's endpoint files. Uniqueness of the file *names* inside
+    /// it does not depend on this — [`Self::PRELUDE`] separates the derived
+    /// broker keys — but a shared directory still mixes unrelated brokers.
     const STATE_DIR: &'static str;
     /// Bumped whenever brokers of different builds must not be shared.
+    ///
+    /// It is a per-protocol counter, not a global one; protocols are kept apart
+    /// by [`Self::PRELUDE`], so picking the same version as another protocol is
+    /// harmless.
     const PROTOCOL_VERSION: &'static str;
     /// Environment flag selecting the hidden broker entry point.
     const MODE_ENV: &'static str;
     /// Environment variable carrying the encoded broker specification.
     const SPEC_ENV: &'static str;
     /// Literal prefix of the client authentication line, token excluded.
+    ///
+    /// Must be unique per protocol: besides greeting the broker it is the
+    /// domain separator folded into the broker key, so two protocols sharing a
+    /// prelude would derive the same endpoint and lock file names.
     const PRELUDE: &'static str;
     /// Human-readable name used in the hidden process's error output.
     const DISPLAY_NAME: &'static str;

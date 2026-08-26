@@ -103,28 +103,26 @@ impl BrokerProtocol for LspBroker {
         message: &mut Value,
         link: &ClientLink<'_, Self>,
     ) -> ClientFlow<LspRequest> {
-        match message.get("method").and_then(Value::as_str) {
-            Some("initialize") => handle_initialize(message, link).await,
-            Some("initialized") => ClientFlow::Drop,
-            Some("shutdown") => {
+        match classify(message) {
+            ClientMessage::Initialize => handle_initialize(message, link).await,
+            ClientMessage::Initialized => ClientFlow::Drop,
+            ClientMessage::Shutdown => {
                 if let Some(id) = message.get("id").cloned() {
                     link.reply(json!({"jsonrpc": "2.0", "id": id, "result": null}))
                         .await;
                 }
                 ClientFlow::Drop
             },
-            Some("exit") => ClientFlow::Stop,
-            Some(_) => {
-                if message.get("id").is_some() {
-                    ClientFlow::Proxy(LspRequest::Plain)
-                } else if should_forward_notification(link.client(), message, link.state()).await {
+            ClientMessage::Exit => ClientFlow::Stop,
+            ClientMessage::Request => ClientFlow::Proxy(LspRequest::Plain),
+            ClientMessage::Notification => {
+                if should_forward_notification(link.client(), message, link.state()).await {
                     ClientFlow::Forward
                 } else {
                     ClientFlow::Drop
                 }
             },
-            // A reply to a server-originated request travels upstream as-is.
-            None => ClientFlow::Forward,
+            ClientMessage::Reply => ClientFlow::Forward,
         }
     }
 
@@ -163,6 +161,48 @@ impl BrokerProtocol for LspBroker {
         .await;
         link.send_upstream(json!({"jsonrpc": "2.0", "method": "exit", "params": null}))
             .await;
+    }
+}
+
+/// What a client message is, settled before a hook borrows it mutably.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClientMessage {
+    /// The one `initialize` whose result every later client shares.
+    Initialize,
+    /// The `initialized` notification the broker sends once, itself.
+    Initialized,
+    /// A `shutdown` request the broker answers without the server.
+    Shutdown,
+    /// The `exit` notification ending this client's session.
+    Exit,
+    /// Any other request: it carries an id the broker must rewrite.
+    Request,
+    /// Any other notification: no id, nothing to track.
+    Notification,
+    /// A reply to a server-originated request; travels upstream as-is.
+    Reply,
+}
+
+/// Classify a client message by the *presence* of `method`, not by `method`
+/// being a string.
+///
+/// A reply is the only client message with no `method` key at all, so a
+/// malformed non-string `method` alongside an `id` is still a request and must
+/// be proxied. Forwarding it verbatim would leave the client's own id on the
+/// wire, and the server's answer would then be matched against whichever other
+/// client's proxied request happens to carry the same id — delivering one
+/// window's answer to another.
+fn classify(message: &Value) -> ClientMessage {
+    let Some(method) = message.get("method") else {
+        return ClientMessage::Reply;
+    };
+    match method.as_str() {
+        Some("initialize") => ClientMessage::Initialize,
+        Some("initialized") => ClientMessage::Initialized,
+        Some("shutdown") => ClientMessage::Shutdown,
+        Some("exit") => ClientMessage::Exit,
+        _ if message.get("id").is_some() => ClientMessage::Request,
+        _ => ClientMessage::Notification,
     }
 }
 
@@ -327,11 +367,12 @@ mod tests {
 
     use super::*;
     use crate::broker::key;
+    use crate::broker::serve::Core;
 
     /// Keeps the moved tests' call shape: identity is derived from the launch
     /// description, which for LSP is a spec plus a repository root.
     fn broker_key(spec: &LspSpec, root: &Path) -> String {
-        key::broker_key(PROTOCOL_VERSION, &launch(spec, root))
+        key::broker_key(PRELUDE, PROTOCOL_VERSION, &launch(spec, root))
     }
 
     /// The document-lease tests only touch [`LspState`]; the channel keeps the
@@ -339,6 +380,25 @@ mod tests {
     fn test_shared() -> (Arc<LspState>, tokio::sync::mpsc::Receiver<Value>) {
         let (_upstream, rx) = tokio::sync::mpsc::channel(8);
         (Arc::new(LspState::default()), rx)
+    }
+
+    /// Everything a [`ClientLink`] borrows, kept alive by the caller.
+    struct LinkParts {
+        core: Arc<Core<LspBroker>>,
+        sender: tokio::sync::mpsc::Sender<Value>,
+        _upstream: tokio::sync::mpsc::Receiver<Value>,
+        _replies: tokio::sync::mpsc::Receiver<Value>,
+    }
+
+    fn link_parts() -> LinkParts {
+        let (upstream, _upstream) = tokio::sync::mpsc::channel(8);
+        let (sender, _replies) = tokio::sync::mpsc::channel(8);
+        LinkParts {
+            core: Core::<LspBroker>::new(upstream),
+            sender,
+            _upstream,
+            _replies,
+        }
     }
 
     #[test]
@@ -391,5 +451,38 @@ mod tests {
         assert!(!should_forward_notification(2, &open, &shared).await);
         assert!(!should_forward_notification(1, &close, &shared).await);
         assert!(should_forward_notification(2, &close, &shared).await);
+    }
+
+    #[tokio::test]
+    async fn a_non_string_method_with_an_id_is_still_proxied() {
+        let parts = link_parts();
+        let link = ClientLink::new(&parts.core, 1, &parts.sender);
+        let mut message = json!({"jsonrpc": "2.0", "id": 1, "method": 42});
+        assert_eq!(
+            LspBroker::on_client_message(&mut message, &link).await,
+            ClientFlow::Proxy(LspRequest::Plain)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_non_string_method_without_an_id_is_forwarded() {
+        let parts = link_parts();
+        let link = ClientLink::new(&parts.core, 1, &parts.sender);
+        let mut message = json!({"jsonrpc": "2.0", "method": 42});
+        assert_eq!(
+            LspBroker::on_client_message(&mut message, &link).await,
+            ClientFlow::Forward
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reply_without_a_method_travels_upstream_as_is() {
+        let parts = link_parts();
+        let link = ClientLink::new(&parts.core, 1, &parts.sender);
+        let mut message = json!({"jsonrpc": "2.0", "id": 1, "result": null});
+        assert_eq!(
+            LspBroker::on_client_message(&mut message, &link).await,
+            ClientFlow::Forward
+        );
     }
 }
