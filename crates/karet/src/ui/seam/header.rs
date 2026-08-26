@@ -41,6 +41,14 @@ pub(super) fn draw(
         },
         strong,
     ));
+    // Said only when there is more than one, because "1 package" beside a package's own
+    // name is noise, and the single-package view is the common one.
+    if state.summary.packages > 1 {
+        spans.push(Span::styled(
+            format!(" · {} packages", state.summary.packages),
+            muted,
+        ));
+    }
     // The breadcrumb is the narrow-undo stack made visible: every step in is a step the
     // reader can see and step back out of.
     for narrow in &state.narrow {

@@ -52,6 +52,7 @@ static PALETTE: &[Command] = &[
     Command::JumpBack,
     Command::ToggleInlineBlame,
     Command::ShowSeamView,
+    Command::ShowSeamViewAt,
     Command::SeamConfiguration,
     Command::SeamCopyIdentity,
     Command::SeamCopyQuery,

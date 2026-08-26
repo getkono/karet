@@ -59,6 +59,8 @@ pub enum OverlayEvent {
     AcceptDeleteLocalBranch(String),
     /// Arm typed confirmation for the selected remote branch.
     AcceptDeleteRemoteBranch { remote: String, branch: String },
+    /// Open the Seam view on the chosen start point.
+    AcceptSeamRoot(PathBuf),
     /// Jump to one of several definition locations.
     AcceptLocation {
         /// The defining file.
@@ -340,6 +342,16 @@ impl Overlay {
             .map(|(label, path)| (label, OverlayEvent::AcceptFile(path)))
             .collect();
         Self::Picker(Picker::new("Go to File", items))
+    }
+
+    /// Build the picker over the start points the Seam view can be opened on.
+    #[must_use]
+    pub fn seam_roots(items: Vec<(String, PathBuf)>) -> Self {
+        let items = items
+            .into_iter()
+            .map(|(label, root)| (label, OverlayEvent::AcceptSeamRoot(root)))
+            .collect();
+        Self::Picker(Picker::new("Open Seam View at", items))
     }
 
     /// Build the picker offered when a symbol has several definitions.

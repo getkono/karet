@@ -25,6 +25,7 @@ mod review;
 mod save;
 mod scm;
 mod scroll;
+mod seam;
 mod search_completion;
 mod spellcheck;
 mod spelling_panel;

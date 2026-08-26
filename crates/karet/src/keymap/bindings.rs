@@ -284,6 +284,9 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Seam, false, false, false, Char('0'), Command::SeamClearLenses),
     b(Seam, false, false, false, Char('c'), Command::SeamConfiguration),
     b(Seam, false, false, false, Char('y'), Command::SeamCopyIdentity),
+    // `r` for reroot: the way out of a root that could not be indexed, without leaving
+    // the view to find the palette.
+    b(Seam, false, false, false, Char('r'), Command::ShowSeamViewAt),
 
     b(CommitGraph, false, false, false, Char('j'), Command::CommitGraphNext),
     b(CommitGraph, false, false, false, Down,      Command::CommitGraphNext),

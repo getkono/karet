@@ -455,6 +455,7 @@ impl SeamViewState {
 }
 
 mod actions;
+pub(crate) mod roots;
 
 #[cfg(test)]
 #[path = "seam/tests.rs"]

@@ -92,6 +92,42 @@ impl App {
         })
     }
 
+    /// Offer the start points the Seam view could be opened on.
+    ///
+    /// Discovery runs here on the app thread rather than on the backend. The picker *is*
+    /// the surface being opened, so rows arriving after it would move the selection under
+    /// the reader's fingers, and withholding it until they arrived would be exactly the
+    /// delayed surface a picker must never be. Discovery only reads manifests and lists
+    /// directories, and it is bounded — the app already runs a heavier walk than this
+    /// synchronously to open the quick-open picker.
+    pub(crate) fn open_seam_view_picker(&mut self) {
+        let items = self.seam_root_candidates();
+        self.overlay = Some(crate::overlay::Overlay::seam_roots(items));
+    }
+
+    /// The start points on offer: the reader's context, and what discovery found.
+    fn seam_root_candidates(&mut self) -> Vec<(String, std::path::PathBuf)> {
+        let discovered = karet_seam::discover(&self.root, karet_seam::DiscoveryOptions::default());
+        let current = self
+            .tabs
+            .get(self.active)
+            .and_then(Tab::path)
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf);
+        let explorer = self.explorer_seam_root();
+        super::roots::candidates(&self.root.clone(), current, explorer, discovered)
+    }
+
+    /// The explorer's selection as a directory, when the panel has one.
+    fn explorer_seam_root(&mut self) -> Option<std::path::PathBuf> {
+        self.explorer.ensure_built(&self.root);
+        let row = self.explorer.selected()?;
+        if row.is_dir {
+            return Some(row.path.clone());
+        }
+        row.path.parent().map(std::path::Path::to_path_buf)
+    }
+
     /// Open the Seam view on the workspace root.
     pub(crate) fn open_seam_view(&mut self) {
         self.open_seam_view_at(self.root.clone());

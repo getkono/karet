@@ -32,6 +32,7 @@ impl Command {
             | Self::SeamLens5 => "lens",
             Self::SeamClearLenses => "all lenses",
             Self::ShowSeamView => "seams",
+            Self::ShowSeamViewAt => "open at",
             Self::SeamConfiguration => "config",
             Self::SeamCopyIdentity => "copy id",
             Self::SeamCopyQuery => "copy query",
