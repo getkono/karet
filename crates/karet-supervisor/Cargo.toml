@@ -19,7 +19,7 @@ publish = false
 default = []
 
 [dependencies]
-karet-lsp.workspace = true            # LspSpec + the shared Content-Length codec
+karet-lsp.workspace = true            # LspSpec + the shared Content-Length codec; used only by src/broker/lsp.rs, never by the broker skeleton
 command-group.workspace = true        # crash-safe process groups / Windows Job Objects
 serde.workspace = true
 serde_json.workspace = true
