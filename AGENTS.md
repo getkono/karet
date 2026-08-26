@@ -99,7 +99,8 @@ published to crates.io (everything else is `publish = false`).
 | `karet-docx` | engine | — | DOCX (OOXML) parse → neutral document model → markdown text, hand-rolled on deflate-only `zip` + `quick-xml` (pure-Rust, no zstd/bzip2); no presentation |
 | `karet-notebook` | engine | — | Jupyter `.ipynb` (nbformat 4) parse → round-trip-preserving model → markdown text; `kernel` feat adds kernelspec discovery + a kernel client over pure-Rust ZMTP (`zeromq`/`jupyter-protocol`/`hmac`); no presentation |
 | `karet-pdf` | engine | ✓ | pure-Rust PDF page → RGBA rasterization (via `hayro`); no presentation |
-| `karet-lsp` | engine | ✓ | async LSP client → core models (headless; ratatui popups live in `karet-widgets`) |
+| `karet-jsonrpc` | engine | ✓ | protocol-agnostic JSON-RPC 2.0 client core: outgoing envelopes, `classify`, the correlation actor (id allocation, pending map, timeouts, bounded outbound queue, close protocol, fail-all-on-EOF), framing behind a `Framing` trait (`ContentLength`, `LineDelimited`); no karet deps |
+| `karet-lsp` | engine | ✓ | async LSP client → core models over `karet-jsonrpc` (headless; ratatui popups live in `karet-widgets`) |
 | `karet-dap` | engine | — | async DAP client: stdio/spawn-then-TCP transports over the shared `karet-lsp` codec, capability-gated handshake, run controls, threads→stack→scopes→variables, evaluate; `publish = false`, consumed by the debugger backend work |
 | `karet-vcs` | engine | ✓ | git facts engine: status/branches/log/commit detail/stash/staging/remotes — `gix` reads + hardened `git`-CLI writes; headless |
 | `karet-github` | engine | — | headless GitHub REST client (issues, PRs, checks, workflows); generated from a vendored OpenAPI spec at build time; consumed only by `karet-session` |

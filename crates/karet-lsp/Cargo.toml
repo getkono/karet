@@ -14,9 +14,11 @@ categories.workspace   = true
 
 # Headless by design: emits neutral `karet-core` models. The ratatui popups that
 # used to live behind a `view` feature now live in `karet-widgets`, so this crate
-# pulls no UI deps and stays cheaply publishable (closure = just `karet-core`).
+# pulls no UI deps and stays cheaply publishable (closure = `karet-core` plus the
+# equally lean `karet-jsonrpc`, which carries no karet dependencies of its own).
 [dependencies]
 karet-core.workspace = true
+karet-jsonrpc.workspace = true
 lsp-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
