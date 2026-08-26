@@ -90,7 +90,7 @@ published to crates.io (everything else is `publish = false`).
 | `karet-filetype` | engine | ✓ | single registry: path → file type (name, category, per-`IconStyle` icon) + renderer routing (`FileKind`/`classify`); dependency-free |
 | `karet-text` | engine | ✓ | rope buffer, undo/redo, dirty/save, EOL/encoding detection, atomic save |
 | `karet-treesitter` | engine | ✓ | shared tree-sitter parse host (parser pool, incremental trees, queries, **language injection** → layered trees) |
-| `karet-syntax` | engine | ✓ | tree-sitter highlighting (incl. **injected** languages), fold regions, semantic blocks, symbol outlines, inline macros; `lang-*` pass-through + `all-languages` forward grammar choice to the parse host |
+| `karet-syntax` | engine | ✓ | tree-sitter highlighting (incl. **injected** languages), fold regions, semantic blocks, symbol outlines, inline macros; `serde` derives on the block model for the remote seam; `lang-*` pass-through + `all-languages` forward grammar choice to the parse host |
 | `karet-theme` | engine | ✓ | token palette, VS Code JSON theme loader (`vscode` feat), ratatui styles + contrast (`view` feat) |
 | `karet-diff` | engine | ✓ | pure text diffing: histogram line diff, side-by-side alignment, intra-line highlights, unified-diff parse, per-hunk staging, prepared-diff model (`PreparedDiff`); ratatui painters behind `view` |
 | `karet-graph` | engine | — | DAG lane-assignment layout; `view` paints the commit-rail gutter and flattens `karet_core::GraphView` into styled tree rows (plain-style slots, no theme dep) |

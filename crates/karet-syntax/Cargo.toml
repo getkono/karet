@@ -14,6 +14,11 @@ categories.workspace   = true
 
 [features]
 default = []
+# Derive `serde` on the block model so semantic blocks can cross the backend
+# seam (`karet-session`'s remote mode ships them to a client that renders
+# sticky scroll). Enables `karet-core`'s serde too, since `Highlights` and
+# `FoldRegions` — the other two halves of a document's derived data — live there.
+serde = ["dep:serde", "karet-core/serde"]
 # Grammar pass-through: each `lang-*` forwards to the same feature on
 # karet-treesitter (the single parse host), so a consumer can depend on
 # karet-syntax alone and still choose its grammar set.
@@ -99,10 +104,12 @@ all-languages = [
 karet-core.workspace = true
 karet-treesitter.workspace = true
 thiserror.workspace = true
+serde = { workspace = true, optional = true }   # feature `serde`
 # NOTE: highlighting runs the grammar's query through karet-treesitter's single
 # parse host (not tree-sitter-highlight), honoring the single-parse-host design.
 
 [dev-dependencies]
+serde_json.workspace = true          # the `serde` feature's round-trip test
 # Compile in the Rust + Markdown grammars so the end-to-end highlight tests — including
 # embedded code fences and markdown-in-doc-comments — are self-contained.
 karet-treesitter = { workspace = true, features = ["all-languages"] }
