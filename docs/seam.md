@@ -8,7 +8,14 @@ that way answers a different set of questions than reading it file by file: what
 exposed, what can be swapped, what varies before compiling, what crosses the package
 line, and where that is dangerous.
 
-Open it with **Seam: Open Seam View** in the command palette, or `Ctrl+K S`.
+Open it with **Seam: Open Seam View** in the command palette, or `Ctrl+K S`. That reads
+the workspace root. To read something narrower — one crate, a subdirectory, a Python
+project beside the Rust — use **Seam: Open Seam View at…**, or press `r` from inside the
+view, and pick from the start points on offer: the workspace root, the explorer selection,
+the directory of the file you are in, and every package found under the root.
+
+One index sits behind the view, so opening at another start point re-points the view you
+have rather than opening a second beside it.
 
 ```
  Seam  karet-core   config: default @ x86_64-linux   1⬤ api  2◇ sub  3⌥ var  4⇥ bnd  5⚡ haz
@@ -26,6 +33,31 @@ Open it with **Seam: Open Seam View** in the command palette, or `Ctrl+K S`.
    edges         … not resolved — structural relations only
  / lens:substitution !kind:member                              ⌫ widen (1)
 ```
+
+## What gets indexed
+
+A root is read as a *repository*, not as a single package. Whatever is found under it
+becomes one index with a root per package, so the spine's first column is the package list
+and a query spans all of them at once:
+
+```
+ Seam  karet · 30 packages   config: unconfigured (variation incomplete)   1⬤ api  …
+ package          │ module           │ item
+ blameline     ▸ 9│ model         ▸12│ Symbol           ⬤ 6
+ karet-core   ▸ 47│ coord         ▸ 8│ SymbolKind       ⬤
+ karet-diff   ▸ 31│▸provider      ▸ 3│▸SymbolProvider  ⬤◇ 2
+```
+
+Four Cargo shapes are read: a package, a virtual `[workspace]` root, a root that is both,
+and a root with no manifest whose crates sit a level or two down (`rust/api/`,
+`services/worker/`). Python projects — marked by `pyproject.toml`, `setup.py`, or
+`setup.cfg` — are read alongside them, so a polyglot repository answers about all of
+itself. A package's name comes from its manifest; a Python package's comes from the
+directory holding its `__init__.py`, because that, not the distribution name, is what an
+import path is made of.
+
+Build output, dependency caches, and virtual environments are never walked. `seam.maxIndexedFiles`
+caps the whole index rather than each package, and the header says so when it bites.
 
 ## The five lenses
 
@@ -152,8 +184,11 @@ indication anything was wrong, which is exactly how a filter stops being trustwo
 ```bash
 karet crates/karet-core --seam-query 'lens:hazard !kind:member'
 karet crates/karet-core --seam-query 'in:karet-core::model substitution:dyn'
-karet . --seam-query 'lens:api' --seam-config all-features
+karet . --seam-query 'lens:api' --seam-config test
 ```
+
+The last reads every package in the workspace at once; `in:<package>` narrows a query back
+to one of them.
 
 Prints JSON and exits, without entering the TUI. Each node carries its identity, location,
 facets, and per-lens rollup counts — enough to cite a finding, navigate back to it, and
@@ -228,5 +263,7 @@ See [`configuration.md`](configuration.md#seam) for the `seam.*` keys.
 | Query language + `--seam-query` | ✅ shipped |
 | Configuration switching (three-valued `cfg`) | ✅ shipped |
 | Rust + Python mappings | ✅ shipped |
+| Workspace / multi-package / nested-crate discovery | ✅ shipped |
+| Choosing a start point | ✅ shipped |
 | Manifest-derived feature/target configurations | 🧭 designed — needs `dependable-core` 0.2.0 |
 | Semantic-tier edge resolution via rust-analyzer | 🧭 designed — `karet-lsp` requests are in place |

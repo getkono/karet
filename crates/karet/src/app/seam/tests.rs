@@ -59,14 +59,14 @@ fn view() -> SeamViewState {
         ),
         node("pkg::net::connect", Some("pkg::net"), &[], [1, 1, 0, 0, 1]),
     ];
-    let mut state = SeamViewState::pending(PathBuf::from("/tmp/pkg"));
+    let mut state = SeamViewState::pending();
     state.adopt(SeamSummary::default(), nodes);
     state
 }
 
 #[test]
 fn a_fresh_view_is_loading_until_a_tree_arrives() {
-    let state = SeamViewState::pending(PathBuf::from("/tmp/pkg"));
+    let state = SeamViewState::pending();
     assert!(state.is_loading());
     assert!(state.columns()[0].is_empty());
 
@@ -77,7 +77,7 @@ fn a_fresh_view_is_loading_until_a_tree_arrives() {
 
 #[test]
 fn a_failure_is_recorded_rather_than_left_looking_like_an_empty_package() {
-    let mut state = SeamViewState::pending(PathBuf::from("/tmp/pkg"));
+    let mut state = SeamViewState::pending();
     state.fail("no Cargo.toml".to_owned());
     assert!(!state.is_loading());
     assert_eq!(state.error.as_deref(), Some("no Cargo.toml"));

@@ -38,6 +38,7 @@
 //! configuration set. Nothing structural ever waits on anything semantic.
 
 pub mod config;
+pub mod discover;
 pub mod edge;
 pub mod extract;
 pub mod id;
@@ -54,6 +55,10 @@ pub use config::CfgEnv;
 pub use config::CfgPredicate;
 pub use config::Configuration;
 pub use config::Truth;
+pub use discover::Discovered;
+pub use discover::DiscoveryOptions;
+pub use discover::PackageKind;
+pub use discover::discover;
 pub use edge::Edge;
 pub use edge::EdgeKind;
 pub use edge::EdgeStore;
@@ -84,9 +89,11 @@ pub use model::NodeKind;
 pub use model::SeamLocation;
 pub use model::Visibility;
 pub use modules::ModuleSource;
+pub use modules::python::PyModule;
 pub use package::IndexOptions;
 pub use package::PackageError;
 pub use package::index_package;
+pub use package::index_workspace;
 pub use package::reindex_file;
 pub use query::Query;
 pub use query::QueryError;

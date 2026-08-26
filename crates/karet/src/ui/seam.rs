@@ -104,7 +104,12 @@ pub(super) fn draw_seam(
 /// one wrong impression.
 fn placeholder(state: &SeamViewState) -> Option<String> {
     if let Some(error) = &state.error {
-        return Some(format!("This package could not be indexed: {error}"));
+        // "Nothing here", not "this package": the root may be a workspace, a directory of
+        // crates, or somewhere with no package at all — and saying which of those it was
+        // is the error's job, not this sentence's.
+        return Some(format!(
+            "Nothing here could be indexed: {error} — press r to choose another start point."
+        ));
     }
     if state.is_loading() {
         // Nothing at all until the shared reveal delay, so a fast index never flashes.
@@ -122,7 +127,7 @@ fn placeholder(state: &SeamViewState) -> Option<String> {
         if !state.lenses.is_empty() || state.query_matches.is_some() {
             return Some("Nothing here matches the current filters.".to_owned());
         }
-        return Some("This package has no seams under the active configuration.".to_owned());
+        return Some("No seams here under the active configuration.".to_owned());
     }
     None
 }

@@ -51,6 +51,7 @@ fn facet(lens: &str, subtype: &str) -> SeamFacetView {
 fn summary() -> SeamSummary {
     SeamSummary {
         package: "demo".to_owned(),
+        packages: 1,
         nodes: 3,
         files: 1,
         configuration: "default @ x86_64-linux".to_owned(),
@@ -63,7 +64,7 @@ fn summary() -> SeamSummary {
 
 /// A small ready view.
 fn view() -> SeamViewState {
-    let mut state = SeamViewState::pending(std::path::PathBuf::from("/tmp/demo"));
+    let mut state = SeamViewState::pending();
     let mut danger = node("demo::danger", Some("demo"), &[], [1, 0, 0, 0, 1]);
     danger.facets = vec![facet("api", "pub"), facet("hazard", "unsafe")];
     danger.kind = "function".to_owned();
@@ -209,23 +210,28 @@ fn unresolved_edges_read_as_unresolved_not_as_none() {
 #[test]
 fn each_empty_state_says_which_one_it_is() {
     // Indexing.
-    let mut loading = SeamViewState::pending(std::path::PathBuf::from("/tmp/demo"));
+    let mut loading = SeamViewState::pending();
     let rendered = text(&render(&mut loading, 100, 12));
     // Before the reveal delay nothing is claimed at all, so a fast index never flashes.
-    assert!(!rendered.contains("no seams"), "{rendered}");
+    assert!(!rendered.contains("No seams"), "{rendered}");
 
-    // A package that could not be indexed.
-    let mut failed = SeamViewState::pending(std::path::PathBuf::from("/tmp/demo"));
+    // A root that could not be indexed.
+    let mut failed = SeamViewState::pending();
     failed.fail("no Cargo.toml".to_owned());
     let rendered = text(&render(&mut failed, 100, 12));
-    assert!(rendered.contains("could not be indexed"), "{rendered}");
+    assert!(
+        rendered.contains("Nothing here could be indexed"),
+        "{rendered}"
+    );
     assert!(rendered.contains("no Cargo.toml"), "{rendered}");
+    // And the way out is named, since the root may simply have been the wrong choice.
+    assert!(rendered.contains("another start point"), "{rendered}");
 
-    // A package with genuinely nothing in it.
-    let mut empty = SeamViewState::pending(std::path::PathBuf::from("/tmp/demo"));
+    // A root with genuinely nothing in it.
+    let mut empty = SeamViewState::pending();
     empty.adopt(summary(), Vec::new());
     let rendered = text(&render(&mut empty, 100, 12));
-    assert!(rendered.contains("no seams"), "{rendered}");
+    assert!(rendered.contains("No seams here"), "{rendered}");
 
     // Filtered to nothing, which is a different fact again.
     let mut filtered = view();
@@ -282,4 +288,27 @@ fn lens_glyphs_are_distinct_in_the_ascii_tier() {
     unique.sort_unstable();
     unique.dedup();
     assert_eq!(unique.len(), glyphs.len(), "{glyphs:?}");
+}
+
+#[test]
+fn a_workspace_names_the_directory_and_counts_its_packages() {
+    let mut state = view();
+    let mut many = summary();
+    many.package = "myrepo".to_owned();
+    many.packages = 18;
+    state.summary = many;
+
+    let rendered = text(&render(&mut state, 100, 12));
+    assert!(rendered.contains("myrepo"), "{rendered}");
+    assert!(rendered.contains("18 packages"), "{rendered}");
+}
+
+#[test]
+fn a_single_package_says_nothing_about_counts() {
+    // "1 package" beside the package's own name is noise, and one package is the common
+    // case.
+    let mut state = view();
+    let rendered = text(&render(&mut state, 100, 12));
+    assert!(rendered.contains("demo"), "{rendered}");
+    assert!(!rendered.contains("package"), "{rendered}");
 }

@@ -640,7 +640,11 @@ impl Session {
                     let _ = self.seam_worker.send(crate::seam_worker::SeamJob::Index {
                         id,
                         root,
-                        options: karet_seam::IndexOptions::default(),
+                        // The cap stops being theoretical once the root is a whole
+                        // repository rather than one crate.
+                        options: karet_seam::IndexOptions {
+                            max_files: self.config.settings.seam.max_indexed_files,
+                        },
                     });
                 }
             },

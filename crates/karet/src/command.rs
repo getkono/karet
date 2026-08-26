@@ -507,6 +507,8 @@ pub enum Command {
     ShowDependencyGraph,
     /// Open the full-screen Seam view for the workspace package.
     ShowSeamView,
+    /// Open the Seam view on a chosen start point rather than the workspace root.
+    ShowSeamViewAt,
     /// Choose which configuration the Seam view reads the package under.
     SeamConfiguration,
     /// Copy the selected seam node's identity, which is its citation form.
@@ -858,6 +860,7 @@ impl Command {
             Self::SeamLens5 => "Seam: Toggle Hazard Lens",
             Self::SeamClearLenses => "Seam: Clear Lenses",
             Self::ShowSeamView => "Seam: Open Seam View",
+            Self::ShowSeamViewAt => "Seam: Open Seam View at…",
             Self::SeamConfiguration => "Seam: Set Configuration",
             Self::SeamCopyIdentity => "Seam: Copy Node Identity",
             Self::SeamCopyQuery => "Seam: Copy Query",

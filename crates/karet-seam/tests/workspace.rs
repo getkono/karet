@@ -17,6 +17,7 @@ use karet_seam::LENSES;
 use karet_seam::Lens;
 use karet_seam::SeamIndex;
 use karet_seam::index_package;
+use karet_seam::index_workspace;
 
 /// Crates whose shapes between them exercise every resolution rule: flat modules,
 /// `mod.rs` directories, nested non-root files, and `#[path]` overrides.
@@ -178,5 +179,106 @@ fn reindexing_a_real_file_leaves_the_tree_consistent() {
         index.subtree(root).len(),
         index.len(),
         "every node must still be reachable after a re-index"
+    );
+}
+
+/// The repository root, when the layout is the one these tests expect.
+///
+/// Integration tests run with the crate directory as the working directory, so the
+/// workspace root is two levels up.
+fn repository_root() -> Option<PathBuf> {
+    let path = Path::new("..").join("..");
+    path.join("Cargo.toml").is_file().then_some(path)
+}
+
+#[test]
+fn the_repository_root_discovers_every_member_crate() {
+    // Needs no grammar: discovery reads manifests and lists directories, never source.
+    let Some(root) = repository_root() else {
+        return;
+    };
+    let found = karet_seam::discover(&root, karet_seam::DiscoveryOptions::default());
+    let names: Vec<&str> = found.iter().map(|package| package.name.as_str()).collect();
+
+    assert!(
+        names.len() > 20,
+        "a workspace this size has many members: {names:?}"
+    );
+    for expected in ["karet-core", "karet-seam", "blameline", "xtask"] {
+        assert!(
+            names.contains(&expected),
+            "{expected} missing from {names:?}"
+        );
+    }
+    // Sorted within the `crates/*` expansion, so the view's first column is stable.
+    let globbed: Vec<&&str> = names.iter().filter(|name| **name != "xtask").collect();
+    let mut sorted = globbed.clone();
+    sorted.sort();
+    assert_eq!(
+        globbed, sorted,
+        "member order must not depend on the filesystem"
+    );
+}
+
+#[test]
+fn the_repository_root_indexes_as_one_tree_with_a_root_per_package() {
+    // The case that was a hard error: this repository's root manifest is virtual, so the
+    // only entry point the editor could reach always failed on it.
+    if karet_seam::lang::rust::language_id().is_none() {
+        return;
+    }
+    let Some(root) = repository_root() else {
+        return;
+    };
+    let Ok(index) = index_workspace(&root, IndexOptions::default()) else {
+        return;
+    };
+
+    assert!(index.roots().len() > 20, "every member becomes a root");
+    assert_eq!(
+        index.truncated_after(),
+        None,
+        "the default cap is far above this"
+    );
+
+    // The multi-root analogue of the single-package connectivity check: the roots
+    // partition the index, so nothing is orphaned and nothing is counted twice.
+    let total: usize = index
+        .roots()
+        .iter()
+        .map(|id| index.subtree(*id).len())
+        .sum();
+    assert_eq!(total, index.len(), "the roots must partition every node");
+
+    let names: Vec<&str> = index
+        .roots()
+        .iter()
+        .filter_map(|id| index.node(*id).map(|node| node.name.as_str()))
+        .collect();
+    assert!(names.contains(&"karet-core"), "got {names:?}");
+    assert!(names.contains(&"karet-seam"), "got {names:?}");
+}
+
+#[test]
+fn every_module_across_the_whole_workspace_resolves_to_a_file() {
+    // The sibling of the per-crate check, over every crate at once — which is where a
+    // resolution bug in a crate nobody listed would otherwise hide.
+    if karet_seam::lang::rust::language_id().is_none() {
+        return;
+    }
+    let Some(root) = repository_root() else {
+        return;
+    };
+    let Ok(index) = index_workspace(&root, IndexOptions::default()) else {
+        return;
+    };
+    let unresolved: Vec<String> = index
+        .unresolved_modules()
+        .iter()
+        .filter_map(|(id, _)| index.path(*id).map(ToString::to_string))
+        .collect();
+    assert!(
+        unresolved.is_empty(),
+        "unresolved across the workspace: {unresolved:?}"
     );
 }

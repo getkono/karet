@@ -90,8 +90,14 @@ pub struct SeamEdgeView {
 /// What an indexed package amounts to, for the header and the empty states.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SeamSummary {
-    /// The package name, and the tree's root identity.
+    /// What the index is *of*: a single package's name, or the name of the directory an
+    /// index spanning several was built from.
+    ///
+    /// No member's name describes a workspace, so naming one would be worse than naming
+    /// none — see [`Self::packages`] for how many it holds.
     pub package: String,
+    /// How many package roots the index holds.
+    pub packages: usize,
     /// How many nodes the index holds.
     pub nodes: usize,
     /// How many files it spans.

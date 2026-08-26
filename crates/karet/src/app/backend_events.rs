@@ -326,12 +326,16 @@ impl App {
                 self.status = Some(format!("dependency graph: {count} package(s)"));
             },
             SessionEvent::LoadedConfig { report } => self.open_loaded_config(*report),
-            SessionEvent::SeamIndexed { summary, nodes } => self.on_seam_indexed(summary, nodes),
-            SessionEvent::SeamIndexFailed { message } => self.on_seam_index_failed(message),
-            SessionEvent::SeamQueryResult { nodes, error, .. } => {
-                self.on_seam_query_result(nodes, error);
+            SessionEvent::SeamIndexed { summary, nodes } => {
+                self.on_seam_indexed(id, summary, nodes);
             },
-            SessionEvent::SeamNodeDetail { node, edges } => self.on_seam_node_detail(node, edges),
+            SessionEvent::SeamIndexFailed { message } => self.on_seam_index_failed(id, message),
+            SessionEvent::SeamQueryResult { nodes, error, .. } => {
+                self.on_seam_query_result(id, nodes, error);
+            },
+            SessionEvent::SeamNodeDetail { node, edges } => {
+                self.on_seam_node_detail(id, node, edges);
+            },
             SessionEvent::SearchResults { hits } => self.apply_search_results(hits),
             SessionEvent::SpellingScanProgress {
                 hits,

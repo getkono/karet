@@ -373,6 +373,7 @@ impl App {
             Command::SeamLens5 => self.seam_toggle_lens(4),
             Command::SeamClearLenses => self.seam_clear_lenses(),
             Command::ShowSeamView => self.open_seam_view(),
+            Command::ShowSeamViewAt => self.open_seam_view_picker(),
             Command::SeamConfiguration => self.seam_configuration(),
             Command::SeamCopyIdentity => self.seam_copy_identity(),
             Command::SeamCopyQuery => self.seam_copy_query(),

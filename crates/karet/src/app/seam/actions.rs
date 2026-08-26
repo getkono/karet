@@ -7,6 +7,7 @@
 use std::collections::HashSet;
 
 use karet_session::api::Command as SessionCommand;
+use karet_session::api::RequestId;
 use karet_session::api::SeamEdgeView;
 use karet_session::api::SeamNodeView;
 use karet_session::api::SeamQueryError;
@@ -19,18 +20,41 @@ use crate::tab::Tab;
 use crate::tab::TabKind;
 
 impl Tab {
+    /// The title a Seam view on `root` carries.
+    ///
+    /// Known at the moment the tab appears and never revised: the strip is painted before
+    /// any answer arrives, and a title that changed when one did would move the tab the
+    /// reader is aiming at.
+    fn seam_title(root: &std::path::Path) -> String {
+        let named = |path: &std::path::Path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+        };
+        // Resolved when the path does not name itself: a session launched as `karet .`
+        // has a root of `.`, and a tab reading "Seams" names nothing the reader chose.
+        let name = named(root)
+            .or_else(|| root.canonicalize().ok().as_deref().and_then(named))
+            .unwrap_or_else(|| "Seams".to_owned());
+        format!("⌗ {name}")
+    }
+
     /// A Seam view reserved for `root`, with its index already requested.
     #[must_use]
     pub fn seam(root: std::path::PathBuf) -> Self {
-        let title = root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("Seams")
-            .to_owned();
         Self::new(
-            format!("⌗ {title}"),
-            TabKind::Seam(Box::new(SeamViewState::pending(root))),
+            Self::seam_title(&root),
+            TabKind::Seam(Box::new(SeamViewState::pending())),
         )
+    }
+
+    /// Point an open Seam view at a different root.
+    ///
+    /// Mutated in place rather than replaced, so the tab keeps its view identity: moving
+    /// where the view reads is not the same as closing it and opening another.
+    pub(crate) fn repoint_seam(&mut self, root: std::path::PathBuf) {
+        self.title = Self::seam_title(&root);
+        self.kind = TabKind::Seam(Box::new(SeamViewState::pending()));
     }
 }
 
@@ -43,13 +67,98 @@ impl App {
         }
     }
 
+    /// The one Seam view, wherever it is shown.
+    ///
+    /// Backend answers land here rather than on the active tab. Indexing a repository
+    /// takes seconds, and a reader who moved on while it ran must still get the tree they
+    /// asked for. The distinction is the point of having both: input acts on the tab you
+    /// are looking at, answers go to the tab that asked.
+    pub(crate) fn seam_view(&mut self) -> Option<&mut SeamViewState> {
+        self.all_tabs_mut().find_map(|tab| match &mut tab.kind {
+            TabKind::Seam(state) => Some(&mut **state),
+            _ => None,
+        })
+    }
+
+    /// Where the one Seam tab lives, if it is open: its pane and its index within it.
+    fn seam_tab_location(&self) -> Option<(karet_widgets::PaneId, usize)> {
+        if let Some(index) = self
+            .tabs
+            .iter()
+            .position(|tab| matches!(tab.kind, TabKind::Seam(_)))
+        {
+            return Some((self.layout.focus(), index));
+        }
+        self.stored.iter().find_map(|(pane, stored)| {
+            stored
+                .tabs
+                .iter()
+                .position(|tab| matches!(tab.kind, TabKind::Seam(_)))
+                .map(|index| (*pane, index))
+        })
+    }
+
+    /// Offer the start points the Seam view could be opened on.
+    ///
+    /// Discovery runs here on the app thread rather than on the backend. The picker *is*
+    /// the surface being opened, so rows arriving after it would move the selection under
+    /// the reader's fingers, and withholding it until they arrived would be exactly the
+    /// delayed surface a picker must never be. Discovery only reads manifests and lists
+    /// directories, and it is bounded — the app already runs a heavier walk than this
+    /// synchronously to open the quick-open picker.
+    pub(crate) fn open_seam_view_picker(&mut self) {
+        let items = self.seam_root_candidates();
+        self.overlay = Some(crate::overlay::Overlay::seam_roots(items));
+    }
+
+    /// The start points on offer: the reader's context, and what discovery found.
+    fn seam_root_candidates(&mut self) -> Vec<(String, std::path::PathBuf)> {
+        let discovered = karet_seam::discover(&self.root, karet_seam::DiscoveryOptions::default());
+        let current = self
+            .tabs
+            .get(self.active)
+            .and_then(Tab::path)
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf);
+        let explorer = self.explorer_seam_root();
+        super::roots::candidates(&self.root.clone(), current, explorer, discovered)
+    }
+
+    /// The explorer's selection as a directory, when the panel has one.
+    fn explorer_seam_root(&mut self) -> Option<std::path::PathBuf> {
+        self.explorer.ensure_built(&self.root);
+        let row = self.explorer.selected()?;
+        if row.is_dir {
+            return Some(row.path.clone());
+        }
+        row.path.parent().map(std::path::Path::to_path_buf)
+    }
+
     /// Open the Seam view on the workspace root.
+    pub(crate) fn open_seam_view(&mut self) {
+        self.open_seam_view_at(self.root.clone());
+    }
+
+    /// Open the Seam view on `root`.
     ///
     /// The tab is reserved and shown immediately; the index fills in behind it, so the
-    /// pane switches at once rather than after a parse of every file in the package.
-    pub(crate) fn open_seam_view(&mut self) {
-        let root = self.root.clone();
-        self.push_tab(Tab::seam(root.clone()));
+    /// pane switches at once rather than after a parse of every file under the root.
+    ///
+    /// An open Seam view is re-pointed rather than joined by a second. One index sits
+    /// behind the view, so two of them on different roots would answer each other's
+    /// questions — and a view that failed holds nothing worth keeping beside the new one.
+    pub(crate) fn open_seam_view_at(&mut self, root: std::path::PathBuf) {
+        match self.seam_tab_location() {
+            Some((pane, index)) => {
+                self.focus_pane_switch(pane);
+                self.active = index;
+                self.focus = crate::app::Focus::Editor;
+                if let Some(tab) = self.tabs.get_mut(index) {
+                    tab.repoint_seam(root.clone());
+                }
+            },
+            None => self.push_tab(Tab::seam(root.clone())),
+        }
         self.apply_seam_settings();
         self.seam_index_req = self.send(SessionCommand::IndexSeams { root: Some(root) });
     }
@@ -73,15 +182,13 @@ impl App {
         }
     }
 
-    /// Re-index a file that changed, when it belongs to the package being read.
+    /// Re-index a file that changed, when the index actually holds it.
     ///
-    /// Scoped to the package: an edit somewhere else in the workspace has nothing to do
-    /// with this tree, and re-indexing on it would be work the reader never asked for.
+    /// Scoped by membership rather than by containment: the root may be a whole
+    /// repository, and every file in it sits under that root — so asking "is it beneath
+    /// us?" would re-index the repository on every save.
     pub(crate) fn reindex_seams(&mut self, path: &std::path::Path, text: String) {
-        let inside = self
-            .active_seam()
-            .is_some_and(|state| path.starts_with(&state.root));
-        if !inside {
+        if !self.seam_view().is_some_and(|state| state.covers(path)) {
             return;
         }
         self.seam_index_req = self.send(SessionCommand::ReindexSeams {
@@ -154,8 +261,16 @@ impl App {
     }
 
     /// Adopt a freshly indexed tree, if this answer is still the one being awaited.
-    pub(crate) fn on_seam_indexed(&mut self, summary: SeamSummary, nodes: Vec<SeamNodeView>) {
-        let Some(state) = self.active_seam() else {
+    pub(crate) fn on_seam_indexed(
+        &mut self,
+        id: Option<RequestId>,
+        summary: SeamSummary,
+        nodes: Vec<SeamNodeView>,
+    ) {
+        if !self.awaiting_seam_index(id) {
+            return;
+        }
+        let Some(state) = self.seam_view() else {
             return;
         };
         state.adopt(summary, nodes);
@@ -166,20 +281,41 @@ impl App {
         }
     }
 
-    /// Record that the package could not be indexed.
-    pub(crate) fn on_seam_index_failed(&mut self, message: String) {
-        if let Some(state) = self.active_seam() {
+    /// Record that the root could not be indexed.
+    pub(crate) fn on_seam_index_failed(&mut self, id: Option<RequestId>, message: String) {
+        if !self.awaiting_seam_index(id) {
+            return;
+        }
+        if let Some(state) = self.seam_view() {
             state.fail(message);
         }
+    }
+
+    /// Whether `id` answers the index request this view is still waiting on.
+    ///
+    /// Opening at one root and immediately at another leaves the first index running; its
+    /// answer must not land on the view that replaced it. One field serves all three
+    /// commands that answer with a tree, since only one of them can be outstanding.
+    fn awaiting_seam_index(&mut self, id: Option<RequestId>) -> bool {
+        if id.is_none() || id != self.seam_index_req {
+            return false;
+        }
+        self.seam_index_req = None;
+        true
     }
 
     /// Apply a query result, keeping a parse failure distinct from an empty match.
     pub(crate) fn on_seam_query_result(
         &mut self,
+        id: Option<RequestId>,
         nodes: Vec<String>,
         error: Option<SeamQueryError>,
     ) {
-        let Some(state) = self.active_seam() else {
+        if id.is_none() || id != self.seam_query_req {
+            return;
+        }
+        self.seam_query_req = None;
+        let Some(state) = self.seam_view() else {
             return;
         };
         if error.is_some() {
@@ -194,8 +330,17 @@ impl App {
     }
 
     /// Attach edges to the node they belong to, ignoring a reply for another.
-    pub(crate) fn on_seam_node_detail(&mut self, node: String, edges: Vec<SeamEdgeView>) {
-        let Some(state) = self.active_seam() else {
+    pub(crate) fn on_seam_node_detail(
+        &mut self,
+        id: Option<RequestId>,
+        node: String,
+        edges: Vec<SeamEdgeView>,
+    ) {
+        if id.is_none() || id != self.seam_node_req {
+            return;
+        }
+        self.seam_node_req = None;
+        let Some(state) = self.seam_view() else {
             return;
         };
         // A stale reply, for a node the reader has already navigated away from.

@@ -105,7 +105,7 @@ published to crates.io (everything else is `publish = false`).
 | `karet-vcs` | engine | ✓ | git facts engine: status/branches/log/commit detail/stash/staging/remotes — `gix` reads + hardened `git`-CLI writes; headless |
 | `karet-github` | engine | — | headless GitHub REST client (issues, PRs, checks, workflows); generated from a vendored OpenAPI spec at build time; consumed only by `karet-session` |
 | `karet-search` | engine | ✓ | in-file + workspace search/replace, plus the shared gitignore-aware file walk (`walk_text_files`); no karet deps |
-| `karet-seam` | engine | — | a package's **seams** as a queryable index: containment tree, per-lens facets (api/substitution/variation/boundary/hazard), edges, `cfg` configurations, and a predicate query language; `lang-rust`/`lang-python` mappings |
+| `karet-seam` | engine | — | a repository's **seams** as a queryable index: package discovery (Cargo workspaces, nested crates, Python projects) → containment tree with a root per package, per-lens facets (api/substitution/variation/boundary/hazard), edges, `cfg` configurations, and a predicate query language; `lang-rust`/`lang-python` mappings |
 | `karet-watch` | engine | — | debounced cross-platform FS-watch → neutral `FsEvent` Tokio stream; enumerates off-thread (headless) |
 | `karet-fuzzy` | engine | — | fuzzy match + ranking (nucleo-backed, smart case), shared by widgets and completion |
 | `karet-session` | backend | — | headless editor backend: owns documents/workspace, orchestrates producers, applies `Command`s, emits `Event`s; runs layered highlighting on a background worker; holds format-on-save, spell-check (per-document *and* a workspace-wide scan worker), settings/session |
@@ -154,8 +154,11 @@ requests and `cargo check`s a few grammar feature subsets.
   their names (no breaking renames just to satisfy the convention). Grandfathered
   exceptions, documented rather than churned: `karet_markdown::parse` is
   infallible by design (markdown has no invalid input), `karet-cbor` exposes the
-  editor seam `decode_to_text`/`encode_from_text`, and `karet-pdf`/`karet-theme`
-  keep their published `Document::load`/`Theme::load_vscode` constructors.
+  editor seam `decode_to_text`/`encode_from_text`, `karet-pdf`/`karet-theme`
+  keep their published `Document::load`/`Theme::load_vscode` constructors, and
+  `karet-seam` takes a *filesystem location* rather than content
+  (`index_package`/`index_workspace`) — it already spends the `parse` verb correctly on
+  `query::parse`, which is the text-in/model-out entry point it does have.
 
 ## UI loading states
 
