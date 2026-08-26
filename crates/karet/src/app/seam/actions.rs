@@ -26,10 +26,16 @@ impl Tab {
     /// any answer arrives, and a title that changed when one did would move the tab the
     /// reader is aiming at.
     fn seam_title(root: &std::path::Path) -> String {
-        let name = root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("Seams");
+        let named = |path: &std::path::Path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+        };
+        // Resolved when the path does not name itself: a session launched as `karet .`
+        // has a root of `.`, and a tab reading "Seams" names nothing the reader chose.
+        let name = named(root)
+            .or_else(|| root.canonicalize().ok().as_deref().and_then(named))
+            .unwrap_or_else(|| "Seams".to_owned());
         format!("⌗ {name}")
     }
 

@@ -204,3 +204,16 @@ fn every_debugger_action_is_reachable_by_name() {
         assert_eq!(resolve_named(title), Ok(command));
     }
 }
+
+#[test]
+fn the_seam_start_point_command_resolves_by_title_and_by_slug() {
+    // Both are user-facing entry points: the palette matches the title, `--command`
+    // matches the slug.
+    assert_eq!(
+        resolve_named("Seam: Open Seam View at…"),
+        Ok(Command::ShowSeamViewAt)
+    );
+    assert_eq!(resolve_named("open at"), Ok(Command::ShowSeamViewAt));
+    // And it did not shadow the command it sits beside.
+    assert_eq!(resolve_named("seams"), Ok(Command::ShowSeamView));
+}

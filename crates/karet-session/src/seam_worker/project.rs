@@ -119,11 +119,7 @@ pub(crate) fn summary_of(
         // No member's name describes an index spanning several of them, and picking one
         // arbitrarily would read as a claim about what is on screen. The directory that
         // was indexed does describe it, and the count says how much it holds.
-        _ => root
-            .and_then(|path| path.file_name())
-            .and_then(|name| name.to_str())
-            .unwrap_or_default()
-            .to_owned(),
+        _ => root.map(directory_name).unwrap_or_default(),
     };
     SeamSummary {
         package,
@@ -145,6 +141,22 @@ pub(crate) fn summary_of(
             .filter_map(|(id, candidates)| Some((index.path(*id)?.to_string(), candidates.clone())))
             .collect(),
     }
+}
+
+/// What to call the directory an index was built from.
+///
+/// Resolved when the path does not name itself — a session launched as `karet .` has a
+/// root of `.`, whose file name is nothing at all, and a header reading "…" would say
+/// less than the directory's actual name does.
+fn directory_name(root: &Path) -> String {
+    let named = |path: &Path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+    };
+    named(root)
+        .or_else(|| root.canonicalize().ok().as_deref().and_then(named))
+        .unwrap_or_default()
 }
 
 /// The configurations a package can be read under.
@@ -255,6 +267,14 @@ mod tests {
                 .iter()
                 .any(|c| c.target.as_deref() == Some("test"))
         );
+    }
+
+    #[test]
+    fn a_root_that_does_not_name_itself_is_resolved() {
+        // `karet .` has a root of `.`, and "…" in the header says less than the
+        // directory's own name does.
+        assert!(!directory_name(Path::new(".")).is_empty());
+        assert_eq!(directory_name(Path::new("/repo/myproject")), "myproject");
     }
 
     #[test]

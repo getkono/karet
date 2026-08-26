@@ -110,11 +110,18 @@ fn resolve(root: &Path, path: &Path) -> PathBuf {
 }
 
 /// A directory's own name, for a path discovery had no package name for.
+///
+/// Resolved when the path does not name itself: a session launched as `karet .` has a
+/// root of `.`, and a row reading "/" names nothing the reader would recognize.
 fn directory_name(path: &Path) -> String {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("/")
-        .to_owned()
+    let named = |path: &Path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+    };
+    named(path)
+        .or_else(|| path.canonicalize().ok().as_deref().and_then(named))
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -232,6 +239,14 @@ mod tests {
         assert!(row.contains("karet-core"), "got {row:?}");
         assert!(row.contains("crates/karet-core"), "got {row:?}");
         assert!(row.contains("package"), "got {row:?}");
+    }
+
+    #[test]
+    fn a_root_that_does_not_name_itself_is_resolved() {
+        // `karet .` has a root of `.`; a row reading "/" names nothing recognizable.
+        let rows = candidates(Path::new("."), None, None, Vec::new());
+        assert!(!rows[0].0.starts_with("/"), "got {:?}", rows[0].0);
+        assert!(!rows[0].0.starts_with("."), "got {:?}", rows[0].0);
     }
 
     #[test]
