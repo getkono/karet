@@ -41,9 +41,18 @@ const MAX_WIDTH: u16 = 72;
 const H_PAD: u16 = 1;
 /// The cells a border plus its padding costs on both sides together.
 const CHROME: u16 = 2 + 2 * H_PAD;
+/// The marker closing a body the box was too short to paint in full.
+const ELLIPSIS: &str = "\u{2026}";
 
 /// A dialog's body text and how it should be rendered.
+///
+/// `#[non_exhaustive]`: the `Markdown` variant exists only with the `markdown`
+/// feature, so without it a downstream exhaustive `match` would compile and
+/// then break the moment feature unification switched `markdown` on — an
+/// additive feature must never be a breaking change. The attribute forces the
+/// wildcard arm that keeps such a `match` honest either way.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DialogBody {
     /// Plain text, soft-wrapped at whitespace to the dialog's inner width.
     Plain(String),
@@ -134,9 +143,18 @@ impl<A> Dialog<A> {
     /// The choice row at terminal point `(x, y)`, using the rect recorded by
     /// the last [`draw`](Self::draw). Disabled rows answer too, so a click on
     /// one can still explain itself.
+    ///
+    /// The click target is exactly [`rows`](Self::rows), the rect the choices
+    /// were painted into: a dialog is a large, deliberate modal, so a click
+    /// counts only where a row is actually printed — the padding column and the
+    /// border are chrome, not a row. (A [`ContextMenu`](crate::menu::ContextMenu)
+    /// makes the opposite call for its own reasons; [`ChoiceList::row_at`]
+    /// permits either.) A squeezed dialog that scrolled its list still resolves
+    /// to the entry printed on the row, never to the entry that index would
+    /// name in an unscrolled list.
     #[must_use]
     pub fn row_at(&self, x: u16, y: u16) -> Option<usize> {
-        crate::choice::row_at(self.rows, self.choices.len(), x, y)
+        self.choices.row_at(self.rows, x, y)
     }
 
     /// Track the pointer, highlighting the choice it rests on. `None` — or a
@@ -205,7 +223,10 @@ impl<A> Dialog<A> {
     /// `labels` and `hints` are the consumer-resolved choice texts,
     /// index-aligned with [`choices`](Self::choices). When `area` is too small
     /// for everything, the choices win: they are anchored to the bottom of the
-    /// box and the body is clipped above them.
+    /// box and the body is clipped above them, keeping the blank line that
+    /// separates the two and closing its last painted row with an ellipsis so
+    /// the loss is visible. The body does not scroll; a body that cannot fit is
+    /// a dialog asking too much.
     pub fn draw(
         &mut self,
         f: &mut Frame,
@@ -261,13 +282,33 @@ impl<A> Dialog<A> {
             height: rows_h,
         };
         self.rows = rows;
-        let body_h = body_h.min(inner.height.saturating_sub(rows_h));
-        let buf = f.buffer_mut();
-        for (row, line) in body.iter().take(usize::from(body_h)).enumerate() {
-            let y = inner
-                .y
-                .saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
-            buf.set_line(inner.x, y, line, inner.width);
+        // `gap` — the blank line between body and choices — is reserved before
+        // the body gets its share: without that, a clipped body abuts the first
+        // choice and a click aimed at prose lands on an answer.
+        let room = inner.height.saturating_sub(rows_h).saturating_sub(gap);
+        let painted = body_h.min(room);
+        {
+            let buf = f.buffer_mut();
+            for (row, line) in body.iter().take(usize::from(painted)).enumerate() {
+                let y = inner
+                    .y
+                    .saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
+                buf.set_line(inner.x, y, line, inner.width);
+            }
+            // A clipped body simply loses its tail — there is no scrolling to
+            // reach it — so the last row it did paint says so.
+            if painted > 0 && painted < body_h {
+                let last = painted - 1;
+                let used = body
+                    .get(usize::from(last))
+                    .map_or(0, |line| u16::try_from(line.width()).unwrap_or(u16::MAX));
+                let x = inner
+                    .x
+                    .saturating_add(used.min(inner.width.saturating_sub(1)));
+                if let Some(cell) = buf.cell_mut((x, inner.y.saturating_add(last))) {
+                    cell.set_symbol(ELLIPSIS);
+                }
+            }
         }
         if rows_h > 0 {
             self.choices.render(f, theme, rows, labels, hints);
@@ -513,26 +554,110 @@ mod tests {
         assert!(d.rows.height > 0, "the answers survive the squeeze");
         assert_eq!(d.rows.bottom(), d.rect.bottom() - 1);
         assert!(row(&buffer, d.rows.y, 14).contains("Allow"));
+        // 14x5 is the last size at which every choice still gets a row; the
+        // genuinely squeezed case is
+        // `a_squeezed_dialog_hit_tests_the_choice_printed_on_each_row`.
+        assert_eq!(usize::from(d.rows.height), d.choices.len());
     }
 
     #[test]
     fn a_degenerate_area_paints_nothing_and_never_panics() {
-        let mut d = dialog("Run `ls`?");
         // A frame is only drawn for a non-empty terminal, so exercise the
-        // zero-sized area through a real frame with an empty sub-rect.
-        let theme = Theme::dark();
-        let names = labels(&d);
-        let hints = vec![None; names.len()];
-        let Some(mut terminal) = terminal(10, 4) else {
+        // zero-sized areas through a real frame with empty sub-rects: fully
+        // empty, and each degenerate axis on its own.
+        for area in [
+            Rect::new(0, 0, 0, 0),
+            Rect::new(0, 0, 0, 4),
+            Rect::new(0, 0, 10, 0),
+        ] {
+            let mut d = dialog("Run `ls`?");
+            let theme = Theme::dark();
+            let names = labels(&d);
+            let hints = vec![None; names.len()];
+            let Some(mut terminal) = terminal(10, 4) else {
+                return;
+            };
+            let drawn = terminal.draw(|f| {
+                d.draw(f, &theme, area, &names, &hints);
+            });
+            assert!(drawn.is_ok(), "{area:?} panicked");
+            assert_eq!(d.rect, Rect::default(), "{area:?}");
+            assert_eq!(d.rows, Rect::default(), "{area:?}");
+            assert_eq!(d.row_at(0, 0), None, "{area:?}");
+            assert_eq!(d.choices.first_visible(), 0, "{area:?}");
+        }
+    }
+
+    #[test]
+    fn a_squeezed_dialog_hit_tests_the_choice_printed_on_each_row() {
+        // Regression: a rows rect shorter than the choice list scrolls, so the
+        // row painted at `rows.y` is no longer choice 0. Hit-testing that ignored
+        // the scroll answered "Allow once" for a click on "Allow always" — in a
+        // permission prompt, running the tool the user did not pick.
+        let mut d = dialog("Run `ls`?");
+        d.select_by(1); // skips the refused middle choice
+        assert_eq!(d.choices.selected, 2, "the cursor is on the last choice");
+        let Some(buffer) = draw(&mut d, 30, 4) else {
             return;
         };
-        let drawn = terminal.draw(|f| {
-            d.draw(f, &theme, Rect::new(0, 0, 0, 0), &names, &hints);
-        });
-        assert!(drawn.is_ok());
-        assert_eq!(d.rect, Rect::default());
-        assert_eq!(d.rows, Rect::default());
-        assert_eq!(d.row_at(0, 0), None);
+        assert!(
+            usize::from(d.rows.height) < d.choices.len(),
+            "the area cannot hold every choice"
+        );
+        assert_eq!(d.choices.first_visible(), 1, "the list scrolled by one");
+
+        let names = labels(&d);
+        for offset in 0..d.rows.height {
+            let y = d.rows.y + offset;
+            let text = row(&buffer, y, 30);
+            let hit = d.row_at(d.rows.x, y).and_then(|index| names.get(index));
+            assert!(
+                hit.is_some_and(|label| text.contains(label.as_str())),
+                "the row painted at y={y} reads {text:?} but hit-tests to {hit:?}"
+            );
+        }
+        // The specific escalation, spelled out against the painted text.
+        assert!(row(&buffer, d.rows.y, 30).contains("Allow always"));
+        assert_eq!(
+            d.row_at(d.rows.x, d.rows.y),
+            Some(1),
+            "the top painted row is the refused choice, never `Allow once`"
+        );
+        assert_eq!(d.row_at(d.rows.x, d.rows.y + 1), Some(2));
+        // Hover follows the same path, so the accent cannot promise otherwise.
+        d.set_hover(Some((d.rows.x, d.rows.y)));
+        assert_eq!(d.choices.hover, None, "the refused choice never lights up");
+        d.set_hover(Some((d.rows.x, d.rows.y + 1)));
+        assert_eq!(d.choices.hover, Some(2));
+    }
+
+    #[test]
+    fn a_clipped_body_keeps_its_gap_row_and_ends_in_an_ellipsis() {
+        let long = "the agent would like to run a command in your working tree \
+                    and needs your permission before it does anything at all";
+        let mut d = dialog(long);
+        let Some(buffer) = draw(&mut d, 30, 8) else {
+            return;
+        };
+        let full = d.body_lines(&Theme::dark(), d.rect.width.saturating_sub(CHROME));
+        // Inner rows above the choices are the painted body plus the gap row.
+        let body_rows = usize::from(d.rows.y - (d.rect.y + 1)).saturating_sub(1);
+        assert!(body_rows > 0, "some of the body survives");
+        assert!(body_rows < full.len(), "and the rest really was clipped");
+        // The row just above the choices stays blank: the gap is reserved
+        // before the body gets its share.
+        let gap_row: String = (d.rows.x..d.rows.right())
+            .map(|x| buffer[(x, d.rows.y - 1)].symbol().to_owned())
+            .collect();
+        assert!(
+            gap_row.trim().is_empty(),
+            "the separator survives the squeeze: {gap_row:?}"
+        );
+        let last = row(&buffer, d.rows.y - 2, 30);
+        assert!(
+            last.contains(ELLIPSIS),
+            "the last painted body row marks the tail it dropped: {last:?}"
+        );
     }
 
     #[test]

@@ -11,7 +11,9 @@
 //!
 //! Placement is *not* shared: a menu is anchored at a point and clamped into
 //! view, a dialog is centered. Each widget keeps its own geometry and hit-tests
-//! through [`row_at`], the one implementation of "which row is this point on".
+//! through [`ChoiceList::row_at`], the one implementation of "which row is this
+//! point on" — and the only place that knows a squeezed list scrolls, so the
+//! row a click addresses is always the row the last render painted there.
 
 use karet_core::ThemeRole;
 use karet_theme::Theme;
@@ -103,6 +105,13 @@ pub struct ChoiceList<A> {
     /// The activatable row under the pointer, painted with a secondary accent so
     /// the mouse gets the same live feedback the keyboard cursor has.
     pub hover: Option<usize>,
+    /// The entry painted on the first row of the rect the last
+    /// [`render`](Self::render) drew into.
+    ///
+    /// A rect shorter than the list scrolls so the selection stays visible, so
+    /// this is not always `0`; private because only `render` may set it — a
+    /// hand-set value would desync the hit test from the pixels again.
+    first_visible: usize,
 }
 
 impl<A> ChoiceList<A> {
@@ -115,7 +124,16 @@ impl<A> ChoiceList<A> {
             entries,
             selected,
             hover: None,
+            first_visible: 0,
         }
+    }
+
+    /// The entry painted on the first row of the rect the last
+    /// [`render`](Self::render) drew into — `0` until a squeeze makes the list
+    /// scroll, and `0` again whenever nothing was painted.
+    #[must_use]
+    pub fn first_visible(&self) -> usize {
+        self.first_visible
     }
 
     /// The number of rows.
@@ -166,7 +184,10 @@ impl<A> ChoiceList<A> {
     /// Highlight `row` under the pointer. `None` — or a row that cannot be
     /// activated — clears the highlight: feedback promising a click that would
     /// be refused is worse than none.
-    pub fn set_hover_row(&mut self, row: Option<usize>) {
+    ///
+    /// Crate-private: a hover set from anything but [`row_at`](Self::row_at)
+    /// would light up a row a click does not address.
+    pub(crate) fn set_hover_row(&mut self, row: Option<usize>) {
         self.hover =
             row.filter(|&index| self.entries.get(index).is_some_and(|entry| entry.enabled));
     }
@@ -176,8 +197,11 @@ impl<A> ChoiceList<A> {
     ///
     /// `labels` and `hints` are the consumer-resolved row texts, index-aligned
     /// with [`entries`](Self::entries); rows past either run are not painted.
+    ///
+    /// Crate-private: it is an implementation detail of
+    /// [`render`](Self::render), not a second way to paint the rows.
     #[must_use]
-    pub fn items(
+    pub(crate) fn items(
         &self,
         theme: &Theme,
         width: u16,
@@ -219,16 +243,30 @@ impl<A> ChoiceList<A> {
     }
 
     /// Paint the rows into `rows`, one row per entry, with the selected row
-    /// carrying the primary accent.
-    pub fn render(
-        &self,
+    /// carrying the primary accent, and record which entry landed on the first
+    /// painted row.
+    ///
+    /// A `rows` rect shorter than the list scrolls so the selection stays
+    /// visible; remembering where it settled is what lets
+    /// [`row_at`](Self::row_at) map a painted row back to the entry printed on
+    /// it. Crate-private (and `&mut self`) for exactly that reason: painting
+    /// somewhere the widget will not hit-test would desync the two.
+    pub(crate) fn render(
+        &mut self,
         f: &mut Frame,
         theme: &Theme,
         rows: Rect,
         labels: &[String],
         hints: &[Option<String>],
     ) {
+        if rows.width == 0 || rows.height == 0 || self.entries.is_empty() {
+            // Nothing was painted, so no point may resolve to a row.
+            self.first_visible = 0;
+            return;
+        }
         let items = self.items(theme, rows.width, labels, hints);
+        // Seeded fresh every frame: the scroll position is derived from the
+        // selection alone, so the same model always paints the same rows.
         let mut state = ListState::default();
         state.select(Some(self.selected));
         let list = List::new(items).highlight_style(
@@ -237,29 +275,41 @@ impl<A> ChoiceList<A> {
                 .add_modifier(Modifier::BOLD),
         );
         f.render_stateful_widget(list, rows, &mut state);
+        // `List` scrolled the selection into view; the offset it settled on is
+        // the entry now printed on the rect's first row.
+        self.first_visible = state.offset();
     }
-}
 
-/// The index of the row at terminal point `(x, y)`, given the `rows` rect a
-/// `len`-row list was painted into (one row per entry, no borders).
-///
-/// Disabled rows answer too — refusing them is the consumer's business, and a
-/// click on one still owes the user its note. Both the click and the hover path
-/// resolve rows through here, so what lights up under the pointer is the row a
-/// click addresses.
-#[must_use]
-pub fn row_at(rows: Rect, len: usize, x: u16, y: u16) -> Option<usize> {
-    if rows.width == 0
-        || rows.height == 0
-        || x < rows.x
-        || x >= rows.right()
-        || y < rows.y
-        || y >= rows.bottom()
-    {
-        return None;
+    /// The index of the row at terminal point `(x, y)`, given the click
+    /// `target` a preceding [`render`](Self::render) painted the rows into.
+    ///
+    /// `target` is the **click target area**, not necessarily the painted rect:
+    /// a caller may deliberately widen it horizontally (a bordered menu counts
+    /// its border columns as part of the row a user aimed at). Its `y` and
+    /// `height` must be the painted rows' own, since the row a point lands on
+    /// is counted from `target.y` and offset by
+    /// [`first_visible`](Self::first_visible) — the entry the last render put
+    /// on that first row, which is not `0` once a squeezed list has scrolled.
+    ///
+    /// Disabled rows answer too — refusing them is the consumer's business, and
+    /// a click on one still owes the user its note. Both the click and the
+    /// hover path resolve rows through here, so what lights up under the
+    /// pointer is the row a click addresses.
+    #[must_use]
+    pub fn row_at(&self, target: Rect, x: u16, y: u16) -> Option<usize> {
+        if target.width == 0
+            || target.height == 0
+            || x < target.x
+            || x >= target.right()
+            || y < target.y
+            || y >= target.bottom()
+        {
+            return None;
+        }
+        let painted = usize::from(y - target.y);
+        let index = self.first_visible.checked_add(painted)?;
+        (index < self.entries.len()).then_some(index)
     }
-    let index = usize::from(y - rows.y);
-    (index < len).then_some(index)
 }
 
 #[cfg(test)]
@@ -320,17 +370,36 @@ mod tests {
     #[test]
     fn a_point_resolves_to_the_row_it_rests_on() {
         let rows = Rect::new(2, 3, 10, 3);
-        assert_eq!(row_at(rows, 3, 2, 3), Some(0));
-        assert_eq!(row_at(rows, 3, 11, 5), Some(2));
-        assert_eq!(row_at(rows, 3, 2, 2), None, "above the rows");
-        assert_eq!(row_at(rows, 3, 2, 6), None, "below the rows");
-        assert_eq!(row_at(rows, 3, 1, 3), None, "left of the rows");
-        assert_eq!(row_at(rows, 3, 12, 3), None, "right of the rows");
-        assert_eq!(row_at(rows, 2, 2, 5), None, "past the last entry");
+        let l = list(&[true, true, true]);
+        assert_eq!(l.row_at(rows, 2, 3), Some(0));
+        assert_eq!(l.row_at(rows, 11, 5), Some(2));
+        assert_eq!(l.row_at(rows, 2, 2), None, "above the rows");
+        assert_eq!(l.row_at(rows, 2, 6), None, "below the rows");
+        assert_eq!(l.row_at(rows, 1, 3), None, "left of the rows");
+        assert_eq!(l.row_at(rows, 12, 3), None, "right of the rows");
         assert_eq!(
-            row_at(Rect::default(), 3, 0, 0),
+            list(&[true, true]).row_at(rows, 2, 5),
             None,
-            "nothing painted yet"
+            "past the last entry"
+        );
+        assert_eq!(l.row_at(Rect::default(), 0, 0), None, "nothing painted yet");
+    }
+
+    #[test]
+    fn a_scrolled_list_resolves_a_point_to_the_row_printed_on_it() {
+        let mut l = list(&[true, true, true]);
+        // What a two-row rect shows after the list scrolled by one: entries 1
+        // and 2, in that order. Only `render` may set this in real code.
+        l.first_visible = 1;
+        let rows = Rect::new(0, 0, 8, 2);
+        assert_eq!(l.row_at(rows, 0, 0), Some(1), "the top row is not entry 0");
+        assert_eq!(l.row_at(rows, 0, 1), Some(2));
+        assert_eq!(l.first_visible(), 1, "and the offset is readable");
+        l.first_visible = 2;
+        assert_eq!(
+            l.row_at(rows, 0, 1),
+            None,
+            "an offset row past the last entry answers nothing"
         );
     }
 

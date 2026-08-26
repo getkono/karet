@@ -37,7 +37,9 @@ pub type ContextMenuEntry<A> = Choice<A>;
 /// Dereferences to its [`ChoiceList`], so the row model — `entries`,
 /// `selected`, `hover`, [`select_by`](ChoiceList::select_by),
 /// [`selected_entry`](ChoiceList::selected_entry) — is reached directly on the
-/// menu.
+/// menu. `Clone` is derived so `menu.clone()` copies the placement too, rather
+/// than resolving through the deref to a bare `ChoiceList`.
+#[derive(Clone)]
 pub struct ContextMenu<A> {
     /// The column where the menu should be anchored.
     pub x: u16,
@@ -76,8 +78,14 @@ impl<A> ContextMenu<A> {
         }
     }
 
-    /// The rect the rows occupy: the borders bracket them, so the first row
-    /// sits one line below the menu's top edge.
+    /// The rows' click target: the borders bracket them, so the first row sits
+    /// one line below the menu's top edge.
+    ///
+    /// `y`/`height` are the painted rows' own, as
+    /// [`ChoiceList::row_at`] requires. `x`/`width` are deliberately the whole
+    /// box's — a menu is a small floating target and a click that lands on the
+    /// border column beside a row plainly means that row, so the target is
+    /// widened by the one border cell either side of the painted rows.
     fn rows_rect(&self) -> Rect {
         Rect {
             x: self.rect.x,
@@ -92,10 +100,11 @@ impl<A> ContextMenu<A> {
     /// the consumer's business, and a click on one still owes the user its note.
     ///
     /// Both the click and the hover path resolve rows through here, so what
-    /// lights up under the pointer is the row a click addresses.
+    /// lights up under the pointer is the row a click addresses — including
+    /// when the menu was clamped shorter than its list and scrolled.
     #[must_use]
     pub fn row_at(&self, x: u16, y: u16) -> Option<usize> {
-        crate::choice::row_at(self.rows_rect(), self.rows.len(), x, y)
+        self.rows.row_at(self.rows_rect(), x, y)
     }
 
     /// Move the selection by `delta` rows, skipping disabled entries. When
@@ -305,5 +314,63 @@ mod tests {
 
         assert_eq!(m.hover, None);
         assert_ne!(buffer[(2u16, 2u16)].bg, hover);
+    }
+
+    /// The text painted on row `y` of the 20-cell-wide test buffer.
+    fn painted(buffer: &Buffer, y: u16) -> String {
+        (0..20u16)
+            .map(|x| buffer[(x, y)].symbol().to_owned())
+            .collect()
+    }
+
+    /// Every painted row hit-tests to the entry whose label is printed on it.
+    fn assert_rows_agree(m: &ContextMenu<u8>, buffer: &Buffer) {
+        assert!(m.rect.height > 2, "the menu painted at least one row");
+        for offset in 0..m.rect.height - 2 {
+            let y = m.rect.y + 1 + offset;
+            let text = painted(buffer, y);
+            let hit = m.row_at(m.rect.x, y).map(|index| format!("row {index}"));
+            assert!(
+                hit.as_ref()
+                    .is_some_and(|label| text.contains(label.as_str())),
+                "the row painted at y={y} reads {text:?} but hit-tests to {hit:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_drawn_menu_hit_tests_the_rows_it_painted() {
+        let mut m = menu(&[true, false, true]);
+        // Anchored away from the origin, so a rect derived wrong would show.
+        m.x = 4;
+        m.y = 2;
+        let Some(buffer) = draw(&mut m) else {
+            return;
+        };
+        assert!(m.rect.x > 0 && m.rect.y > 0, "not drawn at the origin");
+        assert_rows_agree(&m, &buffer);
+    }
+
+    #[test]
+    fn a_menu_clamped_shorter_than_its_list_hit_tests_what_it_paints() {
+        // Ten rows into an eight-row terminal: the box is clamped and the
+        // `List` scrolls the selection into view.
+        let mut m = menu(&[true; 10]);
+        m.select_by(9);
+        assert_eq!(m.selected, 9);
+        let Some(buffer) = draw(&mut m) else {
+            return;
+        };
+        assert!(
+            usize::from(m.rect.height - 2) < m.entries.len(),
+            "fewer painted rows than entries"
+        );
+        assert_eq!(m.first_visible(), 4, "the list scrolled off the top");
+        assert_rows_agree(&m, &buffer);
+        assert_ne!(
+            m.row_at(m.rect.x, m.rect.y + 1),
+            Some(0),
+            "row 0 scrolled away"
+        );
     }
 }
