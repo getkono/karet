@@ -81,7 +81,13 @@ impl App {
             return;
         }
         let tab = self.tabs.remove(idx);
-        self.active = self.active.min(self.tabs.len().saturating_sub(1));
+        // The dragged tab leaves this pane, so the origin needs a new tab in front:
+        // the one that was active here most recently. A plain write, not
+        // `set_active` — focus is moving to `dest`, so the origin's replacement must
+        // not top the activation history. `load_focused` records it if the user
+        // comes back to this pane.
+        let fallback = self.active.min(self.tabs.len().saturating_sub(1));
+        self.active = Self::recent_index_in(&self.view_history, &self.tabs, fallback);
 
         // Move all panes into storage so the layout can be mutated freely.
         self.stash_focused();
@@ -236,7 +242,7 @@ impl App {
         let target = (self.active as i64 + i64::from(delta)).clamp(0, n - 1) as usize;
         if target != self.active {
             self.tabs.swap(self.active, target);
-            self.active = target;
+            self.set_active(target);
         }
     }
 }

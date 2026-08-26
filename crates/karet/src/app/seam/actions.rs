@@ -151,7 +151,7 @@ impl App {
         match self.seam_tab_location() {
             Some((pane, index)) => {
                 self.focus_pane_switch(pane);
-                self.active = index;
+                self.set_active(index);
                 self.focus = crate::app::Focus::Editor;
                 if let Some(tab) = self.tabs.get_mut(index) {
                     tab.repoint_seam(root.clone());

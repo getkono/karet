@@ -59,6 +59,7 @@ impl App {
             layout: PaneLayout::new(),
             stored: HashMap::new(),
             closed: Vec::new(),
+            view_history: Vec::new(),
             overlay: None,
             find_open: false,
             commit_input: CommitInput::default(),

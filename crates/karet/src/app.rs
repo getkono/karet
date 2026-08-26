@@ -341,6 +341,14 @@ pub struct App {
     pub(crate) stored: HashMap<PaneId, StoredPane>,
     /// Paths of recently-closed file tabs, for "reopen closed editor" (newest last).
     pub(crate) closed: Vec<PathBuf>,
+    /// Open views in activation order, oldest first, newest last: the history that
+    /// picks which tab — and which pane — to focus when the active one closes.
+    /// Every write to `active` goes through [`App::set_active`], which appends here,
+    /// so the order cannot drift from what the user actually visited. Ids are only
+    /// ever appended: a view whose tab has closed is skipped when the history is
+    /// read, so no pruning pass is needed. `ViewId(0)` never enters, being the
+    /// unassigned sentinel every welcome tab shares.
+    pub(crate) view_history: Vec<ViewId>,
     /// The open modal overlay (quick-open / command palette), if any.
     pub(crate) overlay: Option<Overlay>,
     /// Whether the find-in-file bar is currently shown. The query/toggle data

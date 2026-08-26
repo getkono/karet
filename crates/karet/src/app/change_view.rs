@@ -53,7 +53,7 @@ impl App {
                 tab.title = format!("⚠ {}", tab.title);
                 tab.merge_conflict = Some(MergeConflictState::loading());
             }
-            self.active = idx;
+            self.set_active(idx);
             self.find_open = false;
             if needs_conflict && let Some(path) = conflict_path {
                 self.request_merge_conflict(path);
