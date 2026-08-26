@@ -188,8 +188,11 @@ impl TextAreaState {
     /// Place the cursor at a viewport cell: `column`/`row` are relative to the
     /// text area's top-left, so `row` is offset by the current [`Self::scroll`].
     ///
-    /// The hit test ignores the caret glyph the renderer injects — it maps the
-    /// buffer's own glyphs, so a click lands on the character under the pointer.
+    /// The hit test maps the buffer's own glyphs and does not account for the
+    /// one-cell caret [`styled_text`] injects *into* the line. Known limitation:
+    /// on the caret's own row every glyph after the caret paints one cell right
+    /// of where the hit test places it, so a click to the right of the caret on
+    /// that row can land one glyph early.
     pub fn place_cursor(&mut self, text: &str, column: u16, row: u16, width: u16, extend: bool) {
         let target_row = usize::from(row.saturating_add(self.scroll));
         let target = byte_at_row_col(text, target_row, usize::from(column), width);
@@ -217,15 +220,24 @@ fn glyph_width(character: char) -> usize {
 /// The wrapped display row holding the caret at byte `cursor`, for a viewport
 /// `width` cells wide.
 ///
-/// The caret glyph is itself one cell, so a cursor at the end of an exactly-full
-/// row reports the row below — which is where the renderer paints it. See the
+/// The row is a single left-to-right walk of the text before `cursor`: every
+/// glyph advances the pen by its display width, a glyph that would overflow the
+/// row starts the next one, and a `\n` starts the next row at column 0. A
+/// completed line therefore costs exactly the rows its glyphs fill. The caret
+/// glyph is itself one cell, so a cursor at the end of an exactly-full row
+/// reports the row below — which is where the renderer paints it. See the
 /// [module docs](self) on the wrap model.
+///
+/// `cursor` is an arbitrary byte offset and never panics: one past the end of
+/// `text` walks the whole buffer, and one inside a multi-byte character reports
+/// the same row as the next `char` boundary at or after it, since the walk
+/// covers every character that *starts* before `cursor`.
 #[must_use]
 pub fn cursor_row(text: &str, cursor: usize, width: u16) -> u16 {
     let width = usize::from(width.max(1));
     let mut row = 0usize;
     let mut column = 0usize;
-    for character in text[..cursor.min(text.len())].chars() {
+    for (_, character) in text.char_indices().take_while(|(index, _)| *index < cursor) {
         if character == '\n' {
             row = row.saturating_add(1);
             column = 0;
@@ -287,7 +299,8 @@ pub struct TextAreaStyle {
 }
 
 impl TextAreaStyle {
-    /// A style set painting everything with `normal`.
+    /// A style set painting unselected text with `normal`, the run inside the
+    /// active selection with `selection`, and the insertion caret with `caret`.
     #[must_use]
     pub fn new(normal: Style, selection: Style, caret: Style) -> Self {
         Self {
@@ -514,6 +527,35 @@ mod tests {
     }
 
     #[test]
+    fn cursor_row_charges_a_full_line_only_the_rows_it_fills() {
+        // Regression. The old floor-division model summed `segment.width() /
+        // width` over every `\n`-segment of the prefix and added the newline
+        // count, which over-counts by one for every *completed* preceding line
+        // whose display width is a positive exact multiple of `width`: such a
+        // line consumes `floor((w - 1) / width)` extra rows, not `floor(w /
+        // width)`. It returned 2 and 4 for the first two cases below, so the
+        // caret follow-scrolled one row too far — a commit panel of inner width
+        // 50 with a 50-column subject line scrolled past the caret. The values
+        // pinned here are the rows ratatui actually paints, and the ones
+        // `byte_at_row_col`/`place_cursor` already mapped back.
+        assert_eq!(cursor_row("subject\nbody", 12, 7), 1); // old: 2
+        assert_eq!(cursor_row("aaaaa\nbbbbb\ncc", 14, 5), 2); // old: 4
+        assert_eq!(cursor_row("abcdefghij\nxy", 13, 5), 2); // old: 3
+        assert_eq!(cursor_row("abcde\nx", 7, 5), 1); // old: 2
+        assert_eq!(cursor_row("abcd\n", 5, 4), 1); // old: 2
+    }
+
+    #[test]
+    fn cursor_row_tolerates_a_cursor_off_a_char_boundary() {
+        // Byte 2 is interior to the two-byte "é"; slicing the prefix panicked.
+        assert_eq!(cursor_row("héllo", 2, 10), 0);
+        // An interior offset reports the next boundary's row, not its own.
+        let text = "hé\nllo";
+        assert_eq!(cursor_row(text, 2, 10), cursor_row(text, 3, 10));
+        assert_eq!(cursor_row("héllo", 99, 10), 0, "past the end walks it all");
+    }
+
+    #[test]
     fn hit_testing_maps_rows_and_wide_characters_back_to_byte_offsets() {
         let text = "subject\nbody";
         assert_eq!(byte_at_row_col(text, 0, 3, 20), 3);
@@ -615,6 +657,47 @@ mod tests {
         // Unfocused: no caret at all.
         let display = styled_text(text, None, None, TextAreaStyle::default());
         assert_eq!(display.lines[1].to_string(), "body");
+    }
+
+    #[test]
+    fn the_renderer_opens_a_line_after_a_trailing_newline() {
+        let display = styled_text("a\n", Some(2), None, TextAreaStyle::default());
+        assert_eq!(display.lines.len(), 2, "the trailing newline opens a line");
+        assert_eq!(display.lines[0].to_string(), "a");
+        assert_eq!(display.lines[1].to_string(), "▏");
+        assert_eq!(display.lines[1].spans.len(), 1, "the caret alone");
+
+        // No caret at all still leaves the empty final line in place.
+        let display = styled_text("a\n", None, None, TextAreaStyle::default());
+        assert_eq!(display.lines.len(), 2);
+        assert!(display.lines[1].spans.is_empty());
+    }
+
+    #[test]
+    fn the_renderer_splits_a_selection_around_a_caret_inside_it() {
+        let style = TextAreaStyle::new(
+            Style::default().fg(Color::White),
+            Style::default().fg(Color::White).bg(Color::Blue),
+            Style::default().fg(Color::Red),
+        );
+        let display = styled_text("abcd", Some(2), Some(1..3), style);
+        let spans = &display.lines[0].spans;
+        assert_eq!(display.lines[0].to_string(), "ab▏cd");
+        assert_eq!(spans.len(), 5, "\"a\", \"b\", caret, \"c\", \"d\"");
+        assert_eq!(spans[2].content.as_ref(), "▏");
+        assert_eq!(
+            spans[2].style.fg,
+            Some(Color::Red),
+            "the caret keeps its own style"
+        );
+        assert_eq!(spans[1].style.bg, Some(Color::Blue));
+        assert_eq!(
+            spans[3].style.bg,
+            Some(Color::Blue),
+            "the selection resumes past it"
+        );
+        assert_eq!(spans[0].style.bg, None);
+        assert_eq!(spans[4].style.bg, None);
     }
 
     #[test]
