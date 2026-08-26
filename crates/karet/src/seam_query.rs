@@ -28,7 +28,7 @@ pub(crate) struct QueryFailure {
     pub(crate) code: i32,
 }
 
-/// Answer one query against the package at `root`, printing JSON to stdout.
+/// Answer one query against everything under `root`, printing JSON to stdout.
 ///
 /// # Errors
 /// Returns the message and exit code to fail with: the package could not be indexed,
@@ -39,9 +39,11 @@ pub(crate) fn run(
     configuration: Option<&str>,
 ) -> Result<String, QueryFailure> {
     let mut index =
-        karet_seam::index_package(root, IndexOptions::default()).map_err(|error| QueryFailure {
-            message: format!("--seam-query: {error}"),
-            code: 2,
+        karet_seam::index_workspace(root, IndexOptions::default()).map_err(|error| {
+            QueryFailure {
+                message: format!("--seam-query: {error}"),
+                code: 2,
+            }
         })?;
 
     // A named configuration changes what the tree even contains, so it is applied

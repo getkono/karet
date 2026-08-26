@@ -95,6 +95,9 @@ impl App {
             }
             match &tab.kind {
                 TabKind::LanguageServers(view) => pendings.extend(view.loading_since),
+                // Indexing a repository takes seconds, so the reveal has to be scheduled
+                // rather than left to whenever a key happens to arrive.
+                TabKind::Seam(state) => pendings.extend(state.loading_since),
                 TabKind::CommitLoading {
                     loading_since,
                     error: None,

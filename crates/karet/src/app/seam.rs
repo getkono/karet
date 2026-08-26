@@ -81,8 +81,6 @@ impl Narrow {
 
 /// The Seam view's whole state.
 pub(crate) struct SeamViewState {
-    /// The package root being read.
-    pub(crate) root: PathBuf,
     /// Every node, by identity.
     pub(crate) nodes: HashMap<String, SeamNodeView>,
     /// The tree roots, in order.
@@ -117,6 +115,8 @@ pub(crate) struct SeamViewState {
     pub(crate) edges: Vec<SeamEdgeView>,
     /// The selected row of the facet pane, when it has focus.
     pub(crate) facet_row: usize,
+    /// Every file the index holds, so an edit elsewhere is not mistaken for one here.
+    pub(crate) files: HashSet<PathBuf>,
     /// The in-flight index request, driving the delayed placeholder.
     pub(crate) loading_since: Option<Pending>,
     /// Why the package could not be indexed, when it could not.
@@ -125,9 +125,12 @@ pub(crate) struct SeamViewState {
 
 impl SeamViewState {
     /// A view awaiting its first index.
-    pub(crate) fn pending(root: PathBuf) -> Self {
+    ///
+    /// The root it was opened on lives in the tab's title and in the request that was
+    /// sent for it; the view itself is identified by what the index answers, so holding a
+    /// second copy here would only be something to keep in step.
+    pub(crate) fn pending() -> Self {
         Self {
-            root,
             nodes: HashMap::new(),
             roots: Vec::new(),
             summary: SeamSummary::default(),
@@ -145,6 +148,7 @@ impl SeamViewState {
             focus: SeamFocus::default(),
             edges: Vec::new(),
             facet_row: 0,
+            files: HashSet::new(),
             loading_since: Some(Pending::start()),
             error: None,
         }
@@ -157,6 +161,7 @@ impl SeamViewState {
             .filter(|node| node.parent.is_none())
             .map(|node| node.id.clone())
             .collect();
+        self.files = nodes.iter().map(|node| node.file.clone()).collect();
         self.nodes = nodes
             .into_iter()
             .map(|node| (node.id.clone(), node))
@@ -171,6 +176,7 @@ impl SeamViewState {
     pub(crate) fn fail(&mut self, message: String) {
         self.loading_since = None;
         self.error = Some(message);
+        self.files.clear();
     }
 
     /// Drop state whose nodes no longer exist, falling back to the nearest survivor.
@@ -198,6 +204,19 @@ impl SeamViewState {
     /// Whether the tree is empty because nothing has arrived yet.
     pub(crate) fn is_loading(&self) -> bool {
         self.loading_since.is_some()
+    }
+
+    /// Whether re-indexing `path` would mean anything to this view.
+    ///
+    /// Membership, not containment. The root may be a whole repository, in which case
+    /// every file in it sits under the root and asking "is it beneath us?" would answer
+    /// yes for a file the index never read — and re-index the repository on every save.
+    pub(crate) fn covers(&self, path: &std::path::Path) -> bool {
+        // A view that failed, or has not answered yet, has no tree to patch. The loading
+        // case matters on its own: a re-index is never coalesced away, so one queued
+        // behind a first index would run in full against a tree that is about to be
+        // replaced anyway.
+        self.error.is_none() && !self.is_loading() && self.files.contains(path)
     }
 
     /// The identities forming the current root set, after any narrowing.
