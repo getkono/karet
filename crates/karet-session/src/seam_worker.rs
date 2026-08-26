@@ -127,7 +127,9 @@ impl Worker {
         events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
     ) {
         match job {
-            SeamJob::Index { id, root, options } => self.index_package(id, &root, options, events),
+            SeamJob::Index { id, root, options } => {
+                self.index_workspace(id, &root, options, events)
+            },
             SeamJob::Reindex { id, path, text } => self.reindex(id, &path, &text, events),
             SeamJob::Query { id, text } => self.query(id, &text, events),
             SeamJob::Node { id, path } => self.node(id, &path, events),
@@ -135,15 +137,15 @@ impl Worker {
         }
     }
 
-    /// Build the index for a package from scratch.
-    fn index_package(
+    /// Build the index for everything under `root` from scratch.
+    fn index_workspace(
         &mut self,
         id: RequestId,
         root: &std::path::Path,
         options: IndexOptions,
         events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
     ) {
-        match karet_seam::index_package(root, options) {
+        match karet_seam::index_workspace(root, options) {
             Ok(index) => {
                 self.index = Some(index);
                 self.root = Some(root.to_path_buf());
@@ -176,6 +178,8 @@ impl Worker {
         events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
     ) {
         let Some(index) = self.index.as_mut() else {
+            // Unreachable from the editor, which only re-indexes a file the index is
+            // known to hold. Nothing to rebuild and nothing to say about it.
             return;
         };
         if karet_seam::reindex_file(index, &mut self.pool, path, text).is_err() {
@@ -195,6 +199,18 @@ impl Worker {
         events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
     ) {
         let Some(index) = self.index.as_ref() else {
+            // Answer anyway. An unanswered request leaves its id outstanding forever, and
+            // the view goes on believing a filter is still running that never was. Not an
+            // `error`, because nothing was wrong with the query — there is simply nothing
+            // to evaluate it against, which the view is already saying.
+            let _ = events.send((
+                Some(id),
+                Event::SeamQueryResult {
+                    nodes: Vec::new(),
+                    configuration: None,
+                    error: None,
+                },
+            ));
             return;
         };
         match karet_seam::query::parse(text) {
@@ -242,6 +258,14 @@ impl Worker {
         events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
     ) {
         let Some(index) = self.index.as_ref() else {
+            // Empty rather than silent, matching what an unknown node already answers.
+            let _ = events.send((
+                Some(id),
+                Event::SeamNodeDetail {
+                    node: path.to_owned(),
+                    edges: Vec::new(),
+                },
+            ));
             return;
         };
         let target = path
@@ -295,11 +319,23 @@ impl Worker {
         let Some(index) = self.index.as_ref() else {
             return;
         };
+        // Walked from the roots rather than iterated out of the arena's map: the order
+        // nodes cross the wire in is the order the view lists them in, and a map's order
+        // is not stable between runs. Roots first in index order, then each subtree in
+        // source order.
         let nodes = index
-            .nodes()
+            .roots()
+            .iter()
+            .flat_map(|root| index.subtree(*root))
+            .filter_map(|id| index.node(id))
             .filter_map(|node| node_view(index, node))
             .collect();
-        let summary = summary_of(index, self.configuration.as_ref(), &self.available);
+        let summary = summary_of(
+            index,
+            self.root.as_deref(),
+            self.configuration.as_ref(),
+            &self.available,
+        );
         let _ = events.send((id, Event::SeamIndexed { summary, nodes }));
     }
 }

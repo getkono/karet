@@ -264,3 +264,165 @@
         // The neighbouring file is untouched by its sibling's edit.
         assert!(after.iter().any(|n| n.id == "seamdemo::danger"));
     }
+    
+
+    /// A virtual Cargo workspace on disk, with `members` under `crates/`.
+    fn seam_workspace(dir: &std::path::Path, members: &[&str]) -> std::io::Result<()> {
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        )?;
+        for name in members {
+            let member = dir.join("crates").join(name);
+            std::fs::create_dir_all(member.join("src"))?;
+            std::fs::write(
+                member.join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n"),
+            )?;
+            std::fs::write(
+                member.join("src").join("lib.rs"),
+                format!("pub unsafe fn {name}_danger() {{}}\n"),
+            )?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn indexing_a_workspace_root_answers_with_every_package_as_a_root() {
+        // The command the editor actually sends, against the shape a repository actually
+        // has. This used to answer `SeamIndexFailed` on every Cargo workspace.
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        if seam_workspace(dir.path(), &["alpha", "beta"]).is_err() {
+            return;
+        }
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![dir.path().to_path_buf()],
+            ..SessionConfig::default()
+        });
+        session.handle(RequestId(1), Command::IndexSeams { root: None });
+        let Some(Event::SeamIndexed { summary, nodes }) = await_seam_event(&mut events) else {
+            return;
+        };
+
+        assert_eq!(summary.packages, 2);
+        let roots: Vec<&str> = nodes
+            .iter()
+            .filter(|node| node.parent.is_none())
+            .map(|node| node.name.as_str())
+            .collect();
+        assert_eq!(roots, ["alpha", "beta"]);
+        assert!(nodes.iter().any(|n| n.id == "alpha::alpha_danger"));
+        assert!(nodes.iter().any(|n| n.id == "beta::beta_danger"));
+    }
+
+    #[test]
+    fn a_workspace_summary_names_the_directory_rather_than_one_member() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        if seam_workspace(dir.path(), &["alpha", "beta"]).is_err() {
+            return;
+        }
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![dir.path().to_path_buf()],
+            ..SessionConfig::default()
+        });
+        session.handle(RequestId(1), Command::IndexSeams { root: None });
+        let Some(Event::SeamIndexed { summary, .. }) = await_seam_event(&mut events) else {
+            return;
+        };
+
+        let expected = dir.path().file_name().and_then(|n| n.to_str()).unwrap_or("");
+        assert_eq!(summary.package, expected);
+        assert_ne!(summary.package, "alpha");
+    }
+
+    #[test]
+    fn a_single_package_index_still_reports_one_package() {
+        let Some((_session, _events, _dir, event)) = indexed_session() else {
+            return;
+        };
+        let Event::SeamIndexed { summary, .. } = event else {
+            return;
+        };
+        assert_eq!(summary.packages, 1);
+        assert_eq!(summary.package, "seamdemo");
+    }
+
+    #[test]
+    fn the_configured_file_cap_is_what_the_index_is_built_under() {
+        // Declared in settings since the view shipped and never read, which stops being
+        // harmless once one index can span a whole repository.
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        if seam_workspace(dir.path(), &["alpha", "beta", "gamma"]).is_err() {
+            return;
+        }
+        let mut settings = crate::config::Settings::default();
+        settings.seam.max_indexed_files = 1;
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![dir.path().to_path_buf()],
+            settings,
+            ..SessionConfig::default()
+        });
+        session.handle(RequestId(1), Command::IndexSeams { root: None });
+        let Some(Event::SeamIndexed { summary, .. }) = await_seam_event(&mut events) else {
+            return;
+        };
+        assert_eq!(summary.truncated_after, Some(1));
+    }
+
+    #[test]
+    fn a_query_with_no_index_answers_rather_than_going_silent() {
+        // Reachable the moment a reader can pick a start point: index somewhere with no
+        // package, then type in the filter box. A dropped answer leaves the request
+        // outstanding forever and the view believing a filter is still running.
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![dir.path().to_path_buf()],
+            ..SessionConfig::default()
+        });
+        session.handle(RequestId(1), Command::IndexSeams { root: None });
+        let Some(Event::SeamIndexFailed { .. }) = await_seam_event(&mut events) else {
+            return;
+        };
+
+        session.handle(RequestId(2), Command::SeamQuery {
+            text: "lens:api".to_owned(),
+        });
+        let answer = await_seam_event(&mut events);
+        assert!(
+            matches!(answer, Some(Event::SeamQueryResult { ref nodes, ref error, .. })
+                if nodes.is_empty() && error.is_none()),
+            "got {answer:?}"
+        );
+    }
+
+    #[test]
+    fn asking_for_a_node_with_no_index_answers_with_no_edges() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![dir.path().to_path_buf()],
+            ..SessionConfig::default()
+        });
+        session.handle(RequestId(1), Command::IndexSeams { root: None });
+        let Some(Event::SeamIndexFailed { .. }) = await_seam_event(&mut events) else {
+            return;
+        };
+
+        session.handle(RequestId(2), Command::SeamNode {
+            path: "absent::thing".to_owned(),
+        });
+        let answer = await_seam_event(&mut events);
+        assert!(
+            matches!(answer, Some(Event::SeamNodeDetail { ref edges, .. }) if edges.is_empty()),
+            "got {answer:?}"
+        );
+    }

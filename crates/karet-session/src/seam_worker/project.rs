@@ -106,17 +106,28 @@ fn endpoint_state(endpoint: &karet_seam::Endpoint) -> (String, bool) {
 #[must_use]
 pub(crate) fn summary_of(
     index: &SeamIndex,
+    root: Option<&Path>,
     active: Option<&Configuration>,
     available: &[Configuration],
 ) -> SeamSummary {
-    let package = index
-        .roots()
-        .first()
-        .and_then(|root| index.node(*root))
-        .map(|node| node.name.clone())
-        .unwrap_or_default();
+    let package = match index.roots() {
+        [] => String::new(),
+        [single] => index
+            .node(*single)
+            .map(|node| node.name.clone())
+            .unwrap_or_default(),
+        // No member's name describes an index spanning several of them, and picking one
+        // arbitrarily would read as a claim about what is on screen. The directory that
+        // was indexed does describe it, and the count says how much it holds.
+        _ => root
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_owned(),
+    };
     SeamSummary {
         package,
+        packages: index.roots().len(),
         nodes: index.len(),
         files: index.files().len(),
         configuration: active
@@ -157,11 +168,79 @@ mod tests {
     #[test]
     fn an_index_with_no_configuration_still_summarizes() {
         let index = SeamIndex::new();
-        let summary = summary_of(&index, None, &[]);
+        let summary = summary_of(&index, None, None, &[]);
         assert_eq!(summary.nodes, 0);
         assert_eq!(summary.configuration, karet_seam::config::UNCONFIGURED);
         assert!(!summary.variation_complete);
         assert!(summary.is_complete());
+        assert_eq!(summary.packages, 0);
+    }
+
+    #[test]
+    fn a_workspace_is_named_for_its_directory_rather_than_one_arbitrary_member() {
+        let mut index = SeamIndex::new();
+        for name in ["alpha", "beta"] {
+            let id = index.intern(karet_seam::SeamPath::new(vec![
+                karet_seam::SeamSegment::new(name),
+            ]));
+            let file = index.intern_file(Path::new("Cargo.toml"));
+            index.insert(Node {
+                id,
+                kind: karet_seam::NodeKind::Package,
+                name: name.to_owned(),
+                detail: None,
+                location: karet_seam::SeamLocation {
+                    file,
+                    range: karet_core::Range::default(),
+                    span: karet_core::Span::default(),
+                    selection: karet_core::Range::default(),
+                },
+                parent: None,
+                children: Vec::new(),
+                facets: Vec::new(),
+                visibility: None,
+                rollups: karet_seam::Rollups::new(),
+                membership: karet_seam::ConfigMembership::Active,
+                provisional: false,
+            });
+        }
+
+        let summary = summary_of(&index, Some(Path::new("/repo/myproject")), None, &[]);
+        assert_eq!(summary.packages, 2);
+        // Naming one member would read as a claim about what is on screen.
+        assert_eq!(summary.package, "myproject");
+    }
+
+    #[test]
+    fn a_lone_package_is_still_named_for_itself() {
+        let mut index = SeamIndex::new();
+        let id = index.intern(karet_seam::SeamPath::new(vec![
+            karet_seam::SeamSegment::new("solo"),
+        ]));
+        let file = index.intern_file(Path::new("Cargo.toml"));
+        index.insert(Node {
+            id,
+            kind: karet_seam::NodeKind::Package,
+            name: "solo".to_owned(),
+            detail: None,
+            location: karet_seam::SeamLocation {
+                file,
+                range: karet_core::Range::default(),
+                span: karet_core::Span::default(),
+                selection: karet_core::Range::default(),
+            },
+            parent: None,
+            children: Vec::new(),
+            facets: Vec::new(),
+            visibility: None,
+            rollups: karet_seam::Rollups::new(),
+            membership: karet_seam::ConfigMembership::Active,
+            provisional: false,
+        });
+
+        let summary = summary_of(&index, Some(Path::new("/repo/elsewhere")), None, &[]);
+        assert_eq!(summary.packages, 1);
+        assert_eq!(summary.package, "solo");
     }
 
     #[test]
