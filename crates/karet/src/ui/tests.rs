@@ -9,6 +9,9 @@ use super::scm::commit_cursor_row;
 use super::*;
 use crate::app::CommitInput;
 
+#[path = "tests/save_mark.rs"]
+mod save_mark;
+
 #[test]
 fn scm_change_rows_show_colored_added_and_removed_counts() {
     use karet_session::ChangeSummary;
@@ -305,46 +308,6 @@ fn symbolic_link_tabs_carry_the_configured_link_marker() {
     tab.is_symlink = true;
     let titles = tab_display_titles(&[tab], Path::new("/repo"), karet_filetype::IconStyle::Ascii);
     assert_eq!(titles[0].name, "alias.rs @");
-}
-
-#[test]
-fn the_tab_save_mark_is_one_cell_and_spins_only_for_a_slow_save() {
-    use std::time::Instant;
-
-    use unicode_width::UnicodeWidthChar;
-
-    let nerd = karet_filetype::IconStyle::NerdFont;
-    let mut tab = test_code_tab("/repo/slow.rs");
-    assert_eq!(save_mark(&tab, nerd), ' ');
-
-    tab.dirty = true;
-    assert_eq!(save_mark(&tab, nerd), '\u{25cf}');
-
-    // A save that has only just begun keeps the dirty mark: the spinner is a
-    // save-specific reveal policy, not something the widget decides.
-    tab.saving_since = Some(Instant::now());
-    assert_eq!(save_mark(&tab, nerd), '\u{25cf}');
-
-    // Past the delay it animates the shared widget's cycle for the active tier,
-    // and every tier fills the same single cell.
-    tab.saving_since = Instant::now().checked_sub(SPINNER_DELAY);
-    for style in [
-        nerd,
-        karet_filetype::IconStyle::Unicode,
-        karet_filetype::IconStyle::Ascii,
-    ] {
-        let mark = save_mark(&tab, style);
-        assert!(
-            Spinner::new(style).frames().contains(&mark),
-            "{style:?} save mark {mark:?} is not a spinner frame",
-        );
-        // The slot is one cell wide in every branch, so the tab strip never shifts.
-        assert_eq!(
-            UnicodeWidthChar::width(mark),
-            Some(1),
-            "{style:?} save mark {mark:?} is not one cell",
-        );
-    }
 }
 
 #[test]
