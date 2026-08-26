@@ -1,0 +1,29 @@
+# Published (no `publish` key) deliberately: the published `karet-lsp` depends on
+# this crate, and `xtask publish-closure` requires every path dependency of a
+# publishable crate to be publishable and version-pinned. It also stands on its
+# own — a complete JSON-RPC 2.0 client core with zero karet dependencies.
+[package]
+name        = "karet-jsonrpc"
+description = "Protocol-agnostic async JSON-RPC 2.0 client core: request/response correlation over pluggable framing."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+readme = "README.md"
+keywords.workspace     = true
+categories.workspace   = true
+
+# Zero karet dependencies by design: an ACP/LSP/DAP client core a downstream
+# consumer can take without inheriting `lsp-types` or the karet model crates.
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "io-util", "macros", "sync", "time"] }
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true
