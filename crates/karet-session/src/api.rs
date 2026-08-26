@@ -13,6 +13,7 @@ use karet_core::Change;
 use karet_core::CompletionItem;
 use karet_core::CursorState;
 use karet_core::Diagnostic;
+use karet_core::DirEntry;
 use karet_core::Hover;
 use karet_core::LineCol;
 use karet_core::Location;
@@ -38,15 +39,19 @@ mod command;
 mod debug;
 mod event;
 mod github;
+mod render;
 mod seam;
 mod vcs;
+mod workspace;
 
 pub use command::Command;
 pub use debug::*;
 pub use event::Event;
 pub use github::*;
+pub use render::*;
 pub use seam::*;
 pub use vcs::*;
+pub use workspace::*;
 
 /// Per-document editing and serialization behavior after application settings and
 /// matching EditorConfig files have been resolved.

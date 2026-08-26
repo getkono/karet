@@ -28,6 +28,7 @@ pub mod config;
 mod dap;
 mod diff_prepare;
 mod editorconfig;
+mod fs_worker;
 mod highlight;
 mod latex;
 pub mod local;

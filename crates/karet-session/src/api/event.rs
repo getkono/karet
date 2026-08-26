@@ -691,4 +691,64 @@ pub enum Event {
         /// The acknowledged set, in the submitted order.
         breakpoints: Vec<DebugBreakpoint>,
     },
+
+    // --- The remote seam -------------------------------------------------
+    /// A document's render-only state advanced.
+    ///
+    /// The serializable counterpart of the local
+    /// [`DocSnapshot`](crate::local::DocSnapshot) stream: same information, but
+    /// owned and delta-shaped so it can cross a connection. A local client keeps
+    /// using the snapshot channel and never sees this.
+    Render {
+        /// The document.
+        doc: DocumentId,
+        /// What changed since the last update for this document.
+        update: Box<RenderUpdate>,
+    },
+    /// How a path should be opened (answers [`Command::ClassifyPath`]).
+    PathClassified {
+        /// The classified path.
+        path: PathBuf,
+        /// Its classification, or why it could not be read.
+        result: Result<PathClass, String>,
+    },
+    /// A chunk of a file's bytes (answers [`Command::ReadFileBytes`]).
+    FileBytes {
+        /// The file read.
+        path: PathBuf,
+        /// The chunk, or why the read failed.
+        result: Result<FileChunk, String>,
+    },
+    /// The workspace's text files (answers [`Command::ListFiles`]).
+    FilesListed {
+        /// Paths, in walk order.
+        files: Vec<PathBuf>,
+        /// Whether the walk stopped at the requested limit, so a client can say
+        /// its list is partial instead of implying the workspace is small.
+        truncated: bool,
+    },
+    /// One directory's children (answers [`Command::ReadDirectory`]).
+    DirectoryListed {
+        /// The directory listed.
+        path: PathBuf,
+        /// Its children in display order, or why it could not be read.
+        result: Result<Vec<DirEntry>, String>,
+    },
+    /// A filesystem mutation finished (answers [`Command::MutatePath`]).
+    PathMutated {
+        /// What was attempted — carried back so a client can refresh the right
+        /// directories without tracking the request itself.
+        mutation: PathMutation,
+        /// Success, or why it failed.
+        result: Result<(), String>,
+    },
+    /// The view state a previous connection checkpointed.
+    ///
+    /// Emitted once on attach, before any other event, so a reattaching client
+    /// can restore its tabs and panes before the first frame. `None` when this
+    /// is a fresh session or the stored blob was dropped.
+    ViewStateRestored {
+        /// The blob a previous connection stored, verbatim.
+        blob: Option<Vec<u8>>,
+    },
 }

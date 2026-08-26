@@ -557,4 +557,92 @@ pub enum Command {
     DependencyGraph,
     /// Return the loaded settings and their in-memory provenance for this session.
     LoadedConfig,
+
+    // --- The remote seam -------------------------------------------------
+    //
+    // Local mode could answer these from the presentation layer's own process,
+    // and used to. They exist because a client that does not share a machine
+    // with the workspace has no other way to ask, and because routing both modes
+    // through one path is what keeps the remote one from rotting.
+    /// Declare the lines a view is displaying, so the backend can scope a
+    /// document's highlight spans to them.
+    ///
+    /// Highlights are resolved per rendered line, so spans outside the viewport
+    /// are never read. Bounding them is what keeps a keystroke's answer to about
+    /// a screenful instead of a whole file's worth of spans.
+    ///
+    /// Advisory and idempotent: a backend may answer with a wider range (it
+    /// pads by a margin so small scrolls need no round trip), and a client that
+    /// never sends this gets whole-document highlights.
+    SetViewport {
+        /// The document being displayed.
+        doc: DocumentId,
+        /// The view displaying it — two views can show one document at
+        /// different scroll positions.
+        view: ViewId,
+        /// First visible 0-based line.
+        first_line: u32,
+        /// Last visible 0-based line, inclusive.
+        last_line: u32,
+    },
+    /// Classify a workspace path, answered by [`Event::PathClassified`].
+    ///
+    /// Deciding which renderer a path warrants needs its leading bytes and its
+    /// length, so it has to happen where the file is.
+    ClassifyPath {
+        /// The path to classify.
+        path: PathBuf,
+        /// Bypass the size guard, so an over-large file opens with the renderer
+        /// its content warrants rather than a placeholder.
+        ignore_size: bool,
+    },
+    /// Read a byte range of a workspace file, answered by [`Event::FileBytes`].
+    ///
+    /// Backs the renderers that consume bytes rather than text — images, PDF
+    /// pages, hex dumps. The bytes are rendered by the client, which is the side
+    /// that knows its cell grid and graphics protocol.
+    ReadFileBytes {
+        /// The file to read.
+        path: PathBuf,
+        /// The byte offset to start at.
+        offset: u64,
+        /// How many bytes to read; the backend may return fewer.
+        len: u64,
+    },
+    /// List the workspace's text files for quick-open, answered by
+    /// [`Event::FilesListed`].
+    ///
+    /// Uses the same gitignore-aware walk the workspace search does, so what
+    /// quick-open offers and what a search covers cannot drift.
+    ListFiles {
+        /// Stop after this many paths and report the listing as truncated.
+        limit: usize,
+    },
+    /// List one directory's immediate children, answered by
+    /// [`Event::DirectoryListed`].
+    ReadDirectory {
+        /// The directory to list.
+        path: PathBuf,
+        /// Include dotfiles.
+        show_hidden: bool,
+        /// Flag gitignored entries as ignored rather than listing them plainly.
+        /// They are never filtered out — a tree dims them instead.
+        respect_gitignore: bool,
+    },
+    /// Create, rename, copy or delete a workspace path, answered by
+    /// [`Event::PathMutated`].
+    MutatePath {
+        /// What to do.
+        mutation: PathMutation,
+    },
+    /// Store the client's opaque view state so a later attach can restore it.
+    ///
+    /// Tabs, panes and carets belong to the client — the backend never
+    /// interprets this blob. But a client process does not outlive its
+    /// connection, so the backend holds the bytes on its behalf; see
+    /// [`Event::ViewStateRestored`].
+    CheckpointViewState {
+        /// The client's serialized view state.
+        blob: Vec<u8>,
+    },
 }

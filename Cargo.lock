@@ -3550,6 +3550,7 @@ dependencies = [
  "directories",
  "ec4rs",
  "flate2",
+ "ignore",
  "jsonc-parser",
  "karet-cbor",
  "karet-core",
@@ -3607,6 +3608,8 @@ version = "0.5.0"
 dependencies = [
  "karet-core",
  "karet-treesitter",
+ "serde",
+ "serde_json",
  "thiserror 2.0.19",
 ]
 

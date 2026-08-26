@@ -36,6 +36,7 @@ mod persistence;
 mod spelling;
 mod updates;
 mod vcs;
+mod workspace;
 
 #[cfg(test)]
 mod tests;
@@ -91,6 +92,7 @@ use crate::api::Event;
 use crate::api::RangeSpec;
 use crate::api::RequestId;
 use crate::api::SwapInfo;
+use crate::api::ViewId;
 use crate::backup::SwapRecord;
 use crate::backup::SwapStore;
 use crate::backup::discard;
@@ -105,6 +107,14 @@ use crate::lsp::LspManager;
 use crate::lsp::LspUpdate;
 use crate::spell::SpellJob;
 use crate::spell::SpellResult;
+
+/// How many lines beyond a declared viewport a document's highlight spans cover.
+///
+/// A scroll shorter than this needs no round trip: the spans a client already
+/// holds still reach past the edge of its screen. Sized for a page-ish jump,
+/// trading a little bandwidth for not repainting unhighlighted text on every
+/// `Ctrl+D`.
+pub(crate) const VIEWPORT_MARGIN: u32 = 200;
 
 /// Configuration for a [`Session`].
 #[derive(Clone, Debug)]
@@ -295,6 +305,17 @@ pub struct Session {
     /// Ordered background repository actions and network reads.
     vcs_worker: std::sync::mpsc::Sender<crate::vcs_worker::VcsJob>,
     search_worker: std::sync::mpsc::Sender<crate::search_worker::SearchJob>,
+    /// Workspace path I/O: classification, byte reads, listings, mutations.
+    /// Blocking and filesystem-bound, so never on the actor.
+    fs_worker: std::sync::mpsc::Sender<crate::fs_worker::FsJob>,
+    /// The inclusive line range each view is displaying, keyed by
+    /// `(document, view)`. Bounds a document's highlight spans to what a
+    /// client can actually see; empty until a client declares one.
+    viewports: HashMap<(DocumentId, ViewId), (u32, u32)>,
+    /// The client's opaque view state, held so a reattaching client can
+    /// restore tabs and panes its own process did not outlive. Never
+    /// interpreted here.
+    view_state: Vec<u8>,
     /// The seam indexer, which owns its index rather than rebuilding it per request.
     seam_worker: std::sync::mpsc::Sender<crate::seam_worker::SeamJob>,
     /// The workspace spelling scan, which walks every file rather than the open ones.
@@ -371,6 +392,9 @@ impl Session {
             return;
         }
         if self.handle_lsp_command(id, &command) {
+            return;
+        }
+        if self.handle_workspace_command(id, &command) {
             return;
         }
         match command {

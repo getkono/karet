@@ -472,6 +472,9 @@ impl Session {
                 // Release the worker's retained trees for this document.
                 self.highlight_tx.send(HighlightJob::Drop(doc_id)).ok();
                 self.spell_errors.remove(&doc_id);
+                // A closed document has no views left to declare a viewport;
+                // leaving them would widen the next document to reuse this id.
+                self.forget_viewports(doc_id);
                 // The document is gone from the editor: skipping a save is an explicit
                 // decision, so clean up its swap.
                 if let Some(store) = self.swaps.as_ref() {
