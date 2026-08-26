@@ -1,12 +1,83 @@
-//! Keyboard editing helpers for GitHub creation forms.
+//! GitHub creation-form state, keyboard editing, and submission.
 
-use crossterm::event::KeyCode;
-use crossterm::event::KeyEvent;
-use crossterm::event::KeyModifiers;
+use super::*;
 
-use super::GithubFormField;
-use super::GithubIssueForm;
-use super::GithubPullRequestForm;
+/// New-issue editor state.
+#[derive(Debug, Default)]
+pub(crate) struct GithubIssueForm {
+    pub(crate) title: String,
+    pub(crate) body: String,
+    pub(crate) assignees: String,
+    pub(crate) labels: String,
+    pub(crate) milestone: String,
+    pub(crate) issue_type: String,
+    pub(crate) assignee_options: Vec<String>,
+    pub(crate) assignee_cursor: usize,
+    pub(crate) metadata_pending: Option<RequestId>,
+    pub(crate) field: GithubFormField,
+    pub(crate) preview: bool,
+    pub(crate) submitting: Option<RequestId>,
+    pub(crate) error: Option<String>,
+}
+
+impl GithubIssueForm {
+    /// Repository assignees matching the fragment after the final comma.
+    pub(crate) fn assignee_suggestions(&self) -> Vec<&str> {
+        let fragment = self
+            .assignees
+            .rsplit_once(',')
+            .map_or(self.assignees.as_str(), |(_, fragment)| fragment)
+            .trim()
+            .to_ascii_lowercase();
+        let selected = comma_list(&self.assignees);
+        self.assignee_options
+            .iter()
+            .filter(|login| {
+                !selected.iter().any(|value| value == *login)
+                    && login.to_ascii_lowercase().contains(&fragment)
+            })
+            .map(String::as_str)
+            .collect()
+    }
+}
+
+// TODO(spargen-project-items): replace the label/milestone/type text inputs with
+// repository-aware selector islands and add project/custom-field controls.
+// Project-item request bodies remain typed manual adapters while spargen#46
+// tracks their unsupported oneOf property-presence constraints. Do not add
+// untyped JSON calls here as a temporary workaround.
+
+/// New-pull-request editor state.
+#[derive(Debug)]
+pub(crate) struct GithubPullRequestForm {
+    pub(crate) title: String,
+    pub(crate) body: String,
+    pub(crate) head: String,
+    pub(crate) base: String,
+    pub(crate) field: GithubFormField,
+    pub(crate) preview: bool,
+    pub(crate) draft: bool,
+    pub(crate) maintainer_can_modify: bool,
+    pub(crate) submitting: Option<RequestId>,
+    pub(crate) error: Option<String>,
+}
+
+impl Default for GithubPullRequestForm {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            body: String::new(),
+            head: String::new(),
+            base: "main".to_string(),
+            field: GithubFormField::Title,
+            preview: false,
+            draft: false,
+            maintainer_can_modify: true,
+            submitting: None,
+            error: None,
+        }
+    }
+}
 
 pub(crate) fn auth_label(auth: &karet_session::GithubAuth) -> String {
     if let Some(login) = auth.viewer_login.as_deref() {
@@ -141,6 +212,89 @@ pub(super) fn comma_list(value: &str) -> Vec<String> {
 pub(super) fn nonempty(value: &str) -> Option<String> {
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_string())
+}
+
+impl App {
+    pub(super) fn github_form_key(&mut self, key: KeyEvent) -> bool {
+        let special = key.code == KeyCode::Char('p') || key.code == KeyCode::Enter;
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && !special
+        {
+            return false;
+        }
+        let Some(TabKind::Github(view)) = self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
+        else {
+            return false;
+        };
+        match view {
+            GithubViewState::NewIssue { form, .. } => edit_issue_form(form, key),
+            GithubViewState::NewPullRequest { form, .. } => edit_pull_request_form(form, key),
+            _ => return false,
+        }
+        if key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.submit_github_form();
+        }
+        true
+    }
+
+    fn submit_github_form(&mut self) {
+        enum Submission {
+            Issue(GithubNewIssue),
+            PullRequest(GithubNewPullRequest),
+        }
+        let submission = match self.tabs.get(self.active).map(|tab| &tab.kind) {
+            Some(TabKind::Github(GithubViewState::NewIssue { form, .. })) => {
+                if form.title.trim().is_empty() {
+                    self.status = Some("issue title is required".to_string());
+                    return;
+                }
+                Submission::Issue(GithubNewIssue {
+                    title: form.title.trim().to_string(),
+                    body: form.body.clone(),
+                    assignees: comma_list(&form.assignees),
+                    labels: comma_list(&form.labels),
+                    milestone: form.milestone.trim().parse().ok(),
+                    issue_type: nonempty(&form.issue_type),
+                })
+            },
+            Some(TabKind::Github(GithubViewState::NewPullRequest { form, .. })) => {
+                if form.title.trim().is_empty()
+                    || form.head.trim().is_empty()
+                    || form.base.trim().is_empty()
+                {
+                    self.status =
+                        Some("pull request title, head, and base are required".to_string());
+                    return;
+                }
+                Submission::PullRequest(GithubNewPullRequest {
+                    title: form.title.trim().to_string(),
+                    head: form.head.trim().to_string(),
+                    base: form.base.trim().to_string(),
+                    body: form.body.clone(),
+                    draft: form.draft,
+                    maintainer_can_modify: form.maintainer_can_modify,
+                })
+            },
+            _ => return,
+        };
+        let command = match submission {
+            Submission::Issue(issue) => SessionCommand::GithubCreateIssue { issue },
+            Submission::PullRequest(pull_request) => {
+                SessionCommand::GithubCreatePullRequest { pull_request }
+            },
+        };
+        let request = self.send(command);
+        if let Some(TabKind::Github(view)) = self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
+        {
+            match view {
+                GithubViewState::NewIssue { form, .. } => form.submitting = request,
+                GithubViewState::NewPullRequest { form, .. } => form.submitting = request,
+                _ => {},
+            }
+        }
+    }
 }
 
 #[cfg(test)]

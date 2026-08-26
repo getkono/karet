@@ -1,4 +1,4 @@
-//! Pull-request page state shared by input and rendering.
+//! GitHub view, dashboard, and pull-request page state.
 
 use super::*;
 
@@ -93,4 +93,130 @@ pub(crate) struct GithubPullRequestSupplement {
     pub(crate) checks: Vec<GithubCheckRun>,
     pub(crate) activity: Vec<GithubPullRequestActivity>,
     pub(crate) activity_error: Option<String>,
+}
+
+/// Pinned dashboard state.
+#[derive(Debug)]
+pub(crate) struct GithubDashboard {
+    pub(crate) repository: GithubRepository,
+    pub(crate) auth: GithubAuth,
+    pub(crate) section: GithubSection,
+    pub(crate) query: String,
+    pub(crate) query_focused: bool,
+    pub(crate) issues: GithubPage<GithubIssue>,
+    pub(crate) pull_requests: GithubPage<GithubPullRequest>,
+    pub(crate) workflows: GithubPage<GithubWorkflow>,
+    pub(crate) runs: GithubPage<GithubWorkflowRun>,
+    pub(crate) cursor: usize,
+    pub(crate) selected: BTreeSet<usize>,
+    pub(crate) loading_since: Option<Pending>,
+    pub(crate) pending: Option<RequestId>,
+    pub(crate) error: Option<String>,
+    pub(crate) login_editing: bool,
+    pub(crate) login_token: String,
+    pub(crate) login_pending: Option<RequestId>,
+    pub(crate) section_hits: Vec<(GithubSection, Rect)>,
+    pub(crate) query_rect: Rect,
+    pub(crate) auth_rect: Rect,
+    pub(crate) table_rect: Rect,
+    pub(crate) first_visible: usize,
+}
+
+impl GithubDashboard {
+    fn new(repository: GithubRepository, auth: GithubAuth) -> Self {
+        Self {
+            repository,
+            auth,
+            section: GithubSection::Issues,
+            query: "is:open sort:updated-desc".to_string(),
+            query_focused: false,
+            issues: empty_page(),
+            pull_requests: empty_page(),
+            workflows: empty_page(),
+            runs: empty_page(),
+            cursor: 0,
+            selected: BTreeSet::new(),
+            loading_since: None,
+            pending: None,
+            error: None,
+            login_editing: false,
+            login_token: String::new(),
+            login_pending: None,
+            section_hits: Vec::new(),
+            query_rect: Rect::default(),
+            auth_rect: Rect::default(),
+            table_rect: Rect::default(),
+            first_visible: 0,
+        }
+    }
+
+    pub(crate) fn row_count(&self) -> usize {
+        match self.section {
+            GithubSection::Issues => self.issues.items.len(),
+            GithubSection::PullRequests => self.pull_requests.items.len(),
+            GithubSection::Actions => self.runs.items.len(),
+        }
+    }
+
+    pub(super) fn reset_navigation(&mut self) {
+        self.cursor = 0;
+        self.first_visible = 0;
+        self.selected.clear();
+        self.error = None;
+    }
+}
+
+fn empty_page<T>() -> GithubPage<T> {
+    GithubPage {
+        items: Vec::new(),
+        page: 1,
+        next_page: None,
+        total_count: None,
+    }
+}
+
+/// Content shown by a GitHub tab.
+#[derive(Debug)]
+pub(crate) enum GithubViewState {
+    /// The special pinned repository dashboard.
+    Dashboard(GithubDashboard),
+    /// An issue detail request or loaded issue.
+    Issue {
+        number: u64,
+        issue: Option<GithubIssue>,
+        comments: GithubPage<GithubComment>,
+        pending: Option<RequestId>,
+        loading_since: Pending,
+        error: Option<String>,
+        scroll: u16,
+    },
+    /// New issue form.
+    NewIssue {
+        repository: GithubRepository,
+        form: GithubIssueForm,
+    },
+    /// Pull request detail from a search result.
+    PullRequest(GithubPullRequestView),
+    /// A selected GitHub Actions workflow run.
+    WorkflowRun {
+        repository: GithubRepository,
+        workflow: Option<GithubWorkflow>,
+        run: GithubWorkflowRun,
+        scroll: u16,
+    },
+    /// New pull request form.
+    NewPullRequest {
+        repository: GithubRepository,
+        form: GithubPullRequestForm,
+    },
+}
+
+impl GithubViewState {
+    pub(crate) fn dashboard(repository: GithubRepository, auth: GithubAuth) -> Self {
+        Self::Dashboard(GithubDashboard::new(repository, auth))
+    }
+
+    pub(crate) fn is_pinned(&self) -> bool {
+        matches!(self, Self::Dashboard(_))
+    }
 }
