@@ -198,16 +198,27 @@ mod tests {
     }
 
     #[test]
+    fn the_lower_tiers_keep_their_cycles() {
+        // `the_frame_advances_once_per_interval` derives its expectation from
+        // `frames()`, so it pins the index-to-frame mapping but not the frames
+        // themselves. Reversing a rotation would otherwise pass silently.
+        assert_eq!(
+            Spinner::new(IconStyle::Unicode).frames(),
+            &['\u{2596}', '\u{2598}', '\u{259d}', '\u{2597}'],
+        );
+        assert_eq!(
+            Spinner::new(IconStyle::Ascii).frames(),
+            &['|', '/', '-', '\\']
+        );
+    }
+
+    #[test]
     fn the_ascii_tier_avoids_ambiguous_characters() {
         for frame in Spinner::new(IconStyle::Ascii).frames() {
             assert!(frame.is_ascii_graphic(), "{frame:?} is not printable ASCII");
             assert!(
-                !frame.is_ascii_digit(),
-                "{frame:?} reads as part of a count"
-            );
-            assert!(
                 !frame.is_ascii_alphanumeric(),
-                "{frame:?} reads as part of a label",
+                "{frame:?} reads as part of an adjacent count or label",
             );
         }
     }
