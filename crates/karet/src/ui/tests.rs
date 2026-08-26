@@ -3,9 +3,11 @@ use karet_core::Range;
 use karet_session::RequestId;
 use karet_session::SpellingHit;
 use karet_widgets::breadcrumbs::breadcrumb_segment_spans;
+use karet_widgets::textarea::TextAreaStyle;
+use karet_widgets::textarea::cursor_row as commit_cursor_row;
+use karet_widgets::textarea::styled_text;
 
 use super::scm::change_line;
-use super::scm::commit_cursor_row;
 use super::*;
 use crate::app::CommitInput;
 
@@ -175,13 +177,11 @@ fn commit_input_display_preserves_lines_and_marks_the_caret() {
         ..CommitInput::default()
     };
     input.edit.set_cursor(&input.text, 8, false);
-    let display = text_field_text(
+    let display = styled_text(
         &input.text,
-        &input.edit,
-        true,
-        Style::default(),
-        Style::default(),
-        Style::default(),
+        Some(input.edit.cursor()),
+        input.edit.selection(),
+        TextAreaStyle::default(),
     );
     assert_eq!(display.lines[0].to_string(), "subject");
     assert_eq!(display.lines[1].to_string(), "▏body");

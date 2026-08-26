@@ -1,4 +1,6 @@
 use karet_session::ChangeSummary;
+use karet_widgets::textarea::TextArea;
+use karet_widgets::textarea::TextAreaStyle;
 
 use super::*;
 
@@ -397,43 +399,20 @@ pub(super) fn draw_commit_input(f: &mut Frame, app: &mut App, theme: &Theme, are
         return;
     }
 
-    let caret_row = commit_cursor_row(
-        &app.commit_input.text,
-        app.commit_input.edit.cursor(),
-        inner.width,
+    app.commit_input
+        .edit
+        .ensure_cursor_visible(&app.commit_input.text, inner.width, inner.height);
+    let foreground = theme.role(ThemeRole::Foreground).to_ratatui();
+    let selection = theme.role(ThemeRole::Selection).to_ratatui();
+    f.render_widget(
+        TextArea::new(&app.commit_input.text, &app.commit_input.edit)
+            .focused(app.commit_input.focused)
+            .style(TextAreaStyle::new(
+                Style::default().fg(foreground),
+                Style::default().fg(foreground).bg(selection),
+                Style::default().fg(accent),
+            ))
+            .placeholder("Type a commit message", Style::default().fg(muted)),
+        inner,
     );
-    let visible = inner.height;
-    if caret_row < app.commit_input.scroll {
-        app.commit_input.scroll = caret_row;
-    } else if caret_row >= app.commit_input.scroll.saturating_add(visible) {
-        app.commit_input.scroll = caret_row.saturating_sub(visible.saturating_sub(1));
-    }
-    let paragraph = if app.commit_input.text.is_empty() && !app.commit_input.focused {
-        Paragraph::new("Type a commit message")
-            .style(Style::default().fg(muted))
-            .wrap(Wrap { trim: false })
-    } else {
-        let foreground = theme.role(ThemeRole::Foreground).to_ratatui();
-        let selection = theme.role(ThemeRole::Selection).to_ratatui();
-        Paragraph::new(text_field_text(
-            &app.commit_input.text,
-            &app.commit_input.edit,
-            app.commit_input.focused,
-            Style::default().fg(foreground),
-            Style::default().fg(foreground).bg(selection),
-            Style::default().fg(accent),
-        ))
-        .wrap(Wrap { trim: false })
-    };
-    f.render_widget(paragraph.scroll((app.commit_input.scroll, 0)), inner);
-}
-
-pub(super) fn commit_cursor_row(text: &str, cursor: usize, width: u16) -> u16 {
-    let width = usize::from(width.max(1));
-    let mut row = 0usize;
-    for line in text[..cursor.min(text.len())].split('\n') {
-        row = row.saturating_add(line.width() / width);
-    }
-    row = row.saturating_add(text[..cursor.min(text.len())].matches('\n').count());
-    u16::try_from(row).unwrap_or(u16::MAX)
 }

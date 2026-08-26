@@ -165,6 +165,7 @@ use karet_widgets::drop_zone;
 use karet_widgets::scroll::PaintedTracks;
 use karet_widgets::scroll::ScrollTrack;
 use karet_widgets::scroll::TrackHit;
+pub(crate) use karet_widgets::textarea::TextAreaState;
 pub(crate) use karet_widgets::textfield::TextFieldState;
 pub(crate) use language_servers::LanguageServerBadge;
 pub(crate) use pending::Pending;

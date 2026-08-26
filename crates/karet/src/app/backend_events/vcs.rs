@@ -227,7 +227,7 @@ impl App {
             self.commit_input.text.len(),
             false,
         );
-        self.commit_input.scroll = 0;
+        self.commit_input.edit.scroll = 0;
         self.status = Some("commit message generated".to_string());
     }
 

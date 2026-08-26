@@ -23,6 +23,7 @@ pub mod select;
 pub mod spinner;
 pub mod status;
 pub mod text;
+pub mod textarea;
 pub mod textfield;
 
 pub use columns::Column;
