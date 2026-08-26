@@ -10,6 +10,8 @@
 //! appears as `karet-core::model` because that is what it *is*; the file is an
 //! implementation detail of where the text lives.
 
+pub mod python;
+
 use std::path::Path;
 use std::path::PathBuf;
 

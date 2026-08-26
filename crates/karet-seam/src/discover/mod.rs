@@ -28,6 +28,8 @@ mod glob;
 mod python;
 mod scan;
 
+pub(crate) use scan::skipped;
+
 /// Which ecosystem's rules apply to a discovered package.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]

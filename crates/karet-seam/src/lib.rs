@@ -89,6 +89,7 @@ pub use model::NodeKind;
 pub use model::SeamLocation;
 pub use model::Visibility;
 pub use modules::ModuleSource;
+pub use modules::python::PyModule;
 pub use package::IndexOptions;
 pub use package::PackageError;
 pub use package::index_package;
