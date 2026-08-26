@@ -20,7 +20,8 @@ use super::MAX_MESSAGE_BYTES;
 /// Framing failures while reading a line-delimited message.
 #[derive(Debug, thiserror::Error)]
 pub enum LineError {
-    /// The underlying stream failed (including EOF mid-line).
+    /// The underlying stream failed. EOF is *not* a failure here: a part-read
+    /// final line is returned as the last message.
     #[error("i/o error on the peer stream: {0}")]
     Io(#[from] io::Error),
     /// The line grew past [`MAX_MESSAGE_BYTES`] before a newline arrived.
@@ -29,6 +30,12 @@ pub enum LineError {
 }
 
 /// Newline-delimited JSON bodies.
+///
+/// This framing's answer to the trailing-partial-frame question
+/// [`Framing::read_frame`] leaves open: an unterminated final line is a **final
+/// message**, not an error. A newline is a terminator this framing cannot
+/// distinguish from a peer that exited immediately after its last write, and
+/// losing that message is the worse failure, so it is returned.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LineDelimited;
 
@@ -54,15 +61,32 @@ impl Framing for LineDelimited {
 
 /// Read one newline-delimited message body, or `None` on a clean EOF.
 ///
-/// Blank lines are skipped rather than yielded as empty bodies. A final line
-/// without a trailing newline is still returned. EOF with nothing buffered is a
-/// clean end of stream (`Ok(None)`), not an error.
+/// Blank lines are skipped rather than yielded as empty bodies. EOF with nothing
+/// buffered is a clean end of stream (`Ok(None)`), not an error.
+///
+/// A final line **without** a trailing newline is returned as a message rather
+/// than rejected as truncation — this framing's choice on the point
+/// [`Framing::read_frame`] leaves to each implementation, so a peer that exits
+/// right after its last write does not lose it.
 ///
 /// # Errors
 ///
 /// Returns [`LineError::Io`] if the stream fails, or [`LineError::TooLarge`] if a
 /// single line exceeds [`MAX_MESSAGE_BYTES`].
 pub async fn read_frame<R>(reader: &mut R) -> Result<Option<Vec<u8>>, LineError>
+where
+    R: AsyncBufRead + Unpin,
+{
+    read_frame_capped(reader, MAX_MESSAGE_BYTES).await
+}
+
+/// [`read_frame`]'s body, with the line cap as a parameter.
+///
+/// Only [`read_frame`] (at [`MAX_MESSAGE_BYTES`]) and the cap test call this:
+/// tripping [`LineError::TooLarge`] over the real cap would mean pushing 64 MiB
+/// through an 8 KiB buffer on every test run, and the code path is identical at
+/// any `cap`.
+async fn read_frame_capped<R>(reader: &mut R, cap: usize) -> Result<Option<Vec<u8>>, LineError>
 where
     R: AsyncBufRead + Unpin,
 {
@@ -79,7 +103,7 @@ where
         }
         match available.iter().position(|byte| *byte == b'\n') {
             Some(at) => {
-                if line.len() + at > MAX_MESSAGE_BYTES {
+                if line.len() + at > cap {
                     return Err(LineError::TooLarge);
                 }
                 line.extend_from_slice(&available[..at]);
@@ -91,7 +115,7 @@ where
             },
             None => {
                 let taken = available.len();
-                if line.len() + taken > MAX_MESSAGE_BYTES {
+                if line.len() + taken > cap {
                     return Err(LineError::TooLarge);
                 }
                 line.extend_from_slice(available);
@@ -219,9 +243,10 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_an_oversized_line() -> TestResult {
+        const CAP: usize = 4 * 1024;
         let (reader, mut writer) = duplex(64 * 1024);
         let feeder = tokio::spawn(async move {
-            let chunk = vec![b'x'; 64 * 1024];
+            let chunk = vec![b'x'; 8 * 1024];
             // Never sends a newline: the cap must trip while accumulating.
             loop {
                 if writer.write_all(&chunk).await.is_err() {
@@ -230,9 +255,47 @@ mod tests {
             }
         });
         let mut reader = BufReader::new(reader);
-        let err = read_frame(&mut reader).await;
+        // The capped entry point, not `read_frame`: same code path, without
+        // pushing 64 MiB through the buffer on every test run.
+        let err = read_frame_capped(&mut reader, CAP).await;
         assert!(matches!(err, Err(LineError::TooLarge)));
         feeder.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn caps_a_terminated_line_too() -> TestResult {
+        let (reader, mut writer) = duplex(4096);
+        // A line that *does* end in a newline, but past the cap.
+        writer.write_all(&[b'x'; 64]).await?;
+        writer.write_all(b"\n").await?;
+        drop(writer);
+        let mut reader = BufReader::new(reader);
+        let err = read_frame_capped(&mut reader, 16).await;
+        assert!(matches!(err, Err(LineError::TooLarge)));
+        Ok(())
+    }
+
+    /// A reader whose every poll fails, so [`LineError::Io`] is reachable.
+    struct FailingReader;
+
+    impl tokio::io::AsyncRead for FailingReader {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::task::Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "boom")))
+        }
+    }
+
+    #[tokio::test]
+    async fn surfaces_a_stream_failure_as_io() -> TestResult {
+        let mut reader = BufReader::new(FailingReader);
+        let Err(LineError::Io(error)) = read_frame(&mut reader).await else {
+            return Err("expected an i/o error".into());
+        };
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
         Ok(())
     }
 }

@@ -47,10 +47,9 @@ impl From<karet_jsonrpc::RpcError> for LspError {
             Rpc::Timeout => Self::Timeout,
             Rpc::Closed => Self::Closed,
             Rpc::QueueFull => Self::Protocol("language-server outbound queue is full".to_owned()),
-            // `RpcError` is `#[non_exhaustive]`; a variant added upstream must
-            // still surface as *something*, and its own `Display` is the best
-            // available text until this bridge is taught the new shape.
-            other => Self::Protocol(other.to_string()),
+            // No catch-all arm on purpose: `RpcError` is not `#[non_exhaustive]`,
+            // so a variant added upstream breaks this match at compile time
+            // rather than silently surfacing as the wrong `LspError` kind.
         }
     }
 }
@@ -213,4 +212,43 @@ fn route_diagnostics(params: Value, diagnostics: &broadcast::Sender<PublishedDia
         version: parsed.version,
         diagnostics: mapped,
     }); // no subscribers is fine
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    #[test]
+    fn queue_full_bridges_to_a_protocol_error() -> TestResult {
+        let error = LspError::from(karet_jsonrpc::RpcError::QueueFull);
+        let LspError::Protocol(message) = &error else {
+            return Err("expected a protocol error".into());
+        };
+        assert_eq!(message, "language-server outbound queue is full");
+        assert_eq!(
+            error.to_string(),
+            "protocol error: language-server outbound queue is full"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn encode_failures_bridge_to_a_protocol_error() -> TestResult {
+        let source = serde_json::from_str::<i32>("not json")
+            .err()
+            .ok_or("expected a serde failure")?;
+        let expected = format!("failed to encode textDocument/didOpen: {source}");
+        let error = LspError::from(karet_jsonrpc::RpcError::Encode {
+            method: "textDocument/didOpen".to_owned(),
+            source,
+        });
+        let LspError::Protocol(message) = &error else {
+            return Err("expected a protocol error".into());
+        };
+        assert_eq!(*message, expected);
+        assert_eq!(error.to_string(), format!("protocol error: {expected}"));
+        Ok(())
+    }
 }

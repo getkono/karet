@@ -1,5 +1,7 @@
 //! Tests for the connection actor, over a scripted in-memory peer.
 
+use std::sync::atomic::AtomicUsize;
+
 use serde_json::json;
 use tokio::io::AsyncWriteExt;
 use tokio::io::DuplexStream;
@@ -305,5 +307,131 @@ async fn line_delimited_framing_drives_the_same_actor() -> TestResult {
     let result: String = connection.request("test/lined", Value::Null).await?;
     assert_eq!(result, "lined");
     peer_task.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn zero_declared_capacities_are_clamped_not_panicked() -> TestResult {
+    /// A handler declaring the capacities `tokio`'s channels panic on.
+    struct ZeroCapacityHandler;
+
+    impl Handler for ZeroCapacityHandler {
+        type Framing = ContentLength;
+        type Push = (String, Value);
+
+        const PUSH_CHANNEL_CAPACITY: usize = 0;
+        const OUTBOUND_CHANNEL_CAPACITY: usize = 0;
+
+        fn push_payload(&self, method: &str, params: &Value) -> Option<Self::Push> {
+            Some((method.to_owned(), params.clone()))
+        }
+    }
+
+    let ((read, write), mut peer) = wire();
+    // Starting at all is half the assertion: unclamped, both channel
+    // constructors would panic on a zero capacity.
+    let connection = Connection::start(ZeroCapacityHandler, read, write);
+    let mut pushes = connection.subscribe();
+    let peer_task = tokio::spawn(async move {
+        let req = peer.recv().await;
+        let id = req["id"].clone();
+        peer.respond(&id, json!("clamped")).await;
+        peer.send(&json!({"jsonrpc": "2.0", "method": "test/pushed", "params": {"n": 1}}))
+            .await;
+        peer
+    });
+    let result: String = connection.request("test/clamped", Value::Null).await?;
+    assert_eq!(result, "clamped");
+    let (method, params) = pushes.recv().await?;
+    assert_eq!(method, "test/pushed");
+    assert_eq!(params, json!({"n": 1}));
+    let _peer = peer_task.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn default_answer_refuses_and_default_on_notification_absorbs() -> TestResult {
+    /// A handler overriding neither `answer` nor `on_notification`.
+    struct DefaultsHandler;
+
+    impl Handler for DefaultsHandler {
+        type Framing = ContentLength;
+        type Push = (String, Value);
+
+        fn push_payload(&self, method: &str, params: &Value) -> Option<Self::Push> {
+            Some((method.to_owned(), params.clone()))
+        }
+    }
+
+    let ((read, write), mut peer) = wire();
+    let _connection = Connection::start(DefaultsHandler, read, write);
+
+    // The default `answer` refuses every method, naming it.
+    peer.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "test/anything", "params": {"a": 1}}))
+        .await;
+    let refused = peer.recv().await;
+    assert_eq!(refused["id"], json!(1));
+    assert_eq!(refused["error"]["code"], json!(METHOD_NOT_FOUND));
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("test/anything"),
+        "got {refused}"
+    );
+
+    // The default `on_notification` absorbs the notification rather than
+    // killing the reader: the request behind it is still answered.
+    peer.send(&json!({"jsonrpc": "2.0", "method": "test/ignored", "params": {"b": 2}}))
+        .await;
+    peer.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "test/again"}))
+        .await;
+    let second = peer.recv().await;
+    assert_eq!(second["id"], json!(2));
+    assert_eq!(second["error"]["code"], json!(METHOD_NOT_FOUND));
+    Ok(())
+}
+
+#[tokio::test]
+async fn handler_exposes_the_handler_it_was_started_with() -> TestResult {
+    /// A handler carrying state the caller can observe through `handler()`.
+    struct LabelledHandler {
+        label: &'static str,
+        notifications: AtomicUsize,
+    }
+
+    impl Handler for LabelledHandler {
+        type Framing = ContentLength;
+        type Push = (String, Value);
+
+        fn push_payload(&self, method: &str, params: &Value) -> Option<Self::Push> {
+            Some((method.to_owned(), params.clone()))
+        }
+
+        fn on_notification(&self, _method: &str, _params: Value) {
+            self.notifications.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let ((read, write), mut peer) = wire();
+    let connection = Connection::start(
+        LabelledHandler {
+            label: "marker",
+            notifications: AtomicUsize::new(0),
+        },
+        read,
+        write,
+    );
+    assert_eq!(connection.handler().label, "marker");
+    assert_eq!(connection.handler().notifications.load(Ordering::SeqCst), 0);
+
+    peer.send(&json!({"jsonrpc": "2.0", "method": "test/counted"}))
+        .await;
+    // The reader routes frames in order, so an answered request behind the
+    // notification proves the notification already reached the handler.
+    peer.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "test/sync"}))
+        .await;
+    assert_eq!(peer.recv().await["id"], json!(1));
+    assert_eq!(connection.handler().notifications.load(Ordering::SeqCst), 1);
     Ok(())
 }

@@ -327,7 +327,26 @@ mod tests {
         assert!(classify(json!({"jsonrpc": "2.0"})).is_none());
         // Neither a number that overflows `i64` nor a structured id is legal.
         assert!(classify(json!({"jsonrpc": "2.0", "id": 1.5, "result": 1})).is_none());
+        assert!(
+            classify(json!({"jsonrpc": "2.0", "id": 18_446_744_073_709_551_615_u64, "result": 1}))
+                .is_none()
+        );
         assert!(classify(json!({"jsonrpc": "2.0", "id": {"n": 1}, "result": 1})).is_none());
+    }
+
+    #[test]
+    fn request_ids_round_trip_untagged() -> TestResult {
+        for (id, wire) in [
+            (RequestId::Number(7), json!(7)),
+            (RequestId::Text("call-1".to_owned()), json!("call-1")),
+        ] {
+            // Untagged: a bare number or a bare string, with no wrapper object.
+            let encoded = serde_json::to_value(&id)?;
+            assert_eq!(encoded, wire);
+            let decoded: RequestId = serde_json::from_value(encoded)?;
+            assert_eq!(decoded, id);
+        }
+        Ok(())
     }
 
     #[test]

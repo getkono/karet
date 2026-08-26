@@ -24,6 +24,12 @@ use super::Framing;
 pub use super::MAX_MESSAGE_BYTES;
 
 /// `Content-Length`-framed bodies: the LSP/DAP base protocol.
+///
+/// This framing's answer to the trailing-partial-frame question
+/// [`Framing::read_frame`] leaves open: a truncated final message is an
+/// **error**. A declared `Content-Length` whose bytes never arrive (or a header
+/// block that never terminates) is unambiguous truncation, so it fails with
+/// [`CodecError::Io`] rather than being handed on as a body.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ContentLength;
 
@@ -69,6 +75,10 @@ pub enum CodecError {
 /// Headers are parsed case-insensitively; unknown headers (e.g. `Content-Type`)
 /// are ignored. Both `\r\n` and bare `\n` line endings are accepted. EOF in the
 /// middle of a message (headers or body) is a [`CodecError::Io`] error.
+///
+/// [`MAX_MESSAGE_BYTES`] caps the message **body** only. Header lines are read
+/// uncapped, so a peer that sends an endless header line with no newline can
+/// still grow memory without bound; the cap is not a defence against that.
 ///
 /// # Errors
 ///

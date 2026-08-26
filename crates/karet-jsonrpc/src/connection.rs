@@ -56,9 +56,17 @@ pub trait Handler: Send + Sync + 'static {
     /// The deadline for draining the outbound queue in [`Connection::close`].
     const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
     /// Broadcast capacity; slow subscribers drop the oldest payloads.
+    ///
+    /// [`Connection::start`] clamps this into `1..=usize::MAX / 2`, the range
+    /// `tokio::sync::broadcast` accepts — an override outside it degrades the
+    /// capacity rather than panicking.
     const PUSH_CHANNEL_CAPACITY: usize = 64;
     /// Frames waiting to be written. A buggy producer cannot grow memory without
     /// bound; requests wait for capacity and notifications fail fast.
+    ///
+    /// [`Connection::start`] clamps this to at least `1`, the minimum
+    /// `tokio::sync::mpsc` accepts — an override of `0` degrades to `1` rather
+    /// than panicking.
     const OUTBOUND_CHANNEL_CAPACITY: usize = 256;
 
     /// Build the broadcast payload for one peer notification (`None` drops it).
@@ -85,8 +93,15 @@ pub trait Handler: Send + Sync + 'static {
 }
 
 /// Errors raised by a [`Connection`] operation.
+///
+/// Deliberately **not** `#[non_exhaustive]`: every consumer is a lockstep-
+/// versioned workspace crate, so the attribute would buy no compatibility —
+/// it would only force a catch-all arm in the bridges that translate this
+/// enum (`impl From<RpcError> for LspError`), where a newly added variant
+/// would then compile clean and surface silently as the wrong error kind.
+/// Exhaustive matching turns that into a compile error at the one place that
+/// must be taught the new shape.
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
 pub enum RpcError {
     /// The outgoing message could not be serialized.
     #[error("failed to encode {method}: {source}")]
@@ -157,8 +172,14 @@ impl<H: Handler> Connection<H> {
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
     {
-        let (outbound, mut outbound_rx) = mpsc::channel::<Outbound>(H::OUTBOUND_CHANNEL_CAPACITY);
-        let (push, _) = broadcast::channel(H::PUSH_CHANNEL_CAPACITY);
+        // Both capacities are downstream-overridable consts, and both channel
+        // constructors *panic* on an out-of-range value (`mpsc` on 0;
+        // `broadcast` on 0 or `> usize::MAX / 2`). This crate's lint floor
+        // forbids panicking library code, so a bad const degrades the capacity
+        // instead of aborting the process.
+        let (outbound, mut outbound_rx) =
+            mpsc::channel::<Outbound>(H::OUTBOUND_CHANNEL_CAPACITY.max(1));
+        let (push, _) = broadcast::channel(H::PUSH_CHANNEL_CAPACITY.clamp(1, usize::MAX / 2));
         let pending: Pending = Arc::default();
         let closed = Arc::new(AtomicBool::new(false));
         let handler = Arc::new(handler);

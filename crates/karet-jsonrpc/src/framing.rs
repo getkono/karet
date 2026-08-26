@@ -17,8 +17,13 @@ use tokio::io::AsyncWrite;
 pub mod content_length;
 pub mod line_delimited;
 
-/// The largest message body any framing in this crate will read, guarding
+/// The largest message **body** any framing in this crate will read, guarding
 /// against a corrupt or hostile length allocating unbounded memory.
+///
+/// The cap covers bodies only. Framing *metadata* is each implementation's own
+/// business, and not all of it is bounded: [`content_length::read_frame`] reads
+/// its header lines uncapped, so a peer sending an endless header line still
+/// grows memory without bound.
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
 /// A wire framing for JSON-RPC message bodies.
@@ -33,10 +38,19 @@ pub trait Framing: Send + Sync + 'static {
 
     /// Read one framed body, or `None` on a clean EOF between messages.
     ///
+    /// A **trailing partial frame** — EOF part-way through a message — is
+    /// deliberately *not* specified here: whether it is an error or a final
+    /// frame depends on what the framing can tell apart, so each implementation
+    /// documents its own choice. In this crate,
+    /// [`content_length::ContentLength`] errors (a declared length that never
+    /// arrives is unambiguously truncation) while
+    /// [`line_delimited::LineDelimited`] returns it (a peer that exits right
+    /// after its last write must not lose that message).
+    ///
     /// # Errors
     ///
     /// Returns [`Framing::Error`] when the stream fails or the bytes on it do
-    /// not form a valid frame — including EOF part-way through a message.
+    /// not form a valid frame.
     fn read_frame<R>(
         reader: &mut R,
     ) -> impl Future<Output = Result<Option<Vec<u8>>, Self::Error>> + Send
