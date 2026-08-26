@@ -3544,6 +3544,7 @@ dependencies = [
  "aicommit-core",
  "base64",
  "blameline",
+ "ciborium",
  "command-group",
  "dependable-core",
  "dependable-fetch",

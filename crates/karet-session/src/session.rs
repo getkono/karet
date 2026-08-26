@@ -933,6 +933,17 @@ fn unknown_document(doc: DocumentId) -> Event {
 /// The receiving half of a session's server→client event stream.
 pub struct EventRx(mpsc::UnboundedReceiver<(Option<RequestId>, Event)>);
 
+/// Build an event stream not backed by a local [`Session`].
+///
+/// A remote client presents the same stream to the presentation layer, filled
+/// from a connection instead of an in-process actor. Exposing the constructor is
+/// what lets it do that without the UI learning there are two kinds.
+#[must_use]
+pub(crate) fn event_channel() -> (mpsc::UnboundedSender<(Option<RequestId>, Event)>, EventRx) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    (tx, EventRx(rx))
+}
+
 impl EventRx {
     /// Receive the next event, with the [`RequestId`] it answers (if any).
     ///
