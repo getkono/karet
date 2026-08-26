@@ -5,6 +5,7 @@
 
 use karet_core::ThemeRole;
 use karet_theme::Theme;
+use karet_theme::ThemeError;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -118,7 +119,7 @@ fn a_width_change_invalidates_and_rewraps_every_message() {
 
 #[test]
 fn invalidating_forces_a_rewrap_at_an_unchanged_width() {
-    // The escape hatch for the one input the width key cannot see: the theme.
+    // The escape hatch for anything neither the width nor the theme key can see.
     let area = Rect::new(0, 0, 20, 10);
     let mut transcript = six_lines();
     let _ = paint(&mut transcript, area);
@@ -209,7 +210,11 @@ fn an_append_while_released_does_not_move_the_viewport() {
 
     assert_eq!(transcript.offset(), 2, "the reader's place was kept");
     assert!(!transcript.is_following());
-    assert_eq!(rows(&before, area), rows(&after, area));
+    // Whole buffers, not extracted symbols: a colour, a modifier or a misplaced
+    // scrollbar thumb is a moved viewport too. The reserved column is in scope
+    // because the thumb geometry rounds to the same cells across this growth
+    // (`(1, 2)` of a five-cell track either way), so any diff there is a real one.
+    assert_eq!(before, after, "not one cell of the frame changed");
     assert_eq!(transcript.rows(), 15, "the content grew beneath it");
 }
 
@@ -466,6 +471,11 @@ fn degenerate_areas_paint_nothing_and_never_panic() {
 
     // A one-cell area is too small to reserve a track, but still wraps and paints.
     let tracks = transcript.paint(&mut buf, &theme, Rect::new(0, 0, 1, 1));
+    assert_eq!(
+        transcript.viewport(),
+        1,
+        "one row of content is one row of view"
+    );
     assert_eq!(tracks, PaintedTracks::default(), "no room for a bar");
     assert!(transcript.rows() > 11, "one cell per row is a lot of rows");
     assert_ne!(
@@ -473,10 +483,110 @@ fn degenerate_areas_paint_nothing_and_never_panic() {
         Some(" ".to_owned()),
         "the tail's last cell is what a one-cell viewport shows"
     );
+    // A degenerate paint after a real one must not leave the old height behind:
+    // `max_offset`, `page_by` and `extent` all answer out of `viewport`.
+    let tracks = transcript.paint(&mut buf, &theme, Rect::new(0, 0, 4, 0));
+    assert_eq!(tracks, PaintedTracks::default());
+    assert_eq!(
+        transcript.viewport(),
+        0,
+        "there is no viewport to answer for"
+    );
+    assert_eq!(transcript.extent().viewport, 0);
+    assert_eq!(
+        transcript.max_offset(),
+        transcript.rows(),
+        "every row is off-screen when no row is on it"
+    );
     assert_eq!(
         Transcript::default().extent(),
         crate::scroll::ScrollExtent::default()
     );
+}
+
+#[test]
+fn a_resize_that_fits_the_content_re_engages_a_released_follow() {
+    // Not a duplicate of `a_view_whose_content_fits_never_leaves_the_follow`: that
+    // one proves `set_offset` cannot *release* the follow while `max_offset()` is
+    // zero. This one enters `max_offset() == 0` while already released, which only
+    // the clamp in `settle` can undo — and a clamp that landed on the tail without
+    // re-deriving the follow pinned the view to the top for the rest of the stream.
+    let small = Rect::new(0, 0, 20, 5);
+    let tall = Rect::new(0, 0, 20, 12);
+    let mut transcript = six_lines();
+    let _ = paint(&mut transcript, small);
+    transcript.scroll_by(-4);
+    assert_eq!(transcript.offset(), 2);
+    assert!(!transcript.is_following(), "the reader took over");
+
+    // The pane grows until the whole transcript fits: the reader is now looking at
+    // all of it, tail included, so the view is back on the tail by definition.
+    let _ = paint(&mut transcript, tall);
+
+    assert_eq!(transcript.max_offset(), 0, "eleven rows in twelve");
+    assert_eq!(transcript.offset(), 0);
+    assert!(transcript.is_following(), "the tail is on screen");
+
+    for index in 6..16 {
+        transcript.push(body(&format!("line {index}")));
+    }
+    let (buf, _) = paint(&mut transcript, tall);
+
+    assert_eq!(
+        transcript.rows(),
+        31,
+        "sixteen messages and fifteen spacers"
+    );
+    assert_eq!(transcript.offset(), transcript.max_offset());
+    assert_eq!(transcript.offset(), 19, "the tail, not the top");
+    assert_eq!(rows(&buf, tall).last().map(String::as_str), Some("line 15"));
+}
+
+#[test]
+fn a_theme_change_rewraps_and_an_unchanged_theme_reuses_the_cache() {
+    let area = Rect::new(0, 0, 20, 10);
+    let mut buf = Buffer::empty(area);
+    let dark = Theme::dark();
+    let mut transcript = six_lines();
+    transcript.paint(&mut buf, &dark, area);
+    let settled = transcript.wrap_count();
+    assert_eq!(settled, 6);
+
+    // An equal theme in a different instance is still the theme the rows were
+    // wrapped with, so the width key alone decides: nothing re-wraps.
+    transcript.paint(&mut buf, &Theme::dark(), area);
+    assert_eq!(
+        transcript.wrap_count(),
+        settled,
+        "no theme change to react to"
+    );
+
+    // A hot-swapped theme is invisible to the width key, so the widget compares the
+    // theme itself. The only second theme value karet-theme can build is a loaded
+    // one, which needs its `vscode` feature — on under the workspace gate
+    // (`--all-features`), where this half really runs.
+    match Theme::load_vscode(r##"{"colors": {"editor.foreground": "#ff0000"}}"##) {
+        Ok(swapped) => {
+            assert_ne!(swapped, dark, "the loaded theme really does differ");
+
+            transcript.paint(&mut buf, &swapped, area);
+            assert_eq!(
+                transcript.wrap_count(),
+                settled + 6,
+                "every message re-wrapped in the new theme"
+            );
+            assert_eq!(transcript.rows(), 11, "the rows themselves are unchanged");
+
+            transcript.paint(&mut buf, &swapped, area);
+            assert_eq!(
+                transcript.wrap_count(),
+                settled + 6,
+                "the swapped theme is the cached one now"
+            );
+        },
+        // The one acceptable reason to have no second theme: the loader is absent.
+        Err(error) => assert!(matches!(error, ThemeError::Unsupported), "{error}"),
+    }
 }
 
 #[test]

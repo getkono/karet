@@ -11,8 +11,9 @@
 //!
 //! - **Incremental append.** Each message caches the styled rows it wrapped to,
 //!   keyed by the width it wrapped at. Appending a message wraps *that* message;
-//!   the earlier ones are reused verbatim. Only a width change (or a theme change,
-//!   which the consumer signals with [`Transcript::invalidate`]) re-wraps the lot.
+//!   the earlier ones are reused verbatim. Only a width change — or a theme change,
+//!   which [`Transcript::paint`] detects by comparing the theme it was handed with
+//!   the one the cache was built from — re-wraps the lot.
 //! - **Stick-to-bottom.** The view follows the tail by default; scrolling up
 //!   releases it, scrolling back to the bottom re-engages it. Appending while
 //!   released never moves the viewport.
@@ -54,7 +55,14 @@ use crate::scroll::reserve_tracks;
 use crate::text;
 
 /// A transcript message's body, and how it should be rendered.
+///
+/// `#[non_exhaustive]`: the `Markdown` variant exists only with the `markdown`
+/// feature, so without it a downstream exhaustive `match` would compile and then
+/// break the moment feature unification switched `markdown` on — an additive
+/// feature must never be a breaking change. The attribute forces the wildcard arm
+/// that keeps such a `match` honest either way.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TranscriptBody {
     /// Plain text, soft-wrapped at whitespace to the transcript's content width.
     Plain(String),
@@ -165,6 +173,9 @@ pub struct Transcript {
     /// How many message wraps have been performed — a cache-effectiveness
     /// diagnostic, and what the tests assert reuse against.
     wraps: usize,
+    /// The theme the cached rows were wrapped with; `None` before the first
+    /// wrap pass. Compared once per paint so a hot-swapped theme re-wraps.
+    theme: Option<Theme>,
 }
 
 impl Transcript {
@@ -224,8 +235,9 @@ impl Transcript {
 
     /// Drop every cached wrap, forcing a full re-wrap on the next paint.
     ///
-    /// The cache is keyed by width alone, so this is how a consumer signals the
-    /// one other input the rows depend on: the theme.
+    /// Width and theme changes are detected by [`paint`](Self::paint) on their
+    /// own; this is the escape hatch for anything else a consumer knows has
+    /// changed underneath the cached rows.
     pub fn invalidate(&mut self) {
         for entry in &mut self.entries {
             entry.width = None;
@@ -300,8 +312,10 @@ impl Transcript {
     /// The post-wrap vertical extent: wrapped rows, the current offset, and the
     /// last painted viewport.
     ///
-    /// Unlike a line-counting extent this is exact, because the rows it counts are
-    /// the rows that were painted.
+    /// Unlike a line-counting extent this is exact *as of the last wrap pass*,
+    /// because the rows it counts are the rows that were painted. A `push`,
+    /// `extend_tail`, `amend_tail`, `invalidate` or resize since that pass is not
+    /// reflected until the next [`paint`](Self::paint).
     #[must_use]
     pub fn extent(&self) -> ScrollExtent {
         ScrollExtent::new(self.rows, self.offset, self.viewport)
@@ -354,11 +368,19 @@ impl Transcript {
     ///
     /// The reservation runs first and the wrap width comes out of the content rect
     /// it leaves — see the module docs for why that order is load-bearing.
+    ///
+    /// `theme` is part of the cache key: handing over a theme that differs from the
+    /// one the cached rows were wrapped with re-wraps every message, so a consumer
+    /// that hot-swaps themes needs no [`invalidate`](Self::invalidate) call.
     pub fn paint(&mut self, buf: &mut Buffer, theme: &Theme, area: Rect) -> PaintedTracks {
         // Invariant: area and axes only. Nothing about the content may influence
         // this call, or the wrap width would feed back into the reservation.
         let (content, tracks) = reserve_tracks(area, ScrollAxes::VERTICAL);
         if content.width == 0 || content.height == 0 {
+            // There is no viewport to answer for: leaving the previous paint's
+            // height behind would make `max_offset`, `page_by` and `extent`
+            // report against a rect that no longer exists.
+            self.viewport = 0;
             return PaintedTracks::default();
         }
         self.viewport = usize::from(content.height);
@@ -399,7 +421,16 @@ impl Transcript {
 
     /// Wrap every message whose cache is not already valid for `width`, and total
     /// the rows.
+    ///
+    /// The cached rows carry themed colors, so a theme that differs from the one
+    /// they were wrapped with invalidates the lot before the width key is even
+    /// consulted. `Theme` is a fixed-size value, so the comparison is a cheap
+    /// once-per-paint check rather than a per-message one.
     fn wrap_to(&mut self, width: u16, theme: &Theme) {
+        if self.theme.as_ref() != Some(theme) {
+            self.theme = Some(theme.clone());
+            self.invalidate();
+        }
         let mut wraps = 0usize;
         let mut rows = 0usize;
         for (index, entry) in self.entries.iter_mut().enumerate() {
@@ -416,12 +447,19 @@ impl Transcript {
 
     /// Pin the offset to the tail while following, and clamp it otherwise — so a
     /// released view holds still no matter how much arrives beneath it.
+    ///
+    /// The clamp re-derives the follow, because it can land the offset *on* the
+    /// tail: [`set_offset`](Self::set_offset) holds `following == (offset >=
+    /// max_offset())`, and a released view resting at `max` — after a resize that
+    /// fits the content, or a tail that shrank — would otherwise never re-engage,
+    /// since paint only ever runs through here.
     fn settle(&mut self) {
         let max = self.max_offset();
         if self.following {
             self.offset = max;
         } else {
             self.offset = self.offset.min(max);
+            self.following = self.offset >= max;
         }
     }
 }
