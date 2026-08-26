@@ -158,6 +158,7 @@ use karet_widgets::PaneDivider;
 use karet_widgets::PaneId;
 use karet_widgets::PaneLayout;
 use karet_widgets::PendingEdit;
+use karet_widgets::Spinner;
 use karet_widgets::SplitAxis;
 use karet_widgets::SplitDir;
 use karet_widgets::drop_zone;

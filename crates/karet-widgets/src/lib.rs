@@ -20,6 +20,7 @@ pub mod pane;
 pub mod picker;
 pub mod scroll;
 pub mod select;
+pub mod spinner;
 pub mod status;
 pub mod text;
 pub mod textfield;
@@ -49,6 +50,7 @@ pub use pane::SplitDir;
 pub use pane::drop_preview_rect;
 pub use pane::drop_zone;
 pub use select::ListSelection;
+pub use spinner::Spinner;
 
 /// The LSP hover / documentation popup (relocated here from `karet-lsp`).
 #[cfg(feature = "hover")]

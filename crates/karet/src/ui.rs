@@ -59,6 +59,7 @@ use karet_vcs::StatusKind;
 use karet_widgets::CompletionPopup;
 use karet_widgets::Corner;
 use karet_widgets::FileTree;
+use karet_widgets::Spinner;
 use karet_widgets::SplitAxis;
 use karet_widgets::Toasts;
 use karet_widgets::UiIcon;
@@ -484,7 +485,7 @@ fn draw_pane_tabs(
         let style = tab_text_style(ctx.theme, i == active, ctx.pane_focused, tab.is_preview);
         // A pre-allocated 1-cell status slot keeps the layout stable: `●` for
         // unsaved changes (a spinner frame while a slow save writes), else blank.
-        let mark = save_mark(tab);
+        let mark = save_mark(tab, ctx.icon_style);
         let title = &titles[i];
         let label_w = 4u16
             .saturating_add(cell_width(&title.prefix))
@@ -647,15 +648,11 @@ fn tab_parent_prefix(path: &Path, root: &Path) -> Option<String> {
     (!prefix.is_empty()).then(|| format!("{prefix}/"))
 }
 
-/// Braille spinner frames for a slow save (each is a single display cell).
-const SPINNER: &[char] = &[
-    '\u{280b}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283c}', '\u{2834}', '\u{2826}', '\u{2827}',
-    '\u{2807}', '\u{280f}',
-];
-/// How long a save must run before its spinner appears.
+/// How long a save must run before its spinner appears. This is the save-specific
+/// reveal policy — deliberately slower than the shared `LOADING_REVEAL_DELAY`,
+/// since most saves finish imperceptibly — and it lives here rather than in the
+/// [`Spinner`] widget, which owns only the frame cycle.
 const SPINNER_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
-/// Milliseconds per spinner frame.
-const SPINNER_FRAME_MS: u128 = 100;
 
 /// The scale at which document (PDF) pages are rasterized. Larger than a typical
 /// pane so the Kitty protocol downscales (sharp) rather than upscales into the
@@ -665,12 +662,11 @@ const DOC_RENDER_SCALE: f32 = 2.0;
 
 /// The 1-cell tab status mark: a spinner while a slow save writes, `●` for unsaved
 /// changes, else blank. The slot is always one cell so the layout never shifts.
-fn save_mark(tab: &Tab) -> char {
+fn save_mark(tab: &Tab, icon_style: karet_filetype::IconStyle) -> char {
     if let Some(since) = tab.saving_since {
         let elapsed = since.elapsed();
         if elapsed >= SPINNER_DELAY {
-            let frame = (elapsed.as_millis() / SPINNER_FRAME_MS) as usize % SPINNER.len();
-            return SPINNER[frame];
+            return Spinner::new(icon_style).frame(elapsed);
         }
     }
     if tab.dirty { '\u{25cf}' } else { ' ' }

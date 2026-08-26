@@ -308,6 +308,38 @@ fn symbolic_link_tabs_carry_the_configured_link_marker() {
 }
 
 #[test]
+fn the_tab_save_mark_reserves_one_cell_and_spins_only_for_a_slow_save() {
+    use std::time::Instant;
+
+    let nerd = karet_filetype::IconStyle::NerdFont;
+    let mut tab = test_code_tab("/repo/slow.rs");
+    assert_eq!(save_mark(&tab, nerd), ' ');
+
+    tab.dirty = true;
+    assert_eq!(save_mark(&tab, nerd), '\u{25cf}');
+
+    // A save that has only just begun keeps the dirty mark: the spinner is a
+    // save-specific reveal policy, not something the widget decides.
+    tab.saving_since = Some(Instant::now());
+    assert_eq!(save_mark(&tab, nerd), '\u{25cf}');
+
+    // Past the delay it animates the shared widget's cycle for the active tier,
+    // and every tier fills the same single cell.
+    tab.saving_since = Some(Instant::now() - SPINNER_DELAY);
+    for style in [
+        nerd,
+        karet_filetype::IconStyle::Unicode,
+        karet_filetype::IconStyle::Ascii,
+    ] {
+        let mark = save_mark(&tab, style);
+        assert!(
+            Spinner::new(style).frames().contains(&mark),
+            "{style:?} save mark {mark:?} is not a spinner frame",
+        );
+    }
+}
+
+#[test]
 fn markdown_tabs_expose_preview_and_table_actions() {
     let mut tab = test_code_tab("/repo/README.md");
     let actions = pane_actions(&tab);
