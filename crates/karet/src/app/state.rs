@@ -528,10 +528,8 @@ impl Default for SearchPanel {
 pub(crate) struct CommitInput {
     /// Draft message, retained while the field is blurred and while a commit runs.
     pub(crate) text: String,
-    /// Cursor and selection state within the draft.
-    pub(crate) edit: TextFieldState,
-    /// First wrapped display row visible inside the field.
-    pub(crate) scroll: u16,
+    /// Cursor, selection, and viewport state within the draft.
+    pub(crate) edit: TextAreaState,
     /// Whether keyboard input is currently routed into the field.
     pub(crate) focused: bool,
     /// Commit request in flight; prevents accidental duplicate submissions.

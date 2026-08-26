@@ -1,5 +1,3 @@
-use unicode_width::UnicodeWidthChar;
-
 use super::*;
 
 impl App {
@@ -828,32 +826,7 @@ impl CommitInput {
     }
 
     fn move_vertical(&mut self, delta: i8, extend: bool) {
-        let cursor = self.edit.cursor();
-        let start = self.text[..cursor]
-            .rfind('\n')
-            .map_or(0, |newline| newline + 1);
-        let column = self.text[start..cursor].chars().count();
-        let target_start = if delta < 0 {
-            let Some(previous_end) = start.checked_sub(1) else {
-                return;
-            };
-            self.text[..previous_end]
-                .rfind('\n')
-                .map_or(0, |newline| newline + 1)
-        } else {
-            let Some(next) = self.text[cursor..].find('\n') else {
-                return;
-            };
-            cursor + next + 1
-        };
-        let target_end = self.text[target_start..]
-            .find('\n')
-            .map_or(self.text.len(), |newline| target_start + newline);
-        let target = self.text[target_start..target_end]
-            .char_indices()
-            .nth(column)
-            .map_or(target_end, |(offset, _)| target_start + offset);
-        self.edit.set_cursor(&self.text, target, extend);
+        self.edit.move_vertical(&self.text, delta, extend);
     }
 
     fn select_all(&mut self) {
@@ -861,37 +834,7 @@ impl CommitInput {
     }
 
     pub(super) fn place_cursor(&mut self, column: u16, row: u16, width: u16, extend: bool) {
-        let target_row = usize::from(row.saturating_add(self.scroll));
-        let target_col = usize::from(column);
-        let width = usize::from(width.max(1));
-        let mut display_row = 0usize;
-        let mut display_col = 0usize;
-        let mut candidate = 0usize;
-        for (index, character) in self.text.char_indices() {
-            if character == '\n' {
-                if display_row == target_row {
-                    self.edit.set_cursor(&self.text, candidate, extend);
-                    return;
-                }
-                display_row += 1;
-                display_col = 0;
-                candidate = index + 1;
-                continue;
-            }
-            let char_width = character.width().unwrap_or(0).max(1);
-            if display_col + char_width > width {
-                display_row += 1;
-                display_col = 0;
-            }
-            if display_row > target_row
-                || display_row == target_row && target_col < display_col + char_width
-            {
-                self.edit.set_cursor(&self.text, index, extend);
-                return;
-            }
-            display_col += char_width;
-            candidate = index + character.len_utf8();
-        }
-        self.edit.set_cursor(&self.text, candidate, extend);
+        self.edit
+            .place_cursor(&self.text, column, row, width, extend);
     }
 }

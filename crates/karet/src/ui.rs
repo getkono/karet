@@ -106,7 +106,8 @@ use crate::keymap::Context;
 use crate::keymap::Focus;
 use crate::tab::CommitFiles;
 
-/// Render text-field content with a highlighted selection and an insertion caret.
+/// Render single-line text-field content with a highlighted selection and an
+/// insertion caret, through the shared `karet-widgets` text-area renderer.
 pub(super) fn text_field_text(
     text: &str,
     edit: &TextFieldState,
@@ -115,33 +116,12 @@ pub(super) fn text_field_text(
     selection: Style,
     caret: Style,
 ) -> Text<'static> {
-    let selected = edit.selection();
-    let cursor = edit.cursor();
-    let mut lines = Vec::new();
-    let mut spans = Vec::new();
-    for (index, character) in text.char_indices() {
-        if focused && index == cursor {
-            spans.push(Span::styled("▏", caret));
-        }
-        if character == '\n' {
-            lines.push(Line::from(std::mem::take(&mut spans)));
-            continue;
-        }
-        let style = if selected
-            .as_ref()
-            .is_some_and(|range| range.start <= index && index < range.end)
-        {
-            selection
-        } else {
-            normal
-        };
-        spans.push(Span::styled(character.to_string(), style));
-    }
-    if focused && cursor == text.len() {
-        spans.push(Span::styled("▏", caret));
-    }
-    lines.push(Line::from(spans));
-    Text::from(lines)
+    karet_widgets::textarea::styled_text(
+        text,
+        focused.then(|| edit.cursor()),
+        edit.selection(),
+        karet_widgets::textarea::TextAreaStyle::new(normal, selection, caret),
+    )
 }
 
 pub(crate) use karet_widgets::scroll::ScrollAxes;

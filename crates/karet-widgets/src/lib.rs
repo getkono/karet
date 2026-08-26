@@ -22,6 +22,7 @@ pub mod scroll;
 pub mod select;
 pub mod status;
 pub mod text;
+pub mod textarea;
 pub mod textfield;
 
 pub use columns::Column;
