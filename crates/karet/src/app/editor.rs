@@ -58,7 +58,7 @@ impl App {
                 let mut tab = workspace::open_file(&pdf);
                 tab.view = view;
                 self.tabs[index] = tab;
-                self.active = index;
+                self.set_active(index);
                 self.status = Some("LaTeX preview built".to_owned());
             } else if let TabKind::LatexPreview {
                 error: preview_error,

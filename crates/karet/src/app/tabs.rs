@@ -1,5 +1,11 @@
 use super::*;
 
+/// The activation history's hard ceiling. It only bounds memory in a very long
+/// session: entries this old are far past any "put me back where I was" reach, and
+/// closed views are skipped on read rather than pruned, so nothing else depends on
+/// the list being tight.
+const MAX_VIEW_HISTORY: usize = 256;
+
 impl App {
     /// Open `path`, focusing an existing tab for the same file instead of opening a
     /// duplicate. This is the single entry point for every "open a file" flow
@@ -39,7 +45,7 @@ impl App {
             .iter()
             .position(|t| !t.is_diff() && t.path().is_some_and(|p| canonical(p) == target))
         {
-            self.active = idx;
+            self.set_active(idx);
             self.find_open = false;
             if steal_focus {
                 self.focus = Focus::Editor;
@@ -99,7 +105,7 @@ impl App {
         {
             Some(idx) => {
                 self.tabs[idx] = tab;
-                self.active = idx;
+                self.set_active(idx);
                 self.find_open = false;
                 if steal_focus {
                     self.focus = Focus::Editor;
@@ -112,10 +118,10 @@ impl App {
             None => {
                 if self.tabs.len() == 1 && matches!(self.tabs[0].kind, TabKind::Welcome) {
                     self.tabs[0] = tab;
-                    self.active = 0;
+                    self.set_active(0);
                 } else {
                     self.tabs.push(tab);
-                    self.active = self.tabs.len() - 1;
+                    self.set_active(self.tabs.len() - 1);
                 }
                 self.find_open = false;
                 if steal_focus {
@@ -155,10 +161,10 @@ impl App {
         tab.view = self.alloc_view();
         if self.tabs.len() == 1 && matches!(self.tabs[0].kind, TabKind::Welcome) {
             self.tabs[0] = tab;
-            self.active = 0;
+            self.set_active(0);
         } else {
             self.tabs.push(tab);
-            self.active = self.tabs.len() - 1;
+            self.set_active(self.tabs.len() - 1);
         }
         self.focus = Focus::Editor;
         // A newly-focused tab never inherits another tab's open find bar.
@@ -198,7 +204,7 @@ impl App {
                 active: self.active,
             },
         );
-        self.active = 0;
+        self.set_active(0);
     }
 
     /// Pull the (possibly newly) focused pane's tabs out of storage into the live
@@ -207,10 +213,10 @@ impl App {
         let pane = self.layout.focus();
         if let Some(sp) = self.stored.remove(&pane) {
             self.tabs = sp.tabs;
-            self.active = sp.active;
+            self.set_active(sp.active);
         } else {
             self.tabs = vec![Tab::welcome()];
-            self.active = 0;
+            self.set_active(0);
         }
     }
 
@@ -251,27 +257,41 @@ impl App {
     }
 
     /// Close every clean tab backed by one of `paths` or a descendant.
+    ///
+    /// A pane whose active tab survives keeps it in front at its shifted index; one
+    /// that loses it falls back to the most recently active tab still open there.
     pub(super) fn close_tabs_under(&mut self, paths: &[PathBuf]) {
-        self.tabs.retain(|tab| {
-            !tab.path()
+        let doomed = |tab: &Tab| {
+            tab.path()
                 .is_some_and(|path| paths.iter().any(|root| path_under(root, path)))
-        });
+        };
+        let active_view = self.tabs.get(self.active).map(|tab| tab.view);
+        self.tabs.retain(|tab| !doomed(tab));
         if self.tabs.is_empty() {
             self.tabs.push(Tab::welcome());
-            self.active = 0;
-        } else if self.active >= self.tabs.len() {
-            self.active = self.tabs.len() - 1;
+            self.set_active(0);
+        } else {
+            let fallback = self.active.min(self.tabs.len() - 1);
+            let next =
+                Self::refocus_after_removal(&self.view_history, &self.tabs, active_view, fallback);
+            self.set_active(next);
         }
-        for pane in self.stored.values_mut() {
-            pane.tabs.retain(|tab| {
-                !tab.path()
-                    .is_some_and(|path| paths.iter().any(|root| path_under(root, path)))
-            });
+        // Field-split the borrow: the stored panes are read against the same history.
+        let App {
+            stored,
+            view_history,
+            ..
+        } = self;
+        for pane in stored.values_mut() {
+            let active_view = pane.tabs.get(pane.active).map(|tab| tab.view);
+            pane.tabs.retain(|tab| !doomed(tab));
             if pane.tabs.is_empty() {
                 pane.tabs.push(Tab::welcome());
                 pane.active = 0;
-            } else if pane.active >= pane.tabs.len() {
-                pane.active = pane.tabs.len() - 1;
+            } else {
+                let fallback = pane.active.min(pane.tabs.len() - 1);
+                pane.active =
+                    Self::refocus_after_removal(view_history, &pane.tabs, active_view, fallback);
             }
         }
         self.reconcile_open_docs();
@@ -315,10 +335,108 @@ impl App {
         }
     }
 
+    /// Make the tab at `index` the focused pane's active one, recording the
+    /// activation in [`view_history`](App::view_history).
+    ///
+    /// **Every** write to [`active`](App::active) goes through here, including the
+    /// index shifts that keep the same view in front: that is what keeps the history
+    /// behind close-focus from drifting. Recording is idempotent, so a shift that
+    /// re-selects the view already in front costs nothing.
+    ///
+    /// This is the bare mechanism; [`select_tab`](App::select_tab) layers the
+    /// editor-focus and find-bar side effects on top. An `index` past the end (or a
+    /// momentarily empty tab list) still moves `active` but records nothing.
+    pub(super) fn set_active(&mut self, index: usize) {
+        self.active = index;
+        if let Some(view) = self.tabs.get(index).map(|tab| tab.view) {
+            self.note_activation(view);
+        }
+    }
+
+    /// Record `view` as the most recently activated one, moving it to the front when
+    /// it is already known. `ViewId(0)` is ignored: it is the unassigned sentinel
+    /// every welcome tab shares, so it identifies no single view.
+    fn note_activation(&mut self, view: ViewId) {
+        if view == ViewId(0) || self.view_history.last() == Some(&view) {
+            return;
+        }
+        self.view_history.retain(|known| *known != view);
+        self.view_history.push(view);
+        if self.view_history.len() > MAX_VIEW_HISTORY {
+            self.view_history.remove(0);
+        }
+    }
+
+    /// The focused pane's most recently activated tab that is still open, or
+    /// `fallback` when the history knows none of them. Call it *after* removing the
+    /// closing tab, so the tab being closed can never be the answer.
+    pub(super) fn recent_tab_index(&self, fallback: usize) -> usize {
+        Self::recent_index_in(&self.view_history, &self.tabs, fallback)
+    }
+
+    /// The index in `tabs` of the most recently activated view still present there,
+    /// or `fallback` when `history` knows none of them. An empty `tabs` yields `0`.
+    ///
+    /// Takes its inputs as slices rather than reading `self` so the same code answers
+    /// for the focused pane and for a [`StoredPane`] inside a `stored.values_mut()`
+    /// loop, where `self` is already mutably borrowed.
+    pub(in crate::app) fn recent_index_in(
+        history: &[ViewId],
+        tabs: &[Tab],
+        fallback: usize,
+    ) -> usize {
+        if tabs.is_empty() {
+            return 0;
+        }
+        history
+            .iter()
+            .rev()
+            .find_map(|view| tabs.iter().position(|tab| tab.view == *view))
+            .unwrap_or(fallback)
+    }
+
+    /// Which tab a pane should show after a bulk removal took an arbitrary subset of
+    /// its tabs: `active_view` again if it survived (at its shifted index), else the
+    /// most recently active tab still open there, else `fallback`.
+    ///
+    /// Shared by every "tabs vanished underneath the user" path — an external file
+    /// delete, the GitHub dashboard being withdrawn — so all of them land the user in
+    /// the same place an ordinary close would.
+    pub(in crate::app) fn refocus_after_removal(
+        history: &[ViewId],
+        tabs: &[Tab],
+        active_view: Option<ViewId>,
+        fallback: usize,
+    ) -> usize {
+        active_view
+            .and_then(|view| tabs.iter().position(|tab| tab.view == view))
+            .unwrap_or_else(|| Self::recent_index_in(history, tabs, fallback))
+    }
+
+    /// Point pane focus at the pane holding the most recently activated surviving
+    /// view, overriding the positional neighbour [`PaneLayout::close`] chose.
+    ///
+    /// Call it once the collapsed pane is gone from both the layout and `stored`,
+    /// while every surviving pane's tabs are still stashed. A no-op when the history
+    /// knows none of them, which leaves the positional answer standing.
+    fn focus_recent_pane(&mut self) {
+        let recent = self.view_history.iter().rev().find_map(|view| {
+            self.stored
+                .iter()
+                .find(|(_, pane)| pane.tabs.iter().any(|tab| tab.view == *view))
+                .map(|(id, _)| *id)
+        });
+        if let Some(pane) = recent
+            && self.layout.contains(pane)
+        {
+            self.layout.set_focus(pane);
+        }
+    }
+
     /// Switch to the tab at `index`, focusing the editor.
     pub(super) fn select_tab(&mut self, index: usize) {
         if index < self.tabs.len() {
-            self.active = index;
+            self.set_active(index);
             self.focus = Focus::Editor;
             // The find bar is keyed to whichever tab it was opened over; switching
             // tabs must not show it over a different file.
@@ -363,7 +481,7 @@ impl App {
         }
         let tab = self.tabs.remove(from);
         self.tabs.insert(to, tab);
-        self.active = to;
+        self.set_active(to);
     }
     /// Record a closed file tab's path so it can be reopened later.
     pub(super) fn remember_closed(&mut self, index: usize) {
@@ -400,6 +518,10 @@ impl App {
 
     /// Close the tab at `index`. When it is the pane's final tab, collapse the pane
     /// if another pane remains; the sole pane falls back to a Welcome tab.
+    ///
+    /// Closing the tab in front hands focus to the tab the user was in most recently
+    /// that is still open — not to whichever tab happens to slide into the vacated
+    /// slot. Collapsing a pane picks the surviving pane the same way.
     pub(super) fn close_tab_at(&mut self, index: usize) {
         if index >= self.tabs.len() || self.tabs[index].is_github_dashboard() {
             return;
@@ -410,20 +532,31 @@ impl App {
             self.stash_focused();
             self.stored.remove(&closing);
             if self.layout.close(closing).is_some() {
+                // Every surviving pane is stashed and the closed one is gone from
+                // both the layout and `stored`: the moment `focus_recent_pane` needs.
+                self.focus_recent_pane();
                 self.load_focused();
                 self.focus = Focus::Editor;
             }
         } else if self.tabs.len() == 1 {
             self.tabs = vec![Tab::welcome()];
-            self.active = 0;
+            self.set_active(0);
             self.focus = Focus::Sidebar;
+        } else if index == self.active {
+            // The tab in front is going. Fall back to the neighbour that slides into
+            // its slot only when the history knows none of the survivors.
+            self.tabs.remove(index);
+            let fallback = index.min(self.tabs.len() - 1);
+            let next = self.recent_tab_index(fallback);
+            self.set_active(next);
         } else {
+            // A background tab: the same view stays in front, its index just shifts.
             self.tabs.remove(index);
             if index < self.active {
-                self.active -= 1;
+                self.set_active(self.active - 1);
             }
             if self.active >= self.tabs.len() {
-                self.active = self.tabs.len() - 1;
+                self.set_active(self.tabs.len() - 1);
             }
         }
         // The closed tab's own `find` data goes with it; the flag may now be
@@ -446,11 +579,12 @@ impl App {
         let active_view = self.tabs[self.active].view;
         self.tabs
             .retain(|tab| tab.view == active_view || tab.is_github_dashboard());
-        self.active = self
+        let kept = self
             .tabs
             .iter()
             .position(|tab| tab.view == active_view)
             .unwrap_or(0);
+        self.set_active(kept);
         self.find_open = false;
         self.reconcile_open_docs();
     }
@@ -475,7 +609,7 @@ impl App {
         if self.tabs.is_empty() {
             self.tabs.push(Tab::welcome());
         }
-        self.active = 0;
+        self.set_active(0);
         self.focus = if self.tabs[0].is_github_dashboard() {
             Focus::Editor
         } else {
