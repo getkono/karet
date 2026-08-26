@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 
+use karet_treesitter::LanguageId;
+
 use crate::edge::EdgeStore;
 use crate::id::SeamId;
 use crate::id::SeamInterner;
@@ -25,6 +27,7 @@ pub struct SeamIndex {
     roots: Vec<SeamId>,
     files: Vec<PathBuf>,
     file_ids: HashMap<PathBuf, FileId>,
+    attribution: HashMap<FileId, (SeamId, LanguageId)>,
     edges: EdgeStore,
     unresolved: Vec<(SeamId, Vec<PathBuf>)>,
     truncated: Option<usize>,
@@ -67,6 +70,33 @@ impl SeamIndex {
         self.files.push(path.to_path_buf());
         self.file_ids.insert(path.to_path_buf(), id);
         id
+    }
+
+    /// The handle already assigned to `path`, without assigning one.
+    ///
+    /// Re-indexing asks this rather than [`Self::intern_file`]: a path the index never
+    /// held has nothing to rebuild, and registering it would inflate the file count the
+    /// header reports for work that never happened.
+    #[must_use]
+    pub fn file_id(&self, path: &Path) -> Option<FileId> {
+        self.file_ids.get(path).copied()
+    }
+
+    /// Record which node owns `file`, and which grammar parsed it.
+    ///
+    /// Re-indexing an edited file has to rebuild it under the same node and the same
+    /// grammar it was first built under. Rediscovering either by inspecting the tree
+    /// works only while every module node is located in its *declaring* file, which is a
+    /// Rust accident: Python declares nothing, so its module nodes sit in the very file
+    /// they own, and the inference silently lands one level too high.
+    pub fn attribute_file(&mut self, file: FileId, owner: SeamId, language: LanguageId) {
+        self.attribution.insert(file, (owner, language));
+    }
+
+    /// The node and grammar recorded for `file`, if it was indexed.
+    #[must_use]
+    pub fn file_attribution(&self, file: FileId) -> Option<(SeamId, LanguageId)> {
+        self.attribution.get(&file).copied()
     }
 
     /// The path behind a file handle.
@@ -534,5 +564,45 @@ mod tests {
         let a = add(&mut index, "alpha", vec![]);
         let b = add(&mut index, "beta", vec![]);
         assert_eq!(index.roots(), [a, b]);
+    }
+
+    #[test]
+    fn a_path_the_index_never_held_has_no_handle() {
+        let mut index = SeamIndex::new();
+        assert_eq!(index.file_id(Path::new("/absent.rs")), None);
+        // Asking must not register it: an unknown path has nothing to rebuild, and
+        // interning one here would inflate the file count for work that never happened.
+        let known = index.intern_file(Path::new("/present.rs"));
+        assert_eq!(index.file_id(Path::new("/present.rs")), Some(known));
+        assert_eq!(index.files().len(), 1);
+    }
+
+    #[test]
+    fn a_files_owner_and_grammar_round_trip() {
+        let mut index = SeamIndex::new();
+        let owner = add(&mut index, "alpha", vec![]);
+        let file = index.intern_file(Path::new("/alpha/src/lib.rs"));
+        assert_eq!(index.file_attribution(file), None);
+
+        index.attribute_file(file, owner, LanguageId(7));
+        assert_eq!(index.file_attribution(file), Some((owner, LanguageId(7))));
+    }
+
+    #[test]
+    fn attribution_survives_removing_the_files_own_nodes() {
+        // `remove_nodes_in_file` never removes the owner itself, so the record it was
+        // built under stays valid across the re-index that clears its subtree.
+        let mut index = SeamIndex::new();
+        let owner = add(&mut index, "alpha", vec![]);
+        let child = add(&mut index, "alpha::inner", vec![]);
+        let file = index.intern_file(Path::new("/alpha/src/inner.rs"));
+        index.attribute_file(file, owner, LanguageId(3));
+        if let Some(node) = index.node_mut(child) {
+            node.location.file = file;
+        }
+
+        index.remove_nodes_in_file(file, owner);
+        assert_eq!(index.node(child), None);
+        assert_eq!(index.file_attribution(file), Some((owner, LanguageId(3))));
     }
 }
