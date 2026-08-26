@@ -52,11 +52,19 @@ pub(crate) enum Visit {
 /// Offer `root` and the directories beneath it to `visit`, breadth-first, in sorted order.
 ///
 /// `max_depth` counts levels below `root`, so a depth of 0 offers only `root` itself.
-/// Skipped directories are never offered at all.
-pub(crate) fn walk(root: &Path, max_depth: usize, mut visit: impl FnMut(&Path) -> Visit) {
+/// `max_directories` caps how many are visited in total. Depth alone does not bound the
+/// cost — a shallow tree can still be enormous, and this runs while a reader waits for a
+/// picker to open. Skipped directories are never offered at all.
+pub(crate) fn walk(
+    root: &Path,
+    max_depth: usize,
+    max_directories: usize,
+    mut visit: impl FnMut(&Path) -> Visit,
+) {
     if !root.is_dir() {
         return;
     }
+    let mut visited = 1usize;
     let mut level = match visit(root) {
         Visit::Descend => vec![root.to_path_buf()],
         Visit::Prune => return,
@@ -65,9 +73,13 @@ pub(crate) fn walk(root: &Path, max_depth: usize, mut visit: impl FnMut(&Path) -
         let mut next = Vec::new();
         for parent in &level {
             for child in directories(parent) {
+                if visited >= max_directories {
+                    return;
+                }
                 if skipped(&child) {
                     continue;
                 }
+                visited += 1;
                 if visit(&child) == Visit::Descend {
                     next.push(child);
                 }
@@ -111,7 +123,7 @@ mod tests {
     /// Every directory the walk offers, relative to `root`, in the order offered.
     fn visited(root: &Path, max_depth: usize) -> Vec<String> {
         let mut seen = Vec::new();
-        walk(root, max_depth, |path| {
+        walk(root, max_depth, usize::MAX, |path| {
             seen.push(
                 path.strip_prefix(root)
                     .unwrap_or(path)
@@ -171,7 +183,7 @@ mod tests {
     fn pruning_takes_a_directory_without_descending_into_it() -> TestResult {
         let root = tree(&["a/deep", "b"])?;
         let mut seen = Vec::new();
-        walk(root.path(), 3, |path| {
+        walk(root.path(), 3, usize::MAX, |path| {
             let name = path
                 .strip_prefix(root.path())
                 .unwrap_or(path)
@@ -192,11 +204,25 @@ mod tests {
     fn pruning_the_root_ends_the_walk() -> TestResult {
         let root = tree(&["a"])?;
         let mut seen = 0usize;
-        walk(root.path(), 3, |_| {
+        walk(root.path(), 3, usize::MAX, |_| {
             seen += 1;
             Visit::Prune
         });
         assert_eq!(seen, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn the_directory_budget_stops_a_wide_tree() -> TestResult {
+        // Depth alone does not bound the cost: a shallow tree can still be enormous, and
+        // this runs while a reader waits for a picker to open.
+        let root = tree(&["a", "b", "c", "d", "e"])?;
+        let mut seen = 0usize;
+        walk(root.path(), 3, 3, |_| {
+            seen += 1;
+            Visit::Descend
+        });
+        assert_eq!(seen, 3);
         Ok(())
     }
 
@@ -206,7 +232,7 @@ mod tests {
         let file = root.path().join("notes.md");
         std::fs::write(&file, "x")?;
         let mut seen = 0usize;
-        walk(&file, 3, |_| {
+        walk(&file, 3, usize::MAX, |_| {
             seen += 1;
             Visit::Descend
         });

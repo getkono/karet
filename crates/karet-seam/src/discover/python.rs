@@ -46,7 +46,7 @@ const NOT_PACKAGES: &[&str] = &[
 /// Every Python package under `root`.
 pub(super) fn discover(root: &Path, options: DiscoveryOptions) -> Vec<Discovered> {
     let mut out = Vec::new();
-    scan::walk(root, options.max_depth, |dir| {
+    scan::walk(root, options.max_depth, options.max_directories, |dir| {
         if out.len() >= options.max_packages {
             return scan::Visit::Prune;
         }

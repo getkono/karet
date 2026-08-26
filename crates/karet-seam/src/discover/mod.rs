@@ -60,6 +60,11 @@ pub struct DiscoveryOptions {
     pub max_depth: usize,
     /// Stop after this many packages.
     pub max_packages: usize,
+    /// Stop after visiting this many directories.
+    ///
+    /// Depth alone does not bound the walk — a shallow tree can still be enormous — and
+    /// discovery runs synchronously while a reader waits for a picker to open.
+    pub max_directories: usize,
 }
 
 impl Default for DiscoveryOptions {
@@ -69,6 +74,10 @@ impl Default for DiscoveryOptions {
         Self {
             max_depth: 3,
             max_packages: 512,
+            // Generous enough that no real repository is cut short, low enough that a
+            // pathological tree cannot stall the picker for longer than it takes to
+            // notice.
+            max_directories: 8192,
         }
     }
 }
@@ -190,7 +199,7 @@ fn take_member(
 /// Cargo packages parked below a root that declares none.
 fn scan_cargo(root: &Path, options: DiscoveryOptions) -> Vec<Discovered> {
     let mut out = Vec::new();
-    scan::walk(root, options.max_depth, |dir| {
+    scan::walk(root, options.max_depth, options.max_directories, |dir| {
         if out.len() >= options.max_packages {
             return scan::Visit::Prune;
         }
