@@ -6,14 +6,14 @@
 //! a non-ratatui UI. (The ratatui completion/hover popups live in `karet-widgets`,
 //! which renders these models, so this crate stays free of UI dependencies.)
 //!
-//! The transport is a hand-rolled `Content-Length`-framed JSON-RPC 2.0 codec over
-//! generic async I/O: [`LspClient::spawn`] wraps a child process's stdio, and
-//! [`LspClient::connect`] accepts any `AsyncRead`/`AsyncWrite` pair — the seam the
-//! in-memory (`tokio::io::duplex`) tests and embedders use. A reader task
-//! correlates responses by id, broadcasts pushed diagnostics, and answers the few
-//! server→client requests a headless client must not leave hanging
-//! (`workspace/configuration`, `client/registerCapability`,
-//! `window/workDoneProgress/create`).
+//! The transport is the shared `karet-jsonrpc` correlation actor over
+//! `Content-Length` framing, on generic async I/O: [`LspClient::spawn`] wraps a
+//! child process's stdio, and [`LspClient::connect`] accepts any
+//! `AsyncRead`/`AsyncWrite` pair — the seam the in-memory (`tokio::io::duplex`)
+//! tests and embedders use. A reader task correlates responses by id, broadcasts
+//! pushed diagnostics, and answers the few server→client requests a headless
+//! client must not leave hanging (`workspace/configuration`,
+//! `client/registerCapability`, `window/workDoneProgress/create`).
 //!
 //! Three protocol choices are deliberate and documented here once:
 //!
@@ -34,10 +34,15 @@
 //! symbols, inlay hints, rename, signature help, code actions, and document/range
 //! formatting are implemented as typed, non-panicking operations.
 
-pub mod codec;
+/// `Content-Length` message framing (the LSP base protocol).
+///
+/// Re-exported from [`karet_jsonrpc::framing::content_length`], which is where
+/// the implementation now lives; the `karet_lsp::codec` path is kept because it
+/// is this crate's published surface.
+pub use karet_jsonrpc::framing::content_length as codec;
+
 mod conn;
 mod convert;
-mod jsonrpc;
 mod snippet;
 mod uri;
 

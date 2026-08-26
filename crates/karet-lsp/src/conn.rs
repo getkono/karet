@@ -1,19 +1,12 @@
-//! The connection actor: two I/O tasks and request/response correlation.
+//! The LSP half of the connection: what `karet-jsonrpc` cannot know.
 //!
-//! A [`Connection`] owns a writer task (draining an outbound frame queue) and a
-//! reader task (de-framing inbound messages and routing them): responses resolve
-//! the pending request with the matching id, `textDocument/publishDiagnostics`
-//! fans out on a broadcast channel, the few server→client requests a headless
-//! client must answer are answered inline, and everything else is logged and
-//! dropped. When the stream ends, in-flight requests fail with
-//! [`LspError::Closed`].
+//! The correlation actor — id allocation, the pending map, timeouts, the bounded
+//! outbound queue, the close protocol, failing everything in flight on EOF —
+//! lives in [`karet_jsonrpc`]. What stays here is the LSP-specific leaves: the
+//! diagnostics fan-out, the raw-notification broadcast payload, the few
+//! server→client requests a headless client must not leave hanging, and the
+//! bridge that turns [`karet_jsonrpc::RpcError`] into [`LspError`].
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicI64;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -21,60 +14,96 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
-use tokio::io::BufReader;
 use tokio::sync::broadcast;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
 
 use crate::LspError;
 use crate::PublishedDiagnostics;
 use crate::RawNotification;
-use crate::codec;
 use crate::convert;
-use crate::jsonrpc;
-use crate::jsonrpc::Incoming;
-use crate::jsonrpc::ResponseError;
 use crate::uri;
-
-/// How long a request may wait for its response before failing with
-/// [`LspError::Timeout`].
-pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The (shorter) deadline for the `shutdown` handshake and process exit.
 pub(crate) const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Diagnostics broadcast capacity; slow subscribers drop the oldest sets.
 const DIAGNOSTICS_CHANNEL_CAPACITY: usize = 64;
-/// Raw-notification broadcast capacity; slow subscribers drop the oldest.
-const RAW_CHANNEL_CAPACITY: usize = 64;
-/// Frames waiting to be written. A buggy producer cannot grow memory without
-/// bound; requests wait for capacity and notifications fail fast.
-const OUTBOUND_CHANNEL_CAPACITY: usize = 256;
 
-type Pending = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, ResponseError>>>>>;
+/// Every user-visible `LspError` string is produced here, so the shared actor
+/// stays protocol-neutral while this crate's error surface is unchanged.
+impl From<karet_jsonrpc::RpcError> for LspError {
+    fn from(error: karet_jsonrpc::RpcError) -> Self {
+        use karet_jsonrpc::RpcError as Rpc;
+        match error {
+            Rpc::Encode { method, source } => {
+                Self::Protocol(format!("failed to encode {method}: {source}"))
+            },
+            Rpc::Decode { method, source } => Self::Protocol(format!(
+                "malformed {method} response from the server: {source}"
+            )),
+            Rpc::Peer { method, error } => Self::Server(format!(
+                "{method} failed with code {}: {}",
+                error.code, error.message
+            )),
+            Rpc::Timeout => Self::Timeout,
+            Rpc::Closed => Self::Closed,
+            Rpc::QueueFull => Self::Protocol("language-server outbound queue is full".to_owned()),
+            // `RpcError` is `#[non_exhaustive]`; a variant added upstream must
+            // still surface as *something*, and its own `Display` is the best
+            // available text until this bridge is taught the new shape.
+            other => Self::Protocol(other.to_string()),
+        }
+    }
+}
 
-/// An item on the outbound queue: a frame to write, or the drain-and-stop
-/// signal [`Connection::close`] enqueues behind the final frames.
-enum Outbound {
-    Frame(Vec<u8>),
-    Close,
+/// The LSP protocol handler: it owns the diagnostics fan-out and answers the
+/// server→client requests a headless client must not leave hanging.
+pub(crate) struct LspHandler {
+    diagnostics: broadcast::Sender<PublishedDiagnostics>,
+}
+
+impl Default for LspHandler {
+    fn default() -> Self {
+        let (diagnostics, _) = broadcast::channel(DIAGNOSTICS_CHANNEL_CAPACITY);
+        Self { diagnostics }
+    }
+}
+
+impl karet_jsonrpc::Handler for LspHandler {
+    type Framing = karet_jsonrpc::framing::content_length::ContentLength;
+    /// Every server notification fans out raw — the escape hatch that lets a
+    /// consumer handle server-specific methods (`language/status`,
+    /// `experimental/*`) the typed surface does not model.
+    type Push = RawNotification;
+
+    const PEER: &'static str = "language server";
+    // REQUEST_TIMEOUT / CLOSE_TIMEOUT / PUSH_CHANNEL_CAPACITY /
+    // OUTBOUND_CHANNEL_CAPACITY all take the trait defaults, which are exactly
+    // this crate's historical 30s / 5s / 64 / 256.
+
+    fn push_payload(&self, method: &str, params: &Value) -> Option<RawNotification> {
+        Some(RawNotification {
+            method: method.to_owned(),
+            params: params.clone(),
+        })
+    }
+
+    fn on_notification(&self, method: &str, params: Value) {
+        match method {
+            "textDocument/publishDiagnostics" => route_diagnostics(params, &self.diagnostics),
+            // Log/progress/telemetry notifications are safe to ignore headlessly.
+            _ => {
+                tracing::debug!(method, "raw-only server notification");
+            },
+        }
+    }
+
+    fn answer(&self, method: &str, params: &Value) -> Result<Value, karet_jsonrpc::ResponseError> {
+        answer_server_request(method, params)
+    }
 }
 
 /// A live JSON-RPC connection to one language server.
-pub(crate) struct Connection {
-    outbound: mpsc::Sender<Outbound>,
-    pending: Pending,
-    next_id: AtomicI64,
-    diagnostics: broadcast::Sender<PublishedDiagnostics>,
-    raw: broadcast::Sender<RawNotification>,
-    /// Set once either I/O task stops, so requests issued *after* the
-    /// connection died fail fast with [`LspError::Closed`] instead of sitting in
-    /// the pending map until they time out.
-    closed: Arc<AtomicBool>,
-    reader_task: JoinHandle<()>,
-    writer_task: JoinHandle<()>,
-}
+pub(crate) struct Connection(karet_jsonrpc::Connection<LspHandler>);
 
 impl Connection {
     /// Start the reader/writer tasks over an arbitrary I/O pair.
@@ -83,55 +112,21 @@ impl Connection {
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
     {
-        let (outbound, mut outbound_rx) = mpsc::channel::<Outbound>(OUTBOUND_CHANNEL_CAPACITY);
-        let (diagnostics, _) = broadcast::channel(DIAGNOSTICS_CHANNEL_CAPACITY);
-        let (raw, _) = broadcast::channel(RAW_CHANNEL_CAPACITY);
-        let pending: Pending = Arc::default();
-        let closed = Arc::new(AtomicBool::new(false));
-
-        let writer_closed = Arc::clone(&closed);
-        let writer_task = tokio::spawn(async move {
-            let mut write = write;
-            while let Some(item) = outbound_rx.recv().await {
-                let frame = match item {
-                    Outbound::Frame(frame) => frame,
-                    Outbound::Close => break,
-                };
-                if let Err(e) = codec::write_frame(&mut write, &frame).await {
-                    tracing::warn!(error = %e, "language-server write failed; closing writer");
-                    break;
-                }
-            }
-            writer_closed.store(true, Ordering::SeqCst);
-        });
-        let reader_task = tokio::spawn(read_loop(
-            BufReader::new(read),
-            Arc::clone(&pending),
-            diagnostics.clone(),
-            raw.clone(),
-            outbound.clone(),
-            Arc::clone(&closed),
-        ));
-
-        Self {
-            outbound,
-            pending,
-            next_id: AtomicI64::new(1),
-            diagnostics,
-            raw,
-            closed,
-            reader_task,
-            writer_task,
-        }
+        Self(karet_jsonrpc::Connection::start(
+            LspHandler::default(),
+            read,
+            write,
+        ))
     }
 
-    /// Issue `method` and await its typed result, bounded by [`REQUEST_TIMEOUT`].
+    /// Issue `method` and await its typed result, bounded by the default
+    /// request timeout.
     pub(crate) async fn request<P, T>(&self, method: &str, params: P) -> Result<T, LspError>
     where
         P: Serialize,
         T: DeserializeOwned,
     {
-        self.request_with(method, params, REQUEST_TIMEOUT).await
+        Ok(self.0.request(method, params).await?)
     }
 
     /// Issue `method` and await its typed result, bounded by `timeout`.
@@ -145,199 +140,35 @@ impl Connection {
         P: Serialize,
         T: DeserializeOwned,
     {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let frame = serde_json::to_vec(&jsonrpc::OutgoingRequest::new(id, method, params))
-            .map_err(|e| LspError::Protocol(format!("failed to encode {method}: {e}")))?;
-        let (tx, rx) = oneshot::channel();
-        {
-            let mut map = self.pending.lock().map_err(|_| LspError::Closed)?;
-            map.insert(id, tx);
-        }
-        // Checked *after* registering: if the reader exits first it drains the
-        // map (failing us via the dropped sender); if it exited before our
-        // insert, this flag is already set. Either way we never wait out the
-        // timeout on a dead connection.
-        if self.closed.load(Ordering::SeqCst) {
-            self.forget(id);
-            return Err(LspError::Closed);
-        }
-        if self.outbound.send(Outbound::Frame(frame)).await.is_err() {
-            self.forget(id);
-            return Err(LspError::Closed);
-        }
-        match tokio::time::timeout(timeout, rx).await {
-            Err(_elapsed) => {
-                self.forget(id);
-                Err(LspError::Timeout)
-            },
-            // The reader dropped the sender: the connection is gone.
-            Ok(Err(_recv)) => Err(LspError::Closed),
-            Ok(Ok(Err(rpc))) => Err(LspError::Server(format!(
-                "{method} failed with code {}: {}",
-                rpc.code, rpc.message
-            ))),
-            Ok(Ok(Ok(value))) => serde_json::from_value(value).map_err(|e| {
-                LspError::Protocol(format!("malformed {method} response from the server: {e}"))
-            }),
-        }
+        Ok(self.0.request_with(method, params, timeout).await?)
     }
 
     /// Send a notification (fire-and-forget).
     pub(crate) fn notify<P: Serialize>(&self, method: &str, params: P) -> Result<(), LspError> {
-        let frame = serde_json::to_vec(&jsonrpc::OutgoingNotification::new(method, params))
-            .map_err(|e| LspError::Protocol(format!("failed to encode {method}: {e}")))?;
-        self.outbound
-            .try_send(Outbound::Frame(frame))
-            .map_err(|error| match error {
-                mpsc::error::TrySendError::Closed(_) => LspError::Closed,
-                mpsc::error::TrySendError::Full(_) => {
-                    LspError::Protocol("language-server outbound queue is full".to_owned())
-                },
-            })
+        Ok(self.0.notify(method, params)?)
     }
 
     /// Subscribe to server-pushed diagnostics.
     pub(crate) fn diagnostics(&self) -> broadcast::Receiver<PublishedDiagnostics> {
-        self.diagnostics.subscribe()
+        self.0.handler().diagnostics.subscribe()
     }
 
     /// Subscribe to every server-initiated notification, undecoded.
     pub(crate) fn raw_notifications(&self) -> broadcast::Receiver<RawNotification> {
-        self.raw.subscribe()
+        self.0.subscribe()
     }
 
-    /// Drain the outbound queue (every already-enqueued frame is written and
-    /// flushed), then stop both I/O tasks. Bounded by [`SHUTDOWN_TIMEOUT`] in
-    /// case the peer stops consuming.
+    /// Drain the outbound queue, then stop both I/O tasks.
     pub(crate) async fn close(&mut self) {
-        let _ = self.outbound.send(Outbound::Close).await;
-        let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, &mut self.writer_task).await;
-        self.writer_task.abort(); // no-op when it drained cleanly
-        self.reader_task.abort();
-    }
-
-    /// Drop the pending entry for `id` (on timeout or send failure).
-    fn forget(&self, id: i64) {
-        if let Ok(mut map) = self.pending.lock() {
-            map.remove(&id);
-        }
-    }
-}
-
-impl Drop for Connection {
-    fn drop(&mut self) {
-        self.reader_task.abort();
-        self.writer_task.abort();
-    }
-}
-
-/// De-frame and route inbound messages until EOF or a framing error, then fail
-/// all in-flight requests by dropping their response senders.
-async fn read_loop<R>(
-    mut reader: BufReader<R>,
-    pending: Pending,
-    diagnostics: broadcast::Sender<PublishedDiagnostics>,
-    raw: broadcast::Sender<RawNotification>,
-    outbound: mpsc::Sender<Outbound>,
-    closed: Arc<AtomicBool>,
-) where
-    R: AsyncRead + Send + Unpin + 'static,
-{
-    loop {
-        match codec::read_frame(&mut reader).await {
-            Ok(Some(bytes)) => handle_frame(&bytes, &pending, &diagnostics, &raw, &outbound),
-            Ok(None) => break,
-            Err(e) => {
-                // A framing error means we lost message-boundary sync; the only
-                // safe recovery is to drop the connection.
-                tracing::warn!(error = %e, "language-server stream lost framing; closing");
-                break;
-            },
-        }
-    }
-    // Flag first, then drain: a request that raced past the flag check has
-    // already registered and is failed by the drain below.
-    closed.store(true, Ordering::SeqCst);
-    if let Ok(mut map) = pending.lock() {
-        map.clear(); // dropping the senders fails the awaiting requests
-    }
-}
-
-/// Route one de-framed message.
-fn handle_frame(
-    bytes: &[u8],
-    pending: &Pending,
-    diagnostics: &broadcast::Sender<PublishedDiagnostics>,
-    raw: &broadcast::Sender<RawNotification>,
-    outbound: &mpsc::Sender<Outbound>,
-) {
-    let value: Value = match serde_json::from_slice(bytes) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(error = %e, "dropping non-JSON message from the language server");
-            return;
-        },
-    };
-    match jsonrpc::classify(value) {
-        Some(Incoming::Response { id, result }) => {
-            let sender = pending.lock().ok().and_then(|mut map| map.remove(&id));
-            match sender {
-                Some(sender) => {
-                    let _ = sender.send(result); // requester may have timed out
-                },
-                None => {
-                    tracing::debug!(id, "dropping response to an unknown or abandoned request");
-                },
-            }
-        },
-        Some(Incoming::Request { id, method, params }) => {
-            let outcome = answer_server_request(&method, &params);
-            match serde_json::to_vec(&jsonrpc::OutgoingResponse::new(id, outcome)) {
-                Ok(frame) => {
-                    if outbound.try_send(Outbound::Frame(frame)).is_err() {
-                        tracing::warn!(
-                            method,
-                            "dropping server-request response: outbound queue full"
-                        );
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!(error = %e, method, "failed to encode a response");
-                },
-            }
-        },
-        Some(Incoming::Notification { method, params }) => {
-            // Every notification fans out raw first — the escape hatch that
-            // lets a consumer handle server-specific methods (`language/status`,
-            // `experimental/*`) the typed surface does not model.
-            //
-            // Cloning `params` deep-copies the payload, and a `publishDiagnostics`
-            // payload for a large file is not small, so only pay for it when
-            // somebody is listening. A subscriber only ever sees notifications
-            // sent after it subscribed, so skipping the send while the count is
-            // zero is indistinguishable from sending into no receivers.
-            if raw.receiver_count() > 0 {
-                let _ = raw.send(RawNotification {
-                    method: method.clone(),
-                    params: params.clone(),
-                }); // a receiver that dropped between the check and here is fine
-            }
-            match method.as_str() {
-                "textDocument/publishDiagnostics" => route_diagnostics(params, diagnostics),
-                // Log/progress/telemetry notifications are safe to ignore headlessly.
-                _ => {
-                    tracing::debug!(method, "raw-only server notification");
-                },
-            }
-        },
-        None => {
-            tracing::warn!("dropping a message with no JSON-RPC shape");
-        },
+        self.0.close().await;
     }
 }
 
 /// Answer the server→client requests a headless client must not leave hanging.
-fn answer_server_request(method: &str, params: &Value) -> Result<Value, ResponseError> {
+fn answer_server_request(
+    method: &str,
+    params: &Value,
+) -> Result<Value, karet_jsonrpc::ResponseError> {
     match method {
         // No configuration to offer: answer `null` per requested item.
         "workspace/configuration" => {
@@ -352,8 +183,8 @@ fn answer_server_request(method: &str, params: &Value) -> Result<Value, Response
         "client/registerCapability"
         | "client/unregisterCapability"
         | "window/workDoneProgress/create" => Ok(Value::Null),
-        _ => Err(ResponseError {
-            code: jsonrpc::METHOD_NOT_FOUND,
+        _ => Err(karet_jsonrpc::ResponseError {
+            code: karet_jsonrpc::METHOD_NOT_FOUND,
             message: format!("karet-lsp does not implement {method}"),
         }),
     }

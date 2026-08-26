@@ -1,4 +1,4 @@
-//! JSON-RPC 2.0 message envelopes, as LSP uses them.
+//! JSON-RPC 2.0 message envelopes.
 //!
 //! Outgoing messages are strongly typed serialize-only structs; incoming messages
 //! are classified from a parsed [`Value`] by shape — a `method` marks a request or
@@ -10,23 +10,49 @@ use serde::Serialize;
 use serde_json::Value;
 
 /// The protocol version stamped on every message.
-pub(crate) const JSONRPC_VERSION: &str = "2.0";
+pub const JSONRPC_VERSION: &str = "2.0";
 
 /// JSON-RPC error code for a method the receiving side does not implement.
-pub(crate) const METHOD_NOT_FOUND: i64 = -32601;
+pub const METHOD_NOT_FOUND: i64 = -32601;
 
-/// A request we send to the server.
+/// A JSON-RPC request identifier: a number or a string, per the spec.
+///
+/// This crate only ever *allocates* [`RequestId::Number`]s, but a nonconforming
+/// peer may answer with the id stringified, so both shapes are correlated.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(untagged)]
+pub enum RequestId {
+    /// A numeric id.
+    Number(i64),
+    /// A string id.
+    Text(String),
+}
+
+impl std::fmt::Display for RequestId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Number(id) => write!(f, "{id}"),
+            Self::Text(id) => f.write_str(id),
+        }
+    }
+}
+
+/// A request we send to the peer.
 #[derive(Serialize)]
-pub(crate) struct OutgoingRequest<'a, P: Serialize> {
+pub struct OutgoingRequest<'a, P: Serialize> {
     jsonrpc: &'static str,
-    pub(crate) id: i64,
-    pub(crate) method: &'a str,
-    pub(crate) params: P,
+    /// The id the peer must echo in its response.
+    pub id: RequestId,
+    /// The method being invoked.
+    pub method: &'a str,
+    /// The request parameters.
+    pub params: P,
 }
 
 impl<'a, P: Serialize> OutgoingRequest<'a, P> {
     /// Build a request envelope.
-    pub(crate) fn new(id: i64, method: &'a str, params: P) -> Self {
+    #[must_use]
+    pub fn new(id: RequestId, method: &'a str, params: P) -> Self {
         Self {
             jsonrpc: JSONRPC_VERSION,
             id,
@@ -36,17 +62,20 @@ impl<'a, P: Serialize> OutgoingRequest<'a, P> {
     }
 }
 
-/// A notification we send to the server.
+/// A notification we send to the peer.
 #[derive(Serialize)]
-pub(crate) struct OutgoingNotification<'a, P: Serialize> {
+pub struct OutgoingNotification<'a, P: Serialize> {
     jsonrpc: &'static str,
-    pub(crate) method: &'a str,
-    pub(crate) params: P,
+    /// The method being notified.
+    pub method: &'a str,
+    /// The notification parameters.
+    pub params: P,
 }
 
 impl<'a, P: Serialize> OutgoingNotification<'a, P> {
     /// Build a notification envelope.
-    pub(crate) fn new(method: &'a str, params: P) -> Self {
+    #[must_use]
+    pub fn new(method: &'a str, params: P) -> Self {
         Self {
             jsonrpc: JSONRPC_VERSION,
             method,
@@ -55,21 +84,29 @@ impl<'a, P: Serialize> OutgoingNotification<'a, P> {
     }
 }
 
-/// Our response to a server-initiated request. The `id` is echoed verbatim
-/// (servers may use string ids).
+/// Our response to a peer-initiated request. The `id` is echoed verbatim
+/// (peers may use string ids).
+///
+/// The asymmetry with [`OutgoingRequest::id`] is deliberate: ids the peer chose
+/// must be echoed **byte-identically**, whereas ids we allocate must be
+/// **matched**, which is what [`RequestId`] is for.
 #[derive(Serialize)]
-pub(crate) struct OutgoingResponse {
+pub struct OutgoingResponse {
     jsonrpc: &'static str,
-    pub(crate) id: Value,
+    /// The peer's request id, echoed verbatim.
+    pub id: Value,
+    /// The successful result, when the request succeeded.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) result: Option<Value>,
+    pub result: Option<Value>,
+    /// The failure, when the request failed.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) error: Option<ResponseError>,
+    pub error: Option<ResponseError>,
 }
 
 impl OutgoingResponse {
     /// A response carrying `outcome` for the request identified by `id`.
-    pub(crate) fn new(id: Value, outcome: Result<Value, ResponseError>) -> Self {
+    #[must_use]
+    pub fn new(id: Value, outcome: Result<Value, ResponseError>) -> Self {
         let (result, error) = match outcome {
             Ok(v) => (Some(v), None),
             Err(e) => (None, Some(e)),
@@ -85,33 +122,44 @@ impl OutgoingResponse {
 
 /// The `error` member of a response.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub(crate) struct ResponseError {
+pub struct ResponseError {
     /// The JSON-RPC error code.
-    pub(crate) code: i64,
+    pub code: i64,
     /// A human-readable message.
-    pub(crate) message: String,
+    pub message: String,
+}
+
+impl ResponseError {
+    /// The standard "no such method" failure for `method`.
+    #[must_use]
+    pub fn method_not_found(method: &str) -> Self {
+        Self {
+            code: METHOD_NOT_FOUND,
+            message: format!("method not found: {method}"),
+        }
+    }
 }
 
 /// A parsed incoming message.
 #[derive(Debug)]
-pub(crate) enum Incoming {
-    /// A response to a request we issued (ids we issue are always numeric).
+pub enum Incoming {
+    /// A response to a request we issued.
     Response {
         /// The request id being answered.
-        id: i64,
-        /// The result, or the server's error.
+        id: RequestId,
+        /// The result, or the peer's error.
         result: Result<Value, ResponseError>,
     },
-    /// A server-initiated request expecting a response.
+    /// A peer-initiated request expecting a response.
     Request {
-        /// The server's id, echoed back verbatim in our response.
+        /// The peer's id, echoed back verbatim in our response.
         id: Value,
         /// The request method.
         method: String,
         /// The request params (or `Null`).
         params: Value,
     },
-    /// A server notification.
+    /// A peer notification.
     Notification {
         /// The notification method.
         method: String,
@@ -121,7 +169,12 @@ pub(crate) enum Incoming {
 }
 
 /// Classify one incoming message; `None` when the value has no JSON-RPC shape.
-pub(crate) fn classify(mut value: Value) -> Option<Incoming> {
+///
+/// Response ids are accepted in both spec-legal shapes — a number that fits an
+/// `i64`, or a string. Any other id shape (a float, an object) still yields
+/// `None`, exactly as a shapeless value does.
+#[must_use]
+pub fn classify(mut value: Value) -> Option<Incoming> {
     let obj = value.as_object_mut()?;
     let id = obj.remove("id");
     let params = obj.remove("params").unwrap_or(Value::Null);
@@ -132,7 +185,11 @@ pub(crate) fn classify(mut value: Value) -> Option<Incoming> {
             None => Incoming::Notification { method, params },
         });
     }
-    let id = id?.as_i64()?;
+    let id = match id? {
+        Value::Number(number) => RequestId::Number(number.as_i64()?),
+        Value::String(text) => RequestId::Text(text),
+        _ => return None,
+    };
     let result = match obj.remove("error") {
         Some(err) => Err(ResponseError {
             code: err.get("code").and_then(Value::as_i64).unwrap_or_default(),
@@ -153,10 +210,16 @@ mod tests {
 
     use super::*;
 
+    type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
     #[test]
     fn serializes_request_notification_and_response() {
-        let req = serde_json::to_value(OutgoingRequest::new(7, "initialize", json!({"a": 1})))
-            .unwrap_or_default();
+        let req = serde_json::to_value(OutgoingRequest::new(
+            RequestId::Number(7),
+            "initialize",
+            json!({"a": 1}),
+        ))
+        .unwrap_or_default();
         assert_eq!(
             req,
             json!({"jsonrpc": "2.0", "id": 7, "method": "initialize", "params": {"a": 1}})
@@ -187,7 +250,32 @@ mod tests {
         );
     }
 
-    type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    #[test]
+    fn serializes_a_string_request_id() {
+        let req = serde_json::to_value(OutgoingRequest::new(
+            RequestId::Text("call-1".to_owned()),
+            "session/prompt",
+            Value::Null,
+        ))
+        .unwrap_or_default();
+        assert_eq!(
+            req,
+            json!({"jsonrpc": "2.0", "id": "call-1", "method": "session/prompt", "params": null})
+        );
+    }
+
+    #[test]
+    fn displays_both_id_shapes() {
+        assert_eq!(RequestId::Number(12).to_string(), "12");
+        assert_eq!(RequestId::Text("abc".to_owned()).to_string(), "abc");
+    }
+
+    #[test]
+    fn method_not_found_names_the_method() {
+        let error = ResponseError::method_not_found("window/showMessageRequest");
+        assert_eq!(error.code, METHOD_NOT_FOUND);
+        assert!(error.message.contains("window/showMessageRequest"));
+    }
 
     #[test]
     fn classifies_responses() -> TestResult {
@@ -196,7 +284,7 @@ mod tests {
         else {
             return Err("expected a response".into());
         };
-        assert_eq!(id, 4);
+        assert_eq!(id, RequestId::Number(4));
         assert_eq!(result.ok(), Some(json!({"ok": true})));
 
         let Some(Incoming::Response { id, result }) = classify(
@@ -204,7 +292,7 @@ mod tests {
         ) else {
             return Err("expected a response".into());
         };
-        assert_eq!(id, 5);
+        assert_eq!(id, RequestId::Number(5));
         let Err(e) = result else {
             return Err("expected an error result".into());
         };
@@ -237,7 +325,24 @@ mod tests {
     fn rejects_shapeless_values() {
         assert!(classify(json!("just a string")).is_none());
         assert!(classify(json!({"jsonrpc": "2.0"})).is_none());
-        // A string id on a *response* cannot be ours (we issue numeric ids).
-        assert!(classify(json!({"jsonrpc": "2.0", "id": "x", "result": 1})).is_none());
+        // Neither a number that overflows `i64` nor a structured id is legal.
+        assert!(classify(json!({"jsonrpc": "2.0", "id": 1.5, "result": 1})).is_none());
+        assert!(classify(json!({"jsonrpc": "2.0", "id": {"n": 1}, "result": 1})).is_none());
+    }
+
+    #[test]
+    fn classifies_a_string_id_response() -> TestResult {
+        // The id widening: a string-id response is a response, not a shapeless
+        // value. Correlation is exact `RequestId` equality, so a peer answering
+        // our numeric id as a string still goes unmatched — but it is now
+        // *classified*, which is what a string-id protocol (ACP) needs.
+        let Some(Incoming::Response { id, result }) =
+            classify(json!({"jsonrpc": "2.0", "id": "x", "result": 1}))
+        else {
+            return Err("expected a response".into());
+        };
+        assert_eq!(id, RequestId::Text("x".to_owned()));
+        assert_eq!(result.ok(), Some(json!(1)));
+        Ok(())
     }
 }

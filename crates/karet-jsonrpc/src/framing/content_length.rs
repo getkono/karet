@@ -1,11 +1,12 @@
-//! `Content-Length`-framed message codec (the LSP "base protocol").
+//! `Content-Length`-framed message codec (the LSP/DAP base protocol).
 //!
-//! Every LSP message travels as an HTTP-style header block terminated by a blank
+//! Every message travels as an HTTP-style header block terminated by a blank
 //! line, followed by exactly `Content-Length` bytes of JSON. This module frames
 //! and de-frames those messages over any [`AsyncBufRead`]/[`AsyncWrite`] pair, so
 //! the transport is testable in-memory (`tokio::io::duplex`) and the process layer
 //! stays a thin wrapper around child stdio.
 
+use std::future::Future;
 use std::io;
 
 use tokio::io::AsyncBufRead;
@@ -14,9 +15,37 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 
+use super::Framing;
 /// The largest message body we will read, guarding against a corrupt or hostile
 /// `Content-Length` allocating unbounded memory.
-pub const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+///
+/// Re-exported from [`super::MAX_MESSAGE_BYTES`] so the historical
+/// `karet_lsp::codec::MAX_MESSAGE_BYTES` path keeps resolving.
+pub use super::MAX_MESSAGE_BYTES;
+
+/// `Content-Length`-framed bodies: the LSP/DAP base protocol.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ContentLength;
+
+impl Framing for ContentLength {
+    type Error = CodecError;
+
+    fn read_frame<R>(
+        reader: &mut R,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, CodecError>> + Send
+    where
+        R: AsyncBufRead + Send + Unpin,
+    {
+        read_frame(reader)
+    }
+
+    fn write_frame<W>(writer: &mut W, body: &[u8]) -> impl Future<Output = io::Result<()>> + Send
+    where
+        W: AsyncWrite + Send + Unpin,
+    {
+        write_frame(writer, body)
+    }
+}
 
 /// Framing failures while reading a message.
 #[derive(Debug, thiserror::Error)]
@@ -40,6 +69,11 @@ pub enum CodecError {
 /// Headers are parsed case-insensitively; unknown headers (e.g. `Content-Type`)
 /// are ignored. Both `\r\n` and bare `\n` line endings are accepted. EOF in the
 /// middle of a message (headers or body) is a [`CodecError::Io`] error.
+///
+/// # Errors
+///
+/// Returns [`CodecError`] for a broken stream or a malformed, absent, or
+/// oversized `Content-Length` header.
 pub async fn read_frame<R>(reader: &mut R) -> Result<Option<Vec<u8>>, CodecError>
 where
     R: AsyncBufRead + Unpin,
@@ -86,6 +120,10 @@ where
 }
 
 /// Write `body` as one framed message and flush.
+///
+/// # Errors
+///
+/// Returns the underlying [`io::Error`] if the write or flush fails.
 pub async fn write_frame<W>(writer: &mut W, body: &[u8]) -> io::Result<()>
 where
     W: AsyncWrite + Unpin,
