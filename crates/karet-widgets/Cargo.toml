@@ -15,10 +15,13 @@ publish = false                       # karet-internal UI toolkit — not publis
 
 [features]
 default = []
-# The LSP hover/doc popup. Off by default: it is the only widget that needs
-# markdown rendering (and, transitively, the tree-sitter stack for fence
-# highlighting), so consumers of the plain widgets never pay for it.
-hover = ["dep:karet-markdown"]
+# Markdown rendering (and, transitively, the tree-sitter stack for fence
+# highlighting). Off by default so consumers of the plain widgets never pay for
+# it: the dialog's body wraps as plain text without it, and only gains
+# `DialogBody::Markdown` with it.
+markdown = ["dep:karet-markdown"]
+# The LSP hover/doc popup, whose markup is rendered as markdown.
+hover = ["markdown"]
 
 [dependencies]
 karet-core.workspace = true

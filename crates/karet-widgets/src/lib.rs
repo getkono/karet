@@ -5,13 +5,17 @@
 //! so do **not** depend on the producers (`karet-lsp`/`karet-vcs`). This crate
 //! also hosts the LSP [`completion`] popup, and (behind the `hover` feature) the
 //! LSP hover/doc popup, which render `karet-core` models supplied over the
-//! backend's event stream. The read-only file-view primitives (hex dump,
+//! backend's event stream. The [`menu`] and [`dialog`] widgets share one row
+//! model ([`choice`]), so a context menu and a modal confirmation navigate
+//! identically. The read-only file-view primitives (hex dump,
 //! terminal image, placeholder) live in `karet-fileview`.
 
 pub mod ansi;
 pub mod breadcrumbs;
+pub mod choice;
 pub mod columns;
 pub mod completion;
+pub mod dialog;
 pub mod file_tree;
 pub mod glyph;
 pub mod menu;
@@ -24,6 +28,8 @@ pub mod status;
 pub mod text;
 pub mod textfield;
 
+pub use choice::Choice;
+pub use choice::ChoiceList;
 pub use columns::Column;
 pub use columns::ColumnRow;
 pub use columns::ColumnStyle;
@@ -31,6 +37,8 @@ pub use columns::Columns;
 pub use columns::RowEmphasis;
 pub use completion::CompletionPopup;
 pub use completion::CompletionState;
+pub use dialog::Dialog;
+pub use dialog::DialogBody;
 pub use file_tree::FileTree;
 pub use file_tree::FileTreeRow;
 pub use file_tree::FileTreeState;
