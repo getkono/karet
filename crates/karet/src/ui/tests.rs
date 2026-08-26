@@ -9,6 +9,9 @@ use super::scm::commit_cursor_row;
 use super::*;
 use crate::app::CommitInput;
 
+#[path = "tests/save_mark.rs"]
+mod save_mark;
+
 #[test]
 fn scm_change_rows_show_colored_added_and_removed_counts() {
     use karet_session::ChangeSummary;

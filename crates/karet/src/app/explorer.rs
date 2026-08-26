@@ -50,7 +50,9 @@ impl App {
                 .map(|(path, since)| {
                     (
                         path.clone(),
-                        repository_spinner(since.elapsed_since(now), self.icon_style),
+                        Spinner::new(self.icon_style)
+                            .frame(since.elapsed_since(now))
+                            .to_string(),
                     )
                 }),
         );
@@ -65,7 +67,7 @@ impl App {
         }
         self.nested_repository_pending
             .values()
-            .map(|(_, since)| since.wake(now).unwrap_or(Duration::from_millis(100)))
+            .map(|(_, since)| since.wake(now).unwrap_or(Spinner::FRAME_INTERVAL))
             .min()
     }
 
@@ -635,14 +637,4 @@ fn repository_summary_label(summary: RepositorySummary, icons: IconStyle) -> Str
         parts.push(format!("-{}", summary.removed));
     }
     parts.join(" ")
-}
-
-fn repository_spinner(elapsed: Duration, icons: IconStyle) -> String {
-    let frame = usize::try_from(elapsed.as_millis() / 100).unwrap_or(usize::MAX);
-    let frames: &[&str] = if icons == IconStyle::Ascii {
-        &["-", "\\", "|", "/"]
-    } else {
-        &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-    };
-    frames[frame % frames.len()].to_string()
 }
