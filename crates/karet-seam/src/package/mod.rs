@@ -284,7 +284,7 @@ fn seed_python(index: &mut SeamIndex, package: &Discovered, root_id: SeamId) -> 
         let parent = if module.segments.is_empty() {
             root_id
         } else {
-            add_module_node(index, root_id, package, &module.segments, &module.file)
+            add_module_node(index, root_id, &module.segments, &module.file)
         };
         queue.extend(pending_for(module.file, parent, false));
     }
@@ -309,7 +309,6 @@ fn pending_for(file: PathBuf, parent: SeamId, crate_root: bool) -> Option<Pendin
 fn add_module_node(
     index: &mut SeamIndex,
     root_id: SeamId,
-    package: &Discovered,
     segments: &[String],
     file: &Path,
 ) -> SeamId {
@@ -343,7 +342,6 @@ fn add_module_node(
         membership: ConfigMembership::Active,
         provisional: false,
     });
-    let _ = package;
     id
 }
 
