@@ -60,9 +60,11 @@ On a Markdown file, `Ctrl+K V` (or "Markdown: Toggle Preview to the Side" in the
 command palette) opens a rendered preview in a pane to the right. It re-renders as
 you type, and the two panes scroll together — whichever one has focus leads.
 
-- **Seam view** (`Ctrl+K S`) — read a crate by its *seams*, not its files: one
+- **Seam view** (`Ctrl+K S`) — read a repository by its *seams*, not its files: one
   navigable tree of what's exposed, what can be swapped, what varies before compile,
-  what crosses the package line, and where that's dangerous. The same query language
+  what crosses the package line, and where that's dangerous. A workspace, nested crates,
+  and Python packages beside them all become one tree with a root per package; open it
+  somewhere narrower with **Seam: Open Seam View at…**. The same query language
   drives the filter box and `karet --seam-query`, so what you narrow to by hand is
   exactly what a script can ask for. See [`docs/seam.md`](docs/seam.md).
 
