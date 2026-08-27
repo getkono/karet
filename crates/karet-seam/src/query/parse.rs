@@ -274,9 +274,6 @@ fn edit_distance(a: &str, b: &str) -> usize {
     previous.last().copied().unwrap_or(0)
 }
 
-/// One language's subtypes for a lens.
-#[allow(dead_code, reason = "unused when no language feature is enabled")]
-
 /// Every facet subtype *any* registered language can emit, for `<lens>:<subtype>`
 /// suggestions and validation.
 ///

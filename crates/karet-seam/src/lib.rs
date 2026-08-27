@@ -38,6 +38,7 @@
 //! configuration set. Nothing structural ever waits on anything semantic.
 
 pub mod config;
+pub mod contribution;
 pub mod discover;
 pub mod edge;
 pub mod extract;
@@ -47,6 +48,7 @@ pub mod lang;
 pub mod model;
 pub mod modules;
 pub mod package;
+pub mod parallel;
 pub mod query;
 pub mod regroup;
 pub mod rollup;
@@ -56,6 +58,10 @@ pub use config::CfgEnv;
 pub use config::CfgPredicate;
 pub use config::Configuration;
 pub use config::Truth;
+pub use contribution::CachedModule;
+pub use contribution::CachedNode;
+pub use contribution::FileContribution;
+pub use contribution::FileStamp;
 pub use discover::Discovered;
 pub use discover::DiscoveryOptions;
 pub use discover::PackageKind;
@@ -97,6 +103,10 @@ pub use package::PackageError;
 pub use package::index_package;
 pub use package::index_workspace;
 pub use package::reindex_file;
+pub use parallel::IndexObserver;
+pub use parallel::IndexedPackage;
+pub use parallel::Unobserved;
+pub use parallel::index_workspace_with;
 pub use query::Query;
 pub use query::QueryError;
 pub use query::QueryResult;

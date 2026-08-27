@@ -27,7 +27,6 @@ use karet_treesitter::LanguageId;
 use karet_treesitter::ParserPool;
 
 use crate::discover::Discovered;
-use crate::discover::DiscoveryOptions;
 use crate::discover::PackageKind;
 use crate::extract::ExtractError;
 use crate::extract::extract_file;
@@ -82,13 +81,13 @@ impl Default for IndexOptions {
 }
 
 /// One file waiting to be indexed, and the module node it belongs to.
-struct Pending {
-    file: PathBuf,
-    parent: SeamId,
+pub(crate) struct Pending {
+    pub(crate) file: PathBuf,
+    pub(crate) parent: SeamId,
     /// Fixed when the file is enqueued, not guessed when it is read: an index may hold
     /// Rust and Python at once, so there is no one grammar to fall back on.
-    language: LanguageId,
-    crate_root: bool,
+    pub(crate) language: LanguageId,
+    pub(crate) crate_root: bool,
 }
 
 /// Index the package rooted at `root`, following module declarations across files.
@@ -149,54 +148,7 @@ pub fn index_package(root: &Path, options: IndexOptions) -> Result<SeamIndex, Pa
 /// is found but cannot be read is represented in the index rather than failing the whole
 /// call, since one unreadable crate is no reason to answer nothing about the rest.
 pub fn index_workspace(root: &Path, options: IndexOptions) -> Result<SeamIndex, PackageError> {
-    let packages = crate::discover::discover(root, DiscoveryOptions::default());
-    if packages.is_empty() {
-        return Err(PackageError::NothingToIndex(root.to_path_buf()));
-    }
-
-    let mut index = SeamIndex::new();
-    let mut pool = ParserPool::new();
-    // Shared across packages: a file reachable from two roots is indexed once, and the cap
-    // is a budget for the whole index rather than a per-package allowance.
-    let mut walk = Walk::new();
-    // One list for the whole workspace, resolved once at the end. Resolution never
-    // crosses a package boundary, so pooling them costs nothing and keeps the ordering
-    // the extraction produced.
-    let mut ownership = Vec::new();
-
-    for package in &packages {
-        if walk.scanned >= options.max_files {
-            index.mark_truncated(walk.scanned);
-            break;
-        }
-        let root_id = add_package_node(&mut index, package);
-        let entry_points = if package.kind == PackageKind::Cargo {
-            let found = crate_roots(&package.root);
-            if found.is_empty() {
-                // The package keeps its root. Dropping it would say the workspace has no
-                // such member; an empty root would say the member holds nothing. Neither
-                // is what happened — its entry point is somewhere we do not look yet, and
-                // the paths tried say exactly that.
-                index.mark_module_unresolved(root_id, crate_root_candidates(&package.root));
-            }
-            found
-        } else {
-            Vec::new()
-        };
-        let mut queue = seed::seed(&mut index, package, root_id, entry_points);
-        drain(
-            &mut index,
-            &mut pool,
-            &mut queue,
-            &mut walk,
-            options,
-            &mut ownership,
-        );
-    }
-
-    crate::regroup::apply(&mut index, ownership);
-    index.recompute_rollups();
-    Ok(index)
+    crate::parallel::index_workspace_with(root, options, &crate::parallel::Unobserved)
 }
 
 /// What one walk has already done, shared across every package in an index.
@@ -346,7 +298,7 @@ fn unique_root_segment(index: &SeamIndex, name: &str) -> SeamSegment {
 /// The entry points a Cargo package conventionally has, whether or not they exist.
 ///
 /// Recorded as evidence when none of them do, so "we looked here" is answerable.
-fn crate_root_candidates(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn crate_root_candidates(root: &Path) -> Vec<PathBuf> {
     CRATE_ROOTS
         .iter()
         .map(|relative| root.join(relative))
@@ -357,7 +309,7 @@ fn crate_root_candidates(root: &Path) -> Vec<PathBuf> {
 ///
 /// Conventional locations only, for now — the manifest tier supplies the full declared
 /// target set, including the ones a manifest relocates with an explicit `path`.
-fn crate_roots(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn crate_roots(root: &Path) -> Vec<PathBuf> {
     crate_root_candidates(root)
         .into_iter()
         .filter(|candidate| candidate.is_file())
@@ -405,7 +357,7 @@ pub fn reindex_file(
     Ok(())
 }
 
-mod seed;
+pub(crate) mod seed;
 
 #[cfg(test)]
 mod tests;

@@ -141,7 +141,7 @@ fn seed_file_tree(index: &mut SeamIndex, package: &Discovered, root_id: SeamId) 
 }
 
 /// The queue a discovered package starts from, by its ecosystem's rules.
-pub(super) fn seed(
+pub(crate) fn seed(
     index: &mut SeamIndex,
     package: &Discovered,
     root_id: SeamId,

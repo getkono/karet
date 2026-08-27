@@ -311,6 +311,10 @@ fn line_opening_body(text: &str, start: usize, body: usize) -> Option<usize> {
 /// through it, and so does subtype lookup — which is what lets a facet subtype
 /// deserialize back to the `&'static str` it was written from, rather than allocating.
 #[must_use]
+#[allow(
+    clippy::vec_init_then_push,
+    reason = "each push is feature-gated, so there is no literal to build this from"
+)]
 pub fn registered() -> Vec<&'static dyn SeamLanguage> {
     let mut out: Vec<&'static dyn SeamLanguage> = Vec::new();
     #[cfg(feature = "lang-rust")]
@@ -511,6 +515,10 @@ mod tests {
 
         let mut unique = all.clone();
         unique.dedup();
-        assert_eq!(all.len(), unique.len(), "two languages naming the same subtype list it once");
+        assert_eq!(
+            all.len(),
+            unique.len(),
+            "two languages naming the same subtype list it once"
+        );
     }
 }

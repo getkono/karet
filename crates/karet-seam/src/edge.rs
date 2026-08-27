@@ -176,6 +176,16 @@ impl EdgeStore {
         &self.edges
     }
 
+    /// Take every edge, consuming the store.
+    ///
+    /// Merging one index into another re-assigns node ids, so the edges are rebuilt
+    /// rather than kept — this hands them over without cloning what is about to be
+    /// dropped.
+    #[must_use]
+    pub fn into_all(self) -> Vec<Edge> {
+        self.edges
+    }
+
     /// How many edges are stored.
     #[must_use]
     pub fn len(&self) -> usize {

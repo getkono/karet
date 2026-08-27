@@ -282,3 +282,20 @@ fn every_module_across_the_whole_workspace_resolves_to_a_file() {
         "unresolved across the workspace: {unresolved:?}"
     );
 }
+
+/// Not an assertion — a stopwatch. `cargo test --release -- --ignored --nocapture bench`
+#[test]
+#[ignore = "timing, not a correctness check"]
+fn bench_cold_index_of_this_repository() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .unwrap_or(std::path::Path::new("."))
+        .to_path_buf();
+    let start = std::time::Instant::now();
+    let index = karet_seam::index_workspace(&root, karet_seam::IndexOptions::default());
+    let elapsed = start.elapsed();
+    let nodes = index.as_ref().map(karet_seam::SeamIndex::len).unwrap_or(0);
+    let files = index.as_ref().map(|i| i.files().len()).unwrap_or(0);
+    println!("COLD {elapsed:?} — {nodes} nodes across {files} files");
+}
