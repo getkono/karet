@@ -188,6 +188,7 @@ async fn event_loop(
                 }
             } => {},
         }
+        app.tick_drag_autoscroll();
         app.notifications.expire(Instant::now());
         app.expire_operation_blocker(Instant::now());
         app.fire_auto_save(Instant::now());

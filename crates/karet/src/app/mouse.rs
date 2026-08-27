@@ -216,12 +216,12 @@ impl App {
             return;
         }
         // An in-progress text selection captures motion until the button is released.
-        if self.editor_selecting {
+        if self.editor_drag.is_some() {
             match mouse.kind {
                 MouseEventKind::Drag(MouseButton::Left) => {
                     self.drag_select_to(mouse.column, mouse.row);
                 },
-                MouseEventKind::Up(MouseButton::Left) => self.editor_selecting = false,
+                MouseEventKind::Up(MouseButton::Left) => self.editor_drag = None,
                 _ => {},
             }
             return;

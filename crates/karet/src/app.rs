@@ -11,6 +11,7 @@ mod debugging;
 mod definition;
 mod deps;
 mod diffs;
+mod drag;
 mod editor;
 mod explorer;
 pub(crate) mod github;
@@ -81,6 +82,8 @@ use crossterm::event::PopKeyboardEnhancementFlags;
 use crossterm::event::PushKeyboardEnhancementFlags;
 use crossterm::event::{self};
 use crossterm::terminal::SetTitle;
+pub(crate) use drag::DragGranularity;
+pub(crate) use drag::EditorDrag;
 pub(crate) use hit::*;
 use karet_core::BlameAttribution;
 use karet_core::BytePos;
@@ -482,8 +485,8 @@ pub struct App {
     /// The focused commit view's signature-badge rect (screen coords) from the last
     /// frame, for double-click hit-testing. `None` when no badge is on screen.
     pub(crate) commit_badge_rect: Option<Rect>,
-    /// Whether a mouse text-selection drag is in progress in the editor.
-    pub(crate) editor_selecting: bool,
+    /// The editor's in-progress pointer selection drag, if one is under way.
+    pub(crate) editor_drag: Option<drag::EditorDrag>,
     /// The live pointer selection on a read-only surface (diff, viewer), if any.
     pub(crate) surface_selection: Option<select::SurfaceSelection>,
     /// The surface currently capturing a selection drag, if one is under way.
