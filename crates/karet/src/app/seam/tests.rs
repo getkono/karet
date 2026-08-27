@@ -149,7 +149,7 @@ fn rerooting_narrows_to_a_subtree_and_widening_returns_to_it() {
     state.move_column(1);
     state.move_row(0); // pkg::model
 
-    assert!(state.reroot());
+    assert_eq!(state.reroot(), Reroot::Narrowed);
     assert_eq!(state.root_set(), ["pkg::model"]);
     assert_eq!(state.narrow.len(), 1);
 
@@ -164,8 +164,81 @@ fn a_leaf_cannot_be_rerooted() {
     let mut state = view();
     state.select_path("pkg::model::Symbol");
     // Rerooting onto something with nothing under it would produce an empty view.
-    assert!(!state.reroot());
+    assert_eq!(state.reroot(), Reroot::Refused);
     assert!(state.narrow.is_empty());
+}
+
+#[test]
+fn pressing_enter_twice_never_stacks_the_same_scope_twice() {
+    let mut state = view();
+    state.select_path("pkg::model");
+    assert_eq!(state.reroot(), Reroot::Narrowed);
+
+    // Back onto the lone root row, where the second Enter used to land the reader.
+    state.focused_column = 0;
+    state.move_row(0);
+    assert_eq!(state.selected_id(), Some("pkg::model"));
+
+    assert_eq!(state.reroot(), Reroot::Descended);
+    // The breadcrumb is what the reader watched grow, so that is what this pins.
+    let crumbs: Vec<String> = state.narrow.iter().map(Narrow::label).collect();
+    assert_eq!(crumbs, ["model"]);
+}
+
+#[test]
+fn rerooting_lands_focus_inside_the_new_subtree() {
+    let mut state = view();
+    state.select_path("pkg::model");
+    assert_eq!(state.reroot(), Reroot::Narrowed);
+    // Narrowing and then leaving the reader on the row they came from looks inert.
+    assert_eq!(state.focused_column, 1);
+    assert_eq!(state.selected_id(), Some("pkg::model::Symbol"));
+}
+
+#[test]
+fn enter_on_the_current_root_steps_into_it_rather_than_narrowing() {
+    let mut state = view();
+    state.select_path("pkg::model");
+    assert_eq!(state.reroot(), Reroot::Narrowed);
+    state.focused_column = 0;
+    state.move_row(0);
+
+    assert_eq!(state.reroot(), Reroot::Descended);
+    assert_eq!(state.focused_column, 1);
+    assert_eq!(state.narrow.len(), 1);
+}
+
+#[test]
+fn the_sole_root_of_a_single_package_index_is_never_pushed_as_a_narrow() {
+    let mut state = view();
+    state.move_row(0); // pkg, the only root
+    // Rerooting the one thing on offer removes nothing from view; it only adds a crumb.
+    assert_eq!(state.reroot(), Reroot::Descended);
+    assert!(state.narrow.is_empty());
+    assert_eq!(state.focused_column, 1);
+}
+
+#[test]
+fn one_backspace_undoes_one_enter() {
+    let mut state = view();
+    state.move_row(0); // pkg
+    assert_eq!(state.reroot(), Reroot::Descended); // steps into pkg, no crumb
+    assert_eq!(state.reroot(), Reroot::Narrowed); // pkg::model narrows for real
+    assert_eq!(state.reroot(), Reroot::Refused); // pkg::model::Symbol is a leaf
+
+    assert_eq!(state.narrow.len(), 1);
+    assert!(state.widen());
+    assert!(!state.widen());
+}
+
+#[test]
+fn a_pivot_onto_the_current_root_set_is_refused() {
+    let mut state = view();
+    state.select_path("pkg::model");
+    assert_eq!(state.reroot(), Reroot::Narrowed);
+    // Following an edge back to where the reader already stands moves nothing.
+    assert!(!state.pivot("implements", "pkg::model", vec!["pkg::model".to_owned()]));
+    assert_eq!(state.narrow.len(), 1);
 }
 
 #[test]
@@ -202,7 +275,7 @@ fn a_pivot_reaching_nothing_in_this_tree_does_not_narrow() {
 fn narrows_stack_and_unwind_one_at_a_time() {
     let mut state = view();
     state.select_path("pkg::model");
-    assert!(state.reroot());
+    assert_eq!(state.reroot(), Reroot::Narrowed);
     state.move_row(0);
     assert_eq!(state.narrow.len(), 1);
 
@@ -321,7 +394,7 @@ fn a_rename_costs_that_node_its_place_and_nothing_else() {
 fn a_narrow_whose_root_vanished_is_dropped_rather_than_left_dangling() {
     let mut state = view();
     state.select_path("pkg::model");
-    assert!(state.reroot());
+    assert_eq!(state.reroot(), Reroot::Narrowed);
 
     let without_model = vec![
         node("pkg", None, &["pkg::net"], [2, 1, 0, 0, 1]),
@@ -348,7 +421,7 @@ fn selecting_a_path_walks_the_columns_down_to_it() {
 fn selecting_something_outside_the_current_root_is_refused() {
     let mut state = view();
     state.select_path("pkg::model");
-    assert!(state.reroot());
+    assert_eq!(state.reroot(), Reroot::Narrowed);
     let before = state.selection.clone();
     // `pkg::net` is not under the current root, so the walk finds no anchor.
     state.select_path("pkg::net");
@@ -361,7 +434,7 @@ fn selecting_something_outside_the_current_root_is_refused() {
 fn ui_state_serializes_to_the_query_that_would_reproduce_it() {
     let mut state = view();
     state.select_path("pkg::model");
-    state.reroot();
+    let _ = state.reroot();
     state.toggle_lens("api");
     state.toggle_lens("hazard");
     state.query = "Symbol".to_owned();

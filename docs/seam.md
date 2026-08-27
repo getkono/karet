@@ -101,7 +101,7 @@ decoding pictograms.
 |---|---|
 | `↑` `↓` / `k` `j` | move within a column |
 | `←` `→` / `h` `l` | move between columns |
-| `Enter` | reroot at the selection (or open its source, if it has no children) |
+| `Enter` | narrow to the selection and step into it — on the current root, just step in; on a leaf, open its source |
 | `Backspace` / `-` | step back out of the last narrowing |
 | `Tab` | move focus between the spine and the facet pane |
 | `Enter` (facet pane) | pivot — reroot on the far end of the selected edge |
@@ -114,7 +114,10 @@ decoding pictograms.
 
 **Every narrow is reversible, and the way back is visible.** Rerooting and pivoting push
 onto one stack that the breadcrumb renders, and the footer shows how many steps remain. A
-narrowing you cannot undo is a trap; one you can undo but cannot see is a maze.
+narrowing you cannot undo is a trap; one you can undo but cannot see is a maze. A narrow
+that would not change the root set is refused rather than recorded, so the breadcrumb only
+ever shows steps that actually moved the view — and one `Backspace` always undoes exactly
+one `Enter`.
 
 ## Identity
 

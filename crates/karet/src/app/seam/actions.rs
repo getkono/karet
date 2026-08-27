@@ -13,6 +13,7 @@ use karet_session::api::SeamNodeView;
 use karet_session::api::SeamQueryError;
 use karet_session::api::SeamSummary;
 
+use super::Reroot;
 use super::SeamFocus;
 use super::SeamViewState;
 use crate::app::App;
@@ -428,12 +429,11 @@ impl App {
             self.submit_seam_query();
             return;
         }
-        if state.reroot() {
-            self.request_seam_node();
-        } else {
+        match state.reroot() {
+            Reroot::Narrowed | Reroot::Descended => self.request_seam_node(),
             // Nothing to descend into, so Enter falls through to the escape hatch
             // rather than doing nothing at all.
-            self.open_seam_selection();
+            Reroot::Refused => self.open_seam_selection(),
         }
     }
 
@@ -540,8 +540,12 @@ impl App {
             return;
         };
         let from = state.selected_id().unwrap_or_default().to_owned();
-        if state.pivot(&edge.kind, &from, vec![target]) {
+        if state.pivot(&edge.kind, &from, vec![target.clone()]) {
             self.request_seam_node();
+        } else {
+            // Refusing silently would look like a dropped keypress; the reader is already
+            // looking at what the pivot would have shown them.
+            self.status = Some(format!("seam: already scoped to {target}"));
         }
     }
 }

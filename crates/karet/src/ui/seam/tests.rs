@@ -263,8 +263,12 @@ fn a_query_error_is_shown_with_its_suggestions() {
 #[test]
 fn the_reversal_path_is_visible_once_narrowed() {
     let mut state = view();
-    state.select_path("demo");
-    state.reroot();
+    // Narrowed directly: what this pins is that a narrowed view shows the way back, not
+    // how one narrows — and the fixture's sole root is no longer rerootable onto itself.
+    state
+        .narrow
+        .push(crate::app::seam::Narrow::Scope("demo".to_owned()));
+    state.move_row(0);
     let rendered = text(&render(&mut state, 120, 20));
     // Reversible is not enough — the way back has to be on screen.
     assert!(rendered.contains("widen"), "{rendered}");

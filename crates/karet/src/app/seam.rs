@@ -79,6 +79,21 @@ impl Narrow {
     }
 }
 
+/// What pressing Enter on a spine row did.
+///
+/// Three outcomes rather than a bool, because the caller's fallback differs: nothing to
+/// descend into means open the source, whereas *already being* the root means step in.
+/// Collapsing those two into `false` is what let Enter push a crumb per keystroke.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reroot {
+    /// The view narrowed to the selection, and focus stepped into it.
+    Narrowed,
+    /// The selection already *is* the current root, so focus stepped in without narrowing.
+    Descended,
+    /// There is nothing beneath the selection to narrow to.
+    Refused,
+}
+
 /// The Seam view's whole state.
 pub(crate) struct SeamViewState {
     /// Every node, by identity.
@@ -336,23 +351,37 @@ impl SeamViewState {
     }
 
     /// Reroot at the current selection, pushing onto the narrow stack.
-    pub(crate) fn reroot(&mut self) -> bool {
+    ///
+    /// A narrow that would not change the root set is not a narrow. The current scope is
+    /// itself the only row of column zero, so pushing it again would grow the breadcrumb
+    /// (`pkg > model > model`) while the view stood still — one extra `Backspace` owed per
+    /// stray keystroke, and a trail claiming steps that were never taken. Stepping into
+    /// the subtree is what the reader meant by the keypress, and it costs no crumb.
+    pub(crate) fn reroot(&mut self) -> Reroot {
         let Some(id) = self.selected_id().map(str::to_owned) else {
-            return false;
+            return Reroot::Refused;
         };
         if self
             .nodes
             .get(&id)
             .is_none_or(|node| node.children.is_empty())
         {
-            return false;
+            return Reroot::Refused;
+        }
+        if self.root_set() == [id.clone()] {
+            self.move_column(1);
+            return Reroot::Descended;
         }
         self.narrow.push(Narrow::Scope(id));
         self.selection.clear();
         self.focused_column = 0;
         self.offsets.clear();
         self.move_row(0);
-        true
+        // Land inside what was just narrowed to. Narrowing and then leaving the reader on
+        // the one row they came from is what made Enter look inert and invited the second
+        // press that used to cost them a crumb.
+        self.move_column(1);
+        Reroot::Narrowed
     }
 
     /// Reroot on the far end of an edge.
@@ -362,6 +391,11 @@ impl SeamViewState {
             .filter(|id| self.nodes.contains_key(id))
             .collect();
         if reachable.is_empty() {
+            return false;
+        }
+        // A pivot onto the set already on screen records a step that moved nothing, and
+        // reverses to nothing — the same trap a repeated reroot used to set.
+        if reachable == self.root_set() {
             return false;
         }
         // A pivot pushes onto the same stack as a scope narrow, so it reverses the same
