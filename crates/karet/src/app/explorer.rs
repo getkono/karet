@@ -311,6 +311,9 @@ impl App {
             .map(|row| row.path.clone())
             .collect();
         let mut requested = 0usize;
+        // Reset before submitting, matching paste: the running count belongs to
+        // this batch, not the one before it.
+        self.explorer_paste_done = 0;
         for source in paths {
             let Some(parent) = source.parent() else {
                 continue;
@@ -326,7 +329,6 @@ impl App {
             requested += 1;
         }
         if requested > 0 {
-            self.explorer_paste_done = 0;
             self.status = Some(format!("duplicating {requested} item(s)…"));
         }
     }

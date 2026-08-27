@@ -57,9 +57,13 @@ async fn open(
                 .stdin
                 .take()
                 .ok_or_else(|| eyre!("the backend command accepted no stdin"))?;
-            // The child is deliberately not awaited: it lives exactly as long as
-            // the streams do, and `kill_on_drop` ends it when the editor exits.
-            std::mem::forget(child);
+            // The child must outlive this call but die with the editor, so it is
+            // parked on a task that holds it until the process ends. Forgetting it
+            // would leak the handle and defeat `kill_on_drop`, leaving an orphaned
+            // `ssh` behind every session.
+            tokio::spawn(async move {
+                let _ = child.wait().await;
+            });
             connect(tokio::io::BufReader::new(stdout), stdin).await
         },
     }
