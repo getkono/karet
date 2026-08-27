@@ -57,11 +57,15 @@ pub(super) fn directory(
         .into_iter()
         .map(|(path, is_dir, is_symlink)| {
             let ignored = respect_gitignore && !visible.contains(&path);
+            // A nested repository is badged by the tree, and only this side can
+            // see the `.git` that makes it one.
+            let is_repository = is_dir && path.join(".git").exists();
             DirEntry {
                 path,
                 is_dir,
                 is_symlink,
                 ignored,
+                is_repository,
             }
         })
         .collect();

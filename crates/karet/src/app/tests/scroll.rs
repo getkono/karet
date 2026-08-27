@@ -292,6 +292,8 @@ fn dragging_the_explorer_thumb_scrolls_the_tree_without_it_snapping_back() {
     let mut app = App::new(dir, Vec::new(), Vec::new(), false);
     app.sidebar_visible = true;
     app.sidebar_panel = SidebarPanel::Explorer;
+    // The tree renders listings it has been given.
+    build_explorer_from_disk(&mut app);
     screen(&mut app, 60, 20);
 
     let hit = app
@@ -327,6 +329,8 @@ fn the_sidebar_track_scrolls_the_sidebar_and_not_the_editor() {
     app.sidebar_visible = true;
     app.sidebar_panel = SidebarPanel::Explorer;
     app.push_tab(text_tab("tall.rs", &"line\n".repeat(200)));
+    // The tree renders listings it has been given.
+    build_explorer_from_disk(&mut app);
     screen(&mut app, 60, 20);
 
     let track = app

@@ -1,9 +1,11 @@
+use karet_session::api::PathMutation;
+
 use super::*;
 
 impl App {
     /// Start background status reads for nested repository rows not already cached.
     pub(crate) fn request_nested_repository_statuses(&mut self) {
-        self.explorer.ensure_built(&self.root);
+        self.build_explorer();
         let paths: Vec<PathBuf> = self
             .explorer
             .rows()
@@ -94,7 +96,7 @@ impl App {
         self.sidebar_panel = SidebarPanel::Explorer;
         self.sidebar_visible = true;
         self.focus = Focus::Sidebar;
-        self.explorer.ensure_built(&self.root);
+        self.build_explorer();
         self.explorer.begin_new(folder);
     }
 
@@ -104,14 +106,14 @@ impl App {
         if self.sidebar_panel != SidebarPanel::Explorer {
             return;
         }
-        self.explorer.ensure_built(&self.root);
+        self.build_explorer();
         self.explorer.begin_rename();
     }
 
     /// Hard-reload the explorer tree and re-request VCS status — a bullet-proof
     /// refresh that drops every cached row and re-reads the filesystem.
     pub(super) fn explorer_refresh(&mut self) {
-        self.explorer.rebuild(&self.root);
+        self.rebuild_explorer();
         self.nested_repository_status.clear();
         let pending: Vec<RequestId> = self.nested_repository_pending.keys().copied().collect();
         self.nested_repository_pending.clear();
@@ -127,48 +129,29 @@ impl App {
         let Some(pending) = self.explorer.take_edit() else {
             return;
         };
-        match &pending {
+        let edit = Box::new(pending.clone());
+        match pending {
             PendingEdit::Create { path, folder } => {
-                let result = if *folder {
-                    std::fs::create_dir_all(path)
+                let mutation = if folder {
+                    PathMutation::CreateDirectory { path: path.clone() }
                 } else {
-                    if let Some(parent) = path.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                    std::fs::File::create(path).map(|_| ())
+                    PathMutation::CreateFile { path: path.clone() }
                 };
-                match result {
-                    Ok(()) => {
-                        self.explorer.rebuild(&self.root);
-                        self.send_command(SessionCommand::RefreshVcs);
-                        if !*folder {
-                            self.open_path(path);
-                        }
-                    },
-                    Err(e) => {
-                        self.explorer.restore_edit(&pending);
-                        self.notify(
-                            Severity::Error,
-                            NotificationKind::Io,
-                            format!("create failed: {e}"),
-                        );
-                    },
-                }
+                let follow_up = if folder {
+                    crate::app::explorer_mutate::FollowUp::CreatedFolder { edit }
+                } else {
+                    crate::app::explorer_mutate::FollowUp::CreatedFile { path, edit }
+                };
+                self.mutate_path(mutation, follow_up);
             },
-            PendingEdit::Rename { from, to } => match std::fs::rename(from, to) {
-                Ok(()) => {
-                    self.retarget_open_paths(from, to);
-                    self.explorer.rebuild(&self.root);
-                    self.send_command(SessionCommand::RefreshVcs);
-                },
-                Err(e) => {
-                    self.explorer.restore_edit(&pending);
-                    self.notify(
-                        Severity::Error,
-                        NotificationKind::Io,
-                        format!("rename failed: {e}"),
-                    );
-                },
+            PendingEdit::Rename { from, to } => {
+                self.mutate_path(
+                    PathMutation::Rename {
+                        from: from.clone(),
+                        to: to.clone(),
+                    },
+                    crate::app::explorer_mutate::FollowUp::Renamed { from, to, edit },
+                );
             },
         }
     }
@@ -187,7 +170,7 @@ impl App {
 
     /// Store the current explorer selection as the source for a future paste.
     pub(super) fn explorer_store_files(&mut self, op: ExplorerFileOp) {
-        self.explorer.ensure_built(&self.root);
+        self.build_explorer();
         let paths = self.explorer_selected_paths();
         if paths.is_empty() {
             self.status = Some("explorer: select a file first".to_string());
@@ -203,35 +186,35 @@ impl App {
     }
 
     /// Paste the internal explorer file clipboard into the selected destination.
+    ///
+    /// Every item is its own request: one failure reports itself and the rest go
+    /// on, which is what the synchronous version did and what a user pasting a
+    /// dozen files expects. The checks that remain here are the ones answerable
+    /// from paths alone; whether a source still exists, and whether a destination
+    /// is free, are the backend's to answer — it refuses to clobber, so a name the
+    /// explorer had not heard of fails loudly instead of overwriting.
     pub(super) fn explorer_paste_files(&mut self) {
         let Some(clipboard) = self.explorer_clipboard.clone() else {
             self.status = Some("paste: no explorer files".to_string());
             return;
         };
         let dest_dir = self.explorer_paste_destination();
-        if let Err(e) = std::fs::create_dir_all(&dest_dir) {
-            self.notify(
-                Severity::Error,
-                NotificationKind::Io,
-                format!("paste failed: {e}"),
-            );
-            return;
-        }
+        let mut taken: std::collections::BTreeSet<PathBuf> = self
+            .explorer
+            .rows()
+            .iter()
+            .filter(|row| row.path.parent() == Some(dest_dir.as_path()))
+            .map(|row| row.path.clone())
+            .collect();
 
-        let mut pasted = 0usize;
         let mut skipped = 0usize;
-        let mut failed = 0usize;
+        let mut requested = 0usize;
         let mut first_error: Option<String> = None;
-        let mut moves = Vec::new();
+        self.explorer_paste_done = 0;
 
         for source in &clipboard.paths {
-            if !source.exists() {
-                failed += 1;
-                first_error.get_or_insert_with(|| {
-                    format!("paste failed: {} no longer exists", source.display())
-                });
-                continue;
-            }
+            // A cut into the directory the file already sits in is a no-op, not
+            // an error.
             if clipboard.op == ExplorerFileOp::Cut
                 && source
                     .parent()
@@ -240,8 +223,7 @@ impl App {
                 skipped += 1;
                 continue;
             }
-            if source.is_dir() && path_contains_or_equals(source, &dest_dir) {
-                failed += 1;
+            if path_contains_or_equals(source, &dest_dir) {
                 first_error.get_or_insert_with(|| {
                     format!(
                         "paste failed: cannot paste {} into itself",
@@ -251,54 +233,45 @@ impl App {
                 continue;
             }
 
-            let target = unique_child_path(&dest_dir, source);
-            let result = match clipboard.op {
-                ExplorerFileOp::Copy => copy_path_recursive(source, &target),
-                ExplorerFileOp::Cut => move_path(source, &target),
+            let target = unique_child_path(&dest_dir, source, &taken);
+            // Reserve the name so two sources with the same file name do not both
+            // choose it in one paste.
+            taken.insert(target.clone());
+            let mutation = match clipboard.op {
+                ExplorerFileOp::Copy => PathMutation::Copy {
+                    from: source.clone(),
+                    to: target.clone(),
+                },
+                ExplorerFileOp::Cut => PathMutation::Rename {
+                    from: source.clone(),
+                    to: target.clone(),
+                },
             };
-            match result {
-                Ok(()) => {
-                    pasted += 1;
-                    if clipboard.op == ExplorerFileOp::Cut {
-                        moves.push((source.clone(), target));
-                    }
-                },
-                Err(e) => {
-                    failed += 1;
-                    first_error.get_or_insert_with(|| format!("paste failed: {e}"));
-                },
-            }
+            let moved = (clipboard.op == ExplorerFileOp::Cut).then(|| (source.clone(), target));
+            self.mutate_path(
+                mutation,
+                crate::app::explorer_mutate::FollowUp::Pasted { moved },
+            );
+            requested += 1;
         }
 
-        if pasted > 0 {
-            for (from, to) in &moves {
-                self.retarget_open_paths(from, to);
-            }
-            self.explorer.rebuild(&self.root);
-            self.send_command(SessionCommand::RefreshVcs);
-            if clipboard.op == ExplorerFileOp::Cut {
-                self.explorer_clipboard = None;
-            }
+        if requested > 0 && clipboard.op == ExplorerFileOp::Cut {
+            self.explorer_clipboard = None;
         }
-
         if let Some(message) = first_error {
             self.notify(Severity::Error, NotificationKind::Io, message);
+        } else if requested == 0 && skipped > 0 {
+            self.status = Some("paste: already in target folder".to_string());
+        } else if requested > 0 {
+            // Superseded per answer by the running count; this is what the user
+            // sees while the backend is still working through the list.
+            self.status = Some(format!("pasting {requested} item(s)…"));
         }
-
-        self.status = if pasted > 0 && failed > 0 {
-            Some(format!("pasted {pasted} item(s), {failed} failed"))
-        } else if pasted > 0 {
-            Some(format!("pasted {pasted} item(s)"))
-        } else if skipped > 0 && failed == 0 {
-            Some("paste: already in target folder".to_string())
-        } else {
-            Some("paste failed".to_string())
-        };
     }
 
     /// The explorer paste target: selected directory, selected file's parent, or root.
     pub(super) fn explorer_paste_destination(&mut self) -> PathBuf {
-        self.explorer.ensure_built(&self.root);
+        self.build_explorer();
         match self.explorer.selected() {
             Some(row) if row.is_dir => row.path.clone(),
             Some(row) => row
@@ -312,7 +285,7 @@ impl App {
 
     /// The explorer's selected paths after ensuring its row cache is current.
     pub(super) fn explorer_selected_paths(&mut self) -> Vec<PathBuf> {
-        self.explorer.ensure_built(&self.root);
+        self.build_explorer();
         self.explorer.selected_paths()
     }
 
@@ -331,27 +304,30 @@ impl App {
             self.status = Some("duplicate: select a file first".to_string());
             return;
         }
-        let mut copied = 0usize;
-        let mut first_error = None;
+        let known: std::collections::BTreeSet<PathBuf> = self
+            .explorer
+            .rows()
+            .iter()
+            .map(|row| row.path.clone())
+            .collect();
+        let mut requested = 0usize;
         for source in paths {
             let Some(parent) = source.parent() else {
                 continue;
             };
-            let target = unique_child_path(parent, &source);
-            match copy_path_recursive(&source, &target) {
-                Ok(()) => copied += 1,
-                Err(e) => {
-                    first_error.get_or_insert_with(|| format!("duplicate failed: {e}"));
+            let target = unique_child_path(parent, &source, &known);
+            self.mutate_path(
+                PathMutation::Copy {
+                    from: source.clone(),
+                    to: target,
                 },
-            }
+                crate::app::explorer_mutate::FollowUp::Pasted { moved: None },
+            );
+            requested += 1;
         }
-        if copied > 0 {
-            self.explorer.rebuild(&self.root);
-            self.send_command(SessionCommand::RefreshVcs);
-            self.status = Some(format!("duplicated {copied} item(s)"));
-        }
-        if let Some(message) = first_error {
-            self.notify(Severity::Error, NotificationKind::Io, message);
+        if requested > 0 {
+            self.explorer_paste_done = 0;
+            self.status = Some(format!("duplicating {requested} item(s)…"));
         }
     }
 
@@ -410,32 +386,15 @@ impl App {
             return;
         }
         self.close_tabs_under(&paths);
-        let mut deleted = 0usize;
-        let mut first_error = None;
-        for path in &paths {
-            let result = if path.is_dir() {
-                std::fs::remove_dir_all(path)
-            } else {
-                std::fs::remove_file(path)
-            };
-            match result {
-                Ok(()) => deleted += 1,
-                Err(e) if !path.exists() => {
-                    deleted += 1;
-                    first_error.get_or_insert_with(|| format!("delete warning: {e}"));
-                },
-                Err(e) => {
-                    first_error.get_or_insert_with(|| format!("delete failed: {e}"));
-                },
-            }
-        }
-        if deleted > 0 {
-            self.explorer.rebuild(&self.root);
-            self.send_command(SessionCommand::RefreshVcs);
-            self.status = Some(format!("deleted {deleted} item(s)"));
-        }
-        if let Some(message) = first_error {
-            self.notify(Severity::Error, NotificationKind::Io, message);
+        // Each path is its own request, so one failure does not abandon the rest —
+        // the same "delete what you can, report what you cannot" behaviour, now
+        // with the reporting arriving per answer.
+        self.explorer_delete_done = 0;
+        for path in paths {
+            self.mutate_path(
+                PathMutation::Delete { path },
+                crate::app::explorer_mutate::FollowUp::Deleted,
+            );
         }
     }
 
@@ -480,7 +439,7 @@ impl App {
         self.sidebar_panel = SidebarPanel::Explorer;
         self.sidebar_visible = true;
         self.focus = Focus::Sidebar;
-        self.explorer.ensure_built(&self.root);
+        self.build_explorer();
         let items = if let Some(row) = row {
             if !self.explorer.is_selected(row) {
                 self.explorer.select_index(row);
@@ -496,7 +455,7 @@ impl App {
         self.sidebar_panel = SidebarPanel::Explorer;
         self.sidebar_visible = true;
         self.focus = Focus::Sidebar;
-        self.explorer.ensure_built(&self.root);
+        self.build_explorer();
         let cursor = self.explorer.cursor();
         let y = self.sidebar_content_rect.y.saturating_add(
             cursor

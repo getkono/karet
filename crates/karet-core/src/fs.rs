@@ -26,6 +26,12 @@ pub struct DirEntry {
     /// Ignored entries are *listed and flagged*, never filtered out — a tree dims
     /// them the way VS Code does, so the user can still see what is there.
     pub ignored: bool,
+    /// Whether this directory is itself a repository root.
+    ///
+    /// A tree badges these, and it is a fact only the machine holding the
+    /// directory can establish — so it rides the listing rather than being
+    /// probed by whoever renders it.
+    pub is_repository: bool,
 }
 
 impl DirEntry {
@@ -65,6 +71,7 @@ mod tests {
             is_dir,
             is_symlink: false,
             ignored: false,
+            is_repository: false,
         }
     }
 
@@ -103,6 +110,7 @@ mod tests {
             is_dir: true,
             is_symlink: false,
             ignored: true,
+            is_repository: false,
         };
 
         let restored: DirEntry = serde_json::from_str(&serde_json::to_string(&original)?)?;

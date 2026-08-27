@@ -43,10 +43,11 @@ where
     R: AsyncBufRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
+    let roots = config.roots.clone();
     let (session, events, snapshots) = Session::new(config);
     let backend = crate::backend::local_session(session, Some(events));
     Connection::new(reader, writer)
-        .run(&backend, snapshots)
+        .run(&backend, snapshots, roots)
         .await
 }
 
@@ -93,6 +94,7 @@ where
         mut self,
         backend: &crate::backend::LocalBackend,
         mut snapshots: crate::local::SnapshotRx,
+        roots: Vec<std::path::PathBuf>,
     ) -> Result<(), RemoteError> {
         let mut events = backend
             .take_events()
@@ -100,6 +102,10 @@ where
         if !self.handshake().await? {
             return Ok(()); // nobody connected
         }
+        // Before anything else: a client has no way to know what workspace it is
+        // rendering, and every relative path it resolves depends on the answer.
+        self.send_event(None, Event::WorkspaceRoots { roots })
+            .await?;
 
         loop {
             // Biased, and events before snapshots: a session emits `Applied`

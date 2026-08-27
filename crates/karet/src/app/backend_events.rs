@@ -126,6 +126,17 @@ impl App {
                     self.on_files_listed(request, files);
                 }
             },
+            SessionEvent::WorkspaceRoots { roots } => self.on_workspace_roots(roots),
+            SessionEvent::DirectoryListed { path, result } => {
+                if let Some(request) = id {
+                    self.on_directory_listed(request, &path, result);
+                }
+            },
+            SessionEvent::PathMutated { result, .. } => {
+                if let Some(request) = id {
+                    self.on_path_mutated(request, result);
+                }
+            },
             SessionEvent::Symbols { doc, symbols } => self.on_symbols(doc, symbols),
             SessionEvent::Completions {
                 doc,

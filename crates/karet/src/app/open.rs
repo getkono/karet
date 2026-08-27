@@ -200,6 +200,25 @@ impl App {
         }
     }
 
+    /// Adopt the workspace the backend is rooted at.
+    ///
+    /// A client's own working directory says nothing about which workspace it is
+    /// rendering — the files may be on another machine — so the backend names it.
+    /// Everything path-shaped downstream (the explorer, relative opens, the window
+    /// title) resolves against this.
+    pub(super) fn on_workspace_roots(&mut self, roots: Vec<PathBuf>) {
+        let Some(root) = roots.into_iter().next() else {
+            return;
+        };
+        if root == self.root {
+            return;
+        }
+        self.root = root;
+        // Every listing was keyed to the old root and none of it applies.
+        self.explorer.invalidate_all();
+        self.build_explorer();
+    }
+
     /// Ask the backend for the workspace's files, to fill the quick-open picker.
     pub(super) fn request_file_list(&mut self) {
         let Some(id) = self.send(SessionCommand::ListFiles {
@@ -229,6 +248,82 @@ impl App {
         if let Some(crate::overlay::Overlay::Picker(picker)) = self.overlay.as_mut() {
             picker.set_items(items);
         }
+    }
+}
+
+impl App {
+    /// Build the explorer's rows and fetch any listing it turned out to need.
+    ///
+    /// The tree renders listings it has been given, so every build can discover a
+    /// directory nobody has fetched yet — the root on the first frame, a
+    /// subdirectory the user just expanded. Each answer marks the tree dirty and
+    /// the next build reveals the level below it, so the tree fills in downward as
+    /// fast as the backend answers.
+    pub(super) fn build_explorer(&mut self) {
+        self.explorer.ensure_built(&self.root);
+        self.fetch_missing_listings();
+    }
+
+    /// Force a rebuild, then fetch anything it needs.
+    pub(super) fn rebuild_explorer(&mut self) {
+        self.explorer.rebuild(&self.root);
+        self.fetch_missing_listings();
+    }
+
+    /// Ask the backend for every directory the tree is waiting on.
+    fn fetch_missing_listings(&mut self) {
+        let (show_hidden, respect_gitignore) = (
+            self.explorer.show_hidden(),
+            self.explorer.respect_gitignore(),
+        );
+        for path in self.explorer.take_missing() {
+            if self.pending_listings.values().any(|open| *open == path) {
+                continue;
+            }
+            let Some(id) = self.send(SessionCommand::ReadDirectory {
+                path: path.clone(),
+                show_hidden,
+                respect_gitignore,
+            }) else {
+                // No backend attached yet. Put the miss back rather than dropping
+                // it: the tree must keep reporting itself incomplete, or anything
+                // waiting on this level concludes it arrived empty.
+                self.explorer.mark_missing(path);
+                continue;
+            };
+            self.pending_listings.insert(id, path);
+        }
+    }
+
+    /// Hand a directory listing to the tree.
+    pub(super) fn on_directory_listed(
+        &mut self,
+        id: RequestId,
+        path: &Path,
+        result: Result<Vec<karet_core::DirEntry>, String>,
+    ) {
+        let Some(expected) = self.pending_listings.remove(&id) else {
+            return;
+        };
+        if expected != path {
+            return;
+        }
+        // An unreadable directory is supplied as empty rather than left missing:
+        // a permission error should render as a directory with nothing in it, not
+        // as one the tree asks about on every single frame.
+        self.explorer
+            .supply(path.to_path_buf(), result.unwrap_or_default());
+        self.build_explorer();
+        // A reveal waiting on this level can now advance, or finish.
+        self.finish_reveal();
+    }
+
+    /// Forget the listings for `dirs`, so the tree fetches them again.
+    pub(super) fn invalidate_listings(&mut self, dirs: &[PathBuf]) {
+        for dir in dirs {
+            self.explorer.invalidate(dir);
+        }
+        self.build_explorer();
     }
 }
 

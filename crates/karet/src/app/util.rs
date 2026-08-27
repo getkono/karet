@@ -51,39 +51,6 @@ pub(crate) fn effective_word_wrap(tab: &Tab, override_: Option<bool>) -> bool {
     })
 }
 
-/// Recursively copy a file or directory tree.
-pub(super) fn copy_path_recursive(from: &Path, to: &Path) -> io::Result<()> {
-    if from.is_dir() {
-        std::fs::create_dir_all(to)?;
-        for entry in std::fs::read_dir(from)? {
-            let entry = entry?;
-            copy_path_recursive(&entry.path(), &to.join(entry.file_name()))?;
-        }
-        Ok(())
-    } else {
-        if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::copy(from, to).map(|_| ())
-    }
-}
-
-/// Move a file or directory, falling back to copy-then-delete for cross-device moves.
-pub(super) fn move_path(from: &Path, to: &Path) -> io::Result<()> {
-    match std::fs::rename(from, to) {
-        Ok(()) => Ok(()),
-        Err(rename_err) => {
-            copy_path_recursive(from, to)?;
-            let remove = if from.is_dir() {
-                std::fs::remove_dir_all(from)
-            } else {
-                std::fs::remove_file(from)
-            };
-            remove.map_err(|_| rename_err)
-        },
-    }
-}
-
 /// Whether two paths resolve to the same filesystem location.
 pub(super) fn same_path(a: &Path, b: &Path) -> bool {
     canonical(a) == canonical(b)
@@ -127,21 +94,27 @@ pub(super) fn path_contains_or_equals(parent: &Path, child: &Path) -> bool {
     canonical(child).starts_with(canonical(parent))
 }
 
-/// A destination path under `dir`, suffixing when the source name already exists.
-pub(super) fn unique_child_path(dir: &Path, source: &Path) -> PathBuf {
+/// A destination path under `dir`, suffixing when the source name is already
+/// `taken`.
+///
+/// `taken` is what the explorer has been told is in `dir`, not what a probe of the
+/// filesystem would say — the files may be on another machine. A name the tree has
+/// not heard of can still collide, and the backend refuses to clobber rather than
+/// overwrite, so the worst case is a reported failure instead of lost data.
+pub(super) fn unique_child_path(dir: &Path, source: &Path, taken: &BTreeSet<PathBuf>) -> PathBuf {
     let name = source
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "item".to_string());
     let first = dir.join(&name);
-    if !first.exists() {
+    if !taken.contains(&first) {
         return first;
     }
 
     for n in 1usize.. {
         let candidate = dir.join(copy_name(source, &name, n));
-        if !candidate.exists() {
+        if !taken.contains(&candidate) {
             return candidate;
         }
     }

@@ -13,6 +13,7 @@ mod deps;
 mod diffs;
 mod editor;
 mod explorer;
+mod explorer_mutate;
 pub(crate) mod github;
 mod graphics;
 mod history;
@@ -177,10 +178,8 @@ use tokio::sync::mpsc;
 use util::KeyboardEnhancementGuard;
 use util::canonical;
 use util::close_prompt_message;
-use util::copy_path_recursive;
 pub(crate) use util::effective_word_wrap;
 use util::load_theme;
-use util::move_path;
 use util::parse_rev_range;
 use util::path_contains_or_equals;
 use util::path_under;
@@ -573,6 +572,18 @@ pub struct App {
     /// The in-flight quick-open file list, so a stale answer cannot repopulate a
     /// picker the user has already replaced.
     file_list_req: Option<RequestId>,
+    /// In-flight directory listings, keyed to the directory each was asked
+    /// about, so a stale answer cannot repopulate a tree that has moved on.
+    pending_listings: HashMap<RequestId, PathBuf>,
+    /// A path to select in the explorer once the tree has a row for it. Revealing
+    /// a deep path needs a listing per level, and those arrive one at a time.
+    pending_reveal: Option<PathBuf>,
+    /// In-flight filesystem mutations and what to do when each lands.
+    pending_mutations: HashMap<RequestId, explorer_mutate::PendingMutation>,
+    /// How many items the current delete has removed, for its status line.
+    explorer_delete_done: usize,
+    /// How many items the current paste has placed, for its status line.
+    explorer_paste_done: usize,
     /// Caret positions asked for before their file's content arrived, applied on
     /// the document's first snapshot. A jump to a line must land on that line
     /// however long the content takes to reach this machine.

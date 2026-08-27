@@ -742,6 +742,16 @@ pub enum Event {
         /// Success, or why it failed.
         result: Result<(), String>,
     },
+    /// The workspace this session is rooted at.
+    ///
+    /// Emitted on attach. A client cannot assume its own working directory is the
+    /// workspace — the files may be on another machine entirely — so the backend
+    /// names it, and the shell resolves every relative path against what it is
+    /// told rather than where it happens to be running.
+    WorkspaceRoots {
+        /// The session's roots, first one primary.
+        roots: Vec<PathBuf>,
+    },
     /// The view state a previous connection checkpointed.
     ///
     /// Emitted once on attach, before any other event, so a reattaching client
