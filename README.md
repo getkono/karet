@@ -1,7 +1,7 @@
 # karet
 
 <p align="center">
-  <img src="assets/karet.svg" alt="A karet window: the file explorer on the left, a Rust source file with syntax highlighting in the editor, and the status bar along the bottom" width="100%">
+  <img src="assets/karet.svg" alt="A karet window: the view switcher along the top, the file explorer on the left, a Rust source file with syntax highlighting in the editor, and the status bar along the bottom" width="100%">
 </p>
 
 `karet` is a TUI for high-velocity, terminal-centric coding, focused on review
