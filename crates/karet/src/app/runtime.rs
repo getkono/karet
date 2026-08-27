@@ -69,6 +69,7 @@ pub(super) fn attach(
     };
     app.backend = Some(backend);
     app.register_open_tabs();
+    app.request_markdownlint_config();
     app.request_pending_startup_diffs();
     app.request_pending_spelling_scan();
     // `--command` runs last, and only once the backend can answer: a palette

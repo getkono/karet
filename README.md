@@ -68,6 +68,19 @@ you type, and the two panes scroll together — whichever one has focus leads.
   drives the filter box and `karet --seam-query`, so what you narrow to by hand is
   exactly what a script can ask for. See [`docs/seam.md`](docs/seam.md).
 
+- **Split sessions** — edit a workspace that lives on another machine, without
+  editing over the network. The session stays with the files; the editor draws
+  where you are:
+
+  ```bash
+  karet --client-exec "ssh dev-box karet --serve /srv/repo"
+  ```
+
+  Typing, scrolling and repainting are answered locally, so a slow link costs
+  freshness rather than responsiveness. karet ships no transport of its own —
+  anything that connects two pipes will do, and `ssh` is better at authentication
+  and encryption than an editor would be. See [`docs/remote.md`](docs/remote.md).
+
 ## Prerequisites
 
 - [Rust (rustup)](https://rustup.rs) — toolchain (stable pinned in `rust-toolchain.toml`; the rustfmt-only nightly in `rust-nightly.txt`)

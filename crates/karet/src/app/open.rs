@@ -143,6 +143,9 @@ impl App {
         path: &Path,
         result: Result<karet_session::api::FileChunk, String>,
     ) {
+        if self.take_markdownlint_answer(id, &result) {
+            return;
+        }
         let Some(mut pending) = self.pending_bytes.remove(&id) else {
             return;
         };
@@ -203,6 +206,54 @@ impl App {
         }
     }
 
+    /// Fetch the workspace's markdownlint configuration, if it has one.
+    ///
+    /// The rules a "fix all" applies come from beside the code, so they have to be
+    /// read from where the code is. Both candidate names are asked for and
+    /// whichever answers wins; a workspace with neither simply lints by the
+    /// defaults, which is what it would have done anyway.
+    pub(super) fn request_markdownlint_config(&mut self) {
+        if self.markdownlint_config.is_some() || !self.markdownlint_requests.is_empty() {
+            return;
+        }
+        for name in [".markdownlint.json", ".markdownlint.jsonc"] {
+            let path = self.root.join(name);
+            if let Some(id) = self.send(SessionCommand::ReadFileBytes {
+                path,
+                offset: 0,
+                len: CHUNK,
+            }) {
+                self.markdownlint_requests.push(id);
+            }
+        }
+    }
+
+    /// Take a markdownlint configuration answer, if this request was for one.
+    ///
+    /// Reports whether it consumed the answer, so the ordinary media path does not
+    /// also try to build a tab out of it.
+    pub(super) fn take_markdownlint_answer(
+        &mut self,
+        id: RequestId,
+        result: &Result<karet_session::api::FileChunk, String>,
+    ) -> bool {
+        let Some(index) = self
+            .markdownlint_requests
+            .iter()
+            .position(|open| *open == id)
+        else {
+            return false;
+        };
+        self.markdownlint_requests.remove(index);
+        if let Ok(chunk) = result
+            && let Ok(text) = std::str::from_utf8(&chunk.bytes)
+            && let Ok(config) = karet_markdown::lint::Config::from_json(text)
+        {
+            self.markdownlint_config = Some(config);
+        }
+        true
+    }
+
     /// Tell the backend what each open document's views are displaying.
     ///
     /// Highlights are resolved per rendered line, so spans outside a viewport are
@@ -255,6 +306,10 @@ impl App {
         // Every listing was keyed to the old root and none of it applies.
         self.explorer.invalidate_all();
         self.build_explorer();
+        // The workspace's own lint rules live beside its code, wherever that is.
+        self.markdownlint_config = None;
+        self.markdownlint_requests.clear();
+        self.request_markdownlint_config();
     }
 
     /// Ask the backend for the workspace's files, to fill the quick-open picker.

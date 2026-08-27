@@ -575,6 +575,12 @@ pub struct App {
     /// In-flight directory listings, keyed to the directory each was asked
     /// about, so a stale answer cannot repopulate a tree that has moved on.
     pending_listings: HashMap<RequestId, PathBuf>,
+    /// The workspace's markdownlint rules, fetched through the backend because
+    /// they live beside the code. `None` until an answer arrives, or when the
+    /// workspace has no such file — both lint by the defaults.
+    markdownlint_config: Option<karet_markdown::lint::Config>,
+    /// In-flight reads of the markdownlint configuration candidates.
+    markdownlint_requests: Vec<RequestId>,
     /// The presentation settings this machine resolved, kept across a backend's
     /// configuration. Set only when the workspace is somewhere else; a local
     /// session has one configuration and no distinction to draw.

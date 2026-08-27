@@ -157,6 +157,8 @@ impl App {
             pending_bytes: HashMap::new(),
             file_list_req: None,
             pending_listings: HashMap::new(),
+            markdownlint_config: None,
+            markdownlint_requests: Vec::new(),
             presentation: None,
             reported_viewports: HashMap::new(),
             pending_reveal: None,
