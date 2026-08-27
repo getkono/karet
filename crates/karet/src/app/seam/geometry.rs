@@ -32,6 +32,10 @@ pub(crate) struct SeamHits {
     pub(crate) config: Rect,
     /// Legend entries, by lens index.
     pub(crate) lenses: Vec<(Rect, usize)>,
+    /// The sync affordance on the header row.
+    pub(crate) sync: Rect,
+    /// The force-re-sync affordance beside it.
+    pub(crate) force_sync: Rect,
     /// The widen affordance on the query line.
     pub(crate) widen: Rect,
     /// Every painted spine row, by node identity.
@@ -52,6 +56,10 @@ pub(crate) enum SeamTarget {
     Configuration,
     /// A legend entry, by lens index.
     Lens(usize),
+    /// Re-index what changed.
+    Sync,
+    /// Discard the stored index and read everything again.
+    ForceSync,
     /// A spine row, by node identity.
     Row(String),
     /// Somewhere on the spine that is not a row.
@@ -76,6 +84,8 @@ impl SeamHits {
         self.query = Rect::default();
         self.config = Rect::default();
         self.widen = Rect::default();
+        self.sync = Rect::default();
+        self.force_sync = Rect::default();
         self.crumbs.clear();
         self.lenses.clear();
         self.rows.clear();
@@ -94,6 +104,14 @@ impl SeamHits {
         }
         if rect_contains(self.widen, point) {
             return Some(SeamTarget::Widen);
+        }
+        // Before the crumbs: the package name widens all the way back out, and it is the
+        // run that grows to fill the row, so an untested button would sit under it.
+        if rect_contains(self.force_sync, point) {
+            return Some(SeamTarget::ForceSync);
+        }
+        if rect_contains(self.sync, point) {
+            return Some(SeamTarget::Sync);
         }
         if let Some((_, depth)) = self
             .crumbs

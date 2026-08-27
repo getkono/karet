@@ -15,6 +15,9 @@ pub(super) fn session_config(app: &App, swap_dir: Option<std::path::PathBuf>) ->
         // Immutable installations are shared by every local karet instance.
         lsp_registry_dir: directories::ProjectDirs::from("", "getkono", "karet")
             .map(|dirs| dirs.data_local_dir().join("language-servers")),
+        // The stored seam index, so opening the view a second time does not re-parse a
+        // repository that has not changed. Losing it costs a rebuild and nothing else.
+        seam_cache_dir: karet_session::seam_cache::default_cache_dir(),
     }
 }
 

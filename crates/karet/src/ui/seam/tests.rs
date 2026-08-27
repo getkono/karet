@@ -65,7 +65,7 @@ fn summary() -> SeamSummary {
 
 /// A small ready view.
 fn view() -> SeamViewState {
-    let mut state = SeamViewState::pending();
+    let mut state = SeamViewState::pending(std::path::PathBuf::new());
     let mut danger = node("demo::danger", Some("demo"), &[], [1, 0, 0, 0, 1]);
     danger.facets = vec![facet("api", "pub"), facet("hazard", "unsafe")];
     danger.kind = "function".to_owned();
@@ -216,13 +216,13 @@ fn unresolved_edges_read_as_unresolved_not_as_none() {
 #[test]
 fn each_empty_state_says_which_one_it_is() {
     // Indexing.
-    let mut loading = SeamViewState::pending();
+    let mut loading = SeamViewState::pending(std::path::PathBuf::new());
     let rendered = text(&render(&mut loading, 100, 12));
     // Before the reveal delay nothing is claimed at all, so a fast index never flashes.
     assert!(!rendered.contains("No seams"), "{rendered}");
 
     // A root that could not be indexed.
-    let mut failed = SeamViewState::pending();
+    let mut failed = SeamViewState::pending(std::path::PathBuf::new());
     failed.fail("no Cargo.toml".to_owned());
     let rendered = text(&render(&mut failed, 100, 12));
     assert!(
@@ -234,7 +234,7 @@ fn each_empty_state_says_which_one_it_is() {
     assert!(rendered.contains("another start point"), "{rendered}");
 
     // A root with genuinely nothing in it.
-    let mut empty = SeamViewState::pending();
+    let mut empty = SeamViewState::pending(std::path::PathBuf::new());
     empty.adopt(summary(), Vec::new());
     let rendered = text(&render(&mut empty, 100, 12));
     assert!(rendered.contains("No seams here"), "{rendered}");
@@ -696,4 +696,59 @@ fn a_single_package_says_nothing_about_counts() {
     let rendered = text(&render(&mut state, 100, 12));
     assert!(rendered.contains("demo"), "{rendered}");
     assert!(!rendered.contains("package"), "{rendered}");
+}
+
+#[test]
+fn the_header_offers_sync_and_force_sync_at_its_right_edge() {
+    let mut state = view();
+    let buf = render(&mut state, 100, 12);
+    let header = text(&buf).lines().next().unwrap_or_default().to_owned();
+
+    // Ascii tier renders `UiIcon::Refresh` as `R`; the forced one is marked with `!`.
+    assert!(header.contains("R R!"), "no sync affordances in {header:?}");
+    assert!(
+        header.trim_end().ends_with("R R!"),
+        "not right-aligned: {header:?}"
+    );
+
+    // And they are clickable exactly where they were painted.
+    assert!(state.hits.sync.width > 0);
+    assert!(state.hits.force_sync.width > 0);
+    assert_eq!(
+        state.hits.at(state.hits.sync.x, 0),
+        Some(crate::app::seam::geometry::SeamTarget::Sync)
+    );
+    assert_eq!(
+        state.hits.at(state.hits.force_sync.x, 0),
+        Some(crate::app::seam::geometry::SeamTarget::ForceSync)
+    );
+}
+
+#[test]
+fn a_header_with_no_room_drops_the_affordances_rather_than_the_name() {
+    // The row is the package name and the breadcrumb first; the buttons are what gives
+    // way, and `s`/`S` still do the same thing.
+    let mut state = view();
+    let buf = render(&mut state, 24, 12);
+    let header = text(&buf).lines().next().unwrap_or_default().to_owned();
+
+    assert!(
+        header.contains("demo"),
+        "the name was pushed off: {header:?}"
+    );
+    assert!(
+        !header.contains("R!"),
+        "the buttons did not give way: {header:?}"
+    );
+    assert_eq!(state.hits.sync.width, 0);
+    assert_eq!(state.hits.force_sync.width, 0);
+    // Nothing on the row resolves to a button that was never painted, so a click at the
+    // right edge falls through to whatever is genuinely there.
+    assert!(!matches!(
+        state.hits.at(23, 0),
+        Some(
+            crate::app::seam::geometry::SeamTarget::Sync
+                | crate::app::seam::geometry::SeamTarget::ForceSync
+        )
+    ));
 }

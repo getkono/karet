@@ -290,6 +290,9 @@ pub(super) static BINDINGS: &[Binding] = &[
     // `r` for reroot: the way out of a root that could not be indexed, without leaving
     // the view to find the palette.
     b(Seam, false, false, false, Char('r'), Command::ShowSeamViewAt),
+    // `s` to sync, shifted to distrust the stored index and read everything again.
+    b(Seam, false, false, false, Char('s'), Command::SeamSync),
+    b(Seam, false, false, false, Char('S'), Command::SeamForceSync),
 
     b(CommitGraph, false, false, false, Char('j'), Command::CommitGraphNext),
     b(CommitGraph, false, false, false, Down,      Command::CommitGraphNext),
