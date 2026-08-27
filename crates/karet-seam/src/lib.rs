@@ -48,6 +48,7 @@ pub mod model;
 pub mod modules;
 pub mod package;
 pub mod query;
+pub mod regroup;
 pub mod rollup;
 pub mod text;
 
@@ -76,6 +77,7 @@ pub use index::SeamIndex;
 pub use lang::Attribute;
 pub use lang::Classified;
 pub use lang::FacetContext;
+pub use lang::Owner;
 pub use lang::SeamLanguage;
 pub use model::ConfigMembership;
 pub use model::Effective;

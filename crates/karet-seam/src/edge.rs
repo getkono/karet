@@ -219,6 +219,28 @@ impl EdgeStore {
         self.reindex();
     }
 
+    /// Point every endpoint at wherever its node moved to.
+    ///
+    /// Regrouping changes ids, and an edge left naming the old one would point at a node
+    /// that no longer exists — an unresolvable relation invented by bookkeeping, which is
+    /// exactly the kind of false answer this crate refuses to give.
+    pub fn remap(&mut self, remap: &std::collections::HashMap<SeamId, SeamId>) {
+        if remap.is_empty() {
+            return;
+        }
+        for edge in &mut self.edges {
+            if let Some(moved) = remap.get(&edge.from) {
+                edge.from = *moved;
+            }
+            if let Endpoint::Resolved(to) = &mut edge.to
+                && let Some(moved) = remap.get(to)
+            {
+                *to = *moved;
+            }
+        }
+        self.reindex();
+    }
+
     /// Resolve a side index into edge references.
     fn lookup<'a>(
         &'a self,

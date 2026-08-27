@@ -46,7 +46,12 @@ pub struct ColumnRow {
     /// The row's text.
     pub label: String,
     /// Marker glyphs shown after the label, already resolved to the icon style.
-    pub markers: String,
+    ///
+    /// Characters rather than one string: each is painted into its own fixed-width slot,
+    /// so a row carrying a glyph the font draws wide still lines its count up with the
+    /// row above. A pre-composed string cannot be re-spaced — nothing downstream can see
+    /// where one glyph ended and the next began.
+    pub markers: Vec<char>,
     /// A right-aligned trailing value, such as a count.
     pub trailing: Option<String>,
     /// Whether descending into this row would show anything.
@@ -65,10 +70,10 @@ impl ColumnRow {
         }
     }
 
-    /// This row with marker glyphs.
+    /// This row with marker glyphs, one per slot.
     #[must_use]
-    pub fn with_markers(mut self, markers: impl Into<String>) -> Self {
-        self.markers = markers.into();
+    pub fn with_markers(mut self, markers: impl IntoIterator<Item = char>) -> Self {
+        self.markers = markers.into_iter().collect();
         self
     }
 
@@ -166,6 +171,13 @@ pub struct Columns<'a> {
     pub style: ColumnStyle,
     /// The glyph marking a row with children.
     pub child_marker: char,
+    /// The cells each marker glyph is given.
+    ///
+    /// One by default, which is what a consumer composing its own single-width glyphs
+    /// wants. A consumer resolving them through [`crate::glyph`] passes
+    /// [`glyph_slot`](crate::glyph::glyph_slot) for its icon style instead, so a tier
+    /// whose width the terminal may disagree about still paints an aligned run.
+    pub marker_slot: u16,
 }
 
 impl<'a> Columns<'a> {
@@ -177,6 +189,7 @@ impl<'a> Columns<'a> {
             focused,
             style,
             child_marker: '>',
+            marker_slot: 1,
         }
     }
 
@@ -184,6 +197,13 @@ impl<'a> Columns<'a> {
     #[must_use]
     pub fn child_marker(mut self, marker: char) -> Self {
         self.child_marker = marker;
+        self
+    }
+
+    /// Reserve `cells` for every marker glyph, including the has-children one.
+    #[must_use]
+    pub fn marker_slot(mut self, cells: u16) -> Self {
+        self.marker_slot = cells.max(1);
         self
     }
 
@@ -311,30 +331,38 @@ impl<'a> Columns<'a> {
 
         // Reserve the right edge for the count and the child marker, so a long label
         // truncates rather than pushing them out of view.
+        let slot = usize::from(self.marker_slot.max(1));
         let trailing = row.trailing.as_deref().unwrap_or("");
-        let marker_width = usize::from(row.has_children);
+        let marker_width = if row.has_children { slot } else { 0 };
         let reserved = trailing.width() + marker_width + usize::from(!trailing.is_empty());
-        let label_room = width.saturating_sub(reserved + row.markers.width() + 1);
+        let markers_width = row.markers.len().saturating_mul(slot);
+        let label_room = width.saturating_sub(reserved + markers_width + 1);
 
         let mut x = rect.x;
         let label = truncate(&row.label, label_room);
         buf.set_stringn(x, rect.y, &label, label_room, style);
         x = x.saturating_add(u16::try_from(label.width()).unwrap_or(0));
 
-        if !row.markers.is_empty() {
-            let marker_x = x.saturating_add(1);
-            buf.set_stringn(
-                marker_x,
-                rect.y,
-                &row.markers,
-                row.markers.width(),
-                self.style.marker,
-            );
+        // One glyph per slot, advanced by the slot rather than by the glyph: a font that
+        // draws a marker wide then overruns its own padding and nothing else.
+        let markers_end = rect
+            .x
+            .saturating_add(rect.width)
+            .saturating_sub(u16::try_from(reserved).unwrap_or(u16::MAX));
+        let mut marker_x = x.saturating_add(1);
+        for glyph in &row.markers {
+            if marker_x >= markers_end {
+                break;
+            }
+            if let Some(cell) = buf.cell_mut((marker_x, rect.y)) {
+                cell.set_char(*glyph).set_style(self.style.marker);
+            }
+            marker_x = marker_x.saturating_add(self.marker_slot.max(1));
         }
 
         let mut right = rect.x.saturating_add(rect.width);
         if row.has_children {
-            right = right.saturating_sub(1);
+            right = right.saturating_sub(self.marker_slot.max(1));
             if let Some(cell) = buf.cell_mut((right, rect.y)) {
                 cell.set_char(self.child_marker).set_style(style);
             }
@@ -490,11 +518,81 @@ mod tests {
     #[test]
     fn markers_follow_the_label() {
         let columns = [Column::new(vec![
-            ColumnRow::new("Symbol").with_markers("*#"),
+            ColumnRow::new("Symbol").with_markers("*#".chars()),
         ])];
         let buf = render(&columns, 0, Rect::new(0, 0, 20, 1));
         let text = row_text(&buf, 0);
         assert!(text.contains("Symbol *#"), "got {text:?}");
+    }
+
+    #[test]
+    fn each_marker_glyph_gets_its_own_slot() {
+        // Rows with different marker counts must still agree about where the count sits.
+        let columns = [Column::new(vec![
+            ColumnRow::new("one")
+                .with_markers("*".chars())
+                .with_trailing("7"),
+            ColumnRow::new("three")
+                .with_markers("*#%".chars())
+                .with_trailing("7"),
+        ])];
+        let area = Rect::new(0, 0, 20, 2);
+        let mut buf = Buffer::empty(area);
+        Columns::new(&columns, 0, ColumnStyle::default())
+            .marker_slot(2)
+            .render(area, &mut buf);
+        let first = row_text(&buf, 0);
+        let second = row_text(&buf, 1);
+        assert_eq!(first.find('7'), second.find('7'), "{first:?} vs {second:?}");
+        // Two cells apart, whatever the glyphs measure.
+        assert_eq!(
+            second.find('*').map(|x| second.find('#').map(|y| y - x)),
+            Some(Some(2))
+        );
+    }
+
+    #[test]
+    fn a_marker_wider_than_one_cell_does_not_shift_the_row() {
+        let narrow = [Column::new(vec![
+            ColumnRow::new("row")
+                .with_markers("*".chars())
+                .with_trailing("7"),
+        ])];
+        let wide = [Column::new(vec![
+            ColumnRow::new("row")
+                .with_markers("\u{65e5}".chars())
+                .with_trailing("7"),
+        ])];
+        let area = Rect::new(0, 0, 20, 1);
+        let paint = |columns: &[Column]| {
+            let mut buf = Buffer::empty(area);
+            Columns::new(columns, 0, ColumnStyle::default())
+                .marker_slot(2)
+                .render(area, &mut buf);
+            row_text(&buf, 0)
+        };
+        // By cell, not by byte: a wide glyph is three bytes and would shift `find`.
+        let column_of = |text: String, needle: char| text.chars().position(|c| c == needle);
+        assert_eq!(column_of(paint(&narrow), '7'), column_of(paint(&wide), '7'));
+    }
+
+    #[test]
+    fn a_child_marker_keeps_its_slot_clear_of_the_count() {
+        let columns = [Column::new(vec![
+            ColumnRow::new("module")
+                .with_markers("*#".chars())
+                .with_children(true)
+                .with_trailing("47"),
+        ])];
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buf = Buffer::empty(area);
+        Columns::new(&columns, 0, ColumnStyle::default())
+            .marker_slot(2)
+            .render(area, &mut buf);
+        let text = row_text(&buf, 0);
+        // The count survives beside a two-cell child marker rather than being painted on.
+        assert!(text.contains("47"), "got {text:?}");
+        assert!(text.contains('>'), "got {text:?}");
     }
 
     #[test]

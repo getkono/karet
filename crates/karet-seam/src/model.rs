@@ -368,6 +368,14 @@ pub struct SeamLocation {
     pub span: Span,
     /// The range to reveal when jumping here — usually just the name.
     pub selection: Range,
+    /// The declaration head: everything up to the body the construct opens.
+    ///
+    /// This is the part a reader needs in order to decide anything — a signature with
+    /// its parameters, a `struct` line with its generics, an `impl` with what it binds.
+    /// It is a *range*, not a line count, because a signature is as tall as it is: three
+    /// lines for a wrapped parameter list, one for `fn now() -> Instant`. A construct
+    /// that opens no body has none, and this is then its whole extent.
+    pub header: Range,
 }
 
 /// One node in the containment tree.
@@ -512,6 +520,7 @@ mod tests {
                 range: Range::default(),
                 span: Span::default(),
                 selection: Range::default(),
+                header: Range::default(),
             },
             parent: None,
             children: Vec::new(),

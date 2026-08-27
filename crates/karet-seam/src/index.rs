@@ -276,6 +276,185 @@ impl SeamIndex {
         self.unresolved.retain(|(id, _)| !removed.contains(id));
     }
 
+    // --- relocation -----------------------------------------------------------
+
+    /// The segment `name` should take as a child of `parent`, disambiguated as needed.
+    ///
+    /// Same rule as extraction's: the first occurrence keeps its bare name, later ones
+    /// take a 1-based ordinal. Asked of the tree rather than of a counter, because a node
+    /// arriving here was written somewhere else entirely and there is no sibling walk to
+    /// have counted it.
+    fn free_child_segment(&self, parent: SeamId, name: &str) -> crate::id::SeamSegment {
+        // Ordinal zero is the bare slot, not the first numbered one: a lone sibling
+        // wears its name unadorned, and only the second occurrence starts counting.
+        let taken: Vec<u32> = self
+            .children(parent)
+            .iter()
+            .filter_map(|child| self.path(*child))
+            .filter_map(|path| path.segments().last())
+            .filter(|segment| segment.name == name)
+            .map(|segment| segment.ordinal)
+            .collect();
+        if taken.is_empty() {
+            return crate::id::SeamSegment::new(name);
+        }
+        let next = (2..).find(|n| !taken.contains(n)).unwrap_or(u32::MAX);
+        crate::id::SeamSegment::numbered(name, next)
+    }
+
+    /// Move `id` and everything under it to sit beneath `parent`, optionally renaming it.
+    ///
+    /// Identity is position, so moving a node changes its path and therefore its id, and
+    /// every descendant's with it. The remap that produced is returned: a caller holding
+    /// ids from before the move — the regroup pass holds a whole queue of them — would
+    /// otherwise be addressing nodes that no longer exist.
+    ///
+    /// Refuses a move that would not leave a tree: onto itself, into its own subtree, or
+    /// onto a parent the index does not hold.
+    pub(crate) fn relocate(
+        &mut self,
+        id: SeamId,
+        parent: SeamId,
+        rename: Option<(String, String)>,
+    ) -> HashMap<SeamId, SeamId> {
+        let empty = HashMap::new();
+        if id == parent || !self.nodes.contains_key(&parent) {
+            return empty;
+        }
+        let subtree = self.subtree(id);
+        if subtree.is_empty() || subtree.contains(&parent) {
+            return empty;
+        }
+        let (Some(old_root), Some(parent_path)) =
+            (self.path(id).cloned(), self.path(parent).cloned())
+        else {
+            return empty;
+        };
+        let name = match (&rename, old_root.segments().last()) {
+            (Some((_, segment)), _) => segment.clone(),
+            (None, Some(segment)) => segment.name.clone(),
+            (None, None) => return empty,
+        };
+        let new_root = parent_path.child(self.free_child_segment(parent, &name));
+        if new_root == old_root {
+            return empty;
+        }
+        // A path already occupied by a node outside this subtree is not a slot: interning
+        // it would move this node on top of that one and silently lose it.
+        if self
+            .resolve(&new_root)
+            .is_some_and(|held| self.nodes.contains_key(&held) && !subtree.contains(&held))
+        {
+            return empty;
+        }
+
+        // Every descendant keeps its own segments and swaps its prefix, so the subtree's
+        // internal shape — and every ordinal inside it — survives the move untouched.
+        let mut remap = HashMap::new();
+        for old in &subtree {
+            let Some(path) = self.path(*old).cloned() else {
+                continue;
+            };
+            let mut segments = new_root.segments().to_vec();
+            segments.extend_from_slice(path.segments().get(old_root.len()..).unwrap_or_default());
+            remap.insert(*old, self.intern(SeamPath::new(segments)));
+        }
+
+        let old_parent = self.nodes.get(&id).and_then(|node| node.parent);
+        for old in &subtree {
+            let Some(mut node) = self.nodes.remove(old) else {
+                continue;
+            };
+            node.id = remap.get(old).copied().unwrap_or(node.id);
+            node.parent = if *old == id {
+                Some(parent)
+            } else {
+                node.parent.map(|up| remap.get(&up).copied().unwrap_or(up))
+            };
+            for child in &mut node.children {
+                *child = remap.get(child).copied().unwrap_or(*child);
+            }
+            if *old == id
+                && let Some((display, _)) = &rename
+            {
+                node.name = display.clone();
+            }
+            self.nodes.insert(node.id, node);
+        }
+
+        if let Some(previous) = old_parent.and_then(|up| self.nodes.get_mut(&up)) {
+            previous.children.retain(|child| *child != id);
+        }
+        self.roots.retain(|root| *root != id);
+        let moved = remap.get(&id).copied().unwrap_or(id);
+        if let Some(target) = self.nodes.get_mut(&parent)
+            && !target.children.contains(&moved)
+        {
+            target.children.push(moved);
+        }
+        self.sort_children(parent);
+        self.remap_references(&remap);
+        remap
+    }
+
+    /// Detach `id` from the tree, dropping it and everything still under it.
+    pub(crate) fn discard(&mut self, id: SeamId) {
+        for doomed in self.subtree(id) {
+            self.edges.remove_from(doomed);
+            self.nodes.remove(&doomed);
+        }
+        if let Some(parent) = self.nodes.values_mut().find(|n| n.children.contains(&id)) {
+            parent.children.retain(|child| *child != id);
+        }
+        self.roots.retain(|root| *root != id);
+        self.unresolved.retain(|(held, _)| *held != id);
+    }
+
+    /// Put a node's children back into source order after one arrived from elsewhere.
+    ///
+    /// By file, then by byte offset. Files have no order between them, so the file
+    /// handle's own registration order stands in — arbitrary, but stable, which is the
+    /// property a spine needs.
+    fn sort_children(&mut self, parent: SeamId) {
+        let mut children = match self.nodes.get(&parent) {
+            Some(node) => node.children.clone(),
+            None => return,
+        };
+        children.sort_by_key(|child| {
+            self.nodes
+                .get(child)
+                .map_or((u32::MAX, usize::MAX), |node| {
+                    (node.location.file.0, node.location.span.start.0)
+                })
+        });
+        if let Some(node) = self.nodes.get_mut(&parent) {
+            node.children = children;
+        }
+    }
+
+    /// Point everything that names a node by id at wherever it moved to.
+    fn remap_references(&mut self, remap: &HashMap<SeamId, SeamId>) {
+        if remap.is_empty() {
+            return;
+        }
+        let swap = |id: &mut SeamId| *id = remap.get(id).copied().unwrap_or(*id);
+        for node in self.nodes.values_mut() {
+            for child in &mut node.children {
+                swap(child);
+            }
+        }
+        for root in &mut self.roots {
+            swap(root);
+        }
+        for (owner, _) in self.attribution.values_mut() {
+            swap(owner);
+        }
+        for (id, _) in &mut self.unresolved {
+            swap(id);
+        }
+        self.edges.remap(remap);
+    }
+
     // --- truncation -----------------------------------------------------------
 
     /// Record that indexing stopped early after `scanned` files.
@@ -372,6 +551,7 @@ mod tests {
             range: Range::default(),
             span: Span::default(),
             selection: Range::default(),
+            header: Range::default(),
         }
     }
 

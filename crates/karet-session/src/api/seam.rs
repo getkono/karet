@@ -19,6 +19,7 @@
 use std::path::PathBuf;
 
 use karet_core::Range;
+use karet_diff::TokenSpan;
 
 /// One node, flattened for the presentation layer.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -87,6 +88,121 @@ pub struct SeamEdgeView {
     pub site: Option<Range>,
 }
 
+/// The source behind one seam node: the lines that define it, and the lines around it.
+///
+/// The detail pane exists so a reader can tell whether pressing Enter is worth it, and a
+/// name with nothing around it does not answer that — an attribute, a doc comment, or the
+/// item it sits beside usually does.
+///
+/// The window is described row by row rather than as one span, because it is not always
+/// one span. A node longer than the fetch cap has its middle cut out, and the lines that
+/// follow it are then not adjacent to the lines that were kept — reporting them as if
+/// they were would put three lines from the middle of a function where its surroundings
+/// belong. Every row therefore carries the file line it came from.
+///
+/// Deliberately *larger* than any pane: how many rows to show is the renderer's budget,
+/// not the protocol's. What the protocol does decide is which rows *matter*, and that is
+/// [`head_end`](Self::head_end).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SeamPreview {
+    /// The file the lines were read from.
+    pub file: PathBuf,
+    /// The lines themselves, newline stripped, in file order: the context before the
+    /// node, the node's own extent, then the context after.
+    pub lines: Vec<String>,
+    /// The 0-based file line each entry of [`Self::lines`] came from.
+    ///
+    /// Not derivable from a start line, because the window can have a gap in it.
+    pub numbers: Vec<u32>,
+    /// The first index into [`Self::lines`] belonging to the node itself.
+    ///
+    /// Fewer than [`context`](Self::context) lines before it means the node sits near the
+    /// top of its file. That is reported rather than padded, so the *view* can decide to
+    /// reserve the missing rows instead of being handed blank lines it cannot tell from
+    /// real ones.
+    pub body_start: usize,
+    /// One past the last index belonging to the node's declaration head.
+    ///
+    /// These are the rows a renderer must not drop: the signature with its parameters,
+    /// the `struct` line with its bounds. Everything from here to
+    /// [`body_end`](Self::body_end) is the body, and may be elided at any point.
+    pub head_end: usize,
+    /// One past the last index into [`Self::lines`] belonging to the node.
+    pub body_end: usize,
+    /// How many of the node's own lines were dropped to stay inside the fetch cap.
+    ///
+    /// Zero means the node's whole extent is present. Non-zero means the row at
+    /// [`body_end`](Self::body_end), if there is one, is not adjacent to the row before it.
+    pub dropped: u32,
+    /// How many lines of context were asked for on each side.
+    ///
+    /// Stated rather than assumed, so a view can tell "the file ended" from "only three
+    /// were ever fetched".
+    pub context: u32,
+    /// Per entry of [`Self::lines`], the syntax token runs as byte offsets within it.
+    ///
+    /// Empty when the file has no grammar, would not parse, or is too large to highlight
+    /// — the view then paints unstyled text rather than nothing.
+    pub tokens: Vec<Vec<TokenSpan>>,
+}
+
+impl SeamPreview {
+    /// The token runs for `row`, empty when there are none and when `row` is out of range.
+    ///
+    /// Total by construction: a renderer walking its own row budget must never be able to
+    /// index past the table.
+    #[must_use]
+    pub fn tokens_for(&self, row: usize) -> &[TokenSpan] {
+        self.tokens.get(row).map_or(&[], Vec::as_slice)
+    }
+
+    /// Whether `row` is one of the node's own lines rather than surrounding context.
+    #[must_use]
+    pub fn is_body(&self, row: usize) -> bool {
+        row >= self.body_start && row < self.body_end
+    }
+
+    /// Whether `row` belongs to the node's declaration head.
+    #[must_use]
+    pub fn is_head(&self, row: usize) -> bool {
+        row >= self.body_start && row < self.head_end
+    }
+
+    /// The 0-based file line `lines[row]` came from.
+    ///
+    /// Saturates at the last known line for a row past the end, so a renderer that walks
+    /// its own budget cannot index out of the table.
+    #[must_use]
+    pub fn line_number(&self, row: usize) -> u32 {
+        self.numbers
+            .get(row)
+            .copied()
+            .unwrap_or_else(|| self.numbers.last().copied().unwrap_or(0))
+    }
+
+    /// The largest file line the window reaches, for sizing a gutter.
+    #[must_use]
+    pub fn last_line(&self) -> u32 {
+        self.numbers.last().copied().unwrap_or(0)
+    }
+
+    /// Whether `row` starts a run of lines that does not follow the row before it.
+    ///
+    /// True exactly where the fetch cap cut the node's middle out, which is where a
+    /// renderer has to say so rather than letting two distant lines read as neighbours.
+    #[must_use]
+    pub fn is_after_gap(&self, row: usize) -> bool {
+        let (Some(previous), Some(current)) = (
+            row.checked_sub(1)
+                .and_then(|before| self.numbers.get(before)),
+            self.numbers.get(row),
+        ) else {
+            return false;
+        };
+        *current > previous.saturating_add(1)
+    }
+}
+
 /// What an indexed package amounts to, for the header and the empty states.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SeamSummary {
@@ -143,6 +259,74 @@ pub struct SeamQueryError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn preview() -> SeamPreview {
+        SeamPreview {
+            file: PathBuf::from("src/lib.rs"),
+            lines: (0..7).map(|n| format!("line {n}")).collect(),
+            numbers: (8..15).collect(),
+            body_start: 3,
+            head_end: 4,
+            body_end: 5,
+            dropped: 0,
+            context: 3,
+            tokens: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn tokens_for_a_row_past_the_table_are_empty_rather_than_a_panic() {
+        // A renderer walks its own row budget; the table may be shorter, or absent.
+        let preview = preview();
+        assert!(preview.tokens_for(0).is_empty());
+        assert!(preview.tokens_for(999).is_empty());
+    }
+
+    #[test]
+    fn context_rows_are_not_body_rows() {
+        let preview = preview();
+        let body: Vec<bool> = (0..preview.lines.len())
+            .map(|r| preview.is_body(r))
+            .collect();
+        assert_eq!(body, [false, false, false, true, true, false, false]);
+    }
+
+    #[test]
+    fn a_preview_numbers_its_rows_from_the_file_it_came_from() {
+        let preview = preview();
+        assert_eq!(preview.line_number(0), 8);
+        assert_eq!(preview.line_number(preview.body_start), 11);
+        assert_eq!(preview.last_line(), 14);
+    }
+
+    #[test]
+    fn the_head_is_the_front_of_the_body_and_never_the_context() {
+        let preview = preview();
+        let head: Vec<bool> = (0..preview.lines.len())
+            .map(|r| preview.is_head(r))
+            .collect();
+        assert_eq!(head, [false, false, false, true, false, false, false]);
+    }
+
+    #[test]
+    fn a_window_with_a_cut_middle_says_where_the_cut_is() {
+        let mut preview = preview();
+        // Rows 0..5 are lines 8..13; the tail then jumps to line 400.
+        preview.numbers = vec![8, 9, 10, 11, 12, 400, 401];
+        preview.dropped = 387;
+        let gaps: Vec<bool> = (0..preview.lines.len())
+            .map(|r| preview.is_after_gap(r))
+            .collect();
+        assert_eq!(gaps, [false, false, false, false, false, true, false]);
+    }
+
+    #[test]
+    fn a_row_past_the_window_still_answers_with_a_real_line() {
+        // A renderer walks its own budget; running off the end must not wrap to zero and
+        // paint a line number from the top of the file next to the bottom of it.
+        let preview = preview();
+        assert_eq!(preview.line_number(999), 14);
+    }
 
     #[test]
     fn a_summary_reports_completeness_only_when_nothing_was_lost() {

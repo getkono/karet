@@ -25,6 +25,7 @@ use crate::id::SeamSegment;
 use crate::index::SeamIndex;
 use crate::lang::Attribute;
 use crate::lang::FacetContext;
+use crate::lang::Owner;
 use crate::lang::SeamLanguage;
 use crate::lang::for_language;
 use crate::model::ConfigMembership;
@@ -84,6 +85,12 @@ pub struct ExtractOutcome {
     pub added: Vec<SeamId>,
     /// Module declarations whose bodies live elsewhere.
     pub external_modules: Vec<ExternalModule>,
+    /// Nodes whose semantic owner is named elsewhere, with the candidates to try.
+    ///
+    /// Recorded rather than acted on, because the owner may be declared in a file this
+    /// extraction has not read yet — a Rust `impl` and its type routinely live apart.
+    /// The package layer resolves these once every file is in.
+    pub ownership: Vec<(SeamId, Vec<Owner>)>,
 }
 
 /// Extract every entity in `text` into `index`, nested under `parent`.
@@ -177,8 +184,12 @@ impl Extractor<'_> {
             Some(classified) => {
                 let facets = self.mapping.facets_of(node, &ctx);
                 let external = self.mapping.external_module(node, &ctx);
+                let owners = self.mapping.ownership(node, &ctx);
                 let inline_path = self.inline_module_path();
                 let id = self.push_entity(node, classified, facets, depth);
+                if let (Some(id), false) = (id, owners.is_empty()) {
+                    self.outcome.ownership.push((id, owners));
+                }
                 if let (Some(name), Some(id)) = (external, id) {
                     self.outcome.external_modules.push(ExternalModule {
                         id,
@@ -236,6 +247,7 @@ impl Extractor<'_> {
             .stack
             .last()
             .map(|frame| (frame.id, frame.path.clone()))?;
+        let header = self.mapping.header(node, &self.context(&[]));
         let segment = self.next_segment(parent_id, classified.segment.clone());
         let path = parent_path.child(segment);
         let id = self.index.intern(path.clone());
@@ -252,6 +264,7 @@ impl Extractor<'_> {
                 range: self.lines.range(self.text, node.span()),
                 span: node.span(),
                 selection: classified.selection,
+                header,
             },
             parent: Some(parent_id),
             children: Vec::new(),

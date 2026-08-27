@@ -43,6 +43,7 @@ fn add(
             range: karet_core::Range::default(),
             span: karet_core::Span::default(),
             selection: karet_core::Range::default(),
+            header: karet_core::Range::default(),
         },
         parent,
         children: Vec::new(),
@@ -464,4 +465,17 @@ fn an_empty_index_yields_an_empty_result_without_panicking() -> TestResult {
     assert!(evaluate(&query, &index).is_empty());
     assert_eq!(Query::default().to_string(), "");
     Ok(())
+}
+
+#[test]
+fn every_compiled_in_language_contributes_its_own_vocabulary() {
+    // A term is valid if *any* compiled-in language can emit it. A language whose
+    // subtypes were left out of this union would have every one of its terms rejected as
+    // a typo, with a suggestion from someone else's grammar.
+    #[cfg(feature = "lang-rust")]
+    assert!(parse("substitution:blanket-impl").is_ok());
+    #[cfg(feature = "lang-python")]
+    assert!(parse("substitution:protocol").is_ok());
+    #[cfg(feature = "lang-javascript")]
+    assert!(parse("substitution:implements").is_ok());
 }

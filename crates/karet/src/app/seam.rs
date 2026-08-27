@@ -22,6 +22,7 @@ use std::path::PathBuf;
 
 use karet_session::api::SeamEdgeView;
 use karet_session::api::SeamNodeView;
+use karet_session::api::SeamPreview;
 use karet_session::api::SeamQueryError;
 use karet_session::api::SeamSummary;
 
@@ -79,6 +80,21 @@ impl Narrow {
     }
 }
 
+/// What pressing Enter on a spine row did.
+///
+/// Three outcomes rather than a bool, because the caller's fallback differs: nothing to
+/// descend into means open the source, whereas *already being* the root means step in.
+/// Collapsing those two into `false` is what let Enter push a crumb per keystroke.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reroot {
+    /// The view narrowed to the selection, and focus stepped into it.
+    Narrowed,
+    /// The selection already *is* the current root, so focus stepped in without narrowing.
+    Descended,
+    /// There is nothing beneath the selection to narrow to.
+    Refused,
+}
+
 /// The Seam view's whole state.
 pub(crate) struct SeamViewState {
     /// Every node, by identity.
@@ -113,6 +129,13 @@ pub(crate) struct SeamViewState {
     pub(crate) focus: SeamFocus,
     /// The selected node's edges, once fetched.
     pub(crate) edges: Vec<SeamEdgeView>,
+    /// The selected node's source, once fetched, or the reason there is none.
+    ///
+    /// Dropped the moment the selection moves, so the pane can never show one node's
+    /// source under another node's name.
+    pub(crate) preview: Option<Result<SeamPreview, String>>,
+    /// The in-flight detail request, driving the delayed placeholder in the source block.
+    pub(crate) detail_since: Option<Pending>,
     /// The selected row of the facet pane, when it has focus.
     pub(crate) facet_row: usize,
     /// Every file the index holds, so an edit elsewhere is not mistaken for one here.
@@ -121,6 +144,13 @@ pub(crate) struct SeamViewState {
     pub(crate) loading_since: Option<Pending>,
     /// Why the package could not be indexed, when it could not.
     pub(crate) error: Option<String>,
+    /// Where the last frame painted everything clickable.
+    pub(crate) hits: geometry::SeamHits,
+    /// Where the pointer last was, when it was over something actionable.
+    ///
+    /// Beside the hit map rather than inside it, so the renderer's per-frame reset cannot
+    /// clobber pointer state written between frames.
+    pub(crate) hover: Option<(u16, u16)>,
 }
 
 impl SeamViewState {
@@ -147,10 +177,14 @@ impl SeamViewState {
             query_matches: None,
             focus: SeamFocus::default(),
             edges: Vec::new(),
+            preview: None,
+            detail_since: None,
             facet_row: 0,
             files: HashSet::new(),
             loading_since: Some(Pending::start()),
             error: None,
+            hits: geometry::SeamHits::default(),
+            hover: None,
         }
     }
 
@@ -294,6 +328,14 @@ impl SeamViewState {
 
     // --- navigation -----------------------------------------------------------
 
+    /// Move the selected edge within the facet pane.
+    ///
+    /// Shared by the arrow keys and the wheel, so the two cannot clamp differently.
+    pub(crate) fn move_facet_row(&mut self, delta: isize) {
+        let last = self.edges.len().saturating_sub(1);
+        self.facet_row = self.facet_row.saturating_add_signed(delta).min(last);
+    }
+
     /// Move the selection within the focused column.
     pub(crate) fn move_row(&mut self, delta: isize) {
         let columns = self.columns();
@@ -317,7 +359,18 @@ impl SeamViewState {
         // Selecting in a column invalidates everything to its right.
         self.selection.truncate(self.focused_column);
         self.selection.push(id);
+        self.forget_detail();
+    }
+
+    /// Forget the previous selection's detail.
+    ///
+    /// Edges and source answer the same question about the same node, so they go
+    /// together: a pane holding half of each would be a lie about the other half. Cleared
+    /// rather than left standing, because stale detail under a new name reads as an
+    /// answer, where an empty pane reads as a question still being asked.
+    fn forget_detail(&mut self) {
         self.edges.clear();
+        self.preview = None;
         self.facet_row = 0;
     }
 
@@ -336,23 +389,37 @@ impl SeamViewState {
     }
 
     /// Reroot at the current selection, pushing onto the narrow stack.
-    pub(crate) fn reroot(&mut self) -> bool {
+    ///
+    /// A narrow that would not change the root set is not a narrow. The current scope is
+    /// itself the only row of column zero, so pushing it again would grow the breadcrumb
+    /// (`pkg > model > model`) while the view stood still — one extra `Backspace` owed per
+    /// stray keystroke, and a trail claiming steps that were never taken. Stepping into
+    /// the subtree is what the reader meant by the keypress, and it costs no crumb.
+    pub(crate) fn reroot(&mut self) -> Reroot {
         let Some(id) = self.selected_id().map(str::to_owned) else {
-            return false;
+            return Reroot::Refused;
         };
         if self
             .nodes
             .get(&id)
             .is_none_or(|node| node.children.is_empty())
         {
-            return false;
+            return Reroot::Refused;
+        }
+        if self.root_set() == [id.clone()] {
+            self.move_column(1);
+            return Reroot::Descended;
         }
         self.narrow.push(Narrow::Scope(id));
         self.selection.clear();
         self.focused_column = 0;
         self.offsets.clear();
         self.move_row(0);
-        true
+        // Land inside what was just narrowed to. Narrowing and then leaving the reader on
+        // the one row they came from is what made Enter look inert and invited the second
+        // press that used to cost them a crumb.
+        self.move_column(1);
+        Reroot::Narrowed
     }
 
     /// Reroot on the far end of an edge.
@@ -362,6 +429,11 @@ impl SeamViewState {
             .filter(|id| self.nodes.contains_key(id))
             .collect();
         if reachable.is_empty() {
+            return false;
+        }
+        // A pivot onto the set already on screen records a step that moved nothing, and
+        // reverses to nothing — the same trap a repeated reroot used to set.
+        if reachable == self.root_set() {
             return false;
         }
         // A pivot pushes onto the same stack as a scope narrow, so it reverses the same
@@ -397,6 +469,18 @@ impl SeamViewState {
         true
     }
 
+    /// Step back out until only `depth` narrows remain.
+    ///
+    /// The breadcrumb's counterpart to pressing `Backspace` repeatedly: clicking a crumb
+    /// has to land on *that* crumb rather than on the one after it.
+    pub(crate) fn widen_to(&mut self, depth: usize) -> bool {
+        let mut moved = false;
+        while self.narrow.len() > depth && self.widen() {
+            moved = true;
+        }
+        moved
+    }
+
     /// Select `id` by walking down to it from the current root, so the columns line up.
     pub(crate) fn select_path(&mut self, id: &str) {
         let mut chain = Vec::new();
@@ -413,8 +497,7 @@ impl SeamViewState {
         if chain.first().is_some_and(|first| roots.contains(first)) {
             self.selection = chain;
             self.focused_column = self.selection.len().saturating_sub(1);
-            self.edges.clear();
-            self.facet_row = 0;
+            self.forget_detail();
         }
     }
 
@@ -455,6 +538,8 @@ impl SeamViewState {
 }
 
 mod actions;
+pub(crate) mod geometry;
+mod mouse;
 pub(crate) mod roots;
 
 #[cfg(test)]

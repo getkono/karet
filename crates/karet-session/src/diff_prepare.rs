@@ -118,7 +118,10 @@ fn prepare(
 
 /// Parse and highlight `content`, returning the syntax token runs for each line.
 /// Returns an empty table (plaintext) when there is no grammar or parsing fails.
-fn line_tokens(content: &str, lang: Option<LanguageId>) -> Vec<Vec<TokenSpan>> {
+///
+/// Shared with the seam worker's source previews, which colour a window of a file nobody
+/// has open — the same problem this solves for a diff of one.
+pub(crate) fn line_tokens(content: &str, lang: Option<LanguageId>) -> Vec<Vec<TokenSpan>> {
     let Some(lang) = lang.filter(|_| !content.is_empty()) else {
         return Vec::new();
     };

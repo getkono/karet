@@ -28,8 +28,12 @@ serde = ["dep:serde", "karet-core/serde"]
 # Grammar pass-through to the single parse host. Only the languages this crate
 # actually maps into the lens vocabulary appear here — a grammar with no facet
 # mapping would parse and then classify nothing.
-lang-rust   = ["karet-treesitter/lang-rust"]
-lang-python = ["karet-treesitter/lang-python"]
+lang-rust       = ["karet-treesitter/lang-rust"]
+lang-python     = ["karet-treesitter/lang-python"]
+lang-javascript = ["karet-treesitter/lang-javascript"]
+lang-typescript = ["lang-javascript", "karet-treesitter/lang-typescript"]
+lang-swift      = ["karet-treesitter/lang-swift"]
+lang-kotlin     = ["karet-treesitter/lang-kotlin"]
 
 [dependencies]
 karet-core.workspace       = true

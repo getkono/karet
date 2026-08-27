@@ -25,6 +25,7 @@ use crate::api::Event;
 use crate::api::RequestId;
 use crate::api::SeamQueryError;
 
+mod preview;
 mod project;
 
 pub(crate) use project::edges_of;
@@ -94,6 +95,8 @@ struct Worker {
     configuration: Option<Configuration>,
     available: Vec<Configuration>,
     pool: ParserPool,
+    /// The one file kept in memory for source previews.
+    preview: Option<preview::PreviewSource>,
 }
 
 fn run(jobs: &Receiver<SeamJob>, events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>) {
@@ -103,12 +106,7 @@ fn run(jobs: &Receiver<SeamJob>, events: &tokio_mpsc::UnboundedSender<(Option<Re
         // an unstarted older one. A re-index is never dropped — losing one would leave
         // the index describing text that no longer exists.
         while let Ok(next) = jobs.try_recv() {
-            let supersedes = matches!(
-                (&job, &next),
-                (SeamJob::Index { .. }, SeamJob::Index { .. })
-                    | (SeamJob::Query { .. }, SeamJob::Query { .. })
-            );
-            if supersedes {
+            if supersedes(&job, &next) {
                 job = next;
             } else {
                 worker.execute(job, events);
@@ -117,6 +115,27 @@ fn run(jobs: &Receiver<SeamJob>, events: &tokio_mpsc::UnboundedSender<(Option<Re
         }
         worker.execute(job, events);
     }
+}
+
+/// Whether `next` makes `current` pointless: the reader's newest intent wins.
+///
+/// A held arrow key enqueues one node request per row, and every one but the last asks
+/// about a node the reader has already moved past — which, now that a node request reads
+/// and highlights a file, is a disk read and a parse each. A re-index is never dropped:
+/// losing one would leave the index describing text that no longer exists.
+///
+/// Dropping a job leaves its request id unanswered forever. That is safe only because the
+/// client overwrites its single in-flight seam-node slot on every send, so an abandoned id
+/// can never be the one it is waiting on, and seam commands register no cancellation
+/// entry. Should either stop being true, this rule has to deregister what it drops.
+#[must_use]
+fn supersedes(current: &SeamJob, next: &SeamJob) -> bool {
+    matches!(
+        (current, next),
+        (SeamJob::Index { .. }, SeamJob::Index { .. })
+            | (SeamJob::Query { .. }, SeamJob::Query { .. })
+            | (SeamJob::Node { .. }, SeamJob::Node { .. })
+    )
 }
 
 impl Worker {
@@ -149,6 +168,8 @@ impl Worker {
             Ok(index) => {
                 self.index = Some(index);
                 self.root = Some(root.to_path_buf());
+                // A rebuilt index may describe entirely different files.
+                self.preview = None;
                 self.available = project::configurations_for(root);
                 self.configuration = self.available.first().cloned();
                 self.apply_configuration();
@@ -182,6 +203,9 @@ impl Worker {
             // known to hold. Nothing to rebuild and nothing to say about it.
             return;
         };
+        // Adopted rather than dropped: `Reindex` carries the caller's text, which may be
+        // an unsaved buffer, and the pane must quote what the index actually read.
+        self.preview = Some(preview::PreviewSource::adopt(path, text));
         if karet_seam::reindex_file(index, &mut self.pool, path, text).is_err() {
             // A file that will not parse leaves the previous tree standing rather than
             // emptying the view mid-edit.
@@ -250,7 +274,11 @@ impl Worker {
         }
     }
 
-    /// Answer with one node's edges.
+    /// Answer with one node's edges and the source behind it.
+    ///
+    /// Both in one answer rather than two: they describe the same node, they are
+    /// invalidated by the same keypress, and splitting them would let the pane show one
+    /// node's source beneath another node's relations.
     fn node(
         &mut self,
         id: RequestId,
@@ -264,6 +292,7 @@ impl Worker {
                 Event::SeamNodeDetail {
                     node: path.to_owned(),
                     edges: Vec::new(),
+                    preview: Err(preview::no_index()),
                 },
             ));
             return;
@@ -272,12 +301,22 @@ impl Worker {
             .parse::<SeamPath>()
             .ok()
             .and_then(|parsed| index.resolve(&parsed));
+        let located = target.and_then(|id| index.node(id)).and_then(|node| {
+            index
+                .file_path(node.location.file)
+                .map(|file| (file.to_path_buf(), node.location))
+        });
         let edges = target.map(|node| edges_of(index, node)).unwrap_or_default();
+        let preview = match located {
+            Some((file, at)) => preview::preview_for(&mut self.preview, &file, at.range, at.header),
+            None => Err(preview::no_index()),
+        };
         let _ = events.send((
             Some(id),
             Event::SeamNodeDetail {
                 node: path.to_owned(),
                 edges,
+                preview,
             },
         ));
     }
@@ -337,5 +376,50 @@ impl Worker {
             &self.available,
         );
         let _ = events.send((id, Event::SeamIndexed { summary, nodes }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node_job(path: &str) -> SeamJob {
+        SeamJob::Node {
+            id: RequestId(1),
+            path: path.to_owned(),
+        }
+    }
+
+    fn query_job(text: &str) -> SeamJob {
+        SeamJob::Query {
+            id: RequestId(1),
+            text: text.to_owned(),
+        }
+    }
+
+    fn reindex_job() -> SeamJob {
+        SeamJob::Reindex {
+            id: RequestId(1),
+            path: PathBuf::from("src/lib.rs"),
+            text: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_newer_node_request_supersedes_an_unstarted_older_one() {
+        // A held arrow key would otherwise read and parse one file per row travelled.
+        assert!(supersedes(&node_job("a"), &node_job("b")));
+    }
+
+    #[test]
+    fn a_reindex_is_never_superseded() {
+        // Dropping one would leave the index describing text that no longer exists.
+        assert!(!supersedes(&reindex_job(), &reindex_job()));
+    }
+
+    #[test]
+    fn superseding_is_per_kind_rather_than_newest_wins() {
+        assert!(!supersedes(&node_job("a"), &query_job("lens:api")));
+        assert!(!supersedes(&query_job("lens:api"), &node_job("a")));
     }
 }

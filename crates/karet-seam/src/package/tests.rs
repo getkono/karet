@@ -24,6 +24,15 @@ fn package(name: &str, files: &[(&str, &str)]) -> Result<tempfile::TempDir, std:
     Ok(dir)
 }
 
+/// Write a file under `root`, creating the directories above it.
+fn write(root: &Path, relative: &str, contents: &str) -> Result<(), std::io::Error> {
+    let path = root.join(relative);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)
+}
+
 fn paths(index: &SeamIndex) -> Vec<String> {
     let mut out: Vec<String> = index
         .nodes()
@@ -585,5 +594,85 @@ fn reindexing_one_file_replaces_only_its_own_nodes() -> TestResult {
         .and_then(|id| index.node(*id))
         .ok_or("package root")?;
     assert!(root.rollups.get(crate::model::Lens::Hazard) >= 1);
+    Ok(())
+}
+
+// --- the file-tree ecosystems -----------------------------------------------
+
+#[test]
+fn a_node_package_becomes_a_module_per_file_and_a_namespace_per_directory() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    write(dir.path(), "package.json", "{}")?;
+    write(dir.path(), "src/index.ts", "")?;
+    write(dir.path(), "src/widget.ts", "")?;
+    write(dir.path(), "src/model/index.ts", "")?;
+    write(dir.path(), "src/model/shape.ts", "")?;
+    let index = index_workspace(dir.path(), IndexOptions::default())?;
+    let found = paths(&index);
+    // `index.ts` *is* its directory, exactly as `__init__.py` and `mod.rs` are.
+    assert!(found.iter().any(|p| p.ends_with("::widget")), "{found:?}");
+    assert!(found.iter().any(|p| p.ends_with("::model")), "{found:?}");
+    assert!(
+        found.iter().any(|p| p.ends_with("::model::shape")),
+        "{found:?}"
+    );
+    assert!(!found.iter().any(|p| p.ends_with("::index")), "{found:?}");
+    Ok(())
+}
+
+#[test]
+fn a_swift_package_becomes_one_root_per_target() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    write(dir.path(), "Package.swift", "")?;
+    write(dir.path(), "Sources/Widgets/Widget.swift", "")?;
+    write(dir.path(), "Sources/Support/Util.swift", "")?;
+    let index = index_workspace(dir.path(), IndexOptions::default())?;
+    let found = paths(&index);
+    assert!(found.contains(&"Support::Util".to_owned()), "{found:?}");
+    assert!(found.contains(&"Widgets::Widget".to_owned()), "{found:?}");
+    Ok(())
+}
+
+#[test]
+fn a_gradle_module_becomes_a_namespace_per_package_directory() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    write(dir.path(), "build.gradle.kts", "")?;
+    write(dir.path(), "src/main/kotlin/com/acme/Widget.kt", "")?;
+    let index = index_workspace(dir.path(), IndexOptions::default())?;
+    let found = paths(&index);
+    // The directory tree mirrors the package declaration by convention, and it is what a
+    // reader navigating the spine actually sees.
+    assert!(
+        found
+            .iter()
+            .any(|path| path.ends_with("::com::acme::Widget")),
+        "{found:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_directory_with_no_module_file_still_becomes_one_node() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    write(dir.path(), "Package.swift", "")?;
+    write(
+        dir.path(),
+        "Sources/Widgets/model/Shape.swift",
+        "struct Shape {}\n",
+    )?;
+    let index = index_workspace(dir.path(), IndexOptions::default())?;
+    let found = paths(&index);
+    // `model` is a namespace with no file of its own, so it points at `Shape.swift` for
+    // somewhere to open. Extracting that file into `model` as well would give the struct
+    // two nodes, one under each — so `Shape` the module holds `Shape` the struct, once.
+    assert_eq!(
+        found,
+        [
+            "Widgets",
+            "Widgets::model",
+            "Widgets::model::Shape",
+            "Widgets::model::Shape::Shape",
+        ]
+    );
     Ok(())
 }

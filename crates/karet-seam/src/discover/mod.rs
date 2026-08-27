@@ -13,9 +13,10 @@
 //!
 //! Two rules shape the result:
 //!
-//! - **Both ecosystems always run.** Cargo discovery does not suppress Python discovery.
-//!   A repository with a Rust workspace and a Python service is one repository, and
-//!   answering with only half of it would be a quieter kind of wrong than failing.
+//! - **Every ecosystem always runs.** Cargo discovery does not suppress Python discovery,
+//!   nor Node, Swift or Gradle. A repository with a Rust workspace, a Python service and
+//!   a TypeScript front end is one repository, and answering with only part of it would
+//!   be a quieter kind of wrong than failing.
 //! - **The order is stable and meaningful.** Outermost first, then declaration order, then
 //!   sorted. The order packages are discovered in is the order the view lists them in its
 //!   first column, so a reshuffle between runs is user-visible.
@@ -27,6 +28,7 @@ use std::path::PathBuf;
 mod glob;
 mod python;
 mod scan;
+mod trees;
 
 pub(crate) use scan::skipped;
 
@@ -38,6 +40,40 @@ pub enum PackageKind {
     Cargo,
     /// A Python package: walked over the filesystem, because Python modules *are* files.
     Python,
+    /// A Node package — TypeScript or JavaScript — marked by `package.json`.
+    Node,
+    /// A Swift package, marked by `Package.swift`, one root per target.
+    Swift,
+    /// A Gradle module, marked by `build.gradle{,.kts}`, one root per source set.
+    Gradle,
+}
+
+impl PackageKind {
+    /// The source extensions this ecosystem's walk reads.
+    ///
+    /// Empty for Cargo, whose module tree is declared rather than walked, and for Python,
+    /// which has a walk of its own because `__init__.py` carries a rule nothing else does.
+    #[must_use]
+    pub fn extensions(self) -> &'static [&'static str] {
+        match self {
+            Self::Node => &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"],
+            Self::Swift => &["swift"],
+            Self::Gradle => &["kt", "kts"],
+            Self::Cargo | Self::Python => &[],
+        }
+    }
+
+    /// File stems that *are* their directory's module rather than a module beside it.
+    ///
+    /// The `__init__.py`/`mod.rs` convention, where a language has one. Swift and Kotlin
+    /// do not, so every file there is its own module.
+    #[must_use]
+    pub fn index_names(self) -> &'static [&'static str] {
+        match self {
+            Self::Node => &["index"],
+            _ => &[],
+        }
+    }
 }
 
 /// One package found under a directory.
@@ -82,7 +118,7 @@ impl Default for DiscoveryOptions {
     }
 }
 
-/// The packages under `root`, Cargo first, then Python.
+/// The packages under `root`, Cargo first, then Python, then the file-tree ecosystems.
 ///
 /// Infallible by design: an empty result means nothing indexable is here, which is an
 /// answer a caller can act on — offering a picker, say — rather than an error it must
@@ -92,6 +128,7 @@ impl Default for DiscoveryOptions {
 pub fn discover(root: &Path, options: DiscoveryOptions) -> Vec<Discovered> {
     let mut found = cargo(root, options);
     found.extend(python::discover(root, options));
+    found.extend(trees::discover(root, options));
 
     let mut seen: HashSet<PathBuf> = HashSet::new();
     found.retain(|package| seen.insert(package.root.clone()));

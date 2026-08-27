@@ -710,7 +710,7 @@ pub enum Command {
         /// The query text, exactly as typed.
         text: String,
     },
-    /// Fetch one seam node's edges, answering with [`Event::SeamNodeDetail`].
+    /// Fetch one seam node's edges and source, answering with [`Event::SeamNodeDetail`].
     SeamNode {
         /// The node's identity, as its semantic path.
         path: String,

@@ -10,12 +10,15 @@ use karet_session::api::Command as SessionCommand;
 use karet_session::api::RequestId;
 use karet_session::api::SeamEdgeView;
 use karet_session::api::SeamNodeView;
+use karet_session::api::SeamPreview;
 use karet_session::api::SeamQueryError;
 use karet_session::api::SeamSummary;
 
+use super::Reroot;
 use super::SeamFocus;
 use super::SeamViewState;
 use crate::app::App;
+use crate::app::pending::Pending;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 
@@ -278,6 +281,9 @@ impl App {
         // content the moment the tree arrives.
         if state.selection.is_empty() {
             state.move_row(0);
+            // Ask for what the reader just landed on. Without this the detail pane stays
+            // empty until they press a key, which reads as a view that failed to load.
+            self.request_seam_node();
         }
     }
 
@@ -329,12 +335,13 @@ impl App {
         state.query_matches = Some(nodes.into_iter().collect::<HashSet<_>>());
     }
 
-    /// Attach edges to the node they belong to, ignoring a reply for another.
+    /// Attach a node's detail to the node it belongs to, ignoring a reply for another.
     pub(crate) fn on_seam_node_detail(
         &mut self,
         id: Option<RequestId>,
         node: String,
         edges: Vec<SeamEdgeView>,
+        preview: Result<SeamPreview, String>,
     ) {
         if id.is_none() || id != self.seam_node_req {
             return;
@@ -348,10 +355,12 @@ impl App {
             return;
         }
         state.edges = edges;
+        state.preview = Some(preview);
+        state.detail_since = None;
         state.facet_row = 0;
     }
 
-    /// Ask the backend for the selected node's edges.
+    /// Ask the backend for the selected node's edges and source.
     pub(crate) fn request_seam_node(&mut self) {
         let Some(id) = self
             .active_seam()
@@ -359,6 +368,11 @@ impl App {
         else {
             return;
         };
+        if let Some(state) = self.active_seam() {
+            // The block's rows are already reserved on screen; only the shared reveal
+            // delay decides whether they say anything while the answer is on its way.
+            state.detail_since = Some(Pending::start());
+        }
         self.seam_node_req = self.send(SessionCommand::SeamNode { path: id });
     }
 
@@ -398,8 +412,7 @@ impl App {
         };
         if state.focus == SeamFocus::Facets {
             // In the facet pane the same keys walk the edge list instead.
-            let last = state.edges.len().saturating_sub(1);
-            state.facet_row = state.facet_row.saturating_add_signed(delta).min(last);
+            state.move_facet_row(delta);
             return;
         }
         state.move_row(delta);
@@ -428,12 +441,11 @@ impl App {
             self.submit_seam_query();
             return;
         }
-        if state.reroot() {
-            self.request_seam_node();
-        } else {
+        match state.reroot() {
+            Reroot::Narrowed | Reroot::Descended => self.request_seam_node(),
             // Nothing to descend into, so Enter falls through to the escape hatch
             // rather than doing nothing at all.
-            self.open_seam_selection();
+            Reroot::Refused => self.open_seam_selection(),
         }
     }
 
@@ -540,8 +552,12 @@ impl App {
             return;
         };
         let from = state.selected_id().unwrap_or_default().to_owned();
-        if state.pivot(&edge.kind, &from, vec![target]) {
+        if state.pivot(&edge.kind, &from, vec![target.clone()]) {
             self.request_seam_node();
+        } else {
+            // Refusing silently would look like a dropped keypress; the reader is already
+            // looking at what the pivot would have shown them.
+            self.status = Some(format!("seam: already scoped to {target}"));
         }
     }
 }

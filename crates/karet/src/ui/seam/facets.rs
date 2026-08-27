@@ -4,14 +4,11 @@
 //! be the only place a fact appears, or the reader is left decoding pictograms. Every
 //! glyph on a row corresponds to a line here, spelled out.
 //!
-//! Three states are kept apart deliberately. A lens with nothing is `—`, meaning the
-//! index looked and found nothing. A relation still being resolved is `…`, meaning the
-//! answer has not arrived. One that can never resolve is `?`. Collapsing these into a
-//! blank would make "there is no unsafe code here" and "nobody has checked" look identical.
 
 use karet_core::ThemeRole;
 use karet_filetype::IconStyle;
 use karet_theme::Theme;
+use karet_widgets::glyph::slot;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -19,24 +16,20 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 
+use super::ABSENT;
 use super::LENS_NAMES;
+use super::PENDING;
+use super::UNRESOLVABLE;
 use super::lens_glyph;
 use crate::app::seam::SeamFocus;
 use crate::app::seam::SeamViewState;
-
-/// Shown when a lens carries nothing: the index looked, and there was nothing.
-const ABSENT: &str = "—";
-/// Shown while an answer is still being resolved.
-const PENDING: &str = "…";
-/// Shown when an answer can never be resolved.
-const UNRESOLVABLE: &str = "?";
 
 /// Draw the facet pane.
 pub(super) fn draw(
     f: &mut Frame,
     theme: &Theme,
     area: Rect,
-    state: &SeamViewState,
+    state: &mut SeamViewState,
     icons: IconStyle,
 ) {
     let Some(node) = state.selected() else {
@@ -46,6 +39,12 @@ pub(super) fn draw(
     let strong = theme
         .style(ThemeRole::Foreground)
         .add_modifier(Modifier::BOLD);
+
+    // Beside a source preview the pane is half a terminal wide, so the fixed label
+    // columns shrink rather than eating the room an edge needs to name its target.
+    let compact = area.width < super::FACET_COMPACT_WIDTH;
+    let lens_column = if compact { 4 } else { 13 };
+    let kind_column = if compact { 10 } else { 18 };
 
     let mut lines = Vec::new();
 
@@ -81,8 +80,11 @@ pub(super) fn draw(
     for lens in LENS_NAMES {
         let facets: Vec<_> = node.facets.iter().filter(|f| f.lens == lens).collect();
         let mut spans = vec![
-            Span::styled(format!("{} ", lens_glyph(lens, icons)), muted),
-            Span::styled(format!("{lens:<13} "), muted),
+            Span::styled(format!("{} ", slot(lens_glyph(lens, icons), icons)), muted),
+            Span::styled(
+                format!("{:<lens_column$} ", lens_label(lens, compact)),
+                muted,
+            ),
         ];
         if facets.is_empty() {
             spans.push(Span::styled(ABSENT, muted));
@@ -116,8 +118,14 @@ pub(super) fn draw(
         lines.push(Line::from(spans));
     }
 
-    lines.push(edges_line(theme, state));
+    lines.push(edges_line(theme, state, lens_column));
 
+    // Measured from what has been pushed so far rather than from a constant, so adding a
+    // line above the edges can never quietly move what the mouse thinks it is aiming at.
+    let first_edge = area
+        .y
+        .saturating_add(u16::try_from(lines.len()).unwrap_or(u16::MAX));
+    let mut hits = Vec::new();
     let focused = state.focus == SeamFocus::Facets;
     for (index, edge) in state.edges.iter().enumerate() {
         let arrow = if edge.outgoing { "→" } else { "←" };
@@ -137,22 +145,49 @@ pub(super) fn draw(
         } else {
             theme.style(ThemeRole::Foreground)
         };
+        let y = first_edge.saturating_add(u16::try_from(index).unwrap_or(u16::MAX));
+        if y < area.y.saturating_add(area.height) {
+            hits.push((Rect::new(area.x, y, area.width, 1), index));
+        }
         lines.push(Line::from(vec![
-            Span::styled(format!("  {:<18} {arrow} ", edge.kind), muted),
+            Span::styled(
+                format!(
+                    "  {} {arrow} ",
+                    karet_widgets::text::fit_end(&edge.kind, kind_column)
+                        + &" ".repeat(kind_column.saturating_sub(edge.kind.chars().count()))
+                ),
+                muted,
+            ),
             Span::styled(target, style),
             Span::styled(format!("   ({})", edge.state), muted),
         ]));
     }
 
+    state.hits.edges = hits;
     f.render_widget(Paragraph::new(lines), area);
 }
 
+/// The lens's name, abbreviated where the pane is too narrow for it.
+fn lens_label(lens: &str, compact: bool) -> &str {
+    if !compact {
+        return lens;
+    }
+    match lens {
+        "api" => "api",
+        "substitution" => "sub",
+        "variation" => "var",
+        "boundary" => "bnd",
+        _ => "haz",
+    }
+}
+
 /// The edges header, which distinguishes "none" from "not yet resolved".
-fn edges_line<'a>(theme: &Theme, state: &SeamViewState) -> Line<'a> {
+fn edges_line<'a>(theme: &Theme, state: &SeamViewState, lens_column: usize) -> Line<'a> {
+    let width = lens_column + 2;
     let muted = theme.style(ThemeRole::Muted);
     if state.edges.is_empty() {
         return Line::from(vec![
-            Span::styled(format!("{:<15}", "  edges"), muted),
+            Span::styled(format!("{:<width$}", "  edges"), muted),
             // Without a semantic tier nothing has looked, so saying "none" would assert
             // an absence the index has not established.
             Span::styled(
@@ -162,7 +197,7 @@ fn edges_line<'a>(theme: &Theme, state: &SeamViewState) -> Line<'a> {
         ]);
     }
     Line::from(vec![
-        Span::styled(format!("{:<15}", "  edges"), muted),
+        Span::styled(format!("{:<width$}", "  edges"), muted),
         Span::styled(
             format!("{} — Enter to pivot", state.edges.len()),
             theme.style(ThemeRole::DiagnosticInfo),

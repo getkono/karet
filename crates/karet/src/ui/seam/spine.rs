@@ -10,6 +10,9 @@ use karet_filetype::IconStyle;
 use karet_theme::Theme;
 use karet_widgets::Columns;
 use karet_widgets::UiIcon;
+use karet_widgets::glyph::glyph_slot;
+use karet_widgets::glyph::slot;
+use karet_widgets::glyph::slots;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -59,13 +62,41 @@ fn draw_columns(
         .unwrap_or_default();
     let focused = state.focused_column.saturating_sub(window.start);
 
+    // Recorded from the same loop that paints, and keyed on identity: the mouse never has
+    // to re-derive which node a row was, so the window offset cannot drift between them.
+    let ids = state.columns();
+    let rects = Columns::layout(area, visible.len());
+    let mut rows = Vec::new();
+    for (index, (column, rect)) in visible.iter().zip(&rects).enumerate() {
+        let Some(ids) = ids.get(window.start + index) else {
+            break;
+        };
+        for offset in 0..rect.height {
+            let Some(id) = ids.get(column.offset + usize::from(offset)) else {
+                break;
+            };
+            rows.push((
+                Rect::new(rect.x, rect.y.saturating_add(offset), rect.width, 1),
+                id.clone(),
+            ));
+        }
+    }
+    state.hits.rows = rows;
+
     let widget = Columns::new(&visible, focused, column_style(theme))
-        .child_marker(UiIcon::SeamHasChildren.glyph(icons));
+        .child_marker(UiIcon::SeamHasChildren.glyph(icons))
+        .marker_slot(u16::try_from(glyph_slot(icons)).unwrap_or(1));
     widget.render(area, f.buffer_mut());
 }
 
 /// The indented rendering, for terminals too narrow to cascade.
-fn draw_tree(f: &mut Frame, theme: &Theme, area: Rect, state: &SeamViewState, icons: IconStyle) {
+fn draw_tree(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    state: &mut SeamViewState,
+    icons: IconStyle,
+) {
     let selected_style = Style::default()
         .fg(theme.role(ThemeRole::Foreground).to_ratatui())
         .bg(theme.role(ThemeRole::Selection).to_ratatui());
@@ -73,10 +104,12 @@ fn draw_tree(f: &mut Frame, theme: &Theme, area: Rect, state: &SeamViewState, ic
     let normal = theme.style(ThemeRole::Foreground);
 
     let mut lines = Vec::new();
+    let mut ids_by_line = Vec::new();
     // The path the reader has open, one level per line — the same information the
     // columns show side by side, stacked instead.
     for (depth, ids) in state.columns().into_iter().enumerate() {
         for id in ids {
+            ids_by_line.push(id.clone());
             let row = row_for(state, &id, icons);
             let chosen = state.selection.get(depth).is_some_and(|sel| *sel == id);
             let style = if chosen {
@@ -90,7 +123,7 @@ fn draw_tree(f: &mut Frame, theme: &Theme, area: Rect, state: &SeamViewState, ic
             spans.push(Span::styled(row.label.clone(), style));
             if !row.markers.is_empty() {
                 spans.push(Span::styled(
-                    format!(" {}", row.markers),
+                    format!(" {}", slots(row.markers.iter().copied(), icons)),
                     theme.style(ThemeRole::DiagnosticInfo),
                 ));
             }
@@ -102,7 +135,7 @@ fn draw_tree(f: &mut Frame, theme: &Theme, area: Rect, state: &SeamViewState, ic
             }
             if row.has_children {
                 spans.push(Span::styled(
-                    format!(" {}", UiIcon::SeamHasChildren.glyph(icons)),
+                    format!(" {}", slot(UiIcon::SeamHasChildren.glyph(icons), icons)),
                     muted,
                 ));
             }
@@ -118,6 +151,25 @@ fn draw_tree(f: &mut Frame, theme: &Theme, area: Rect, state: &SeamViewState, ic
         .len()
         .saturating_sub(usize::from(area.height))
         .min(usize::from(area.height));
+    // The tree shows its tail, so the rows it records start from the same skip.
+    state.hits.rows = ids_by_line
+        .into_iter()
+        .skip(skip)
+        .take(usize::from(area.height))
+        .enumerate()
+        .map(|(row, id)| {
+            (
+                Rect::new(
+                    area.x,
+                    area.y
+                        .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
+                    area.width,
+                    1,
+                ),
+                id,
+            )
+        })
+        .collect();
     let visible: Vec<Line> = lines.into_iter().skip(skip).collect();
     f.render_widget(
         Paragraph::new(visible).style(Style::default().add_modifier(Modifier::empty())),

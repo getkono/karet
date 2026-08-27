@@ -210,6 +210,51 @@
     }
 
     #[test]
+    fn asking_for_a_node_answers_with_its_edges_and_its_source_together() {
+        let Some((mut session, mut events, _dir, _)) = indexed_session() else {
+            return;
+        };
+        session.handle(
+            RequestId(2),
+            Command::SeamNode {
+                path: "seamdemo::danger".to_owned(),
+            },
+        );
+        let Some(Event::SeamNodeDetail { preview, .. }) = await_seam_event(&mut events) else {
+            return;
+        };
+        assert!(preview.is_ok(), "{preview:?}");
+        let Ok(preview) = preview else {
+            return;
+        };
+        // One answer, not two: the pane can never show one node's source under another
+        // node's relations.
+        let body = preview.lines[preview.body_start..preview.body_end].join("\n");
+        assert!(body.contains("unsafe fn danger"), "{body:?}");
+        assert!(preview.file.ends_with("lib.rs"), "{:?}", preview.file);
+    }
+
+    #[test]
+    fn a_node_request_with_no_index_says_why_it_has_no_source() {
+        let Some(dir) = tempfile::tempdir().ok() else {
+            return;
+        };
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![dir.path().to_path_buf()],
+            ..SessionConfig::default()
+        });
+        session.handle(RequestId(1), Command::SeamNode {
+            path: "absent::thing".to_owned(),
+        });
+        let Some(Event::SeamNodeDetail { preview, .. }) = await_seam_event(&mut events) else {
+            return;
+        };
+        // A reason, never a blank block: the pane keeps "nothing there" and "nobody
+        // looked" apart everywhere else, and the source must not be the exception.
+        assert!(preview.is_err(), "{preview:?}");
+    }
+
+    #[test]
     fn switching_configuration_re_answers_with_the_new_one_named() {
         let Some((mut session, mut events, _dir, first)) = indexed_session() else {
             return;

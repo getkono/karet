@@ -9,6 +9,7 @@ use karet_core::Range;
 use karet_filetype::IconStyle;
 use karet_session::api::SeamFacetView;
 use karet_session::api::SeamNodeView;
+use karet_session::api::SeamPreview;
 use karet_session::api::SeamSummary;
 use karet_theme::Theme;
 use ratatui::Terminal;
@@ -86,13 +87,18 @@ fn view() -> SeamViewState {
 
 /// Render into a buffer of the given size.
 fn render(state: &mut SeamViewState, width: u16, height: u16) -> Buffer {
+    render_as(state, width, height, IconStyle::Ascii)
+}
+
+/// Render in a chosen icon tier, for the assertions that are about glyph width.
+fn render_as(state: &mut SeamViewState, width: u16, height: u16, icons: IconStyle) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(width, height));
     let Ok(terminal) = terminal.as_mut() else {
         return Buffer::empty(ratatui::layout::Rect::new(0, 0, width, height));
     };
     let theme = Theme::dark();
     let _ = terminal.draw(|f| {
-        draw_seam(f, &theme, f.area(), state, IconStyle::Ascii);
+        draw_seam(f, &theme, f.area(), state, icons);
     });
     terminal.backend().buffer().clone()
 }
@@ -263,11 +269,390 @@ fn a_query_error_is_shown_with_its_suggestions() {
 #[test]
 fn the_reversal_path_is_visible_once_narrowed() {
     let mut state = view();
-    state.select_path("demo");
-    state.reroot();
+    // Narrowed directly: what this pins is that a narrowed view shows the way back, not
+    // how one narrows — and the fixture's sole root is no longer rerootable onto itself.
+    state
+        .narrow
+        .push(crate::app::seam::Narrow::Scope("demo".to_owned()));
+    state.move_row(0);
     let rendered = text(&render(&mut state, 120, 20));
     // Reversible is not enough — the way back has to be on screen.
     assert!(rendered.contains("widen"), "{rendered}");
+}
+
+#[test]
+fn every_lens_line_in_the_facet_pane_starts_at_the_same_column() {
+    // The regression: `hazard`'s glyph was East-Asian Wide, so its name sat one column
+    // right of the other four and the pane read as ragged.
+    for icons in [IconStyle::NerdFont, IconStyle::Unicode, IconStyle::Ascii] {
+        let mut state = view();
+        state.select_path("demo::danger");
+        let rendered = text(&render_as(&mut state, 120, 24, icons));
+        let columns: Vec<usize> = LENS_NAMES
+            .iter()
+            .filter_map(|lens| {
+                rendered
+                    .lines()
+                    // Past the header, whose legend also spells `api`.
+                    .skip(1)
+                    .find(|line| line.contains(*lens))
+                    .and_then(|line| line.chars().position(|c| c.is_ascii_alphabetic()))
+            })
+            .collect();
+        assert_eq!(columns.len(), LENS_NAMES.len(), "{icons:?}");
+        assert!(
+            columns.windows(2).all(|pair| pair[0] == pair[1]),
+            "{icons:?}: lens names start at {columns:?}"
+        );
+    }
+}
+
+#[test]
+fn the_legend_entries_are_evenly_spaced_in_every_tier() {
+    // Each entry is `{digit}{glyph} {short}  `, so the short names sit at a constant
+    // stride — until one glyph measures two cells and shoves everything after it along.
+    for icons in [IconStyle::NerdFont, IconStyle::Unicode, IconStyle::Ascii] {
+        let mut state = view();
+        let rendered = text(&render_as(&mut state, 140, 20, icons));
+        let Some(header) = rendered.lines().next() else {
+            panic!("no header row");
+        };
+        let columns: Vec<usize> = ["api", "sub", "var", "bnd", "haz"]
+            .iter()
+            .filter_map(|short| {
+                header
+                    .chars()
+                    .collect::<Vec<_>>()
+                    .windows(3)
+                    .position(|w| w.iter().collect::<String>() == **short)
+            })
+            .collect();
+        assert_eq!(columns.len(), 5, "{icons:?}: {header:?}");
+        let strides: Vec<usize> = columns.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        assert!(
+            strides.windows(2).all(|pair| pair[0] == pair[1]),
+            "{icons:?}: legend strides {strides:?} in {header:?}"
+        );
+    }
+}
+
+/// A source preview whose node sits `before` lines into the fetched block.
+fn preview(first_line: u32, before: usize, body: usize, count: usize) -> SeamPreview {
+    SeamPreview {
+        file: std::path::PathBuf::from("src/lib.rs"),
+        lines: (0..count).map(|n| format!("    source line {n}")).collect(),
+        numbers: (first_line..).take(count).collect(),
+        body_start: before,
+        head_end: before + 1,
+        body_end: before + body,
+        dropped: 0,
+        context: 3,
+        tokens: Vec::new(),
+    }
+}
+
+/// The view with a source preview already answered.
+fn with_preview(answer: Result<SeamPreview, String>) -> SeamViewState {
+    let mut state = view();
+    state.select_path("demo::danger");
+    state.preview = Some(answer);
+    state
+}
+
+#[test]
+fn the_preview_block_is_the_same_height_at_the_top_of_a_file_as_in_the_middle() {
+    // The requirement: nothing below the block may move as the selection travels.
+    let row_of = |state: &mut SeamViewState| {
+        let rendered = text(&render(state, 100, 24));
+        rendered
+            .lines()
+            .position(|line| line.contains("edges"))
+            .zip(
+                rendered
+                    .lines()
+                    .position(|line| line.contains("press / to filter")),
+            )
+    };
+    let mid = row_of(&mut with_preview(Ok(preview(40, 3, 2, 8))));
+    let top = row_of(&mut with_preview(Ok(preview(0, 0, 2, 5))));
+    let unread = row_of(&mut with_preview(Err("gone".to_owned())));
+    assert!(mid.is_some(), "nothing rendered");
+    assert_eq!(mid, top);
+    assert_eq!(mid, unread);
+}
+
+#[test]
+fn context_the_file_does_not_have_is_reserved_rather_than_closed_up() {
+    let rendered = text(&render(&mut with_preview(Ok(preview(0, 0, 2, 5))), 100, 24));
+    // The node starts at line 1, so the first painted source number must be 1 — the
+    // rows above it are blank, not filled with whatever came next.
+    let numbered: Vec<&str> = rendered
+        .lines()
+        .filter(|line| line.contains("source line"))
+        .collect();
+    assert!(!numbered.is_empty(), "{rendered}");
+    assert!(numbered.iter().all(|line| !line.trim().is_empty()));
+}
+
+#[test]
+fn a_preview_that_could_not_be_read_says_why_instead_of_rendering_blank() {
+    let rendered = text(&render(
+        &mut with_preview(Err("the file could not be read".to_owned())),
+        100,
+        24,
+    ));
+    assert!(rendered.contains("could not be read"), "{rendered}");
+    assert!(rendered.contains('?'), "{rendered}");
+}
+
+#[test]
+fn a_pending_preview_says_nothing_until_the_reveal_delay_and_then_says_so() {
+    let paint = |pending: Option<crate::ui::Pending>| {
+        let mut state = view();
+        state.select_path("demo::danger");
+        state.detail_since = pending;
+        text(&render(&mut state, 100, 24))
+    };
+    // A fast answer must never flash a placeholder on its way past, so a request that
+    // has only just gone out looks exactly like no request at all.
+    assert_eq!(paint(Some(crate::ui::Pending::start())), paint(None));
+    // Past the shared delay it has to say something, or the pane reads as broken.
+    assert_ne!(paint(Some(crate::ui::Pending::revealed())), paint(None));
+}
+
+#[test]
+fn the_preview_sits_beside_the_facets_on_a_wide_terminal() {
+    let rendered = text(&render(
+        &mut with_preview(Ok(preview(40, 3, 2, 8))),
+        160,
+        24,
+    ));
+    // Same row as a lens line: the pane split sideways rather than growing.
+    assert!(
+        rendered
+            .lines()
+            .any(|line| line.contains("substitution") && line.contains("source line")),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn the_preview_sits_below_the_facets_on_a_tall_narrow_one() {
+    let rendered = text(&render(&mut with_preview(Ok(preview(40, 3, 2, 8))), 70, 40));
+    assert!(rendered.contains("source line"), "{rendered}");
+    assert!(
+        !rendered
+            .lines()
+            .any(|line| line.contains("substitution") && line.contains("source line")),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn context_lines_are_muted_and_the_definition_is_not() {
+    // The whole point of the block: the eye lands on the definition, not on its
+    // surroundings — and that has to hold in a file with no grammar to colour it.
+    let mut state = with_preview(Ok(preview(40, 3, 2, 8)));
+    let buf = render(&mut state, 100, 24);
+    let rendered = text(&buf);
+    let Some(row) = rendered
+        .lines()
+        .position(|line| line.contains("source line 3"))
+    else {
+        panic!("the first body line was not painted: {rendered}");
+    };
+    let Some(column) = rendered
+        .lines()
+        .nth(row)
+        .and_then(|line| line.find("source"))
+    else {
+        panic!("no source column");
+    };
+    let cell = |y: usize| {
+        buf.cell((
+            u16::try_from(column).unwrap_or(0),
+            u16::try_from(y).unwrap_or(0),
+        ))
+        .map(|c| (c.fg, c.modifier))
+    };
+    let (body_fg, body_modifier) = cell(row).unwrap_or_default();
+    let (context_fg, context_modifier) = cell(row - 1).unwrap_or_default();
+    assert_ne!(
+        body_fg, context_fg,
+        "body must not wear its context's colour"
+    );
+    // Hue alone is one grey step in a pane where most rows are grey, so context recedes
+    // on weight too and the eye has somewhere to land.
+    assert!(
+        context_modifier.contains(ratatui::style::Modifier::DIM),
+        "context should be dim: {context_modifier:?}"
+    );
+    assert!(
+        !body_modifier.contains(ratatui::style::Modifier::DIM),
+        "the definition must not be dim"
+    );
+}
+
+#[test]
+fn a_taller_terminal_buys_more_source() {
+    // Stability across selections is pinned above; this is the other half of the deal.
+    let rows_of = |height: u16| {
+        let rendered = text(&render(
+            &mut with_preview(Ok(preview(40, 3, 30, 40))),
+            100,
+            height,
+        ));
+        rendered
+            .lines()
+            .filter(|line| line.contains("source line"))
+            .count()
+    };
+    assert!(
+        rows_of(48) > rows_of(24),
+        "{} vs {}",
+        rows_of(48),
+        rows_of(24)
+    );
+}
+
+#[test]
+fn a_wrapped_signature_reaches_the_screen_whole() {
+    // The defect this pane had: a signature spanning four lines showed two of them.
+    let mut wrapped = preview(40, 3, 40, 46);
+    wrapped.head_end = wrapped.body_start + 4;
+    let rendered = text(&render(&mut with_preview(Ok(wrapped)), 100, 40));
+    for line in 3..7 {
+        assert!(
+            rendered.contains(&format!("source line {line}")),
+            "line {line} missing from {rendered}"
+        );
+    }
+}
+
+#[test]
+fn a_terminal_that_can_hold_neither_keeps_its_spine_instead() {
+    let rendered = text(&render(&mut with_preview(Ok(preview(40, 3, 2, 8))), 60, 20));
+    // The spine is the primary surface; a preview is not worth its rows here.
+    assert!(!rendered.contains("source line"), "{rendered}");
+}
+
+// --- what the frame records for the pointer ---------------------------------
+
+#[test]
+fn every_painted_spine_row_is_clickable() {
+    let mut state = view();
+    let buf = render(&mut state, 120, 20);
+    assert!(!state.hits.rows.is_empty());
+    for (rect, id) in &state.hits.rows {
+        let Some(node) = state.nodes.get(id) else {
+            panic!("recorded a row for a node that is not in the tree: {id}");
+        };
+        // The cells the row claims are the cells its name was painted into.
+        let painted: String = (rect.x..rect.right())
+            .map(|x| {
+                buf.cell((x, rect.y))
+                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+            })
+            .collect();
+        assert!(
+            painted.contains(&node.name),
+            "{painted:?} lacks {}",
+            node.name
+        );
+        assert_eq!(
+            state.hits.at(rect.x, rect.y),
+            Some(crate::app::seam::geometry::SeamTarget::Row(id.clone()))
+        );
+    }
+}
+
+#[test]
+fn the_narrow_fallback_records_its_rows_too() {
+    // The indented tree is a different renderer, so it needs its own row map — and both
+    // must resolve to the same identities.
+    let mut wide = view();
+    let _ = render(&mut wide, 120, 20);
+    let mut narrow = view();
+    let _ = render(&mut narrow, 30, 20);
+    let ids = |state: &SeamViewState| {
+        let mut ids: Vec<String> = state.hits.rows.iter().map(|(_, id)| id.clone()).collect();
+        ids.sort();
+        ids
+    };
+    assert!(!narrow.hits.rows.is_empty());
+    assert_eq!(ids(&narrow), ids(&wide));
+}
+
+#[test]
+fn the_breadcrumb_records_one_crumb_per_narrow_plus_the_root() {
+    let mut state = view();
+    state
+        .narrow
+        .push(crate::app::seam::Narrow::Scope("demo".to_owned()));
+    state.move_row(0);
+    let _ = render(&mut state, 120, 20);
+    assert_eq!(state.hits.crumbs.len(), state.narrow.len() + 1);
+    let depths: Vec<usize> = state.hits.crumbs.iter().map(|(_, depth)| *depth).collect();
+    assert_eq!(depths, [0, 1]);
+}
+
+#[test]
+fn the_legend_records_a_hit_for_every_lens() {
+    let mut state = view();
+    let buf = render(&mut state, 120, 20);
+    assert_eq!(state.hits.lenses.len(), LENS_NAMES.len());
+    for (rect, index) in &state.hits.lenses {
+        let painted: String = (rect.x..rect.right())
+            .map(|x| {
+                buf.cell((x, rect.y))
+                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+            })
+            .collect();
+        // The word is part of the target, not just the glyph beside it.
+        let Some(lens) = LENS_NAMES.get(*index) else {
+            panic!("legend hit for a lens that does not exist");
+        };
+        assert!(painted.contains(short(lens)), "{painted:?} for {lens}");
+    }
+}
+
+/// The abbreviated lens name the legend paints.
+fn short(lens: &str) -> &'static str {
+    match lens {
+        "api" => "api",
+        "substitution" => "sub",
+        "variation" => "var",
+        "boundary" => "bnd",
+        _ => "haz",
+    }
+}
+
+#[test]
+fn the_widen_affordance_is_recorded_only_once_narrowed() {
+    let mut state = view();
+    let _ = render(&mut state, 120, 20);
+    assert_eq!(state.hits.widen.width, 0);
+
+    state
+        .narrow
+        .push(crate::app::seam::Narrow::Scope("demo".to_owned()));
+    state.move_row(0);
+    let _ = render(&mut state, 120, 20);
+    assert!(state.hits.widen.width > 0);
+}
+
+#[test]
+fn a_header_run_pushed_off_the_row_claims_nothing() {
+    // A long package name shoves the legend past the right edge; nothing painted there
+    // means nothing clickable there.
+    let mut state = view();
+    state.summary.package = "a".repeat(200);
+    let _ = render(&mut state, 60, 20);
+    assert!(
+        state.hits.lenses.iter().all(|(rect, _)| rect.width == 0),
+        "{:?}",
+        state.hits.lenses
+    );
 }
 
 #[test]
