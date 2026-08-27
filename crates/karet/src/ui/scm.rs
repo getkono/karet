@@ -49,6 +49,7 @@ pub(super) fn draw_scm(
     } else {
         // No pinned region this frame: clear its state so stale hit-testing can't fire.
         app.scm_ui.commits_rect = Rect::default();
+        app.scm_ui.commits_title_rect = Rect::default();
         app.scm_ui.commits_total = 0;
         app.scm_ui.more_row = None;
     }

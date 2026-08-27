@@ -878,3 +878,29 @@ fn the_commits_title_tracks_the_hover_pointer() {
     app.hover = Some((2, 4));
     assert!(!app.hovered_scm_commits_title(), "the row below is not it");
 }
+
+/// The commit region is dropped when the panel is too short for it. Its title rect must
+/// go with it, or a click in the freed space would still open the graph.
+#[test]
+fn a_hidden_commit_region_leaves_no_clickable_title_behind() {
+    let mut app = app();
+    app.sidebar_visible = true;
+    app.sidebar_panel = SidebarPanel::SourceControl;
+    app.scm.log = vec![commit("aaaaaaa111", "first")];
+
+    // Tall enough for the pinned region: the title is painted and hit-testable.
+    let _ = screen(&mut app, 80, 30);
+    assert_ne!(
+        app.scm_ui.commits_title_rect,
+        Rect::default(),
+        "the title is painted when the region fits"
+    );
+
+    // Too short for it: the region is dropped, and so is its hit rect.
+    let _ = screen(&mut app, 80, 12);
+    assert_eq!(
+        app.scm_ui.commits_title_rect,
+        Rect::default(),
+        "no region, no clickable title"
+    );
+}
