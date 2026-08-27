@@ -505,6 +505,7 @@ fn dragging_moves_the_active_tab() {
         editor_rect: Rect::default(),
         commit_file_hits: Vec::new(),
         commit_collapse_hits: Vec::new(),
+        select_regions: Vec::new(),
     }];
     app.active = 0;
     app.tab_drag = Some(TabDrag {
@@ -536,6 +537,7 @@ fn pane_action_click_wins_over_the_underlying_tab_hit() {
         editor_rect: Rect::default(),
         commit_file_hits: Vec::new(),
         commit_collapse_hits: Vec::new(),
+        select_regions: Vec::new(),
     }];
 
     app.handle_mouse(MouseEvent {

@@ -156,15 +156,21 @@ impl Backend for RecordingBackend {
     }
 }
 
-/// Draw the whole shell into a test terminal and return the screen, row by row.
-pub(crate) fn screen(app: &mut App, width: u16, height: u16) -> Vec<String> {
+/// Draw the whole shell into a test terminal and return the painted cells, so a
+/// test can assert on styling rather than only on the glyphs.
+pub(crate) fn frame(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
     terminal
         .draw(|f| crate::ui::draw(f, app))
         .expect("draw the shell");
-    let buffer = terminal.backend().buffer();
+    terminal.backend().buffer().clone()
+}
+
+/// Draw the whole shell into a test terminal and return the screen, row by row.
+pub(crate) fn screen(app: &mut App, width: u16, height: u16) -> Vec<String> {
+    let buffer = frame(app, width, height);
     (0..height)
         .map(|y| {
             (0..width)
@@ -188,6 +194,7 @@ pub(crate) fn content_frame(app: &App, rect: Rect) -> PaneFrame {
         editor_rect: rect,
         commit_file_hits: Vec::new(),
         commit_collapse_hits: Vec::new(),
+        select_regions: Vec::new(),
     }
 }
 

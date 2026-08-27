@@ -97,6 +97,7 @@ pub(super) fn draw_panes(
                     .is_some(),
                 markdown_link_hover: app.markdown_link_hover,
                 pane_action_hover: app.pane_action_hover,
+                selection: app.surface_selection,
             };
             render_pane(f, &mut app.tabs, app.active, rect, &ctx, sink)
         } else if let Some(stored) = app.stored.get_mut(&pane) {
@@ -133,6 +134,7 @@ pub(super) fn draw_panes(
                 blame_clickable: false,
                 markdown_link_hover: None,
                 pane_action_hover: app.pane_action_hover,
+                selection: None,
             };
             render_pane(f, &mut stored.tabs, stored.active, rect, &ctx, sink)
         } else {
@@ -157,6 +159,7 @@ pub(super) fn draw_panes(
             editor_rect: rendered.editor_rect,
             commit_file_hits: rendered.commit_file_hits,
             commit_collapse_hits: rendered.commit_collapse_hits,
+            select_regions: rendered.select_regions,
         });
     }
     app.pane_dividers = app.layout.dividers(area);
@@ -263,6 +266,7 @@ pub(super) fn render_pane(
         commit_collapse_hits: painted.collapse_hits,
         blame_rect: painted.blame_rect,
         markdown_link_hits: painted.markdown_link_hits,
+        select_regions: painted.select_regions,
     }
 }
 

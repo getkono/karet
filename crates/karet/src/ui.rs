@@ -371,6 +371,9 @@ struct PaneCtx<'a> {
     blame_clickable: bool,
     /// Mouse position over a link in this pane, used for hover emphasis.
     markdown_link_hover: Option<(u16, u16)>,
+    /// The live pointer selection to paint over this pane's rows (focused pane
+    /// only) — read-only surfaces have no selection state of their own.
+    selection: Option<crate::app::SurfaceSelection>,
     /// Mouse position over a format-specific pane action.
     pane_action_hover: Option<(u16, u16)>,
     /// Fence languages the markdown preview renders as mermaid diagrams
@@ -404,6 +407,7 @@ struct RenderedPane {
     commit_collapse_hits: Vec<crate::app::CommitCollapseHit>,
     blame_rect: Option<Rect>,
     markdown_link_hits: Vec<crate::app::MarkdownLinkHit>,
+    select_regions: Vec<crate::app::SelectRegion>,
 }
 
 /// Geometry a tab's content reported for post-draw use: a reserved Kitty image rect
@@ -418,6 +422,7 @@ struct PaneContent {
     collapse_hits: Vec<crate::app::CommitCollapseHit>,
     blame_rect: Option<Rect>,
     markdown_link_hits: Vec<crate::app::MarkdownLinkHit>,
+    select_regions: Vec<crate::app::SelectRegion>,
 }
 
 /// A `width`×`height` rect centered within `area`.

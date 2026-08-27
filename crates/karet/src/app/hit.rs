@@ -78,6 +78,8 @@ pub(crate) struct PaneFrame {
     pub(crate) commit_file_hits: Vec<CommitFileHit>,
     /// File-card disclosure controls clickable within the pane's commit-like view.
     pub(crate) commit_collapse_hits: Vec<CommitCollapseHit>,
+    /// Read-only surfaces in this pane whose rows the pointer can select.
+    pub(crate) select_regions: Vec<super::select::SelectRegion>,
 }
 
 /// An in-progress tab drag: the pane it started from and the current drop target

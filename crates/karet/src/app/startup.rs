@@ -118,6 +118,8 @@ impl App {
             markdown_link_hover: None,
             commit_badge_rect: None,
             editor_selecting: false,
+            surface_selection: None,
+            surface_selecting: None,
             last_click: None,
             click_streak: 0,
             clipboard: Clipboard::new(),

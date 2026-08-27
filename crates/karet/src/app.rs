@@ -34,6 +34,7 @@ mod scm;
 mod scroll;
 pub(crate) mod seam;
 mod search;
+pub(crate) mod select;
 mod sidebar;
 mod snapshot_events;
 mod spellcheck;
@@ -171,6 +172,9 @@ pub(crate) use language_servers::LanguageServerBadge;
 pub(crate) use pending::Pending;
 use ratatui::layout::Rect;
 pub(crate) use runtime::run;
+pub(crate) use select::SelectRegion;
+pub(crate) use select::SelectSurface;
+pub(crate) use select::SurfaceSelection;
 pub(crate) use state::*;
 use tokio::sync::mpsc;
 use util::KeyboardEnhancementGuard;
@@ -477,6 +481,10 @@ pub struct App {
     pub(crate) commit_badge_rect: Option<Rect>,
     /// Whether a mouse text-selection drag is in progress in the editor.
     pub(crate) editor_selecting: bool,
+    /// The live pointer selection on a read-only surface (diff, viewer), if any.
+    pub(crate) surface_selection: Option<select::SurfaceSelection>,
+    /// The surface currently capturing a selection drag, if one is under way.
+    pub(crate) surface_selecting: Option<select::SelectSurface>,
     /// The last left-click `(time, column, row)`, for multi-click detection.
     last_click: Option<(Instant, u16, u16)>,
     /// The current multi-click streak (1 = single, 2 = double, 3 = triple).

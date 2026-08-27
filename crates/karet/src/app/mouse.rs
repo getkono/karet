@@ -202,6 +202,19 @@ impl App {
             }
             return;
         }
+        // A read-only surface's selection drag captures motion the same way the
+        // editor's does, and for the same reason: the pointer must keep extending
+        // even after it leaves the rows it started on.
+        if self.surface_selecting.is_some() {
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    self.drag_surface_selection(mouse.column, mouse.row);
+                },
+                MouseEventKind::Up(MouseButton::Left) => self.surface_selecting = None,
+                _ => {},
+            }
+            return;
+        }
         // An in-progress text selection captures motion until the button is released.
         if self.editor_selecting {
             match mouse.kind {
@@ -317,7 +330,11 @@ impl App {
                     self.handle_sidebar_click(mouse.column, mouse.row, mouse.modifiers);
                 } else {
                     self.commit_input.focused = false;
-                    self.handle_editor_click(mouse);
+                    // A read-only surface owns the click before the editor sees it;
+                    // the editor's own handler only answers for code tabs.
+                    if !self.begin_surface_selection(mouse.column, mouse.row) {
+                        self.handle_editor_click(mouse);
+                    }
                 }
             },
             // Track the hover position for the secondary-accent row highlight in the

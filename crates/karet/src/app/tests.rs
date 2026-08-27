@@ -30,6 +30,7 @@ mod search_completion;
 mod spellcheck;
 mod spelling_panel;
 mod startup;
+mod surface_select;
 mod tab_focus;
 mod tabs_search;
 mod todos;
