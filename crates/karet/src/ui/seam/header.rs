@@ -8,6 +8,7 @@
 use karet_core::ThemeRole;
 use karet_filetype::IconStyle;
 use karet_theme::Theme;
+use karet_widgets::glyph::slot;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -122,7 +123,7 @@ fn legend<'a>(theme: &Theme, state: &SeamViewState, icons: IconStyle) -> Vec<Spa
         let on = state.lenses.contains(lens);
         // The digit that toggles it, so the binding never has to be memorized.
         spans.push(Span::styled(
-            format!("{}{} ", index + 1, lens_glyph(lens, icons)),
+            format!("{}{} ", index + 1, slot(lens_glyph(lens, icons), icons)),
             if on { active } else { muted },
         ));
         spans.push(Span::styled(

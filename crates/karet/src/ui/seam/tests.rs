@@ -86,13 +86,18 @@ fn view() -> SeamViewState {
 
 /// Render into a buffer of the given size.
 fn render(state: &mut SeamViewState, width: u16, height: u16) -> Buffer {
+    render_as(state, width, height, IconStyle::Ascii)
+}
+
+/// Render in a chosen icon tier, for the assertions that are about glyph width.
+fn render_as(state: &mut SeamViewState, width: u16, height: u16, icons: IconStyle) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(width, height));
     let Ok(terminal) = terminal.as_mut() else {
         return Buffer::empty(ratatui::layout::Rect::new(0, 0, width, height));
     };
     let theme = Theme::dark();
     let _ = terminal.draw(|f| {
-        draw_seam(f, &theme, f.area(), state, IconStyle::Ascii);
+        draw_seam(f, &theme, f.area(), state, icons);
     });
     terminal.backend().buffer().clone()
 }
@@ -272,6 +277,62 @@ fn the_reversal_path_is_visible_once_narrowed() {
     let rendered = text(&render(&mut state, 120, 20));
     // Reversible is not enough — the way back has to be on screen.
     assert!(rendered.contains("widen"), "{rendered}");
+}
+
+#[test]
+fn every_lens_line_in_the_facet_pane_starts_at_the_same_column() {
+    // The regression: `hazard`'s glyph was East-Asian Wide, so its name sat one column
+    // right of the other four and the pane read as ragged.
+    for icons in [IconStyle::NerdFont, IconStyle::Unicode, IconStyle::Ascii] {
+        let mut state = view();
+        state.select_path("demo::danger");
+        let rendered = text(&render_as(&mut state, 120, 24, icons));
+        let columns: Vec<usize> = LENS_NAMES
+            .iter()
+            .filter_map(|lens| {
+                rendered
+                    .lines()
+                    // Past the header, whose legend also spells `api`.
+                    .skip(1)
+                    .find(|line| line.contains(*lens))
+                    .and_then(|line| line.chars().position(|c| c.is_ascii_alphabetic()))
+            })
+            .collect();
+        assert_eq!(columns.len(), LENS_NAMES.len(), "{icons:?}");
+        assert!(
+            columns.windows(2).all(|pair| pair[0] == pair[1]),
+            "{icons:?}: lens names start at {columns:?}"
+        );
+    }
+}
+
+#[test]
+fn the_legend_entries_are_evenly_spaced_in_every_tier() {
+    // Each entry is `{digit}{glyph} {short}  `, so the short names sit at a constant
+    // stride — until one glyph measures two cells and shoves everything after it along.
+    for icons in [IconStyle::NerdFont, IconStyle::Unicode, IconStyle::Ascii] {
+        let mut state = view();
+        let rendered = text(&render_as(&mut state, 140, 20, icons));
+        let Some(header) = rendered.lines().next() else {
+            panic!("no header row");
+        };
+        let columns: Vec<usize> = ["api", "sub", "var", "bnd", "haz"]
+            .iter()
+            .filter_map(|short| {
+                header
+                    .chars()
+                    .collect::<Vec<_>>()
+                    .windows(3)
+                    .position(|w| w.iter().collect::<String>() == **short)
+            })
+            .collect();
+        assert_eq!(columns.len(), 5, "{icons:?}: {header:?}");
+        let strides: Vec<usize> = columns.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        assert!(
+            strides.windows(2).all(|pair| pair[0] == pair[1]),
+            "{icons:?}: legend strides {strides:?} in {header:?}"
+        );
+    }
 }
 
 #[test]

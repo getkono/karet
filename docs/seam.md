@@ -18,18 +18,18 @@ One index sits behind the view, so opening at another start point re-points the 
 have rather than opening a second beside it.
 
 ```
- Seam  karet-core   config: default @ x86_64-linux   1⬤ api  2◇ sub  3⌥ var  4⇥ bnd  5⚡ haz
+ Seam  karet-core   config: default @ x86_64-linux   1◉ api  2◊ sub  3⌥ var  4⇥ bnd  5☡ haz
  package          │ module           │ item                 │ member
- karet-core   ▸ 47│ model         ▸12│ Symbol           ⬤ 6 │ name              ⬤
-                  │ coord         ▸ 8│ SymbolKind       ⬤   │ kind              ⬤
-                  │▸provider      ▸ 3│▸SymbolProvider  ⬤◇ 2 │ detail            ⬤
-                  │ graph         ▸ 9│ impl … for Vec   ◇   │ range             ⬤
+ karet-core   ▸ 47│ model         ▸12│ Symbol           ◉ 6 │ name              ◉
+                  │ coord         ▸ 8│ SymbolKind       ◉   │ kind              ◉
+                  │▸provider      ▸ 3│▸SymbolProvider  ◉◊ 2 │ detail            ◉
+                  │ graph         ▸ 9│ impl … for Vec   ◊   │ range             ◉
  ─ karet-core::provider::SymbolProvider ────────── interface ── provider.rs:12 ─────
- ⬤ api           pub                effective: karet_core::SymbolProvider
- ◇ substitution  trait · default-method ×1
+ ◉ api           pub                effective: karet_core::SymbolProvider
+ ◊ substitution  trait · default-method ×1
  ⌥ variation     —
  ⇥ boundary      —
- ⚡ hazard        —
+ ☡ hazard        —
    edges         … not resolved — structural relations only
  / lens:substitution !kind:member                              ⌫ widen (1)
 ```
@@ -41,11 +41,11 @@ becomes one index with a root per package, so the spine's first column is the pa
 and a query spans all of them at once:
 
 ```
- Seam  karet · 30 packages   config: unconfigured (variation incomplete)   1⬤ api  …
+ Seam  karet · 30 packages   config: unconfigured (variation incomplete)   1◉ api  …
  package          │ module           │ item
- blameline     ▸ 9│ model         ▸12│ Symbol           ⬤ 6
- karet-core   ▸ 47│ coord         ▸ 8│ SymbolKind       ⬤
- karet-diff   ▸ 31│▸provider      ▸ 3│▸SymbolProvider  ⬤◇ 2
+ blameline     ▸ 9│ model         ▸12│ Symbol           ◉ 6
+ karet-core   ▸ 47│ coord         ▸ 8│ SymbolKind       ◉
+ karet-diff   ▸ 31│▸provider      ▸ 3│▸SymbolProvider  ◉◊ 2
 ```
 
 Four Cargo shapes are read: a package, a virtual `[workspace]` root, a root that is both,

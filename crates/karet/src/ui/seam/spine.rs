@@ -10,6 +10,9 @@ use karet_filetype::IconStyle;
 use karet_theme::Theme;
 use karet_widgets::Columns;
 use karet_widgets::UiIcon;
+use karet_widgets::glyph::glyph_slot;
+use karet_widgets::glyph::slot;
+use karet_widgets::glyph::slots;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -60,7 +63,8 @@ fn draw_columns(
     let focused = state.focused_column.saturating_sub(window.start);
 
     let widget = Columns::new(&visible, focused, column_style(theme))
-        .child_marker(UiIcon::SeamHasChildren.glyph(icons));
+        .child_marker(UiIcon::SeamHasChildren.glyph(icons))
+        .marker_slot(u16::try_from(glyph_slot(icons)).unwrap_or(1));
     widget.render(area, f.buffer_mut());
 }
 
@@ -90,7 +94,7 @@ fn draw_tree(f: &mut Frame, theme: &Theme, area: Rect, state: &SeamViewState, ic
             spans.push(Span::styled(row.label.clone(), style));
             if !row.markers.is_empty() {
                 spans.push(Span::styled(
-                    format!(" {}", row.markers),
+                    format!(" {}", slots(row.markers.iter().copied(), icons)),
                     theme.style(ThemeRole::DiagnosticInfo),
                 ));
             }
@@ -102,7 +106,7 @@ fn draw_tree(f: &mut Frame, theme: &Theme, area: Rect, state: &SeamViewState, ic
             }
             if row.has_children {
                 spans.push(Span::styled(
-                    format!(" {}", UiIcon::SeamHasChildren.glyph(icons)),
+                    format!(" {}", slot(UiIcon::SeamHasChildren.glyph(icons), icons)),
                     muted,
                 ));
             }

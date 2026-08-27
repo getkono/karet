@@ -12,6 +12,7 @@
 use karet_core::ThemeRole;
 use karet_filetype::IconStyle;
 use karet_theme::Theme;
+use karet_widgets::glyph::slot;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -81,7 +82,7 @@ pub(super) fn draw(
     for lens in LENS_NAMES {
         let facets: Vec<_> = node.facets.iter().filter(|f| f.lens == lens).collect();
         let mut spans = vec![
-            Span::styled(format!("{} ", lens_glyph(lens, icons)), muted),
+            Span::styled(format!("{} ", slot(lens_glyph(lens, icons), icons)), muted),
             Span::styled(format!("{lens:<13} "), muted),
         ];
         if facets.is_empty() {

@@ -202,7 +202,7 @@ fn row_for(state: &SeamViewState, id: &str, icons: IconStyle) -> ColumnRow {
     let Some(node) = state.nodes.get(id) else {
         return ColumnRow::new(id);
     };
-    let mut markers = String::new();
+    let mut markers = Vec::new();
     for (index, lens) in LENS_NAMES.iter().enumerate() {
         let carries = node.facets.iter().any(|facet| facet.lens == *lens);
         let under = node.rollups.get(index).is_some_and(|count| *count > 0);
