@@ -113,6 +113,9 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Explorer inline name editor (new file/folder or rename).
     b(ExplorerEdit, false, false, false, Esc,   Command::ExplorerEditCancel),
     b(ExplorerEdit, false, false, false, Enter, Command::ExplorerEditSubmit),
+    b(ExplorerEdit, true,  false, false, Char('c'), Command::Copy),
+    b(ExplorerEdit, true,  false, false, Char('x'), Command::Cut),
+    b(ExplorerEdit, true,  false, false, Char('v'), Command::Paste),
 
     // Sidebar focus. Selection verbs are shared across every list panel (explorer
     // and source control) — they route to the focused panel's selection in dispatch.

@@ -56,6 +56,8 @@ pub(crate) enum TextFieldTarget {
     FindQuery,
     /// The in-file find bar's replacement field.
     FindReplace,
+    /// The explorer's inline rename / new-name field.
+    ExplorerRename,
 }
 
 /// A rendered pane's clickable regions, recorded during the last frame for mouse

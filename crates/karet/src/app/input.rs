@@ -34,6 +34,7 @@ impl App {
                         .map(str::to_string),
                 }
             },
+            Modal::ExplorerEdit => self.explorer.edit_selected_text().map(str::to_string),
             _ => None,
         }
     }
@@ -53,6 +54,7 @@ impl App {
                     SearchField::Replace => find.replace_edit.cut(&mut find.replace),
                 }
             },
+            Modal::ExplorerEdit => self.explorer.edit_cut(),
             _ => None,
         }
     }
@@ -74,6 +76,7 @@ impl App {
                     SearchField::Replace => find.replace_edit.select_all(&find.replace),
                 }
             },
+            Some(Modal::ExplorerEdit) => self.explorer.edit_select_all(),
             _ => return false,
         }
         true
@@ -315,15 +318,17 @@ impl App {
     }
 
     /// Feed a key to the explorer inline name editor: printable characters extend the
-    /// name, Backspace trims it (Enter/Esc are handled as bound commands).
+    /// name, Backspace trims it, and Shift with a motion extends the selection
+    /// (Enter/Esc are handled as bound commands).
     pub(super) fn explorer_edit(&mut self, key: KeyEvent) {
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
             KeyCode::Backspace => self.explorer.edit_backspace(),
             KeyCode::Delete => self.explorer.edit_delete(),
-            KeyCode::Left => self.explorer.edit_left(),
-            KeyCode::Right => self.explorer.edit_right(),
-            KeyCode::Home => self.explorer.edit_home(),
-            KeyCode::End => self.explorer.edit_end(),
+            KeyCode::Left => self.explorer.edit_left(shift),
+            KeyCode::Right => self.explorer.edit_right(shift),
+            KeyCode::Home => self.explorer.edit_home(shift),
+            KeyCode::End => self.explorer.edit_end(shift),
             KeyCode::Char('a') | KeyCode::Char('A')
                 if key.modifiers.contains(KeyModifiers::CONTROL) =>
             {

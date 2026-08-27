@@ -445,6 +445,22 @@ impl App {
                 if !rect_contains(self.sidebar_content_rect, (col, row_y)) {
                     return;
                 }
+                // An open inline rename owns clicks on its own row: they place the
+                // caret in the name rather than selecting a different entry.
+                if self
+                    .explorer
+                    .edit_rect()
+                    .is_some_and(|rect| rect_contains(rect, (col, row_y)))
+                {
+                    self.place_text_field_cursor(
+                        TextFieldTarget::ExplorerRename,
+                        col,
+                        row_y,
+                        shift,
+                    );
+                    self.text_field_drag = Some(TextFieldTarget::ExplorerRename);
+                    return;
+                }
                 let view_row = (row_y - self.sidebar_content_rect.y) as usize;
                 let root = self.root.clone();
                 self.explorer.ensure_built(&root);
@@ -607,6 +623,13 @@ impl App {
                 self.search
                     .query_edit
                     .set_cursor(&self.search.query, cursor, extend);
+            },
+            TextFieldTarget::ExplorerRename => {
+                let Some(rect) = self.explorer.edit_rect() else {
+                    return;
+                };
+                self.explorer
+                    .edit_place_cursor(usize::from(column.saturating_sub(rect.x)), extend);
             },
             TextFieldTarget::FindQuery | TextFieldTarget::FindReplace => {
                 let query = target == TextFieldTarget::FindQuery;

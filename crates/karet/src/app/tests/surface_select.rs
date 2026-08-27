@@ -580,3 +580,27 @@ fn clicking_the_replace_row_moves_the_edited_field() {
     );
     assert_eq!(app.modal_selection_text().as_deref(), Some("replace"));
 }
+
+#[test]
+fn dragging_the_explorer_rename_field_selects_within_the_name() {
+    let dir = test_dir("explorer-rename-select");
+    write_file(&dir, "readme.md", b"hi\n");
+    let mut app = App::new(dir, Vec::new(), Vec::new(), false);
+    app.sidebar_panel = SidebarPanel::Explorer;
+    app.focus = Focus::Sidebar;
+    screen(&mut app, 80, 24);
+    app.dispatch(Command::ExplorerRename);
+    screen(&mut app, 80, 24);
+
+    let rect = app.explorer.edit_rect();
+    assert!(rect.is_some(), "the rename row reports its field");
+    let Some(rect) = rect else { return };
+
+    // Drag across the extension.
+    drag(&mut app, (rect.x + 6, rect.y), (rect.x + 9, rect.y));
+    assert_eq!(app.modal_selection_text().as_deref(), Some(".md"));
+
+    // Ctrl+C reaches the field rather than the editor behind the sidebar.
+    app.dispatch(Command::Copy);
+    assert_eq!(app.status.as_deref(), Some("copied selection"));
+}
