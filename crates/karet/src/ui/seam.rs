@@ -103,12 +103,17 @@ pub(crate) fn preview_placement(area: Rect) -> PreviewPlacement {
     PreviewPlacement::None
 }
 
-/// The detail pane's total height under `placement`.
+/// The detail pane's total height under `placement`, for a view occupying `area`.
+///
+/// Beside the facets the preview shares their rows and only ever deepens the pane to fit
+/// itself; below them it adds its own. Either way the height follows the terminal and not
+/// the selection, so nothing in the pane moves as the reader arrows around.
 #[must_use]
-fn detail_height(placement: PreviewPlacement) -> u16 {
+fn detail_height(area: Rect, placement: PreviewPlacement) -> u16 {
     match placement {
-        PreviewPlacement::Below => FACET_HEIGHT.saturating_add(preview::HEIGHT),
-        PreviewPlacement::Side { .. } | PreviewPlacement::None => FACET_HEIGHT,
+        PreviewPlacement::Below => FACET_HEIGHT.saturating_add(preview::height(area)),
+        PreviewPlacement::Side { .. } => FACET_HEIGHT.max(preview::height(area)),
+        PreviewPlacement::None => FACET_HEIGHT,
     }
 }
 
@@ -143,7 +148,7 @@ pub(super) fn draw_seam(
         PreviewPlacement::None
     };
     let facet_height = if state.selected().is_some() {
-        detail_height(placement).min(area.height.saturating_sub(4))
+        detail_height(area, placement).min(area.height.saturating_sub(4))
     } else {
         0
     };
@@ -201,10 +206,9 @@ fn draw_detail(
         PreviewPlacement::Below => {
             let split = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(FACET_HEIGHT),
-                    Constraint::Length(preview::HEIGHT),
-                ])
+                // The preview takes whatever is left rather than a fixed count, so a
+                // pane the terminal clamped shrinks the peek and never the facets.
+                .constraints([Constraint::Length(FACET_HEIGHT), Constraint::Min(0)])
                 .split(area);
             state.hits.facets = split[0];
             facets::draw(f, theme, split[0], state, icons);

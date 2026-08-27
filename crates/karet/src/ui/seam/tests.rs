@@ -473,13 +473,60 @@ fn context_lines_are_muted_and_the_definition_is_not() {
             u16::try_from(column).unwrap_or(0),
             u16::try_from(y).unwrap_or(0),
         ))
-        .map(|c| c.fg)
+        .map(|c| (c.fg, c.modifier))
     };
+    let (body_fg, body_modifier) = cell(row).unwrap_or_default();
+    let (context_fg, context_modifier) = cell(row - 1).unwrap_or_default();
     assert_ne!(
-        cell(row),
-        cell(row - 1),
+        body_fg, context_fg,
         "body must not wear its context's colour"
     );
+    // Hue alone is one grey step in a pane where most rows are grey, so context recedes
+    // on weight too and the eye has somewhere to land.
+    assert!(
+        context_modifier.contains(ratatui::style::Modifier::DIM),
+        "context should be dim: {context_modifier:?}"
+    );
+    assert!(
+        !body_modifier.contains(ratatui::style::Modifier::DIM),
+        "the definition must not be dim"
+    );
+}
+
+#[test]
+fn a_taller_terminal_buys_more_source() {
+    // Stability across selections is pinned above; this is the other half of the deal.
+    let rows_of = |height: u16| {
+        let rendered = text(&render(
+            &mut with_preview(Ok(preview(40, 3, 30, 40))),
+            100,
+            height,
+        ));
+        rendered
+            .lines()
+            .filter(|line| line.contains("source line"))
+            .count()
+    };
+    assert!(
+        rows_of(48) > rows_of(24),
+        "{} vs {}",
+        rows_of(48),
+        rows_of(24)
+    );
+}
+
+#[test]
+fn a_wrapped_signature_reaches_the_screen_whole() {
+    // The defect this pane had: a signature spanning four lines showed two of them.
+    let mut wrapped = preview(40, 3, 40, 46);
+    wrapped.head_end = wrapped.body_start + 4;
+    let rendered = text(&render(&mut with_preview(Ok(wrapped)), 100, 40));
+    for line in 3..7 {
+        assert!(
+            rendered.contains(&format!("source line {line}")),
+            "line {line} missing from {rendered}"
+        );
+    }
 }
 
 #[test]

@@ -1,13 +1,17 @@
 //! The source preview: the lines that define the selection, with muted context.
 //!
 //! The pane's job is to answer one question before the reader spends a keystroke on it —
-//! is pressing Enter worth it? A name and a kind do not answer that. The attribute above
-//! the item, its doc comment, or the thing it sits beside usually does.
+//! is pressing Enter worth it? A name and a kind do not answer that. The declaration does:
+//! the signature with its parameters, the attribute above the item, its doc comment.
 //!
-//! The block is a fixed nine rows whatever the node is. Context that does not exist — at
-//! the top or the bottom of a file — is reserved and left blank rather than closed up,
-//! because a pane that changes height as the selection moves makes the reader re-find the
-//! edge list on every arrow key.
+//! So the **declaration head is never sacrificed**. Whatever else the budget goes to —
+//! context, body, the elision marker — the head is painted first and in full, because a
+//! signature cut after its second parameter has told the reader less than nothing.
+//!
+//! The block's height depends on the terminal and on nothing else. It does not follow the
+//! selection: a pane that changes height as you arrow down makes you re-find the edge list
+//! on every keystroke. Context that does not exist — at the top or the bottom of a file —
+//! is reserved and left blank rather than closed up, for the same reason.
 
 use karet_core::ThemeRole;
 use karet_diff::TokenSpan;
@@ -16,6 +20,7 @@ use karet_session::api::SeamPreview;
 use karet_theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -28,14 +33,14 @@ use crate::app::seam::SeamViewState;
 /// Rows of context shown on each side of the node's own lines.
 const CONTEXT: usize = 3;
 
-/// Rows given to the node's own lines.
-///
-/// Fixed: a taller node is elided rather than allowed to change the pane's height as the
-/// selection moves.
-const BODY: usize = 3;
+/// The fewest rows worth giving the block: three of context each side and three of source.
+pub(super) const MIN_HEIGHT: u16 = 9;
 
-/// The block's height. Constant by construction — that is the property.
-pub(super) const HEIGHT: u16 = (CONTEXT * 2 + BODY) as u16;
+/// The most rows worth giving it.
+///
+/// Past this the pane is competing with the spine, which is the primary surface, and a
+/// preview is a peek rather than an editor.
+const MAX_HEIGHT: u16 = 16;
 
 /// The narrowest gutter worth drawing, in digits.
 const MIN_GUTTER: usize = 3;
@@ -46,7 +51,16 @@ const MAX_GUTTER: usize = 6;
 /// Cells a tab stands for, since a raw tab would paint as one cell and misalign the block.
 const TAB: usize = 4;
 
-/// Draw the preview block into `area`, which is always [`HEIGHT`] rows tall.
+/// The block's height for a view occupying `area`.
+///
+/// A function of the terminal, deliberately, and never of the selection: constant while
+/// the reader arrows around, generous when there are rows to be generous with.
+#[must_use]
+pub(super) fn height(area: Rect) -> u16 {
+    (area.height / 3).clamp(MIN_HEIGHT, MAX_HEIGHT)
+}
+
+/// Draw the preview block into `area`, filling exactly `area.height` rows.
 pub(super) fn draw(
     f: &mut Frame,
     theme: &Theme,
@@ -57,28 +71,44 @@ pub(super) fn draw(
     if area.width == 0 || area.height == 0 {
         return;
     }
-    f.render_widget(Paragraph::new(rows(theme, state, area.width, icons)), area);
+    let budget = usize::from(area.height);
+    f.render_widget(
+        Paragraph::new(rows(theme, state, area.width, budget, icons)),
+        area,
+    );
 }
 
-/// The rows the block paints: exactly [`HEIGHT`] of them, whatever has been answered.
+/// The rows the block paints: exactly `budget` of them, whatever has been answered.
 ///
 /// Split from [`draw`] so the row budget — the part that must not move — is testable
 /// without a terminal.
 #[must_use]
-fn rows<'a>(theme: &Theme, state: &SeamViewState, width: u16, icons: IconStyle) -> Vec<Line<'a>> {
+fn rows<'a>(
+    theme: &Theme,
+    state: &SeamViewState,
+    width: u16,
+    budget: usize,
+    icons: IconStyle,
+) -> Vec<Line<'a>> {
     match (&state.preview, state.detail_since) {
-        (Some(Ok(preview)), _) => source_rows(theme, preview, width, icons),
-        (Some(Err(message)), _) => reserved(Some(Span::styled(
-            format!("{UNRESOLVABLE} {message}"),
-            theme.style(ThemeRole::DiagnosticWarning),
-        ))),
+        (Some(Ok(preview)), _) => source_rows(theme, preview, width, budget, icons),
+        (Some(Err(message)), _) => reserved(
+            budget,
+            Some(Span::styled(
+                format!("{UNRESOLVABLE} {message}"),
+                theme.style(ThemeRole::DiagnosticWarning),
+            )),
+        ),
         // Past the shared reveal delay and still unanswered.
-        (None, Some(pending)) if pending.visible() => reserved(Some(Span::styled(
-            PENDING.to_owned(),
-            theme.style(ThemeRole::Muted),
-        ))),
+        (None, Some(pending)) if pending.visible() => reserved(
+            budget,
+            Some(Span::styled(
+                PENDING.to_owned(),
+                theme.style(ThemeRole::Muted),
+            )),
+        ),
         // A fast path must never flash: nothing at all until the delay elapses.
-        (None, _) => reserved(None),
+        (None, _) => reserved(budget, None),
     }
 }
 
@@ -87,9 +117,9 @@ fn rows<'a>(theme: &Theme, state: &SeamViewState, width: u16, icons: IconStyle) 
 /// The shape every unanswered state takes, so "not yet", "never" and "nothing so far"
 /// cannot differ in height from each other or from a real preview.
 #[must_use]
-fn reserved<'a>(message: Option<Span<'a>>) -> Vec<Line<'a>> {
-    let middle = usize::from(HEIGHT) / 2;
-    (0..usize::from(HEIGHT))
+fn reserved<'a>(budget: usize, message: Option<Span<'a>>) -> Vec<Line<'a>> {
+    let middle = budget / 2;
+    (0..budget)
         .map(|row| match (row == middle, &message) {
             (true, Some(span)) => Line::from(span.clone()),
             _ => Line::default(),
@@ -97,61 +127,109 @@ fn reserved<'a>(message: Option<Span<'a>>) -> Vec<Line<'a>> {
         .collect()
 }
 
-/// The nine rows of an answered preview.
+/// How the budget is divided between context, the node, and the marker.
+///
+/// Pulled out of the painting so the one decision that matters — *does the whole
+/// signature fit* — is testable as arithmetic rather than through a buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Budget {
+    /// Rows reserved above the node, blank where the file has no line to put there.
+    lead: usize,
+    /// Rows of the node's own text to paint, head first.
+    shown: usize,
+    /// Whether a marker row stands for what did not fit.
+    elides: bool,
+}
+
+/// Divide `budget` rows between the node and its surroundings.
+///
+/// The rules, in order of who gives way to whom. The head is never cut while any row
+/// remains — it is the reason the pane exists. Trailing context gives way to the head
+/// before leading context does, because a signature reads downward, and it also gives way
+/// to a node that is one row short of fitting, since a marker reading "1 more line" has
+/// spent a row to say less than the line would have. Leading context gives way last, and
+/// only when the head could not otherwise fit at all.
+#[must_use]
+fn divide(preview: &SeamPreview, budget: usize) -> Budget {
+    let head = preview.head_end.saturating_sub(preview.body_start);
+    let body = preview.body_end.saturating_sub(preview.body_start);
+    let after = preview.lines.len().saturating_sub(preview.body_end);
+
+    // The head, plus a row for the marker under it, is what the block must find room for.
+    let lead = CONTEXT.min(budget.saturating_sub(head.saturating_add(1)));
+    let for_node = budget
+        .saturating_sub(lead)
+        .saturating_sub(CONTEXT.min(after))
+        .max(head.saturating_add(1).min(budget.saturating_sub(lead)))
+        .max(1);
+
+    // A marker that hides one line has cost a row to say less than the row would have.
+    // When the node is that close to fitting, the trailing context gives up the row.
+    let for_node = if preview.dropped == 0 && body <= for_node.saturating_add(1) {
+        body.min(budget.saturating_sub(lead))
+    } else {
+        for_node
+    };
+
+    let elides = body > for_node || preview.dropped > 0;
+    let shown = if elides {
+        for_node.saturating_sub(1).max(1)
+    } else {
+        body
+    };
+    Budget {
+        lead,
+        shown: shown.min(body),
+        elides,
+    }
+}
+
+/// The rows of an answered preview.
 #[must_use]
 fn source_rows<'a>(
     theme: &Theme,
     preview: &SeamPreview,
     width: u16,
+    budget: usize,
     icons: IconStyle,
 ) -> Vec<Line<'a>> {
     let gutter = gutter_width(preview);
     let indent = shared_indent(&preview.lines);
-    let head = preview.body_start.saturating_sub(CONTEXT);
-    let body_rows = (preview.body_end - preview.body_start).min(BODY);
-    let elided = preview.dropped > 0 || preview.body_end - preview.body_start > BODY;
-    let tail_start = preview.body_end;
-
-    let mut lines = Vec::with_capacity(usize::from(HEIGHT));
+    let plan = divide(preview, budget);
+    let mut lines = Vec::with_capacity(budget);
+    let paint =
+        |row: usize, body: bool| source_row(theme, preview, row, indent, gutter, width, body);
 
     // Leading context, reserved from the top so a node near line zero pushes nothing.
-    let missing = CONTEXT.saturating_sub(preview.body_start);
-    for _ in 0..missing {
+    let have = plan.lead.min(preview.body_start);
+    for _ in 0..plan.lead - have {
         lines.push(Line::default());
     }
-    for row in head..preview.body_start {
-        lines.push(source_row(
-            theme, preview, row, indent, gutter, width, false,
-        ));
+    for row in (preview.body_start - have)..preview.body_start {
+        lines.push(paint(row, false));
     }
 
-    // The node's own lines: its head, since the signature is the informative part and a
+    // The node's own lines, head first — the signature is the informative part, and a
     // closing brace is not worth a row.
-    let shown = if elided {
-        body_rows.min(BODY - 1)
-    } else {
-        body_rows
-    };
-    for offset in 0..shown {
-        let row = preview.body_start + offset;
-        lines.push(source_row(theme, preview, row, indent, gutter, width, true));
+    for offset in 0..plan.shown {
+        lines.push(paint(preview.body_start + offset, true));
     }
-    if elided {
-        let hidden = (preview.body_end - preview.body_start - shown) + preview.dropped as usize;
+    if plan.elides {
+        let hidden = (preview.body_end - preview.body_start - plan.shown)
+            .saturating_add(preview.dropped as usize);
         lines.push(elision(theme, hidden, gutter, icons));
-    }
-    for _ in lines.len()..CONTEXT + BODY {
-        lines.push(Line::default());
     }
 
     // Trailing context, from after the node ends rather than from its own continuation:
     // muting lines that belong to the node would misdescribe them.
-    for row in tail_start..(tail_start + CONTEXT).min(preview.lines.len()) {
-        lines.push(source_row(
-            theme, preview, row, indent, gutter, width, false,
-        ));
+    for row in preview.body_end..preview.lines.len() {
+        if lines.len() >= budget {
+            break;
+        }
+        lines.push(paint(row, false));
     }
-    lines.resize(usize::from(HEIGHT), Line::default());
+    lines.resize(budget, Line::default());
+    lines.truncate(budget);
     lines
 }
 
@@ -189,15 +267,18 @@ fn source_row<'a>(
     let number = preview.line_number(row).saturating_add(1);
     // The definition reads as the definition even in a file with no grammar: an
     // unhighlighted body line must never fall back to the colour its context wears.
-    let base = if body {
-        theme.style(ThemeRole::Foreground)
+    // Context recedes on weight as well as hue, since a single grey step is not much of a
+    // signal in a pane where most rows are grey.
+    let (base, gutter_style) = if body {
+        (
+            theme.style(ThemeRole::Foreground),
+            theme.style(ThemeRole::LineNumber),
+        )
     } else {
-        theme.style(ThemeRole::Muted)
+        let muted = theme.style(ThemeRole::Muted).add_modifier(Modifier::DIM);
+        (muted, muted)
     };
-    let mut spans = vec![Span::styled(
-        format!("{number:>gutter$} "),
-        theme.style(ThemeRole::LineNumber),
-    )];
+    let mut spans = vec![Span::styled(format!("{number:>gutter$} "), gutter_style)];
     let room = usize::from(width).saturating_sub(gutter + 1);
     let cut = text.get(indent.min(text.len())..).unwrap_or("");
     let tokens = if body { preview.tokens_for(row) } else { &[] };
@@ -291,10 +372,7 @@ fn shared_indent(lines: &[String]) -> usize {
 /// Digits the gutter needs for the largest line number in the block.
 #[must_use]
 fn gutter_width(preview: &SeamPreview) -> usize {
-    let last = preview
-        .line_number(preview.lines.len().saturating_sub(1))
-        .saturating_add(1);
-    let digits = last.to_string().len();
+    let digits = preview.last_line().saturating_add(1).to_string().len();
     digits.clamp(MIN_GUTTER, MAX_GUTTER)
 }
 
@@ -302,37 +380,149 @@ fn gutter_width(preview: &SeamPreview) -> usize {
 mod tests {
     use super::*;
 
-    fn preview(first_line: u32, body_start: usize, body_end: usize, count: usize) -> SeamPreview {
+    /// A preview whose node runs `body` lines from `body_start`, its head `head` of them.
+    fn built(
+        first_line: u32,
+        body_start: usize,
+        head: usize,
+        body: usize,
+        count: usize,
+    ) -> SeamPreview {
         SeamPreview {
             file: std::path::PathBuf::from("src/lib.rs"),
             lines: (0..count).map(|n| format!("    line {n}")).collect(),
             numbers: (first_line..).take(count).collect(),
             body_start,
-            head_end: (body_start + 1).min(body_end),
-            body_end,
+            head_end: body_start + head,
+            body_end: body_start + body,
             dropped: 0,
             context: 3,
             tokens: Vec::new(),
         }
     }
 
+    fn preview(first_line: u32, body_start: usize, body_end: usize, count: usize) -> SeamPreview {
+        built(
+            first_line,
+            body_start,
+            1.min(body_end - body_start),
+            body_end - body_start,
+            count,
+        )
+    }
+
+    /// The text of every painted row, for whole-block assertions.
+    fn painted(rows: &[Line<'_>]) -> Vec<String> {
+        rows.iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
     #[test]
-    fn the_block_is_always_the_same_height() {
+    fn the_block_fills_its_budget_whatever_was_answered() {
         let theme = Theme::dark();
         let mut state = SeamViewState::pending();
         // Nothing answered, an error, a node mid-file, and a node at line zero all have
         // to occupy the same rows, or the pane below shifts as the selection moves.
-        let heights = [
+        let answers = [
             None,
             Some(Err("gone".to_owned())),
             Some(Ok(preview(20, 3, 5, 9))),
             Some(Ok(preview(0, 0, 2, 6))),
+            Some(Ok(built(20, 3, 6, 40, 46))),
         ];
-        for answer in heights {
-            state.preview = answer;
-            let painted = rows(&theme, &state, 60, IconStyle::Ascii);
-            assert_eq!(painted.len(), usize::from(HEIGHT));
+        for budget in [usize::from(MIN_HEIGHT), 12, usize::from(MAX_HEIGHT)] {
+            for answer in answers.clone() {
+                state.preview = answer;
+                let rows = rows(&theme, &state, 60, budget, IconStyle::Ascii);
+                assert_eq!(rows.len(), budget, "budget {budget}");
+            }
         }
+    }
+
+    #[test]
+    fn the_pane_grows_with_the_terminal_and_stops() {
+        assert_eq!(height(Rect::new(0, 0, 100, 24)), MIN_HEIGHT);
+        assert_eq!(height(Rect::new(0, 0, 100, 40)), 13);
+        assert_eq!(height(Rect::new(0, 0, 100, 200)), MAX_HEIGHT);
+        // Never below the floor, however little there is.
+        assert_eq!(height(Rect::new(0, 0, 100, 1)), MIN_HEIGHT);
+    }
+
+    #[test]
+    fn a_wrapped_signature_is_painted_whole() {
+        // The bug this pane had: a four-line signature showed two lines and an ellipsis.
+        let theme = Theme::dark();
+        let mut state = SeamViewState::pending();
+        state.preview = Some(Ok(built(20, 3, 4, 40, 46)));
+        let rows = painted(&rows(&theme, &state, 60, 13, IconStyle::Ascii));
+        for offset in 0..4 {
+            assert!(
+                rows[3 + offset].contains(&format!("line {}", 3 + offset)),
+                "head row {offset} missing from {rows:?}"
+            );
+        }
+        let marker = rows.iter().position(|row| row.contains("more lines"));
+        assert!(marker.is_some_and(|at| at >= 7), "{rows:?}");
+    }
+
+    #[test]
+    fn a_head_taller_than_the_context_takes_the_context_s_rows() {
+        // Nine rows cannot hold three of context, a six-line signature and a marker. The
+        // signature wins: it is the only thing in the block a reader cannot reconstruct.
+        let preview = built(20, 3, 6, 40, 46);
+        let plan = divide(&preview, usize::from(MIN_HEIGHT));
+        assert_eq!(plan.shown, 6);
+        assert!(plan.elides);
+        assert!(plan.lead < CONTEXT);
+    }
+
+    #[test]
+    fn an_ordinary_node_keeps_its_three_rows_of_leading_context() {
+        // The common case must not move: a one-line head leaves the lead untouched, so
+        // the definition lands on the same row for every selection.
+        for budget in [usize::from(MIN_HEIGHT), 13, usize::from(MAX_HEIGHT)] {
+            let plan = divide(&built(20, 3, 1, 40, 46), budget);
+            assert_eq!(plan.lead, CONTEXT, "budget {budget}");
+        }
+    }
+
+    #[test]
+    fn a_node_that_fits_is_painted_whole_with_no_marker() {
+        let preview = built(20, 3, 1, 4, 10);
+        let plan = divide(&preview, 13);
+        assert_eq!(plan.shown, 4);
+        assert!(!plan.elides);
+    }
+
+    #[test]
+    fn a_bigger_budget_spends_the_extra_rows_on_the_definition() {
+        let preview = built(20, 3, 1, 40, 46);
+        let small = divide(&preview, usize::from(MIN_HEIGHT));
+        let large = divide(&preview, usize::from(MAX_HEIGHT));
+        assert!(large.shown > small.shown, "{small:?} vs {large:?}");
+    }
+
+    #[test]
+    fn a_node_whose_lines_were_dropped_still_says_so() {
+        // The fetch cap cut the middle out; the marker has to account for both the rows
+        // the pane could not show and the lines the worker never sent.
+        let theme = Theme::dark();
+        let mut state = SeamViewState::pending();
+        let mut preview = built(0, 3, 1, 200, 206);
+        preview.dropped = 300;
+        state.preview = Some(Ok(preview));
+        let rows = painted(&rows(&theme, &state, 60, 13, IconStyle::Ascii));
+        let marker = rows.iter().find(|row| row.contains("more lines"));
+        assert_eq!(
+            marker.map(String::as_str).map(str::trim),
+            Some("... 494 more lines")
+        );
     }
 
     #[test]
@@ -340,25 +530,54 @@ mod tests {
         let theme = Theme::dark();
         let mut state = SeamViewState::pending();
         state.preview = Some(Ok(preview(0, 0, 2, 6)));
-        let painted = rows(&theme, &state, 60, IconStyle::Ascii);
+        let rows = rows(
+            &theme,
+            &state,
+            60,
+            usize::from(MIN_HEIGHT),
+            IconStyle::Ascii,
+        );
         // Blank, and numberless: an absent line number is the honest rendering of an
         // absent line.
-        for row in &painted[..CONTEXT] {
+        for row in &rows[..CONTEXT] {
             assert_eq!(row.spans.len(), 0, "{row:?}");
         }
     }
 
     #[test]
-    fn a_node_longer_than_the_budget_says_how_many_lines_it_hid() {
+    fn trailing_context_comes_from_after_the_node() {
         let theme = Theme::dark();
         let mut state = SeamViewState::pending();
-        state.preview = Some(Ok(preview(0, 0, 40, 50)));
-        let painted = rows(&theme, &state, 60, IconStyle::Ascii);
-        let text: String = painted
-            .iter()
-            .flat_map(|line| line.spans.iter().map(|s| s.content.as_ref()))
-            .collect();
-        assert!(text.contains("more lines"), "{text}");
+        state.preview = Some(Ok(built(0, 3, 1, 4, 10)));
+        let rows = painted(&rows(
+            &theme,
+            &state,
+            60,
+            usize::from(MIN_HEIGHT),
+            IconStyle::Ascii,
+        ));
+        // Four body lines fit in the floor budget once the marker row is not spent on
+        // hiding one of them, leaving two rows for what follows the node.
+        assert!(rows[7].contains("line 7"), "{rows:?}");
+        assert!(rows[8].contains("line 8"), "{rows:?}");
+        assert!(
+            !rows.iter().any(|row| row.contains("more lines")),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_marker_is_never_spent_to_hide_a_single_line() {
+        // The floor budget leaves the node three rows. A four-line node showing three and
+        // a marker has spent that marker to hide one line; showing all four says more for
+        // the same rows.
+        let plan = divide(&built(20, 3, 1, 4, 12), usize::from(MIN_HEIGHT));
+        assert_eq!(plan.shown, 4);
+        assert!(!plan.elides);
+        // Two short is a genuine elision, and stays one.
+        let plan = divide(&built(20, 3, 1, 5, 14), usize::from(MIN_HEIGHT));
+        assert!(plan.elides);
+        assert_eq!(plan.shown, 2);
     }
 
     #[test]

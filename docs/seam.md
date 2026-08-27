@@ -112,18 +112,26 @@ decoding pictograms.
 | `y` | copy the selection's identity |
 | `q` | close |
 
-The **source preview** shows the lines the selection is made of, with three muted lines of
+The **source preview** shows the lines the selection is made of, with muted lines of
 context on each side, so the decision to press `Enter` is made against the code rather than
 against a name. It sits beside the facet pane on a terminal 80 columns or wider, below it on
 a narrower but taller one, and nowhere at all on one that is neither — the spine is the
 primary surface and keeps its rows.
 
-The block is always the same nine rows. Context a file does not have — at its top or its
-bottom — is left blank rather than closed up, because a pane that changes height as the
-selection moves makes you re-find the edge list on every arrow key. A node longer than the
-budget shows its head and says how many lines it hid; the gutter numbers make the jump
-plain. A file that could not be read says so, in the same `?` that every other unresolvable
-answer uses.
+What it never cuts is the **declaration head**: the signature with its parameters, the
+`struct` line with its bounds, the `impl` with what it binds. A signature that wraps over
+four lines is painted over four lines. Everything else in the block gives way to it —
+the context below it first, the context above it last — because a signature cut after its
+second parameter has told you less than nothing.
+
+The block's height follows the terminal (nine rows to sixteen) and never the selection: a
+pane that changed height as you arrowed down would make you re-find the edge list on every
+keystroke. Context a file does not have — at its top or its bottom — is left blank rather
+than closed up, for the same reason. A node longer than the budget shows its head and says
+how many lines it hid; the gutter numbers make the jump plain, and the lines shown after a
+very long node are the ones that really follow it rather than whatever the fetch cap
+happened to stop at. A file that could not be read says so, in the same `?` that every
+other unresolvable answer uses.
 
 ### With the mouse
 
