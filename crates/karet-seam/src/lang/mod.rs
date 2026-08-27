@@ -155,6 +155,15 @@ pub trait SeamLanguage {
         Vec::new()
     }
 
+    /// The declaration head: everything from the construct's start up to the body it
+    /// opens, or the whole construct when it opens none.
+    ///
+    /// The default reads the grammar's `body` field, which every grammar mapped here
+    /// names the same way, so a language overrides this only where its grammar disagrees.
+    fn header(&self, node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Range {
+        header_before_body(node, ctx)
+    }
+
     /// The name of a module whose body lives in *another file*, when this node declares one.
     ///
     /// Rust's `mod net;` is the case: a containment edge that crosses a file boundary and
@@ -170,6 +179,48 @@ pub trait SeamLanguage {
 
     /// Every facet subtype this language can emit, for query-term suggestions.
     fn subtypes(&self) -> &'static [(Lens, FacetSubtype)];
+}
+
+/// The head of a construct that names its body with a `body` field.
+///
+/// Shared rather than defaulted-in-place so a language that overrides
+/// [`SeamLanguage::header`] for one construct can still fall back to it for the rest.
+///
+/// Where the cut lands is decided by the *line*, not by the grammar, because grammars
+/// disagree about where a body begins and readers do not. Rust's `body` is the `{` that
+/// closes the signature's line; Python's is the first statement, a line below the `:`.
+/// Cutting at the body would therefore give Rust its whole signature and Python its
+/// signature plus a stolen line of code. So a body that opens its own line — nothing but
+/// whitespace before it — cuts at the end of the line above instead.
+#[must_use]
+pub fn header_before_body(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Range {
+    let span = node.span();
+    // A body that starts at or before the construct does is not a body we can cut at;
+    // the whole extent is the honest answer rather than an inverted range.
+    let Some(body) = node
+        .child_span("body")
+        .filter(|body| body.start > span.start)
+    else {
+        return ctx.range(span);
+    };
+    let end = line_opening_body(ctx.text, span.start.0, body.start.0).unwrap_or(body.start.0);
+    ctx.range(karet_core::Span {
+        start: span.start,
+        end: karet_core::BytePos(end),
+    })
+}
+
+/// The end of the line above `body`, when `body` opens a line of its own.
+///
+/// `None` when the body shares its line with the signature, when it is the construct's
+/// own first line, or when the line above would leave nothing of the head at all.
+fn line_opening_body(text: &str, start: usize, body: usize) -> Option<usize> {
+    let before = text.get(start..body)?;
+    let newline = start.checked_add(before.rfind('\n')?)?;
+    if !text.get(newline.checked_add(1)?..body)?.trim().is_empty() {
+        return None;
+    }
+    (newline > start).then_some(newline)
 }
 
 /// Look up the mapping for a grammar, or `None` when the language has none.
@@ -233,6 +284,16 @@ mod tests {
         assert_eq!(ctx.attributes_named("cfg").count(), 2);
         assert_eq!(ctx.attributes_named("missing").count(), 0);
         assert_eq!(ctx.attribute("missing"), None);
+    }
+
+    #[test]
+    fn a_body_on_its_own_line_leaves_that_line_out_of_the_head() {
+        // `fn f()\n{` — the brace line carries nothing a reader wants.
+        assert_eq!(line_opening_body("fn f()\n{}", 0, 7), Some(6));
+        // `fn f() {` — the brace shares the signature's line, so there is nothing to cut.
+        assert_eq!(line_opening_body("fn f() {}", 0, 7), None);
+        // A body starting on the construct's own first line has no line above to end at.
+        assert_eq!(line_opening_body("{}", 0, 0), None);
     }
 
     #[test]

@@ -372,6 +372,7 @@ mod tests {
             range: Range::default(),
             span: Span::default(),
             selection: Range::default(),
+            header: Range::default(),
         }
     }
 

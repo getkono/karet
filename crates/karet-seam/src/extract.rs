@@ -236,6 +236,7 @@ impl Extractor<'_> {
             .stack
             .last()
             .map(|frame| (frame.id, frame.path.clone()))?;
+        let header = self.mapping.header(node, &self.context(&[]));
         let segment = self.next_segment(parent_id, classified.segment.clone());
         let path = parent_path.child(segment);
         let id = self.index.intern(path.clone());
@@ -252,6 +253,7 @@ impl Extractor<'_> {
                 range: self.lines.range(self.text, node.span()),
                 span: node.span(),
                 selection: classified.selection,
+                header,
             },
             parent: Some(parent_id),
             children: Vec::new(),

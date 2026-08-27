@@ -43,6 +43,7 @@ fn add(
             range: karet_core::Range::default(),
             span: karet_core::Span::default(),
             selection: karet_core::Range::default(),
+            header: karet_core::Range::default(),
         },
         parent,
         children: Vec::new(),

@@ -33,6 +33,7 @@ fn index(source: &str) -> Option<SeamIndex> {
             range: karet_core::Range::default(),
             span: karet_core::Span::default(),
             selection: karet_core::Range::default(),
+            header: karet_core::Range::default(),
         },
         parent: None,
         children: Vec::new(),
@@ -552,4 +553,68 @@ fn the_mapping_declares_what_its_semantic_tier_can_resolve() {
     use crate::lang::SeamLanguage;
     let capabilities = super::Rust.semantic_capabilities();
     assert!(capabilities.contains(&crate::edge::EdgeKind::Implements));
+}
+
+// --- the declaration head ---------------------------------------------------
+
+#[test]
+fn a_wrapped_signature_is_all_head() -> TestResult {
+    // The whole reason the head is a range rather than a line count: this signature is
+    // four lines, and a preview that shows two of them has shown nothing useful.
+    let source = "\
+pub fn render(
+    widget: &Widget,
+    area: Rect,
+) -> Result<(), Error> {
+    Ok(())
+}
+";
+    let Some(index) = index(source) else {
+        return Ok(());
+    };
+    let node = at(&index, "pkg::render").ok_or("no render")?;
+    assert_eq!(node.location.header.start.line, 0);
+    // Through the line the body opens on, not the line the name sits on.
+    assert_eq!(node.location.header.end.line, 3);
+    assert_eq!(node.location.range.end.line, 5);
+    Ok(())
+}
+
+#[test]
+fn a_construct_with_no_body_is_all_head() -> TestResult {
+    let Some(index) = index("pub const LIMIT: usize = 20_000;\n") else {
+        return Ok(());
+    };
+    let node = at(&index, "pkg::LIMIT").ok_or("no LIMIT")?;
+    assert_eq!(node.location.header, node.location.range);
+    Ok(())
+}
+
+#[test]
+fn a_type_and_an_impl_both_cut_at_their_brace() -> TestResult {
+    let source = "\
+pub struct Widget<T>
+where
+    T: Clone,
+{
+    pub id: u32,
+}
+
+impl<T: Clone> Widget<T> {
+    pub fn new() -> Self {
+        Self { id: 0 }
+    }
+}
+";
+    let Some(index) = index(source) else {
+        return Ok(());
+    };
+    let widget = at(&index, "pkg::Widget").ok_or("no Widget")?;
+    // Through the `where` clause, but not the brace sitting alone on line 3: a line
+    // holding nothing but the body's opening is not part of the declaration.
+    assert_eq!(widget.location.header.end.line, 2);
+    let block = at(&index, "pkg::{impl Widget<T>}").ok_or("no impl")?;
+    assert_eq!(block.location.header.start.line, 7);
+    assert_eq!(block.location.header.end.line, 7);
+    Ok(())
 }

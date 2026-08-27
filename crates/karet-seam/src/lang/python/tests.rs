@@ -31,6 +31,7 @@ fn index(source: &str) -> Option<SeamIndex> {
             range: karet_core::Range::default(),
             span: karet_core::Span::default(),
             selection: karet_core::Range::default(),
+            header: karet_core::Range::default(),
         },
         parent: None,
         children: Vec::new(),
@@ -355,5 +356,53 @@ fn the_query_language_needed_no_change_to_serve_a_second_language() -> TestResul
 
     let protocol = crate::query::parse("substitution:protocol").map_err(|e| e.to_string())?;
     assert_eq!(crate::query::evaluate(&protocol, &index).len(), 1);
+    Ok(())
+}
+
+// --- the declaration head ---------------------------------------------------
+
+#[test]
+fn a_wrapped_signature_is_all_head() -> TestResult {
+    let source = "\
+def render(
+    widget,
+    area,
+):
+    return None
+";
+    let Some(index) = index(source) else {
+        return Ok(());
+    };
+    let node = at(&index, "pkg::render").ok_or("no render")?;
+    assert_eq!(node.location.header.start.line, 0);
+    // Python opens its body with the newline after the colon, so the head runs through
+    // the `):` line — exactly the rows a reader needs.
+    assert_eq!(node.location.header.end.line, 3);
+    assert_eq!(node.location.range.end.line, 4);
+    Ok(())
+}
+
+#[test]
+fn a_class_head_stops_at_its_bases() -> TestResult {
+    let source = "\
+class Widget(Base):
+    def render(self):
+        return None
+";
+    let Some(index) = index(source) else {
+        return Ok(());
+    };
+    let node = at(&index, "pkg::Widget").ok_or("no Widget")?;
+    assert_eq!(node.location.header.end.line, 0);
+    Ok(())
+}
+
+#[test]
+fn an_assignment_is_all_head() -> TestResult {
+    let Some(index) = index("LIMIT = 20000\n") else {
+        return Ok(());
+    };
+    let node = at(&index, "pkg::LIMIT").ok_or("no LIMIT")?;
+    assert_eq!(node.location.header, node.location.range);
     Ok(())
 }
