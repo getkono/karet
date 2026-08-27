@@ -2,7 +2,7 @@
 //! breadcrumb, a switchable sidebar (explorer / search / source-control), the main
 //! content area (the active tab), and a status bar.
 
-mod commit;
+pub(crate) mod commit;
 mod content;
 mod github;
 mod language_servers;
@@ -20,9 +20,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
+pub(crate) use commit::relative_time;
 use commit::*;
 use content::*;
 use github::*;
@@ -42,9 +41,6 @@ use karet_fileview::image::ImageWidget;
 #[cfg(feature = "pdf")]
 use karet_fileview::image::fit_rect;
 use karet_fileview::viewer::Placeholder;
-use karet_graph::LaneInput;
-use karet_graph::assign_lanes;
-use karet_graph::view::render_rail;
 use karet_markdown::WrappedDocument;
 use karet_markdown::view::MarkdownView;
 use karet_markdown::view::MarkdownViewState;
@@ -86,7 +82,6 @@ use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 use scm::draw_scm;
-pub(crate) use scm::relative_time;
 use secondary::*;
 use sidebar::*;
 use status::*;
@@ -132,7 +127,6 @@ pub(crate) use karet_widgets::scroll::ScrollBar;
 pub(crate) use karet_widgets::scroll::ScrollExtent;
 pub(crate) use karet_widgets::scroll::ScrollTrack;
 pub(crate) use karet_widgets::scroll::ScrollbarStyles;
-pub(crate) use karet_widgets::scroll::draw_horizontally_scrollable_lines;
 pub(crate) use karet_widgets::scroll::draw_scrollable_lines;
 pub(crate) use karet_widgets::scroll::line_width;
 pub(crate) use karet_widgets::scroll::reserve_tracks;
@@ -391,6 +385,8 @@ struct PaneCtx<'a> {
     debug_stopped: Option<&'a (PathBuf, u32)>,
     /// Every ref per commit hash, for log-row decorations.
     ref_labels: &'a HashMap<String, Vec<karet_vcs::RefLabel>>,
+    /// Branch, upstream and divergence, for the commit-graph header.
+    repo_state: Option<&'a karet_vcs::RepositoryState>,
 }
 
 /// What a rendered pane reported back for hit-testing and image placement.

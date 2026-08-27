@@ -164,6 +164,10 @@ async fn event_loop(
     loop {
         terminal.draw(|f| ui::draw(f, app))?;
         app.flush_graphics();
+        // The graph view only learns its viewport height by being painted; top its
+        // history up once that is known, so the first screen is already backed by more
+        // history than it shows.
+        app.graph_prefetch();
 
         // Wake for notification expiry or a save-spinner frame; park on the event
         // sources when nothing time-based is pending (no idle repaints).

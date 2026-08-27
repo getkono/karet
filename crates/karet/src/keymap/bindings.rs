@@ -296,8 +296,12 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(CommitGraph, false, false, false, Char('k'), Command::CommitGraphPrev),
     b(CommitGraph, false, false, false, Up,        Command::CommitGraphPrev),
     b(CommitGraph, false, false, false, Enter,     Command::CommitGraphOpen),
-    b(CommitGraph, false, false, false, Char('l'), Command::CommitGraphOpen),
-    b(CommitGraph, false, false, false, Right,     Command::CommitGraphOpen),
+    // The graph spans the whole pane and can outrun it, so the horizontal keys pan it
+    // rather than opening a commit — `Enter` is the one way in.
+    b(CommitGraph, false, false, false, Char('h'), Command::CommitGraphPanLeft),
+    b(CommitGraph, false, false, false, Left,      Command::CommitGraphPanLeft),
+    b(CommitGraph, false, false, false, Char('l'), Command::CommitGraphPanRight),
+    b(CommitGraph, false, false, false, Right,     Command::CommitGraphPanRight),
     // Two-commit compare: `m` marks the selected commit as the base, `c` compares the
     // current selection against it.
     b(CommitGraph, false, false, false, Char('m'), Command::CommitGraphMarkBase),

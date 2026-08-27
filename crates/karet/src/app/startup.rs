@@ -159,7 +159,7 @@ impl App {
             pending_startup_diffs: Vec::new(),
             pending_commit_verification: HashMap::new(),
             pending_merge_conflicts: HashMap::new(),
-            graph_log_req: None,
+            graph_log_reqs: HashMap::new(),
             seam_index_req: None,
             seam_query_req: None,
             seam_node_req: None,

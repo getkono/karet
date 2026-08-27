@@ -24,7 +24,9 @@ fn file_document_windows_match_the_complete_document() {
     let mut complete = doc.prefix.clone();
     for file in &files {
         complete.push(Line::raw(""));
-        complete.extend(file_card(&theme, file, width));
+        complete.push(file_card_header(&theme, file, width, false));
+        complete.extend(file_card_body(&theme, file, 0, usize::MAX, width));
+        complete.push(file_card_footer(&theme, width));
     }
     assert_eq!(usize::from(doc.rows), complete.len());
     for start in 0..complete.len() {

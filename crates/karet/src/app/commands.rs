@@ -381,6 +381,8 @@ impl App {
             Command::CommitGraphNext => self.graph_select(1),
             Command::CommitGraphPrev => self.graph_select(-1),
             Command::CommitGraphOpen => self.graph_open_selected(),
+            Command::CommitGraphPanLeft => self.scroll_columns(-GRAPH_PAN_COLUMNS),
+            Command::CommitGraphPanRight => self.scroll_columns(GRAPH_PAN_COLUMNS),
             Command::OpenCommitByHash => self.open_rev_input(),
             Command::RevInputSubmit => self.rev_submit(),
             Command::RevInputCancel => self.rev_cancel(),

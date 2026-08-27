@@ -5,6 +5,7 @@
 mod support;
 
 mod blame;
+mod commit_graph;
 mod commit_navigation;
 mod commit_view;
 mod debugging;

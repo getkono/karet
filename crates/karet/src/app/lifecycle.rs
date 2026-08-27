@@ -158,9 +158,7 @@ impl App {
             &mut self.pending_commit_detail,
             views,
             &mut requests,
-            |d| match d {
-                CommitDest::Tab { view } | CommitDest::Browser { view, .. } => *view,
-            },
+            |view| *view,
         );
         drain_view_requests(&mut self.latex_previews, views, &mut requests, |view| *view);
         drain_view_requests(
@@ -182,12 +180,7 @@ impl App {
             &mut requests,
             |(view, _)| *view,
         );
-        if let Some((request, view)) = self.graph_log_req
-            && views.contains(&view)
-        {
-            self.graph_log_req = None;
-            requests.push(request);
-        }
+        drain_view_requests(&mut self.graph_log_reqs, views, &mut requests, |view| *view);
         for request in requests {
             self.cancel_backend_request(request);
         }
