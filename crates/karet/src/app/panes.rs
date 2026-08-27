@@ -234,15 +234,22 @@ impl App {
     }
 
     /// Move the active tab one slot left (`-1`) or right (`+1`), clamped (no wrap).
+    ///
+    /// The pinned GitHub dashboard keeps the leftmost slot: it neither moves nor is
+    /// displaced by a neighbour, the same refusal [`App::move_tab`] makes for a drag.
     pub(super) fn move_active_tab(&mut self, delta: i32) {
         let n = self.tabs.len() as i64;
         if n < 2 {
             return;
         }
         let target = (self.active as i64 + i64::from(delta)).clamp(0, n - 1) as usize;
-        if target != self.active {
-            self.tabs.swap(self.active, target);
-            self.set_active(target);
+        if target == self.active
+            || self.tabs[self.active].is_github_dashboard()
+            || self.tabs[target].is_github_dashboard()
+        {
+            return;
         }
+        self.tabs.swap(self.active, target);
+        self.set_active(target);
     }
 }

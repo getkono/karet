@@ -106,6 +106,51 @@ fn github_dashboard_disappears_when_repository_becomes_ineligible() {
 }
 
 #[test]
+fn github_dashboard_cannot_be_moved_off_the_leftmost_slot() {
+    let mut app = app();
+    app.apply_github_availability(Some(repository()), anonymous_auth());
+    app.push_tab(Tab::welcome());
+    assert_eq!(app.tabs.len(), 2);
+    assert!(app.tabs[0].is_github_dashboard());
+
+    // "View: Move Editor Right" with the pin in front.
+    app.set_active(0);
+    app.move_active_tab(1);
+    assert!(
+        app.tabs[0].is_github_dashboard(),
+        "the pinned dashboard must not move off the leftmost slot"
+    );
+
+    // ...and its neighbour must not be able to swap it rightwards either.
+    app.set_active(1);
+    app.move_active_tab(-1);
+    assert!(
+        app.tabs[0].is_github_dashboard(),
+        "a neighbour must not displace the pinned dashboard"
+    );
+}
+
+#[test]
+fn closing_editors_to_the_right_spares_the_pinned_dashboard() {
+    let mut app = app();
+    app.apply_github_availability(Some(repository()), anonymous_auth());
+    app.push_tab(Tab::welcome());
+
+    // Seat the dashboard to the right of the active tab directly, so this pins
+    // `close_tabs_to_right` on its own rather than through whatever else can
+    // put it there.
+    app.tabs.swap(0, 1);
+    app.set_active(0);
+    assert!(app.tabs[1].is_github_dashboard());
+
+    app.close_tabs_to_right();
+    assert!(
+        app.tabs.iter().any(Tab::is_github_dashboard),
+        "closing editors to the right must spare the uncloseable pinned dashboard"
+    );
+}
+
+#[test]
 fn github_dashboard_opens_a_masked_in_tui_sign_in_control() {
     let mut app = app();
     app.apply_github_availability(Some(repository()), anonymous_auth());
