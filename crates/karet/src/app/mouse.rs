@@ -64,6 +64,8 @@ impl App {
             .markdown_link_hits
             .iter()
             .any(|hit| rect_contains(hit.rect, (mouse.column, mouse.row)));
+        let over_commits_title = self.sidebar_panel == SidebarPanel::SourceControl
+            && rect_contains(self.scm_ui.commits_title_rect, (mouse.column, mouse.row));
         // A thumb is draggable, and this shell hints every draggable it has. The grab
         // shape outlives the pointer leaving the track, because the drag does too.
         let over_thumb = self
@@ -79,7 +81,11 @@ impl App {
             Some("row-resize")
         } else if over_thumb {
             Some("grab")
-        } else if over_blame || over_markdown_link || self.definition_hover.is_some() {
+        } else if over_blame
+            || over_markdown_link
+            || over_commits_title
+            || self.definition_hover.is_some()
+        {
             Some("pointer")
         } else {
             None
@@ -362,6 +368,13 @@ impl App {
         self.scm_ui.row_map.get(display).copied().flatten()
     }
 
+    /// Whether the pointer is over the Source-Control `COMMITS` title, which opens the
+    /// full commit-graph view.
+    pub(crate) fn hovered_scm_commits_title(&self) -> bool {
+        self.hover
+            .is_some_and(|point| rect_contains(self.scm_ui.commits_title_rect, point))
+    }
+
     /// The sidebar panel whose header switcher cell is at `(col, row_y)`, if any.
     pub(super) fn panel_at(&self, col: u16, row_y: u16) -> Option<SidebarPanel> {
         if row_y != self.sidebar_rect.y {
@@ -453,15 +466,16 @@ impl App {
             SidebarPanel::SourceControl => {
                 // The pinned commit-log region: click a commit row to open its commit
                 // view; the trailing "load more" affordance pages in older history.
+                if rect_contains(self.scm_ui.commits_title_rect, (col, row_y)) {
+                    self.dispatch(Command::ShowCommitGraph);
+                    return;
+                }
                 if rect_contains(self.scm_ui.commits_rect, (col, row_y)) {
                     let display =
                         self.scm_ui.commits_offset + (row_y - self.scm_ui.commits_rect.y) as usize;
                     if self.scm_ui.more_row == Some(display) {
                         self.load_more_scm_log();
-                    } else if let Some(commit) =
-                        display.checked_sub(1).and_then(|i| self.scm.log.get(i))
-                    {
-                        // Row 0 is the " COMMITS" header; commits begin at display 1.
+                    } else if let Some(commit) = self.scm.log.get(display) {
                         self.open_commit(commit.hash.clone());
                     }
                     return;

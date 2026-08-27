@@ -26,15 +26,16 @@ renderer.
 
 ## Commit-history DAG (shipped)
 
-The Source-Control panel renders the commit log as a **lane-based DAG** instead of a
-flat list. `karet-vcs` captures each commit's parents; `karet-graph::assign_lanes` walks
-the commits (newest first) and produces one rail gutter per row, drawn to the left of
-the existing hash / summary / age columns.
+The commit log renders as a **lane-based DAG** instead of a flat list. `karet-vcs`
+captures each commit's parents; `karet-graph::assign_lanes` walks the commits (newest
+first) and produces one rail gutter per row, drawn to the left of the hash / refs /
+summary / age columns. One renderer (`ui::commit::list`) paints those rows everywhere
+they appear, so the surfaces cannot drift apart.
 
 Glyphs: `●` a commit, `◉` `HEAD`, `◆` a merge (2+ parents); `│` a rail, `─` a
 connector, `╭ ╮ ╰ ╯` rounded corners where a lane opens (a branch/merge) or folds back.
-Each lane gets a stable colour so parallel branches read apart. A branch-and-merge
-history renders like:
+Each lane gets a stable colour — resolved through the theme, like every other span on
+the row — so parallel branches read apart. A branch-and-merge history renders like:
 
 ```
 ◉─╮  e4f1a2  feat(pdf): page scroll bar          Justin  2h
@@ -43,6 +44,27 @@ history renders like:
 ●─╮  9569303 feat(editor): caret restore on undo   Justin  7h
   ●  37da4ba fix(editor): undo/redo caret          Justin  8h
 ```
+
+It appears on two surfaces:
+
+- **The Source Control panel** — a short pinned region at the bottom, under a `COMMITS`
+  title. The title is a button: hovering it highlights it, and clicking opens the full
+  view. Clicking a commit row opens that commit.
+- **The commit-graph view** — a first-class tab at the same tier as an editor, opened by
+  **Source Control: Commit Graph** (`g` in the Source Control panel), by clicking the
+  `COMMITS` title, or scoped to one file by **Show File History**. Several can be open
+  at once; each owns its own paging cursor.
+
+The view gives the graph the **whole pane** — a branchy history with many lanes and long
+summaries is exactly what a side pane would squeeze — and pans in **both axes**. Its
+header names the branch, its upstream and divergence, any in-progress operation, and the
+tip commit (author, hash, age) with how much history is loaded behind it. Selecting a
+commit and pressing `Enter` opens it as its own commit tab rather than an embedded pane.
+
+History is **prefetched two screens ahead** of the viewport in large pages, and each
+arriving page re-checks, so fetching chains forward on its own: the graph is drawn as
+far as the eye can see, and the trailing `⋯ more` affordance only becomes reachable if
+you scroll faster than the backend answers.
 
 ## Workspace dependency map (shipped)
 

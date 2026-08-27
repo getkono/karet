@@ -144,11 +144,6 @@ impl CommitFiles {
             ..Self::default()
         }
     }
-
-    /// Reset to an in-flight state (a reselection cleared the shown files).
-    pub fn reset_loading(&mut self) {
-        *self = Self::loading();
-    }
 }
 
 /// The content of a tab and how to render it.
@@ -362,14 +357,19 @@ pub enum TabKind {
         /// Responsive scrolling, anchor, and file-rail state.
         view: CommitViewState,
     },
-    /// The full-screen commit graph browser: a scrollable DAG commit log on the left
-    /// and the selected commit's detail on the right.
+    /// The full-screen commit-graph view: the DAG log across the whole pane, panned in
+    /// both axes. Selecting a commit opens it as its own [`TabKind::Commit`] tab rather
+    /// than an embedded pane, so a wide graph keeps the full width.
     CommitGraph {
-        /// When set, the browser shows the history of this file (`git log -- <path>`)
+        /// When set, the view shows the history of this file (`git log -- <path>`)
         /// rather than the whole-repository log; paging uses the same source.
         history_path: Option<PathBuf>,
         /// The loaded commits, newest first (its own paged history).
         commits: Vec<karet_vcs::Commit>,
+        /// The lane layout for `commits`, cached because assignment is sequential from
+        /// the tip and would otherwise be recomputed for every row on every frame.
+        /// Always the same length as `commits`.
+        rails: Vec<karet_graph::RailRow>,
         /// Whether older commits remain to be paged in.
         has_more: bool,
         /// Whether a history page is currently in flight.
@@ -378,19 +378,18 @@ pub enum TabKind {
         loading_since: Option<Pending>,
         /// The selected commit's index into `commits`.
         selected: usize,
-        /// The selected commit's in-flight detail request, if any.
-        detail_loading_since: Option<Pending>,
-        /// The selected commit's loaded detail, if the fetch has answered.
-        detail: Option<Box<karet_vcs::CommitDetail>>,
-        /// The selected commit's changed files and their load state.
-        files: CommitFiles,
         /// A commit hash marked as the base for a two-commit comparison, if any. Set by
         /// "mark base"; the next "compare" diffs it against the current selection.
         compare_base: Option<String>,
-        /// The commit-list scroll offset (first visible row).
+        /// The vertical scroll offset (first visible row), free of the selection so the
+        /// graph can be panned without moving the cursor.
         list_offset: u16,
-        /// Horizontal offset for long lines in the selected commit detail.
-        detail_column: u16,
+        /// The horizontal scroll offset, for graphs wider than the pane.
+        column: u16,
+        /// The last painted rect of the commit rows. It sets how far ahead history is
+        /// prefetched and maps a click to the commit under it. Empty until the view has
+        /// been drawn once.
+        list_rect: Rect,
     },
 }
 
@@ -758,16 +757,15 @@ impl Tab {
             TabKind::CommitGraph {
                 history_path,
                 commits: Vec::new(),
+                rails: Vec::new(),
                 has_more: false,
                 loading: true,
                 loading_since: Some(Pending::start()),
                 selected: 0,
-                detail_loading_since: None,
-                detail: None,
-                files: CommitFiles::default(),
                 compare_base: None,
                 list_offset: 0,
-                detail_column: 0,
+                column: 0,
+                list_rect: Rect::ZERO,
             },
         )
     }

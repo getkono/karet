@@ -553,8 +553,12 @@ pub enum Command {
     CommitGraphNext,
     /// Move the commit graph browser's selection to the previous (newer) commit.
     CommitGraphPrev,
-    /// Open the browser's selected commit as a standalone commit view.
+    /// Open the graph view's selected commit as a standalone commit view.
     CommitGraphOpen,
+    /// Pan the commit graph left (histories can be wider than the pane).
+    CommitGraphPanLeft,
+    /// Pan the commit graph right.
+    CommitGraphPanRight,
     /// Open the go-to-commit input to view any commit by hash or ref.
     OpenCommitByHash,
     /// Submit the go-to-commit revision.
@@ -868,6 +872,8 @@ impl Command {
             Self::CommitGraphNext => "Commit Graph: Next Commit",
             Self::CommitGraphPrev => "Commit Graph: Previous Commit",
             Self::CommitGraphOpen => "Commit Graph: Open Commit",
+            Self::CommitGraphPanLeft => "Commit Graph: Pan Left",
+            Self::CommitGraphPanRight => "Commit Graph: Pan Right",
             Self::OpenCommitByHash => "Source Control: Go to Commit…",
             Self::RevInputSubmit => "Go to Commit: Submit",
             Self::RevInputCancel => "Go to Commit: Cancel",

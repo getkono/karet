@@ -237,6 +237,19 @@ const SEARCH_RESULT_CAP: usize = 500;
 /// How many commits the source-control log fetches per lazily-loaded page.
 const SCM_LOG_PAGE: usize = 25;
 
+/// How many commits the full-screen commit-graph view fetches per page. Much larger
+/// than [`SCM_LOG_PAGE`]: that view is meant to stay loaded far beyond the viewport, so
+/// it trades a bigger read for not having to page again on every screen of scrolling.
+const GRAPH_LOG_PAGE: usize = 200;
+
+/// Columns one keyboard pan moves the commit graph.
+const GRAPH_PAN_COLUMNS: i32 = 8;
+
+/// How many screens of history the commit-graph view keeps loaded ahead of the
+/// viewport. Prefetching this far out is what keeps the trailing "more" affordance out
+/// of sight unless the user outruns the fetch.
+const GRAPH_PREFETCH_SCREENS: usize = 2;
+
 /// The default height (rows) of the pinned Source-Control commit-log region.
 const DEFAULT_SCM_COMMITS_H: u16 = 8;
 
@@ -550,7 +563,7 @@ pub struct App {
     inline_macro_engine: karet_syntax::InlineMacroEngine,
     /// In-flight commit-detail requests, mapping request id → where its result goes
     /// (a new standalone commit tab, or the graph browser's detail pane).
-    pending_commit_detail: HashMap<RequestId, CommitDest>,
+    pending_commit_detail: HashMap<RequestId, ViewId>,
     /// Explicit LaTeX build requests mapped to their reserved preview view.
     latex_previews: HashMap<RequestId, ViewId>,
     /// Lazy forge-verification reads, owned by their exact commit view.
@@ -566,9 +579,10 @@ pub struct App {
     /// Two-file diffs from the `--diff` flag, opened as loading tabs before the
     /// backend attaches; their `PrepareDiff` commands are sent on attach.
     pending_startup_diffs: Vec<(ViewId, PathBuf, String, String)>,
-    /// The graph browser's in-flight history-page request, so its answering
-    /// [`SessionEvent::VcsLog`] fills the browser rather than the sidebar log.
-    graph_log_req: Option<(RequestId, ViewId)>,
+    /// In-flight commit-graph history pages, each owned by the exact view that asked.
+    /// Keyed this way so an answering [`SessionEvent::VcsLog`] fills that view rather
+    /// than the sidebar log — or, with several graph views open, the wrong one.
+    graph_log_reqs: HashMap<RequestId, ViewId>,
     /// The in-flight seam index request, so a stale answer can be ignored.
     pub(crate) seam_index_req: Option<RequestId>,
     /// The in-flight seam query request.

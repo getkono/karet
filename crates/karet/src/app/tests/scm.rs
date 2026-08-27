@@ -111,7 +111,9 @@ fn source_control_commit_click_opens_pending_commit_tab_immediately() {
     app.scm_ui.commits_offset = 0;
     app.scm.log = vec![commit("aaaaaaa111", "first")];
 
-    app.handle_sidebar_click(2, 5, KeyModifiers::NONE);
+    // The `COMMITS` title is pinned outside the list now, so the first commit is the
+    // region's first row rather than the row after a scrolling header.
+    app.handle_sidebar_click(2, 4, KeyModifiers::NONE);
 
     assert!(matches!(
         &app.tabs[app.active].kind,
@@ -823,4 +825,56 @@ fn conflicted_change_opens_editable_merged_view_with_read_only_sides() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The `COMMITS` title is the way into the full graph view, so a click on it opens that
+/// view rather than falling through to the commit rows beneath it.
+#[test]
+fn clicking_the_commits_title_opens_the_graph_view() {
+    let mut app = app();
+    app.sidebar_panel = SidebarPanel::SourceControl;
+    app.sidebar_rect = Rect {
+        x: 0,
+        y: 0,
+        width: 30,
+        height: 12,
+    };
+    app.scm_ui.commits_title_rect = Rect {
+        x: 0,
+        y: 3,
+        width: 30,
+        height: 1,
+    };
+    app.scm_ui.commits_rect = Rect {
+        x: 0,
+        y: 4,
+        width: 30,
+        height: 6,
+    };
+    app.scm.log = vec![commit("aaaaaaa111", "first")];
+
+    app.handle_sidebar_click(2, 3, KeyModifiers::NONE);
+
+    assert!(
+        matches!(app.tabs[app.active].kind, TabKind::CommitGraph { .. }),
+        "the title opens the graph, not the commit under it"
+    );
+}
+
+/// The title reports itself hovered only while the pointer is actually over it, so the
+/// highlight can't stick to a row that merely shares the panel.
+#[test]
+fn the_commits_title_tracks_the_hover_pointer() {
+    let mut app = app();
+    app.scm_ui.commits_title_rect = Rect {
+        x: 0,
+        y: 3,
+        width: 30,
+        height: 1,
+    };
+    assert!(!app.hovered_scm_commits_title(), "no pointer, no hover");
+    app.hover = Some((2, 3));
+    assert!(app.hovered_scm_commits_title());
+    app.hover = Some((2, 4));
+    assert!(!app.hovered_scm_commits_title(), "the row below is not it");
 }

@@ -176,12 +176,8 @@ impl App {
         labels: std::collections::HashMap<String, Vec<karet_vcs::RefLabel>>,
     ) {
         self.scm.ref_labels = labels;
-        if id.is_some_and(|request| {
-            self.graph_log_req
-                .is_some_and(|(pending, _)| pending == request)
-        }) {
-            self.graph_log_req = None;
-            self.apply_graph_log(skip, commits, has_more);
+        if let Some(view) = id.and_then(|request| self.graph_log_reqs.remove(&request)) {
+            self.apply_graph_log(view, skip, commits, has_more);
         } else {
             self.apply_vcs_log(skip, commits, has_more);
         }
@@ -196,12 +192,8 @@ impl App {
         commits: Vec<Commit>,
         has_more: bool,
     ) {
-        if id.is_some_and(|request| {
-            self.graph_log_req
-                .is_some_and(|(pending, _)| pending == request)
-        }) {
-            self.graph_log_req = None;
-            self.apply_graph_log(skip, commits, has_more);
+        if let Some(view) = id.and_then(|request| self.graph_log_reqs.remove(&request)) {
+            self.apply_graph_log(view, skip, commits, has_more);
         } else if id.is_some() && id == self.pending_history_picker {
             self.pending_history_picker = None;
             self.apply_history_picker(commits);
@@ -237,15 +229,10 @@ impl App {
         id: Option<RequestId>,
         detail: Box<CommitDetail>,
     ) {
-        let dest = id.and_then(|i| self.pending_commit_detail.get(&i).cloned());
-        match dest {
-            Some(CommitDest::Browser { view, hash }) if detail.hash == hash => {
-                self.fill_graph_metadata(view, detail);
-            },
-            Some(CommitDest::Browser { .. }) => {},
-            Some(CommitDest::Tab { view }) => self.fill_commit_metadata(view, detail),
+        match id.and_then(|i| self.pending_commit_detail.get(&i).copied()) {
+            Some(view) => self.fill_commit_metadata(view, detail),
             None if id.is_none() => self.open_commit_metadata_tab(detail),
-            _ => {},
+            None => {},
         }
     }
 
@@ -258,17 +245,9 @@ impl App {
     ) {
         let commit_hash = detail.hash.clone();
         match id.and_then(|request| self.pending_commit_detail.remove(&request)) {
-            Some(CommitDest::Browser { view, hash })
-                if detail.hash == hash && self.all_tabs().any(|tab| tab.view == view) =>
-            {
-                self.fill_graph_detail(view, detail, changes);
-            },
-            Some(CommitDest::Browser { .. }) => {},
-            Some(CommitDest::Tab { view }) => {
-                self.fill_commit_tab(view, detail, changes);
-            },
+            Some(view) => self.fill_commit_tab(view, detail, changes),
             None if id.is_none() => self.open_commit_tab(detail, changes),
-            _ => {},
+            None => {},
         }
         self.apply_review_flags(&commit_hash);
     }

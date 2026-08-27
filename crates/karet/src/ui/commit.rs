@@ -2,8 +2,16 @@ use unicode_width::UnicodeWidthStr;
 
 use super::*;
 
+mod graph;
+pub(crate) mod list;
 mod responsive;
 
+pub(in crate::ui) use graph::CommitGraphInput;
+pub(in crate::ui) use graph::CommitGraphScroll;
+pub(in crate::ui) use graph::draw_commit_graph;
+pub(in crate::ui) use list::CommitListEntry;
+pub(in crate::ui) use list::commit_list_items;
+pub(crate) use list::relative_time;
 pub(super) use responsive::draw_commit;
 pub(super) use responsive::draw_compare;
 
@@ -289,178 +297,6 @@ pub(super) fn commit_metadata_lines(
     (lines, Some(badge_hit))
 }
 
-#[allow(clippy::too_many_arguments)] // shared graph-browser rendering keeps the full commit vocabulary
-pub(super) fn commit_detail_lines(
-    theme: &Theme,
-    detail: &karet_vcs::CommitDetail,
-    files: &CommitFiles,
-    reveal: bool,
-    width: u16,
-) -> (Vec<Line<'static>>, Option<BadgeHit>) {
-    let (mut lines, badge) =
-        commit_metadata_lines(theme, detail, files.verification.as_ref(), reveal);
-    let file_status = file_load_status(files);
-    let muted = theme.style(ThemeRole::Muted);
-    let label = theme.style(ThemeRole::LineNumberActive);
-    match file_status {
-        CommitFileStatus::Ready => lines.extend(changed_files_lines(theme, &files.files, width)),
-        CommitFileStatus::Loading(since) => {
-            lines.push(Line::raw(""));
-            if since.visible() {
-                lines.push(Line::styled(" loading changed files\u{2026}", muted));
-            }
-        },
-        CommitFileStatus::Failed(error) => {
-            lines.push(Line::raw(""));
-            lines.push(Line::from(vec![
-                Span::styled(" changed files unavailable", label),
-                Span::raw("   "),
-                Span::styled(error.to_string(), muted),
-            ]));
-        },
-    }
-    (lines, badge)
-}
-
-/// Build the shared "changed files" block: a `N files changed +a −b` summary, a
-/// changed-file table of contents, then one boxed diff card per file. Used by both the
-/// commit view ([`commit_detail_lines`]) and the compare view so the two render files
-/// identically. `width` is the render width, used to size the card rules.
-pub(super) fn changed_files_lines(
-    theme: &Theme,
-    files: &[render::FileView],
-    width: u16,
-) -> Vec<Line<'static>> {
-    let fg = theme.style(ThemeRole::Foreground);
-    let label = theme.style(ThemeRole::LineNumberActive);
-    let add_fg = theme.style(ThemeRole::DiagnosticHint);
-    let rem_fg = theme.style(ThemeRole::DiagnosticError);
-
-    let mut lines: Vec<Line<'static>> = Vec::new();
-
-    // Summary: N files changed, +added −removed.
-    let (mut added, mut removed) = (0usize, 0usize);
-    for file in files {
-        let (a, r) = file.line_stats();
-        added += a;
-        removed += r;
-    }
-    lines.push(Line::raw(""));
-    lines.push(Line::from(vec![
-        Span::styled(
-            format!(
-                " {} file{} changed",
-                files.len(),
-                if files.len() == 1 { "" } else { "s" }
-            ),
-            label,
-        ),
-        Span::raw("   "),
-        Span::styled(format!("+{added}"), add_fg),
-        Span::raw(" "),
-        Span::styled(format!("\u{2212}{removed}"), rem_fg),
-    ]));
-
-    // Changed-file table of contents.
-    for file in files {
-        let (a, r) = file.line_stats();
-        let (g, role) = status_glyph(file.change.status);
-        lines.push(Line::from(vec![
-            Span::styled(format!(" {g}  "), theme.style(role)),
-            Span::styled(file.change.path.to_string_lossy().into_owned(), fg),
-            Span::styled(format!("   +{a}"), add_fg),
-            Span::styled(format!(" \u{2212}{r}"), rem_fg),
-        ]));
-    }
-
-    // Per-file diff cards.
-    for file in files {
-        lines.push(Line::raw(""));
-        lines.extend(file_card(theme, file, width));
-    }
-    lines
-}
-
-/// Presentation-neutral input for the shared commit-list renderer.
-pub(super) struct CommitListEntry<'a> {
-    pub(super) hash: &'a str,
-    pub(super) short_hash: &'a str,
-    pub(super) summary: &'a str,
-    pub(super) time: i64,
-    pub(super) parents: &'a [String],
-    pub(super) head: bool,
-    /// Refs decorating this commit (branch/remote/tag chips before the summary).
-    pub(super) labels: &'a [karet_vcs::RefLabel],
-}
-
-/// Render the commit rows shared by Source Control, the graph browser, and GitHub
-/// pull-request `Commits`. Keeping the rail/hash/summary/time vocabulary here prevents
-/// those three screens from drifting apart.
-pub(super) fn commit_list_items(
-    theme: &Theme,
-    entries: &[CommitListEntry<'_>],
-    selected: Option<usize>,
-    include_header: bool,
-) -> Vec<ListItem<'static>> {
-    const LANE_COLORS: [Color; 6] = [
-        Color::Cyan,
-        Color::Green,
-        Color::Yellow,
-        Color::Magenta,
-        Color::Blue,
-        Color::Red,
-    ];
-    let lane_style = |lane: u8| Style::default().fg(LANE_COLORS[lane as usize % LANE_COLORS.len()]);
-    let header_style = theme
-        .style(ThemeRole::LineNumberActive)
-        .add_modifier(Modifier::BOLD);
-    let hash_style = theme.style(ThemeRole::DiagnosticWarning);
-    let dim = theme.style(ThemeRole::LineNumber);
-    let sel_bg = theme.role(ThemeRole::Selection).to_ratatui();
-    let inputs: Vec<LaneInput> = entries
-        .iter()
-        .map(|entry| LaneInput {
-            id: entry.hash.to_string(),
-            parents: entry.parents.to_vec(),
-            head: entry.head,
-        })
-        .collect();
-    let rails = assign_lanes(&inputs);
-    let mut items = Vec::with_capacity(entries.len() + usize::from(include_header));
-    if include_header {
-        items.push(ListItem::new(Line::styled(" COMMITS", header_style)));
-    }
-    for (index, (entry, rail)) in entries.iter().zip(rails.iter()).enumerate() {
-        let mut spans = vec![Span::raw(" ")];
-        spans.extend(render_rail(rail, lane_style).spans);
-        spans.push(Span::styled(format!(" {} ", entry.short_hash), hash_style));
-        for label in entry.labels {
-            let (glyph, role) = match label.kind {
-                karet_vcs::RefKind::Local => ("", ThemeRole::DiffAdded),
-                karet_vcs::RefKind::Remote => ("", ThemeRole::DiagnosticInfo),
-                karet_vcs::RefKind::Tag => ("⌂ ", ThemeRole::DiagnosticWarning),
-                karet_vcs::RefKind::Head => ("", ThemeRole::LineNumberActive),
-                _ => ("", ThemeRole::Muted),
-            };
-            spans.push(Span::styled(
-                format!("[{glyph}{}] ", label.name),
-                theme.style(role).add_modifier(Modifier::BOLD),
-            ));
-        }
-        spans.push(Span::raw(entry.summary.to_string()));
-        spans.push(Span::styled(
-            format!("  {}", relative_time(entry.time)),
-            dim,
-        ));
-        let mut line = Line::from(spans);
-        if selected == Some(index) {
-            line = line.style(Style::default().bg(sel_bg));
-        }
-        items.push(ListItem::new(line));
-    }
-    items
-}
-
 /// Render one file's diff as a boxed "card": a top rule carrying the status glyph, the
 /// path (and the old path for renames), and the `+a −b` stats; each diff line prefixed
 /// with a left rail; then a bottom rule. `width` sizes the rules (a small floor keeps a
@@ -488,17 +324,6 @@ pub(super) fn auto_collapse_label(file: &render::FileView) -> Option<String> {
 /// dropped. The path identifies the file; the reason only explains it, so the
 /// reason yields first.
 const REASON_MIN_PATH: usize = 12;
-
-pub(super) fn file_card(theme: &Theme, file: &render::FileView, width: u16) -> Vec<Line<'static>> {
-    let mut out = vec![file_card_header(theme, file, width, false)];
-    if width < FILE_CARD_MIN_WIDTH {
-        return out;
-    }
-    // Body: each diff line behind a left rail.
-    out.extend(file_card_body(theme, file, 0, usize::MAX, width));
-    out.push(file_card_footer(theme, width));
-    out
-}
 
 pub(super) fn file_card_header(
     theme: &Theme,
@@ -643,128 +468,6 @@ pub(super) fn truncate_start(text: &str, max: usize) -> String {
 }
 
 /// Draw the full-screen commit graph browser: a DAG commit list on the left and the
-/// selected commit's detail on the right.
-#[allow(clippy::too_many_arguments)] // a browser pane genuinely has many independent inputs
-pub(super) fn draw_commit_graph(
-    f: &mut Frame,
-    theme: &Theme,
-    area: Rect,
-    commits: &[karet_vcs::Commit],
-    labels: &std::collections::HashMap<String, Vec<karet_vcs::RefLabel>>,
-    has_more: bool,
-    loading: bool,
-    loading_since: Option<Pending>,
-    selected: usize,
-    detail_loading_since: Option<Pending>,
-    detail: Option<&karet_vcs::CommitDetail>,
-    files: &CommitFiles,
-    hits: &mut ScrollHits,
-    list_offset: &mut u16,
-    detail_column: &mut u16,
-) {
-    let cols = Layout::horizontal([
-        Constraint::Percentage(42),
-        Constraint::Length(1),
-        Constraint::Min(0),
-    ])
-    .split(area);
-    let (list_area, detail_area) = (cols[0], cols[2]);
-    f.render_widget(Block::new().borders(Borders::LEFT), cols[1]);
-
-    let dim = theme.style(ThemeRole::LineNumber);
-    let entries: Vec<CommitListEntry<'_>> = commits
-        .iter()
-        .enumerate()
-        .map(|(i, commit)| CommitListEntry {
-            hash: &commit.hash,
-            short_hash: &commit.short_hash,
-            summary: &commit.summary,
-            time: commit.time,
-            parents: &commit.parents,
-            head: i == 0,
-            labels: labels
-                .get(commit.hash.as_str())
-                .map(Vec::as_slice)
-                .unwrap_or_default(),
-        })
-        .collect();
-    let mut items = commit_list_items(theme, &entries, Some(selected), true);
-    if loading && commits.is_empty() && loading_since.is_some_and(Pending::visible) {
-        items.push(ListItem::new(Line::styled(" loading\u{2026}", dim)));
-    } else if has_more {
-        items.push(ListItem::new(Line::styled(" \u{22ef} more", dim)));
-    }
-
-    // Keep the selected row (offset by the header) visible.
-    let total = items.len();
-    let (list_area, tracks) = reserve_tracks(list_area, ScrollAxes::VERTICAL);
-    let height = list_area.height as usize;
-    let sel_row = selected + 1;
-    let mut off = *list_offset as usize;
-    if sel_row < off {
-        off = sel_row;
-    } else if height > 0 && sel_row >= off + height {
-        off = sel_row + 1 - height;
-    }
-    *list_offset = u16::try_from(off).unwrap_or(u16::MAX);
-    let mut state = ListState::default();
-    *state.offset_mut() = off;
-    f.render_stateful_widget(List::new(items), list_area, &mut state);
-    hits.record(
-        tracks.paint(
-            f.buffer_mut(),
-            ScrollbarStyles::from_theme(theme),
-            ScrollExtent::new(total, state.offset(), height),
-            ScrollExtent::default(),
-        ),
-        ScrollSurface::TabRows,
-    );
-
-    // Right: the selected commit's detail (once its fetch answers).
-    let sel_hash = commits.get(selected).map(|c| c.hash.as_str());
-    match detail {
-        Some(d) if Some(d.hash.as_str()) == sel_hash => {
-            // Horizontal only: the browser's vertical wheel belongs to the commit
-            // list beside it, so this pane reserves no vertical track.
-            hits.record_track(
-                draw_horizontally_scrollable_lines(
-                    f,
-                    theme,
-                    detail_area,
-                    commit_detail_lines(theme, d, files, false, detail_area.width).0,
-                    detail_column,
-                )
-                .horizontal,
-                ScrollSurface::TabColumns,
-            );
-        },
-        _ => {
-            let pending_since = if commits.is_empty() {
-                loading_since
-            } else {
-                detail_loading_since
-            };
-            if pending_since.is_some_and(Pending::visible) {
-                let msg = if commits.is_empty() {
-                    "loading commits\u{2026}"
-                } else {
-                    "loading commit details\u{2026}"
-                };
-                f.render_widget(
-                    Paragraph::new(Line::styled(format!("  {msg}"), dim)),
-                    detail_area,
-                );
-            } else {
-                f.render_widget(
-                    Block::default()
-                        .style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui())),
-                    detail_area,
-                );
-            }
-        },
-    }
-}
-
 /// Draw a code-visualization graph: flatten via the karet-graph tree renderer
 /// (theme mapped onto its plain style slots), then paint scrollably.
 #[allow(clippy::too_many_arguments)] // graph model, scroll offsets and the track sink are independent
@@ -787,7 +490,14 @@ pub(super) fn draw_graph(
         badge: theme.style(ThemeRole::LineNumber),
         revisit: theme.style(ThemeRole::DiagnosticWarning),
     };
-    let rows = karet_graph::view::graph_tree_lines(title, view, &styles);
+    // The dependency lens is the only `GraphView` producer today; the flattener names
+    // its lens and edge kind so a future usage/call lens reuses it as-is.
+    let rows = karet_graph::view::graph_tree_lines(
+        &format!("{title} \u{2014} dependency graph"),
+        view,
+        karet_core::GraphEdgeKind::Dependency,
+        &styles,
+    );
     hits.record_both(
         draw_scrollable_lines(f, theme, area, rows, scroll, column),
         ScrollSurface::TabRows,
