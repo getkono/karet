@@ -18,7 +18,7 @@ One index sits behind the view, so opening at another start point re-points the 
 have rather than opening a second beside it.
 
 ```
- Seam  karet-core   config: default @ x86_64-linux   1◉ api  2◊ sub  3⌥ var  4⇥ bnd  5☡ haz
+ Seam  karet-core   config: default @ x86_64-linux   1◉ api  2◊ sub  …  5☡ haz    ↻  ↻!
  package          │ module           │ item                 │ member
  karet-core   ▸ 47│ model         ▸12│ Symbol           ◉ 6 │ name              ◉
                   │ coord         ▸ 8│ SymbolKind       ◉   │ kind              ◉
@@ -78,6 +78,40 @@ what an import path is made of.
 
 Build output, dependency caches, and virtual environments are never walked. `seam.maxIndexedFiles`
 caps the whole index rather than each package, and the header says so when it bites.
+
+## Syncing, and what is kept between runs
+
+Packages are read concurrently, and each one reaches the view the moment it is finished
+rather than at the end. On a repository of any size the first rows are readable and
+navigable while the rest is still being parsed. Every package is final when it appears —
+its configuration is resolved and its counts are computed before it is sent — so nothing
+is revised under the reader. Packages are listed in discovery order however the work
+happened to finish.
+
+What each file produced is stored, keyed on its modification time and length, and replayed
+next time instead of parsed. Deliberately not a content hash: hashing means reading, and
+reading is most of what this avoids. The trade is one-sided — a file touched without being
+changed is parsed needlessly, which costs a moment; a file that changed is never mistaken
+for one that did not, because writing to it moves its modification time.
+
+| | |
+|---|---|
+| `s`, or `↻` | re-index what changed: new and removed packages, and files whose stamp moved |
+| `S`, or `↻!` | discard the stored index entirely and read every file again |
+
+The second exists because a stored answer can be wrong in a way nothing else can detect.
+Everything else — a changed file, an added crate, a deleted module — is caught by the
+first, so reach for the forced one only when the view itself looks untrue.
+
+A sync leaves the tree on screen until its replacement arrives. Blanking it would trade an
+answer that is still true for every package not yet re-read against nothing at all. When it
+finishes, the status line says what it did: `up to date (524 files)`, or `re-read 3 of 524
+files`.
+
+The stored index lives in the user cache directory, one file per workspace. It is a cache
+in the strict sense: deleting it costs a rebuild and nothing else, and it is discarded
+whole whenever the engine version or the set of compiled-in grammars changes, since either
+can alter what every file extracts to.
 
 ## Where things sit
 
@@ -180,6 +214,7 @@ decoding pictograms.
 | `o` | open the selection's source in an editor tab |
 | `c` | cycle the active configuration |
 | `y` | copy the selection's identity |
+| `s` / `S` | sync what changed, or discard the stored index and read everything again |
 | `q` | close |
 
 The **source preview** shows the lines the selection is made of, with muted lines of
@@ -214,6 +249,7 @@ pointer.
 | click a breadcrumb crumb | step back out to that crumb — the package name widens all the way |
 | click a lens in the legend | toggle it, exactly as its digit does |
 | click `config:` | cycle the active configuration |
+| click `↻` / `↻!` | sync what changed, or discard the stored index and read everything |
 | click an edge in the facet pane | select it; click it again to pivot |
 | click the query box, or `⌫ widen` | focus the filter, or step back out one narrow |
 | wheel | move the selection one row; a horizontal wheel moves between columns |
