@@ -111,6 +111,21 @@ impl App {
                 ..
             } => self.finish_latex_build(id, doc, pdf, diagnostics, error),
             SessionEvent::Closed { doc } => self.on_document_closed(doc),
+            SessionEvent::PathClassified { path, result } => {
+                if let Some(request) = id {
+                    self.on_path_classified(request, &path, result);
+                }
+            },
+            SessionEvent::FileBytes { path, result } => {
+                if let Some(request) = id {
+                    self.on_file_bytes(request, &path, result);
+                }
+            },
+            SessionEvent::FilesListed { files, .. } => {
+                if let Some(request) = id {
+                    self.on_files_listed(request, files);
+                }
+            },
             SessionEvent::Symbols { doc, symbols } => self.on_symbols(doc, symbols),
             SessionEvent::Completions {
                 doc,

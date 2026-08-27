@@ -19,6 +19,7 @@ mod inline_macros;
 mod language_servers;
 mod lifecycle;
 mod markdown_edit;
+mod open_seam;
 mod preview;
 mod remote;
 mod review;

@@ -53,6 +53,42 @@ pub(crate) fn app() -> App {
     )
 }
 
+/// Deliver `text` as the backend's content for the tab already open at `path`.
+///
+/// Opening a file reserves a tab and asks the backend for the content; the
+/// content arrives later, as a document snapshot. A test that needs a buffer has
+/// to play the backend's part, and doing it through `on_snapshot` means it
+/// exercises the same path a real session does — including the deferred caret a
+/// jump-to-line records while the file is still empty.
+pub(crate) fn deliver_content(app: &mut App, path: &Path, text: &str) -> DocumentId {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let doc = DocumentId(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    for tab in app.all_tabs_mut() {
+        let matches = tab.path() == Some(path);
+        if let TabKind::Code { doc: slot, .. } = &mut tab.kind
+            && matches
+            && slot.is_none()
+        {
+            *slot = Some(doc);
+        }
+    }
+    let buffer = karet_text::TextBuffer::from_bytes(text.as_bytes()).unwrap_or_default();
+    let snapshot = karet_session::local::DocSnapshot {
+        version: buffer.version(),
+        buffer,
+        highlights: std::sync::Arc::default(),
+        folds: std::sync::Arc::default(),
+        semantic_blocks: std::sync::Arc::default(),
+        decorations: std::sync::Arc::default(),
+        syntax_error_lines: std::sync::Arc::default(),
+        language: None,
+        dirty: false,
+        cursor: None,
+    };
+    app.on_snapshot(doc, &snapshot);
+    doc
+}
+
 pub(crate) fn test_dir(name: &str) -> PathBuf {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -423,6 +459,18 @@ pub(crate) async fn pump(app: &mut App, events: &mut EventRx) {
         tokio::time::timeout(std::time::Duration::from_millis(500), events.recv()).await
     {
         app.on_backend_event(id, ev);
+    }
+}
+
+/// Drain document snapshots into `app` until they stop arriving.
+///
+/// A backend has two streams and a document's *content* comes on this one, so a
+/// test that asserts on buffer text has to drain it as well as the event stream.
+pub(crate) async fn pump_snapshots(app: &mut App, snaps: &mut karet_session::local::SnapshotRx) {
+    while let Ok(Some((doc, snapshot))) =
+        tokio::time::timeout(std::time::Duration::from_millis(500), snaps.recv()).await
+    {
+        app.on_snapshot(doc, &snapshot);
     }
 }
 

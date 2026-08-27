@@ -66,6 +66,7 @@ fn activating_a_word_row_opens_its_file_at_the_misspelling() {
     // Row 0 is the file heading, row 1 the word.
     app.spelling.selection.move_to(1);
     app.open_selected_spelling();
+    deliver_content(&mut app, &path, "first line\nthe wrld ends\n");
 
     assert_eq!(app.tabs[app.active].path(), Some(path.as_path()));
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(1, 4));
@@ -89,6 +90,7 @@ fn activating_a_file_heading_jumps_to_that_files_first_misspelling() {
 
     app.spelling.selection.move_to(0); // the heading
     app.open_selected_spelling();
+    deliver_content(&mut app, &path, "one\ntwo\nthe wrld ends\n");
 
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(2, 4));
 
@@ -155,6 +157,7 @@ fn clicking_a_result_row_opens_it() {
 
     // y = 3 is the second row: the word under its file heading.
     app.spelling_click(4, 3);
+    deliver_content(&mut app, &path, "one\nthe wrld ends\n");
 
     assert_eq!(app.tabs[app.active].path(), Some(path.as_path()));
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(1, 4));

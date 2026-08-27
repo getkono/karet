@@ -38,6 +38,11 @@ fn enter_on_a_focused_diff_opens_the_file_at_its_first_changed_line() {
     // Enter on the focused diff drops into the file, caret on the first
     // changed line (line 2, 0-based 1) — keyboard parity with the mouse.
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    deliver_content(
+        &mut app,
+        &dir.join("a.rs"),
+        "fn a() {}\nfn added() {}\nfn c() {}\n",
+    );
     assert!(
         matches!(app.tabs[app.active].kind, TabKind::Code { .. }),
         "a normal, editable editor tab"

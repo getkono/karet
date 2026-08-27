@@ -25,6 +25,7 @@ mod lifecycle;
 mod markdown_edit;
 mod mouse;
 mod notifications;
+mod open;
 mod panes;
 mod pending;
 mod remote_actions;
@@ -563,6 +564,19 @@ pub struct App {
     /// In-flight document conversions (DOCX → markdown), owned by the reserved
     /// preview tab's view.
     pending_conversions: HashMap<RequestId, ViewId>,
+    /// In-flight path classifications, keyed to the path each was asked about, so
+    /// an answer that arrives after the tab closed is discarded rather than
+    /// reopening it.
+    pending_classify: HashMap<RequestId, PathBuf>,
+    /// In-flight media reads, accumulating chunks until a file is complete.
+    pending_bytes: HashMap<RequestId, open::PendingBytes>,
+    /// The in-flight quick-open file list, so a stale answer cannot repopulate a
+    /// picker the user has already replaced.
+    file_list_req: Option<RequestId>,
+    /// Caret positions asked for before their file's content arrived, applied on
+    /// the document's first snapshot. A jump to a line must land on that line
+    /// however long the content takes to reach this machine.
+    pending_goto: HashMap<ViewId, LineCol>,
     /// Two-file diffs from the `--diff` flag, opened as loading tabs before the
     /// backend attaches; their `PrepareDiff` commands are sent on attach.
     pending_startup_diffs: Vec<(ViewId, PathBuf, String, String)>,

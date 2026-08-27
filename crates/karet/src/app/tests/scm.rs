@@ -768,6 +768,11 @@ fn conflicted_change_opens_editable_merged_view_with_read_only_sides() {
     let mut app = App::new(dir.clone(), Vec::new(), vec![conflicted], false);
     app.backend = Some(backend.clone());
     app.open_path(&dir.join("a.rs"));
+    deliver_content(
+        &mut app,
+        &dir.join("a.rs"),
+        "<<<<<<< HEAD\nfn current() {}\n=======\nfn incoming() {}\n>>>>>>> incoming\n",
+    );
     let original_view = app.tabs[app.active].view;
     app.sidebar_panel = SidebarPanel::SourceControl;
 

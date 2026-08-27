@@ -755,6 +755,27 @@ impl App {
                 }
                 return;
             },
+            // A tab reserved for content the client renders from raw bytes — an
+            // image, a PDF, a hex dump, or the placeholder any of them falls back
+            // to. Its path was routed on its name alone, so ask what it really is;
+            // the answer either confirms the guess or corrects it, and carries the
+            // real length the size guard needs.
+            Some(Tab {
+                kind: TabKind::Hex { path, bytes, .. },
+                ..
+            }) if bytes.is_empty() => {
+                let path = path.clone();
+                self.request_content(&path);
+                return;
+            },
+            Some(Tab {
+                kind: TabKind::Placeholder { path, .. },
+                ..
+            }) => {
+                let path = path.clone();
+                self.request_content(&path);
+                return;
+            },
             _ => return,
         };
         let Some(backend) = &self.backend else {

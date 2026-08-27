@@ -5,6 +5,9 @@ impl App {
     /// render source of truth (buffer, highlights, the search text, and the
     /// unsaved-changes flag).
     pub(super) fn on_snapshot(&mut self, doc: DocumentId, snap: &DocSnapshot) {
+        // Views this snapshot gave content to, so a caret asked for before the
+        // content arrived can be applied once the borrow of the tab list ends.
+        let mut filled: Vec<ViewId> = Vec::new();
         for tab in self.all_tabs_mut() {
             let matches = matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc);
             if !matches {
@@ -47,6 +50,7 @@ impl App {
                 tab.is_preview = false;
             }
             tab.dirty = snap.dirty;
+            filled.push(tab.view);
             // Undo/redo snapshots carry the caret to jump to; ordinary edits carry
             // `None` so the optimistic placement from `submit_edit` is preserved.
             if let Some(cursor) = &snap.cursor {
@@ -65,6 +69,27 @@ impl App {
             .is_some_and(|pending| pending.version <= snap.version)
         {
             self.auto_save_pending.remove(&doc);
+        }
+        // A caret asked for before this file had content: apply it now that there
+        // is a buffer to clamp into. Removed rather than read, so a later edit is
+        // never dragged back to where the file was first opened.
+        for view in filled {
+            let Some(position) = self.pending_goto.remove(&view) else {
+                continue;
+            };
+            let buffer =
+                self.all_tabs_mut()
+                    .find(|tab| tab.view == view)
+                    .and_then(|tab| match &tab.kind {
+                        TabKind::Code { buffer, .. } => Some(buffer.clone()),
+                        _ => None,
+                    });
+            if let (Some(buffer), Some(tab)) =
+                (buffer, self.all_tabs_mut().find(|tab| tab.view == view))
+            {
+                tab.editor.goto(&buffer, position);
+                tab.editor.scroll_to(position);
+            }
         }
         self.request_active_outline();
         // If the find bar is open, an edit (e.g. a replace) just changed the buffer,

@@ -35,6 +35,26 @@ impl<T> Picker<T> {
         }
     }
 
+    /// Replace the items, keeping the query the user has already typed.
+    ///
+    /// A picker over an expensive list opens empty and fills when the list
+    /// arrives — the surface appears at once and the rows land behind it. The
+    /// query survives because a user who started typing immediately must not have
+    /// those keystrokes discarded by the answer they were waiting for.
+    pub fn set_items(&mut self, items: Vec<(String, T)>) {
+        self.items = items;
+        self.refilter();
+    }
+
+    /// Whether the picker currently has nothing to offer.
+    ///
+    /// Distinguishes "still loading" from "no matches" only in combination with
+    /// what the caller knows; the picker itself does not track a request.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
     /// The picker title.
     #[must_use]
     pub fn title(&self) -> &str {
@@ -181,5 +201,50 @@ mod tests {
         assert_eq!(p.selected(), 2, "clamped to the last row");
         p.select_up();
         assert_eq!(p.selected(), 1);
+    }
+
+    /// A picker over an expensive list opens empty and fills behind itself.
+    #[test]
+    fn items_can_arrive_after_the_picker_opens() {
+        let mut picker: Picker<u32> = Picker::new("Go to File", Vec::new());
+        assert!(picker.is_empty());
+
+        picker.set_items(vec![("alpha.rs".to_owned(), 1), ("beta.rs".to_owned(), 2)]);
+
+        assert!(!picker.is_empty());
+        assert_eq!(picker.rows(), ["alpha.rs", "beta.rs"]);
+    }
+
+    /// A user who starts typing before the list arrives must not lose those
+    /// keystrokes to the answer they were waiting for.
+    #[test]
+    fn a_query_typed_before_the_items_arrived_still_filters_them() {
+        let mut picker: Picker<u32> = Picker::new("Go to File", Vec::new());
+        picker.push_char('b');
+
+        picker.set_items(vec![("alpha.rs".to_owned(), 1), ("beta.rs".to_owned(), 2)]);
+
+        assert_eq!(picker.query(), "b");
+        assert_eq!(picker.rows(), ["beta.rs"]);
+    }
+
+    /// Refilling must not leave the selection pointing past the new list.
+    #[test]
+    fn replacing_items_with_a_shorter_list_keeps_the_selection_valid() {
+        let mut picker: Picker<u32> = Picker::new(
+            "Go to File",
+            vec![
+                ("a".to_owned(), 1),
+                ("b".to_owned(), 2),
+                ("c".to_owned(), 3),
+            ],
+        );
+        picker.select_down();
+        picker.select_down();
+
+        picker.set_items(vec![("a".to_owned(), 1)]);
+
+        assert_eq!(picker.selected(), 0);
+        assert_eq!(picker.accepted(), Some(&1));
     }
 }
