@@ -383,8 +383,7 @@ impl App {
         self.push_tab(Tab::commit_loading(rev.clone()));
         let view = self.tabs[self.active].view;
         if let Some(id) = self.send(SessionCommand::CommitDetail { rev }) {
-            self.pending_commit_detail
-                .insert(id, CommitDest::Tab { view });
+            self.pending_commit_detail.insert(id, view);
         }
     }
 
@@ -392,12 +391,14 @@ impl App {
     pub(super) fn open_commit_graph(&mut self) {
         self.push_tab(Tab::commit_graph(None, "Commits"));
         let view = self.tabs[self.active].view;
-        self.graph_log_req = self
-            .send(SessionCommand::VcsLog {
-                skip: 0,
-                limit: SCM_LOG_PAGE,
-            })
-            .map(|id| (id, view));
+        if let Some(id) = self.send(SessionCommand::VcsLog {
+            skip: 0,
+            limit: GRAPH_LOG_PAGE,
+        }) {
+            self.graph_log_reqs.insert(id, view);
+        }
+        // The header reads branch/upstream/divergence from the repository snapshot.
+        self.request_repository_snapshot();
     }
 
     /// Open the graph browser scoped to the active file's history (`git log -- file`).
@@ -418,13 +419,14 @@ impl App {
             .to_string();
         self.push_tab(Tab::commit_graph(Some(path.clone()), format!("⌥ {name}")));
         let view = self.tabs[self.active].view;
-        self.graph_log_req = self
-            .send(SessionCommand::FileHistory {
-                path,
-                skip: 0,
-                limit: SCM_LOG_PAGE,
-            })
-            .map(|id| (id, view));
+        if let Some(id) = self.send(SessionCommand::FileHistory {
+            path,
+            skip: 0,
+            limit: GRAPH_LOG_PAGE,
+        }) {
+            self.graph_log_reqs.insert(id, view);
+        }
+        self.request_repository_snapshot();
     }
 
     /// Open the go-to-commit input; the typed revision resolves via [`open_commit`].
@@ -766,12 +768,55 @@ impl App {
         if inserted == 0 {
             return;
         }
+        let fresh = commits.clone();
         commits.append(&mut self.scm.log);
         self.scm.log = commits;
         // If the user had scrolled into the log, shift down so the same commits stay
         // put; at the top (offset 0) keep them at the newest.
         if self.scm_ui.commits_offset > 0 {
             self.scm_ui.commits_offset += inserted;
+        }
+        self.prepend_graph_commits(&fresh);
+    }
+
+    /// Mirror newly-observed commits into every open whole-repository graph view, so a
+    /// commit made elsewhere shows up without reopening the view.
+    ///
+    /// File-history views are left alone: their log is `git log -- <path>`, and a new
+    /// tip only belongs there if it touched that file — which this event doesn't say.
+    fn prepend_graph_commits(&mut self, fresh: &[Commit]) {
+        for tab in self.all_tabs_mut() {
+            let TabKind::CommitGraph {
+                history_path: None,
+                commits,
+                rails,
+                selected,
+                list_offset,
+                ..
+            } = &mut tab.kind
+            else {
+                continue;
+            };
+            let known: HashSet<&str> = commits.iter().map(|c| c.hash.as_str()).collect();
+            let add: Vec<Commit> = fresh
+                .iter()
+                .filter(|c| !known.contains(c.hash.as_str()))
+                .cloned()
+                .collect();
+            if add.is_empty() {
+                continue;
+            }
+            let inserted = add.len();
+            let mut merged = add;
+            merged.append(commits);
+            *commits = merged;
+            // The lane layout is sequential from the tip, so a new tip invalidates it.
+            *rails = crate::ui::commit::list::commit_rails(commits);
+            // Keep the viewport and the selection on the same commits they were on.
+            if *list_offset > 0 {
+                *list_offset = list_offset.saturating_add(u16::try_from(inserted).unwrap_or(0));
+            }
+            *selected = selected.saturating_add(inserted);
         }
     }
 }

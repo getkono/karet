@@ -168,6 +168,8 @@ impl Command {
             Self::CommitGraphNext => "next",
             Self::CommitGraphPrev => "prev",
             Self::CommitGraphOpen => "open",
+            Self::CommitGraphPanLeft => "pan-left",
+            Self::CommitGraphPanRight => "pan-right",
             Self::CommitGraphMarkBase => "mark base",
             Self::CommitGraphCompare => "compare",
             Self::RevInputSubmit => "go",

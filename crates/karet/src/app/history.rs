@@ -22,8 +22,7 @@ impl App {
         matches!(tab.kind, TabKind::CommitGraph { .. }).then_some(&mut tab.kind)
     }
 
-    /// Move the browser's selection by `delta` (clamped), and request the newly
-    /// selected commit's detail if it isn't already shown.
+    /// Move the view's selection by `delta` (clamped).
     pub(super) fn graph_select(&mut self, delta: i32) {
         let Some(TabKind::CommitGraph {
             commits, selected, ..
@@ -38,19 +37,17 @@ impl App {
         self.graph_select_to(next);
     }
 
-    /// Select commit `index` outright, rather than stepping towards it.
+    /// Select commit `index` outright, scrolling it into view.
     ///
-    /// The browser's list offset is recomputed from the selection every frame, so a
-    /// dragged scrollbar has to move the selection to move the view — and it has to
-    /// come through here, not by writing `selected`, or the detail pane would keep
-    /// showing whichever commit the selection left behind.
+    /// Selection and the viewport are independent here — the wheel and the scrollbar
+    /// pan the graph without moving the cursor — so a *selection* move is the one thing
+    /// that has to drag the viewport along with it.
     pub(super) fn graph_select_to(&mut self, index: usize) {
         let Some(TabKind::CommitGraph {
-            history_path,
             commits,
             selected,
-            has_more,
-            loading,
+            list_offset,
+            list_rect,
             ..
         }) = self.active_commit_graph()
         else {
@@ -59,90 +56,120 @@ impl App {
         if commits.is_empty() {
             return;
         }
-        let next = index.min(commits.len() - 1);
-        *selected = next;
-        // Page in more history when nearing the end, from the same source (whole-repo
-        // log or a single file's history).
-        let near_end = next + COMMIT_AUTOLOAD_THRESHOLD >= commits.len();
-        let want_more = *has_more && !*loading && near_end;
-        let loaded = commits.len();
-        let path = history_path.clone();
-        let hash = commits[next].hash.clone();
-        self.graph_request_detail(hash);
-        if want_more {
-            if let Some(TabKind::CommitGraph {
-                loading,
-                loading_since,
-                ..
-            }) = self.active_commit_graph()
-            {
-                *loading = true;
-                *loading_since = Some(Pending::start());
-            }
-            let command = match path {
-                Some(path) => SessionCommand::FileHistory {
-                    path,
-                    skip: loaded,
-                    limit: SCM_LOG_PAGE,
-                },
-                None => SessionCommand::VcsLog {
-                    skip: loaded,
-                    limit: SCM_LOG_PAGE,
-                },
-            };
-            let view = self.tabs[self.active].view;
-            self.graph_log_req = self.send(command).map(|id| (id, view));
-        }
+        *selected = index.min(commits.len() - 1);
+        let offset = crate::ui::commit::list::keep_visible(
+            *selected,
+            usize::from(*list_offset),
+            usize::from(list_rect.height),
+        );
+        *list_offset = u16::try_from(offset).unwrap_or(u16::MAX);
+        self.graph_prefetch();
     }
 
-    /// Request `hash`'s detail for the browser pane, unless it is already the shown
-    /// detail (avoids re-fetching when re-selecting the same commit).
-    pub(super) fn graph_request_detail(&mut self, hash: String) {
-        let view = self.tabs.get(self.active).map_or(ViewId(0), |tab| tab.view);
-        if let Some(TabKind::CommitGraph { detail, .. }) = self.active_commit_graph()
-            && detail.as_ref().is_some_and(|d| d.hash == hash)
-        {
+    /// Pan the graph vertically without disturbing the selection.
+    pub(super) fn graph_scroll_to(&mut self, offset: usize) {
+        let Some(TabKind::CommitGraph {
+            commits,
+            has_more,
+            list_offset,
+            list_rect,
+            ..
+        }) = self.active_commit_graph()
+        else {
+            return;
+        };
+        // One trailing row exists while more history remains (the "more" affordance),
+        // so the last commit can still be scrolled to the top of the viewport.
+        let rows = commits.len() + usize::from(*has_more);
+        let max = rows.saturating_sub(usize::from(list_rect.height).max(1));
+        *list_offset = u16::try_from(offset.min(max)).unwrap_or(u16::MAX);
+        self.graph_prefetch();
+    }
+
+    /// Keep loaded history well ahead of the viewport.
+    ///
+    /// The point is that the graph renders "as far as the eye can see": a page is
+    /// requested while the viewport is still [`GRAPH_PREFETCH_SCREENS`] screens short of
+    /// the end, and each arriving page re-runs this, so fetching chains forward on its
+    /// own. The trailing "more" row is then only reachable by outrunning the fetch.
+    pub(crate) fn graph_prefetch(&mut self) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let view = tab.view;
+        let TabKind::CommitGraph {
+            history_path,
+            commits,
+            has_more,
+            loading,
+            list_offset,
+            list_rect,
+            ..
+        } = &tab.kind
+        else {
+            return;
+        };
+        if !*has_more || *loading {
             return;
         }
-        let stale: Vec<RequestId> = self
-            .pending_commit_detail
-            .iter()
-            .filter_map(|(request, destination)| {
-                matches!(destination, CommitDest::Browser { view: owner, .. } if *owner == view)
-                    .then_some(*request)
-            })
-            .collect();
-        for request in stale {
-            self.pending_commit_detail.remove(&request);
-            self.cancel_backend_request(request);
+        let height = usize::from(list_rect.height).max(1);
+        let margin = height * GRAPH_PREFETCH_SCREENS;
+        if usize::from(*list_offset) + height + margin < commits.len() {
+            return;
         }
-        let stale_verification: Vec<RequestId> = self
-            .pending_commit_verification
-            .iter()
-            .filter_map(|(request, (owner, _))| (*owner == view).then_some(*request))
-            .collect();
-        for request in stale_verification {
-            self.pending_commit_verification.remove(&request);
-            self.cancel_backend_request(request);
-        }
+        let loaded = commits.len();
+        let command = match history_path.clone() {
+            Some(path) => SessionCommand::FileHistory {
+                path,
+                skip: loaded,
+                limit: GRAPH_LOG_PAGE,
+            },
+            None => SessionCommand::VcsLog {
+                skip: loaded,
+                limit: GRAPH_LOG_PAGE,
+            },
+        };
+        let Some(id) = self.send(command) else {
+            return;
+        };
+        self.graph_log_reqs.insert(id, view);
         if let Some(TabKind::CommitGraph {
-            detail,
-            files,
-            detail_loading_since,
+            loading,
+            loading_since,
             ..
         }) = self.active_commit_graph()
         {
-            *detail = None;
-            *files = CommitFiles::default();
-            *detail_loading_since = Some(Pending::start());
-        }
-        if let Some(id) = self.send(SessionCommand::CommitDetail { rev: hash.clone() }) {
-            self.pending_commit_detail
-                .insert(id, CommitDest::Browser { view, hash });
+            *loading = true;
+            *loading_since = Some(Pending::start());
         }
     }
 
-    /// Open the browser's selected commit as a standalone commit tab.
+    /// Select and open the commit under `point` in the graph view, if the click landed
+    /// on a commit row. Reports whether it consumed the click.
+    pub(super) fn graph_click(&mut self, point: (u16, u16)) -> bool {
+        let Some(TabKind::CommitGraph {
+            commits,
+            list_offset,
+            list_rect,
+            ..
+        }) = self.active_commit_graph()
+        else {
+            return false;
+        };
+        if !rect_contains(*list_rect, point) {
+            return false;
+        }
+        let row = usize::from(*list_offset) + usize::from(point.1 - list_rect.y);
+        if row >= commits.len() {
+            // The trailing "more" row: paging is automatic, so there is nothing to do.
+            return true;
+        }
+        self.graph_select_to(row);
+        self.graph_open_selected();
+        true
+    }
+
+    /// Open the graph view's selected commit as a standalone commit tab.
     pub(super) fn graph_open_selected(&mut self) {
         if let Some(TabKind::CommitGraph {
             commits, selected, ..
@@ -208,113 +235,52 @@ impl App {
         });
     }
 
-    /// Fill the graph browser's metadata pane from a resolved commit, and fire the lazy
-    /// GitHub verification fetch. A no-op if no browser is open.
-    pub(super) fn fill_graph_metadata(&mut self, view: ViewId, detail: Box<CommitDetail>) {
-        let hash = detail.hash.clone();
-        let mut filled = false;
-        for tab in self.all_tabs_mut() {
-            if tab.view != view {
-                continue;
-            }
-            if let TabKind::CommitGraph {
-                commits,
-                selected,
-                detail: slot,
-                files,
-                detail_loading_since,
-                ..
-            } = &mut tab.kind
-            {
-                let selected_hash = commits.get(*selected).map(|c| c.hash.as_str());
-                if selected_hash != Some(hash.as_str()) {
-                    continue;
-                }
-                *slot = Some(detail.clone());
-                files.reset_loading();
-                *detail_loading_since = None;
-                filled = true;
-            }
-        }
-        if filled {
-            self.request_commit_verification(view, hash);
-        }
-    }
-
-    /// Fill the graph browser's detail pane from a resolved commit, and fire the lazy
-    /// GitHub verification fetch. A no-op if no browser is open.
-    pub(super) fn fill_graph_detail(
+    /// Apply a fetched history page to the graph view that asked for it: replace on the
+    /// first page, append otherwise.
+    ///
+    /// The page is routed by [`ViewId`], never broadcast — several graph views can be
+    /// open at once (a whole-repo log beside a file history), and each owns its own
+    /// paging cursor.
+    pub(super) fn apply_graph_log(
         &mut self,
         view: ViewId,
-        detail: Box<CommitDetail>,
-        prepared: Vec<PreparedChange>,
+        skip: usize,
+        commits: Vec<Commit>,
+        has_more: bool,
     ) {
-        let hash = detail.hash.clone();
-        let mut prepared = Some(commit_file_views(prepared));
-        let mut filled = false;
         for tab in self.all_tabs_mut() {
             if tab.view != view {
                 continue;
             }
-            if let TabKind::CommitGraph {
-                commits,
-                selected,
-                detail: slot,
-                files,
-                detail_loading_since,
-                ..
-            } = &mut tab.kind
-            {
-                let selected_hash = commits.get(*selected).map(|c| c.hash.as_str());
-                if selected_hash != Some(hash.as_str()) {
-                    continue;
-                }
-                let verification = (slot.as_ref().is_some_and(|d| d.hash == hash))
-                    .then(|| files.verification.take())
-                    .flatten();
-                *files = CommitFiles {
-                    verification,
-                    ..CommitFiles::ready(prepared.take().unwrap_or_default())
-                };
-                *slot = Some(detail.clone());
-                *detail_loading_since = None;
-                filled = true;
-            }
-        }
-        if filled {
-            self.request_commit_verification(view, hash);
-        }
-    }
-
-    /// Apply a fetched history page to the graph browser: replace on the first page,
-    /// append otherwise. On the first page, select the top commit and load its detail.
-    pub(super) fn apply_graph_log(&mut self, skip: usize, commits: Vec<Commit>, has_more: bool) {
-        let mut first_hash = None;
-        for tab in self.all_tabs_mut() {
-            if let TabKind::CommitGraph {
+            let TabKind::CommitGraph {
                 commits: loaded,
+                rails,
                 has_more: more,
                 loading,
                 loading_since,
                 selected,
                 ..
             } = &mut tab.kind
-            {
-                *loading = false;
-                *loading_since = None;
-                *more = has_more;
-                if skip == 0 {
-                    *loaded = commits.clone();
-                    *selected = 0;
-                    first_hash = loaded.first().map(|c| c.hash.clone());
-                } else if skip == loaded.len() {
-                    loaded.extend(commits.clone());
-                }
+            else {
+                continue;
+            };
+            *loading = false;
+            *loading_since = None;
+            *more = has_more;
+            if skip == 0 {
+                *loaded = commits;
+                *selected = 0;
+            } else if skip == loaded.len() {
+                loaded.extend(commits);
+            } else {
+                // A page that neither replaces nor continues the loaded run is stale.
+                return;
             }
+            *rails = crate::ui::commit::list::commit_rails(loaded);
+            break;
         }
-        if let Some(hash) = first_hash {
-            self.graph_request_detail(hash);
-        }
+        // Chain the next page while the viewport is still short of the end.
+        self.graph_prefetch();
     }
 
     /// Build and open a commit tab from a resolved [`CommitDetail`] and its
@@ -448,52 +414,24 @@ impl App {
     /// Mark a pending commit-detail request as failed and clear any visible loading
     /// placeholder tied to that request.
     pub(super) fn fail_pending_commit_detail(&mut self, request: RequestId, message: &str) {
-        let Some(dest) = self.pending_commit_detail.remove(&request) else {
+        let Some(view) = self.pending_commit_detail.remove(&request) else {
             return;
         };
-        match dest {
-            CommitDest::Tab { view } => {
-                for tab in self.all_tabs_mut() {
-                    if tab.view != view {
-                        continue;
-                    }
-                    match &mut tab.kind {
-                        TabKind::CommitLoading { error, .. } => {
-                            *error = Some(message.to_string());
-                        },
-                        TabKind::Commit { files, .. } => {
-                            files.loading_since = None;
-                            files.error = Some(message.to_string());
-                        },
-                        _ => {},
-                    }
-                    break;
-                }
-            },
-            CommitDest::Browser { hash, .. } => {
-                for tab in self.all_tabs_mut() {
-                    if let TabKind::CommitGraph {
-                        commits,
-                        selected,
-                        detail,
-                        detail_loading_since,
-                        files,
-                        ..
-                    } = &mut tab.kind
-                    {
-                        let selected_hash = commits.get(*selected).map(|c| c.hash.as_str());
-                        if selected_hash != Some(hash.as_str()) {
-                            continue;
-                        }
-                        if detail.as_ref().is_some_and(|d| d.hash == hash) {
-                            files.loading_since = None;
-                            files.error = Some(message.to_string());
-                        } else {
-                            *detail_loading_since = None;
-                        }
-                    }
-                }
-            },
+        for tab in self.all_tabs_mut() {
+            if tab.view != view {
+                continue;
+            }
+            match &mut tab.kind {
+                TabKind::CommitLoading { error, .. } => {
+                    *error = Some(message.to_string());
+                },
+                TabKind::Commit { files, .. } => {
+                    files.loading_since = None;
+                    files.error = Some(message.to_string());
+                },
+                _ => {},
+            }
+            break;
         }
     }
 
@@ -513,19 +451,13 @@ impl App {
         self.push_tab(Tab::compare(base_label, head_label, merge_base, files));
     }
 
-    /// Apply the forge's verification verdict to every open commit view for `hash` —
-    /// both standalone commit tabs and the graph browser's shown detail.
+    /// Apply the forge's verification verdict to every open commit tab for `hash`.
     pub(super) fn apply_commit_verification(&mut self, hash: &str, status: GithubVerification) {
         for tab in self.all_tabs_mut() {
             match &mut tab.kind {
                 TabKind::Commit { detail, files, .. } if detail.hash == hash => {
                     files.verification = Some(status.clone());
                 },
-                TabKind::CommitGraph {
-                    detail: Some(detail),
-                    files,
-                    ..
-                } if detail.hash == hash => files.verification = Some(status.clone()),
                 _ => {},
             }
         }

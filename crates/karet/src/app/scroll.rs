@@ -50,10 +50,7 @@ impl App {
             | TabKind::Graph { pager, .. }
             | TabKind::LoadedConfig { pager, .. }
             | TabKind::CommitLoading { pager, .. } => adjust(&mut pager.column, delta),
-            TabKind::CommitGraph {
-                detail_column: column,
-                ..
-            } => adjust(column, delta),
+            TabKind::CommitGraph { column, .. } => adjust(column, delta),
             TabKind::Commit { view, .. } | TabKind::Compare { view, .. } => {
                 adjust(&mut view.column, delta);
             },
@@ -223,23 +220,9 @@ impl App {
                 dashboard.cursor = cursor_in_window(dashboard.cursor, position, viewport, len);
                 dashboard.first_visible = position;
             },
-            // The browser's list offset is likewise recomputed from the selection,
-            // which is offset by one for the header row above the commits.
-            TabKind::CommitGraph {
-                commits, selected, ..
-            } => {
-                let len = commits.len();
-                let row = cursor_in_window(
-                    (*selected).saturating_add(1),
-                    position,
-                    viewport,
-                    len.saturating_add(1),
-                );
-                let target = row.saturating_sub(1).min(len.saturating_sub(1));
-                if target != *selected {
-                    self.graph_select_to(target);
-                }
-            },
+            // The graph view pans freely: dragging its scrollbar moves the viewport and
+            // leaves the selection where the user put it.
+            TabKind::CommitGraph { .. } => self.graph_scroll_to(position),
             #[cfg(feature = "pdf")]
             TabKind::Document {
                 page, page_count, ..
@@ -260,7 +243,7 @@ impl App {
             | TabKind::Graph { pager, .. }
             | TabKind::LoadedConfig { pager, .. }
             | TabKind::CommitLoading { pager, .. } => pager.column = clamp_u16(position),
-            TabKind::CommitGraph { detail_column, .. } => *detail_column = clamp_u16(position),
+            TabKind::CommitGraph { column, .. } => *column = clamp_u16(position),
             TabKind::Commit { view, .. } | TabKind::Compare { view, .. } => {
                 view.column = clamp_u16(position);
             },

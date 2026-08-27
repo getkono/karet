@@ -152,10 +152,7 @@ fn horizontal_mouse_events_scroll_code_and_pager_overflow() {
     app.handle_mouse(mouse(MouseEventKind::ScrollRight, KeyModifiers::NONE));
     assert!(matches!(
         app.tabs[app.active].kind,
-        TabKind::CommitGraph {
-            detail_column: 3,
-            ..
-        }
+        TabKind::CommitGraph { column: 3, .. }
     ));
 }
 

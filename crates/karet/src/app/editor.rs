@@ -165,12 +165,13 @@ impl App {
 
     /// Scroll the active tab by `delta` lines/rows (clamped to its content).
     pub(super) fn scroll_lines(&mut self, delta: i32) {
-        // The browser has no free scroll: a wheel notch moves the commit selection.
-        if matches!(
-            self.tabs.get(self.active).map(|t| &t.kind),
-            Some(TabKind::CommitGraph { .. })
-        ) {
-            self.graph_select(delta.signum());
+        // The graph view pans freely — the wheel moves the viewport, not the selection,
+        // so a wide history can be read without dragging the cursor across it.
+        if let Some(TabKind::CommitGraph { list_offset, .. }) =
+            self.tabs.get(self.active).map(|t| &t.kind)
+        {
+            let target = i64::from(*list_offset) + i64::from(delta);
+            self.graph_scroll_to(target.max(0) as usize);
             return;
         }
         let word_wrap = self.tabs.get(self.active).is_some_and(|tab| {
@@ -555,6 +556,11 @@ impl App {
                 self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
         {
             view.scroll = hit.scroll;
+            self.editor_selecting = false;
+            return;
+        }
+        // A click on a graph row selects that commit and opens it as its own tab.
+        if self.graph_click(point) {
             self.editor_selecting = false;
             return;
         }
