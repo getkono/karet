@@ -30,6 +30,7 @@ use crate::model::Visibility;
 mod api;
 mod boundary;
 mod hazard;
+mod ownership;
 mod substitution;
 mod variation;
 
@@ -131,6 +132,10 @@ impl SeamLanguage for Rust {
         hazard::interior_facets(node, ctx, &mut facets);
         api::interior_facets(node, ctx, &mut facets);
         facets
+    }
+
+    fn ownership(&self, node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Vec<super::Owner> {
+        ownership::owners(node, ctx)
     }
 
     fn is_container(&self, node: &WalkNode<'_>) -> bool {
@@ -259,15 +264,11 @@ fn classify_impl(
     ctx: &FacetContext<'_>,
     visibility: Option<Visibility>,
 ) -> Classified {
-    let self_type = node
-        .child_text("type", ctx.text)
-        .unwrap_or("?")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    let trait_name = node
-        .child_text("trait", ctx.text)
-        .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
+    let self_type = match node.child_text("type", ctx.text) {
+        Some(text) => joined(text),
+        None => "?".to_owned(),
+    };
+    let trait_name = node.child_text("trait", ctx.text).map(joined);
     let (segment, name) = match &trait_name {
         Some(bound) => (
             format!("{{impl {bound} for {self_type}}}"),
@@ -309,6 +310,13 @@ fn classify_foreign(
         selection: ctx.range(node.span()),
         visibility,
     }
+}
+
+/// Collapse a type expression's whitespace, so a wrapped `where` clause does not become
+/// part of a name.
+#[must_use]
+pub(crate) fn joined(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Read a node's `visibility_modifier`, mapping it onto the neutral levels.

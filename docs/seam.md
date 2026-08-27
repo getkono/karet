@@ -22,8 +22,8 @@ have rather than opening a second beside it.
  package          │ module           │ item                 │ member
  karet-core   ▸ 47│ model         ▸12│ Symbol           ◉ 6 │ name              ◉
                   │ coord         ▸ 8│ SymbolKind       ◉   │ kind              ◉
-                  │▸provider      ▸ 3│▸SymbolProvider  ◉◊ 2 │ detail            ◉
-                  │ graph         ▸ 9│ impl … for Vec   ◊   │ range             ◉
+                  │▸provider      ▸ 3│▸SymbolProvider  ◉◊ 2 │ symbol_at         ◉
+                  │ graph         ▸ 9│ Diagnostic       ◉ 4 │ impl for Vec    ◊ │
  ─ karet-core::provider::SymbolProvider ────────── interface ── provider.rs:12 ─────
  ◉ api           pub                effective: karet_core::SymbolProvider
  ◊ substitution  trait · default-method ×1
@@ -58,6 +58,33 @@ import path is made of.
 
 Build output, dependency caches, and virtual environments are never walked. `seam.maxIndexedFiles`
 caps the whole index rather than each package, and the header says so when it bites.
+
+## Where things sit
+
+Containment follows what a construct *belongs to*, not where it was written.
+
+A Rust `impl` block is not a thing anyone navigates to — it is where methods happen to be
+written, and the language lets it be written anywhere in the crate. So an inherent
+`impl Widget` **dissolves**: its methods become members of `Widget`, beside the fields, in
+source order. A trait implementation stays as one level, because it *is* a thing — a
+binding of a contract to a type, carrying its own seam facets — and it reads as
+`impl Display` once it sits under `Widget`, since repeating the type it is already inside
+says nothing.
+
+An implementation whose self type this package does not declare has no local type to sit
+beneath. `impl MyTrait for String`, and the blanket `impl<T: Bound> MyTrait for T`, sit
+under **the trait** instead, which is where a reader looks for a trait's implementors.
+
+Two things are deliberately left alone. A block gated by `cfg` keeps its level even when it
+is inherent, because the gate decides whether its members exist at all and the type cannot
+carry that fact; dissolving it would list a Unix-only method beside an always-present one
+as though both were always there. And a block neither of whose ends this package declares —
+`impl Display for Vec<u8>` — stays exactly where it was written, because a name that
+resolves to nothing, or to more than one thing, is not a name this index will guess at.
+
+The same machinery serves every language: a language says what a construct belongs to, and
+a neutral pass resolves the name. Python needs none of it — a method is written inside its
+class — and says so rather than inheriting a rule written for someone else's grammar.
 
 ## The five lenses
 
