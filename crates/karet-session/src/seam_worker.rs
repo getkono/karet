@@ -304,11 +304,11 @@ impl Worker {
         let located = target.and_then(|id| index.node(id)).and_then(|node| {
             index
                 .file_path(node.location.file)
-                .map(|file| (file.to_path_buf(), node.location.range))
+                .map(|file| (file.to_path_buf(), node.location))
         });
         let edges = target.map(|node| edges_of(index, node)).unwrap_or_default();
         let preview = match located {
-            Some((file, range)) => preview::preview_for(&mut self.preview, &file, range),
+            Some((file, at)) => preview::preview_for(&mut self.preview, &file, at.range, at.header),
             None => Err(preview::no_index()),
         };
         let _ = events.send((

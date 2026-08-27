@@ -117,10 +117,14 @@ pub(crate) fn no_index() -> String {
 
 /// Build the preview for `range` of `path`, serving `cache` when it already holds the
 /// file and refilling it when it does not.
+///
+/// `header` is the node's declaration head, which is never elided; `range` is its whole
+/// extent, which may be.
 pub(crate) fn preview_for(
     cache: &mut Option<PreviewSource>,
     path: &Path,
     range: Range,
+    header: Range,
 ) -> Result<SeamPreview, String> {
     if cache.as_ref().is_none_or(|held| held.path != path) {
         *cache = Some(read(path)?);
@@ -128,7 +132,7 @@ pub(crate) fn preview_for(
     let Some(source) = cache.as_mut() else {
         return Err(Unavailable::Stale.describe());
     };
-    build(source, range)
+    build(source, range, header)
 }
 
 /// Read `path` into a fresh cache entry.
@@ -146,37 +150,54 @@ fn read(path: &Path) -> Result<PreviewSource, String> {
 }
 
 /// Cut the window `range` names, with [`CONTEXT`] lines on each side of it.
-fn build(source: &mut PreviewSource, range: Range) -> Result<SeamPreview, String> {
+///
+/// The two sides are cut independently, and the trailing side is measured from the node's
+/// *true* end rather than from wherever [`MAX_BODY_LINES`] stopped the fetch. A four
+/// hundred line module clamped to two hundred would otherwise report lines 201–203 as the
+/// code that follows it, when they are the code inside it — the one thing surrounding
+/// context must never be confused with. The gap that leaves is carried in the row numbers.
+fn build(source: &mut PreviewSource, range: Range, header: Range) -> Result<SeamPreview, String> {
     let total = u32::try_from(source.lines.len()).unwrap_or(u32::MAX);
     if range.start.line >= total {
         // The index describes text that has since been edited away. Saying so beats
         // showing whatever now happens to sit at that line number.
         return Err(Unavailable::Stale.describe());
     }
+    let last = total.saturating_sub(1);
     let body_first = range.start.line;
-    let body_last = range.end.line.max(body_first).min(total.saturating_sub(1));
+    let body_last = range.end.line.max(body_first).min(last);
     let dropped = (body_last - body_first + 1).saturating_sub(MAX_BODY_LINES);
-    let body_last = body_last - dropped;
+    let kept_last = body_last - dropped;
+    // The head is clamped into what was kept: a declaration longer than the whole fetch
+    // cap is not a declaration anyone reads, and an out-of-range head index would be a
+    // trap for every renderer downstream.
+    let head_last = header.end.line.max(body_first).min(kept_last);
 
-    let first = body_first.saturating_sub(CONTEXT);
-    let last = body_last.saturating_add(CONTEXT).min(total - 1);
+    let lead = body_first.saturating_sub(CONTEXT)..body_first;
+    let body = body_first..=kept_last;
+    let tail = (body_last + 1).min(total)..(body_last.saturating_add(CONTEXT) + 1).min(total);
 
+    let rows: Vec<u32> = lead.clone().chain(body).chain(tail).collect();
     let take = |line: u32| usize::try_from(line).unwrap_or(usize::MAX);
-    let lines: Vec<String> = source.lines[take(first)..=take(last)].to_vec();
+    let lines: Vec<String> = rows
+        .iter()
+        .map(|line| source.lines.get(take(*line)).cloned().unwrap_or_default())
+        .collect();
     let tokens: Vec<Vec<TokenSpan>> = {
         let table = source.tokens();
-        table
-            .get(take(first)..=take(last))
-            .map(<[Vec<TokenSpan>]>::to_vec)
-            .unwrap_or_default()
+        rows.iter()
+            .map(|line| table.get(take(*line)).cloned().unwrap_or_default())
+            .collect()
     };
 
+    let body_start = take(body_first - lead.start);
     Ok(SeamPreview {
         file: source.path.clone(),
-        first_line: first,
         lines,
-        body_start: take(body_first - first),
-        body_end: take(body_last - first) + 1,
+        numbers: rows,
+        body_start,
+        head_end: body_start + take(head_last - body_first) + 1,
+        body_end: body_start + take(kept_last - body_first) + 1,
         dropped,
         context: CONTEXT,
         tokens,
@@ -206,6 +227,16 @@ mod tests {
         }
     }
 
+    /// Build a preview whose head is its first line, the shape of most declarations.
+    fn preview_of(
+        cache: &mut Option<PreviewSource>,
+        path: &Path,
+        start: u32,
+        end: u32,
+    ) -> Result<SeamPreview, String> {
+        preview_for(cache, path, range(start, end), range(start, start))
+    }
+
     /// A scratch file whose lines are their own 0-based numbers.
     fn numbered(dir: &std::path::Path, name: &str, count: u32) -> PathBuf {
         let path = dir.join(name);
@@ -224,17 +255,56 @@ mod tests {
         };
         let path = numbered(dir.path(), "a.txt", 40);
         let mut cache = None;
-        let built = preview_for(&mut cache, &path, range(20, 21));
+        let built = preview_of(&mut cache, &path, 20, 21);
         assert!(built.is_ok(), "{built:?}");
         let Ok(preview) = built else {
             return;
         };
-        assert_eq!(preview.first_line, 17);
+        assert_eq!(preview.line_number(0), 17);
         assert_eq!(preview.body_start, 3);
         assert_eq!(preview.body_end, 5);
         assert_eq!(preview.lines.len(), 8);
         assert_eq!(preview.context, CONTEXT);
         assert_eq!(preview.lines[preview.body_start], "line 20");
+        // Contiguous: nothing was cut, so no row follows a gap.
+        assert!(!(0..preview.lines.len()).any(|row| preview.is_after_gap(row)));
+    }
+
+    #[test]
+    fn the_head_is_reported_wherever_the_declaration_ends() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = numbered(dir.path(), "a.txt", 40);
+        let mut cache = None;
+        // A node spanning lines 20..30 whose signature runs to line 23.
+        let built = preview_for(&mut cache, &path, range(20, 30), range(20, 23));
+        assert!(built.is_ok(), "{built:?}");
+        let Ok(preview) = built else {
+            return;
+        };
+        assert_eq!(preview.body_start, 3);
+        assert_eq!(preview.head_end, 7);
+        assert_eq!(preview.lines[preview.head_end - 1], "line 23");
+        assert!(preview.is_head(preview.head_end - 1));
+        assert!(!preview.is_head(preview.head_end));
+    }
+
+    #[test]
+    fn a_head_that_outruns_the_node_is_clamped_into_it() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = numbered(dir.path(), "a.txt", 40);
+        let mut cache = None;
+        // A header range that reaches past the node cannot be trusted; clamping it keeps
+        // every downstream index inside the window.
+        let built = preview_for(&mut cache, &path, range(20, 21), range(20, 99));
+        assert!(built.is_ok(), "{built:?}");
+        let Ok(preview) = built else {
+            return;
+        };
+        assert_eq!(preview.head_end, preview.body_end);
     }
 
     #[test]
@@ -244,13 +314,13 @@ mod tests {
         };
         let path = numbered(dir.path(), "a.txt", 40);
         let mut cache = None;
-        let built = preview_for(&mut cache, &path, range(1, 1));
+        let built = preview_of(&mut cache, &path, 1, 1);
         assert!(built.is_ok(), "{built:?}");
         let Ok(preview) = built else {
             return;
         };
         // Reported, never padded: only the view can tell a missing line from a blank one.
-        assert_eq!(preview.first_line, 0);
+        assert_eq!(preview.line_number(0), 0);
         assert_eq!(preview.body_start, 1);
     }
 
@@ -261,7 +331,7 @@ mod tests {
         };
         let path = numbered(dir.path(), "a.txt", 10);
         let mut cache = None;
-        let built = preview_for(&mut cache, &path, range(9, 9));
+        let built = preview_of(&mut cache, &path, 9, 9);
         assert!(built.is_ok(), "{built:?}");
         let Ok(preview) = built else {
             return;
@@ -277,7 +347,7 @@ mod tests {
         };
         let path = numbered(dir.path(), "a.txt", 1000);
         let mut cache = None;
-        let built = preview_for(&mut cache, &path, range(10, 509));
+        let built = preview_of(&mut cache, &path, 10, 509);
         assert!(built.is_ok(), "{built:?}");
         let Ok(preview) = built else {
             return;
@@ -287,9 +357,47 @@ mod tests {
     }
 
     #[test]
+    fn a_truncated_node_takes_its_trailing_context_from_after_the_node() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = numbered(dir.path(), "a.txt", 1000);
+        let mut cache = None;
+        // The node runs 10..=509. Lines 210..212 are *inside* it; the context that
+        // follows it is 510..512, and calling the former "context" would be a lie.
+        let built = preview_of(&mut cache, &path, 10, 509);
+        assert!(built.is_ok(), "{built:?}");
+        let Ok(preview) = built else {
+            return;
+        };
+        let tail: Vec<&str> = preview.lines[preview.body_end..]
+            .iter()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(tail, ["line 510", "line 511", "line 512"]);
+        assert!(preview.is_after_gap(preview.body_end));
+        assert_eq!(preview.line_number(preview.body_end), 510);
+    }
+
+    #[test]
+    fn a_truncated_node_at_the_end_of_its_file_has_no_trailing_context() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = numbered(dir.path(), "a.txt", 300);
+        let mut cache = None;
+        let built = preview_of(&mut cache, &path, 10, 299);
+        assert!(built.is_ok(), "{built:?}");
+        let Ok(preview) = built else {
+            return;
+        };
+        assert_eq!(preview.body_end, preview.lines.len());
+    }
+
+    #[test]
     fn a_missing_file_is_a_reason_rather_than_an_empty_preview() {
         let mut cache = None;
-        let built = preview_for(&mut cache, Path::new("/nope/gone.rs"), range(0, 0));
+        let built = preview_of(&mut cache, Path::new("/nope/gone.rs"), 0, 0);
         assert!(built.is_err(), "{built:?}");
         let Err(message) = built else {
             return;
@@ -305,7 +413,7 @@ mod tests {
         let path = dir.path().join("blob.bin");
         let _ = std::fs::write(&path, [0xff_u8, 0xfe, 0x00]);
         let mut cache = None;
-        let built = preview_for(&mut cache, &path, range(0, 0));
+        let built = preview_of(&mut cache, &path, 0, 0);
         assert!(built.is_err(), "{built:?}");
         let Err(message) = built else {
             return;
@@ -320,7 +428,7 @@ mod tests {
         };
         let path = numbered(dir.path(), "a.txt", 5);
         let mut cache = None;
-        let built = preview_for(&mut cache, &path, range(99, 99));
+        let built = preview_of(&mut cache, &path, 99, 99);
         assert!(built.is_err(), "{built:?}");
         let Err(message) = built else {
             return;
@@ -335,10 +443,10 @@ mod tests {
         };
         let path = numbered(dir.path(), "a.txt", 40);
         let mut cache = None;
-        let _ = preview_for(&mut cache, &path, range(10, 10));
+        let _ = preview_of(&mut cache, &path, 10, 10);
         let _ = std::fs::remove_file(&path);
         // Walking a column must not pay a read per row.
-        assert!(preview_for(&mut cache, &path, range(20, 20)).is_ok());
+        assert!(preview_of(&mut cache, &path, 20, 20).is_ok());
     }
 
     #[test]
@@ -349,8 +457,8 @@ mod tests {
         let first = numbered(dir.path(), "a.txt", 40);
         let second = numbered(dir.path(), "b.txt", 40);
         let mut cache = None;
-        let _ = preview_for(&mut cache, &first, range(10, 10));
-        let built = preview_for(&mut cache, &second, range(10, 10));
+        let _ = preview_of(&mut cache, &first, 10, 10);
+        let built = preview_of(&mut cache, &second, 10, 10);
         assert!(built.is_ok(), "{built:?}");
         let Ok(preview) = built else {
             return;
@@ -366,7 +474,7 @@ mod tests {
         let path = numbered(dir.path(), "a.txt", 40);
         // The pane has to quote what the index actually read, not what disk still says.
         let mut cache = Some(PreviewSource::adopt(&path, "one\ntwo\nthree\n"));
-        let built = preview_for(&mut cache, &path, range(1, 1));
+        let built = preview_of(&mut cache, &path, 1, 1);
         assert!(built.is_ok(), "{built:?}");
         let Ok(preview) = built else {
             return;
@@ -381,12 +489,29 @@ mod tests {
         };
         let path = numbered(dir.path(), "a.unknownext", 10);
         let mut cache = None;
-        let built = preview_for(&mut cache, &path, range(4, 4));
+        let built = preview_of(&mut cache, &path, 4, 4);
         assert!(built.is_ok(), "{built:?}");
         let Ok(preview) = built else {
             return;
         };
-        assert!(preview.tokens.is_empty());
+        assert!(preview.tokens.iter().all(Vec::is_empty));
+    }
+
+    #[test]
+    fn every_row_carries_a_token_slot_whether_or_not_it_has_runs() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = numbered(dir.path(), "a.txt", 40);
+        let mut cache = None;
+        let built = preview_of(&mut cache, &path, 20, 21);
+        assert!(built.is_ok(), "{built:?}");
+        let Ok(preview) = built else {
+            return;
+        };
+        // The renderer indexes the two in lockstep; a short table would misalign colour.
+        assert_eq!(preview.tokens.len(), preview.lines.len());
+        assert_eq!(preview.numbers.len(), preview.lines.len());
     }
 
     #[test]

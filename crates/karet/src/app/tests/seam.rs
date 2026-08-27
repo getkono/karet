@@ -260,9 +260,10 @@ fn nothing_is_re_indexed_after_the_index_failed() {
 fn preview(file: &str) -> karet_session::api::SeamPreview {
     karet_session::api::SeamPreview {
         file: PathBuf::from(file),
-        first_line: 10,
         lines: (0..7).map(|n| format!("line {n}")).collect(),
+        numbers: (10..17).collect(),
         body_start: 3,
+        head_end: 4,
         body_end: 4,
         dropped: 0,
         context: 3,

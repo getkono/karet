@@ -340,9 +340,10 @@ fn the_legend_entries_are_evenly_spaced_in_every_tier() {
 fn preview(first_line: u32, before: usize, body: usize, count: usize) -> SeamPreview {
     SeamPreview {
         file: std::path::PathBuf::from("src/lib.rs"),
-        first_line,
         lines: (0..count).map(|n| format!("    source line {n}")).collect(),
+        numbers: (first_line..).take(count).collect(),
         body_start: before,
+        head_end: before + 1,
         body_end: before + body,
         dropped: 0,
         context: 3,

@@ -305,9 +305,10 @@ mod tests {
     fn preview(first_line: u32, body_start: usize, body_end: usize, count: usize) -> SeamPreview {
         SeamPreview {
             file: std::path::PathBuf::from("src/lib.rs"),
-            first_line,
             lines: (0..count).map(|n| format!("    line {n}")).collect(),
+            numbers: (first_line..).take(count).collect(),
             body_start,
+            head_end: (body_start + 1).min(body_end),
             body_end,
             dropped: 0,
             context: 3,
