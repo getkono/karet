@@ -39,6 +39,7 @@
 //! runs out is now scheduling-dependent; truncation is already an explicit "this is
 //! partial" state rather than a promise about what survived.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
@@ -390,7 +391,10 @@ fn spawn<'scope>(scope: &rayon::Scope<'scope>, unit: FileUnit, state: &'scope Wa
                 // file to read. Neither is a child to walk to.
                 continue;
             };
-            let Some(child) = FileUnit::child(file, declaration, unit.depth) else {
+            let Some(owner) = walked.contribution.path_of(declaration.node) else {
+                continue;
+            };
+            let Some(child) = FileUnit::child(file, owner, unit.depth) else {
                 continue;
             };
             spawn(scope, child, state);
@@ -458,16 +462,29 @@ fn extract_isolated(
 
     let outcome = extract_file(&mut scratch, pool, owner, file, unit.language, text).ok()?;
 
+    // Every node this file produced, by id, so the tree can be stored as offsets into
+    // this list rather than as a full path per node.
+    let position: HashMap<SeamId, u32> = outcome
+        .added
+        .iter()
+        .enumerate()
+        .filter_map(|(index, id)| Some((*id, u32::try_from(index).ok()?)))
+        .collect();
+
     let nodes = outcome
         .added
         .iter()
         .filter_map(|id| Some((scratch.path(*id)?.clone(), scratch.node(*id)?)))
         .map(|(path, node)| CachedNode {
-            path,
+            segment: path
+                .segments()
+                .last()
+                .cloned()
+                .unwrap_or_else(|| SeamSegment::new(String::new())),
+            // Absent means "the node this file hangs from", which is not in this list.
             parent: node
                 .parent
-                .and_then(|parent| scratch.path(parent).cloned())
-                .unwrap_or_default(),
+                .and_then(|parent| position.get(&parent).copied()),
             kind: node.kind,
             name: node.name.clone(),
             detail: node.detail.clone(),
@@ -486,7 +503,7 @@ fn extract_isolated(
         .iter()
         .filter_map(|declaration| {
             Some(CachedModule {
-                node: scratch.path(declaration.id)?.clone(),
+                node: position.get(&declaration.id).copied()?,
                 name: declaration.name.clone(),
                 inline_path: declaration.inline_path.clone(),
                 path_attribute: declaration.path_attribute.clone(),
@@ -497,7 +514,7 @@ fn extract_isolated(
     let ownership = outcome
         .ownership
         .iter()
-        .filter_map(|(id, owners)| Some((scratch.path(*id)?.clone(), owners.clone())))
+        .filter_map(|(id, owners)| Some((position.get(id).copied()?, owners.clone())))
         .collect();
 
     // Resolved here rather than at replay: it depends only on this file's declarations
@@ -515,7 +532,7 @@ fn extract_isolated(
             ) else {
                 return None;
             };
-            Some((scratch.path(declaration.id)?.clone(), candidates))
+            Some((position.get(&declaration.id).copied()?, candidates))
         })
         .collect();
 
@@ -599,11 +616,11 @@ impl FileUnit {
     }
 
     /// The entry for a module declared by a file already read.
-    fn child(file: PathBuf, declaration: &CachedModule, depth: u32) -> Option<Self> {
+    fn child(file: PathBuf, owner: SeamPath, depth: u32) -> Option<Self> {
         Some(Self {
             language: karet_treesitter::language_id_from_path(&file)?,
             file,
-            owner: declaration.node.clone(),
+            owner,
             owner_kind: NodeKind::Module,
             crate_root: false,
             depth: depth.saturating_add(1),

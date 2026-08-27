@@ -485,11 +485,18 @@ impl SeamIndex {
             self.attribute_file(file, owner, language);
         }
 
+        // Paths are rebuilt as the list is walked: a node stores one segment and the
+        // offset of its parent, and parents always come first, so each path is its
+        // parent's plus that segment.
+        let mut resolved: Vec<SeamPath> = Vec::with_capacity(contribution.nodes.len());
         for cached in &contribution.nodes {
-            let id = self.intern(cached.path.clone());
-            // Parents come first — extraction adds nodes in source order, which for a
-            // pre-order walk is parents before children — so this always resolves.
-            let parent = self.resolve(&cached.parent);
+            let parent_path = match cached.parent {
+                Some(index) => resolved.get(index as usize).cloned().unwrap_or_default(),
+                None => contribution.owner.clone(),
+            };
+            let path = parent_path.child(cached.segment.clone());
+            let id = self.intern(path.clone());
+            let parent = self.resolve(&parent_path);
             self.insert(Node {
                 id,
                 kind: cached.kind,
@@ -510,10 +517,14 @@ impl SeamIndex {
                 membership: ConfigMembership::Active,
                 provisional: cached.provisional,
             });
+            resolved.push(path);
         }
 
-        for (path, candidates) in &contribution.unresolved {
-            if let Some(id) = self.resolve(path) {
+        for (index, candidates) in &contribution.unresolved {
+            if let Some(id) = resolved
+                .get(*index as usize)
+                .and_then(|path| self.resolve(path))
+            {
                 self.mark_module_unresolved(id, candidates.clone());
             }
         }
@@ -522,7 +533,12 @@ impl SeamIndex {
             contribution
                 .ownership
                 .iter()
-                .filter_map(|(path, owners)| Some((self.resolve(path)?, owners.clone())))
+                .filter_map(|(index, owners)| {
+                    let id = resolved
+                        .get(*index as usize)
+                        .and_then(|path| self.resolve(path))?;
+                    Some((id, owners.clone()))
+                })
                 .collect(),
         )
     }

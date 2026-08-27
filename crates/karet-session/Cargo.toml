@@ -81,6 +81,9 @@ directories.workspace = true          # server-side config / session paths
 # The seam index cache, which is written once per sync and read on every cold start —
 # so it is worth the compactness of a binary encoding over JSON's inspectability.
 ciborium.workspace    = true
+# The stored index decodes in parallel: it is the one part of a warm start that would
+# otherwise stay serial while the cold path it replaces runs on every core.
+rayon.workspace       = true
 command-group.workspace = true        # crash-safe process groups / Windows Job Objects
 serde = { workspace = true }          # derive Deserialize/Serialize for the Settings schema
 serde_json.workspace = true           # the merge/deserialize target for JSONC config

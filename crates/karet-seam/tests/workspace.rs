@@ -287,11 +287,17 @@ fn every_module_across_the_whole_workspace_resolves_to_a_file() {
 #[test]
 #[ignore = "timing, not a correctness check"]
 fn bench_cold_index_of_this_repository() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .unwrap_or(std::path::Path::new("."))
-        .to_path_buf();
+    // Overridable so a before/after comparison can point both builds at one tree.
+    let root = std::env::var("KARET_BENCH_ROOT").map_or_else(
+        |_| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .ancestors()
+                .nth(2)
+                .unwrap_or(std::path::Path::new("."))
+                .to_path_buf()
+        },
+        std::path::PathBuf::from,
+    );
     let start = std::time::Instant::now();
     let index = karet_seam::index_workspace(&root, karet_seam::IndexOptions::default());
     let elapsed = start.elapsed();

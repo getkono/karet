@@ -30,6 +30,7 @@ use std::path::PathBuf;
 
 use karet_seam::FileContribution;
 use karet_seam::FileStamp;
+use rayon::prelude::*;
 
 /// Bumped whenever the stored shape changes in a way an older reader would misread.
 const SCHEMA: u32 = 1;
@@ -112,11 +113,58 @@ impl Header {
     }
 }
 
-/// A whole workspace's stored contributions.
+/// One independently decodable slice of the stored index.
+///
+/// A newtype rather than a bare `Vec<u8>` so it encodes as a CBOR *byte string*: the
+/// default for a byte vector is an array of integers, which would roughly double the file.
+struct Chunk(Vec<u8>);
+
+impl serde::Serialize for Chunk {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(&self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Chunk {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Bytes;
+        impl serde::de::Visitor<'_> for Bytes {
+            type Value = Chunk;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a byte string")
+            }
+
+            fn visit_bytes<E: serde::de::Error>(self, value: &[u8]) -> Result<Chunk, E> {
+                Ok(Chunk(value.to_vec()))
+            }
+
+            fn visit_byte_buf<E: serde::de::Error>(self, value: Vec<u8>) -> Result<Chunk, E> {
+                Ok(Chunk(value))
+            }
+        }
+        deserializer.deserialize_byte_buf(Bytes)
+    }
+}
+
+/// A whole workspace's stored contributions, in independently decodable pieces.
+///
+/// Split because decoding is otherwise the slowest part of a warm start — and the one
+/// part that would still be serial while the cold path it replaces runs on every core.
+/// The outer file decodes to nothing but byte strings, and the pieces decode in parallel.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Stored {
     header: Header,
-    files: Vec<FileContribution>,
+    chunks: Vec<Chunk>,
+}
+
+/// How many pieces to split a stored index into.
+///
+/// Enough to keep a many-core machine busy without making the pieces so small that the
+/// per-piece overhead shows. A piece that fails to decode costs only its own files, which
+/// are re-read; the rest of the cache still stands.
+fn chunk_count(files: usize) -> usize {
+    files.div_ceil(32).clamp(1, 64)
 }
 
 /// What a build may replay instead of parsing.
@@ -154,8 +202,12 @@ impl SeamCache {
         }
         Self {
             entries: stored
-                .files
-                .into_iter()
+                .chunks
+                .par_iter()
+                .flat_map_iter(|chunk| {
+                    ciborium::from_reader::<Vec<FileContribution>, _>(chunk.0.as_slice())
+                        .unwrap_or_default()
+                })
                 .map(|contribution| (contribution.file.clone(), contribution))
                 .collect(),
         }
@@ -187,9 +239,22 @@ impl SeamCache {
         if std::fs::create_dir_all(dir).is_err() {
             return;
         }
+        let per_chunk = contributions
+            .len()
+            .div_ceil(chunk_count(contributions.len()));
+        let chunks: Vec<Chunk> = contributions
+            .par_chunks(per_chunk.max(1))
+            .map(|slice| {
+                let mut encoded = Vec::new();
+                if ciborium::into_writer(&slice.to_vec(), &mut encoded).is_err() {
+                    encoded.clear();
+                }
+                Chunk(encoded)
+            })
+            .collect();
         let stored = Stored {
             header: Header::current(root),
-            files: contributions,
+            chunks,
         };
         let mut bytes = Vec::new();
         if ciborium::into_writer(&stored, &mut bytes).is_err() {
@@ -249,17 +314,19 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let root = dir.path();
         let file = root.join("src").join("lib.rs");
-        let stored = Stored {
-            header: Header::current(root),
-            files: vec![contribution(&file)],
-        };
-        let mut bytes = Vec::new();
-        ciborium::into_writer(&stored, &mut bytes)?;
-        let read: Stored = ciborium::from_reader(bytes.as_slice())?;
-
-        assert!(read.header.usable_for(root));
-        assert_eq!(read.files.len(), 1);
-        assert_eq!(read.files.first().map(|held| held.file.clone()), Some(file));
+        SeamCache::save(Some(root), root, vec![contribution(&file)]);
+        let read = SeamCache::load(Some(root), root);
+        assert_eq!(read.len(), 1);
+        assert!(
+            read.get(
+                &file,
+                FileStamp {
+                    modified_nanos: 42,
+                    len: 7
+                }
+            )
+            .is_some()
+        );
         Ok(())
     }
 
@@ -307,6 +374,56 @@ mod tests {
         SeamCache::save(None, root, vec![contribution(&root.join("a.rs"))]);
         assert_eq!(SeamCache::load(None, root).len(), 0);
         SeamCache::remove(None, root);
+        Ok(())
+    }
+
+    #[test]
+    fn a_large_index_is_split_so_it_can_decode_in_parallel() -> TestResult {
+        let store = tempfile::tempdir()?;
+        let workspace = tempfile::tempdir()?;
+        let root = workspace.path();
+        let files: Vec<FileContribution> = (0..200)
+            .map(|n| contribution(&root.join(format!("src/f{n}.rs"))))
+            .collect();
+        SeamCache::save(Some(store.path()), root, files);
+
+        let bytes = std::fs::read(path_for(store.path(), root))?;
+        let stored: Stored = ciborium::from_reader(bytes.as_slice())?;
+        assert!(
+            stored.chunks.len() > 1,
+            "one piece cannot decode in parallel"
+        );
+        assert_eq!(SeamCache::load(Some(store.path()), root).len(), 200);
+        Ok(())
+    }
+
+    #[test]
+    fn a_damaged_piece_costs_only_the_files_it_held() -> TestResult {
+        // Splitting buys parallelism, and this: the rest of the cache still stands, and
+        // the files behind the bad piece are simply read again.
+        let store = tempfile::tempdir()?;
+        let workspace = tempfile::tempdir()?;
+        let root = workspace.path();
+        let files: Vec<FileContribution> = (0..200)
+            .map(|n| contribution(&root.join(format!("src/f{n}.rs"))))
+            .collect();
+        SeamCache::save(Some(store.path()), root, files);
+
+        let path = path_for(store.path(), root);
+        let bytes = std::fs::read(&path)?;
+        let mut stored: Stored = ciborium::from_reader(bytes.as_slice())?;
+        let held = stored.chunks.len();
+        if let Some(chunk) = stored.chunks.first_mut() {
+            chunk.0 = b"not CBOR".to_vec();
+        }
+        let mut rewritten = Vec::new();
+        ciborium::into_writer(&stored, &mut rewritten)?;
+        std::fs::write(&path, &rewritten)?;
+
+        let loaded = SeamCache::load(Some(store.path()), root).len();
+        assert!(loaded > 0, "one bad piece emptied the whole cache");
+        assert!(loaded < 200, "the bad piece was somehow still read");
+        assert_eq!(held, chunk_count(200));
         Ok(())
     }
 

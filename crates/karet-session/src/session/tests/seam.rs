@@ -713,3 +713,43 @@
         );
         assert_eq!(forced.files, first.files);
     }
+
+    /// Not an assertion — a stopwatch over the path a reader actually takes.
+    ///
+    /// `KARET_BENCH_ROOT=. cargo test --release -p karet-session --all-features \
+    ///   -- --ignored --nocapture bench_seam`
+    #[test]
+    #[ignore = "timing, not a correctness check"]
+    fn bench_seam_cold_then_warm() {
+        let Ok(root) = std::env::var("KARET_BENCH_ROOT") else {
+            return;
+        };
+        let root = std::path::PathBuf::from(root);
+        let Ok(cache) = tempfile::tempdir() else {
+            return;
+        };
+
+        for (label, request) in [("COLD", RequestId(1)), ("WARM", RequestId(2))] {
+            let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+                roots: vec![root.clone()],
+                seam_cache_dir: Some(cache.path().to_path_buf()),
+                ..SessionConfig::default()
+            });
+            let start = std::time::Instant::now();
+            session.handle(request, Command::IndexSeams {
+                root: None,
+                mode: crate::api::SeamSync::Incremental,
+            });
+            let Some(stream) = await_index_stream(&mut events) else {
+                return;
+            };
+            let elapsed = start.elapsed();
+            let nodes: usize = stream.packages.iter().map(|package| package.nodes).sum();
+            println!(
+                "{label} {elapsed:?} — {} packages, {nodes} nodes, {} of {} files parsed",
+                stream.packages.len(),
+                stream.parsed,
+                stream.files
+            );
+        }
+    }

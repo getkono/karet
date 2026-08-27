@@ -39,6 +39,7 @@ use karet_core::Range;
 use karet_core::Span;
 
 use crate::id::SeamPath;
+use crate::id::SeamSegment;
 use crate::lang::Owner;
 use crate::model::Facet;
 use crate::model::NodeKind;
@@ -83,13 +84,20 @@ impl FileStamp {
 }
 
 /// One node as a file produced it, before anything cross-file has been resolved.
+///
+/// Addressed by *position within this contribution* rather than by full path. A node's
+/// path is its parent's path plus one segment, and extraction always emits parents before
+/// children, so the whole tree reconstructs from one segment and one index per node.
+/// Storing the path outright — twice, since the parent is one too — made the stored index
+/// several times larger and its decode the slowest part of a warm start.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CachedNode {
-    /// The node's identity.
-    pub path: SeamPath,
-    /// Its parent's identity. Empty only for a node whose parent is the file's owner.
-    pub parent: SeamPath,
+    /// The one segment this node adds to its parent's path.
+    pub segment: SeamSegment,
+    /// The index of this node's parent within the same contribution, or `None` when its
+    /// parent is the node the whole file hangs from.
+    pub parent: Option<u32>,
     /// The universal kind.
     pub kind: NodeKind,
     /// The display name.
@@ -116,8 +124,8 @@ pub struct CachedNode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CachedModule {
-    /// The module node awaiting its contents.
-    pub node: SeamPath,
+    /// The index, within the same contribution, of the module node awaiting its contents.
+    pub node: u32,
     /// The declared module name.
     pub name: String,
     /// The inline modules enclosing the declaration, outermost first.
@@ -156,10 +164,10 @@ pub struct FileContribution {
     ///
     /// Kept unresolved, exactly as extraction left them: the owner routinely lives in
     /// another file, so resolution is a whole-package step that re-runs on every build
-    /// whether the file was parsed or replayed.
-    pub ownership: Vec<(SeamPath, Vec<Owner>)>,
+    /// whether the file was parsed or replayed. Nodes are named by index, as above.
+    pub ownership: Vec<(u32, Vec<Owner>)>,
     /// Modules whose body could not be found, with the paths that were tried.
-    pub unresolved: Vec<(SeamPath, Vec<PathBuf>)>,
+    pub unresolved: Vec<(u32, Vec<PathBuf>)>,
 }
 
 impl FileContribution {
@@ -167,6 +175,33 @@ impl FileContribution {
     #[must_use]
     pub fn matches(&self, stamp: FileStamp) -> bool {
         self.stamp == stamp
+    }
+
+    /// The full path of the node at `index`, rebuilt from the segments above it.
+    ///
+    /// Nodes are stored as one segment plus a parent offset, so a path is assembled by
+    /// walking up to the file's owner. Module nesting is shallow, and the walker needs
+    /// this only for the handful of nodes that declare a module in another file.
+    #[must_use]
+    pub fn path_of(&self, index: u32) -> Option<SeamPath> {
+        let mut segments = Vec::new();
+        let mut at = Some(index);
+        while let Some(current) = at {
+            let node = self.nodes.get(usize::try_from(current).ok()?)?;
+            segments.push(node.segment.clone());
+            at = node.parent;
+            // A parent that does not sit above its child would loop forever; the writer
+            // never produces one, and refusing to trust that costs nothing.
+            if node.parent.is_some_and(|parent| parent >= current) {
+                return None;
+            }
+        }
+        segments.reverse();
+        let mut path = self.owner.clone();
+        for segment in segments {
+            path = path.child(segment);
+        }
+        Some(path)
     }
 }
 
