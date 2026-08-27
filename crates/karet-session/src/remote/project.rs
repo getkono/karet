@@ -117,10 +117,11 @@ impl Projection {
                 &snapshot.syntax_error_lines,
             )
             .map(|lines| lines.as_ref().clone()),
+            // Sent only when it changed, and able to say "changed to nothing" —
+            // renaming a file to an unrecognized extension has to clear the label,
+            // not leave it showing the language the file used to be.
             language: (previous.map(|sent| sent.language) != Some(snapshot.language))
-                .then_some(snapshot.language)
-                .flatten()
-                .map(str::to_owned),
+                .then(|| snapshot.language.map(str::to_owned)),
             dirty: snapshot.dirty,
             cursor: snapshot.cursor.clone(),
         };
@@ -369,5 +370,63 @@ mod tests {
             matches!(text, None | Some(TextUpdate::Unchanged)),
             "{text:?}"
         );
+    }
+
+    /// The language is announced on first sight and then only when it changes —
+    /// including changing to nothing.
+    #[test]
+    fn a_language_is_announced_once_and_then_only_when_it_changes() {
+        let mut projection = Projection::default();
+        let rust = DocSnapshot {
+            language: Some("Rust"),
+            ..snapshot(1, "fn main() {}\n")
+        };
+
+        let first = projection.project(DOC, &rust);
+        let again = projection.project(
+            DOC,
+            &DocSnapshot {
+                language: Some("Rust"),
+                highlights: rust.highlights.clone(),
+                folds: rust.folds.clone(),
+                semantic_blocks: rust.semantic_blocks.clone(),
+                decorations: rust.decorations.clone(),
+                syntax_error_lines: rust.syntax_error_lines.clone(),
+                ..snapshot(1, "fn main() {}\n")
+            },
+        );
+
+        assert_eq!(
+            first.map(|update| update.language),
+            Some(Some(Some("Rust".to_owned())))
+        );
+        assert!(again.is_none(), "nothing changed, so nothing to say");
+    }
+
+    /// A rename to an unrecognized extension must clear the label, not leave the
+    /// file showing the language it used to be.
+    #[test]
+    fn losing_a_language_is_announced_as_a_change_to_nothing() {
+        let mut projection = Projection::default();
+        let rust = DocSnapshot {
+            language: Some("Rust"),
+            ..snapshot(1, "fn main() {}\n")
+        };
+        let _ = projection.project(DOC, &rust);
+
+        let update = projection.project(
+            DOC,
+            &DocSnapshot {
+                language: None,
+                highlights: rust.highlights.clone(),
+                folds: rust.folds.clone(),
+                semantic_blocks: rust.semantic_blocks.clone(),
+                decorations: rust.decorations.clone(),
+                syntax_error_lines: rust.syntax_error_lines.clone(),
+                ..snapshot(1, "fn main() {}\n")
+            },
+        );
+
+        assert_eq!(update.map(|update| update.language), Some(Some(None)));
     }
 }

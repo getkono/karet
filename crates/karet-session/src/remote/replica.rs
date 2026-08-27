@@ -74,7 +74,7 @@ impl Replica {
             self.syntax_error_lines = Arc::new(lines);
         }
         if let Some(language) = update.language {
-            self.language = intern_language(&language);
+            self.language = language.as_deref().and_then(intern_language);
         }
         self.dirty = update.dirty;
         Some(self.snapshot(update.version, update.cursor))
@@ -315,7 +315,7 @@ mod tests {
 
         let snapshot = replica.apply(RenderUpdate {
             text: TextUpdate::Full("fn main() {}\n".to_owned()),
-            language: Some("Rust".to_owned()),
+            language: Some(Some("Rust".to_owned())),
             ..RenderUpdate::at(1)
         });
 
@@ -333,7 +333,7 @@ mod tests {
 
         let snapshot = replica.apply(RenderUpdate {
             text: TextUpdate::Full("x\n".to_owned()),
-            language: Some("Bogolang".to_owned()),
+            language: Some(Some("Bogolang".to_owned())),
             ..RenderUpdate::at(1)
         });
 
@@ -341,5 +341,47 @@ mod tests {
             return;
         };
         assert_eq!(snapshot.language, None);
+    }
+
+    /// Renaming a file to an unrecognized extension clears its language. An
+    /// update that could only *set* one would leave the tab labelled with the
+    /// language the file used to be.
+    #[test]
+    fn a_language_can_be_cleared_as_well_as_set() {
+        let mut replica = Replica::default();
+        let _ = replica.apply(RenderUpdate {
+            text: TextUpdate::Full("fn main() {}\n".to_owned()),
+            language: Some(Some("Rust".to_owned())),
+            ..RenderUpdate::at(1)
+        });
+
+        let snapshot = replica.apply(RenderUpdate {
+            language: Some(None),
+            ..RenderUpdate::at(2)
+        });
+
+        let Some(snapshot) = snapshot else {
+            return;
+        };
+        assert_eq!(snapshot.language, None);
+    }
+
+    /// An update that says nothing about the language keeps the one in force —
+    /// that is what `None` means for every other field too.
+    #[test]
+    fn an_update_silent_about_the_language_keeps_it() {
+        let mut replica = Replica::default();
+        let _ = replica.apply(RenderUpdate {
+            text: TextUpdate::Full("fn main() {}\n".to_owned()),
+            language: Some(Some("Rust".to_owned())),
+            ..RenderUpdate::at(1)
+        });
+
+        let snapshot = replica.apply(RenderUpdate::at(2));
+
+        let Some(snapshot) = snapshot else {
+            return;
+        };
+        assert_eq!(snapshot.language, Some("Rust"));
     }
 }

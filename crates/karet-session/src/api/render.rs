@@ -88,8 +88,14 @@ pub struct RenderUpdate {
     pub decorations: Option<Vec<Decoration>>,
     /// Inclusive 0-based line ranges covered by syntax errors.
     pub syntax_error_lines: Option<Vec<(u32, u32)>>,
-    /// The display language name, when it is first known or changes.
-    pub language: Option<String>,
+    /// The display language name, when it changed.
+    ///
+    /// Doubly optional on purpose, and the one field where "unchanged" and "none"
+    /// genuinely differ: `None` means the language did not change, while
+    /// `Some(None)` means it changed *to* no language — which is what a rename to
+    /// an unrecognized extension does. Collapsing the two would leave a renamed
+    /// file labelled with the language it used to be.
+    pub language: Option<Option<String>>,
     /// Whether the buffer has unsaved changes.
     pub dirty: bool,
     /// A caret for the client to move to, set only for undo/redo so the edit
@@ -173,7 +179,7 @@ mod tests {
         let update = RenderUpdate {
             text: TextUpdate::Full("fn main() {}\n".to_owned()),
             highlights: Some(HighlightSlice::default()),
-            language: Some("Rust".to_owned()),
+            language: Some(Some("Rust".to_owned())),
             dirty: true,
             ..RenderUpdate::at(12)
         };
@@ -182,7 +188,7 @@ mod tests {
 
         assert_eq!(restored.version, 12);
         assert_eq!(restored.text, TextUpdate::Full("fn main() {}\n".to_owned()));
-        assert_eq!(restored.language.as_deref(), Some("Rust"));
+        assert_eq!(restored.language.flatten().as_deref(), Some("Rust"));
         assert!(restored.dirty);
         Ok(())
     }
