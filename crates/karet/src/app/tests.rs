@@ -11,6 +11,7 @@ mod debugging;
 mod definition;
 mod deps;
 mod diff_view;
+mod editor_drag;
 mod editor_mouse;
 mod explorer;
 mod github;
