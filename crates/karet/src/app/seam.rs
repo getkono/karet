@@ -250,19 +250,7 @@ impl SeamViewState {
         // A re-sync of a package the view already holds must replace it, not double it:
         // a node the package no longer produces has to disappear.
         if self.replaced.insert(root.to_owned()) {
-            let stale: Vec<String> = self
-                .nodes
-                .values()
-                .filter(|node| node.id == root || node.id.starts_with(&format!("{root}::")))
-                .map(|node| node.id.clone())
-                .collect();
-            for id in stale {
-                self.nodes.remove(&id);
-            }
-            self.roots.retain(|id| id != root);
-            self.summary
-                .unresolved_modules
-                .retain(|(id, _)| id != root && !id.starts_with(&format!("{root}::")));
+            self.forget_package(root);
         }
 
         for node in &nodes {
@@ -290,11 +278,43 @@ impl SeamViewState {
 
     /// Settle the header once every package is in.
     pub(crate) fn finish_sync(&mut self, summary: SeamSummary) {
+        // A package deleted from disk never reports, so it is not caught by the
+        // replace-on-first-report that keeps an edited package honest. Anything the run
+        // did not speak for is gone, and saying otherwise would leave the reader
+        // navigating a crate that no longer exists.
+        let gone: Vec<String> = self
+            .roots
+            .iter()
+            .filter(|root| !self.replaced.contains(*root))
+            .cloned()
+            .collect();
+        for root in gone {
+            self.forget_package(&root);
+        }
+
+        // Rebuilt rather than added to, so a dropped package takes its files with it.
+        // This set decides whether saving a file re-indexes, and the whole-tree path
+        // derives it the same way.
+        self.files = self.nodes.values().map(|node| node.file.clone()).collect();
+
         self.summary = summary;
         self.syncing = None;
+        self.replaced.clear();
         self.loading_since = None;
         self.error = None;
         self.repair();
+    }
+
+    /// Drop a package root and everything beneath it.
+    fn forget_package(&mut self, root: &str) {
+        let under = format!("{root}::");
+        self.nodes
+            .retain(|id, _| id != root && !id.starts_with(&under));
+        self.roots.retain(|id| id != root);
+        self.root_order.remove(root);
+        self.summary
+            .unresolved_modules
+            .retain(|(id, _)| id != root && !id.starts_with(&under));
     }
 
     /// Record that indexing failed.

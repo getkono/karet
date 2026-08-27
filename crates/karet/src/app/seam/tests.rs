@@ -570,3 +570,88 @@ fn a_sync_leaves_the_previous_tree_readable_until_it_is_replaced() {
     assert_eq!(state.selected_id().map(str::to_owned), before);
     assert_eq!(state.roots, ["pkg"]);
 }
+
+#[test]
+fn a_package_that_vanished_is_dropped_when_the_sync_finishes() {
+    // A deleted crate never reports, so replace-on-first-report cannot catch it. Leaving
+    // it would have the reader navigating a package that is no longer there.
+    let mut state = SeamViewState::pending(PathBuf::new());
+    state.begin_sync();
+    for (order, name) in [(0, "alpha"), (1, "beta")] {
+        state.adopt_package(
+            order,
+            name,
+            vec![
+                node(name, None, &[&format!("{name}::one")], [1, 0, 0, 0, 0]),
+                node(&format!("{name}::one"), Some(name), &[], [1, 0, 0, 0, 0]),
+            ],
+            Vec::new(),
+        );
+    }
+    state.finish_sync(SeamSummary::default());
+    assert_eq!(state.roots, ["alpha", "beta"]);
+
+    // `beta` is gone from disk: this sync only ever speaks for `alpha`.
+    state.begin_sync();
+    state.adopt_package(
+        0,
+        "alpha",
+        vec![node("alpha", None, &[], [0; 5])],
+        Vec::new(),
+    );
+    state.finish_sync(SeamSummary::default());
+
+    assert_eq!(state.roots, ["alpha"], "the removed package survived");
+    assert!(!state.nodes.contains_key("beta"));
+    assert!(
+        !state.nodes.contains_key("beta::one"),
+        "its subtree survived"
+    );
+}
+
+#[test]
+fn a_first_index_keeps_every_package_it_reports() {
+    // The prune must not fire on a view that never synced: nothing was there before, and
+    // every package it reports is one it is speaking for.
+    let mut state = SeamViewState::pending(PathBuf::new());
+    state.adopt_package(
+        0,
+        "alpha",
+        vec![node("alpha", None, &[], [0; 5])],
+        Vec::new(),
+    );
+    state.adopt_package(1, "beta", vec![node("beta", None, &[], [0; 5])], Vec::new());
+    state.finish_sync(SeamSummary::default());
+
+    assert_eq!(state.roots, ["alpha", "beta"]);
+}
+
+#[test]
+fn a_dropped_package_takes_its_files_with_it() {
+    // `files` decides whether saving a file re-indexes this view. A file belonging to a
+    // package that is gone must stop counting.
+    let mut state = SeamViewState::pending(PathBuf::new());
+    state.begin_sync();
+    let mut beta = node("beta", None, &[], [0; 5]);
+    beta.file = PathBuf::from("crates/beta/src/lib.rs");
+    state.adopt_package(
+        0,
+        "alpha",
+        vec![node("alpha", None, &[], [0; 5])],
+        Vec::new(),
+    );
+    state.adopt_package(1, "beta", vec![beta], Vec::new());
+    state.finish_sync(SeamSummary::default());
+    assert!(state.covers(&PathBuf::from("crates/beta/src/lib.rs")));
+
+    state.begin_sync();
+    state.adopt_package(
+        0,
+        "alpha",
+        vec![node("alpha", None, &[], [0; 5])],
+        Vec::new(),
+    );
+    state.finish_sync(SeamSummary::default());
+
+    assert!(!state.covers(&PathBuf::from("crates/beta/src/lib.rs")));
+}
