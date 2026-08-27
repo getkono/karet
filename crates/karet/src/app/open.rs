@@ -19,10 +19,13 @@ use std::path::PathBuf;
 
 use karet_fileview::viewer::FileKind;
 use karet_session::api::Command as SessionCommand;
+use karet_session::api::DocumentId;
 use karet_session::api::PathClass;
 use karet_session::api::RequestId;
+use karet_session::api::ViewId;
 
 use super::App;
+use crate::tab::TabKind;
 use crate::workspace;
 
 /// Read a file's bytes in pieces of this size.
@@ -197,6 +200,41 @@ impl App {
             tab.is_preview = preview;
             *existing = tab;
             break;
+        }
+    }
+
+    /// Tell the backend what each open document's views are displaying.
+    ///
+    /// Highlights are resolved per rendered line, so spans outside a viewport are
+    /// never read. Bounding them is what keeps a keystroke's answer to about a
+    /// screenful rather than a whole file's worth of spans — the difference
+    /// between a usable and an unusable connection once the two ends are not on
+    /// one machine.
+    ///
+    /// Called after each frame, because the visible range is only known once the
+    /// editor has been laid out. Sends only what changed: a viewport that has not
+    /// moved is a message that says nothing.
+    pub(super) fn report_viewports(&mut self) {
+        let mut seen: Vec<(ViewId, DocumentId, u32, u32)> = Vec::new();
+        for tab in self.all_tabs_mut() {
+            let TabKind::Code { doc: Some(doc), .. } = &tab.kind else {
+                continue;
+            };
+            let visible = tab.editor.viewport();
+            seen.push((tab.view, *doc, visible.start.line, visible.end.line));
+        }
+        for (view, doc, first_line, last_line) in seen {
+            if self.reported_viewports.get(&view) == Some(&(first_line, last_line)) {
+                continue;
+            }
+            self.reported_viewports
+                .insert(view, (first_line, last_line));
+            self.send_command(SessionCommand::SetViewport {
+                doc,
+                view,
+                first_line,
+                last_line,
+            });
         }
     }
 

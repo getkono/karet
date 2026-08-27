@@ -451,3 +451,49 @@ async fn repeated_edit_and_undo_cycles_keep_converging() {
         version += 2;
     }
 }
+
+/// A client cannot assume its own working directory is the workspace — the files
+/// may be on another machine — so the backend names it on attach.
+#[tokio::test]
+async fn a_client_is_told_which_workspace_it_is_rendering() {
+    let Some(mut pair) = pair(&[("a.rs", "x\n")]).await else {
+        return;
+    };
+    let expected = pair.root();
+
+    let roots = tokio::time::timeout(PATIENCE, async {
+        while let Some((_, event)) = pair.events.recv().await {
+            if let Event::WorkspaceRoots { roots } = event {
+                return Some(roots);
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten();
+
+    assert_eq!(roots, Some(vec![expected]));
+}
+
+/// The workspace's configuration describes the code and lives beside it, so the
+/// backend resolves it and the client is told.
+#[tokio::test]
+async fn a_client_is_told_the_workspaces_configuration() {
+    let Some(mut pair) = pair(&[("a.rs", "x\n")]).await else {
+        return;
+    };
+
+    let announced = tokio::time::timeout(PATIENCE, async {
+        while let Some((_, event)) = pair.events.recv().await {
+            if matches!(event, Event::ConfigChanged { .. }) {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .unwrap_or(false);
+
+    assert!(announced);
+}

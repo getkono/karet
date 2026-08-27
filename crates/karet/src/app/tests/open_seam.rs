@@ -367,3 +367,162 @@ fn a_stale_file_list_is_ignored() {
     };
     assert!(overlay.rows().is_empty(), "{:?}", overlay.rows());
 }
+
+/// Highlights are scoped to what a client can see, and the backend only knows
+/// that if the client says so. Without this the whole file's spans cross the
+/// connection on every recompute.
+#[test]
+fn a_laid_out_editor_reports_its_visible_lines() {
+    let (backend, mut app) = remote_app();
+    let path = PathBuf::from("/not/on/this/machine/main.rs");
+    app.open_path(&path);
+    app.register_open_tabs();
+    let Some(open) = find_request(&backend, |command| {
+        matches!(command, SessionCommand::OpenDocument { .. })
+    }) else {
+        return;
+    };
+    app.on_backend_event(
+        Some(open),
+        SessionEvent::Opened {
+            doc: DocumentId(1),
+            version: 1,
+        },
+    );
+
+    app.report_viewports();
+
+    assert!(
+        find_request(&backend, |command| matches!(
+            command,
+            SessionCommand::SetViewport { doc, .. } if *doc == DocumentId(1)
+        ))
+        .is_some(),
+        "the backend cannot scope highlights to a viewport it was never told"
+    );
+}
+
+/// A viewport that has not moved is a message that says nothing, and this runs
+/// after every frame.
+#[test]
+fn an_unmoved_viewport_is_not_reported_again() {
+    let (backend, mut app) = remote_app();
+    let path = PathBuf::from("/not/on/this/machine/main.rs");
+    app.open_path(&path);
+    app.register_open_tabs();
+    let Some(open) = find_request(&backend, |command| {
+        matches!(command, SessionCommand::OpenDocument { .. })
+    }) else {
+        return;
+    };
+    app.on_backend_event(
+        Some(open),
+        SessionEvent::Opened {
+            doc: DocumentId(1),
+            version: 1,
+        },
+    );
+
+    app.report_viewports();
+    app.report_viewports();
+    app.report_viewports();
+
+    let reports = sent(&backend)
+        .iter()
+        .filter(|(_, command)| matches!(command, SessionCommand::SetViewport { .. }))
+        .count();
+    assert_eq!(reports, 1);
+}
+
+/// A scroll must reach the backend, or the newly revealed lines stay
+/// unhighlighted for as long as the user stays there.
+#[test]
+fn scrolling_reports_the_new_viewport() {
+    let (backend, mut app) = remote_app();
+    let path = PathBuf::from("/not/on/this/machine/main.rs");
+    app.open_path(&path);
+    app.register_open_tabs();
+    let Some(open) = find_request(&backend, |command| {
+        matches!(command, SessionCommand::OpenDocument { .. })
+    }) else {
+        return;
+    };
+    app.on_backend_event(
+        Some(open),
+        SessionEvent::Opened {
+            doc: DocumentId(1),
+            version: 1,
+        },
+    );
+    app.report_viewports();
+
+    let active = app.active;
+    app.tabs[active].editor.scroll_to_line(400);
+    app.report_viewports();
+
+    let reports: Vec<u32> = sent(&backend)
+        .iter()
+        .filter_map(|(_, command)| match command {
+            SessionCommand::SetViewport { first_line, .. } => Some(*first_line),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reports, vec![0, 400]);
+}
+
+/// The workspace's configuration describes the code — indentation, linters,
+/// language servers — and is the backend's to resolve.
+#[test]
+fn a_backends_configuration_replaces_the_clients_behavioural_settings() {
+    let (_backend, mut app) = remote_app();
+    app.adopt_local_presentation();
+    let mut report = app.loaded_config.clone();
+    report.settings.editor.tab_size = 7;
+
+    app.on_backend_event(
+        None,
+        SessionEvent::ConfigChanged {
+            report: Box::new(report),
+        },
+    );
+
+    assert_eq!(app.settings.editor.tab_size, 7);
+}
+
+/// …but it has no standing to say which theme suits the terminal the user is
+/// looking at, or whether that terminal has a patched font.
+#[test]
+fn a_backends_configuration_does_not_replace_the_clients_presentation() {
+    let (_backend, mut app) = remote_app();
+    app.settings.workbench.color_theme = "my-local-theme".to_owned();
+    app.adopt_local_presentation();
+    let mut report = app.loaded_config.clone();
+    report.settings.workbench.color_theme = "a-theme-on-the-server".to_owned();
+
+    app.on_backend_event(
+        None,
+        SessionEvent::ConfigChanged {
+            report: Box::new(report),
+        },
+    );
+
+    assert_eq!(app.settings.workbench.color_theme, "my-local-theme");
+}
+
+/// A local session has one configuration and nothing to arbitrate, so the theme
+/// it loads is simply the one it resolved.
+#[test]
+fn a_local_session_takes_its_whole_configuration_as_given() {
+    let (_backend, mut app) = remote_app();
+    let mut report = app.loaded_config.clone();
+    report.settings.workbench.color_theme = "configured".to_owned();
+
+    app.on_backend_event(
+        None,
+        SessionEvent::ConfigChanged {
+            report: Box::new(report),
+        },
+    );
+
+    assert_eq!(app.settings.workbench.color_theme, "configured");
+}

@@ -233,6 +233,15 @@ fn main() -> color_eyre::Result<()> {
     app.startup_commands = startup_commands;
     // `--capture` acts like the other automation flags: render the shell off-screen,
     // write the frame to stdout, and return — never enter the alternate screen.
+    // A client resolves the presentation settings on this machine and keeps them:
+    // the backend's configuration will otherwise overwrite the theme and icon
+    // style with whatever suits a terminal nobody is looking at.
+    if matches!(
+        mode,
+        split::Mode::ClientSocket(_) | split::Mode::ClientExec(_)
+    ) {
+        app.adopt_local_presentation();
+    }
     let source = match mode {
         split::Mode::ClientSocket(socket) => {
             split::client::source(split::client::Endpoint::Socket(socket))

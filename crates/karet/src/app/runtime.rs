@@ -218,6 +218,9 @@ async fn event_loop(
     loop {
         terminal.draw(|f| ui::draw(f, app))?;
         app.flush_graphics();
+        // The visible line range is only known once the editor has been laid out,
+        // so the backend hears about it after the frame that established it.
+        app.report_viewports();
 
         // Wake for notification expiry or a save-spinner frame; park on the event
         // sources when nothing time-based is pending (no idle repaints).

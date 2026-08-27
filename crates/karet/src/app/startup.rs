@@ -157,6 +157,8 @@ impl App {
             pending_bytes: HashMap::new(),
             file_list_req: None,
             pending_listings: HashMap::new(),
+            presentation: None,
+            reported_viewports: HashMap::new(),
             pending_reveal: None,
             pending_mutations: HashMap::new(),
             explorer_delete_done: 0,
@@ -205,9 +207,30 @@ impl App {
 
     /// Apply a configuration snapshot. Live reload deliberately leaves the startup
     /// panel alone; it is a startup action rather than persistent UI state.
+    /// Keep this machine's presentation settings across a backend's configuration.
+    ///
+    /// Called when the workspace is somewhere else. A local session never needs
+    /// it: there is one configuration and nothing to arbitrate.
+    pub(crate) fn adopt_local_presentation(&mut self) {
+        self.presentation = Some(crate::app::PresentationSettings {
+            color_theme: self.settings.workbench.color_theme.clone(),
+            icon_style: self.settings.workbench.icon_style,
+        });
+    }
+
     pub(super) fn apply_loaded_config(&mut self, loaded: LoadedConfig, apply_startup_panel: bool) {
         use karet_session::config::schema::StartupPanel;
 
+        let mut loaded = loaded;
+        // Presentation belongs to the machine doing the presenting. A backend's
+        // configuration describes the code — its indentation, its linters, its
+        // language servers — but it has no standing to say which theme suits the
+        // terminal the user is looking at, or whether that terminal has a patched
+        // font. Those keys stay with the client that resolved them.
+        if let Some(presentation) = self.presentation.clone() {
+            loaded.settings.workbench.color_theme = presentation.color_theme;
+            loaded.settings.workbench.icon_style = presentation.icon_style;
+        }
         let settings = loaded.settings.clone();
         self.config_diagnostics = loaded.diagnostics.clone();
         self.loaded_config = loaded;

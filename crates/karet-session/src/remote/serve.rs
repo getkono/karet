@@ -44,10 +44,11 @@ where
     W: AsyncWrite + Unpin + Send,
 {
     let roots = config.roots.clone();
+    let loaded = Box::new(config.loaded_config.clone());
     let (session, events, snapshots) = Session::new(config);
     let backend = crate::backend::local_session(session, Some(events));
     Connection::new(reader, writer)
-        .run(&backend, snapshots, roots)
+        .run(&backend, snapshots, roots, loaded)
         .await
 }
 
@@ -95,6 +96,7 @@ where
         backend: &crate::backend::LocalBackend,
         mut snapshots: crate::local::SnapshotRx,
         roots: Vec<std::path::PathBuf>,
+        config: Box<crate::config::LoadedConfig>,
     ) -> Result<(), RemoteError> {
         let mut events = backend
             .take_events()
@@ -105,6 +107,12 @@ where
         // Before anything else: a client has no way to know what workspace it is
         // rendering, and every relative path it resolves depends on the answer.
         self.send_event(None, Event::WorkspaceRoots { roots })
+            .await?;
+        // The workspace's own configuration — `.editorconfig`, the project
+        // settings layer, linter and formatter config — is resolved here, because
+        // it describes the code and lives beside it. A client keeps only the keys
+        // that describe the terminal in front of the user.
+        self.send_event(None, Event::ConfigChanged { report: config })
             .await?;
 
         loop {

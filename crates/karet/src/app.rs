@@ -575,6 +575,13 @@ pub struct App {
     /// In-flight directory listings, keyed to the directory each was asked
     /// about, so a stale answer cannot repopulate a tree that has moved on.
     pending_listings: HashMap<RequestId, PathBuf>,
+    /// The presentation settings this machine resolved, kept across a backend's
+    /// configuration. Set only when the workspace is somewhere else; a local
+    /// session has one configuration and no distinction to draw.
+    presentation: Option<PresentationSettings>,
+    /// The line range last reported for each view, so an unmoved viewport is not
+    /// re-sent on every frame.
+    reported_viewports: HashMap<ViewId, (u32, u32)>,
     /// A path to select in the explorer once the tree has a row for it. Revealing
     /// a deep path needs a listing per level, and those arrive one at a time.
     pending_reveal: Option<PathBuf>,
@@ -610,4 +617,18 @@ pub struct App {
     /// is the seam future tiled/split panes build on — multiple views can share one
     /// document, whose edit log already lives once in the session.
     next_view: u64,
+}
+
+/// The settings that describe the terminal in front of the user rather than the
+/// code being edited.
+///
+/// A split session has two configurations — the workspace's and this machine's —
+/// and these are the keys where the machine wins. Everything else is the
+/// workspace's, because everything else describes the code.
+#[derive(Clone, Debug)]
+pub(crate) struct PresentationSettings {
+    /// The colour theme name or path, resolved on this machine.
+    pub(crate) color_theme: String,
+    /// The icon glyph set this terminal's font can render.
+    pub(crate) icon_style: karet_session::config::schema::IconStyleSetting,
 }
