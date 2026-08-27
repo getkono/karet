@@ -150,6 +150,110 @@ fn closing_editors_to_the_right_spares_the_pinned_dashboard() {
     );
 }
 
+/// Availability is re-emitted on every `GithubJob::Refresh`, so the install path
+/// has to recognise a dashboard parked in a pane that is not the focused one.
+#[test]
+fn github_dashboard_stays_a_singleton_across_split_panes() {
+    let mut app = app();
+    app.apply_github_availability(Some(repository()), anonymous_auth());
+    app.push_tab(Tab::welcome());
+    app.split_focused(SplitDir::Right);
+
+    assert!(
+        !app.tabs.iter().any(Tab::is_github_dashboard),
+        "the new pane hosts no dashboard"
+    );
+    assert!(
+        app.stored
+            .values()
+            .flat_map(|pane| pane.tabs.iter())
+            .any(Tab::is_github_dashboard),
+        "the dashboard stayed behind in its host pane"
+    );
+
+    app.apply_github_availability(Some(repository()), anonymous_auth());
+
+    assert_eq!(
+        app.all_tabs()
+            .filter(|tab| tab.is_github_dashboard())
+            .count(),
+        1,
+        "a refresh must update the parked dashboard, not install a second one"
+    );
+    assert!(
+        !app.tabs.iter().any(Tab::is_github_dashboard),
+        "and must not pull it into the focused pane"
+    );
+}
+
+#[test]
+fn github_dashboard_is_removed_from_a_background_pane() {
+    let mut app = app();
+    app.apply_github_availability(Some(repository()), anonymous_auth());
+    app.push_tab(Tab::welcome());
+    app.split_focused(SplitDir::Right);
+
+    app.apply_github_availability(None, anonymous_auth());
+
+    assert!(!app.all_tabs().any(Tab::is_github_dashboard));
+    assert!(!app.tabs.is_empty());
+    assert!(
+        app.stored.values().all(|pane| !pane.tabs.is_empty()),
+        "a pane the dashboard vacated falls back to a tab"
+    );
+}
+
+#[test]
+fn splitting_on_the_dashboard_does_not_clone_it() {
+    let mut app = app();
+    app.apply_github_availability(Some(repository()), anonymous_auth());
+    assert_eq!(app.tabs.len(), 1);
+    assert!(app.tabs[0].is_github_dashboard());
+
+    app.split_focused(SplitDir::Right);
+
+    assert!(
+        matches!(app.tabs[0].kind, TabKind::Welcome),
+        "the new pane opens on a welcome tab, not a copy of the pin"
+    );
+    assert_eq!(
+        app.all_tabs()
+            .filter(|tab| tab.is_github_dashboard())
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn github_dashboard_cannot_be_dragged_into_another_pane() {
+    let mut app = app();
+    app.apply_github_availability(Some(repository()), anonymous_auth());
+    app.push_tab(Tab::welcome());
+    app.split_focused(SplitDir::Right);
+
+    // Back to the pane hosting the dashboard, with the pin in front.
+    app.focus_pane_cycle(false);
+    app.set_active(0);
+    assert!(app.tabs[0].is_github_dashboard());
+
+    let targets: Vec<_> = app.stored.keys().copied().collect();
+    assert!(!targets.is_empty(), "the split left a pane to drop onto");
+    for target in targets {
+        app.drop_tab_on(target, DropZone::Center);
+    }
+
+    assert!(
+        app.tabs[0].is_github_dashboard(),
+        "the pin never leaves its pane"
+    );
+    assert!(
+        !app.stored
+            .values()
+            .flat_map(|pane| pane.tabs.iter())
+            .any(Tab::is_github_dashboard)
+    );
+}
+
 #[test]
 fn github_dashboard_opens_a_masked_in_tui_sign_in_control() {
     let mut app = app();
