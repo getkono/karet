@@ -29,7 +29,7 @@ mod panes;
 mod pending;
 mod remote_actions;
 mod review;
-mod runtime;
+pub(crate) mod runtime;
 mod scm;
 mod scroll;
 pub(crate) mod seam;

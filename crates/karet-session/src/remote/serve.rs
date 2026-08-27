@@ -97,7 +97,9 @@ where
         let mut events = backend
             .take_events()
             .ok_or_else(|| RemoteError::Protocol("session event stream taken".to_owned()))?;
-        self.handshake().await?;
+        if !self.handshake().await? {
+            return Ok(()); // nobody connected
+        }
 
         loop {
             // Biased, and events before snapshots: a session emits `Applied`
@@ -160,10 +162,14 @@ where
     }
 
     /// Exchange greetings and refuse a peer this build cannot talk to.
-    async fn handshake(&mut self) -> Result<(), RemoteError> {
-        let body = frame::read(&mut self.reader)
-            .await?
-            .ok_or_else(|| RemoteError::Protocol("client closed before greeting".to_owned()))?;
+    ///
+    /// Reports whether a client actually arrived: a stream that ends before the
+    /// greeting is nobody connecting, which is an ordinary way for a backend to
+    /// finish, not a failure to report.
+    async fn handshake(&mut self) -> Result<bool, RemoteError> {
+        let Some(body) = frame::read(&mut self.reader).await? else {
+            return Ok(false);
+        };
         // A handshake that will not decode is fatal, unlike a later frame: there
         // is no session yet to keep alive by skipping it.
         let ClientFrame::Hello(hello) = super::wire::decode(&body)? else {
@@ -171,7 +177,8 @@ where
         };
         hello.accept()?;
         let greeting = super::wire::encode(&ServerFrame::Hello(Hello::current()))?;
-        frame::write(&mut self.writer, &greeting).await
+        frame::write(&mut self.writer, &greeting).await?;
+        Ok(true)
     }
 
     /// Handle one client frame, reporting whether the connection continues.

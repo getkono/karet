@@ -3,12 +3,36 @@ use super::*;
 /// The session configuration for `app` — shared by the interactive runtime and
 /// the capture harness so the two attach identically. `swap_dir` differs: the
 /// real app persists crash-recovery swaps; a throwaway capture must not.
-pub(super) fn session_config(app: &App, swap_dir: Option<std::path::PathBuf>) -> SessionConfig {
+pub(crate) fn session_config(app: &App, swap_dir: Option<std::path::PathBuf>) -> SessionConfig {
+    session_config_for(
+        app.root.clone(),
+        app.loaded_config.clone(),
+        app.syntax,
+        swap_dir,
+    )
+}
+
+/// The session configuration for a workspace, without a shell around it.
+///
+/// A backend serving a remote client never builds an [`App`], but must configure
+/// its session identically to a local one — same settings layers, same supervisor,
+/// same shared language-server installs. Having one constructor is what keeps a
+/// served workspace and a local one from drifting.
+///
+/// Every path resolved here belongs to the machine holding the workspace, which is
+/// the point: `current_exe` is *this* karet, and the language-server directory is
+/// the one whose servers can actually see these files.
+pub(crate) fn session_config_for(
+    root: std::path::PathBuf,
+    loaded_config: LoadedConfig,
+    syntax: bool,
+    swap_dir: Option<std::path::PathBuf>,
+) -> SessionConfig {
     SessionConfig {
-        roots: vec![app.root.clone()],
-        diff_syntax: app.syntax,
-        settings: app.settings.clone(),
-        loaded_config: app.loaded_config.clone(),
+        roots: vec![root],
+        diff_syntax: syntax,
+        settings: loaded_config.settings.clone(),
+        loaded_config,
         swap_dir,
         // Every external process is owned by a hidden copy of this executable.
         process_supervisor: std::env::current_exe().ok(),
@@ -27,10 +51,19 @@ pub(super) fn attach_backend(
     config: SessionConfig,
 ) -> color_eyre::Result<(EventRx, SnapshotRx)> {
     let (local_backend, snaps) = local(config);
-    // The composition root only ever sees the `Backend` seam: the local
-    // implementation is constructed here, and the event stream comes off the
-    // trait — the exact shape a remote backend will slot into.
-    let backend: Arc<dyn Backend> = Arc::new(local_backend);
+    attach(app, Arc::new(local_backend), snaps)
+}
+
+/// Attach an already-constructed backend and run the shared post-attach steps.
+///
+/// The composition root only ever sees the `Backend` seam, so a session running
+/// in this process and one running on another machine arrive here identically —
+/// which is the whole reason remote mode needed no changes below this line.
+pub(super) fn attach(
+    app: &mut App,
+    backend: Arc<dyn Backend>,
+    snaps: SnapshotRx,
+) -> color_eyre::Result<(EventRx, SnapshotRx)> {
     let Some(events) = backend.take_events() else {
         return Err(eyre!("backend event stream is unavailable"));
     };
@@ -57,7 +90,26 @@ pub(super) fn attach_backend(
     Ok((events, snaps))
 }
 
-pub fn run(mut app: App) -> color_eyre::Result<()> {
+/// Where the session this shell drives comes from.
+pub enum Source {
+    /// An in-process session over the given configuration.
+    Local(Box<SessionConfig>),
+    /// A session on the other end of a connection, opened by `open`.
+    ///
+    /// The connection is established inside the shell's runtime rather than
+    /// handed in already made, because a `RemoteBackend` and its pump are tied to
+    /// the runtime that spawned them.
+    Remote(RemoteOpen),
+}
+
+/// Opens a connection to a remote backend, inside the shell's Tokio runtime.
+pub type RemoteOpen = Box<
+    dyn FnOnce() -> std::pin::Pin<
+            Box<dyn Future<Output = color_eyre::Result<(Arc<dyn Backend>, SnapshotRx)>>>,
+        > + Send,
+>;
+
+pub fn run(mut app: App, source: Source) -> color_eyre::Result<()> {
     let kitty_keyboard_supported = crate::term_caps::supports_kitty_keyboard();
     if !kitty_keyboard_supported {
         return Err(eyre!(
@@ -70,10 +122,6 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     // The session backend runs on its own Tokio runtime; the UI task selects over
     // terminal input, backend events, and document snapshots so it never blocks.
     let runtime = tokio::runtime::Runtime::new().map_err(|e| eyre!("tokio runtime: {e}"))?;
-    // The real app persists crash-recovery swaps to the user data directory;
-    // headless/test sessions leave this unset and keep no backups.
-    let config = session_config(&app, karet_session::backup::default_swap_dir());
-
     let mut terminal = ratatui::init();
     let _ = crossterm::execute!(
         io::stdout(),
@@ -113,7 +161,13 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     }
 
     let result = runtime.block_on(async move {
-        let (events, snaps) = attach_backend(&mut app, config)?;
+        let (events, snaps) = match source {
+            Source::Local(config) => attach_backend(&mut app, *config)?,
+            Source::Remote(open) => {
+                let (backend, snaps) = open().await?;
+                attach(&mut app, backend, snaps)?
+            },
+        };
         let graphical_cursor_requested = app.tabs.get(app.active).is_some_and(|tab| {
             app.settings
                 .editor
