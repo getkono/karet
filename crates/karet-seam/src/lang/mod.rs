@@ -68,6 +68,61 @@ impl Attribute {
     }
 }
 
+/// One candidate semantic owner for a construct written away from what it belongs to.
+///
+/// A candidate is a *name*, not a node: a language mapping sees one syntax node at a time
+/// and never the index, so it cannot know whether `Widget` exists, let alone where. It
+/// says what it is looking for and what to become if that is found; resolving the name is
+/// [`crate::regroup`]'s job, and a name that resolves to nothing leaves the node exactly
+/// where it was written.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Owner {
+    /// The name to look for — a bare name, or a path the language's own syntax allows.
+    pub name: String,
+    /// Whether the construct dissolves into this owner rather than nesting under it.
+    ///
+    /// Dissolving lifts the construct's children into the owner and removes the
+    /// construct: a Rust inherent `impl` is not a thing anyone navigates to, it is where
+    /// the methods happen to be written. A trait binding *is* a thing, and nests.
+    pub dissolve: bool,
+    /// The display name and path segment to take on if this candidate is the one that
+    /// resolves, or `None` to keep what the construct already has.
+    ///
+    /// Which candidate wins changes what the construct should be called: `impl Display
+    /// for Widget` reads as `impl Display` under `Widget`, and as `impl for Widget` under
+    /// `Display`. Naming is therefore per candidate rather than per construct.
+    pub rename: Option<(String, String)>,
+}
+
+impl Owner {
+    /// A candidate that nests under `name`, keeping the construct's own naming.
+    #[must_use]
+    pub fn nested(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            dissolve: false,
+            rename: None,
+        }
+    }
+
+    /// A candidate that lifts the construct's children into `name` and removes it.
+    #[must_use]
+    pub fn dissolved(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            dissolve: true,
+            rename: None,
+        }
+    }
+
+    /// Rename the construct to `name`, addressed by `segment`, if this candidate wins.
+    #[must_use]
+    pub fn renamed(mut self, name: impl Into<String>, segment: impl Into<String>) -> Self {
+        self.rename = Some((name.into(), segment.into()));
+        self
+    }
+}
+
 /// Everything a language needs to classify one node beyond the node itself.
 pub struct FacetContext<'a> {
     /// The full source text the tree was parsed from.
@@ -152,6 +207,26 @@ pub trait SeamLanguage {
     /// A language without generics leaves this empty and nothing downstream notices.
     fn type_parameters(&self, node: &WalkNode<'_>, text: &str) -> Vec<String> {
         let _ = (node, text);
+        Vec::new()
+    }
+
+    /// Where this construct's members really belong, when its syntactic parent is not
+    /// its semantic owner — most specific candidate first.
+    ///
+    /// Some constructs are written away from the thing they belong to. A Rust `impl` and
+    /// a Swift `extension` hold members of a type declared elsewhere; a Kotlin extension
+    /// function is a member of its receiver; a JavaScript `X.prototype.y = …` is a member
+    /// of `X`. Containment built from syntax alone puts all of them beside the type
+    /// rather than inside it, and "show me everything about `Widget`" stops being a
+    /// question the tree can answer.
+    ///
+    /// Returning candidates rather than a decision keeps the contract narrow: the
+    /// language still sees one node and never the index, and it is the neutral
+    /// [`crate::regroup`] pass that decides whether a name resolves. Empty — the default
+    /// — means the construct is already written where it belongs, which is the common
+    /// case and the whole of Python.
+    fn ownership(&self, node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Vec<Owner> {
+        let _ = (node, ctx);
         Vec::new()
     }
 
@@ -284,6 +359,59 @@ mod tests {
         assert_eq!(ctx.attributes_named("cfg").count(), 2);
         assert_eq!(ctx.attributes_named("missing").count(), 0);
         assert_eq!(ctx.attribute("missing"), None);
+    }
+
+    #[test]
+    fn an_owner_candidate_carries_how_it_wants_to_be_attached() {
+        assert_eq!(
+            Owner::nested("Widget"),
+            Owner {
+                name: "Widget".to_owned(),
+                dissolve: false,
+                rename: None,
+            }
+        );
+        let dissolved = Owner::dissolved("Widget");
+        assert!(dissolved.dissolve);
+        // Naming is per candidate: which owner wins changes what the node should read as.
+        let renamed = Owner::nested("Widget").renamed("impl Display", "{impl Display}");
+        assert_eq!(
+            renamed.rename,
+            Some(("impl Display".to_owned(), "{impl Display}".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_language_owns_nothing_elsewhere_by_default() {
+        // The common case, and the whole of Python: constructs are written where they
+        // belong, so the regroup pass has nothing to do.
+        struct Bare;
+        impl SeamLanguage for Bare {
+            fn language(&self) -> LanguageId {
+                LanguageId(u16::MAX)
+            }
+            fn classify(&self, _: &WalkNode<'_>, _: &FacetContext<'_>) -> Option<Classified> {
+                None
+            }
+            fn facets_of(&self, _: &WalkNode<'_>, _: &FacetContext<'_>) -> Vec<Facet> {
+                Vec::new()
+            }
+            fn interior_facets(&self, _: &WalkNode<'_>, _: &FacetContext<'_>) -> Vec<Facet> {
+                Vec::new()
+            }
+            fn is_container(&self, _: &WalkNode<'_>) -> bool {
+                false
+            }
+            fn semantic_capabilities(&self) -> &'static [EdgeKind] {
+                &[]
+            }
+            fn subtypes(&self) -> &'static [(Lens, FacetSubtype)] {
+                &[]
+            }
+        }
+        // Reached through the trait object, since that is how the extractor sees it.
+        let language: &dyn SeamLanguage = &Bare;
+        assert_eq!(language.subtypes().len(), 0);
     }
 
     #[test]

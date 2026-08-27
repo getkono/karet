@@ -76,6 +76,7 @@ pub use index::SeamIndex;
 pub use lang::Attribute;
 pub use lang::Classified;
 pub use lang::FacetContext;
+pub use lang::Owner;
 pub use lang::SeamLanguage;
 pub use model::ConfigMembership;
 pub use model::Effective;
