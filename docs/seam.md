@@ -112,6 +112,19 @@ decoding pictograms.
 | `y` | copy the selection's identity |
 | `q` | close |
 
+The **source preview** shows the lines the selection is made of, with three muted lines of
+context on each side, so the decision to press `Enter` is made against the code rather than
+against a name. It sits beside the facet pane on a terminal 80 columns or wider, below it on
+a narrower but taller one, and nowhere at all on one that is neither — the spine is the
+primary surface and keeps its rows.
+
+The block is always the same nine rows. Context a file does not have — at its top or its
+bottom — is left blank rather than closed up, because a pane that changes height as the
+selection moves makes you re-find the edge list on every arrow key. A node longer than the
+budget shows its head and says how many lines it hid; the gutter numbers make the jump
+plain. A file that could not be read says so, in the same `?` that every other unresolvable
+answer uses.
+
 **Every narrow is reversible, and the way back is visible.** Rerooting and pivoting push
 onto one stack that the breadcrumb renders, and the footer shows how many steps remain. A
 narrowing you cannot undo is a trap; one you can undo but cannot see is a maze. A narrow
@@ -263,6 +276,7 @@ See [`configuration.md`](configuration.md#seam) for the `seam.*` keys.
 | Containment tree, spine, rollups | ✅ shipped |
 | `api` · `substitution` · `variation` · `boundary` · `hazard` lenses | ✅ shipped |
 | Facet pane, pivot, breadcrumb | ✅ shipped |
+| Source preview with context | ✅ shipped |
 | Query language + `--seam-query` | ✅ shipped |
 | Configuration switching (three-valued `cfg`) | ✅ shipped |
 | Rust + Python mappings | ✅ shipped |

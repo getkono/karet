@@ -97,7 +97,12 @@ impl App {
                 TabKind::LanguageServers(view) => pendings.extend(view.loading_since),
                 // Indexing a repository takes seconds, so the reveal has to be scheduled
                 // rather than left to whenever a key happens to arrive.
-                TabKind::Seam(state) => pendings.extend(state.loading_since),
+                // Indexing takes seconds and a node's source is read from disk, so both
+                // reveals have to be scheduled rather than left to the next keypress.
+                TabKind::Seam(state) => {
+                    pendings.extend(state.loading_since);
+                    pendings.extend(state.detail_since);
+                },
                 TabKind::CommitLoading {
                     loading_since,
                     error: None,

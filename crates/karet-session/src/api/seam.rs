@@ -19,6 +19,7 @@
 use std::path::PathBuf;
 
 use karet_core::Range;
+use karet_diff::TokenSpan;
 
 /// One node, flattened for the presentation layer.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -87,6 +88,73 @@ pub struct SeamEdgeView {
     pub site: Option<Range>,
 }
 
+/// The source behind one seam node: the lines that define it, and the lines around it.
+///
+/// The detail pane exists so a reader can tell whether pressing Enter is worth it, and a
+/// name with nothing around it does not answer that — an attribute, a doc comment, or the
+/// item it sits beside usually does.
+///
+/// Described in absolute file coordinates plus an index range, so the view never
+/// re-derives what the worker already knew. Deliberately *larger* than any pane: how many
+/// rows to show is the renderer's budget, not the protocol's.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SeamPreview {
+    /// The file the lines were read from.
+    pub file: PathBuf,
+    /// The 0-based line, in that file, of `lines[0]`.
+    pub first_line: u32,
+    /// The lines themselves, newline stripped, in file order: the context before the
+    /// node, the node's own extent, then the context after.
+    pub lines: Vec<String>,
+    /// The first index into [`Self::lines`] belonging to the node itself.
+    ///
+    /// Fewer than [`context`](Self::context) lines before it means the node sits near the
+    /// top of its file. That is reported rather than padded, so the *view* can decide to
+    /// reserve the missing rows instead of being handed blank lines it cannot tell from
+    /// real ones.
+    pub body_start: usize,
+    /// One past the last index into [`Self::lines`] belonging to the node.
+    pub body_end: usize,
+    /// How many of the node's own lines were dropped to stay inside the fetch cap.
+    ///
+    /// Zero means the node's whole extent is present.
+    pub dropped: u32,
+    /// How many lines of context were asked for on each side.
+    ///
+    /// Stated rather than assumed, so a view can tell "the file ended" from "only three
+    /// were ever fetched".
+    pub context: u32,
+    /// Per entry of [`Self::lines`], the syntax token runs as byte offsets within it.
+    ///
+    /// Empty when the file has no grammar, would not parse, or is too large to highlight
+    /// — the view then paints unstyled text rather than nothing.
+    pub tokens: Vec<Vec<TokenSpan>>,
+}
+
+impl SeamPreview {
+    /// The token runs for `row`, empty when there are none and when `row` is out of range.
+    ///
+    /// Total by construction: a renderer walking its own row budget must never be able to
+    /// index past the table.
+    #[must_use]
+    pub fn tokens_for(&self, row: usize) -> &[TokenSpan] {
+        self.tokens.get(row).map_or(&[], Vec::as_slice)
+    }
+
+    /// Whether `row` is one of the node's own lines rather than surrounding context.
+    #[must_use]
+    pub fn is_body(&self, row: usize) -> bool {
+        row >= self.body_start && row < self.body_end
+    }
+
+    /// The 0-based file line `lines[row]` came from.
+    #[must_use]
+    pub fn line_number(&self, row: usize) -> u32 {
+        self.first_line
+            .saturating_add(u32::try_from(row).unwrap_or(u32::MAX))
+    }
+}
+
 /// What an indexed package amounts to, for the header and the empty states.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SeamSummary {
@@ -143,6 +211,43 @@ pub struct SeamQueryError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn preview() -> SeamPreview {
+        SeamPreview {
+            file: PathBuf::from("src/lib.rs"),
+            first_line: 8,
+            lines: (0..7).map(|n| format!("line {n}")).collect(),
+            body_start: 3,
+            body_end: 5,
+            dropped: 0,
+            context: 3,
+            tokens: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn tokens_for_a_row_past_the_table_are_empty_rather_than_a_panic() {
+        // A renderer walks its own row budget; the table may be shorter, or absent.
+        let preview = preview();
+        assert!(preview.tokens_for(0).is_empty());
+        assert!(preview.tokens_for(999).is_empty());
+    }
+
+    #[test]
+    fn context_rows_are_not_body_rows() {
+        let preview = preview();
+        let body: Vec<bool> = (0..preview.lines.len())
+            .map(|r| preview.is_body(r))
+            .collect();
+        assert_eq!(body, [false, false, false, true, true, false, false]);
+    }
+
+    #[test]
+    fn a_preview_numbers_its_rows_from_the_file_it_came_from() {
+        let preview = preview();
+        assert_eq!(preview.line_number(0), 8);
+        assert_eq!(preview.line_number(preview.body_start), 11);
+    }
 
     #[test]
     fn a_summary_reports_completeness_only_when_nothing_was_lost() {

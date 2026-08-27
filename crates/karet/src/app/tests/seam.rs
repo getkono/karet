@@ -256,6 +256,97 @@ fn nothing_is_re_indexed_after_the_index_failed() {
     assert!(reindex_paths(&backend).is_empty());
 }
 
+/// A source preview for `id`, three lines of context either side of one body line.
+fn preview(file: &str) -> karet_session::api::SeamPreview {
+    karet_session::api::SeamPreview {
+        file: PathBuf::from(file),
+        first_line: 10,
+        lines: (0..7).map(|n| format!("line {n}")).collect(),
+        body_start: 3,
+        body_end: 4,
+        dropped: 0,
+        context: 3,
+        tokens: Vec::new(),
+    }
+}
+
+/// Land an index and answer the detail request it fires, leaving a settled view.
+fn settled(app: &mut App) {
+    let id = app.seam_index_req;
+    app.on_seam_indexed(
+        id,
+        summary("repo", 1),
+        vec![node("core::thing", "/repo/a.rs")],
+    );
+    let detail = app.seam_node_req;
+    app.on_seam_node_detail(
+        detail,
+        "core::thing".to_owned(),
+        Vec::new(),
+        Ok(preview("/repo/a.rs")),
+    );
+}
+
+#[test]
+fn a_fresh_index_asks_for_the_landing_nodes_detail() {
+    // Without this the detail pane stays empty until a key arrives, which reads as a
+    // view that failed to load rather than one waiting on nothing.
+    let (_backend, mut app) = seam_app("/repo");
+    let id = app.seam_index_req;
+    app.on_seam_indexed(
+        id,
+        summary("repo", 1),
+        vec![node("core::thing", "/repo/a.rs")],
+    );
+    assert!(app.seam_node_req.is_some());
+}
+
+#[test]
+fn a_detail_request_is_pending_until_it_is_answered() {
+    let (_backend, mut app) = seam_app("/repo");
+    settled(&mut app);
+    let Some(state) = app.active_seam() else {
+        panic!("no seam view");
+    };
+    assert!(state.detail_since.is_none());
+    assert!(matches!(state.preview, Some(Ok(_))));
+}
+
+#[test]
+fn a_preview_for_a_node_the_reader_left_is_ignored() {
+    let (_backend, mut app) = seam_app("/repo");
+    settled(&mut app);
+    let detail = app.seam_node_req;
+    // The guard already protected the edges; the source must not be the exception.
+    app.on_seam_node_detail(
+        detail,
+        "core::somewhere_else".to_owned(),
+        Vec::new(),
+        Ok(preview("/repo/b.rs")),
+    );
+    let Some(state) = app.active_seam() else {
+        panic!("no seam view");
+    };
+    let Some(Ok(held)) = &state.preview else {
+        panic!("expected the earlier preview to stand");
+    };
+    assert_eq!(held.file, PathBuf::from("/repo/a.rs"));
+}
+
+#[test]
+fn moving_the_selection_forgets_the_previous_nodes_source() {
+    let (_backend, mut app) = seam_app("/repo");
+    settled(&mut app);
+    let Some(state) = app.active_seam() else {
+        panic!("no seam view");
+    };
+    state.move_row(1);
+    // Edges and source describe the same node, so they go together — a pane holding
+    // half of each would be a lie about the other half.
+    assert!(state.preview.is_none());
+    assert!(state.edges.is_empty());
+}
+
 #[test]
 fn an_indexing_view_schedules_its_own_reveal() {
     // Otherwise the placeholder appears only if a key happens to arrive, which at
@@ -269,5 +360,14 @@ fn an_indexing_view_schedules_its_own_reveal() {
         summary("repo", 1),
         vec![node("core::thing", "/repo/a.rs")],
     );
-    assert!(app.pendings().is_empty(), "the reveal outlived the answer");
+    let Some(state) = app.active_seam() else {
+        panic!("no seam view");
+    };
+    assert!(
+        state.loading_since.is_none(),
+        "the reveal outlived the answer"
+    );
+    // The landing node's detail is now what is outstanding, and it schedules its own.
+    assert!(state.detail_since.is_some());
+    assert!(!app.pendings().is_empty());
 }

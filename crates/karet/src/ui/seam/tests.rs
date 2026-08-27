@@ -9,6 +9,7 @@ use karet_core::Range;
 use karet_filetype::IconStyle;
 use karet_session::api::SeamFacetView;
 use karet_session::api::SeamNodeView;
+use karet_session::api::SeamPreview;
 use karet_session::api::SeamSummary;
 use karet_theme::Theme;
 use ratatui::Terminal;
@@ -333,6 +334,158 @@ fn the_legend_entries_are_evenly_spaced_in_every_tier() {
             "{icons:?}: legend strides {strides:?} in {header:?}"
         );
     }
+}
+
+/// A source preview whose node sits `before` lines into the fetched block.
+fn preview(first_line: u32, before: usize, body: usize, count: usize) -> SeamPreview {
+    SeamPreview {
+        file: std::path::PathBuf::from("src/lib.rs"),
+        first_line,
+        lines: (0..count).map(|n| format!("    source line {n}")).collect(),
+        body_start: before,
+        body_end: before + body,
+        dropped: 0,
+        context: 3,
+        tokens: Vec::new(),
+    }
+}
+
+/// The view with a source preview already answered.
+fn with_preview(answer: Result<SeamPreview, String>) -> SeamViewState {
+    let mut state = view();
+    state.select_path("demo::danger");
+    state.preview = Some(answer);
+    state
+}
+
+#[test]
+fn the_preview_block_is_the_same_height_at_the_top_of_a_file_as_in_the_middle() {
+    // The requirement: nothing below the block may move as the selection travels.
+    let row_of = |state: &mut SeamViewState| {
+        let rendered = text(&render(state, 100, 24));
+        rendered
+            .lines()
+            .position(|line| line.contains("edges"))
+            .zip(
+                rendered
+                    .lines()
+                    .position(|line| line.contains("press / to filter")),
+            )
+    };
+    let mid = row_of(&mut with_preview(Ok(preview(40, 3, 2, 8))));
+    let top = row_of(&mut with_preview(Ok(preview(0, 0, 2, 5))));
+    let unread = row_of(&mut with_preview(Err("gone".to_owned())));
+    assert!(mid.is_some(), "nothing rendered");
+    assert_eq!(mid, top);
+    assert_eq!(mid, unread);
+}
+
+#[test]
+fn context_the_file_does_not_have_is_reserved_rather_than_closed_up() {
+    let rendered = text(&render(&mut with_preview(Ok(preview(0, 0, 2, 5))), 100, 24));
+    // The node starts at line 1, so the first painted source number must be 1 — the
+    // rows above it are blank, not filled with whatever came next.
+    let numbered: Vec<&str> = rendered
+        .lines()
+        .filter(|line| line.contains("source line"))
+        .collect();
+    assert!(!numbered.is_empty(), "{rendered}");
+    assert!(numbered.iter().all(|line| !line.trim().is_empty()));
+}
+
+#[test]
+fn a_preview_that_could_not_be_read_says_why_instead_of_rendering_blank() {
+    let rendered = text(&render(
+        &mut with_preview(Err("the file could not be read".to_owned())),
+        100,
+        24,
+    ));
+    assert!(rendered.contains("could not be read"), "{rendered}");
+    assert!(rendered.contains('?'), "{rendered}");
+}
+
+#[test]
+fn a_pending_preview_says_nothing_until_the_reveal_delay_and_then_says_so() {
+    let paint = |pending: Option<crate::ui::Pending>| {
+        let mut state = view();
+        state.select_path("demo::danger");
+        state.detail_since = pending;
+        text(&render(&mut state, 100, 24))
+    };
+    // A fast answer must never flash a placeholder on its way past, so a request that
+    // has only just gone out looks exactly like no request at all.
+    assert_eq!(paint(Some(crate::ui::Pending::start())), paint(None));
+    // Past the shared delay it has to say something, or the pane reads as broken.
+    assert_ne!(paint(Some(crate::ui::Pending::revealed())), paint(None));
+}
+
+#[test]
+fn the_preview_sits_beside_the_facets_on_a_wide_terminal() {
+    let rendered = text(&render(
+        &mut with_preview(Ok(preview(40, 3, 2, 8))),
+        160,
+        24,
+    ));
+    // Same row as a lens line: the pane split sideways rather than growing.
+    assert!(
+        rendered
+            .lines()
+            .any(|line| line.contains("substitution") && line.contains("source line")),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn the_preview_sits_below_the_facets_on_a_tall_narrow_one() {
+    let rendered = text(&render(&mut with_preview(Ok(preview(40, 3, 2, 8))), 70, 40));
+    assert!(rendered.contains("source line"), "{rendered}");
+    assert!(
+        !rendered
+            .lines()
+            .any(|line| line.contains("substitution") && line.contains("source line")),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn context_lines_are_muted_and_the_definition_is_not() {
+    // The whole point of the block: the eye lands on the definition, not on its
+    // surroundings — and that has to hold in a file with no grammar to colour it.
+    let mut state = with_preview(Ok(preview(40, 3, 2, 8)));
+    let buf = render(&mut state, 100, 24);
+    let rendered = text(&buf);
+    let Some(row) = rendered
+        .lines()
+        .position(|line| line.contains("source line 3"))
+    else {
+        panic!("the first body line was not painted: {rendered}");
+    };
+    let Some(column) = rendered
+        .lines()
+        .nth(row)
+        .and_then(|line| line.find("source"))
+    else {
+        panic!("no source column");
+    };
+    let cell = |y: usize| {
+        buf.cell((
+            u16::try_from(column).unwrap_or(0),
+            u16::try_from(y).unwrap_or(0),
+        ))
+        .map(|c| c.fg)
+    };
+    assert_ne!(
+        cell(row),
+        cell(row - 1),
+        "body must not wear its context's colour"
+    );
+}
+
+#[test]
+fn a_terminal_that_can_hold_neither_keeps_its_spine_instead() {
+    let rendered = text(&render(&mut with_preview(Ok(preview(40, 3, 2, 8))), 60, 20));
+    // The spine is the primary surface; a preview is not worth its rows here.
+    assert!(!rendered.contains("source line"), "{rendered}");
 }
 
 #[test]

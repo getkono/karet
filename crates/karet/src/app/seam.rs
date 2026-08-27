@@ -22,6 +22,7 @@ use std::path::PathBuf;
 
 use karet_session::api::SeamEdgeView;
 use karet_session::api::SeamNodeView;
+use karet_session::api::SeamPreview;
 use karet_session::api::SeamQueryError;
 use karet_session::api::SeamSummary;
 
@@ -128,6 +129,13 @@ pub(crate) struct SeamViewState {
     pub(crate) focus: SeamFocus,
     /// The selected node's edges, once fetched.
     pub(crate) edges: Vec<SeamEdgeView>,
+    /// The selected node's source, once fetched, or the reason there is none.
+    ///
+    /// Dropped the moment the selection moves, so the pane can never show one node's
+    /// source under another node's name.
+    pub(crate) preview: Option<Result<SeamPreview, String>>,
+    /// The in-flight detail request, driving the delayed placeholder in the source block.
+    pub(crate) detail_since: Option<Pending>,
     /// The selected row of the facet pane, when it has focus.
     pub(crate) facet_row: usize,
     /// Every file the index holds, so an edit elsewhere is not mistaken for one here.
@@ -162,6 +170,8 @@ impl SeamViewState {
             query_matches: None,
             focus: SeamFocus::default(),
             edges: Vec::new(),
+            preview: None,
+            detail_since: None,
             facet_row: 0,
             files: HashSet::new(),
             loading_since: Some(Pending::start()),
@@ -332,7 +342,18 @@ impl SeamViewState {
         // Selecting in a column invalidates everything to its right.
         self.selection.truncate(self.focused_column);
         self.selection.push(id);
+        self.forget_detail();
+    }
+
+    /// Forget the previous selection's detail.
+    ///
+    /// Edges and source answer the same question about the same node, so they go
+    /// together: a pane holding half of each would be a lie about the other half. Cleared
+    /// rather than left standing, because stale detail under a new name reads as an
+    /// answer, where an empty pane reads as a question still being asked.
+    fn forget_detail(&mut self) {
         self.edges.clear();
+        self.preview = None;
         self.facet_row = 0;
     }
 
@@ -447,8 +468,7 @@ impl SeamViewState {
         if chain.first().is_some_and(|first| roots.contains(first)) {
             self.selection = chain;
             self.focused_column = self.selection.len().saturating_sub(1);
-            self.edges.clear();
-            self.facet_row = 0;
+            self.forget_detail();
         }
     }
 

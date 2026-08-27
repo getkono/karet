@@ -10,6 +10,7 @@ use karet_session::api::Command as SessionCommand;
 use karet_session::api::RequestId;
 use karet_session::api::SeamEdgeView;
 use karet_session::api::SeamNodeView;
+use karet_session::api::SeamPreview;
 use karet_session::api::SeamQueryError;
 use karet_session::api::SeamSummary;
 
@@ -17,6 +18,7 @@ use super::Reroot;
 use super::SeamFocus;
 use super::SeamViewState;
 use crate::app::App;
+use crate::app::pending::Pending;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 
@@ -279,6 +281,9 @@ impl App {
         // content the moment the tree arrives.
         if state.selection.is_empty() {
             state.move_row(0);
+            // Ask for what the reader just landed on. Without this the detail pane stays
+            // empty until they press a key, which reads as a view that failed to load.
+            self.request_seam_node();
         }
     }
 
@@ -330,12 +335,13 @@ impl App {
         state.query_matches = Some(nodes.into_iter().collect::<HashSet<_>>());
     }
 
-    /// Attach edges to the node they belong to, ignoring a reply for another.
+    /// Attach a node's detail to the node it belongs to, ignoring a reply for another.
     pub(crate) fn on_seam_node_detail(
         &mut self,
         id: Option<RequestId>,
         node: String,
         edges: Vec<SeamEdgeView>,
+        preview: Result<SeamPreview, String>,
     ) {
         if id.is_none() || id != self.seam_node_req {
             return;
@@ -349,10 +355,12 @@ impl App {
             return;
         }
         state.edges = edges;
+        state.preview = Some(preview);
+        state.detail_since = None;
         state.facet_row = 0;
     }
 
-    /// Ask the backend for the selected node's edges.
+    /// Ask the backend for the selected node's edges and source.
     pub(crate) fn request_seam_node(&mut self) {
         let Some(id) = self
             .active_seam()
@@ -360,6 +368,11 @@ impl App {
         else {
             return;
         };
+        if let Some(state) = self.active_seam() {
+            // The block's rows are already reserved on screen; only the shared reveal
+            // delay decides whether they say anything while the answer is on its way.
+            state.detail_since = Some(Pending::start());
+        }
         self.seam_node_req = self.send(SessionCommand::SeamNode { path: id });
     }
 

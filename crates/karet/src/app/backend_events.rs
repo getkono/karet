@@ -333,8 +333,12 @@ impl App {
             SessionEvent::SeamQueryResult { nodes, error, .. } => {
                 self.on_seam_query_result(id, nodes, error);
             },
-            SessionEvent::SeamNodeDetail { node, edges } => {
-                self.on_seam_node_detail(id, node, edges);
+            SessionEvent::SeamNodeDetail {
+                node,
+                edges,
+                preview,
+            } => {
+                self.on_seam_node_detail(id, node, edges, preview);
             },
             SessionEvent::SearchResults { hits } => self.apply_search_results(hits),
             SessionEvent::SpellingScanProgress {

@@ -315,10 +315,17 @@ pub enum Event {
     },
     /// One seam node's edges, answering [`Command::SeamNode`].
     SeamNodeDetail {
-        /// The node the edges belong to.
+        /// The node the detail belongs to.
         node: String,
         /// Its edges, in both directions.
         edges: Vec<SeamEdgeView>,
+        /// Its source lines with context, or a reader-facing reason there are none.
+        ///
+        /// Carried by the same event as the edges rather than by a second round trip:
+        /// both answer "is pressing Enter worth it", both are invalidated by the same
+        /// move of the selection, and splitting them would let the pane show one node's
+        /// source beneath another node's relations.
+        preview: Result<SeamPreview, String>,
     },
     /// A dictionary word was persisted, answering [`Command::AddDictionaryWord`].
     DictionaryWordAdded {
