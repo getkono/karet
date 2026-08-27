@@ -309,13 +309,13 @@ fn inline_edit_cursor_keys_match_a_text_field() {
     state.ensure_built(&dir.path);
     state.begin_new(false);
     state.edit_paste("abcd");
-    state.edit_left();
-    state.edit_left();
+    state.edit_left(false);
+    state.edit_left(false);
     state.edit_delete();
     state.edit_push('X');
-    state.edit_home();
+    state.edit_home(false);
     state.edit_push('^');
-    state.edit_end();
+    state.edit_end(false);
     state.edit_push('$');
     state.ensure_built(&dir.path);
     assert!(
@@ -809,5 +809,79 @@ fn file_icons_are_tinted_by_category() {
     assert_eq!(
         buf.content()[2].fg,
         theme.role(ThemeRole::FileIconText).to_ratatui()
+    );
+}
+
+#[test]
+fn inline_edit_motions_extend_a_selection_and_the_clipboard_reaches_it() {
+    let dir = temp_dir();
+    let mut state = FileTreeState::new();
+    state.ensure_built(&dir.path);
+    state.begin_new(false);
+    state.edit_paste("readme.md");
+
+    // Shift with a motion extends back from the caret at the end.
+    state.edit_left(true);
+    state.edit_left(true);
+    state.edit_left(true);
+    assert_eq!(state.edit_selected_text(), Some(".md"));
+
+    // Cutting takes exactly that run away.
+    assert_eq!(state.edit_cut().as_deref(), Some(".md"));
+    assert_eq!(state.edit_selected_text(), None);
+    state.ensure_built(&dir.path);
+    assert!(
+        state
+            .rows()
+            .iter()
+            .any(|r| r.editing && r.label == "readme")
+    );
+
+    // Select-all then cut empties the field.
+    state.edit_select_all();
+    assert_eq!(state.edit_cut().as_deref(), Some("readme"));
+}
+
+#[test]
+fn a_click_in_the_inline_edit_places_the_caret_at_that_cell() {
+    let dir = temp_dir();
+    let mut state = FileTreeState::new();
+    state.ensure_built(&dir.path);
+    state.begin_new(false);
+    state.edit_paste("alphabet");
+
+    // Anchor at cell 5, then extend to cell 8.
+    state.edit_place_cursor(5, false);
+    state.edit_place_cursor(8, true);
+    assert_eq!(state.edit_selected_text(), Some("bet"));
+}
+
+#[test]
+fn the_renderer_records_where_the_inline_edit_field_landed() {
+    let dir = temp_dir();
+    let mut state = FileTreeState::new();
+    state.ensure_built(&dir.path);
+    assert_eq!(state.edit_rect(), None, "nothing is being edited yet");
+
+    state.begin_new(false);
+    state.edit_paste("name");
+    let area = Rect::new(3, 0, 40, 10);
+    let mut buf = Buffer::empty(area);
+    FileTree::new(&dir.path).render(area, &mut buf, &mut state);
+
+    let rect = state.edit_rect();
+    assert!(rect.is_some(), "the editing row reports its field");
+    let Some(rect) = rect else { return };
+    assert!(
+        rect.x > area.x,
+        "the field starts after the row's indent, chevron and icon"
+    );
+    assert_eq!(rect.height, 1);
+    assert!(rect.right() <= area.right());
+    // The recorded rect is where the name actually is: the cell at its left edge
+    // holds the first character of the buffer.
+    assert_eq!(
+        buf.cell((rect.x, rect.y)).map(|cell| cell.symbol()),
+        Some("n")
     );
 }

@@ -120,6 +120,7 @@ pub(super) fn text_field_text(
     )
 }
 
+pub(crate) use commit::responsive::document_row as commit_document_row;
 pub(crate) use karet_widgets::scroll::ScrollAxes;
 pub(crate) use karet_widgets::scroll::ScrollAxis;
 pub(crate) use karet_widgets::scroll::ScrollBar;
@@ -129,6 +130,7 @@ pub(crate) use karet_widgets::scroll::ScrollbarStyles;
 pub(crate) use karet_widgets::scroll::draw_scrollable_lines;
 pub(crate) use karet_widgets::scroll::line_width;
 pub(crate) use karet_widgets::scroll::reserve_tracks;
+pub(crate) use panes::FindBarRects;
 
 use crate::app::ContextMenuEntryExt;
 pub(crate) use crate::app::ScrollHits;
@@ -365,6 +367,9 @@ struct PaneCtx<'a> {
     blame_clickable: bool,
     /// Mouse position over a link in this pane, used for hover emphasis.
     markdown_link_hover: Option<(u16, u16)>,
+    /// The live pointer selection to paint over this pane's rows (focused pane
+    /// only) — read-only surfaces have no selection state of their own.
+    selection: Option<crate::app::SurfaceSelection>,
     /// Mouse position over a format-specific pane action.
     pane_action_hover: Option<(u16, u16)>,
     /// Fence languages the markdown preview renders as mermaid diagrams
@@ -400,6 +405,8 @@ struct RenderedPane {
     commit_collapse_hits: Vec<crate::app::CommitCollapseHit>,
     blame_rect: Option<Rect>,
     markdown_link_hits: Vec<crate::app::MarkdownLinkHit>,
+    select_regions: Vec<crate::app::SelectRegion>,
+    find_rects: FindBarRects,
 }
 
 /// Geometry a tab's content reported for post-draw use: a reserved Kitty image rect
@@ -414,6 +421,7 @@ struct PaneContent {
     collapse_hits: Vec<crate::app::CommitCollapseHit>,
     blame_rect: Option<Rect>,
     markdown_link_hits: Vec<crate::app::MarkdownLinkHit>,
+    select_regions: Vec<crate::app::SelectRegion>,
 }
 
 /// A `width`×`height` rect centered within `area`.

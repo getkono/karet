@@ -46,15 +46,21 @@ pub use prepared::line_stats;
 #[cfg(feature = "view")]
 pub use view::DiffPalette;
 #[cfg(feature = "view")]
+pub use view::RowContent;
+#[cfg(feature = "view")]
 pub use view::pad_diff_lines;
 #[cfg(feature = "view")]
 pub use view::side_by_side_hunk_at_row;
 #[cfg(feature = "view")]
 pub use view::side_by_side_lines;
 #[cfg(feature = "view")]
+pub use view::side_by_side_row;
+#[cfg(feature = "view")]
 pub use view::unified_hunk_at_row;
 #[cfg(feature = "view")]
 pub use view::unified_lines;
+#[cfg(feature = "view")]
+pub use view::unified_row;
 
 /// Errors produced while diffing or parsing.
 #[derive(Debug, thiserror::Error)]

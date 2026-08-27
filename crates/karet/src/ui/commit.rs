@@ -4,7 +4,7 @@ use super::*;
 
 mod graph;
 pub(crate) mod list;
-mod responsive;
+pub(in crate::ui) mod responsive;
 
 pub(in crate::ui) use graph::CommitGraphInput;
 pub(in crate::ui) use graph::CommitGraphScroll;

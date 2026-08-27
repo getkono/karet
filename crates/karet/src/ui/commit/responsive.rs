@@ -21,6 +21,8 @@ pub(in crate::ui) struct CommitPaint {
     pub(in crate::ui) file_hits: Vec<CommitFileHit>,
     /// Visible file-card disclosure controls.
     pub(in crate::ui) collapse_hits: Vec<CommitCollapseHit>,
+    /// Where the file cards painted their rows, for pointer selection.
+    pub(in crate::ui) select_regions: Vec<crate::app::SelectRegion>,
 }
 
 #[allow(clippy::too_many_arguments)] // metadata, progressive file state, and view state are independent
@@ -216,6 +218,62 @@ fn build_files(
     doc
 }
 
+/// Columns the file card's `\u{2502} ` rail occupies before a diff row's own gutter.
+pub(crate) const CARD_RAIL_WIDTH: u16 = 2;
+
+/// The copyable content of the file-card document's row `row`.
+///
+/// Mirrors [`visible_file_lines`]'s walk — `prefix_rows` of index and summary,
+/// then per file a blank separator, a card header, its diff body and a footer —
+/// so the row a selection names is the row that was painted there. Only body
+/// rows carry content; the chrome around them reports `None` and is therefore
+/// neither selectable nor copied.
+pub(crate) fn document_row(
+    theme: &Theme,
+    files: &[render::FileView],
+    width: u16,
+    prefix_rows: usize,
+    toggled_files: &BTreeSet<usize>,
+    row: usize,
+) -> Option<crate::app::SurfaceRow> {
+    if row < prefix_rows {
+        return None;
+    }
+    let mut next = prefix_rows;
+    for (index, file) in files.iter().enumerate() {
+        // Each card opens with a blank separator row.
+        if row == next {
+            return None;
+        }
+        next = next.saturating_add(1);
+        let collapsed = card_collapsed(file, index, toggled_files);
+        let body_rows = if width < FILE_CARD_MIN_WIDTH || collapsed {
+            0
+        } else {
+            render::unified_line_count(file, theme)
+        };
+        let card_rows = if body_rows == 0 {
+            1
+        } else {
+            body_rows.saturating_add(2)
+        };
+        if row < next.saturating_add(card_rows) {
+            let local = row.saturating_sub(next);
+            // Row 0 is the card header and the last is its footer.
+            if local == 0 || local > body_rows {
+                return None;
+            }
+            let content = karet_diff::unified_row(&file.change.diff, local - 1)?;
+            return Some(crate::app::SurfaceRow {
+                text: content.text,
+                content_x: content.gutter_width.saturating_add(CARD_RAIL_WIDTH),
+            });
+        }
+        next = next.saturating_add(card_rows);
+    }
+    None
+}
+
 fn visible_file_lines(
     theme: &Theme,
     files: &[render::FileView],
@@ -350,11 +408,25 @@ fn draw_stacked(
         .take(usize::from(body.height))
         .cloned()
         .collect::<Vec<_>>();
-    let remaining = body
-        .height
-        .saturating_sub(u16::try_from(visible.len()).unwrap_or(u16::MAX));
+    let header_shown = u16::try_from(visible.len()).unwrap_or(u16::MAX);
+    let remaining = body.height.saturating_sub(header_shown);
+    let mut select_regions = Vec::new();
     if remaining > 0 {
         let files_scroll = view.scroll.saturating_sub(header_len);
+        // The header and the cards share one paragraph, so the cards begin
+        // wherever the visible header ran out.
+        select_regions.push(crate::app::SelectRegion {
+            surface: crate::app::SelectSurface::CommitCards {
+                prefix_rows: u16::try_from(file_doc.prefix.len()).unwrap_or(u16::MAX),
+            },
+            area: Rect {
+                y: body.y.saturating_add(header_shown),
+                height: remaining,
+                ..body
+            },
+            first_row: usize::from(files_scroll),
+            hscroll: usize::from(view.column),
+        });
         visible.extend(visible_file_lines(
             theme,
             files,
@@ -407,6 +479,7 @@ fn draw_stacked(
         badge_rect,
         file_hits,
         collapse_hits,
+        select_regions,
     }
 }
 

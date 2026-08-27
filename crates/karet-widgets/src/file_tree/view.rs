@@ -145,10 +145,12 @@ impl StatefulWidget for FileTree<'_> {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut FileTreeState) {
         state.ensure_built(self.root);
+        state.edit_rect = None;
         let height = area.height as usize;
         if area.width == 0 || height == 0 {
             return;
         }
+        let mut edit_rect = None;
 
         // Keep the cursor within the viewport.
         let cursor = state.selection.cursor();
@@ -280,6 +282,16 @@ impl StatefulWidget for FileTree<'_> {
                 Style::default().fg(icon_color.to_ratatui()),
             ));
             if row.editing {
+                // The edit field starts wherever the indent, chevron and icon left
+                // off; recording it here is what lets a click land in the name.
+                let prefix =
+                    u16::try_from(spans.iter().map(Span::width).sum::<usize>()).unwrap_or(u16::MAX);
+                edit_rect = Some(Rect {
+                    x: area.x.saturating_add(prefix),
+                    y,
+                    width: area.width.saturating_sub(prefix),
+                    height: 1,
+                });
                 push_editing_spans(
                     &mut spans,
                     state.editing.as_ref(),
@@ -322,5 +334,6 @@ impl StatefulWidget for FileTree<'_> {
                 }
             }
         }
+        state.edit_rect = edit_rect;
     }
 }

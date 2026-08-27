@@ -544,11 +544,11 @@ impl App {
         self.focus_pane_switch(pane);
         self.focus = Focus::Editor;
         if self.handle_language_server_click(mouse.column, mouse.row) {
-            self.editor_selecting = false;
+            self.editor_drag = None;
             return;
         }
         if collapse_hit.is_some_and(|hit| self.toggle_commit_file(hit.file)) {
-            self.editor_selecting = false;
+            self.editor_drag = None;
             return;
         }
         if let Some(hit) = file_hit
@@ -556,16 +556,16 @@ impl App {
                 self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
         {
             view.scroll = hit.scroll;
-            self.editor_selecting = false;
+            self.editor_drag = None;
             return;
         }
         // A click on a graph row selects that commit and opens it as its own tab.
         if self.graph_click(point) {
-            self.editor_selecting = false;
+            self.editor_drag = None;
             return;
         }
         if !rect_contains(area, point) {
-            self.editor_selecting = false;
+            self.editor_drag = None;
             return;
         }
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
@@ -583,7 +583,7 @@ impl App {
             }) = self.tabs.get_mut(self.active)
         {
             *explain_since = Some(Instant::now());
-            self.editor_selecting = false;
+            self.editor_drag = None;
             return;
         }
         // The gutter's leading marker column is the breakpoint lane: a click
@@ -612,7 +612,7 @@ impl App {
         });
         if let Some((path, line)) = marker_hit {
             self.debug_toggle_breakpoint_at(path, line);
-            self.editor_selecting = false;
+            self.editor_drag = None;
             return;
         }
         let code_pos = self.tabs.get(self.active).and_then(|tab| {
@@ -645,14 +645,14 @@ impl App {
         {
             self.go_to_definition_at(pos);
             // A Ctrl+drag must not turn into a text selection.
-            self.editor_selecting = false;
+            self.editor_drag = None;
             return;
         }
         if streak == 2
             && let Some(pos) = code_pos
             && self.open_spelling_menu(mouse.column, mouse.row, pos)
         {
-            self.editor_selecting = false;
+            self.editor_drag = None;
             return;
         }
         if let Some(Tab {
@@ -691,31 +691,27 @@ impl App {
                 _ => editor.set_caret(buffer, pos),
             }
         }
-        // A single click (plain or shift) starts a drag-select so the pointer can
-        // keep extending; word/line clicks are atomic.
-        self.editor_selecting = streak == 1;
+        // Every click arms a drag; the streak decides the unit it extends by, so
+        // a double-click drag grows word by word and a triple-click line by line.
+        let granularity = match streak {
+            2 => DragGranularity::Word,
+            3 => DragGranularity::Line,
+            _ => DragGranularity::Character,
+        };
+        self.editor_drag = self.tabs.get(self.active).and_then(|tab| match &tab.kind {
+            TabKind::Code { buffer, .. } => {
+                let pos = code_pos?;
+                Some(EditorDrag {
+                    anchor: App::drag_span(buffer, pos, granularity),
+                    granularity,
+                    pointer: (mouse.column, mouse.row),
+                    area,
+                })
+            },
+            _ => None,
+        });
     }
 
-    /// Extend the editor selection to the cell under `(col, row)` while dragging.
-    pub(super) fn drag_select_to(&mut self, col: u16, row: u16) {
-        let area = self.editor_rect;
-        if let Some(Tab {
-            kind:
-                TabKind::Code {
-                    buffer,
-                    folds,
-                    folded,
-                    ..
-                },
-            editor,
-            ..
-        }) = self.tabs.get_mut(self.active)
-        {
-            let fold_lines = resolve_folds(folds, folded);
-            let pos = editor.pos_at(area, buffer, &fold_lines, col, row);
-            editor.extend_to(buffer, pos);
-        }
-    }
     // Editing routes through the headless session backend and reflects its
     // snapshots back into the active code tab.
     /// Register every already-open code tab with the session (called once the

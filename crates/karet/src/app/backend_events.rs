@@ -48,6 +48,7 @@ impl App {
             nested_repositories,
             operation,
             reveal,
+            self.drag_autoscroll_wake(),
         ]
         .into_iter()
         .flatten()

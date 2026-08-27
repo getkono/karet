@@ -90,8 +90,17 @@ pub(super) fn draw_wide(
     } else {
         cols[2]
     };
+    let mut select_regions = Vec::new();
     if lower.height > 0 {
         let local_scroll = view.scroll.saturating_sub(header_len);
+        select_regions.push(crate::app::SelectRegion {
+            surface: crate::app::SelectSurface::CommitCards {
+                prefix_rows: u16::try_from(file_doc.prefix.len()).unwrap_or(u16::MAX),
+            },
+            area: diff_body,
+            first_row: usize::from(local_scroll),
+            hscroll: usize::from(view.column),
+        });
         f.render_widget(
             Paragraph::new(visible_file_lines(
                 theme,
@@ -172,5 +181,6 @@ pub(super) fn draw_wide(
         badge_rect,
         file_hits,
         collapse_hits,
+        select_regions,
     }
 }

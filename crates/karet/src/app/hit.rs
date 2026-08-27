@@ -52,6 +52,12 @@ pub(crate) enum TextFieldTarget {
     SearchFind,
     SearchReplace,
     Commit,
+    /// The in-file find bar's query field.
+    FindQuery,
+    /// The in-file find bar's replacement field.
+    FindReplace,
+    /// The explorer's inline rename / new-name field.
+    ExplorerRename,
 }
 
 /// A rendered pane's clickable regions, recorded during the last frame for mouse
@@ -78,6 +84,8 @@ pub(crate) struct PaneFrame {
     pub(crate) commit_file_hits: Vec<CommitFileHit>,
     /// File-card disclosure controls clickable within the pane's commit-like view.
     pub(crate) commit_collapse_hits: Vec<CommitCollapseHit>,
+    /// Read-only surfaces in this pane whose rows the pointer can select.
+    pub(crate) select_regions: Vec<super::select::SelectRegion>,
 }
 
 /// An in-progress tab drag: the pane it started from and the current drop target

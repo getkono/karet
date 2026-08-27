@@ -446,7 +446,7 @@ impl App {
     pub(super) fn cut(&mut self) {
         if matches!(
             self.input_context().modal,
-            Some(Modal::SearchInput | Modal::CommitInput)
+            Some(Modal::SearchInput | Modal::CommitInput | Modal::Find | Modal::ExplorerEdit)
         ) {
             let Some(text) = self.cut_modal_selection() else {
                 return;

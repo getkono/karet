@@ -21,6 +21,20 @@ impl App {
                     .selected_text(&self.search.replace)
                     .map(str::to_string),
             },
+            Modal::Find => {
+                let find = self.active_find()?;
+                match find.field {
+                    SearchField::Find => find
+                        .query_edit
+                        .selected_text(&find.query)
+                        .map(str::to_string),
+                    SearchField::Replace => find
+                        .replace_edit
+                        .selected_text(&find.replace)
+                        .map(str::to_string),
+                }
+            },
+            Modal::ExplorerEdit => self.explorer.edit_selected_text().map(str::to_string),
             _ => None,
         }
     }
@@ -33,6 +47,14 @@ impl App {
                 SearchField::Find => self.search.query_edit.cut(&mut self.search.query),
                 SearchField::Replace => self.search.replace_edit.cut(&mut self.search.replace),
             },
+            Modal::Find => {
+                let find = self.active_find_mut()?;
+                match find.field {
+                    SearchField::Find => find.query_edit.cut(&mut find.query),
+                    SearchField::Replace => find.replace_edit.cut(&mut find.replace),
+                }
+            },
+            Modal::ExplorerEdit => self.explorer.edit_cut(),
             _ => None,
         }
     }
@@ -45,6 +67,16 @@ impl App {
                 SearchField::Find => self.search.query_edit.select_all(&self.search.query),
                 SearchField::Replace => self.search.replace_edit.select_all(&self.search.replace),
             },
+            Some(Modal::Find) => {
+                let Some(find) = self.active_find_mut() else {
+                    return false;
+                };
+                match find.field {
+                    SearchField::Find => find.query_edit.select_all(&find.query),
+                    SearchField::Replace => find.replace_edit.select_all(&find.replace),
+                }
+            },
+            Some(Modal::ExplorerEdit) => self.explorer.edit_select_all(),
             _ => return false,
         }
         true
@@ -246,12 +278,14 @@ impl App {
                     return;
                 };
                 let editing_query = find.field == SearchField::Find;
-                let target = if editing_query {
-                    &mut find.query
+                let (target, edit) = if editing_query {
+                    (&mut find.query, &mut find.query_edit)
                 } else {
-                    &mut find.replace
+                    (&mut find.replace, &mut find.replace_edit)
                 };
-                target.push_str(text);
+                // Paste at the caret, replacing any selection, rather than
+                // always appending.
+                edit.insert(target, text);
                 if editing_query {
                     self.run_find();
                 }
@@ -284,15 +318,17 @@ impl App {
     }
 
     /// Feed a key to the explorer inline name editor: printable characters extend the
-    /// name, Backspace trims it (Enter/Esc are handled as bound commands).
+    /// name, Backspace trims it, and Shift with a motion extends the selection
+    /// (Enter/Esc are handled as bound commands).
     pub(super) fn explorer_edit(&mut self, key: KeyEvent) {
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
             KeyCode::Backspace => self.explorer.edit_backspace(),
             KeyCode::Delete => self.explorer.edit_delete(),
-            KeyCode::Left => self.explorer.edit_left(),
-            KeyCode::Right => self.explorer.edit_right(),
-            KeyCode::Home => self.explorer.edit_home(),
-            KeyCode::End => self.explorer.edit_end(),
+            KeyCode::Left => self.explorer.edit_left(shift),
+            KeyCode::Right => self.explorer.edit_right(shift),
+            KeyCode::Home => self.explorer.edit_home(shift),
+            KeyCode::End => self.explorer.edit_end(shift),
             KeyCode::Char('a') | KeyCode::Char('A')
                 if key.modifiers.contains(KeyModifiers::CONTROL) =>
             {

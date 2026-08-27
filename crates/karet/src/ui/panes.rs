@@ -16,6 +16,7 @@ pub(super) fn draw_panes(
     app.blame_rect = None;
     app.markdown_link_hits.clear();
     app.commit_badge_rect = None;
+    app.find_rects = crate::ui::FindBarRects::default();
     let focused = app.focus_pane();
     // Borrowed straight off the settings field so the reference stays disjoint
     // from the mutable tab borrows below.
@@ -98,6 +99,7 @@ pub(super) fn draw_panes(
                     .is_some(),
                 markdown_link_hover: app.markdown_link_hover,
                 pane_action_hover: app.pane_action_hover,
+                selection: app.surface_selection,
             };
             render_pane(f, &mut app.tabs, app.active, rect, &ctx, sink)
         } else if let Some(stored) = app.stored.get_mut(&pane) {
@@ -135,6 +137,7 @@ pub(super) fn draw_panes(
                 blame_clickable: false,
                 markdown_link_hover: None,
                 pane_action_hover: app.pane_action_hover,
+                selection: None,
             };
             render_pane(f, &mut stored.tabs, stored.active, rect, &ctx, sink)
         } else {
@@ -147,6 +150,7 @@ pub(super) fn draw_panes(
             app.blame_rect = rendered.blame_rect;
             app.markdown_link_hits = rendered.markdown_link_hits;
             app.commit_badge_rect = rendered.commit_badge_rect;
+            app.find_rects = rendered.find_rects;
         }
         app.pane_frames.push(crate::app::PaneFrame {
             pane,
@@ -159,6 +163,7 @@ pub(super) fn draw_panes(
             editor_rect: rendered.editor_rect,
             commit_file_hits: rendered.commit_file_hits,
             commit_collapse_hits: rendered.commit_collapse_hits,
+            select_regions: rendered.select_regions,
         });
     }
     app.pane_dividers = app.layout.dividers(area);
@@ -234,6 +239,7 @@ pub(super) fn render_pane(
         (Rect::default(), Vec::new())
     };
     let mut content = parts[2];
+    let mut find_rects = FindBarRects::default();
     if let Some(find) = ctx.find.as_ref() {
         // One row for find; a second when the replace field is shown.
         let want = if find.replace_visible { 2 } else { 1 };
@@ -242,7 +248,7 @@ pub(super) fn render_pane(
             height: h,
             ..content
         };
-        draw_find_bar(f, find, ctx.theme, bar);
+        find_rects = draw_find_bar(f, find, ctx.theme, bar);
         content = Rect {
             y: content.y.saturating_add(h),
             height: content.height.saturating_sub(h),
@@ -265,6 +271,8 @@ pub(super) fn render_pane(
         commit_collapse_hits: painted.collapse_hits,
         blame_rect: painted.blame_rect,
         markdown_link_hits: painted.markdown_link_hits,
+        select_regions: painted.select_regions,
+        find_rects,
     }
 }
 
@@ -453,7 +461,21 @@ pub(super) fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
 /// Draw the find-in-file bar: a find row (query, match count, option toggles) and,
 /// when the replace field is shown, a replace row. Mirrors the workspace Search
 /// panel's model on the status-bar strip for a consistent find/replace experience.
-pub(super) fn draw_find_bar(f: &mut Frame, find: &FindState, theme: &Theme, area: Rect) {
+/// Where the find bar's two editable fields landed, for pointer hit-testing.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct FindBarRects {
+    /// The query field.
+    pub(crate) query: Rect,
+    /// The replacement field, when the replace row is shown.
+    pub(crate) replace: Option<Rect>,
+}
+
+pub(super) fn draw_find_bar(
+    f: &mut Frame,
+    find: &FindState,
+    theme: &Theme,
+    area: Rect,
+) -> FindBarRects {
     use crate::tab::SearchField;
 
     let base = Style::default()
@@ -482,13 +504,12 @@ pub(super) fn draw_find_bar(f: &mut Frame, find: &FindState, theme: &Theme, area
             },
         )
     };
-    let find_spans = vec![
-        Span::styled(" Find: ", base),
-        Span::styled(
-            find.query.clone(),
-            if editing_find { base.fg(accent) } else { base },
-        ),
-        Span::styled(if editing_find { "_" } else { "" }, base),
+    let selection_bg = theme.role(ThemeRole::Selection).to_ratatui();
+    let caret = Style::default().fg(accent);
+    // The label, the field, then the count and toggles: the field's own rect is
+    // what a click is measured against, so it is laid out rather than inlined.
+    const FIND_LABEL: &str = " Find: ";
+    let trailer = vec![
         Span::styled(count, base.fg(dim)),
         Span::styled("   ", base),
         toggle(".*", find.regex),
@@ -497,32 +518,72 @@ pub(super) fn draw_find_bar(f: &mut Frame, find: &FindState, theme: &Theme, area
         Span::styled(" ", base),
         toggle("\\b", find.whole_word),
     ];
-    f.render_widget(Paragraph::new(Line::from(find_spans)).style(base), rows[0]);
+    let trailer_width =
+        u16::try_from(trailer.iter().map(Span::width).sum::<usize>()).unwrap_or(u16::MAX);
+    let label_width = u16::try_from(FIND_LABEL.len()).unwrap_or(u16::MAX);
+    let find_cols = Layout::horizontal([
+        Constraint::Length(label_width),
+        Constraint::Min(0),
+        Constraint::Length(trailer_width),
+    ])
+    .split(rows[0]);
+    f.render_widget(Paragraph::new(Line::styled(FIND_LABEL, base)), find_cols[0]);
+    f.render_widget(
+        Paragraph::new(text_field_text(
+            &find.query,
+            &find.query_edit,
+            editing_find,
+            base,
+            base.bg(selection_bg),
+            caret,
+        ))
+        .scroll((0, find.query_edit.scroll)),
+        find_cols[1],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(trailer)).style(base),
+        find_cols[2],
+    );
+    let mut rects = FindBarRects {
+        query: find_cols[1],
+        replace: None,
+    };
 
     // Replace row (only when shown and there is room).
     if find.replace_visible && rows[1].height >= 1 {
+        const REPLACE_LABEL: &str = " Repl: ";
+        let hint = "   (Enter replace \u{b7} Alt+Enter all \u{b7} Tab find)";
         let editing_replace = find.field == SearchField::Replace;
-        let replace_spans = vec![
-            Span::styled(" Repl: ", base),
-            Span::styled(
-                find.replace.clone(),
-                if editing_replace {
-                    base.fg(accent)
-                } else {
-                    base
-                },
-            ),
-            Span::styled(if editing_replace { "_" } else { "" }, base),
-            Span::styled(
-                "   (Enter replace · Alt+Enter all · Tab find)",
-                base.fg(dim),
-            ),
-        ];
+        let hint_width = u16::try_from(crate::ui::line_width(&Line::raw(hint))).unwrap_or(u16::MAX);
+        let replace_cols = Layout::horizontal([
+            Constraint::Length(u16::try_from(REPLACE_LABEL.len()).unwrap_or(u16::MAX)),
+            Constraint::Min(0),
+            Constraint::Length(hint_width),
+        ])
+        .split(rows[1]);
         f.render_widget(
-            Paragraph::new(Line::from(replace_spans)).style(base),
-            rows[1],
+            Paragraph::new(Line::styled(REPLACE_LABEL, base)),
+            replace_cols[0],
         );
+        f.render_widget(
+            Paragraph::new(text_field_text(
+                &find.replace,
+                &find.replace_edit,
+                editing_replace,
+                base,
+                base.bg(selection_bg),
+                caret,
+            ))
+            .scroll((0, find.replace_edit.scroll)),
+            replace_cols[1],
+        );
+        f.render_widget(
+            Paragraph::new(Line::styled(hint, base.fg(dim))),
+            replace_cols[2],
+        );
+        rects.replace = Some(replace_cols[1]);
     }
+    rects
 }
 
 /// Draw a centered modal overlay (quick-open / command palette).
