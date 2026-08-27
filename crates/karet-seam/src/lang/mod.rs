@@ -24,6 +24,8 @@ use crate::text::LineIndex;
 
 pub mod python;
 pub mod rust;
+#[cfg(feature = "lang-javascript")]
+pub mod typescript;
 
 /// What a language made of one syntax node.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -315,6 +317,10 @@ pub fn for_language(language: LanguageId) -> Option<&'static dyn SeamLanguage> {
         && python == language
     {
         return Some(python::mapping());
+    }
+    #[cfg(feature = "lang-javascript")]
+    if typescript::language_ids().contains(&language) {
+        return Some(typescript::mapping());
     }
     let _ = language;
     None
