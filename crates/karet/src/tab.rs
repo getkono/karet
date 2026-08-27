@@ -57,8 +57,12 @@ pub(crate) use merge_conflict::MergeConflictState;
 pub(crate) struct FindState {
     /// The search query.
     pub(crate) query: String,
+    /// Caret and selection within [`Self::query`].
+    pub(crate) query_edit: karet_widgets::textfield::TextFieldState,
     /// The replacement text.
     pub(crate) replace: String,
+    /// Caret and selection within [`Self::replace`].
+    pub(crate) replace_edit: karet_widgets::textfield::TextFieldState,
     /// The number of matches.
     pub(crate) count: usize,
     /// The current match (0-based).

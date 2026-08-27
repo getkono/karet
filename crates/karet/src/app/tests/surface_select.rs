@@ -497,3 +497,86 @@ fn a_commit_selection_skips_the_chrome_between_two_cards() {
         "card headers, footers and separators come across as blank lines"
     );
 }
+
+#[test]
+fn the_find_bar_supports_keyboard_and_mouse_selection() {
+    let mut app = app();
+    app.sidebar_visible = false;
+    app.focus = Focus::Editor;
+    app.push_tab(text_tab("t.rs", "alpha bravo charlie"));
+    app.dispatch(Command::OpenFind);
+    for c in "bravo".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    assert_eq!(
+        app.active_find().map(|f| f.query.clone()),
+        Some("bravo".into())
+    );
+
+    // Shift+Left extends a selection back over the last two characters.
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
+    assert_eq!(app.modal_selection_text().as_deref(), Some("vo"));
+
+    // Ctrl+C copies the field, not the editor beneath it.
+    app.dispatch(Command::Copy);
+    assert_eq!(app.status.as_deref(), Some("copied selection"));
+
+    // Ctrl+A selects the whole field; Ctrl+X takes it away.
+    app.dispatch(Command::EditorSelectAll);
+    assert_eq!(app.modal_selection_text().as_deref(), Some("bravo"));
+    app.dispatch(Command::Cut);
+    assert_eq!(
+        app.active_find().map(|f| f.query.clone()),
+        Some(String::new())
+    );
+}
+
+#[test]
+fn dragging_the_find_field_selects_the_text_under_the_pointer() {
+    let mut app = app();
+    app.sidebar_visible = false;
+    app.focus = Focus::Editor;
+    app.push_tab(text_tab("t.rs", "alpha"));
+    app.dispatch(Command::OpenFind);
+    for c in "alphabet".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    screen(&mut app, 80, 24);
+
+    let field = app.find_rects.query;
+    assert!(field.width > 0, "the find bar records its query field");
+    drag(&mut app, (field.x + 5, field.y), (field.x + 8, field.y));
+
+    assert_eq!(app.modal_selection_text().as_deref(), Some("bet"));
+    assert!(
+        app.text_field_drag.is_none(),
+        "the drag is released on button-up"
+    );
+}
+
+#[test]
+fn clicking_the_replace_row_moves_the_edited_field() {
+    let mut app = app();
+    app.sidebar_visible = false;
+    app.focus = Focus::Editor;
+    app.push_tab(text_tab("t.rs", "alpha"));
+    app.dispatch(Command::OpenFind);
+    app.dispatch(Command::FindToggleReplace);
+    if let Some(find) = app.active_find_mut() {
+        find.replace = "replacement".to_string();
+    }
+    screen(&mut app, 80, 24);
+
+    let replace = app.find_rects.replace;
+    assert!(replace.is_some(), "the replace row records its field");
+    let Some(replace) = replace else { return };
+
+    drag(&mut app, (replace.x, replace.y), (replace.x + 7, replace.y));
+    assert_eq!(
+        app.active_find().map(|f| f.field),
+        Some(crate::tab::SearchField::Replace),
+        "clicking the replace row starts editing it"
+    );
+    assert_eq!(app.modal_selection_text().as_deref(), Some("replace"));
+}

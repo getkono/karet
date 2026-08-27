@@ -21,6 +21,19 @@ impl App {
                     .selected_text(&self.search.replace)
                     .map(str::to_string),
             },
+            Modal::Find => {
+                let find = self.active_find()?;
+                match find.field {
+                    SearchField::Find => find
+                        .query_edit
+                        .selected_text(&find.query)
+                        .map(str::to_string),
+                    SearchField::Replace => find
+                        .replace_edit
+                        .selected_text(&find.replace)
+                        .map(str::to_string),
+                }
+            },
             _ => None,
         }
     }
@@ -33,6 +46,13 @@ impl App {
                 SearchField::Find => self.search.query_edit.cut(&mut self.search.query),
                 SearchField::Replace => self.search.replace_edit.cut(&mut self.search.replace),
             },
+            Modal::Find => {
+                let find = self.active_find_mut()?;
+                match find.field {
+                    SearchField::Find => find.query_edit.cut(&mut find.query),
+                    SearchField::Replace => find.replace_edit.cut(&mut find.replace),
+                }
+            },
             _ => None,
         }
     }
@@ -44,6 +64,15 @@ impl App {
             Some(Modal::SearchInput) => match self.search.field {
                 SearchField::Find => self.search.query_edit.select_all(&self.search.query),
                 SearchField::Replace => self.search.replace_edit.select_all(&self.search.replace),
+            },
+            Some(Modal::Find) => {
+                let Some(find) = self.active_find_mut() else {
+                    return false;
+                };
+                match find.field {
+                    SearchField::Find => find.query_edit.select_all(&find.query),
+                    SearchField::Replace => find.replace_edit.select_all(&find.replace),
+                }
             },
             _ => return false,
         }
@@ -246,12 +275,14 @@ impl App {
                     return;
                 };
                 let editing_query = find.field == SearchField::Find;
-                let target = if editing_query {
-                    &mut find.query
+                let (target, edit) = if editing_query {
+                    (&mut find.query, &mut find.query_edit)
                 } else {
-                    &mut find.replace
+                    (&mut find.replace, &mut find.replace_edit)
                 };
-                target.push_str(text);
+                // Paste at the caret, replacing any selection, rather than
+                // always appending.
+                edit.insert(target, text);
                 if editing_query {
                     self.run_find();
                 }

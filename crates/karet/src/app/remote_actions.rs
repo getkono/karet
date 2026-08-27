@@ -14,7 +14,7 @@ impl App {
     pub(super) fn copy_selection(&mut self) {
         if matches!(
             self.input_context().modal,
-            Some(Modal::SearchInput | Modal::CommitInput)
+            Some(Modal::SearchInput | Modal::CommitInput | Modal::Find)
         ) {
             if let Some(text) = self.modal_selection_text() {
                 self.copy_to_clipboard(text, "selection");

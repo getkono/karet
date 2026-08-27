@@ -52,6 +52,10 @@ pub(crate) enum TextFieldTarget {
     SearchFind,
     SearchReplace,
     Commit,
+    /// The in-file find bar's query field.
+    FindQuery,
+    /// The in-file find bar's replacement field.
+    FindReplace,
 }
 
 /// A rendered pane's clickable regions, recorded during the last frame for mouse

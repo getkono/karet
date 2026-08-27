@@ -328,7 +328,7 @@ impl App {
                     self.scm_ui.resizing = true;
                 } else if in_sidebar {
                     self.handle_sidebar_click(mouse.column, mouse.row, mouse.modifiers);
-                } else {
+                } else if !self.handle_find_bar_click(mouse) {
                     self.commit_input.focused = false;
                     // A read-only surface owns the click before the editor sees it;
                     // the editor's own handler only answers for code tabs.
@@ -555,6 +555,34 @@ impl App {
         }
     }
 
+    /// Place the caret in the find bar's field under `(column, row)` and arm a
+    /// selection drag; whether the click landed on one.
+    fn handle_find_bar_click(&mut self, mouse: MouseEvent) -> bool {
+        let point = (mouse.column, mouse.row);
+        let target = if rect_contains(self.find_rects.query, point) {
+            TextFieldTarget::FindQuery
+        } else if self
+            .find_rects
+            .replace
+            .is_some_and(|r| rect_contains(r, point))
+        {
+            TextFieldTarget::FindReplace
+        } else {
+            return false;
+        };
+        let field = match target {
+            TextFieldTarget::FindReplace => SearchField::Replace,
+            _ => SearchField::Find,
+        };
+        if let Some(find) = self.active_find_mut() {
+            find.field = field;
+        }
+        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+        self.place_text_field_cursor(target, mouse.column, mouse.row, shift);
+        self.text_field_drag = Some(target);
+        true
+    }
+
     fn place_text_field_cursor(
         &mut self,
         target: TextFieldTarget,
@@ -579,6 +607,28 @@ impl App {
                 self.search
                     .query_edit
                     .set_cursor(&self.search.query, cursor, extend);
+            },
+            TextFieldTarget::FindQuery | TextFieldTarget::FindReplace => {
+                let query = target == TextFieldTarget::FindQuery;
+                let rect = if query {
+                    Some(self.find_rects.query)
+                } else {
+                    self.find_rects.replace
+                };
+                let Some(rect) = rect else {
+                    return;
+                };
+                let Some(find) = self.active_find_mut() else {
+                    return;
+                };
+                let (text, edit) = if query {
+                    (&mut find.query, &mut find.query_edit)
+                } else {
+                    (&mut find.replace, &mut find.replace_edit)
+                };
+                let cell = usize::from(column.saturating_sub(rect.x).saturating_add(edit.scroll));
+                let cursor = karet_widgets::textfield::byte_at_cell(text, cell);
+                edit.set_cursor(text, cursor, extend);
             },
             TextFieldTarget::SearchReplace => {
                 let Some(rect) = self.search_ui.replace_rect else {

@@ -136,6 +136,7 @@ pub(crate) use karet_widgets::scroll::draw_horizontally_scrollable_lines;
 pub(crate) use karet_widgets::scroll::draw_scrollable_lines;
 pub(crate) use karet_widgets::scroll::line_width;
 pub(crate) use karet_widgets::scroll::reserve_tracks;
+pub(crate) use panes::FindBarRects;
 
 use crate::app::ContextMenuEntryExt;
 pub(crate) use crate::app::ScrollHits;
@@ -409,6 +410,7 @@ struct RenderedPane {
     blame_rect: Option<Rect>,
     markdown_link_hits: Vec<crate::app::MarkdownLinkHit>,
     select_regions: Vec<crate::app::SelectRegion>,
+    find_rects: FindBarRects,
 }
 
 /// Geometry a tab's content reported for post-draw use: a reserved Kitty image rect

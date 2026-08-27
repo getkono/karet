@@ -445,6 +445,8 @@ pub struct App {
     pub(crate) scm_ui: ScmChrome,
     /// Text field currently being extended by a left-button drag.
     pub(crate) text_field_drag: Option<TextFieldTarget>,
+    /// Where the find-in-file bar's editable fields landed last frame.
+    pub(crate) find_rects: crate::ui::FindBarRects,
     /// The Search panel's last-frame render chrome.
     pub(crate) search_ui: SearchChrome,
     /// The Spelling panel's last-frame render chrome.
