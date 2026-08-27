@@ -105,7 +105,11 @@ impl App {
             self.diagnostic_view_key(key);
             return;
         }
-        if self.input_context().modal.is_none() && self.github_key(key) {
+        // Tab-driven key hooks only apply while the editor shell owns the content
+        // area; in another view the active tab is off screen, and a key aimed at
+        // the showing view must not reach it.
+        if self.view == View::Editor && self.input_context().modal.is_none() && self.github_key(key)
+        {
             return;
         }
         // Esc dismisses a showing notification first (VS Code-style), but only when no
@@ -215,7 +219,8 @@ impl App {
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
                 // The Seam view's query box takes raw characters, which its own layer
                 // cannot express — every printable key would need a binding.
-                if !mid_sequence && plain && self.seam_query_focused() {
+                if !mid_sequence && plain && self.view == View::Editor && self.seam_query_focused()
+                {
                     match key.code {
                         KeyCode::Char(c) => self.seam_query_char(c),
                         KeyCode::Backspace => self.seam_query_backspace(),
@@ -225,6 +230,9 @@ impl App {
                 }
                 if !mid_sequence
                     && self.focus == Focus::Editor
+                    // …and likewise for the unbound-printable fallback: a keystroke
+                    // in another view must never land in a hidden document.
+                    && self.view == View::Editor
                     && self.active_code_doc().is_some()
                     && plain
                     && let KeyCode::Char(c) = key.code

@@ -7,9 +7,17 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
 
     let focus = match app.focus {
         Focus::Sidebar => "SIDEBAR",
-        Focus::Editor => "EDITOR",
+        // The content area belongs to whichever view is showing, so name that
+        // rather than the editor shell behind it.
+        Focus::Editor => app.view.focus_label(),
         Focus::Outline => "OUTLINE",
     };
+    // Likewise for the right-hand strip: in a non-editor view the tab-derived half
+    // of it (language, spelling, LSP badge, cursor, encoding) would describe a
+    // document the user cannot see. The workspace-wide segments below still apply.
+    let active_tab = (app.view == View::Editor)
+        .then(|| app.tabs.get(app.active))
+        .flatten();
     let bar = Style::default()
         .bg(theme.role(ThemeRole::StatusBarBackground).to_ratatui())
         .fg(theme.role(ThemeRole::StatusBarForeground).to_ratatui());
@@ -17,8 +25,8 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
 
     // The right column is a fixed-width strip: cursor position (code tabs only),
     // encoding/EOL, then the language/kind label — the hints get everything else.
-    let language = app.tabs.get(app.active).map_or("", Tab::language);
-    let language = match app.tabs.get(app.active).and_then(|tab| match &tab.kind {
+    let language = active_tab.map_or("", Tab::language);
+    let language = match active_tab.and_then(|tab| match &tab.kind {
         TabKind::Code { doc: Some(doc), .. } => app
             .docs
             .settings
@@ -29,7 +37,7 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
         Some(spelling) => format!("{language} · {}", spelling.display_name()),
         None => language.to_owned(),
     };
-    let lsp_badge = app.active_language_server_badge();
+    let lsp_badge = active_tab.and(app.active_language_server_badge());
     let lsp_label = lsp_badge.map(language_server_badge_label);
     let language = lsp_label.map_or(language.clone(), |badge| format!("{language} · {badge}"));
     // The debug session's state leads the strip while one is live.
@@ -46,7 +54,7 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
         Some(today) => format!("{today} · {language}"),
         None => language,
     };
-    let right = match app.tabs.get(app.active) {
+    let right = match active_tab {
         Some(
             tab @ Tab {
                 kind: TabKind::Code { .. },

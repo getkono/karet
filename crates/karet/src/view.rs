@@ -49,6 +49,17 @@ impl View {
         }
     }
 
+    /// The view's name for the status bar's focus chip, which names what owns
+    /// the content area rather than the shell behind it.
+    #[must_use]
+    pub const fn focus_label(self) -> &'static str {
+        match self {
+            Self::Editor => "EDITOR",
+            Self::GitHub => "GITHUB",
+            Self::Agents => "AGENTS",
+        }
+    }
+
     /// The view's chrome-row icon.
     #[must_use]
     pub const fn icon(self) -> UiIcon {
@@ -76,6 +87,15 @@ mod tests {
         assert!(View::Editor.shows_sidebar());
         assert!(View::GitHub.shows_sidebar());
         assert!(!View::Agents.shows_sidebar());
+    }
+
+    #[test]
+    fn every_focus_label_is_the_upper_cased_title() {
+        // The chip and the switcher button must name the same thing; two spellings
+        // of one view would read as two views.
+        for view in View::ALL {
+            assert_eq!(view.focus_label(), view.title().to_uppercase());
+        }
     }
 
     #[test]

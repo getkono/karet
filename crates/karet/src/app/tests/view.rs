@@ -163,6 +163,115 @@ fn the_agents_view_takes_the_full_width_and_hides_the_sidebar() {
 }
 
 #[test]
+fn a_tab_key_hook_does_not_fire_under_another_view() {
+    // `github_key` runs ahead of the keymap and reads the *active tab*. Under a
+    // view that owns the content area, that tab is off screen — a key aimed at the
+    // showing view must not drive it. (The same guard covers the Seam query box
+    // and the unbound-printable fallback into the active document.)
+    let mut app = app();
+    app.push_tab(Tab::github_pull_request(
+        super::github::pull_request(12, false),
+        true,
+        None,
+    ));
+    app.focus = Focus::Editor;
+    let section = |app: &App| match &app.tabs[app.active].kind {
+        TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) => view.section,
+        _ => panic!("expected the pull-request tab"),
+    };
+    let before = section(&app);
+
+    app.dispatch(Command::SelectView(View::Agents));
+    app.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+    assert_eq!(section(&app), before, "the hidden tab is untouched");
+
+    // Back in the editor view the same key drives the tab as before.
+    app.dispatch(Command::SelectView(View::Editor));
+    app.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+    assert_ne!(section(&app), before);
+}
+
+#[test]
+fn a_tab_mouse_hook_does_not_fire_under_another_view() {
+    // Same reasoning as the key hooks, for the hit regions the GitHub and Seam tabs
+    // record on themselves: a view draws over those tabs without re-rendering them,
+    // so their rects must not keep claiming clicks.
+    let mut app = app();
+    app.push_tab(Tab::github_pull_request(
+        super::github::pull_request(12, false),
+        true,
+        None,
+    ));
+    app.focus = Focus::Editor;
+    let _ = screen(&mut app, 100, 24);
+
+    let section = |app: &App| match &app.tabs[app.active].kind {
+        TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) => view.section,
+        _ => panic!("expected the pull-request tab"),
+    };
+    let before = section(&app);
+    // A point on a section tab the view recorded for itself last frame.
+    let target = match &app.tabs[app.active].kind {
+        TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) => view
+            .section_hits
+            .iter()
+            .find(|(candidate, _)| *candidate != before)
+            .map(|(_, rect)| (rect.x, rect.y))
+            .expect("another section to click"),
+        _ => panic!("expected the pull-request tab"),
+    };
+
+    app.dispatch(Command::SelectView(View::Agents));
+    let _ = screen(&mut app, 100, 24);
+    app.handle_mouse(click(target.0, target.1));
+    assert_eq!(section(&app), before, "the hidden tab is untouched");
+
+    // Back in the editor view the same click drives the tab as before.
+    app.dispatch(Command::SelectView(View::Editor));
+    let _ = screen(&mut app, 100, 24);
+    app.handle_mouse(click(target.0, target.1));
+    assert_ne!(section(&app), before);
+}
+
+#[test]
+fn a_view_over_the_editor_drops_the_panes_hit_regions() {
+    // The pane shell is not drawn, so its rects from the last editor frame must not
+    // keep claiming clicks — a press in the Agents body would otherwise arm a text
+    // drag in a document that is not on screen.
+    let mut app = app();
+    app.open_path(std::path::Path::new("Cargo.toml"));
+    let _ = screen(&mut app, 100, 12);
+    assert!(!app.pane_frames.is_empty());
+    assert_ne!(app.editor_rect, Rect::default());
+
+    app.dispatch(Command::SelectView(View::Agents));
+    let _ = screen(&mut app, 100, 12);
+    assert!(app.pane_frames.is_empty());
+    assert_eq!(app.editor_rect, Rect::default());
+    assert!(app.pane_dividers.is_empty());
+}
+
+#[test]
+fn the_status_bar_names_the_showing_view_and_drops_the_tab_strip() {
+    let mut app = app();
+    app.open_path(std::path::Path::new("Cargo.toml"));
+    let editing = screen(&mut app, 100, 12);
+    let status = editing.len() - 1;
+    assert!(editing[status].contains("EDITOR"), "{:?}", editing[status]);
+
+    app.dispatch(Command::SelectView(View::Agents));
+    let rows = screen(&mut app, 100, 12);
+    assert!(rows[status].contains("AGENTS"), "{:?}", rows[status]);
+    // The tab is still open behind the view, but its language describes a document
+    // that is not on screen.
+    assert!(
+        !rows[status].contains("TOML"),
+        "the tab-derived strip is dropped: {:?}",
+        rows[status]
+    );
+}
+
+#[test]
 fn the_sidebar_survives_a_round_trip_through_a_full_width_view() {
     // The view gates *drawing* the sidebar, not the user's preference: coming back
     // to the editor must restore the sidebar rather than leave it collapsed.

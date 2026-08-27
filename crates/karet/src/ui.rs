@@ -235,7 +235,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     match app.view {
         View::Editor => draw_panes(f, app, &theme, app.main_rect, &mut hits),
-        view => draw_view_placeholder(f, &theme, app.main_rect, view, app.icon_style),
+        view => {
+            clear_pane_render_state(app);
+            draw_view_placeholder(f, &theme, app.main_rect, view, app.icon_style);
+        },
     }
     if let Some(divider) = outline_divider {
         draw_sidebar_divider(f, &theme, divider, false);
