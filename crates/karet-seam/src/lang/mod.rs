@@ -22,6 +22,8 @@ use crate::model::NodeKind;
 use crate::model::Visibility;
 use crate::text::LineIndex;
 
+#[cfg(feature = "lang-kotlin")]
+pub mod kotlin;
 pub mod python;
 pub mod rust;
 #[cfg(feature = "lang-swift")]
@@ -329,6 +331,12 @@ pub fn for_language(language: LanguageId) -> Option<&'static dyn SeamLanguage> {
         && swift == language
     {
         return Some(swift::mapping());
+    }
+    #[cfg(feature = "lang-kotlin")]
+    if let Some(kotlin) = kotlin::language_id()
+        && kotlin == language
+    {
+        return Some(kotlin::mapping());
     }
     let _ = language;
     None
