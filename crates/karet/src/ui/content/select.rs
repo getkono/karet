@@ -20,6 +20,7 @@ use crate::app::SurfaceSelection;
 use crate::app::select::SurfaceRow;
 use crate::app::select::diff_row;
 use crate::app::select::hex_row;
+use crate::app::select::markdown_row;
 use crate::render::FileView;
 
 /// The rect `draw_scrollable_lines` paints rows into for `area`.
@@ -99,6 +100,27 @@ pub(super) fn hex(
     };
     paint_rows(f, theme, selection, &region, &|row| hex_row(bytes, row));
     vec![region]
+}
+
+/// Record and paint the markdown preview's selectable rows.
+pub(in crate::ui) fn markdown(
+    f: &mut Frame,
+    theme: &Theme,
+    selection: Option<SurfaceSelection>,
+    area: Rect,
+    wrapped: &karet_markdown::WrappedDocument,
+    scroll: u16,
+) -> SelectRegion {
+    let region = SelectRegion {
+        surface: SelectSurface::MarkdownPreview,
+        area,
+        first_row: usize::from(scroll),
+        hscroll: 0,
+    };
+    paint_rows(f, theme, selection, &region, &|row| {
+        markdown_row(wrapped, row)
+    });
+    region
 }
 
 /// Lay the selection background over `region`'s visible rows.

@@ -33,6 +33,8 @@ pub(crate) enum SelectSurface {
     NewColumn,
     /// The hex dump's byte and ASCII columns.
     Hex,
+    /// The markdown preview, whether split beside a source pane or standalone.
+    MarkdownPreview,
 }
 
 /// Where a selectable surface painted its rows last frame.
@@ -74,6 +76,22 @@ pub(crate) struct SurfaceRow {
 ///
 /// A row's gutter width is not constant across a file — a line number past four
 /// digits widens it — so it travels with the text rather than being assumed.
+/// The copyable content of markdown preview row `row` of `wrapped`.
+///
+/// A preview row's text is what it renders — bullets, rules and table borders
+/// included — because that is what the reader sees and points at. The markdown
+/// source is not recoverable per row: `karet-markdown` anchors only top-level
+/// blocks, so mapping a row back to source would be an interpolation, not a fact.
+pub(crate) fn markdown_row(
+    wrapped: &karet_markdown::WrappedDocument,
+    row: usize,
+) -> Option<SurfaceRow> {
+    Some(SurfaceRow {
+        text: wrapped.lines.get(row)?.text(),
+        content_x: 0,
+    })
+}
+
 /// The copyable content of hex row `row` of `bytes`.
 pub(crate) fn hex_row(bytes: &[u8], row: usize) -> Option<SurfaceRow> {
     Some(SurfaceRow {
@@ -87,7 +105,7 @@ pub(crate) fn diff_row(file: &FileView, surface: SelectSurface, row: usize) -> O
         SelectSurface::Unified => karet_diff::unified_row(&file.change.diff, row),
         SelectSurface::OldColumn => karet_diff::side_by_side_row(&file.change.diff, row).0,
         SelectSurface::NewColumn => karet_diff::side_by_side_row(&file.change.diff, row).1,
-        SelectSurface::Hex => None,
+        SelectSurface::Hex | SelectSurface::MarkdownPreview => None,
     }?;
     Some(SurfaceRow {
         text: content.text,
@@ -98,7 +116,15 @@ pub(crate) fn diff_row(file: &FileView, surface: SelectSurface, row: usize) -> O
 impl App {
     /// The copyable content of `surface`'s row `row` in the active tab.
     pub(crate) fn surface_row(&self, surface: SelectSurface, row: usize) -> Option<SurfaceRow> {
-        let kind = &self.tabs.get(self.active)?.kind;
+        let tab = self.tabs.get(self.active)?;
+        let kind = &tab.kind;
+        if surface == SelectSurface::MarkdownPreview {
+            return match kind {
+                TabKind::MarkdownPreview { wrapped, .. } => markdown_row(wrapped, row),
+                // The split preview beside a source pane keeps its model on the tab.
+                _ => markdown_row(&tab.markdown_preview.as_ref()?.wrapped, row),
+            };
+        }
         if surface == SelectSurface::Hex {
             let TabKind::Hex { bytes, .. } = kind else {
                 return None;

@@ -177,6 +177,8 @@ pub(super) struct MarkdownPreviewRender<'a> {
     pub(super) source_scroll: Option<usize>,
     /// Fence languages to render as mermaid diagrams (`None` = disabled).
     pub(super) mermaid: Option<&'a [String]>,
+    /// The live pointer selection to lay over the preview's rows, if any.
+    pub(super) selection: Option<crate::app::SurfaceSelection>,
 }
 
 pub(super) fn draw_markdown_preview(
@@ -186,7 +188,7 @@ pub(super) fn draw_markdown_preview(
     preview: MarkdownPreviewRender<'_>,
     scroll_hits: &mut ScrollHits,
     surface: ScrollSurface,
-) -> Vec<crate::app::MarkdownLinkHit> {
+) -> (Vec<crate::app::MarkdownLinkHit>, crate::app::SelectRegion) {
     // Wrap to the padded width, not the pane's: the cache key follows, so a resize that
     // only moves the padding away still re-wraps exactly once.
     // Reserve the scroll track before the wrap width is read: the cache key is the
@@ -226,6 +228,14 @@ pub(super) fn draw_markdown_preview(
         ),
         surface,
     );
+    let region = super::content::select::markdown(
+        f,
+        theme,
+        preview.selection,
+        area,
+        preview.wrapped,
+        state.scroll,
+    );
     let hits = markdown_link_hits(preview.wrapped, area, state.scroll);
     apply_markdown_osc8(f, &hits, preview.source, preview.root);
     if let Some(point) = preview.hover {
@@ -244,7 +254,7 @@ pub(super) fn draw_markdown_preview(
             }
         }
     }
-    hits
+    (hits, region)
 }
 
 fn apply_markdown_osc8(

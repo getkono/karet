@@ -1,7 +1,7 @@
 use super::*;
 
 mod diff;
-mod select;
+pub(in crate::ui) mod select;
 mod swatches;
 
 /// Draw one pane's active tab into `area`. Returns the rect to reserve for a Kitty
@@ -232,7 +232,7 @@ pub(super) fn draw_pane_content(
                 if let Some(preview) = tab.markdown_preview.as_mut()
                     && markdown_preview_rect.width > 0
                 {
-                    markdown_link_hits = draw_markdown_preview(
+                    let (links, region) = draw_markdown_preview(
                         f,
                         theme,
                         markdown_preview_rect,
@@ -246,10 +246,13 @@ pub(super) fn draw_pane_content(
                             root: ctx.root,
                             source_scroll: Some(tab.editor.scroll_line as usize),
                             mermaid: ctx.mermaid,
+                            selection: ctx.selection,
                         },
                         hits,
                         ScrollSurface::EditorPreview,
                     );
+                    markdown_link_hits = links;
+                    select_regions = vec![region];
                 }
             }
         },
@@ -261,7 +264,7 @@ pub(super) fn draw_pane_content(
             scroll,
             ..
         } => {
-            markdown_link_hits = draw_markdown_preview(
+            let (links, region) = draw_markdown_preview(
                 f,
                 theme,
                 area,
@@ -275,10 +278,13 @@ pub(super) fn draw_pane_content(
                     root: ctx.root,
                     source_scroll: None,
                     mermaid: ctx.mermaid,
+                    selection: ctx.selection,
                 },
                 hits,
                 ScrollSurface::TabRows,
             );
+            markdown_link_hits = links;
+            select_regions = vec![region];
         },
         TabKind::Diff {
             file,

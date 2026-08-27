@@ -300,3 +300,70 @@ fn a_hex_selection_spanning_rows_copies_each_row_in_full() {
     assert!(lines[1].starts_with("10 11 12"), "{:?}", lines[1]);
     assert!(lines[0].ends_with('|'), "the ASCII column comes along too");
 }
+
+#[test]
+fn dragging_a_markdown_preview_copies_the_text_it_renders() {
+    let mut app = app();
+    app.tabs = vec![Tab::document_preview(
+        PathBuf::from("notes.md"),
+        "# Title\n\nA paragraph of prose.\n",
+    )];
+    app.active = 0;
+    screen(&mut app, 80, 24);
+    let region = region(&app, SelectSurface::MarkdownPreview);
+
+    // Find the rendered row carrying the paragraph.
+    let prose = (0..region.area.height)
+        .map(|offset| region.first_row + usize::from(offset))
+        .find(|row| {
+            app.surface_row(SelectSurface::MarkdownPreview, *row)
+                .is_some_and(|painted| painted.text.contains("paragraph"))
+        });
+    assert!(prose.is_some(), "the paragraph should be a selectable row");
+    let Some(prose) = prose else { return };
+    let Some(painted) = app.surface_row(SelectSurface::MarkdownPreview, prose) else {
+        return;
+    };
+
+    let y = region.area.y + u16::try_from(prose - region.first_row).unwrap_or_default();
+    let width = u16::try_from(painted.text.len()).unwrap_or(u16::MAX);
+    drag(&mut app, (region.area.x, y), (region.area.x + width, y));
+
+    assert_eq!(
+        app.surface_selection_text().as_deref(),
+        Some(painted.text.as_str()),
+        "the whole rendered row comes across"
+    );
+}
+
+#[test]
+fn a_markdown_selection_carries_the_rendered_decorations() {
+    let mut app = app();
+    app.tabs = vec![Tab::document_preview(
+        PathBuf::from("notes.md"),
+        "- first item\n- second item\n",
+    )];
+    app.active = 0;
+    screen(&mut app, 80, 24);
+    let region = region(&app, SelectSurface::MarkdownPreview);
+
+    let bullet = (0..region.area.height)
+        .map(|offset| region.first_row + usize::from(offset))
+        .find(|row| {
+            app.surface_row(SelectSurface::MarkdownPreview, *row)
+                .is_some_and(|painted| painted.text.contains("first item"))
+        });
+    assert!(bullet.is_some());
+    let Some(bullet) = bullet else { return };
+    let Some(painted) = app.surface_row(SelectSurface::MarkdownPreview, bullet) else {
+        return;
+    };
+    // A preview row's text is what the reader sees, list marker included — the
+    // markdown source is not recoverable per row.
+    assert!(
+        !painted.text.starts_with("- "),
+        "the raw source marker is not what the preview paints: {:?}",
+        painted.text
+    );
+    assert!(painted.text.contains("first item"));
+}
