@@ -26,6 +26,12 @@ use crate::local::DocSnapshot;
 #[derive(Default)]
 pub(super) struct Replica {
     /// The text, advanced by the client's own edits and by the backend's.
+    ///
+    /// Its version is kept equal to the *document's* version rather than to a
+    /// count of this buffer's own edits — see [`Replica::apply`]. Everything
+    /// downstream depends on that: the presentation layer bases its next edit on
+    /// the version a snapshot reports, and the backend derives its deltas from
+    /// the version it last sent.
     buffer: TextBuffer,
     /// Spans for the window the client declared. Replaced wholesale rather than
     /// merged: a slice is scoped to a version, and merging one into a cache built
@@ -58,6 +64,15 @@ impl Replica {
                     .ok()?;
             },
         }
+        // The text is now what the backend says `update.version` holds, so the
+        // replica must number it that way. A buffer rebuilt from a full copy
+        // counts from its own zero, and a change can carry the document past more
+        // than one version; either gap is silent and permanent. The presentation
+        // layer bases its next edit on the version a snapshot reports, so a
+        // replica numbering from zero refused every edit that followed — no echo,
+        // no warning, and the stale replica text overwriting the tab on the next
+        // snapshot.
+        self.buffer.set_version(update.version);
         if let Some(slice) = update.highlights {
             self.highlights = Arc::new(slice.highlights);
         }
@@ -85,6 +100,11 @@ impl Replica {
     /// The presentation layer applies the same change to its own buffer; keeping
     /// the replica in step means the next backend update — which is relative to
     /// this version — lands on the same text the backend has.
+    ///
+    /// `None` when the change does not fit the version this replica is at. The
+    /// caller resynchronizes: a replica that cannot place the client's own edit
+    /// cannot place the backend's next one either, and going quiet about it is
+    /// how a document ends up silently swallowing every keystroke.
     pub(super) fn apply_local(
         &mut self,
         change: &karet_core::Change,
@@ -364,6 +384,72 @@ mod tests {
             return;
         };
         assert_eq!(snapshot.language, None);
+    }
+
+    /// The property the presentation layer depends on: a snapshot's version and
+    /// the version of the buffer inside it must be the same number. The app bases
+    /// its next edit on the former and applies it to the latter.
+    #[test]
+    fn a_full_update_numbers_the_replica_by_the_document_not_by_itself() {
+        let mut replica = Replica::default();
+
+        let snapshot = replica.apply(full(7, "alpha\n"));
+
+        assert!(snapshot.is_some(), "a full update must produce a snapshot");
+        let Some(snapshot) = snapshot else {
+            return;
+        };
+        assert_eq!(snapshot.version, 7);
+        assert_eq!(snapshot.buffer.version(), 7);
+    }
+
+    /// The regression a resync used to cause. A replica rebuilt from a full copy
+    /// at a non-zero version must still accept the edits that follow: numbering
+    /// from its own zero made every later keystroke fail silently, and the stale
+    /// text then overwrote what the user had typed.
+    #[test]
+    fn a_replica_rebuilt_at_a_non_zero_version_still_takes_the_next_local_edit() {
+        let mut replica = Replica::default();
+        let _ = replica.apply(full(7, "alpha\n"));
+        let Some(change) = super::super::delta::minimal_change("alpha\n", "alphax\n", 7) else {
+            return;
+        };
+
+        let snapshot = replica.apply_local(&change, karet_text::EditCause::Type);
+
+        assert!(
+            snapshot.is_some(),
+            "an edit based on the version the replica reported must apply"
+        );
+        let Some(snapshot) = snapshot else {
+            return;
+        };
+        assert_eq!(snapshot.buffer.text(), "alphax\n");
+        assert_eq!(snapshot.version, 8);
+    }
+
+    /// A backend change that skips versions (the projection derives it from the
+    /// version it last *sent*, which can lag the document) must still leave the
+    /// replica numbered by the document.
+    #[test]
+    fn a_change_carrying_the_document_past_several_versions_lands_on_the_new_one() {
+        let mut replica = Replica::default();
+        let _ = replica.apply(full(3, "alpha\n"));
+        let Some(change) = super::super::delta::minimal_change("alpha\n", "beta\n", 3) else {
+            return;
+        };
+
+        let snapshot = replica.apply(RenderUpdate {
+            text: TextUpdate::Change(Box::new(change)),
+            ..RenderUpdate::at(9)
+        });
+
+        assert!(snapshot.is_some(), "a well-based change must apply");
+        let Some(snapshot) = snapshot else {
+            return;
+        };
+        assert_eq!(snapshot.buffer.text(), "beta\n");
+        assert_eq!(snapshot.buffer.version(), 9);
     }
 
     /// An update that says nothing about the language keeps the one in force —

@@ -156,6 +156,21 @@ impl TextBuffer {
         self.version
     }
 
+    /// Set the version this buffer reports, for a buffer standing in for a
+    /// document whose authoritative version lives elsewhere.
+    ///
+    /// A buffer normally owns its version: it starts at zero and counts its own
+    /// edits. A **replica** does not. The document it mirrors is numbered by
+    /// whoever holds it, changes arrive expressed against those numbers, and a
+    /// replica rebuilt from a full copy of the text would otherwise start
+    /// counting from its own zero and refuse every change that followed.
+    ///
+    /// Only meaningful on a replica. Moving an authoritative buffer's version
+    /// would invalidate the changes its own consumers already built against it.
+    pub fn set_version(&mut self, version: u64) {
+        self.version = version;
+    }
+
     /// Whether the buffer has unsaved changes relative to the last save point.
     #[must_use]
     pub fn is_dirty(&self) -> bool {

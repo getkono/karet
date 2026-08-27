@@ -16,16 +16,29 @@
 //! exact protocol version between its own halves, and karet should not inherit
 //! that.
 //!
+//! # Asking only when kmux has said what it implements
+//!
+//! The split is offered only to a kmux that *declares* a split-app contract this
+//! karet speaks, by exporting [`SPLIT_APP`] with a revision matching
+//! [`SPLIT_APP_REVISION`]. Nothing infers support — not from a version number,
+//! and not from what `kmux help` happens to print, which would engage a guessed
+//! calling convention against whatever ships and fail in a way the fallback is
+//! designed never to be: visible.
+//!
+//! So this is **inert until kmux#201 lands**. No kmux exports the variable today,
+//! so nothing here runs, nothing is spawned on the startup path, and karet runs
+//! locally. When the contract is settled, kmux declares its revision and the two
+//! sides agree on a number rather than on a guess.
+//!
 //! # Degrading
 //!
-//! Every failure here means "run locally": no kmux, an older kmux with no
-//! split-app support, a kmux that declined, a malformed answer. None of them are
-//! errors a user should have to read about, because the fallback is exactly the
-//! editor they would have got anyway.
+//! Every failure here means "run locally": no kmux, a kmux that declares nothing
+//! or declares a revision this build does not speak, one that declined, a
+//! malformed answer. None of them are errors a user should have to read about,
+//! because the fallback is exactly the editor they would have got anyway.
 //!
 //! The kmux side of this is tracked at
-//! <https://github.com/getkono/kmux/issues/201>; until it ships, `request_split`
-//! finds no support and karet runs locally.
+//! <https://github.com/getkono/kmux/issues/201>.
 
 use std::path::Path;
 use std::process::Command;
@@ -33,6 +46,17 @@ use std::process::Stdio;
 
 /// The environment variable kmux exports into every pane it spawns.
 const PANE: &str = "KMUX_PANE";
+
+/// The environment variable through which kmux declares which revision of the
+/// split-app contract it implements.
+const SPLIT_APP: &str = "KMUX_SPLIT_APP";
+
+/// The split-app contract revision this karet speaks.
+///
+/// An exact match, not a floor: the contract covers how the client half is
+/// spawned and how it is handed its endpoint, and a kmux implementing a
+/// different revision of that is one to run locally beside, not to guess at.
+const SPLIT_APP_REVISION: u32 = 1;
 
 /// The protocol identifier karet declares. kmux does not interpret it; it is
 /// echoed to the client half so the two ends can refuse a mismatch themselves.
@@ -57,8 +81,8 @@ pub(crate) struct Channel {
 /// always a fine one.
 pub(crate) fn request_split(root: &Path) -> Option<Channel> {
     let pane = std::env::var(PANE).ok()?;
-    if !supports_split_app() {
-        tracing::debug!("kmux is present but has no split-app support; running locally");
+    if !declares_split_app(std::env::var(SPLIT_APP).ok().as_deref()) {
+        tracing::debug!("kmux declares no split-app contract this build speaks; running locally");
         return None;
     }
     let endpoint = run_kmux(&[
@@ -79,13 +103,17 @@ pub(crate) fn request_split(root: &Path) -> Option<Channel> {
     Some(Channel { endpoint })
 }
 
-/// Whether the `kmux` on `PATH` understands split-app panes.
+/// Whether `declared` names a split-app contract revision this build speaks.
 ///
-/// Asked by inspecting its help rather than its version: a version comparison
-/// would need updating the moment kmux renumbers, while the presence of the
-/// subcommand is the fact actually being tested.
-fn supports_split_app() -> bool {
-    run_kmux(&["help"]).is_some_and(|help| help.contains("split-app"))
+/// A parameter rather than an ambient lookup so the decision is testable without
+/// mutating the process environment — which `#[test]` functions share.
+fn declares_split_app(declared: Option<&str>) -> bool {
+    declared.is_some_and(|revision| {
+        revision
+            .trim()
+            .parse::<u32>()
+            .is_ok_and(|revision| revision == SPLIT_APP_REVISION)
+    })
 }
 
 /// Run `kmux` with `args`, returning its stdout when it succeeds.
@@ -129,30 +157,47 @@ fn run_kmux(args: &[&str]) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// Outside a pane there is no multiplexer to ask, and karet must not spend
-    /// startup time discovering that.
+    /// The state of the world today, and the one that matters most: no kmux has
+    /// declared a split-app contract, so karet must not act on a guess about how
+    /// one would be spawned. Running locally is exactly the editor the user would
+    /// have had.
     #[test]
-    fn no_pane_means_no_split() {
-        // SAFETY: single-threaded test, and the variable is read only by this
-        // module's own lookups.
-        unsafe { std::env::remove_var(PANE) };
-
-        assert!(request_split(Path::new("/tmp")).is_none());
+    fn a_multiplexer_that_declares_nothing_gets_no_split() {
+        assert!(!declares_split_app(None));
+        assert!(!declares_split_app(Some("")));
     }
 
-    /// A pane whose multiplexer cannot host a client must still run the editor,
-    /// not fail. The fallback is exactly what the user would have got anyway.
+    /// A revision this build does not implement is a kmux to run beside, not to
+    /// negotiate with: the contract covers how the client half is spawned, and
+    /// half-speaking it would fail after the editor had already given up its
+    /// local session.
     #[test]
-    fn a_pane_without_split_support_falls_back_to_local() {
-        // SAFETY: single-threaded test; the variable is read only by this module.
-        unsafe { std::env::set_var(PANE, "test-pane/0") };
+    fn a_contract_revision_this_build_does_not_speak_gets_no_split() {
+        assert!(!declares_split_app(Some(
+            &(SPLIT_APP_REVISION + 1).to_string()
+        )));
+        assert!(!declares_split_app(Some("yes")));
+        assert!(!declares_split_app(Some("1.0")));
+    }
 
-        // No kmux on PATH in the test environment, so support detection fails and
-        // the answer must be "run locally" rather than an error.
-        let split = request_split(Path::new("/tmp"));
+    /// The matching revision, including the whitespace a shell export picks up.
+    #[test]
+    fn the_declared_revision_this_build_speaks_is_accepted() {
+        let declared = SPLIT_APP_REVISION.to_string();
 
-        // SAFETY: as above.
-        unsafe { std::env::remove_var(PANE) };
-        assert!(split.is_none());
+        assert!(declares_split_app(Some(&declared)));
+        assert!(declares_split_app(Some(&format!(" {declared}\n"))));
+    }
+
+    /// Outside a pane there is no multiplexer to ask, and karet must not spend
+    /// startup time discovering that. Read through the real environment because
+    /// that lookup — not the revision check — is the first gate.
+    #[test]
+    fn no_pane_means_no_split() {
+        if std::env::var_os(PANE).is_some() {
+            return; // running inside a real kmux pane; nothing to assert
+        }
+
+        assert!(request_split(Path::new("/tmp")).is_none());
     }
 }

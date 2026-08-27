@@ -167,6 +167,15 @@ Inside a terminal multiplexer that supports **split-app panes**, none of the abo
 needs configuring: `karet` in a pane asks the multiplexer to host `karet --client`
 on the machine with the display and to forward a channel back.
 
+karet offers that only to a multiplexer that has **declared** a split-app contract
+revision this build speaks, through `KMUX_SPLIT_APP`. Nothing is inferred — not
+from a version number, and not from what `kmux help` prints. The contract covers
+how the client half is spawned and how it is handed its endpoint, so acting on a
+guess would engage a calling convention that has not been agreed and fail after
+the editor had already given up its local session. Since no kmux exports the
+variable yet, this path is **inert today**: nothing is spawned on the startup path
+and karet runs locally.
+
 karet talks to [kmux](https://github.com/getkono/kmux) only through the `kmux`
 command-line tool and the documented `KMUX_*` environment variables. That is a
 licence boundary, not a preference: kmux is `AGPL-3.0-only OR
@@ -180,8 +189,11 @@ support, a refusal, a timeout. The fallback is exactly the editor the user would
 otherwise have had, so none of them is worth an error message.
 
 The multiplexer side is tracked at
-[getkono/kmux#201](https://github.com/getkono/kmux/issues/201). Until it ships,
-`--client-exec` is the way to run a split session.
+[getkono/kmux#201](https://github.com/getkono/kmux/issues/201). Two things are
+still open there and are deliberately not guessed at in karet: how the hosted
+client is told which endpoint to connect to, and how a pane's startup flags (the
+file to open, `--goto`, `--command`) reach it. Until both are settled and kmux
+declares its revision, `--client-exec` is the way to run a split session.
 
 ## Known gaps
 

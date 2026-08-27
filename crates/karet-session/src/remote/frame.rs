@@ -8,13 +8,20 @@
 //! the two ends renegotiating — a highlight payload compresses well and a
 //! keystroke acknowledgement does not, and each pays only for itself.
 //!
+//! Reading is deliberately built on [`AsyncBufReadExt::fill_buf`] and a
+//! [`FrameReader`] that owns its partial bytes, rather than on `read_exact`.
+//! Both connection loops read inside a `tokio::select!`, where a future that
+//! loses the race is dropped mid-flight: `read_exact` would take its
+//! half-consumed bytes with it and every frame after that would be parsed from
+//! the wrong offset. `fill_buf` is cancel-safe and the accumulator lives in the
+//! reader rather than in the future, so losing the race costs nothing.
+//!
 //! Deliberately *not* [`karet_jsonrpc::Framing`]: that trait exists to carry
 //! JSON-RPC envelopes, and this stream carries neither JSON nor RPC. The shape is
 //! the same because the problem is.
 
 use tokio::io::AsyncBufRead;
-use tokio::io::AsyncRead;
-use tokio::io::AsyncReadExt;
+use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 
@@ -24,6 +31,9 @@ use super::RemoteError;
 const CODEC_RAW: u8 = 0;
 /// A body compressed with raw deflate.
 const CODEC_DEFLATE: u8 = 1;
+
+/// The length prefix plus the codec tag.
+const HEADER: usize = 5;
 
 /// The largest frame that will be read or written.
 ///
@@ -83,49 +93,103 @@ fn encode_body(body: &[u8]) -> (u8, std::borrow::Cow<'_, [u8]>) {
     }
 }
 
-/// Read one frame's body, or `None` on a clean end of stream between frames.
+/// A framed reader that survives being cancelled.
 ///
-/// An end of stream *part way* through a frame is an error, not an ending: it
-/// means the peer died mid-message and whatever follows cannot be trusted.
-pub(super) async fn read<R>(reader: &mut R) -> Result<Option<Vec<u8>>, RemoteError>
+/// Bytes pulled off the stream but not yet forming a whole frame live here, not
+/// in the future returned by [`next`](Self::next). Dropping that future — which
+/// is what `tokio::select!` does to every branch that loses — therefore loses no
+/// bytes, and the next call resumes exactly where this one stopped.
+pub(super) struct FrameReader<R> {
+    reader: R,
+    /// Bytes read from the stream and not yet consumed by a complete frame.
+    pending: Vec<u8>,
+}
+
+impl<R> FrameReader<R>
 where
-    R: AsyncRead + AsyncBufRead + Unpin,
+    R: AsyncBufRead + Unpin,
 {
-    let mut header = [0_u8; 4];
-    match reader.read_exact(&mut header).await {
-        Ok(_) => {},
-        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(error) => return Err(error.into()),
+    pub(super) fn new(reader: R) -> Self {
+        Self {
+            reader,
+            pending: Vec::new(),
+        }
     }
-    let len = u32::from_be_bytes(header) as usize;
-    if len == 0 {
-        return Err(RemoteError::Protocol("frame has no codec tag".to_owned()));
+
+    /// Read the next frame's body, or `None` on a clean end of stream between
+    /// frames.
+    ///
+    /// An end of stream *part way* through a frame is an error, not an ending: it
+    /// means the peer died mid-message and whatever follows cannot be trusted.
+    ///
+    /// Cancel-safe: safe to use directly as a `tokio::select!` branch.
+    pub(super) async fn next(&mut self) -> Result<Option<Vec<u8>>, RemoteError> {
+        loop {
+            if let Some(body) = self.take_frame()? {
+                return Ok(Some(body));
+            }
+            // `fill_buf` is the cancel-safe primitive: it either yields bytes that
+            // are still on the stream until `consume`, or nothing happened at all.
+            let available = self.reader.fill_buf().await?;
+            if available.is_empty() {
+                return if self.pending.is_empty() {
+                    Ok(None)
+                } else {
+                    Err(RemoteError::Protocol(
+                        "the stream ended part way through a frame".to_owned(),
+                    ))
+                };
+            }
+            let filled = available.len();
+            self.pending.extend_from_slice(available);
+            self.reader.consume(filled);
+        }
     }
-    if len > MAX_FRAME {
-        return Err(RemoteError::Protocol(format!(
-            "frame of {len} bytes exceeds the {MAX_FRAME}-byte cap"
-        )));
+
+    /// Split one complete frame off the front of `pending`, if there is one.
+    ///
+    /// `None` means "not yet, read more" — never "malformed"; a length prefix
+    /// that cannot be honoured is an error rather than a wait, because no amount
+    /// of further reading would rescue it.
+    fn take_frame(&mut self) -> Result<Option<Vec<u8>>, RemoteError> {
+        let Some(header) = self.pending.get(..HEADER - 1) else {
+            return Ok(None);
+        };
+        let len = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
+        if len == 0 {
+            return Err(RemoteError::Protocol("frame has no codec tag".to_owned()));
+        }
+        if len > MAX_FRAME {
+            return Err(RemoteError::Protocol(format!(
+                "frame of {len} bytes exceeds the {MAX_FRAME}-byte cap"
+            )));
+        }
+        // `len` counts the codec tag, so the whole frame is the 4-byte prefix
+        // plus `len`.
+        let total = HEADER - 1 + len;
+        if self.pending.len() < total {
+            return Ok(None);
+        }
+        let codec = self.pending[HEADER - 1];
+        let payload = self.pending[HEADER..total].to_vec();
+        self.pending.drain(..total);
+        decode_body(codec, payload).map(Some)
     }
-    let mut codec = [0_u8; 1];
-    reader.read_exact(&mut codec).await?;
-    let mut payload = vec![0_u8; len - 1];
-    reader.read_exact(&mut payload).await?;
-    decode_body(codec[0], payload)
 }
 
 /// Undo whatever [`encode_body`] did.
-fn decode_body(codec: u8, payload: Vec<u8>) -> Result<Option<Vec<u8>>, RemoteError> {
+fn decode_body(codec: u8, payload: Vec<u8>) -> Result<Vec<u8>, RemoteError> {
     use std::io::Read;
 
     match codec {
-        CODEC_RAW => Ok(Some(payload)),
+        CODEC_RAW => Ok(payload),
         CODEC_DEFLATE => {
             let mut body = Vec::new();
             flate2::read::DeflateDecoder::new(&payload[..])
                 .take(MAX_FRAME as u64)
                 .read_to_end(&mut body)
                 .map_err(|error| RemoteError::Protocol(format!("corrupt frame: {error}")))?;
-            Ok(Some(body))
+            Ok(body)
         },
         other => Err(RemoteError::Protocol(format!(
             "unknown frame codec {other}"
@@ -142,8 +206,13 @@ mod tests {
         let (mut client, server) = tokio::io::duplex(MAX_FRAME.min(1 << 20));
         write(&mut client, body).await.ok()?;
         drop(client);
-        let mut reader = tokio::io::BufReader::new(server);
-        read(&mut reader).await.ok()?
+        let mut reader = FrameReader::new(tokio::io::BufReader::new(server));
+        reader.next().await.ok()?
+    }
+
+    /// A reader over `bytes`, already at end of stream.
+    fn reader_over(bytes: &[u8]) -> FrameReader<tokio::io::BufReader<&[u8]>> {
+        FrameReader::new(tokio::io::BufReader::new(bytes))
     }
 
     #[tokio::test]
@@ -191,65 +260,89 @@ mod tests {
     /// A clean end of stream between frames is how a peer says goodbye.
     #[tokio::test]
     async fn a_closed_stream_reads_as_the_end() {
-        let (client, server) = tokio::io::duplex(64);
-        drop(client);
-        let mut reader = tokio::io::BufReader::new(server);
+        assert_eq!(reader_over(&[]).next().await.ok().flatten(), None);
+    }
 
-        assert_eq!(read(&mut reader).await.ok().flatten(), None);
+    /// Back-to-back frames in one buffer must both come out, in order: a reader
+    /// that accumulates has to drain what it holds before reading more.
+    #[tokio::test]
+    async fn two_frames_delivered_together_are_read_in_order() {
+        let mut stream = Vec::new();
+        let _ = write(&mut stream, b"first").await;
+        let _ = write(&mut stream, b"second").await;
+        let mut reader = reader_over(&stream);
+
+        assert_eq!(reader.next().await.ok().flatten(), Some(b"first".to_vec()));
+        assert_eq!(reader.next().await.ok().flatten(), Some(b"second".to_vec()));
+        assert_eq!(reader.next().await.ok().flatten(), None);
+    }
+
+    /// The property both connection loops depend on. A read that loses a
+    /// `select!` race is dropped part way through a frame; the bytes it had
+    /// already taken off the stream must survive in the reader, or every frame
+    /// after this one is parsed from the wrong offset.
+    #[tokio::test]
+    async fn a_read_cancelled_mid_frame_keeps_the_bytes_it_took() {
+        let body = b"a frame that arrives in two writes".to_vec();
+        let (mut client, server) = tokio::io::duplex(1024);
+        let mut reader = FrameReader::new(tokio::io::BufReader::new(server));
+        // A raw frame, since the body is below `COMPRESS_ABOVE`.
+        let len = u32::try_from(body.len() + 1).unwrap_or_default();
+        let _ = client.write_all(&len.to_be_bytes()).await;
+        let _ = client.write_all(&[CODEC_RAW]).await;
+        let _ = client.write_all(&body[..8]).await;
+
+        // Biased, so the read is polled first and consumes what has arrived
+        // before the ready branch takes the race away from it.
+        let mut lost = 0;
+        for _ in 0..3 {
+            tokio::select! {
+                biased;
+                frame = reader.next() => { let _ = frame; },
+                () = std::future::ready(()) => lost += 1,
+            }
+        }
+        assert_eq!(lost, 3, "the read must lose every race");
+
+        let _ = client.write_all(&body[8..]).await;
+
+        assert_eq!(reader.next().await.ok().flatten(), Some(body));
     }
 
     /// A peer that died mid-frame is not a clean ending — trusting the truncated
     /// bytes would desynchronize everything after them.
     #[tokio::test]
     async fn a_truncated_frame_is_an_error_not_an_ending() {
-        let (mut client, server) = tokio::io::duplex(64);
         // A header promising 32 bytes, followed by 4 and a close.
-        let _ = client.write_all(&32_u32.to_be_bytes()).await;
-        let _ = client.write_all(&[CODEC_RAW]).await;
-        let _ = client.write_all(b"only").await;
-        drop(client);
-        let mut reader = tokio::io::BufReader::new(server);
+        let mut stream = 32_u32.to_be_bytes().to_vec();
+        stream.push(CODEC_RAW);
+        stream.extend_from_slice(b"only");
 
-        assert!(read(&mut reader).await.is_err());
+        assert!(reader_over(&stream).next().await.is_err());
     }
 
     /// A corrupted length prefix must fail rather than allocate whatever it said.
     #[tokio::test]
     async fn an_oversized_length_prefix_is_refused_before_allocating() {
-        let (mut client, server) = tokio::io::duplex(64);
-        let _ = client
-            .write_all(
-                &u32::try_from(MAX_FRAME + 1)
-                    .unwrap_or(u32::MAX)
-                    .to_be_bytes(),
-            )
-            .await;
-        let _ = client.write_all(&[CODEC_RAW]).await;
-        drop(client);
-        let mut reader = tokio::io::BufReader::new(server);
+        let mut stream = u32::try_from(MAX_FRAME + 1)
+            .unwrap_or(u32::MAX)
+            .to_be_bytes()
+            .to_vec();
+        stream.push(CODEC_RAW);
 
-        assert!(read(&mut reader).await.is_err());
+        assert!(reader_over(&stream).next().await.is_err());
     }
 
     #[tokio::test]
     async fn an_unknown_codec_tag_is_refused() {
-        let (mut client, server) = tokio::io::duplex(64);
-        let _ = client.write_all(&2_u32.to_be_bytes()).await;
-        let _ = client.write_all(&[99]).await;
-        let _ = client.write_all(b"x").await;
-        drop(client);
-        let mut reader = tokio::io::BufReader::new(server);
+        let mut stream = 2_u32.to_be_bytes().to_vec();
+        stream.extend_from_slice(&[99, b'x']);
 
-        assert!(read(&mut reader).await.is_err());
+        assert!(reader_over(&stream).next().await.is_err());
     }
 
     #[tokio::test]
     async fn a_zero_length_frame_is_refused() {
-        let (mut client, server) = tokio::io::duplex(64);
-        let _ = client.write_all(&0_u32.to_be_bytes()).await;
-        drop(client);
-        let mut reader = tokio::io::BufReader::new(server);
-
-        assert!(read(&mut reader).await.is_err());
+        assert!(reader_over(&0_u32.to_be_bytes()).next().await.is_err());
     }
 }

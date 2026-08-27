@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 
 use super::RemoteError;
 use super::frame;
+use super::frame::FrameReader;
 use super::replica::Replica;
 use super::wire::ClientFrame;
 use super::wire::Hello;
@@ -67,7 +68,7 @@ impl Backend for RemoteBackend {
 /// # Errors
 /// Returns [`RemoteError`] when the handshake fails or the peer is unusable.
 pub async fn connect<R, W>(
-    mut reader: R,
+    reader: R,
     mut writer: W,
     last_seq: u64,
 ) -> Result<(RemoteBackend, SnapshotRx), RemoteError>
@@ -77,7 +78,12 @@ where
 {
     let greeting = super::wire::encode(&ClientFrame::Hello(Hello::current()))?;
     frame::write(&mut writer, &greeting).await?;
-    let body = frame::read(&mut reader)
+    // The same reader is handed to `pump` afterwards: bytes it buffered past the
+    // greeting belong to the frames that follow, and building a second reader
+    // would strand them.
+    let mut reader = FrameReader::new(reader);
+    let body = reader
+        .next()
         .await?
         .ok_or_else(|| RemoteError::Protocol("backend closed before greeting".to_owned()))?;
     let ServerFrame::Hello(hello) = super::wire::decode(&body)? else {
@@ -109,7 +115,7 @@ where
 
 /// Drive the connection: commands out, events and snapshots in.
 async fn pump<R, W>(
-    mut reader: R,
+    mut reader: FrameReader<R>,
     mut writer: W,
     mut commands: mpsc::UnboundedReceiver<(RequestId, Command)>,
     events: &mpsc::UnboundedSender<(Option<RequestId>, Event)>,
@@ -128,11 +134,29 @@ where
                     // Echo the edit into the replica first, so the snapshot the
                     // renderer draws from advances at local speed rather than at
                     // the connection's.
-                    if let Command::ApplyChange { doc, change, cause } = &command
-                        && let Some(replica) = replicas.get_mut(doc)
-                        && let Some(snapshot) = replica.apply_local(change, *cause)
-                    {
-                        let _ = snapshots.send((*doc, snapshot));
+                    let mut diverged = None;
+                    if let Command::ApplyChange { doc, change, cause } = &command {
+                        match replicas
+                            .get_mut(doc)
+                            .and_then(|replica| replica.apply_local(change, *cause))
+                        {
+                            Some(snapshot) => {
+                                let _ = snapshots.send((*doc, snapshot));
+                            },
+                            // Either there is no replica yet or the change did not
+                            // fit the one there is; either way this client does
+                            // not hold the text its own edit produces. Saying so
+                            // matters as much as the echo does: the backend
+                            // suppresses text for versions it believes the client
+                            // made, so a silent failure here left the document
+                            // stuck at the last text both sides agreed on while
+                            // every later keystroke was acknowledged and dropped.
+                            None => {
+                                tracing::warn!(?doc, "a local edit did not fit its replica");
+                                replicas.remove(doc);
+                                diverged = Some(*doc);
+                            },
+                        }
                     }
                     let body = match super::wire::encode(&ClientFrame::Command {
                         id,
@@ -147,10 +171,18 @@ where
                         },
                     };
                     frame::write(&mut writer, &body).await?;
+                    // After the command, so the backend has already applied it
+                    // and describes the document at the version the resync will
+                    // carry rather than the one before it.
+                    if let Some(doc) = diverged
+                        && let Ok(body) = super::wire::encode(&ClientFrame::Resync { doc })
+                    {
+                        frame::write(&mut writer, &body).await?;
+                    }
                 },
                 None => return Ok(()), // the backend handle was dropped
             },
-            incoming = frame::read(&mut reader) => match incoming? {
+            incoming = reader.next() => match incoming? {
                 Some(body) => {
                     let frame: ServerFrame = match super::wire::decode(&body) {
                         Ok(frame) => frame,

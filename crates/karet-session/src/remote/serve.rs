@@ -10,6 +10,7 @@ use tokio::io::AsyncWrite;
 
 use super::RemoteError;
 use super::frame;
+use super::frame::FrameReader;
 use super::project::Projection;
 use super::wire::ClientFrame;
 use super::wire::Hello;
@@ -54,7 +55,9 @@ where
 
 /// One served connection's state.
 struct Connection<R, W> {
-    reader: R,
+    /// Framed, and cancel-safe: this reader is polled from a `select!` arm that
+    /// loses the race whenever an event or a snapshot is ready first.
+    reader: FrameReader<R>,
     writer: W,
     /// Monotonic sequence for outgoing events, so a reattaching client can name
     /// where it got to.
@@ -81,7 +84,7 @@ where
 {
     fn new(reader: R, writer: W) -> Self {
         Self {
-            reader,
+            reader: FrameReader::new(reader),
             writer,
             seq: 0,
             replay: std::collections::VecDeque::new(),
@@ -128,7 +131,7 @@ where
                     Some((id, event)) => self.on_event(id, event).await?,
                     None => return Ok(()), // the session ended
                 },
-                incoming = frame::read(&mut self.reader) => match incoming? {
+                incoming = self.reader.next() => match incoming? {
                     Some(body) => {
                         if !self.on_client_frame(&body, backend).await? {
                             return Ok(()); // the client said goodbye
@@ -168,6 +171,11 @@ where
 
     /// Describe `doc` from scratch, because the client discarded its replica.
     async fn resync(&mut self, doc: crate::api::DocumentId) -> Result<(), RemoteError> {
+        // Any edit of this document still in flight was submitted by a client
+        // that has since said it cannot place the document. Crediting the client
+        // with the version that edit produces would suppress the very text the
+        // resync exists to deliver, so those edits stop counting as the client's.
+        self.pending_edits.retain(|_, pending| *pending != doc);
         self.projection.forget(doc);
         let Some(snapshot) = self.latest.get(&doc).cloned() else {
             return Ok(()); // nothing open under that id; nothing to describe
@@ -181,7 +189,7 @@ where
     /// greeting is nobody connecting, which is an ordinary way for a backend to
     /// finish, not a failure to report.
     async fn handshake(&mut self) -> Result<bool, RemoteError> {
-        let Some(body) = frame::read(&mut self.reader).await? else {
+        let Some(body) = self.reader.next().await? else {
             return Ok(false);
         };
         // A handshake that will not decode is fatal, unlike a later frame: there
@@ -278,7 +286,22 @@ where
                 self.projection.forget(*doc);
                 self.latest.remove(doc);
             },
-            _ => {},
+            // Any other answer to a pending edit is the session refusing it — a
+            // stale or overlapping change, or a document that has gone. The
+            // client applied that edit to its replica optimistically and is now a
+            // version ahead of the document, while this connection still believes
+            // the two agree. Forgetting what was sent makes the snapshot that
+            // follows describe the document from scratch rather than as a delta
+            // the client can no longer place. Clearing the entry also stops one
+            // leaking per refused edit for the life of the connection.
+            _ => {
+                if let Some(id) = id
+                    && let Some(doc) = self.pending_edits.remove(&id)
+                {
+                    tracing::warn!(?doc, "the session refused a client edit; re-describing it");
+                    self.projection.forget(doc);
+                }
+            },
         }
         self.send_event(id, event).await
     }

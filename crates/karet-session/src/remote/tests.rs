@@ -114,6 +114,43 @@ impl Pair {
         .flatten()
     }
 
+    /// Wait for a snapshot of `doc` whose text satisfies `wanted`, and keep it.
+    ///
+    /// The version matters as much as the text: an edit is built against the
+    /// version a snapshot reports, so a test that only checks text cannot tell a
+    /// replica that is numbered correctly from one that merely happens to hold
+    /// the right characters.
+    async fn await_snapshot(
+        &mut self,
+        doc: DocumentId,
+        wanted: impl Fn(&str) -> bool,
+    ) -> Option<std::sync::Arc<crate::local::DocSnapshot>> {
+        tokio::time::timeout(PATIENCE, async {
+            while let Some((id, snapshot)) = self.snapshots.recv().await {
+                if id == doc && wanted(&snapshot.buffer.text()) {
+                    return Some(snapshot);
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    /// Submit `change` as an edit to `doc`, without waiting for the answer.
+    fn edit(&mut self, doc: DocumentId, change: Change) {
+        let id = self.backend.next_id();
+        let _ = self.backend.send(
+            id,
+            Command::ApplyChange {
+                doc,
+                change,
+                cause: karet_text::EditCause::Type,
+            },
+        );
+    }
+
     /// Open `path` and return the document id and version the backend assigned.
     ///
     /// The version matters: an edit is relative to one, and a rope refuses a
@@ -496,4 +533,52 @@ async fn a_client_is_told_the_workspaces_configuration() {
     .unwrap_or(false);
 
     assert!(announced);
+}
+
+/// A replica is numbered by the *document*, not by a count of its own edits. A
+/// snapshot's version is what the presentation layer builds its next edit
+/// against, and a replica rebuilt from a full copy of the text used to start
+/// counting from its own zero — so the two disagreed and every edit after that
+/// was refused, silently, for the rest of the session.
+#[tokio::test]
+async fn a_re_described_document_is_still_editable() {
+    let Some(mut pair) = pair(&[("resync.txt", "alpha\n")]).await else {
+        return;
+    };
+    let path = pair.root().join("resync.txt");
+    let Some((doc, version)) = pair.open(path).await else {
+        return;
+    };
+    let Some(_) = pair.await_text(doc, |text| text == "alpha\n").await else {
+        return;
+    };
+
+    // Move the document off version zero first: a replica counting from its own
+    // zero agrees with the document by accident there, and would hide the bug.
+    pair.edit(doc, replace_first_line(version, 5, "beta"));
+    let Some(edited) = pair.await_snapshot(doc, |text| text == "beta\n").await else {
+        return;
+    };
+    assert!(edited.version > 0, "the document must have moved");
+
+    // A change against a version the document is not at. The session refuses it,
+    // and the client applied it optimistically first — so both halves know the
+    // replica no longer represents the document and it is described afresh.
+    pair.edit(doc, replace_first_line(edited.version + 7, 4, "nope"));
+
+    let Some(described) = pair.await_snapshot(doc, |text| text == "beta\n").await else {
+        return;
+    };
+    // The re-description carries the document's version, not the replica's own.
+    assert_eq!(
+        described.buffer.version(),
+        described.version,
+        "a snapshot and the buffer inside it must name the same version"
+    );
+
+    // The point of all of it: the editor still works afterwards.
+    pair.edit(doc, replace_first_line(described.version, 4, "gamma"));
+
+    let text = pair.await_text(doc, |text| text == "gamma\n").await;
+    assert_eq!(text.as_deref(), Some("gamma\n"));
 }
