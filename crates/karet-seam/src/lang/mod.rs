@@ -82,6 +82,7 @@ impl Attribute {
 /// [`crate::regroup`]'s job, and a name that resolves to nothing leaves the node exactly
 /// where it was written.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Owner {
     /// The name to look for — a bare name, or a path the language's own syntax allows.
     pub name: String,
@@ -304,6 +305,42 @@ fn line_opening_body(text: &str, start: usize, body: usize) -> Option<usize> {
     (newline > start).then_some(newline)
 }
 
+/// Every language mapping compiled into this build.
+///
+/// The one place the feature-gated set is written down. [`for_language`] dispatches
+/// through it, and so does subtype lookup — which is what lets a facet subtype
+/// deserialize back to the `&'static str` it was written from, rather than allocating.
+#[must_use]
+pub fn registered() -> Vec<&'static dyn SeamLanguage> {
+    let mut out: Vec<&'static dyn SeamLanguage> = Vec::new();
+    #[cfg(feature = "lang-rust")]
+    out.push(rust::mapping());
+    #[cfg(feature = "lang-python")]
+    out.push(python::mapping());
+    #[cfg(feature = "lang-javascript")]
+    out.push(typescript::mapping());
+    #[cfg(feature = "lang-swift")]
+    out.push(swift::mapping());
+    #[cfg(feature = "lang-kotlin")]
+    out.push(kotlin::mapping());
+    out
+}
+
+/// Every `(lens, subtype)` pair any registered language names.
+///
+/// Subtypes are open — a language names its own — so the only authority on which ones
+/// exist is the set of mappings actually compiled in.
+#[must_use]
+pub fn all_subtypes() -> Vec<(Lens, FacetSubtype)> {
+    let mut out: Vec<(Lens, FacetSubtype)> = registered()
+        .iter()
+        .flat_map(|language| language.subtypes().iter().copied())
+        .collect();
+    out.sort_by_key(|(lens, subtype)| (lens.index(), subtype.name()));
+    out.dedup();
+    out
+}
+
 /// Look up the mapping for a grammar, or `None` when the language has none.
 ///
 /// A language with no mapping is not an error: its files are simply not indexed, and
@@ -450,5 +487,30 @@ mod tests {
     fn an_unmapped_language_resolves_to_nothing() {
         // Language id 0 is never a mapped grammar; the caller degrades rather than failing.
         assert!(for_language(LanguageId(u16::MAX)).is_none());
+    }
+
+    #[test]
+    fn every_registered_mapping_is_reachable_by_its_own_language_id() {
+        // `registered` and `for_language` must agree: a mapping listed in one and
+        // unreachable through the other would classify nothing while looking present.
+        for mapping in registered() {
+            let found = for_language(mapping.language());
+            assert!(
+                found.is_some(),
+                "a registered mapping was not reachable by its language id"
+            );
+        }
+    }
+
+    #[test]
+    fn subtypes_are_deduplicated_and_grouped_by_lens() {
+        let all = all_subtypes();
+        let mut sorted = all.clone();
+        sorted.sort_by_key(|(lens, subtype)| (lens.index(), subtype.name()));
+        assert_eq!(all, sorted, "subtypes come back in a stable order");
+
+        let mut unique = all.clone();
+        unique.dedup();
+        assert_eq!(all.len(), unique.len(), "two languages naming the same subtype list it once");
     }
 }

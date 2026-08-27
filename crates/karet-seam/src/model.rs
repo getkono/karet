@@ -15,7 +15,7 @@ use crate::id::SeamId;
 /// A sixth lens would mean the taxonomy failed to describe something; the correct
 /// response is a new *subtype* under an existing lens, which languages may add freely.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
 pub enum Lens {
     /// What is visible from outside?
@@ -88,7 +88,7 @@ impl Lens {
 /// A construct with no sensible mapping becomes [`NodeKind::Other`] rather than forcing
 /// a new kind — the spine renders it, and its facets still classify it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
 #[non_exhaustive]
 pub enum NodeKind {
@@ -165,7 +165,7 @@ impl NodeKind {
 /// The ordering is meaningful: `vis:crate` in a query matches everything at least as
 /// reachable as crate-visible.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
 #[non_exhaustive]
 pub enum Visibility {
@@ -229,6 +229,34 @@ impl FacetSubtype {
     pub fn name(self) -> &'static str {
         self.0
     }
+
+    /// The registered subtype called `name`, or `None` if no compiled-in language names it.
+    ///
+    /// This is what lets the type stay a `Copy` `&'static str` and still be read back from
+    /// the index cache: a name is resolved to the constant a language already owns, never
+    /// to a freshly allocated string. A subtype that is not registered — because the cache
+    /// was written by a build with a language feature this one lacks — is not guessable,
+    /// and saying so rejects that cache entry instead of inventing a facet.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        crate::lang::all_subtypes()
+            .into_iter()
+            .map(|(_, subtype)| subtype)
+            .find(|subtype| subtype.name() == name)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for FacetSubtype {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Owned rather than borrowed: a reader-backed format (the index cache is CBOR)
+        // cannot hand back a borrow into its input. The allocation is transient — what
+        // ends up in the model is the registered `&'static str`.
+        let name = String::deserialize(deserializer)?;
+        Self::from_name(&name).ok_or_else(|| {
+            serde::de::Error::custom(format!("no registered facet subtype named `{name}`"))
+        })
+    }
 }
 
 impl std::fmt::Display for FacetSubtype {
@@ -243,7 +271,7 @@ impl std::fmt::Display for FacetSubtype {
 /// the two interesting states are both comparisons: declared public but unreachable, and
 /// declared private but re-exported into the public API.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Effective {
     /// The reach after following re-export chains.
     pub reach: Visibility,
@@ -259,7 +287,7 @@ pub struct Effective {
 /// mean deciding for the reader which ones matter, which is exactly the judgement the
 /// view exists to support rather than replace.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Facet {
     /// Which lens this facet belongs to.
     pub lens: Lens,
@@ -324,7 +352,7 @@ impl Facet {
 /// out, and saying so is the difference between "this is absent" and "I do not know" —
 /// the distinction the whole view is built to preserve.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
 pub enum ConfigMembership {
     /// Compiled under the active configuration.
@@ -350,7 +378,7 @@ impl ConfigMembership {
 
 /// An index-local handle for a source file, keeping node locations small.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FileId(pub u32);
 
 /// Where a node lives in the source.
@@ -358,7 +386,7 @@ pub struct FileId(pub u32);
 /// Byte span and line/column range are both kept: the span drives incremental re-index
 /// splicing, the range drives navigation. Neither participates in identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SeamLocation {
     /// Which file, resolved through the index's file table.
     pub file: FileId,
@@ -384,7 +412,7 @@ pub struct SeamLocation {
 /// one parent and never points sideways. Relations that are not containment live in
 /// [`crate::edge`].
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Node {
     /// This node's interned identity.
     pub id: SeamId,
@@ -572,5 +600,24 @@ mod tests {
         assert_eq!(ConfigMembership::Active.name(), "active");
         assert_eq!(ConfigMembership::Inactive.name(), "inactive");
         assert_eq!(ConfigMembership::Indeterminate.name(), "indeterminate");
+    }
+
+    #[test]
+    fn every_registered_subtype_round_trips_through_its_name() {
+        // This is what the index cache relies on: a subtype written as text comes back
+        // as a registered `&'static str` constant, so nothing is allocated per facet.
+        // Two languages may name the same subtype; the constants are equal by value,
+        // which is the identity the query language and the cache both use.
+        for (_, subtype) in crate::lang::all_subtypes() {
+            assert_eq!(FacetSubtype::from_name(subtype.name()), Some(subtype));
+        }
+    }
+
+    #[test]
+    fn an_unregistered_subtype_name_resolves_to_nothing() {
+        // A cache written by a build with a language this one lacks must be rejected,
+        // not guessed at.
+        assert_eq!(FacetSubtype::from_name("not-a-real-subtype"), None);
+        assert_eq!(FacetSubtype::from_name(""), None);
     }
 }

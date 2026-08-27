@@ -8,7 +8,6 @@ use super::Term;
 use super::TermKind;
 use crate::edge::EdgeKind;
 use crate::id::SeamPath;
-use crate::lang::SeamLanguage;
 use crate::model::LENSES;
 use crate::model::Lens;
 use crate::model::NodeKind;
@@ -277,14 +276,6 @@ fn edit_distance(a: &str, b: &str) -> usize {
 
 /// One language's subtypes for a lens.
 #[allow(dead_code, reason = "unused when no language feature is enabled")]
-fn subtypes_of(language: &dyn SeamLanguage, lens: Lens) -> Vec<String> {
-    language
-        .subtypes()
-        .iter()
-        .filter(|(l, _)| *l == lens)
-        .map(|(_, subtype)| subtype.name().to_owned())
-        .collect()
-}
 
 /// Every facet subtype *any* registered language can emit, for `<lens>:<subtype>`
 /// suggestions and validation.
@@ -294,18 +285,11 @@ fn subtypes_of(language: &dyn SeamLanguage, lens: Lens) -> Vec<String> {
 /// reject the other language's own vocabulary.
 #[must_use]
 pub fn known_subtypes(lens: Lens) -> Vec<String> {
-    let mut out = Vec::new();
-    #[cfg(feature = "lang-rust")]
-    out.extend(subtypes_of(&crate::lang::rust::Rust, lens));
-    #[cfg(feature = "lang-python")]
-    out.extend(subtypes_of(&crate::lang::python::Python, lens));
-    #[cfg(feature = "lang-javascript")]
-    out.extend(subtypes_of(&crate::lang::typescript::TypeScript, lens));
-    #[cfg(feature = "lang-swift")]
-    out.extend(subtypes_of(&crate::lang::swift::Swift, lens));
-    #[cfg(feature = "lang-kotlin")]
-    out.extend(subtypes_of(&crate::lang::kotlin::Kotlin, lens));
-    let _ = lens;
+    let mut out: Vec<String> = crate::lang::all_subtypes()
+        .into_iter()
+        .filter(|(candidate, _)| *candidate == lens)
+        .map(|(_, subtype)| subtype.name().to_owned())
+        .collect();
     out.sort();
     out.dedup();
     out
