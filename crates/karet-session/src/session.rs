@@ -135,6 +135,12 @@ pub struct SessionConfig {
     /// A headless embedding may leave this unset to disable built-in providers;
     /// configured custom servers remain available through the process supervisor.
     pub lsp_registry_dir: Option<PathBuf>,
+    /// Directory for the stored seam index, which turns a cold start into a warm one.
+    ///
+    /// The application sets this to the real user cache directory
+    /// ([`crate::seam_cache::default_cache_dir`]); left `None` (as in tests) every index
+    /// is built from source and no user directory is touched.
+    pub seam_cache_dir: Option<PathBuf>,
 }
 
 impl Default for SessionConfig {
@@ -147,6 +153,7 @@ impl Default for SessionConfig {
             swap_dir: None,
             process_supervisor: None,
             lsp_registry_dir: None,
+            seam_cache_dir: None,
         }
     }
 }
@@ -635,11 +642,12 @@ impl Session {
                         });
                 }
             },
-            Command::IndexSeams { root } => {
+            Command::IndexSeams { root, mode } => {
                 if let Some(root) = root.or_else(|| self.config.roots.first().cloned()) {
                     let _ = self.seam_worker.send(crate::seam_worker::SeamJob::Index {
                         id,
                         root,
+                        mode,
                         // The cap stops being theoretical once the root is a whole
                         // repository rather than one crate.
                         options: karet_seam::IndexOptions {

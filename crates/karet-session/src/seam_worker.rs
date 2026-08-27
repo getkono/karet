@@ -24,9 +24,12 @@ use tokio::sync::mpsc as tokio_mpsc;
 use crate::api::Event;
 use crate::api::RequestId;
 use crate::api::SeamQueryError;
+use crate::api::SeamSync;
+use crate::seam_cache::SeamCache;
 
 mod preview;
 mod project;
+mod sync;
 
 pub(crate) use project::edges_of;
 pub(crate) use project::node_view;
@@ -34,14 +37,16 @@ pub(crate) use project::summary_of;
 
 /// One unit of background seam work.
 pub(crate) enum SeamJob {
-    /// Index a package and answer with [`Event::SeamIndexed`].
+    /// Index a repository, streaming each package as it lands.
     Index {
-        /// Correlates the answering event.
+        /// Correlates the answering events.
         id: RequestId,
         /// The package root to index.
         root: PathBuf,
         /// How much of it to index.
         options: IndexOptions,
+        /// Whether the stored index may be trusted.
+        mode: SeamSync,
     },
     /// Re-index one edited file in place.
     Reindex {
@@ -79,17 +84,21 @@ pub(crate) enum SeamJob {
 /// event stream.
 pub(crate) fn spawn(
     events: tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
+    cache_dir: Option<PathBuf>,
 ) -> Sender<SeamJob> {
     let (jobs_tx, jobs_rx) = std::sync::mpsc::channel();
     let _ = std::thread::Builder::new()
         .name("karet-seam".to_owned())
-        .spawn(move || run(&jobs_rx, &events));
+        .spawn(move || run(&jobs_rx, &events, cache_dir));
     jobs_tx
 }
 
 /// The worker's own state: the index it owns and what it was built under.
 #[derive(Default)]
 struct Worker {
+    /// Where the stored index lives, or `None` to keep none — the headless and test
+    /// default, which never touches a user directory.
+    cache_dir: Option<PathBuf>,
     index: Option<SeamIndex>,
     root: Option<PathBuf>,
     configuration: Option<Configuration>,
@@ -99,8 +108,15 @@ struct Worker {
     preview: Option<preview::PreviewSource>,
 }
 
-fn run(jobs: &Receiver<SeamJob>, events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>) {
-    let mut worker = Worker::default();
+fn run(
+    jobs: &Receiver<SeamJob>,
+    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
+    cache_dir: Option<PathBuf>,
+) {
+    let mut worker = Worker {
+        cache_dir,
+        ..Worker::default()
+    };
     while let Ok(mut job) = jobs.recv() {
         // Coalesce what the user's intent coalesces: a newer index or query supersedes
         // an unstarted older one. A re-index is never dropped — losing one would leave
@@ -146,9 +162,12 @@ impl Worker {
         events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
     ) {
         match job {
-            SeamJob::Index { id, root, options } => {
-                self.index_workspace(id, &root, options, events)
-            },
+            SeamJob::Index {
+                id,
+                root,
+                options,
+                mode,
+            } => self.index_workspace(id, &root, options, mode, events),
             SeamJob::Reindex { id, path, text } => self.reindex(id, &path, &text, events),
             SeamJob::Query { id, text } => self.query(id, &text, events),
             SeamJob::Node { id, path } => self.node(id, &path, events),
@@ -156,24 +175,58 @@ impl Worker {
         }
     }
 
-    /// Build the index for everything under `root` from scratch.
+    /// Build the index for everything under `root`, reporting each package as it lands.
+    ///
+    /// The configuration is resolved *before* the walk rather than after it, because each
+    /// package is sent the moment it is finished and has to be right on arrival.
     fn index_workspace(
         &mut self,
         id: RequestId,
         root: &std::path::Path,
         options: IndexOptions,
+        mode: SeamSync,
         events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
     ) {
-        match karet_seam::index_workspace(root, options) {
+        if mode == SeamSync::Forced {
+            // Deleted before the walk, not merely ignored: this is the recourse when the
+            // stored index is itself the problem, so it must not survive the run.
+            SeamCache::remove(self.cache_dir.as_deref(), root);
+        }
+        let cache = match mode {
+            SeamSync::Incremental => SeamCache::load(self.cache_dir.as_deref(), root),
+            SeamSync::Forced => SeamCache::empty(),
+        };
+
+        self.available = project::configurations_for(root);
+        self.configuration = self.available.first().cloned();
+
+        let observer = sync::Observer::new(id, &cache, self.configuration.clone(), events);
+        let built = karet_seam::index_workspace_with(root, options, &observer);
+        let parsed = observer.parsed();
+        let walked = observer.walked();
+
+        match built {
             Ok(index) => {
                 self.index = Some(index);
                 self.root = Some(root.to_path_buf());
                 // A rebuilt index may describe entirely different files.
                 self.preview = None;
-                self.available = project::configurations_for(root);
-                self.configuration = self.available.first().cloned();
                 self.apply_configuration();
-                self.emit_index(Some(id), events);
+
+                let summary = self.summary();
+                let _ = events.send((
+                    Some(id),
+                    Event::SeamIndexFinished {
+                        summary,
+                        parsed,
+                        files: walked,
+                    },
+                ));
+                SeamCache::save(
+                    self.cache_dir.as_deref(),
+                    root,
+                    observer.into_contributions(),
+                );
             },
             Err(error) => {
                 let _ = events.send((
@@ -184,6 +237,24 @@ impl Worker {
                 ));
             },
         }
+    }
+
+    /// What the index currently amounts to.
+    fn summary(&self) -> crate::api::SeamSummary {
+        let Some(index) = self.index.as_ref() else {
+            return project::summary_of(
+                &SeamIndex::new(),
+                self.root.as_deref(),
+                self.configuration.as_ref(),
+                &self.available,
+            );
+        };
+        project::summary_of(
+            index,
+            self.root.as_deref(),
+            self.configuration.as_ref(),
+            &self.available,
+        )
     }
 
     /// Re-index one file, then re-answer with the whole tree.

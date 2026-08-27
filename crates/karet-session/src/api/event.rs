@@ -296,6 +296,47 @@ pub enum Event {
         /// Every node, flattened.
         nodes: Vec<SeamNodeView>,
     },
+    /// One package's seams are in, part-way through a [`Command::IndexSeams`].
+    ///
+    /// Packages are read concurrently and reported as each finishes, so a repository's
+    /// first rows appear long before its last crate is parsed. Arrival order is completion
+    /// order, not discovery order — the view keys nodes by identity, so it merges these in
+    /// whatever order they land.
+    ///
+    /// Each package is *final* when it is sent: rollups and configuration membership are
+    /// already resolved, and nothing later revises it. A package root is a subtree root,
+    /// which is what makes that true.
+    SeamPackageIndexed {
+        /// Where this package sits in discovery order.
+        ///
+        /// Carried because arrival order is completion order: without it the view's first
+        /// column — the package list — would be ordered by whichever core finished first,
+        /// and would come out differently on every sync.
+        order: usize,
+        /// The package's own root identity, so a re-sync replaces rather than duplicates.
+        root: String,
+        /// Every node in this package, flattened, parents before children.
+        nodes: Vec<SeamNodeView>,
+        /// Modules in this package whose text could not be found.
+        unresolved_modules: Vec<(String, Vec<PathBuf>)>,
+    },
+    /// An index is complete, closing a [`Command::IndexSeams`].
+    ///
+    /// Exactly one arrives per request, after every [`Event::SeamPackageIndexed`] for it.
+    SeamIndexFinished {
+        /// What the finished index amounts to, for the header and the empty states.
+        summary: SeamSummary,
+        /// How many files had to be parsed rather than replayed from the stored index.
+        ///
+        /// Zero means every file was unchanged since the last sync. This is what lets the
+        /// view say whether a sync did anything.
+        parsed: usize,
+        /// How many source files the sync covered in total.
+        ///
+        /// The files the walk actually read or replayed — not the index's whole file
+        /// table, which also holds each package's manifest as an anchor.
+        files: usize,
+    },
     /// A package could not be indexed, answering [`Command::IndexSeams`].
     SeamIndexFailed {
         /// Why, phrased for the reader.

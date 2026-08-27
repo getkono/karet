@@ -350,3 +350,19 @@ mod tests {
         assert!(!unresolved.is_complete());
     }
 }
+
+/// How much of a seam index a sync should rebuild.
+///
+/// The distinction exists because a cache can be wrong in ways nothing else can detect.
+/// [`Incremental`](Self::Incremental) trusts what is stored and re-reads only what
+/// changed; [`Forced`](Self::Forced) throws it away, which is the only recourse when the
+/// stored answer is itself the problem.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SeamSync {
+    /// Re-discover packages, re-read what changed, replay the rest.
+    #[default]
+    Incremental,
+    /// Discard the cache and read every file again.
+    Forced,
+}
