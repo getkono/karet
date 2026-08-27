@@ -118,7 +118,8 @@ pub trait IndexObserver: Sync {
     ///
     /// Called from whichever worker finished it, so packages arrive in completion order,
     /// not discovery order. Taken by `&mut` so a caller can apply its own configuration
-    /// before reading the tree out.
+    /// before reading the tree out, and can take what it means to keep rather than copy
+    /// it — nothing downstream reads the package again.
     fn package_indexed(&self, indexed: &mut IndexedPackage) {
         let _ = indexed;
     }

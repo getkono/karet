@@ -100,8 +100,10 @@ impl IndexObserver for Observer<'_> {
         self.parsed.fetch_add(indexed.parsed, Ordering::Relaxed);
         self.walked
             .fetch_add(indexed.contributions.len(), Ordering::Relaxed);
+        // Taken rather than copied: this is every node the package produced, and the only
+        // thing left to do with it is write it out once the run is over.
         if let Ok(mut held) = self.contributions.lock() {
-            held.extend(indexed.contributions.iter().cloned());
+            held.append(&mut indexed.contributions);
         }
 
         let index = &indexed.index;
