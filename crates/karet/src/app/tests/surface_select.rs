@@ -1,6 +1,9 @@
 //! Pointer text selection on the read-only surfaces: dragging highlights rows,
 //! and `Ctrl+C` copies the content without the chrome painted around it.
 
+use karet_widgets::RowPos;
+use karet_widgets::RowSelection;
+
 use super::support::*;
 use crate::app::*;
 
@@ -75,12 +78,12 @@ fn dragging_a_unified_diff_selects_rows_without_their_gutters() {
     let added = (0..region.area.height)
         .map(|offset| region.first_row + usize::from(offset))
         .find(|row| {
-            app.surface_row(SelectSurface::Unified, *row)
+            app.surface_row(&region, *row)
                 .is_some_and(|painted| painted.text == "BRAVO")
         });
     assert!(added.is_some(), "the added line should be a selectable row");
     let Some(added) = added else { return };
-    let painted = app.surface_row(SelectSurface::Unified, added);
+    let painted = app.surface_row(&region, added);
     assert!(painted.is_some());
     let Some(painted) = painted else { return };
 
@@ -107,7 +110,7 @@ fn dragging_down_a_unified_diff_spans_several_rows() {
     let rows: Vec<(u16, String)> = (0..region.area.height)
         .filter_map(|offset| {
             let row = region.first_row + usize::from(offset);
-            let painted = app.surface_row(SelectSurface::Unified, row)?;
+            let painted = app.surface_row(&region, row)?;
             Some((region.area.y + offset, painted.text))
         })
         .collect();
@@ -115,7 +118,7 @@ fn dragging_down_a_unified_diff_spans_several_rows() {
 
     let content_x = region.area.x
         + app
-            .surface_row(SelectSurface::Unified, region.first_row + 1)
+            .surface_row(&region, region.first_row + 1)
             .map_or(0, |painted| painted.content_x);
     drag(
         &mut app,
@@ -153,10 +156,10 @@ fn a_side_by_side_drag_never_bleeds_into_the_other_column() {
     // Select the old side, dragging well past its right edge into the new one.
     let row = (0..old.area.height)
         .map(|offset| old.first_row + usize::from(offset))
-        .find(|row| app.surface_row(SelectSurface::OldColumn, *row).is_some());
+        .find(|row| app.surface_row(&old, *row).is_some());
     assert!(row.is_some());
     let Some(row) = row else { return };
-    let painted = app.surface_row(SelectSurface::OldColumn, row);
+    let painted = app.surface_row(&old, row);
     let Some(painted) = painted else { return };
     let y = old.area.y + u16::try_from(row - old.first_row).unwrap_or_default();
 
@@ -205,12 +208,12 @@ fn the_selected_run_is_painted_with_the_selection_background() {
     let added = (0..region.area.height)
         .map(|offset| region.first_row + usize::from(offset))
         .find(|row| {
-            app.surface_row(SelectSurface::Unified, *row)
+            app.surface_row(&region, *row)
                 .is_some_and(|painted| painted.text == "BRAVO")
         });
     assert!(added.is_some());
     let Some(added) = added else { return };
-    let Some(painted) = app.surface_row(SelectSurface::Unified, added) else {
+    let Some(painted) = app.surface_row(&region, added) else {
         return;
     };
     let y = region.area.y + u16::try_from(added - region.first_row).unwrap_or_default();
@@ -253,7 +256,7 @@ fn dragging_a_hex_dump_copies_its_bytes_without_the_offset_column() {
     screen(&mut app, 100, 24);
     let region = region(&app, SelectSurface::Hex);
 
-    let Some(first) = app.surface_row(SelectSurface::Hex, 0) else {
+    let Some(first) = app.surface_row(&region, 0) else {
         return;
     };
     let start = region.area.x + first.content_x;
@@ -282,7 +285,7 @@ fn a_hex_selection_spanning_rows_copies_each_row_in_full() {
     app.active = 0;
     screen(&mut app, 100, 24);
     let region = region(&app, SelectSurface::Hex);
-    let Some(first) = app.surface_row(SelectSurface::Hex, 0) else {
+    let Some(first) = app.surface_row(&region, 0) else {
         return;
     };
     let start = region.area.x + first.content_x;
@@ -316,12 +319,12 @@ fn dragging_a_markdown_preview_copies_the_text_it_renders() {
     let prose = (0..region.area.height)
         .map(|offset| region.first_row + usize::from(offset))
         .find(|row| {
-            app.surface_row(SelectSurface::MarkdownPreview, *row)
+            app.surface_row(&region, *row)
                 .is_some_and(|painted| painted.text.contains("paragraph"))
         });
     assert!(prose.is_some(), "the paragraph should be a selectable row");
     let Some(prose) = prose else { return };
-    let Some(painted) = app.surface_row(SelectSurface::MarkdownPreview, prose) else {
+    let Some(painted) = app.surface_row(&region, prose) else {
         return;
     };
 
@@ -350,12 +353,12 @@ fn a_markdown_selection_carries_the_rendered_decorations() {
     let bullet = (0..region.area.height)
         .map(|offset| region.first_row + usize::from(offset))
         .find(|row| {
-            app.surface_row(SelectSurface::MarkdownPreview, *row)
+            app.surface_row(&region, *row)
                 .is_some_and(|painted| painted.text.contains("first item"))
         });
     assert!(bullet.is_some());
     let Some(bullet) = bullet else { return };
-    let Some(painted) = app.surface_row(SelectSurface::MarkdownPreview, bullet) else {
+    let Some(painted) = app.surface_row(&region, bullet) else {
         return;
     };
     // A preview row's text is what the reader sees, list marker included — the
@@ -366,4 +369,131 @@ fn a_markdown_selection_carries_the_rendered_decorations() {
         painted.text
     );
     assert!(painted.text.contains("first item"));
+}
+
+/// The commit-card region recorded in the focused pane, whatever prefix the
+/// current layout gave it.
+fn cards_region(app: &App) -> Option<SelectRegion> {
+    app.pane_frames
+        .first()?
+        .select_regions
+        .iter()
+        .find(|region| matches!(region.surface, SelectSurface::CommitCards { .. }))
+        .copied()
+}
+
+/// The first card row carrying content, as `(screen row, content)`.
+fn first_card_row(app: &App, region: &SelectRegion) -> Option<(u16, SurfaceRow)> {
+    (0..region.area.height).find_map(|offset| {
+        let row = region.first_row + usize::from(offset);
+        let painted = app.surface_row(region, row)?;
+        (!painted.text.is_empty()).then(|| (region.area.y + offset, painted))
+    })
+}
+
+#[test]
+fn dragging_a_commit_file_card_copies_the_diff_without_its_rail() {
+    let mut app = responsive_commit_app();
+    // Wide enough for the rail-and-diff layout.
+    screen(&mut app, 120, 24);
+    let region = cards_region(&app);
+    assert!(region.is_some(), "the wide layout records a card region");
+    let Some(region) = region else { return };
+    assert!(
+        matches!(
+            region.surface,
+            SelectSurface::CommitCards { prefix_rows: 0 }
+        ),
+        "the wide layout keeps its file index in a separate rail"
+    );
+
+    let found = first_card_row(&app, &region);
+    assert!(found.is_some(), "a card body row should be selectable");
+    let Some((y, painted)) = found else { return };
+
+    let start = region.area.x + painted.content_x;
+    let width = u16::try_from(painted.text.len()).unwrap_or(u16::MAX);
+    drag(&mut app, (start, y), (start + width, y));
+
+    assert_eq!(
+        app.surface_selection_text().as_deref(),
+        Some(painted.text.as_str()),
+        "the card rail and the diff gutter are both chrome"
+    );
+}
+
+#[test]
+fn the_stacked_layout_records_its_file_index_as_prefix_rows() {
+    let mut app = responsive_commit_app();
+    // Below the 104-column breakpoint the file index stacks above the cards.
+    screen(&mut app, 100, 24);
+    let region = cards_region(&app);
+    assert!(region.is_some(), "the stacked layout records a card region");
+    let Some(region) = region else { return };
+
+    let SelectSurface::CommitCards { prefix_rows } = region.surface else {
+        return;
+    };
+    assert!(
+        prefix_rows > 0,
+        "the summary and per-file index rows precede the first card"
+    );
+    // Those prefix rows are chrome: they carry no selectable content.
+    for row in region.first_row..region.first_row + usize::from(prefix_rows) {
+        assert_eq!(
+            app.surface_row(&region, row),
+            None,
+            "prefix row {row} is the file index, not diff content"
+        );
+    }
+}
+
+#[test]
+fn a_commit_selection_skips_the_chrome_between_two_cards() {
+    let mut app = responsive_commit_app();
+    screen(&mut app, 120, 40);
+    let Some(region) = cards_region(&app) else {
+        return;
+    };
+
+    // Every row the cards paint, tagged with whether it carries content.
+    let rows: Vec<(usize, Option<String>)> = (0..region.area.height)
+        .map(|offset| {
+            let row = region.first_row + usize::from(offset);
+            (row, app.surface_row(&region, row).map(|p| p.text))
+        })
+        .collect();
+    let content: Vec<usize> = rows
+        .iter()
+        .filter(|(_, text)| text.is_some())
+        .map(|(row, _)| *row)
+        .collect();
+    assert!(content.len() >= 2, "several body rows are visible");
+
+    // Selecting across the whole visible span copies the body rows and leaves
+    // blank lines where the card borders and separators were.
+    let Some(first) = rows.first().map(|(row, _)| *row) else {
+        return;
+    };
+    let Some(last) = rows.last().map(|(row, _)| *row) else {
+        return;
+    };
+    let mut selection = RowSelection::new(RowPos::new(first, 0));
+    selection.extend_to(RowPos::new(last, 0));
+    app.surface_selection = Some(SurfaceSelection {
+        surface: region.surface,
+        selection,
+    });
+
+    let text = app.surface_selection_text().unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), last - first, "one line per covered row");
+    assert!(
+        lines.iter().any(|line| !line.is_empty()),
+        "body rows carry their diff text"
+    );
+    assert!(
+        lines.iter().any(|line| line.is_empty()),
+        "card headers, footers and separators come across as blank lines"
+    );
 }

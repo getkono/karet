@@ -2,7 +2,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::*;
 
-mod responsive;
+pub(in crate::ui) mod responsive;
 
 pub(super) use responsive::draw_commit;
 pub(super) use responsive::draw_compare;

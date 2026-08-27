@@ -174,6 +174,7 @@ use ratatui::layout::Rect;
 pub(crate) use runtime::run;
 pub(crate) use select::SelectRegion;
 pub(crate) use select::SelectSurface;
+pub(crate) use select::SurfaceRow;
 pub(crate) use select::SurfaceSelection;
 pub(crate) use state::*;
 use tokio::sync::mpsc;

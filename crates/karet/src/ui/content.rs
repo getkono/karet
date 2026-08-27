@@ -363,6 +363,15 @@ pub(super) fn draw_pane_content(
             badge_rect = painted.badge_rect;
             file_hits = painted.file_hits;
             collapse_hits = painted.collapse_hits;
+            select_regions = painted.select_regions;
+            select::commit_cards(
+                f,
+                theme,
+                ctx.selection,
+                &select_regions,
+                &files.files,
+                &view.toggled_files,
+            );
         },
         TabKind::CommitLoading {
             rev,
@@ -400,6 +409,15 @@ pub(super) fn draw_pane_content(
             );
             file_hits = painted.file_hits;
             collapse_hits = painted.collapse_hits;
+            select_regions = painted.select_regions;
+            select::commit_cards(
+                f,
+                theme,
+                ctx.selection,
+                &select_regions,
+                &files.files,
+                &view.toggled_files,
+            );
         },
         TabKind::CommitGraph {
             history_path: _,

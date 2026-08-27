@@ -35,6 +35,14 @@ pub(crate) enum SelectSurface {
     Hex,
     /// The markdown preview, whether split beside a source pane or standalone.
     MarkdownPreview,
+    /// The commit / compare view's file cards.
+    CommitCards {
+        /// Rows of summary and file index painted before the first card. The
+        /// stacked and wide layouts differ here, so it is part of the surface's
+        /// identity: a selection made under one layout cannot resolve under the
+        /// other.
+        prefix_rows: u16,
+    },
 }
 
 /// Where a selectable surface painted its rows last frame.
@@ -105,7 +113,9 @@ pub(crate) fn diff_row(file: &FileView, surface: SelectSurface, row: usize) -> O
         SelectSurface::Unified => karet_diff::unified_row(&file.change.diff, row),
         SelectSurface::OldColumn => karet_diff::side_by_side_row(&file.change.diff, row).0,
         SelectSurface::NewColumn => karet_diff::side_by_side_row(&file.change.diff, row).1,
-        SelectSurface::Hex | SelectSurface::MarkdownPreview => None,
+        SelectSurface::Hex | SelectSurface::MarkdownPreview | SelectSurface::CommitCards { .. } => {
+            None
+        },
     }?;
     Some(SurfaceRow {
         text: content.text,
@@ -114,10 +124,28 @@ pub(crate) fn diff_row(file: &FileView, surface: SelectSurface, row: usize) -> O
 }
 
 impl App {
-    /// The copyable content of `surface`'s row `row` in the active tab.
-    pub(crate) fn surface_row(&self, surface: SelectSurface, row: usize) -> Option<SurfaceRow> {
+    /// The copyable content of `region`'s row `row` in the active tab.
+    ///
+    /// The region travels with the query because a row's chrome width is part of
+    /// the layout that painted it, not of the row itself.
+    pub(crate) fn surface_row(&self, region: &SelectRegion, row: usize) -> Option<SurfaceRow> {
         let tab = self.tabs.get(self.active)?;
         let kind = &tab.kind;
+        let surface = region.surface;
+        if let SelectSurface::CommitCards { prefix_rows } = surface {
+            let (TabKind::Commit { files, view, .. } | TabKind::Compare { files, view, .. }) = kind
+            else {
+                return None;
+            };
+            return crate::ui::commit_document_row(
+                &self.theme,
+                &files.files,
+                region.area.width,
+                usize::from(prefix_rows),
+                &view.toggled_files,
+                row,
+            );
+        }
         if surface == SelectSurface::MarkdownPreview {
             return match kind {
                 TabKind::MarkdownPreview { wrapped, .. } => markdown_row(wrapped, row),
@@ -187,7 +215,7 @@ impl App {
         let last = usize::from(region.area.height.saturating_sub(1));
         let offset = usize::from(row.saturating_sub(region.area.y)).min(last);
         let index = region.first_row.saturating_add(offset);
-        let Some(painted) = self.surface_row(region.surface, index) else {
+        let Some(painted) = self.surface_row(region, index) else {
             return RowPos::new(index, 0);
         };
         let geometry = RowGeometry::new(region.area, painted.content_x).hscroll(region.hscroll);
@@ -234,10 +262,11 @@ impl App {
         if active.selection.is_empty() {
             return None;
         }
+        let region = self.select_region(active.surface)?;
         let (start, end) = active.selection.bounds();
         let rows: Vec<String> = (start.row..=end.row)
             .map(|row| {
-                self.surface_row(active.surface, row)
+                self.surface_row(&region, row)
                     .map(|painted| painted.text)
                     .unwrap_or_default()
             })

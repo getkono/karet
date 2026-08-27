@@ -125,6 +125,7 @@ pub(super) fn text_field_text(
     )
 }
 
+pub(crate) use commit::responsive::document_row as commit_document_row;
 pub(crate) use karet_widgets::scroll::ScrollAxes;
 pub(crate) use karet_widgets::scroll::ScrollAxis;
 pub(crate) use karet_widgets::scroll::ScrollBar;

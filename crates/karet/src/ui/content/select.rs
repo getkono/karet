@@ -123,6 +123,36 @@ pub(in crate::ui) fn markdown(
     region
 }
 
+/// Lay the selection background over the commit view's file cards.
+///
+/// Unlike the other surfaces this paints after the fact rather than inside the
+/// card renderer: the cards are assembled into one paragraph with the header
+/// above them, so the rows are only addressable once they are on screen.
+pub(in crate::ui) fn commit_cards(
+    f: &mut Frame,
+    theme: &Theme,
+    selection: Option<SurfaceSelection>,
+    regions: &[SelectRegion],
+    files: &[crate::render::FileView],
+    toggled: &std::collections::BTreeSet<usize>,
+) {
+    for region in regions {
+        let SelectSurface::CommitCards { prefix_rows } = region.surface else {
+            continue;
+        };
+        paint_rows(f, theme, selection, region, &|row| {
+            crate::ui::commit_document_row(
+                theme,
+                files,
+                region.area.width,
+                usize::from(prefix_rows),
+                toggled,
+                row,
+            )
+        });
+    }
+}
+
 /// Lay the selection background over `region`'s visible rows.
 fn paint(
     f: &mut Frame,
