@@ -24,6 +24,8 @@ use crate::text::LineIndex;
 
 pub mod python;
 pub mod rust;
+#[cfg(feature = "lang-swift")]
+pub mod swift;
 #[cfg(feature = "lang-javascript")]
 pub mod typescript;
 
@@ -321,6 +323,12 @@ pub fn for_language(language: LanguageId) -> Option<&'static dyn SeamLanguage> {
     #[cfg(feature = "lang-javascript")]
     if typescript::language_ids().contains(&language) {
         return Some(typescript::mapping());
+    }
+    #[cfg(feature = "lang-swift")]
+    if let Some(swift) = swift::language_id()
+        && swift == language
+    {
+        return Some(swift::mapping());
     }
     let _ = language;
     None

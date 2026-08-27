@@ -663,10 +663,16 @@ fn a_directory_with_no_module_file_still_becomes_one_node() -> TestResult {
     let index = index_workspace(dir.path(), IndexOptions::default())?;
     let found = paths(&index);
     // `model` is a namespace with no file of its own, so it points at `Shape.swift` for
-    // somewhere to open — one node, not two, and `Shape` keeps its own.
+    // somewhere to open. Extracting that file into `model` as well would give the struct
+    // two nodes, one under each — so `Shape` the module holds `Shape` the struct, once.
     assert_eq!(
         found,
-        ["Widgets", "Widgets::model", "Widgets::model::Shape"]
+        [
+            "Widgets",
+            "Widgets::model",
+            "Widgets::model::Shape",
+            "Widgets::model::Shape::Shape",
+        ]
     );
     Ok(())
 }

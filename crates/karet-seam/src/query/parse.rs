@@ -301,6 +301,8 @@ pub fn known_subtypes(lens: Lens) -> Vec<String> {
     out.extend(subtypes_of(&crate::lang::python::Python, lens));
     #[cfg(feature = "lang-javascript")]
     out.extend(subtypes_of(&crate::lang::typescript::TypeScript, lens));
+    #[cfg(feature = "lang-swift")]
+    out.extend(subtypes_of(&crate::lang::swift::Swift, lens));
     let _ = lens;
     out.sort();
     out.dedup();
