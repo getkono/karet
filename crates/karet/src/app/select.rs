@@ -31,6 +31,8 @@ pub(crate) enum SelectSurface {
     OldColumn,
     /// The new (right) column of the side-by-side diff.
     NewColumn,
+    /// The hex dump's byte and ASCII columns.
+    Hex,
 }
 
 /// Where a selectable surface painted its rows last frame.
@@ -72,11 +74,20 @@ pub(crate) struct SurfaceRow {
 ///
 /// A row's gutter width is not constant across a file — a line number past four
 /// digits widens it — so it travels with the text rather than being assumed.
+/// The copyable content of hex row `row` of `bytes`.
+pub(crate) fn hex_row(bytes: &[u8], row: usize) -> Option<SurfaceRow> {
+    Some(SurfaceRow {
+        text: karet_fileview::hex::row_text(bytes, row)?,
+        content_x: karet_fileview::hex::OFFSET_WIDTH,
+    })
+}
+
 pub(crate) fn diff_row(file: &FileView, surface: SelectSurface, row: usize) -> Option<SurfaceRow> {
     let content = match surface {
         SelectSurface::Unified => karet_diff::unified_row(&file.change.diff, row),
         SelectSurface::OldColumn => karet_diff::side_by_side_row(&file.change.diff, row).0,
         SelectSurface::NewColumn => karet_diff::side_by_side_row(&file.change.diff, row).1,
+        SelectSurface::Hex => None,
     }?;
     Some(SurfaceRow {
         text: content.text,
@@ -87,11 +98,18 @@ pub(crate) fn diff_row(file: &FileView, surface: SelectSurface, row: usize) -> O
 impl App {
     /// The copyable content of `surface`'s row `row` in the active tab.
     pub(crate) fn surface_row(&self, surface: SelectSurface, row: usize) -> Option<SurfaceRow> {
+        let kind = &self.tabs.get(self.active)?.kind;
+        if surface == SelectSurface::Hex {
+            let TabKind::Hex { bytes, .. } = kind else {
+                return None;
+            };
+            return hex_row(bytes, row);
+        }
         let TabKind::Diff {
             file: Some(file),
             view,
             ..
-        } = &self.tabs.get(self.active)?.kind
+        } = kind
         else {
             return None;
         };

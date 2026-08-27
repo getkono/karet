@@ -236,3 +236,67 @@ fn the_selected_run_is_painted_with_the_selection_background() {
         "the gutter is never highlighted"
     );
 }
+
+#[test]
+fn dragging_a_hex_dump_copies_its_bytes_without_the_offset_column() {
+    let mut app = app();
+    let bytes: Vec<u8> = (0u8..48).collect();
+    app.tabs = vec![Tab::new(
+        "blob.bin",
+        TabKind::Hex {
+            path: PathBuf::from("blob.bin"),
+            bytes: bytes.clone(),
+            scroll: 0,
+        },
+    )];
+    app.active = 0;
+    screen(&mut app, 100, 24);
+    let region = region(&app, SelectSurface::Hex);
+
+    let Some(first) = app.surface_row(SelectSurface::Hex, 0) else {
+        return;
+    };
+    let start = region.area.x + first.content_x;
+    // Select the first two byte columns of the first row.
+    drag(&mut app, (start, region.area.y), (start + 6, region.area.y));
+
+    assert_eq!(
+        app.surface_selection_text().as_deref(),
+        Some("00 01 "),
+        "the file-offset column is chrome, so it is never copied"
+    );
+}
+
+#[test]
+fn a_hex_selection_spanning_rows_copies_each_row_in_full() {
+    let mut app = app();
+    let bytes: Vec<u8> = (0u8..48).collect();
+    app.tabs = vec![Tab::new(
+        "blob.bin",
+        TabKind::Hex {
+            path: PathBuf::from("blob.bin"),
+            bytes,
+            scroll: 0,
+        },
+    )];
+    app.active = 0;
+    screen(&mut app, 100, 24);
+    let region = region(&app, SelectSurface::Hex);
+    let Some(first) = app.surface_row(SelectSurface::Hex, 0) else {
+        return;
+    };
+    let start = region.area.x + first.content_x;
+
+    drag(
+        &mut app,
+        (start, region.area.y),
+        (start + 200, region.area.y + 1),
+    );
+
+    let text = app.surface_selection_text().unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "two rows selected: {text:?}");
+    assert!(lines[0].starts_with("00 01 02"), "{:?}", lines[0]);
+    assert!(lines[1].starts_with("10 11 12"), "{:?}", lines[1]);
+    assert!(lines[0].ends_with('|'), "the ASCII column comes along too");
+}

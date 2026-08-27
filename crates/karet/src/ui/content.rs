@@ -430,6 +430,7 @@ pub(super) fn draw_pane_content(
             *scroll = (*scroll).min(rows.saturating_sub(1));
             let (dump, tracks) = reserve_tracks(area, ScrollAxes::VERTICAL);
             f.render_widget(HexView::new(bytes).scroll(*scroll).theme(theme), dump);
+            select_regions = select::hex(f, theme, ctx.selection, dump, bytes, *scroll);
             hits.record(
                 tracks.paint(
                     f.buffer_mut(),

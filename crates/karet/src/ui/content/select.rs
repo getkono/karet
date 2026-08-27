@@ -17,7 +17,9 @@ use ratatui::layout::Rect;
 use crate::app::SelectRegion;
 use crate::app::SelectSurface;
 use crate::app::SurfaceSelection;
+use crate::app::select::SurfaceRow;
 use crate::app::select::diff_row;
+use crate::app::select::hex_row;
 use crate::render::FileView;
 
 /// The rect `draw_scrollable_lines` paints rows into for `area`.
@@ -80,6 +82,25 @@ pub(super) fn side_by_side(
     .collect()
 }
 
+/// Record and paint the hex dump's selectable rows.
+pub(super) fn hex(
+    f: &mut Frame,
+    theme: &Theme,
+    selection: Option<SurfaceSelection>,
+    area: Rect,
+    bytes: &[u8],
+    scroll: usize,
+) -> Vec<SelectRegion> {
+    let region = SelectRegion {
+        surface: SelectSurface::Hex,
+        area,
+        first_row: scroll,
+        hscroll: 0,
+    };
+    paint_rows(f, theme, selection, &region, &|row| hex_row(bytes, row));
+    vec![region]
+}
+
 /// Lay the selection background over `region`'s visible rows.
 fn paint(
     f: &mut Frame,
@@ -87,6 +108,20 @@ fn paint(
     selection: Option<SurfaceSelection>,
     region: &SelectRegion,
     file: &FileView,
+) {
+    paint_rows(f, theme, selection, region, &|row| {
+        diff_row(file, region.surface, row)
+    });
+}
+
+/// Lay the selection background over `region`'s visible rows, asking `row_text`
+/// for the content of each.
+fn paint_rows(
+    f: &mut Frame,
+    theme: &Theme,
+    selection: Option<SurfaceSelection>,
+    region: &SelectRegion,
+    row_text: &dyn Fn(usize) -> Option<SurfaceRow>,
 ) {
     let Some(active) = selection.filter(|active| active.surface == region.surface) else {
         return;
@@ -97,7 +132,7 @@ fn paint(
     let bg = theme.role(ThemeRole::Selection).to_ratatui();
     for offset in 0..region.area.height {
         let row = region.first_row.saturating_add(usize::from(offset));
-        let Some(painted) = diff_row(file, region.surface, row) else {
+        let Some(painted) = row_text(row) else {
             continue;
         };
         let Some(span) = active.selection.row_span(row, painted.text.len()) else {
