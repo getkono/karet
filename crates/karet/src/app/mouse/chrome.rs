@@ -157,6 +157,22 @@ impl App {
         true
     }
 
+    /// Handle a left click on the top-level view switcher. Returns `true` when the
+    /// event was over the chrome row — clicks there never fall through to the body.
+    pub(in crate::app) fn handle_view_chrome_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if !rect_contains(self.view_chrome_rect, (mouse.column, mouse.row)) {
+            return false;
+        }
+        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind
+            && let Some(view) = self.view_hits.iter().find_map(|&(start, end, view)| {
+                (mouse.column >= start && mouse.column < end).then_some(view)
+            })
+        {
+            self.dispatch(Command::SelectView(view));
+        }
+        true
+    }
+
     /// Open the attributed commit when the visible inline blame label is
     /// double-clicked. The first click is consumed so it cannot fall through to the
     /// editor and count twice in the shared multi-click streak.

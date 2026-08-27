@@ -2,6 +2,9 @@ use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 
 use super::*;
+use crate::view::View;
+
+mod context;
 
 fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
     KeyEvent::new(code, mods)
@@ -29,7 +32,7 @@ fn res_in(focus: Focus, panel: SidebarPanel, is_diff: bool, key: KeyEvent) -> Op
     } else {
         EditorTab::Plain
     };
-    let ctx = Context::focus(FocusTarget::from(focus, panel, tab));
+    let ctx = Context::focus(FocusTarget::from(focus, panel, tab, View::Editor));
     match resolve(ctx, &[KeyChord::from_event(key)]) {
         Resolved::Command(c) => Some(c),
         _ => None,
@@ -313,39 +316,6 @@ fn panel_selection_and_quit() {
             key(KeyCode::Char('q'), KeyModifiers::CONTROL)
         ),
         Some(Command::Quit)
-    );
-}
-
-#[test]
-fn focus_target_derivation() {
-    assert_eq!(
-        FocusTarget::from(
-            Focus::Sidebar,
-            SidebarPanel::SourceControl,
-            EditorTab::Plain
-        ),
-        FocusTarget::SourceControl
-    );
-    assert_eq!(
-        FocusTarget::from(Focus::Sidebar, SidebarPanel::Explorer, EditorTab::Plain),
-        FocusTarget::Explorer
-    );
-    // Opening a diff moves focus to the editor: the active layer becomes
-    // DiffEditor, NOT SourceControl, even while the SCM panel is still the
-    // underlying sidebar panel. This is the fact behind the "SCM keys do
-    // nothing after previewing a diff" bug.
-    assert_eq!(
-        FocusTarget::from(Focus::Editor, SidebarPanel::SourceControl, EditorTab::Diff),
-        FocusTarget::DiffEditor
-    );
-    assert_eq!(
-        FocusTarget::from(Focus::Editor, SidebarPanel::Explorer, EditorTab::Plain),
-        FocusTarget::Editor
-    );
-    // A too-large placeholder in the editor resolves to its override target.
-    assert_eq!(
-        FocusTarget::from(Focus::Editor, SidebarPanel::Explorer, EditorTab::Oversize),
-        FocusTarget::Oversize
     );
 }
 

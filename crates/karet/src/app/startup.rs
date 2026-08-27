@@ -23,6 +23,7 @@ impl App {
             icon_style: IconStyle::default(),
             icon_override: None,
             caps: TerminalCaps::detect(),
+            view: View::default(),
             focus: Focus::Sidebar,
             sidebar_panel: SidebarPanel::Explorer,
             sidebar_visible: true,
@@ -98,6 +99,8 @@ impl App {
             pane_action_hover: None,
             sidebar_header_hover: None,
             panel_hits: Vec::new(),
+            view_chrome_rect: Rect::default(),
+            view_hits: Vec::new(),
             outline: OutlinePanel::default(),
             header_action_hits: Vec::new(),
             nested_repository_status: HashMap::new(),
@@ -408,6 +411,12 @@ impl App {
     }
 
     /// Apply the CLI's startup focus override after startup tabs are opened.
+    /// Show the `--view` surface at startup, before `--focus` is applied so an
+    /// explicit focus request still has the last word.
+    pub fn apply_startup_view(&mut self, view: crate::cli::ViewChoice) {
+        self.select_view(view.into());
+    }
+
     pub fn apply_startup_focus(&mut self, focus: crate::cli::FocusChoice) {
         self.focus = match focus {
             crate::cli::FocusChoice::Sidebar if self.sidebar_visible => Focus::Sidebar,
@@ -454,7 +463,12 @@ impl App {
     /// The pane that currently holds keyboard focus — the single value that
     /// determines which keybinding layer is live.
     pub(crate) fn focus_target(&self) -> FocusTarget {
-        FocusTarget::from(self.focus, self.sidebar_panel, self.active_editor_tab())
+        FocusTarget::from(
+            self.focus,
+            self.sidebar_panel,
+            self.active_editor_tab(),
+            self.view,
+        )
     }
 
     /// Whether the active frame should suppress the editor's cell caret because the

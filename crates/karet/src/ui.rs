@@ -12,6 +12,7 @@ mod seam;
 mod secondary;
 mod sidebar;
 mod status;
+mod view_chrome;
 
 #[cfg(test)]
 mod tests;
@@ -86,6 +87,7 @@ use secondary::*;
 use sidebar::*;
 use status::*;
 use unicode_width::UnicodeWidthStr;
+use view_chrome::*;
 
 use crate::app::App;
 use crate::app::MIN_SCM_REGION;
@@ -101,6 +103,7 @@ use crate::keymap::ChordStyle;
 use crate::keymap::Context;
 use crate::keymap::Focus;
 use crate::tab::CommitFiles;
+use crate::view::View;
 
 /// Render single-line text-field content with a highlighted selection and an
 /// insertion caret, through the shared `karet-widgets` text-area renderer.
@@ -155,12 +158,18 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // survive a frame that returns early.
     let mut hits = ScrollHits::default();
 
-    // Top level: the body (sidebar + panes) over a one-row status bar. Tab strips
-    // and breadcrumbs now live *inside* each pane rather than spanning the top.
-    let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
-    let body = rows[0];
+    // Top level: a one-row view switcher, the body (sidebar + panes) it sits above,
+    // and a one-row status bar. Tab strips and breadcrumbs live *inside* each pane.
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .split(area);
+    draw_view_chrome(f, app, &theme, rows[0]);
+    let body = rows[1];
 
-    let sidebar = if app.sidebar_visible {
+    let sidebar = if app.sidebar_visible && app.view.shows_sidebar() {
         // Responsive clamp: the sidebar can grow to nearly the full width, but always
         // leaves one column for the drag divider. The stored width is written back so
         // a subsequent drag starts from what's actually shown after a terminal resize.
@@ -195,7 +204,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let mut outline_area = None;
     let mut outline_divider = None;
     app.outline.overlay = false;
-    if app.outline.visible && app.main_rect.width > app.outline.width + 8 {
+    let outline_shown = app.outline.visible && app.view == View::Editor;
+    if outline_shown && app.main_rect.width > app.outline.width + 8 {
         let region = app.main_rect;
         let cols = Layout::horizontal([
             Constraint::Min(0),
@@ -207,7 +217,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.outline.rect = cols[2];
         outline_area = Some(cols[2]);
         outline_divider = Some(cols[1]);
-    } else if app.outline.visible && app.main_rect.width > 0 {
+    } else if outline_shown && app.main_rect.width > 0 {
         let width = app.outline.width.min(app.main_rect.width);
         let rect = Rect::new(
             app.main_rect.right().saturating_sub(width),
@@ -223,7 +233,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.outline.content_rect = Rect::default();
     }
 
-    draw_panes(f, app, &theme, app.main_rect, &mut hits);
+    match app.view {
+        View::Editor => draw_panes(f, app, &theme, app.main_rect, &mut hits),
+        view => draw_view_placeholder(f, &theme, app.main_rect, view, app.icon_style),
+    }
     if let Some(divider) = outline_divider {
         draw_sidebar_divider(f, &theme, divider, false);
     }
@@ -231,7 +244,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_outline(f, app, &theme, area, &mut hits);
     }
     draw_drop_preview(f, app, &theme);
-    draw_status(f, app, &theme, rows[1]);
+    draw_status(f, app, &theme, rows[2]);
 
     // The completion popup floats over the editor, anchored at the caret; it
     // sits under modal overlays and toasts.

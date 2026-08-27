@@ -26,6 +26,7 @@ pub use resolve::palette;
 pub use resolve::resolve_named;
 
 use crate::keymap::SidebarPanel;
+use crate::view::View;
 
 /// A named operation runnable from a key binding or the command palette.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,6 +39,8 @@ pub enum Command {
     ToggleFocus,
     /// Select a sidebar panel.
     SelectPanel(SidebarPanel),
+    /// Select the top-level view that owns the content area.
+    SelectView(View),
     /// Re-run the workspace spelling scan behind the Spelling panel.
     SpellingScan,
     /// Re-run the workspace codetag scan behind the Todos panel.
@@ -612,6 +615,9 @@ impl Command {
             Self::Quit => "Quit",
             Self::ToggleSidebar => "View: Toggle Sidebar",
             Self::ToggleFocus => "View: Toggle Focus (Sidebar / Editor)",
+            Self::SelectView(View::Editor) => "View: Editor",
+            Self::SelectView(View::GitHub) => "View: GitHub",
+            Self::SelectView(View::Agents) => "View: Agents",
             Self::SelectPanel(SidebarPanel::Explorer) => "View: Show Explorer",
             Self::SelectPanel(SidebarPanel::Search) => "View: Show Search",
             Self::SelectPanel(SidebarPanel::SourceControl) => "View: Show Source Control",

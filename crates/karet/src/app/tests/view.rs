@@ -1,0 +1,176 @@
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
+use ratatui::style::Modifier;
+
+use super::support::*;
+use crate::app::*;
+use crate::view::View;
+
+/// A left click at `(column, row)`.
+fn click(column: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+#[test]
+fn selecting_a_view_moves_focus_onto_it() {
+    let mut app = app();
+    assert_eq!(app.view, View::Editor);
+    assert_eq!(app.focus, Focus::Sidebar);
+
+    app.dispatch(Command::SelectView(View::Agents));
+    assert_eq!(app.view, View::Agents);
+    // Load-bearing rather than merely tidy: the Agents view hides the sidebar, so
+    // focus left behind would send every keystroke to a panel that is not drawn.
+    assert_eq!(app.focus, Focus::Editor);
+
+    app.dispatch(Command::SelectView(View::Editor));
+    assert_eq!(app.view, View::Editor);
+}
+
+#[test]
+fn a_view_that_hides_the_sidebar_cannot_be_toggled_into_it() {
+    let mut app = app();
+    app.dispatch(Command::SelectView(View::Agents));
+    app.dispatch(Command::ToggleFocus);
+    assert_eq!(app.focus, Focus::Editor, "no sidebar to toggle into");
+
+    // The GitHub view keeps the sidebar, so Tab still reaches it there.
+    app.dispatch(Command::SelectView(View::GitHub));
+    app.dispatch(Command::ToggleFocus);
+    assert_eq!(app.focus, Focus::Sidebar);
+}
+
+#[test]
+fn the_view_decides_the_active_keymap_layers() {
+    let mut app = app();
+    app.dispatch(Command::SelectView(View::Agents));
+    assert_eq!(app.focus_target(), FocusTarget::Agents);
+    // The sidebar is not the content area, so it keeps its own layers whatever
+    // view is showing.
+    app.focus = Focus::Sidebar;
+    assert_eq!(app.focus_target(), FocusTarget::Explorer);
+}
+
+#[test]
+fn every_view_is_reachable_by_palette_title_and_slug() {
+    for view in View::ALL {
+        let command = Command::SelectView(view);
+        assert_eq!(
+            crate::command::resolve_named(command.label()),
+            Ok(command),
+            "{view:?} by title"
+        );
+        let slug = command.hint_verb().expect("a short slug");
+        assert_eq!(
+            crate::command::resolve_named(slug),
+            Ok(command),
+            "{view:?} by slug"
+        );
+    }
+}
+
+#[test]
+fn the_startup_flag_selects_a_view() {
+    let mut app = app();
+    app.apply_startup_view(crate::cli::ViewChoice::Agents);
+    assert_eq!(app.view, View::Agents);
+}
+
+#[test]
+fn the_chrome_row_offers_every_view_and_marks_the_active_one() {
+    let mut app = app();
+    let rows = screen(&mut app, 100, 12);
+    for view in View::ALL {
+        assert!(rows[0].contains(view.title()), "{view:?} on the chrome row");
+    }
+    // The active view is the bold one; the others are not.
+    let buffer = frame(&mut app, 100, 12);
+    let bold = |x: u16| buffer[(x, 0)].style().add_modifier.contains(Modifier::BOLD);
+    let hits = app.view_hits.clone();
+    assert_eq!(hits.len(), View::ALL.len());
+    for (start, _, view) in hits {
+        assert_eq!(
+            bold(start + 1),
+            view == View::Editor,
+            "{view:?} emphasis follows the active view"
+        );
+    }
+}
+
+#[test]
+fn a_narrow_chrome_row_drops_every_label_at_once() {
+    // All names or none: a row showing "Editor" beside two bare icons reads as a
+    // rendering fault rather than as a deliberate compaction.
+    let mut app = app();
+    let rows = screen(&mut app, 20, 12);
+    for view in View::ALL {
+        assert!(
+            !rows[0].contains(view.title()),
+            "no labels at 20 columns: {:?}",
+            rows[0]
+        );
+    }
+    // Still one button per view, still clickable.
+    assert_eq!(app.view_hits.len(), View::ALL.len());
+    let (start, end, _) = app.view_hits[View::ALL.len() - 1];
+    assert!(end <= 20, "the last button fits the row: {start}..{end}");
+}
+
+#[test]
+fn clicking_the_chrome_row_switches_view() {
+    let mut app = app();
+    let _ = screen(&mut app, 100, 12);
+    let (start, _, view) = app
+        .view_hits
+        .iter()
+        .copied()
+        .find(|&(_, _, view)| view == View::Agents)
+        .expect("an Agents button");
+
+    assert!(app.handle_view_chrome_mouse(click(start, 0)));
+    assert_eq!(app.view, view);
+    // The whole row belongs to the switcher: a click on its empty right-hand end
+    // is consumed rather than falling through to the body below.
+    assert!(app.handle_view_chrome_mouse(click(99, 0)));
+    assert_eq!(app.view, view);
+}
+
+#[test]
+fn the_agents_view_takes_the_full_width_and_hides_the_sidebar() {
+    let mut app = app();
+    let _ = screen(&mut app, 100, 12);
+    assert!(
+        app.sidebar_rect.width > 0,
+        "the editor view keeps a sidebar"
+    );
+
+    app.dispatch(Command::SelectView(View::Agents));
+    let rows = screen(&mut app, 100, 12);
+    assert_eq!(app.sidebar_rect, Rect::default());
+    assert_eq!(app.main_rect.x, 0);
+    assert_eq!(app.main_rect.width, 100);
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("Agents — not available yet")),
+        "the placeholder body names the view: {rows:?}"
+    );
+}
+
+#[test]
+fn the_sidebar_survives_a_round_trip_through_a_full_width_view() {
+    // The view gates *drawing* the sidebar, not the user's preference: coming back
+    // to the editor must restore the sidebar rather than leave it collapsed.
+    let mut app = app();
+    app.dispatch(Command::SelectView(View::Agents));
+    let _ = screen(&mut app, 100, 12);
+    app.dispatch(Command::SelectView(View::Editor));
+    let _ = screen(&mut app, 100, 12);
+    assert!(app.sidebar_visible);
+    assert!(app.sidebar_rect.width > 0);
+}

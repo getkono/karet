@@ -260,6 +260,9 @@ impl App {
         if self.handle_status_mouse(mouse) {
             return;
         }
+        if self.handle_view_chrome_mouse(mouse) {
+            return;
+        }
         if self.github_mouse(mouse) {
             return;
         }
