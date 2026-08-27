@@ -144,6 +144,13 @@ pub(crate) struct SeamViewState {
     pub(crate) loading_since: Option<Pending>,
     /// Why the package could not be indexed, when it could not.
     pub(crate) error: Option<String>,
+    /// Where the last frame painted everything clickable.
+    pub(crate) hits: geometry::SeamHits,
+    /// Where the pointer last was, when it was over something actionable.
+    ///
+    /// Beside the hit map rather than inside it, so the renderer's per-frame reset cannot
+    /// clobber pointer state written between frames.
+    pub(crate) hover: Option<(u16, u16)>,
 }
 
 impl SeamViewState {
@@ -176,6 +183,8 @@ impl SeamViewState {
             files: HashSet::new(),
             loading_since: Some(Pending::start()),
             error: None,
+            hits: geometry::SeamHits::default(),
+            hover: None,
         }
     }
 
@@ -319,6 +328,14 @@ impl SeamViewState {
 
     // --- navigation -----------------------------------------------------------
 
+    /// Move the selected edge within the facet pane.
+    ///
+    /// Shared by the arrow keys and the wheel, so the two cannot clamp differently.
+    pub(crate) fn move_facet_row(&mut self, delta: isize) {
+        let last = self.edges.len().saturating_sub(1);
+        self.facet_row = self.facet_row.saturating_add_signed(delta).min(last);
+    }
+
     /// Move the selection within the focused column.
     pub(crate) fn move_row(&mut self, delta: isize) {
         let columns = self.columns();
@@ -452,6 +469,18 @@ impl SeamViewState {
         true
     }
 
+    /// Step back out until only `depth` narrows remain.
+    ///
+    /// The breadcrumb's counterpart to pressing `Backspace` repeatedly: clicking a crumb
+    /// has to land on *that* crumb rather than on the one after it.
+    pub(crate) fn widen_to(&mut self, depth: usize) -> bool {
+        let mut moved = false;
+        while self.narrow.len() > depth && self.widen() {
+            moved = true;
+        }
+        moved
+    }
+
     /// Select `id` by walking down to it from the current root, so the columns line up.
     pub(crate) fn select_path(&mut self, id: &str) {
         let mut chain = Vec::new();
@@ -509,6 +538,8 @@ impl SeamViewState {
 }
 
 mod actions;
+pub(crate) mod geometry;
+mod mouse;
 pub(crate) mod roots;
 
 #[cfg(test)]

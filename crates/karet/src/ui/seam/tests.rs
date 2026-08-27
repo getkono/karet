@@ -488,6 +488,125 @@ fn a_terminal_that_can_hold_neither_keeps_its_spine_instead() {
     assert!(!rendered.contains("source line"), "{rendered}");
 }
 
+// --- what the frame records for the pointer ---------------------------------
+
+#[test]
+fn every_painted_spine_row_is_clickable() {
+    let mut state = view();
+    let buf = render(&mut state, 120, 20);
+    assert!(!state.hits.rows.is_empty());
+    for (rect, id) in &state.hits.rows {
+        let Some(node) = state.nodes.get(id) else {
+            panic!("recorded a row for a node that is not in the tree: {id}");
+        };
+        // The cells the row claims are the cells its name was painted into.
+        let painted: String = (rect.x..rect.right())
+            .map(|x| {
+                buf.cell((x, rect.y))
+                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+            })
+            .collect();
+        assert!(
+            painted.contains(&node.name),
+            "{painted:?} lacks {}",
+            node.name
+        );
+        assert_eq!(
+            state.hits.at(rect.x, rect.y),
+            Some(crate::app::seam::geometry::SeamTarget::Row(id.clone()))
+        );
+    }
+}
+
+#[test]
+fn the_narrow_fallback_records_its_rows_too() {
+    // The indented tree is a different renderer, so it needs its own row map — and both
+    // must resolve to the same identities.
+    let mut wide = view();
+    let _ = render(&mut wide, 120, 20);
+    let mut narrow = view();
+    let _ = render(&mut narrow, 30, 20);
+    let ids = |state: &SeamViewState| {
+        let mut ids: Vec<String> = state.hits.rows.iter().map(|(_, id)| id.clone()).collect();
+        ids.sort();
+        ids
+    };
+    assert!(!narrow.hits.rows.is_empty());
+    assert_eq!(ids(&narrow), ids(&wide));
+}
+
+#[test]
+fn the_breadcrumb_records_one_crumb_per_narrow_plus_the_root() {
+    let mut state = view();
+    state
+        .narrow
+        .push(crate::app::seam::Narrow::Scope("demo".to_owned()));
+    state.move_row(0);
+    let _ = render(&mut state, 120, 20);
+    assert_eq!(state.hits.crumbs.len(), state.narrow.len() + 1);
+    let depths: Vec<usize> = state.hits.crumbs.iter().map(|(_, depth)| *depth).collect();
+    assert_eq!(depths, [0, 1]);
+}
+
+#[test]
+fn the_legend_records_a_hit_for_every_lens() {
+    let mut state = view();
+    let buf = render(&mut state, 120, 20);
+    assert_eq!(state.hits.lenses.len(), LENS_NAMES.len());
+    for (rect, index) in &state.hits.lenses {
+        let painted: String = (rect.x..rect.right())
+            .map(|x| {
+                buf.cell((x, rect.y))
+                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+            })
+            .collect();
+        // The word is part of the target, not just the glyph beside it.
+        let Some(lens) = LENS_NAMES.get(*index) else {
+            panic!("legend hit for a lens that does not exist");
+        };
+        assert!(painted.contains(short(lens)), "{painted:?} for {lens}");
+    }
+}
+
+/// The abbreviated lens name the legend paints.
+fn short(lens: &str) -> &'static str {
+    match lens {
+        "api" => "api",
+        "substitution" => "sub",
+        "variation" => "var",
+        "boundary" => "bnd",
+        _ => "haz",
+    }
+}
+
+#[test]
+fn the_widen_affordance_is_recorded_only_once_narrowed() {
+    let mut state = view();
+    let _ = render(&mut state, 120, 20);
+    assert_eq!(state.hits.widen.width, 0);
+
+    state
+        .narrow
+        .push(crate::app::seam::Narrow::Scope("demo".to_owned()));
+    state.move_row(0);
+    let _ = render(&mut state, 120, 20);
+    assert!(state.hits.widen.width > 0);
+}
+
+#[test]
+fn a_header_run_pushed_off_the_row_claims_nothing() {
+    // A long package name shoves the legend past the right edge; nothing painted there
+    // means nothing clickable there.
+    let mut state = view();
+    state.summary.package = "a".repeat(200);
+    let _ = render(&mut state, 60, 20);
+    assert!(
+        state.hits.lenses.iter().all(|(rect, _)| rect.width == 0),
+        "{:?}",
+        state.hits.lenses
+    );
+}
+
 #[test]
 fn rendering_into_a_tiny_area_does_not_panic() {
     let mut state = view();

@@ -412,8 +412,7 @@ impl App {
         };
         if state.focus == SeamFocus::Facets {
             // In the facet pane the same keys walk the edge list instead.
-            let last = state.edges.len().saturating_sub(1);
-            state.facet_row = state.facet_row.saturating_add_signed(delta).min(last);
+            state.move_facet_row(delta);
             return;
         }
         state.move_row(delta);

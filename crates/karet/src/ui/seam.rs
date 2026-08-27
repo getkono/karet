@@ -37,6 +37,7 @@ pub(super) use crate::app::seam::LENS_NAMES;
 use crate::app::seam::LensFilter;
 use crate::app::seam::SeamFocus;
 use crate::app::seam::SeamViewState;
+use crate::app::seam::geometry::span_rect;
 
 mod facets;
 mod header;
@@ -132,6 +133,7 @@ pub(super) fn draw_seam(
     state: &mut SeamViewState,
     icons: IconStyle,
 ) {
+    state.hits.reset(area);
     if area.height < 3 || area.width < 8 {
         return;
     }
@@ -155,6 +157,9 @@ pub(super) fn draw_seam(
         ])
         .split(area);
 
+    state.hits.header = chunks[0];
+    state.hits.spine = chunks[1];
+    state.hits.query = chunks[3];
     header::draw(f, theme, chunks[0], state, icons);
 
     if let Some(message) = placeholder(state) {
@@ -175,7 +180,7 @@ fn draw_detail(
     f: &mut Frame,
     theme: &Theme,
     area: Rect,
-    state: &SeamViewState,
+    state: &mut SeamViewState,
     icons: IconStyle,
     placement: PreviewPlacement,
 ) {
@@ -189,6 +194,7 @@ fn draw_detail(
                     Constraint::Length(columns.min(area.width.saturating_sub(2))),
                 ])
                 .split(area);
+            state.hits.facets = split[0];
             facets::draw(f, theme, split[0], state, icons);
             preview::draw(f, theme, split[2], state, icons);
         },
@@ -200,10 +206,14 @@ fn draw_detail(
                     Constraint::Length(preview::HEIGHT),
                 ])
                 .split(area);
+            state.hits.facets = split[0];
             facets::draw(f, theme, split[0], state, icons);
             preview::draw(f, theme, split[1], state, icons);
         },
-        PreviewPlacement::None => facets::draw(f, theme, area, state, icons),
+        PreviewPlacement::None => {
+            state.hits.facets = area;
+            facets::draw(f, theme, area, state, icons);
+        },
     }
 }
 
@@ -243,7 +253,7 @@ fn placeholder(state: &SeamViewState) -> Option<String> {
 }
 
 /// The query line, with its parse error underneath when it has one.
-fn draw_query_line(f: &mut Frame, theme: &Theme, area: Rect, state: &SeamViewState) {
+fn draw_query_line(f: &mut Frame, theme: &Theme, area: Rect, state: &mut SeamViewState) {
     let muted = theme.style(ThemeRole::Muted);
     let focused = state.focus == SeamFocus::Query;
     let mut spans = vec![Span::styled(
@@ -280,10 +290,23 @@ fn draw_query_line(f: &mut Frame, theme: &Theme, area: Rect, state: &SeamViewSta
         // The reversal path has to be visible, not merely available.
         let depth = state.narrow.len();
         if depth > 0 {
-            spans.push(Span::styled(format!("   ⌫ widen ({depth})"), muted));
+            let run = format!("   ⌫ widen ({depth})");
+            let x = area
+                .x
+                .saturating_add(u16::try_from(line_width(&spans)).unwrap_or(0));
+            state.hits.widen = span_rect(area, x, area.y, karet_widgets::text::width(&run));
+            spans.push(Span::styled(run, muted));
         }
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// The cells a run of spans occupies.
+fn line_width(spans: &[Span<'_>]) -> usize {
+    spans
+        .iter()
+        .map(|span| karet_widgets::text::width(span.content.as_ref()))
+        .sum()
 }
 
 /// The styles the spine paints with.

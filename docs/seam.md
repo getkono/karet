@@ -125,6 +125,24 @@ budget shows its head and says how many lines it hid; the gutter numbers make th
 plain. A file that could not be read says so, in the same `?` that every other unresolvable
 answer uses.
 
+### With the mouse
+
+Every affordance the keys offer has a place on screen, and each of those places answers the
+pointer.
+
+| | |
+|---|---|
+| click a spine row | select it; click it again to step in, or to open its source at a leaf |
+| click a breadcrumb crumb | step back out to that crumb — the package name widens all the way |
+| click a lens in the legend | toggle it, exactly as its digit does |
+| click `config:` | cycle the active configuration |
+| click an edge in the facet pane | select it; click it again to pivot |
+| click the query box, or `⌫ widen` | focus the filter, or step back out one narrow |
+| wheel | move the selection one row; a horizontal wheel moves between columns |
+
+One row per wheel notch rather than a free scroll, because a column's scroll position is
+pinned to its selection — the window travels with you rather than away from you.
+
 **Every narrow is reversible, and the way back is visible.** Rerooting and pivoting push
 onto one stack that the breadcrumb renders, and the footer shows how many steps remain. A
 narrowing you cannot undo is a trap; one you can undo but cannot see is a maze. A narrow

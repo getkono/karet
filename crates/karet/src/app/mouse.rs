@@ -64,6 +64,7 @@ impl App {
             .markdown_link_hits
             .iter()
             .any(|hit| rect_contains(hit.rect, (mouse.column, mouse.row)));
+        let over_seam_affordance = self.seam_affordance_at(mouse.column, mouse.row);
         // A thumb is draggable, and this shell hints every draggable it has. The grab
         // shape outlives the pointer leaving the track, because the drag does too.
         let over_thumb = self
@@ -79,7 +80,11 @@ impl App {
             Some("row-resize")
         } else if over_thumb {
             Some("grab")
-        } else if over_blame || over_markdown_link || self.definition_hover.is_some() {
+        } else if over_blame
+            || over_markdown_link
+            || over_seam_affordance
+            || self.definition_hover.is_some()
+        {
             Some("pointer")
         } else {
             None
@@ -240,6 +245,12 @@ impl App {
             return;
         }
         if self.github_mouse(mouse) {
+            return;
+        }
+        // Ahead of the region match below, and therefore ahead of the editor: the Seam
+        // view owns its whole surface, and a press that fell through to `handle_editor_click`
+        // would arm a text drag in a view that has no text to drag.
+        if self.seam_mouse(mouse) {
             return;
         }
         if self.handle_blame_mouse(mouse) {

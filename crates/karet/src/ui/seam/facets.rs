@@ -29,7 +29,7 @@ pub(super) fn draw(
     f: &mut Frame,
     theme: &Theme,
     area: Rect,
-    state: &SeamViewState,
+    state: &mut SeamViewState,
     icons: IconStyle,
 ) {
     let Some(node) = state.selected() else {
@@ -120,6 +120,12 @@ pub(super) fn draw(
 
     lines.push(edges_line(theme, state, lens_column));
 
+    // Measured from what has been pushed so far rather than from a constant, so adding a
+    // line above the edges can never quietly move what the mouse thinks it is aiming at.
+    let first_edge = area
+        .y
+        .saturating_add(u16::try_from(lines.len()).unwrap_or(u16::MAX));
+    let mut hits = Vec::new();
     let focused = state.focus == SeamFocus::Facets;
     for (index, edge) in state.edges.iter().enumerate() {
         let arrow = if edge.outgoing { "→" } else { "←" };
@@ -139,6 +145,10 @@ pub(super) fn draw(
         } else {
             theme.style(ThemeRole::Foreground)
         };
+        let y = first_edge.saturating_add(u16::try_from(index).unwrap_or(u16::MAX));
+        if y < area.y.saturating_add(area.height) {
+            hits.push((Rect::new(area.x, y, area.width, 1), index));
+        }
         lines.push(Line::from(vec![
             Span::styled(
                 format!(
@@ -153,6 +163,7 @@ pub(super) fn draw(
         ]));
     }
 
+    state.hits.edges = hits;
     f.render_widget(Paragraph::new(lines), area);
 }
 
