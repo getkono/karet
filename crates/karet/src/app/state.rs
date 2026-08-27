@@ -87,6 +87,8 @@ pub(crate) struct ScmChrome {
     pub(crate) commits_offset: usize,
     /// The commit-log region viewport rect from the last frame.
     pub(crate) commits_rect: Rect,
+    /// The pinned, clickable `COMMITS` title's rect from the last frame.
+    pub(crate) commits_title_rect: Rect,
     /// The total number of commit-log display rows from the last frame.
     pub(crate) commits_total: usize,
     /// The display row *within the commit-log region* of the "load more"
@@ -114,6 +116,7 @@ impl Default for ScmChrome {
             total_rows: 0,
             commits_offset: 0,
             commits_rect: Rect::default(),
+            commits_title_rect: Rect::default(),
             commits_total: 0,
             more_row: None,
             commits_h: DEFAULT_SCM_COMMITS_H,
@@ -542,15 +545,6 @@ pub(crate) struct OperationBlocker {
     pub(crate) label: String,
     /// Point after which shutdown stops waiting.
     pub(crate) deadline: Instant,
-}
-
-/// Where a resolved commit detail should be shown.
-#[derive(Clone)]
-pub(crate) enum CommitDest {
-    /// Fill the already-open standalone commit tab with this view id.
-    Tab { view: ViewId },
-    /// Fill the graph browser's detail pane if it still selects this hash.
-    Browser { view: ViewId, hash: String },
 }
 
 /// A document open owned by one concrete editor view.

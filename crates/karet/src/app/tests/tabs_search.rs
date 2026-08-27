@@ -567,7 +567,9 @@ fn commit_graph_browser_opens_fills_and_clamps_navigation() {
         time: 0,
         parents,
     };
+    let view = app.tabs[app.active].view;
     app.apply_graph_log(
+        view,
         0,
         vec![
             commit("aaaa", "c1", vec!["bbbb".to_string()]),
@@ -657,7 +659,9 @@ fn open_compare_tab_builds_a_compare_tab() {
 fn graph_compare_requires_a_marked_base() {
     let mut app = app();
     app.dispatch(Command::ShowCommitGraph);
+    let view = app.tabs[app.active].view;
     app.apply_graph_log(
+        view,
         0,
         vec![
             Commit {

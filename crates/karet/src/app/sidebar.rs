@@ -285,11 +285,7 @@ impl App {
             return;
         }
         let row = self.scm_cursor_display_row();
-        if row < self.scm_ui.offset {
-            self.scm_ui.offset = row;
-        } else if row >= self.scm_ui.offset + h {
-            self.scm_ui.offset = row + 1 - h;
-        }
+        self.scm_ui.offset = crate::ui::commit::list::keep_visible(row, self.scm_ui.offset, h);
     }
 
     /// Scroll the changes region by `delta` rows, clamped to its content.

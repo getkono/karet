@@ -11,6 +11,8 @@ use super::scm::change_line;
 use super::*;
 use crate::app::CommitInput;
 
+#[path = "tests/commit_graph.rs"]
+mod commit_graph;
 #[path = "tests/save_mark.rs"]
 mod save_mark;
 
@@ -237,14 +239,23 @@ fn breadcrumb_spans_of_no_components_are_empty() {
 #[test]
 fn relative_time_uses_compact_git_style_units() {
     let now = 40_000_000;
-    assert_eq!(scm::relative_time_at(now + 1, now), "just now");
-    assert_eq!(scm::relative_time_at(now - 42, now), "42s ago");
-    assert_eq!(scm::relative_time_at(now - 120, now), "2m ago");
-    assert_eq!(scm::relative_time_at(now - 10_800, now), "3h ago");
-    assert_eq!(scm::relative_time_at(now - 172_800, now), "2d ago");
-    assert_eq!(scm::relative_time_at(now - 1_209_600, now), "2w ago");
-    assert_eq!(scm::relative_time_at(now - 5_184_000, now), "2mo ago");
-    assert_eq!(scm::relative_time_at(now - 63_072_000, now), "2y ago");
+    assert_eq!(commit::list::relative_time_at(now + 1, now), "just now");
+    assert_eq!(commit::list::relative_time_at(now - 42, now), "42s ago");
+    assert_eq!(commit::list::relative_time_at(now - 120, now), "2m ago");
+    assert_eq!(commit::list::relative_time_at(now - 10_800, now), "3h ago");
+    assert_eq!(commit::list::relative_time_at(now - 172_800, now), "2d ago");
+    assert_eq!(
+        commit::list::relative_time_at(now - 1_209_600, now),
+        "2w ago"
+    );
+    assert_eq!(
+        commit::list::relative_time_at(now - 5_184_000, now),
+        "2mo ago"
+    );
+    assert_eq!(
+        commit::list::relative_time_at(now - 63_072_000, now),
+        "2y ago"
+    );
 }
 
 #[test]
@@ -423,14 +434,16 @@ fn verified_badge_reflects_forge_and_signature() {
 
 #[test]
 fn file_cards_are_boxed_and_width_sized() {
-    let files = vec![crate::render::test_file_view(
+    let files = [crate::render::test_file_view(
         "src/main.rs",
         "fn a() {}\n",
         "fn b() {}\n",
     )];
     let width = 60u16;
     let theme = Theme::dark();
-    let lines = changed_files_lines(&theme, &files, width);
+    let mut lines = vec![file_card_header(&theme, &files[0], width, false)];
+    lines.extend(file_card_body(&theme, &files[0], 0, usize::MAX, width));
+    lines.push(file_card_footer(&theme, width));
     let text: Vec<String> = lines
         .iter()
         .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
@@ -538,10 +551,7 @@ fn narrow_file_card_headers_never_exceed_the_pane() {
     let file =
         crate::render::test_file_view("very/long/\u{65e5}\u{672c}\u{8a9e}/filename.rs", "", "x\n");
     for width in 1..24u16 {
-        let top = file_card(&Theme::dark(), &file, width)
-            .into_iter()
-            .next()
-            .expect("a card header");
+        let top = file_card_header(&Theme::dark(), &file, width, false);
         let text: String = top.spans.iter().map(|span| span.content.as_ref()).collect();
         assert!(
             UnicodeWidthStr::width(text.as_str()) <= usize::from(width),
@@ -586,7 +596,8 @@ fn badge_hit_spans_the_badge_and_reveal_explains_it() {
 
     // Without a forge verdict, a signed commit reads "Signed"; the reported hit
     // must land exactly on that badge text within its line.
-    let (lines, hit) = commit_detail_lines(&Theme::dark(), &detail, &files, false, 80);
+    let (lines, hit) =
+        commit_metadata_lines(&Theme::dark(), &detail, files.verification.as_ref(), false);
     let hit = hit.expect("a signed commit has a badge");
     let chars: Vec<char> = flat(&lines[hit.line as usize]).chars().collect();
     let span: String = chars[hit.col as usize..(hit.col + hit.width) as usize]
@@ -604,7 +615,8 @@ fn badge_hit_spans_the_badge_and_reveal_explains_it() {
     );
 
     // Revealing inserts the badge's plain-language meaning.
-    let (revealed, _) = commit_detail_lines(&Theme::dark(), &detail, &files, true, 80);
+    let (revealed, _) =
+        commit_metadata_lines(&Theme::dark(), &detail, files.verification.as_ref(), true);
     assert!(
         revealed
             .iter()

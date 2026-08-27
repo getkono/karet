@@ -49,6 +49,7 @@ pub(super) fn draw_scm(
     } else {
         // No pinned region this frame: clear its state so stale hit-testing can't fire.
         app.scm_ui.commits_rect = Rect::default();
+        app.scm_ui.commits_title_rect = Rect::default();
         app.scm_ui.commits_total = 0;
         app.scm_ui.more_row = None;
     }
@@ -274,8 +275,31 @@ pub(super) fn change_line(
     Line::from(spans)
 }
 
-/// Draw the pinned commit-log region (header, lazily-loaded commits, "load more").
-/// Its rows aren't selectable; only the "load more" affordance is clickable.
+/// Draw the `COMMITS` title as a button onto the full commit-graph view: it brightens
+/// under the pointer and carries a hint once there is somewhere to go.
+fn draw_commits_title(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
+    let hovered = app.hovered_scm_commits_title();
+    let mut style = theme
+        .style(ThemeRole::LineNumberActive)
+        .add_modifier(Modifier::BOLD);
+    if hovered {
+        style = style.bg(theme.role(ThemeRole::HoverHighlight).to_ratatui());
+    }
+    let mut spans = vec![Span::styled(" COMMITS", style)];
+    if hovered {
+        spans.push(Span::styled(
+            "  open graph \u{2192}",
+            theme
+                .style(ThemeRole::Muted)
+                .bg(theme.role(ThemeRole::HoverHighlight).to_ratatui()),
+        ));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Draw the pinned commit-log region: a clickable `COMMITS` title, the lazily-loaded
+/// commits, and the "load more" affordance. The commit rows aren't selectable; clicking
+/// one opens that commit, and clicking the title opens the full commit-graph view.
 pub(super) fn draw_scm_commits(
     f: &mut Frame,
     app: &mut App,
@@ -285,27 +309,16 @@ pub(super) fn draw_scm_commits(
 ) {
     app.scm_ui.more_row = None;
     let dim = theme.style(ThemeRole::LineNumber);
-    let entries: Vec<CommitListEntry<'_>> = app
-        .scm
-        .log
-        .iter()
-        .enumerate()
-        .map(|(i, commit)| CommitListEntry {
-            hash: &commit.hash,
-            short_hash: &commit.short_hash,
-            summary: &commit.summary,
-            time: commit.time,
-            parents: &commit.parents,
-            head: i == 0 && app.scm_ui.commits_offset == 0,
-            labels: app
-                .scm
-                .ref_labels
-                .get(commit.hash.as_str())
-                .map(Vec::as_slice)
-                .unwrap_or_default(),
-        })
-        .collect();
-    let mut items = commit_list_items(theme, &entries, None, true);
+    // The title is pinned above the list rather than scrolling with it: it is an
+    // affordance, so it has to stay put and stay hit-testable.
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    let (title_area, area) = (rows[0], rows[1]);
+    app.scm_ui.commits_title_rect = title_area;
+    draw_commits_title(f, app, theme, title_area);
+    let head = (app.scm_ui.commits_offset == 0).then_some(0);
+    let entries =
+        crate::ui::commit::list::entries_from_commits(&app.scm.log, &app.scm.ref_labels, head);
+    let mut items = commit_list_items(theme, &entries, None);
     if app.scm.log_has_more {
         // The "load more" display row is relative to the commit region's top.
         app.scm_ui.more_row = Some(items.len());
@@ -336,39 +349,6 @@ pub(super) fn draw_scm_commits(
         ),
         ScrollSurface::ScmCommits,
     );
-}
-
-/// A terse `git log`-style relative time (e.g. `3d ago`) for a Unix timestamp.
-pub(crate) fn relative_time(secs: i64) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|d| i64::try_from(d.as_secs()).ok())
-        .unwrap_or(0);
-    relative_time_at(secs, now)
-}
-
-pub(super) fn relative_time_at(secs: i64, now: i64) -> String {
-    let delta = now - secs;
-    if delta < 0 {
-        return "just now".to_string();
-    }
-    let (n, unit) = if delta < 60 {
-        (delta, "s")
-    } else if delta < 3600 {
-        (delta / 60, "m")
-    } else if delta < 86_400 {
-        (delta / 3600, "h")
-    } else if delta < 86_400 * 7 {
-        (delta / 86_400, "d")
-    } else if delta < 86_400 * 30 {
-        (delta / (86_400 * 7), "w")
-    } else if delta < 86_400 * 365 {
-        (delta / (86_400 * 30), "mo")
-    } else {
-        (delta / (86_400 * 365), "y")
-    };
-    format!("{n}{unit} ago")
 }
 
 /// Draw the permanent multiline commit-message editor above the change list.

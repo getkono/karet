@@ -120,16 +120,7 @@ impl App {
                     error: None,
                     ..
                 } => pendings.extend(*loading_since),
-                TabKind::CommitGraph {
-                    loading_since,
-                    detail_loading_since,
-                    files,
-                    ..
-                } => pendings.extend(
-                    [*loading_since, *detail_loading_since, files.loading_since]
-                        .into_iter()
-                        .flatten(),
-                ),
+                TabKind::CommitGraph { loading_since, .. } => pendings.extend(*loading_since),
                 TabKind::Github(GithubViewState::Dashboard(dashboard)) => {
                     pendings.extend(dashboard.loading_since);
                 },
