@@ -48,6 +48,7 @@ pub mod model;
 pub mod modules;
 pub mod package;
 pub mod query;
+pub mod regroup;
 pub mod rollup;
 pub mod text;
 

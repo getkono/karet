@@ -123,7 +123,16 @@ pub fn index_package(root: &Path, options: IndexOptions) -> Result<SeamIndex, Pa
     let root_id = add_package_node(&mut index, &package);
     let mut queue = seed_cargo(entry_points, root_id);
 
-    drain(&mut index, &mut pool, &mut queue, &mut Walk::new(), options);
+    let mut ownership = Vec::new();
+    drain(
+        &mut index,
+        &mut pool,
+        &mut queue,
+        &mut Walk::new(),
+        options,
+        &mut ownership,
+    );
+    crate::regroup::apply(&mut index, ownership);
     index.recompute_rollups();
     Ok(index)
 }
@@ -150,6 +159,10 @@ pub fn index_workspace(root: &Path, options: IndexOptions) -> Result<SeamIndex, 
     // Shared across packages: a file reachable from two roots is indexed once, and the cap
     // is a budget for the whole index rather than a per-package allowance.
     let mut walk = Walk::new();
+    // One list for the whole workspace, resolved once at the end. Resolution never
+    // crosses a package boundary, so pooling them costs nothing and keeps the ordering
+    // the extraction produced.
+    let mut ownership = Vec::new();
 
     for package in &packages {
         if walk.scanned >= options.max_files {
@@ -171,9 +184,17 @@ pub fn index_workspace(root: &Path, options: IndexOptions) -> Result<SeamIndex, 
             },
             PackageKind::Python => seed_python(&mut index, package, root_id),
         };
-        drain(&mut index, &mut pool, &mut queue, &mut walk, options);
+        drain(
+            &mut index,
+            &mut pool,
+            &mut queue,
+            &mut walk,
+            options,
+            &mut ownership,
+        );
     }
 
+    crate::regroup::apply(&mut index, ownership);
     index.recompute_rollups();
     Ok(index)
 }
@@ -194,12 +215,17 @@ impl Walk {
 }
 
 /// Work the queue until it empties or the file cap stops it.
+///
+/// Ownership hints accumulate rather than being acted on: a Rust `impl` and the type it
+/// implements routinely live in different files, and the file holding the type may not be
+/// read until later. They are resolved once the queue is empty.
 fn drain(
     index: &mut SeamIndex,
     pool: &mut ParserPool,
     queue: &mut Vec<Pending>,
     walk: &mut Walk,
     options: IndexOptions,
+    ownership: &mut Vec<(SeamId, Vec<crate::lang::Owner>)>,
 ) {
     while let Some(pending) = queue.pop() {
         let canonical = pending
@@ -220,7 +246,7 @@ fn drain(
             // Unreadable or not UTF-8: skip the file, keep the module node.
             continue;
         };
-        index_one_file(index, pool, queue, &pending, &text);
+        index_one_file(index, pool, queue, &pending, &text, ownership);
     }
 }
 
@@ -231,6 +257,7 @@ fn index_one_file(
     queue: &mut Vec<Pending>,
     pending: &Pending,
     text: &str,
+    ownership: &mut Vec<(SeamId, Vec<crate::lang::Owner>)>,
 ) {
     let file_id = index.intern_file(&pending.file);
     // Recorded before extraction, so a file that will not parse can still be re-indexed
@@ -240,6 +267,8 @@ fn index_one_file(
     else {
         return;
     };
+
+    ownership.extend(outcome.ownership);
 
     // Unbranched by design: `SeamLanguage::external_module` defaults to `None`, so a
     // language whose modules never span files reports none and this loop is simply inert.
@@ -444,9 +473,17 @@ pub fn reindex_file(
             karet_treesitter::language_id_from_path(file).ok_or(ExtractError::NoGrammar)?,
         ),
     };
-    index.remove_nodes_in_file(file_id, parent);
-    extract_file(index, pool, parent, file_id, language, text)?;
-    index.recompute_rollups_from(parent);
+    // Removal is scoped to the *package*, not to the module that declares the file.
+    // Regrouping moves nodes out from under their declaring module — a Rust `impl` ends
+    // up beneath the type it implements, which may be anywhere in the package — and a
+    // narrower sweep would leave those behind as duplicates of what is about to be built.
+    let root = index.ancestors(parent).last().copied().unwrap_or(parent);
+    index.remove_nodes_in_file(file_id, root);
+    let outcome = extract_file(index, pool, parent, file_id, language, text)?;
+    crate::regroup::apply(index, outcome.ownership);
+    // From the package root for the same reason: the rebuilt nodes may not have landed
+    // in the subtree the edit appeared to touch.
+    index.recompute_rollups_from(root);
     Ok(())
 }
 
