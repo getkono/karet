@@ -121,7 +121,7 @@ pub fn index_package(root: &Path, options: IndexOptions) -> Result<SeamIndex, Pa
     let mut index = SeamIndex::new();
     let mut pool = ParserPool::new();
     let root_id = add_package_node(&mut index, &package);
-    let mut queue = seed_cargo(entry_points, root_id);
+    let mut queue = seed::seed(&mut index, &package, root_id, entry_points);
 
     let mut ownership = Vec::new();
     drain(
@@ -170,20 +170,20 @@ pub fn index_workspace(root: &Path, options: IndexOptions) -> Result<SeamIndex, 
             break;
         }
         let root_id = add_package_node(&mut index, package);
-        let mut queue = match package.kind {
-            PackageKind::Cargo => {
-                let entry_points = crate_roots(&package.root);
-                if entry_points.is_empty() {
-                    // The package keeps its root. Dropping it would say the workspace has
-                    // no such member; an empty root would say the member holds nothing.
-                    // Neither is what happened — its entry point is somewhere we do not
-                    // look yet, and the paths tried say exactly that.
-                    index.mark_module_unresolved(root_id, crate_root_candidates(&package.root));
-                }
-                seed_cargo(entry_points, root_id)
-            },
-            PackageKind::Python => seed_python(&mut index, package, root_id),
+        let entry_points = if package.kind == PackageKind::Cargo {
+            let found = crate_roots(&package.root);
+            if found.is_empty() {
+                // The package keeps its root. Dropping it would say the workspace has no
+                // such member; an empty root would say the member holds nothing. Neither
+                // is what happened — its entry point is somewhere we do not look yet, and
+                // the paths tried say exactly that.
+                index.mark_module_unresolved(root_id, crate_root_candidates(&package.root));
+            }
+            found
+        } else {
+            Vec::new()
         };
+        let mut queue = seed::seed(&mut index, package, root_id, entry_points);
         drain(
             &mut index,
             &mut pool,
@@ -281,7 +281,7 @@ fn index_one_file(
             declaration.path_attribute.as_deref(),
         ) {
             ModuleSource::File(file) => {
-                queue.extend(pending_for(file, declaration.id, false));
+                queue.extend(seed::pending_for(file, declaration.id, false));
             },
             ModuleSource::Missing { candidates } => {
                 // The module stays in the tree. Dropping it would claim the package has
@@ -291,88 +291,6 @@ fn index_one_file(
             ModuleSource::Inline => {},
         }
     }
-}
-
-/// The queue entries a Cargo package starts from.
-fn seed_cargo(entry_points: Vec<PathBuf>, root_id: SeamId) -> Vec<Pending> {
-    entry_points
-        .into_iter()
-        .filter_map(|file| pending_for(file, root_id, true))
-        .collect()
-}
-
-/// Build a Python package's module nodes, and the queue entries that fill them.
-///
-/// The nodes have to exist before their files are read: the walk hands back parents before
-/// children, and each module node is the parent its own file's contents attach to.
-fn seed_python(index: &mut SeamIndex, package: &Discovered, root_id: SeamId) -> Vec<Pending> {
-    let mut queue = Vec::new();
-    for module in crate::modules::python::walk(&package.root) {
-        // An empty import path is the package's own `__init__.py`, whose contents belong
-        // to the package node itself rather than to a child module named `__init__`.
-        let parent = if module.segments.is_empty() {
-            root_id
-        } else {
-            add_module_node(index, root_id, &module.segments, &module.file)
-        };
-        queue.extend(pending_for(module.file, parent, false));
-    }
-    // The drain pops from the back, so reversing keeps files in walk order — parents
-    // before children, which is the order their nodes were created in.
-    queue.reverse();
-    queue
-}
-
-/// A queue entry, or `None` when no compiled-in grammar reads this file.
-fn pending_for(file: PathBuf, parent: SeamId, crate_root: bool) -> Option<Pending> {
-    let language = karet_treesitter::language_id_from_path(&file)?;
-    Some(Pending {
-        file,
-        parent,
-        language,
-        crate_root,
-    })
-}
-
-/// Add a Python module's node, located in the file it owns.
-fn add_module_node(
-    index: &mut SeamIndex,
-    root_id: SeamId,
-    segments: &[String],
-    file: &Path,
-) -> SeamId {
-    let Some(root_segment) = index
-        .path(root_id)
-        .and_then(|path| path.segments().first().cloned())
-    else {
-        return root_id;
-    };
-    let mut full = vec![root_segment];
-    full.extend(segments.iter().map(SeamSegment::new));
-    let id = index.intern(SeamPath::new(full.clone()));
-    let parent = SeamPath::new(full[..full.len() - 1].to_vec());
-    let file_id = index.intern_file(file);
-    index.insert(Node {
-        id,
-        kind: NodeKind::Module,
-        name: segments.last().cloned().unwrap_or_default(),
-        detail: None,
-        location: SeamLocation {
-            file: file_id,
-            range: karet_core::Range::default(),
-            span: karet_core::Span::default(),
-            selection: karet_core::Range::default(),
-            header: karet_core::Range::default(),
-        },
-        parent: index.resolve(&parent),
-        children: Vec::new(),
-        facets: Vec::new(),
-        visibility: None,
-        rollups: Rollups::new(),
-        membership: ConfigMembership::Active,
-        provisional: false,
-    });
-    id
 }
 
 /// Add the package's root node, which every declaration ultimately hangs from.
@@ -486,6 +404,8 @@ pub fn reindex_file(
     index.recompute_rollups_from(root);
     Ok(())
 }
+
+mod seed;
 
 #[cfg(test)]
 mod tests;

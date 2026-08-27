@@ -423,3 +423,138 @@ fn every_discovered_package_points_at_a_file_that_exists() -> TestResult {
     }
     Ok(())
 }
+
+// --- the file-tree ecosystems -----------------------------------------------
+
+/// The kinds of everything discovered under `root`, in discovery order.
+fn kinds(root: &std::path::Path) -> Vec<PackageKind> {
+    discover(root, DiscoveryOptions::default())
+        .into_iter()
+        .map(|package| package.kind)
+        .collect()
+}
+
+#[test]
+fn a_node_package_is_rooted_at_its_source_directory() {
+    let Ok(dir) = tempfile::tempdir() else {
+        return;
+    };
+    let root = dir.path().join("web");
+    let _ = std::fs::create_dir_all(root.join("src"));
+    let _ = std::fs::write(root.join("package.json"), "{}");
+    let _ = std::fs::write(root.join("src/index.ts"), "");
+    let discovered = discover(dir.path(), DiscoveryOptions::default());
+    let node = discovered.iter().find(|p| p.kind == PackageKind::Node);
+    // `src` says where the sources are, not what they are called, so the name comes from
+    // the package directory.
+    assert_eq!(node.map(|p| p.name.as_str()), Some("web"));
+    assert_eq!(node.map(|p| p.root.clone()), Some(root.join("src")));
+}
+
+#[test]
+fn a_node_package_with_no_src_directory_is_rooted_at_itself() {
+    let Ok(dir) = tempfile::tempdir() else {
+        return;
+    };
+    let _ = std::fs::write(dir.path().join("package.json"), "{}");
+    let _ = std::fs::write(dir.path().join("main.js"), "");
+    let discovered = discover(dir.path(), DiscoveryOptions::default());
+    assert!(discovered.iter().any(|p| p.kind == PackageKind::Node));
+}
+
+#[test]
+fn a_swift_package_yields_one_root_per_target() {
+    let Ok(dir) = tempfile::tempdir() else {
+        return;
+    };
+    let _ = std::fs::write(dir.path().join("Package.swift"), "");
+    for target in ["Widgets", "Support"] {
+        let _ = std::fs::create_dir_all(dir.path().join("Sources").join(target));
+        let _ = std::fs::write(dir.path().join("Sources").join(target).join("a.swift"), "");
+    }
+    let names: Vec<String> = discover(dir.path(), DiscoveryOptions::default())
+        .into_iter()
+        .filter(|p| p.kind == PackageKind::Swift)
+        .map(|p| p.name)
+        .collect();
+    // Sorted, because discovery order is what the view's first column shows.
+    assert_eq!(names, ["Support", "Widgets"]);
+}
+
+#[test]
+fn a_single_target_swift_package_uses_sources_itself() {
+    let Ok(dir) = tempfile::tempdir() else {
+        return;
+    };
+    let root = dir.path().join("Widgets");
+    let _ = std::fs::create_dir_all(root.join("Sources"));
+    let _ = std::fs::write(root.join("Package.swift"), "");
+    let _ = std::fs::write(root.join("Sources/a.swift"), "");
+    let swift = discover(dir.path(), DiscoveryOptions::default())
+        .into_iter()
+        .find(|p| p.kind == PackageKind::Swift);
+    assert_eq!(swift.as_ref().map(|p| p.name.as_str()), Some("Widgets"));
+    assert_eq!(swift.map(|p| p.root), Some(root.join("Sources")));
+}
+
+#[test]
+fn a_gradle_module_yields_a_root_per_source_set() {
+    let Ok(dir) = tempfile::tempdir() else {
+        return;
+    };
+    let root = dir.path().join("app");
+    let _ = std::fs::create_dir_all(root.join("src/main/kotlin"));
+    let _ = std::fs::create_dir_all(root.join("src/test/kotlin"));
+    let _ = std::fs::write(root.join("build.gradle.kts"), "");
+    let roots: Vec<PathBuf> = discover(dir.path(), DiscoveryOptions::default())
+        .into_iter()
+        .filter(|p| p.kind == PackageKind::Gradle)
+        .map(|p| p.root)
+        .collect();
+    // Every set, not just `main`: which one is "the" one is a build-tool question.
+    assert_eq!(
+        roots,
+        [root.join("src/main/kotlin"), root.join("src/test/kotlin")]
+    );
+}
+
+#[test]
+fn a_gradle_module_with_no_sources_contributes_nothing() {
+    let Ok(dir) = tempfile::tempdir() else {
+        return;
+    };
+    let _ = std::fs::write(dir.path().join("build.gradle"), "");
+    assert!(kinds(dir.path()).is_empty());
+}
+
+#[test]
+fn a_polyglot_repository_answers_about_all_of_itself() {
+    let Ok(dir) = tempfile::tempdir() else {
+        return;
+    };
+    let rust = dir.path().join("engine");
+    let _ = std::fs::create_dir_all(rust.join("src"));
+    let _ = std::fs::write(rust.join("Cargo.toml"), "[package]\nname = \"engine\"\n");
+    let _ = std::fs::write(rust.join("src/lib.rs"), "");
+    let web = dir.path().join("web");
+    let _ = std::fs::create_dir_all(web.join("src"));
+    let _ = std::fs::write(web.join("package.json"), "{}");
+    let _ = std::fs::write(web.join("src/index.ts"), "");
+    let kinds = kinds(dir.path());
+    // One repository, both halves. Answering with only one would be a quieter wrong.
+    assert!(kinds.contains(&PackageKind::Cargo), "{kinds:?}");
+    assert!(kinds.contains(&PackageKind::Node), "{kinds:?}");
+}
+
+#[test]
+fn an_ecosystems_extensions_and_index_names_match_its_conventions() {
+    assert!(PackageKind::Node.extensions().contains(&"tsx"));
+    assert_eq!(PackageKind::Swift.extensions(), ["swift"]);
+    assert!(PackageKind::Gradle.extensions().contains(&"kt"));
+    // Only Node has the `__init__.py`/`mod.rs` convention.
+    assert_eq!(PackageKind::Node.index_names(), ["index"]);
+    assert!(PackageKind::Swift.index_names().is_empty());
+    // Cargo declares its tree and Python has a walk of its own.
+    assert!(PackageKind::Cargo.extensions().is_empty());
+    assert!(PackageKind::Python.extensions().is_empty());
+}
