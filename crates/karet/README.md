@@ -139,8 +139,19 @@ button replaces everywhere.
 middle-click) to close, drag to reorder; click explorer rows to open files /
 toggle folders and the header `1 2 3` to switch panels; click SCM / search rows to
 open them; click to place the caret and drag to select text (double / triple-click
-select word / line); `Alt+Click`/`Alt+Drag` add and grow extra carets; the wheel
-scrolls; click a status-bar segment to run it.
+select word / line, and *dragging* from one extends by whole words / lines); a
+drag that leaves the viewport keeps scrolling and selecting; `Alt+Click`/`Alt+Drag`
+add and grow extra carets; the wheel scrolls; click a status-bar segment to run it.
+
+**Mouse — selecting outside the editor.** Dragging highlights text on every
+surface that shows it, and `Ctrl+C` copies **what the text is, not what it looks
+like**: a diff — unified, either side-by-side column, or a commit / compare file
+card — copies the code without its line numbers, `+`/`-` markers or card rail; the
+hex dump copies the byte and ASCII columns without the file-offset column; the
+markdown preview copies the text it renders. A side-by-side drag stays in the
+column it began in, so one side of a change can be taken on its own. The find bar
+and the explorer's inline rename field have a real caret, selection, and
+`Ctrl+A`/`C`/`X`/`V` too.
 
 **Where these live (source of truth).** Every key and mouse interaction is defined in
 a few files, so there is one place to read or change each behavior:
@@ -150,10 +161,14 @@ a few files, so there is one place to read or change each behavior:
   can never drift.
 - **Commands** — every named operation a binding fires is a `Command` in
   `command.rs`.
-- **Mouse** — click / drag / multi-click handling lives in `app.rs`
-  (`handle_editor_click`, `drag_select_to`, and the `handle_mouse` dispatch).
+- **Mouse** — the `handle_mouse` dispatch and its capture states live in
+  `app/mouse.rs`; the editor's own click and drag in `app/editor.rs`
+  (`handle_editor_click`) and `app/drag.rs` (drag granularity and autoscroll).
 - **Caret & selection model** — the multi-caret `EditorState` in the `karet-editor`
   crate (`lib.rs`), built on `karet_core::CursorState`.
+- **Selection on the read-only surfaces** — `app/select.rs` owns the model (a
+  `karet_widgets::RowSelection` over absolute rows) and answers what a row's
+  copyable text is; `ui/content/select.rs` lays it over the rendered cells.
 
 ## Architecture notes
 
@@ -168,7 +183,6 @@ a few files, so there is one place to read or change each behavior:
 - **Editing** (insert/delete/undo/save) — the code window is read-only; needs
   `karet-text` edits + history + `karet-session`. Text selection + copy already
   work (read-only), via mouse drag / `Shift`+arrows and `Ctrl+C`.
-- **Diff drag-select & copy** — code tabs support it; diff tabs are keyboard-first.
 - **Kitty image lifecycle** across scroll/resize — minimal active-tab transmit.
 - **Rich markdown preview** (`karet-markdown`), **PDF rasterization**.
 - **Parallel workspace search** and **replace**; **explorer git-status overlay**.

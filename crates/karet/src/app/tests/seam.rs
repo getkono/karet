@@ -573,7 +573,7 @@ fn a_press_on_the_seam_view_never_arms_a_text_drag() {
     press(&mut app, 22, 2);
     // Falling through to the editor would leave the shell waiting for a selection drag
     // that is never coming, and swallow the next release as if it were one.
-    assert!(!app.editor_selecting);
+    assert!(app.editor_drag.is_none());
 }
 
 #[test]

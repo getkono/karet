@@ -14,7 +14,7 @@ impl App {
     pub(super) fn copy_selection(&mut self) {
         if matches!(
             self.input_context().modal,
-            Some(Modal::SearchInput | Modal::CommitInput)
+            Some(Modal::SearchInput | Modal::CommitInput | Modal::Find | Modal::ExplorerEdit)
         ) {
             if let Some(text) = self.modal_selection_text() {
                 self.copy_to_clipboard(text, "selection");
@@ -25,6 +25,13 @@ impl App {
         }
         if self.focus_target() == FocusTarget::Explorer {
             self.explorer_copy_files();
+            return;
+        }
+        // A live selection on a read-only surface (a diff, a viewer) wins: those
+        // tabs are not `Code`, so they would otherwise fall through to the
+        // "open a text file" message below.
+        if let Some(text) = self.surface_selection_text() {
+            self.copy_to_clipboard(text, "selection");
             return;
         }
         let text = match self.tabs.get(self.active) {

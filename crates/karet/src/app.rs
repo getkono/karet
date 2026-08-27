@@ -11,6 +11,7 @@ mod debugging;
 mod definition;
 mod deps;
 mod diffs;
+mod drag;
 mod editor;
 mod explorer;
 pub(crate) mod github;
@@ -34,6 +35,7 @@ mod scm;
 mod scroll;
 pub(crate) mod seam;
 mod search;
+pub(crate) mod select;
 mod sidebar;
 mod snapshot_events;
 mod spellcheck;
@@ -80,6 +82,8 @@ use crossterm::event::PopKeyboardEnhancementFlags;
 use crossterm::event::PushKeyboardEnhancementFlags;
 use crossterm::event::{self};
 use crossterm::terminal::SetTitle;
+pub(crate) use drag::DragGranularity;
+pub(crate) use drag::EditorDrag;
 pub(crate) use hit::*;
 use karet_core::BlameAttribution;
 use karet_core::BytePos;
@@ -171,6 +175,10 @@ pub(crate) use language_servers::LanguageServerBadge;
 pub(crate) use pending::Pending;
 use ratatui::layout::Rect;
 pub(crate) use runtime::run;
+pub(crate) use select::SelectRegion;
+pub(crate) use select::SelectSurface;
+pub(crate) use select::SurfaceRow;
+pub(crate) use select::SurfaceSelection;
 pub(crate) use state::*;
 use tokio::sync::mpsc;
 use util::KeyboardEnhancementGuard;
@@ -453,6 +461,8 @@ pub struct App {
     pub(crate) scm_ui: ScmChrome,
     /// Text field currently being extended by a left-button drag.
     pub(crate) text_field_drag: Option<TextFieldTarget>,
+    /// Where the find-in-file bar's editable fields landed last frame.
+    pub(crate) find_rects: crate::ui::FindBarRects,
     /// The Search panel's last-frame render chrome.
     pub(crate) search_ui: SearchChrome,
     /// The Spelling panel's last-frame render chrome.
@@ -488,8 +498,12 @@ pub struct App {
     /// The focused commit view's signature-badge rect (screen coords) from the last
     /// frame, for double-click hit-testing. `None` when no badge is on screen.
     pub(crate) commit_badge_rect: Option<Rect>,
-    /// Whether a mouse text-selection drag is in progress in the editor.
-    pub(crate) editor_selecting: bool,
+    /// The editor's in-progress pointer selection drag, if one is under way.
+    pub(crate) editor_drag: Option<drag::EditorDrag>,
+    /// The live pointer selection on a read-only surface (diff, viewer), if any.
+    pub(crate) surface_selection: Option<select::SurfaceSelection>,
+    /// The surface currently capturing a selection drag, if one is under way.
+    pub(crate) surface_selecting: Option<select::SelectSurface>,
     /// The last left-click `(time, column, row)`, for multi-click detection.
     last_click: Option<(Instant, u16, u16)>,
     /// The current multi-click streak (1 = single, 2 = double, 3 = triple).

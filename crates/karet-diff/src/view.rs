@@ -151,6 +151,100 @@ fn hunk_at_row(
     Some(found)
 }
 
+/// The copyable content of one painted diff row.
+///
+/// The text is the line's own content — the line-number gutter and the
+/// `+`/`-` marker are chrome, so they are neither part of it nor of anything a
+/// selection over the row can copy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowContent {
+    /// The row's text, exactly as painted after its gutter.
+    pub text: String,
+    /// How many display columns of gutter precede that text.
+    pub gutter_width: u16,
+}
+
+/// The content of the unified view's display `row`.
+///
+/// `None` when the row carries no copyable text: a scope line, a hunk header, a
+/// binary/hunkless placeholder, or the trailing blank. Mirrors
+/// [`unified_lines`]'s layout exactly, the same invariant
+/// [`unified_hunk_at_row`] holds.
+#[must_use]
+pub fn unified_row(prepared: &PreparedDiff, row: usize) -> Option<RowContent> {
+    let (hunk, body) = body_row_at(prepared, row, |hunk| hunk.lines.len())?;
+    let line = prepared.diff.hunks.get(hunk)?.lines.get(body)?;
+    Some(RowContent {
+        text: line.content.clone(),
+        gutter_width: gutter_width(line.old_lineno)
+            .saturating_add(gutter_width(line.new_lineno))
+            .saturating_add(1),
+    })
+}
+
+/// The `(old, new)` content of the side-by-side view's display `row`.
+///
+/// Either side is `None` where the alignment left that pane empty, and both are
+/// `None` on a row with no copyable text. Mirrors [`side_by_side_lines`]'s
+/// layout, as [`side_by_side_hunk_at_row`] does.
+#[must_use]
+pub fn side_by_side_row(
+    prepared: &PreparedDiff,
+    row: usize,
+) -> (Option<RowContent>, Option<RowContent>) {
+    let content = |cell: Option<&crate::Cell>| {
+        cell.map(|cell| RowContent {
+            text: cell.content.clone(),
+            gutter_width: gutter_width(Some(cell.lineno)),
+        })
+    };
+    let Some((index, body)) = body_row_at(prepared, row, |hunk| align_hunk(&hunk.lines).len())
+    else {
+        return (None, None);
+    };
+    let Some(hunk) = prepared.diff.hunks.get(index) else {
+        return (None, None);
+    };
+    let rows = align_hunk(&hunk.lines);
+    let Some(pair) = rows.get(body) else {
+        return (None, None);
+    };
+    (content(pair.left.as_ref()), content(pair.right.as_ref()))
+}
+
+/// Which `(hunk, body row)` of `prepared` the display `row` falls on, skipping
+/// the scope and header rows that open each hunk.
+fn body_row_at(
+    prepared: &PreparedDiff,
+    row: usize,
+    body_rows: impl Fn(&crate::Hunk) -> usize,
+) -> Option<(usize, usize)> {
+    if prepared.is_binary() || prepared.diff.hunks.is_empty() {
+        return None;
+    }
+    let mut next_row = 0usize;
+    for (index, hunk) in prepared.diff.hunks.iter().enumerate() {
+        let head = usize::from(hunk.scope.is_some()) + 1;
+        let body = body_rows(hunk);
+        if row < next_row + head {
+            return None;
+        }
+        if row < next_row + head + body {
+            return Some((index, row - next_row - head));
+        }
+        next_row += head + body;
+    }
+    None
+}
+
+/// The display width of one line-number gutter cell, mirroring [`gutter_span`]:
+/// a right-aligned number of at least four digits, then one space. A line number
+/// wider than four digits widens the gutter, so this is not a constant.
+fn gutter_width(lineno: Option<u32>) -> u16 {
+    let digits = lineno.map_or(4, |lineno| lineno.to_string().len().max(4));
+    u16::try_from(digits).unwrap_or(u16::MAX).saturating_add(1)
+}
+
 /// Build the side-by-side lines for `prepared` as aligned `(old, new)` columns.
 #[must_use]
 pub fn side_by_side_lines(
@@ -492,6 +586,137 @@ mod tests {
         binary_diff.hunks.clear();
         let binary = PreparedDiff::new(binary_diff, Vec::new(), Vec::new());
         assert_eq!(unified_hunk_at_row(&binary, 0), None);
+    }
+
+    /// The text a painted row shows after its gutter, for cross-checking the
+    /// row API against what `unified_lines` actually renders.
+    fn painted_content(line: &Line<'static>, gutter_width: u16) -> String {
+        let painted: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        painted
+            .chars()
+            .skip(usize::from(gutter_width))
+            .collect::<String>()
+    }
+
+    #[test]
+    fn unified_row_mirrors_the_painted_layout() {
+        let old = "a\nb\nc\nd\ne\nf\ng\nh\ni\n";
+        let new = "A\nb\nc\nd\ne\nf\ng\nh\nI\n";
+        let prep = prepared(old, new);
+        let token_fg = |_: TokenId| Color::White;
+        let lines = unified_lines(&prep, &palette(&token_fg));
+
+        // Row 0 is the first hunk's header: chrome, so no content.
+        assert_eq!(unified_row(&prep, 0), None);
+        // The trailing blank line has none either.
+        assert_eq!(unified_row(&prep, lines.len() - 1), None);
+        assert_eq!(unified_row(&prep, usize::MAX), None);
+
+        // Every row the API claims has content matches what was painted there,
+        // and the gutter width it reports is where that content starts.
+        let mut bodies = 0;
+        for (row, line) in lines.iter().enumerate() {
+            let Some(content) = unified_row(&prep, row) else {
+                continue;
+            };
+            bodies += 1;
+            assert_eq!(
+                painted_content(line, content.gutter_width),
+                content.text,
+                "row {row} content should start after its gutter"
+            );
+        }
+        assert!(bodies > 0, "the diff should have body rows");
+        // A change row carries the changed text, never the `+`/`-` marker.
+        assert!(
+            (0..lines.len())
+                .filter_map(|row| unified_row(&prep, row))
+                .any(|content| content.text == "A"),
+            "the added line's content should be selectable as bare text"
+        );
+    }
+
+    #[test]
+    fn side_by_side_row_mirrors_the_painted_layout() {
+        let prep = prepared("before\n", "after\n");
+        let token_fg = |_: TokenId| Color::White;
+        let (left, right) = side_by_side_lines(&prep, &palette(&token_fg));
+
+        assert_eq!(side_by_side_row(&prep, 0), (None, None), "header row");
+        assert_eq!(side_by_side_row(&prep, left.len() - 1), (None, None));
+
+        for row in 0..left.len() {
+            let (old, new) = side_by_side_row(&prep, row);
+            if let Some(old) = old {
+                assert_eq!(painted_content(&left[row], old.gutter_width), old.text);
+            }
+            if let Some(new) = new {
+                assert_eq!(painted_content(&right[row], new.gutter_width), new.text);
+            }
+        }
+        // The two panes carry the two sides of the change.
+        let contents: Vec<_> = (0..left.len())
+            .map(|row| side_by_side_row(&prep, row))
+            .collect();
+        assert!(
+            contents
+                .iter()
+                .any(|(old, _)| old.as_ref().is_some_and(|c| c.text == "before"))
+        );
+        assert!(
+            contents
+                .iter()
+                .any(|(_, new)| new.as_ref().is_some_and(|c| c.text == "after"))
+        );
+    }
+
+    #[test]
+    fn a_wide_line_number_widens_the_gutter_it_reports() {
+        // Four digits is the minimum width, so 9999 and 1 gutter alike...
+        assert_eq!(gutter_width(Some(1)), 5);
+        assert_eq!(gutter_width(Some(9999)), 5);
+        assert_eq!(gutter_width(None), 5);
+        // ...but a fifth digit pushes the content one column right.
+        assert_eq!(gutter_width(Some(10_000)), 6);
+
+        // End to end: a file long enough to reach five-digit line numbers.
+        let old: String = (1..=10_050).map(|n| format!("line {n}\n")).collect();
+        let new = old.replace("line 10040\n", "line 10040 changed\n");
+        let prep = prepared(&old, &new);
+        let token_fg = |_: TokenId| Color::White;
+        let lines = unified_lines(&prep, &palette(&token_fg));
+        let widened = (0..lines.len())
+            .filter_map(|row| Some((row, unified_row(&prep, row)?)))
+            .find(|(_, content)| content.text.contains("10040"));
+        assert!(
+            widened.is_some(),
+            "the changed line should be a selectable row"
+        );
+        if let Some((row, content)) = widened {
+            assert_eq!(
+                painted_content(&lines[row], content.gutter_width),
+                content.text
+            );
+            assert!(
+                content.gutter_width > 11,
+                "five-digit line numbers widen the two gutters past the four-digit minimum"
+            );
+        }
+    }
+
+    #[test]
+    fn a_binary_or_hunkless_diff_has_no_selectable_rows() {
+        let mut binary_diff = diff_text("a\n", "b\n", &DiffOptions::default());
+        binary_diff.is_binary = true;
+        binary_diff.hunks.clear();
+        let binary = PreparedDiff::new(binary_diff, Vec::new(), Vec::new());
+        // The placeholder and its trailing blank are chrome, not content.
+        assert_eq!(unified_row(&binary, 0), None);
+        assert_eq!(unified_row(&binary, 1), None);
+        assert_eq!(side_by_side_row(&binary, 0), (None, None));
+
+        let identical = prepared("same\n", "same\n");
+        assert_eq!(unified_row(&identical, 0), None);
     }
 
     #[test]

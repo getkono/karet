@@ -113,6 +113,9 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Explorer inline name editor (new file/folder or rename).
     b(ExplorerEdit, false, false, false, Esc,   Command::ExplorerEditCancel),
     b(ExplorerEdit, false, false, false, Enter, Command::ExplorerEditSubmit),
+    b(ExplorerEdit, true,  false, false, Char('c'), Command::Copy),
+    b(ExplorerEdit, true,  false, false, Char('x'), Command::Cut),
+    b(ExplorerEdit, true,  false, false, Char('v'), Command::Paste),
 
     // Sidebar focus. Selection verbs are shared across every list panel (explorer
     // and source control) — they route to the focused panel's selection in dispatch.
@@ -343,6 +346,10 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Find, true,  false, false, Char('g'), Command::FindNext),
     b(Find, true,  true,  false, Char('g'), Command::FindPrev),
     b(Find, false, false, false, Tab,       Command::FindToggleField),
+    b(Find, true,  false, false, Char('a'), Command::EditorSelectAll),
+    b(Find, true,  false, false, Char('c'), Command::Copy),
+    b(Find, true,  false, false, Char('x'), Command::Cut),
+    b(Find, true,  false, false, Char('v'), Command::Paste),
     b(Find, false, false, true,  Enter,     Command::FindReplaceAll),
     b(Find, false, false, true,  Char('h'), Command::FindToggleReplace),
     b(Find, false, false, true,  Char('r'), Command::FindToggleRegex),

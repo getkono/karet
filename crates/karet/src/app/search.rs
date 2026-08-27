@@ -41,31 +41,50 @@ impl App {
         }
     }
 
-    /// Edit the find query with an unbound key (backspace / printable), re-running
-    /// the search. Command keys (Esc / Enter / Ctrl+G / arrows) resolve via the
-    /// keymap's `Find` layer instead.
+    /// Edit the active find field with the same GUI-style cursor and selection
+    /// behavior as the Search panel. Command keys (Esc / Enter / Ctrl+G) resolve
+    /// via the keymap's `Find` layer instead.
     pub(super) fn find_input(&mut self, key: KeyEvent) {
         let Some(find) = self.active_find_mut() else {
             return;
         };
         let editing_query = find.field == SearchField::Find;
-        let target = if editing_query {
-            &mut find.query
+        let (target, edit) = if editing_query {
+            (&mut find.query, &mut find.query_edit)
         } else {
-            &mut find.replace
+            (&mut find.replace, &mut find.replace_edit)
         };
+        // Compared rather than inferred from the key: replacing a selection with
+        // text of the same length still changes what matches.
+        let before = target.clone();
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let command = key.modifiers.contains(KeyModifiers::SUPER);
         match key.code {
-            KeyCode::Backspace => {
-                target.pop();
-            },
+            KeyCode::Backspace => edit.backspace(target, alt || ctrl),
+            KeyCode::Delete => edit.delete(target, alt || ctrl),
+            KeyCode::Left if command => edit.move_start(target, false, shift),
+            KeyCode::Right if command => edit.move_end(target, false, shift),
+            KeyCode::Left if alt || ctrl => edit.move_word_left(target, shift),
+            KeyCode::Right if alt || ctrl => edit.move_word_right(target, shift),
+            KeyCode::Left => edit.move_left(target, shift),
+            KeyCode::Right => edit.move_right(target, shift),
+            KeyCode::Home => edit.move_start(target, ctrl, shift),
+            KeyCode::End => edit.move_end(target, ctrl, shift),
+            KeyCode::Char('a' | 'A') if ctrl || command => edit.select_all(target),
             KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                if !key.modifiers.intersects(
+                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                ) =>
             {
-                target.push(c);
+                edit.insert(target, &c.to_string());
             },
             _ => return,
+        }
+        // Motions leave the text alone; only an edit changes what matches.
+        if *target == before {
+            return;
         }
         // Only re-run the search when the query changed (the replacement doesn't
         // affect what matches).

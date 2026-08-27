@@ -7,7 +7,9 @@
 //! LSP hover/doc popup, which render `karet-core` models supplied over the
 //! backend's event stream. The [`menu`] and [`dialog`] widgets share one row
 //! model ([`choice`]), so a context menu and a modal confirmation navigate
-//! identically. The [`transcript`] widget is the live-conversation surface: an
+//! identically. [`rowselect`] is the shared pointer-selection model for the
+//! read-only surfaces that paint their own rows (diffs, hex dumps, previews) and
+//! so have no document to select over. The [`transcript`] widget is the live-conversation surface: an
 //! append-only, wrapping, stick-to-bottom view with a post-wrap scroll extent.
 //! The read-only file-view primitives (hex dump,
 //! terminal image, placeholder) live in `karet-fileview`.
@@ -24,6 +26,7 @@ pub mod menu;
 pub mod notify;
 pub mod pane;
 pub mod picker;
+pub mod rowselect;
 pub mod scroll;
 pub mod select;
 pub mod spinner;
@@ -61,6 +64,9 @@ pub use pane::SplitAxis;
 pub use pane::SplitDir;
 pub use pane::drop_preview_rect;
 pub use pane::drop_zone;
+pub use rowselect::RowGeometry;
+pub use rowselect::RowPos;
+pub use rowselect::RowSelection;
 pub use select::ListSelection;
 pub use spinner::Spinner;
 pub use transcript::Transcript;
