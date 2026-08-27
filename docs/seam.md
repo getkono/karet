@@ -48,13 +48,33 @@ and a query spans all of them at once:
  karet-diff   ▸ 31│▸provider      ▸ 3│▸SymbolProvider  ◉◊ 2
 ```
 
+Five ecosystems are read, and every one of them always runs — a repository with a Rust
+workspace, a Python service and a TypeScript front end is one repository, and answering
+with only part of it would be a quieter kind of wrong than failing.
+
+| Marked by | Sources under | One package per |
+|---|---|---|
+| `Cargo.toml` | followed from `src/lib.rs`, `src/main.rs` | crate |
+| `pyproject.toml`, `setup.py`, `setup.cfg` | the importable package directories | importable package |
+| `package.json` | `src`, or the package directory | package |
+| `Package.swift` | `Sources/<Target>` | target |
+| `build.gradle{,.kts}` | `src/<set>/{kotlin,java}` | source set |
+
 Four Cargo shapes are read: a package, a virtual `[workspace]` root, a root that is both,
 and a root with no manifest whose crates sit a level or two down (`rust/api/`,
-`services/worker/`). Python projects — marked by `pyproject.toml`, `setup.py`, or
-`setup.cfg` — are read alongside them, so a polyglot repository answers about all of
-itself. A package's name comes from its manifest; a Python package's comes from the
-directory holding its `__init__.py`, because that, not the distribution name, is what an
-import path is made of.
+`services/worker/`).
+
+**Rust declares its module tree and everything else has one on disk.** `mod net;` says
+where to look next, so a Cargo crate is walked by following declarations. Everywhere else
+a file is a module and a directory holding source is a namespace, so the tree is read off
+the filesystem — with the `__init__.py`/`index.ts` convention honoured where a language
+has one, meaning that file *is* its directory rather than a module beside it. Swift and
+Kotlin have no such convention, so every file there is its own module.
+
+**A package's name comes from the directory, not the manifest**, everywhere except Cargo.
+A `[project] name` is a *distribution* name and a `package.json` name may be scoped;
+neither need match anything importable, and the directory is both what a reader sees and
+what an import path is made of.
 
 Build output, dependency caches, and virtual environments are never walked. `seam.maxIndexedFiles`
 caps the whole index rather than each package, and the header says so when it bites.
@@ -83,8 +103,19 @@ as though both were always there. And a block neither of whose ends this package
 resolves to nothing, or to more than one thing, is not a name this index will guess at.
 
 The same machinery serves every language: a language says what a construct belongs to, and
-a neutral pass resolves the name. Python needs none of it — a method is written inside its
-class — and says so rather than inheriting a rule written for someone else's grammar.
+a neutral pass resolves the name. What that means per language:
+
+| Language | Written away from what it belongs to | Where it lands |
+|---|---|---|
+| Rust | `impl` blocks | inherent dissolves into the type; a trait binding keeps a level under it |
+| Swift | `extension Widget`, `extension Widget: Codable` | the same, with `#if` standing in for `cfg` as the gate that keeps a level |
+| Kotlin | `fun Widget.render()`, `val Widget.area` | a member of its receiver; a companion object is transparent and needs no move |
+| TypeScript | `Widget.prototype.render = …` | a member of `Widget` |
+| Python | — | nothing: a method is written inside its class |
+
+A name that resolves to nothing, or to more than one thing, always leaves its node where it
+was written. Over this repository that is three `impl From<Local> for Foreign` blocks, each
+of which genuinely belongs to neither end.
 
 ## The five lenses
 
@@ -98,6 +129,18 @@ not extend it. Subtypes *within* a lens are open, so each language names its own
 | `variation` | What changes shape before compiling? | `cfg`, `cfg_attr`, features, macro defs and calls, derives, attribute macros, `include!` | `TYPE_CHECKING`, `sys.platform` branches, decorators |
 | `boundary` | What crosses the package line? | `extern` blocks and fns, `no_mangle`, `export_name`, `link`, entry points | `ctypes`/`cffi`, non-relative imports, entry points |
 | `hazard` | Where is substitution dangerous? | `unsafe`, `async`, await points, `Send`/`Sync` bounds | `async`, await points, `global`, `nonlocal` |
+
+| Lens | TypeScript / JavaScript | Swift | Kotlin |
+|---|---|---|---|
+| `api` | `export`, `export default`, `declare`, `private`/`protected`, the `#` sigil | `open`, `public`, `package`, `internal`, `fileprivate`, `private` | `public`, `internal`, `protected`, `private` |
+| `substitution` | `interface`, `abstract`, `implements`, `extends`, bodiless signatures, optional members, function-typed values | protocols, extensions, conformances, associated types, `some`, `any`, protocol defaults | interfaces, `abstract`, `open`, `sealed`, `override`, `by` delegation, `object`, extensions |
+| `variation` | decorators, conditional types, dynamic `import()`, `process.env` branches | `#if`, `@available`, `@propertyWrapper`, attributes | annotations, `expect`/`actual`, `inline`, `reified` |
+| `boundary` | package imports, `declare module`, `globalThis` | `@_cdecl`, `@objc`, `@_silgen_name`, `@main`, module imports | `external fun`, `@Jvm*`, `main`, imports |
+| `hazard` | `async`, await points, `as any`, `!`, `@ts-ignore`, `eval` | `async`, await points, `throws`, `try!`/`as!`, unsafe pointers, `@unchecked` | `suspend`, `!!`, `lateinit`, `@Volatile` |
+
+Each language names its own subtypes and a query accepts any of them, so
+`substitution:blanket-impl`, `substitution:protocol` and `substitution:implements` are all
+valid terms in one query over a polyglot repository.
 
 A node may carry facets from several lenses. A facet is present or absent — there is no
 severity and no score, because ranking seams would decide for the reader which ones
