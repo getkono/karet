@@ -126,7 +126,7 @@ impl App {
 
     /// The explorer's selection as a directory, when the panel has one.
     fn explorer_seam_root(&mut self) -> Option<std::path::PathBuf> {
-        self.explorer.ensure_built(&self.root);
+        self.build_explorer();
         let row = self.explorer.selected()?;
         if row.is_dir {
             return Some(row.path.clone());

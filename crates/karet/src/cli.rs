@@ -168,6 +168,49 @@ pub struct Cli {
     #[arg(long, value_name = "MS", requires = "capture")]
     pub capture_timeout: Option<u64>,
 
+    /// Serve this workspace to a karet client over stdin/stdout instead of drawing
+    /// an editor, and exit when the client disconnects.
+    ///
+    /// The session — documents, git, language servers, tree-sitter, search — stays
+    /// here; the client renders. Only edits and derived data cross the stream, so
+    /// typing is answered by the machine the user is sitting at rather than by the
+    /// network.
+    ///
+    /// Nothing but the protocol may be written to stdout while this runs.
+    #[arg(long, conflicts_with_all = ["client", "client_exec", "capture", "doctor", "seam_query"])]
+    pub serve: bool,
+
+    /// Render a workspace served by `karet --serve`, reached over a Unix socket.
+    ///
+    /// The path a supporting terminal multiplexer forwards for a split pane. To
+    /// reach a backend yourself, `--client-exec` is usually what you want.
+    #[arg(long, value_name = "SOCKET", conflicts_with_all = ["serve", "client_exec", "capture", "doctor", "seam_query"])]
+    pub client: Option<PathBuf>,
+
+    /// Render a workspace served by a command this karet runs, speaking the
+    /// protocol over that command's stdin and stdout.
+    ///
+    /// The command supplies the connection; karet supplies neither. Anything that
+    /// forwards two pipes will do:
+    ///
+    /// ```text
+    /// karet --client-exec "ssh dev-box karet --serve /srv/repo"
+    /// ```
+    ///
+    /// The editor behaves exactly as it does locally — the workspace it edits is
+    /// simply somewhere else. Edits apply the moment they are typed and reconcile
+    /// as the backend answers, so a slow link costs freshness, never
+    /// responsiveness.
+    #[arg(long, value_name = "COMMAND", conflicts_with_all = ["serve", "client", "capture", "doctor", "seam_query"])]
+    pub client_exec: Option<String>,
+
+    /// Never split into a client and a backend, even inside a multiplexer that
+    /// supports it — run as one local process.
+    ///
+    /// The escape hatch for when the split is the thing you are debugging.
+    #[arg(long, conflicts_with_all = ["serve", "client", "client_exec"])]
+    pub no_split: bool,
+
     /// Print terminal-capability diagnostics and exit instead of starting the
     /// editor. Probes the same features karet checks at startup (kitty keyboard
     /// protocol, kitty graphics protocol, OSC 22 pointer shapes) and reports one

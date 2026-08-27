@@ -85,6 +85,19 @@ impl App {
             Some(TabKind::Code { buffer, .. }) => Some(buffer.clone()),
             _ => None,
         };
+        // A file whose content has not arrived cannot be positioned in yet:
+        // `goto` clamps into the buffer, and clamping into an empty one lands at
+        // the top. Remember where the caret was asked to go and apply it when the
+        // document's first snapshot lands, so a jump to a line survives however
+        // long the content takes to arrive.
+        if let Some(view) = self.tabs.get(self.active).map(|tab| tab.view) {
+            let ready = buffer
+                .as_ref()
+                .is_some_and(|buffer| buffer.line_count() > 1);
+            if !ready {
+                self.pending_goto.insert(view, position);
+            }
+        }
         if let (Some(buffer), Some(tab)) = (buffer, self.tabs.get_mut(self.active)) {
             tab.editor.goto(&buffer, position);
         }

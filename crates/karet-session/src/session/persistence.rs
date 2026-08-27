@@ -1,3 +1,5 @@
+use karet_core::Span;
+
 use super::*;
 
 impl Session {
@@ -305,7 +307,7 @@ impl Session {
             let snapshot = Arc::new(DocSnapshot {
                 version: doc.buffer.version(),
                 buffer: doc.buffer.content_snapshot(),
-                highlights: doc.highlights.clone(),
+                highlights: self.viewport_highlights(doc_id, doc),
                 folds: doc.folds.clone(),
                 semantic_blocks: doc.semantic_blocks.clone(),
                 decorations: Arc::new(doc.decorations.clone()),
@@ -316,6 +318,40 @@ impl Session {
             });
             self.snapshots.send((doc_id, snapshot)).ok();
         }
+    }
+
+    /// The highlight spans a snapshot of `doc` should carry.
+    ///
+    /// A view resolves highlights per rendered line, so spans outside what a
+    /// client is displaying are never read. When a client has declared a
+    /// viewport, narrowing to it is what keeps the answer to a keystroke about a
+    /// screenful rather than a whole file's worth of spans — the difference
+    /// between a usable and an unusable connection once the two are not on the
+    /// same machine.
+    ///
+    /// With no viewport declared the whole set is shared as-is, at no cost:
+    /// that is the local default, and the `Arc` clone is free.
+    fn viewport_highlights(&self, doc_id: DocumentId, doc: &Document) -> Arc<Highlights> {
+        let Some((first, last)) = self.viewport_lines(doc_id) else {
+            return doc.highlights.clone();
+        };
+        let buffer = &doc.buffer;
+        let last_line = buffer.line_count().saturating_sub(1);
+        // A viewport can outrun the buffer when an edit shortened the document
+        // before the client's next scroll; clamping is what keeps that a
+        // no-highlight frame instead of an empty one.
+        let Some(start) = buffer.line_to_byte_range(first.min(last_line as u32) as usize) else {
+            return doc.highlights.clone();
+        };
+        let Some(end) = buffer.line_to_byte_range(last.min(last_line as u32) as usize) else {
+            return doc.highlights.clone();
+        };
+        let Ok(span) = Span::new(start.start, end.end) else {
+            return doc.highlights.clone();
+        };
+        Arc::new(Highlights::from_sorted_spans(
+            doc.highlights.spans_in(span).to_vec(),
+        ))
     }
 
     /// Without the `viz` feature the dependency-graph lens is absent; say so

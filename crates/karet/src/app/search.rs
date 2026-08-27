@@ -2,9 +2,14 @@ use super::*;
 
 impl App {
     /// Open the quick-open (go-to-file) overlay.
+    ///
+    /// The picker appears at once and its rows land behind it: walking a
+    /// workspace is filesystem-bound work that belongs on the backend, and on a
+    /// large tree it is slow enough that doing it first would be felt as the
+    /// overlay refusing to open.
     pub(super) fn open_quick_open(&mut self) {
-        let files = workspace::list_files(&self.root, 2000);
-        self.overlay = Some(Overlay::quick_open(files));
+        self.overlay = Some(Overlay::quick_open(Vec::new()));
+        self.request_file_list();
     }
 
     /// Open the find-in-file bar (only over a text/code tab). Restores this tab's

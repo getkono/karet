@@ -17,6 +17,13 @@ fn focus_by_file_line_opens_at_the_target_and_focuses_the_editor() {
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.focus_by_file_line(&dir.join("a.rs"), LineCol::new(2, 4));
+    // The jump is recorded while the file is still empty and lands when the
+    // backend answers — a file's content need not be on this machine.
+    deliver_content(
+        &mut app,
+        &dir.join("a.rs"),
+        "fn a() {}\nlet x = 1;\nlet y = 2;\n",
+    );
 
     assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
     assert_eq!(app.focus, Focus::Editor);
@@ -33,6 +40,7 @@ fn focus_by_file_line_resolves_a_relative_path_against_the_workspace_root() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     // VCS change paths and search hits both arrive repo-relative.
     app.focus_by_file_line(Path::new("src/main.rs"), LineCol::new(1, 0));
+    deliver_content(&mut app, &dir.join("src/main.rs"), "one\ntwo\nthree\n");
 
     assert_eq!(
         app.tabs[app.active].path(),
@@ -51,6 +59,7 @@ fn focus_by_file_line_moves_the_caret_in_an_already_open_tab() {
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.focus_by_file_line(&path, LineCol::new(0, 0));
+    deliver_content(&mut app, &path, "one\ntwo\nthree\nfour\n");
     let opened = app.tabs.len();
     app.focus_by_file_line(&path, LineCol::new(3, 2));
 
@@ -195,7 +204,7 @@ fn double_click_promotes_the_preview_tab_without_duplicating_it() {
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.explorer.ensure_built(&dir);
+    build_explorer_from_disk(&mut app);
     app.explorer.select_visible(
         app.explorer
             .rows()
@@ -330,7 +339,7 @@ fn arrowing_the_explorer_previews_files_without_stealing_focus() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
     app.focus = Focus::Sidebar;
-    app.explorer.ensure_built(&dir);
+    build_explorer_from_disk(&mut app);
     let a_idx = explorer_row_index(&app, "a.rs");
     let b_idx = explorer_row_index(&app, "b.rs");
     app.explorer.select_index(a_idx);
@@ -371,7 +380,7 @@ fn wheel_scrolling_the_explorer_moves_selection_without_previewing() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
     app.focus = Focus::Sidebar;
-    app.explorer.ensure_built(&dir);
+    build_explorer_from_disk(&mut app);
     let before = app.explorer.cursor();
 
     // A wheel notch moves the selection but must not open anything —
@@ -395,7 +404,7 @@ fn arrowing_onto_a_directory_row_leaves_the_editor_untouched() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
     app.focus = Focus::Sidebar;
-    app.explorer.ensure_built(&dir);
+    build_explorer_from_disk(&mut app);
     // Preview a.rs first, then arrow onto the `sub` directory row.
     let a_idx = explorer_row_index(&app, "a.rs");
     app.explorer.select_index(a_idx);
@@ -428,7 +437,7 @@ fn arrowing_onto_an_already_open_file_activates_it_without_a_new_tab() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
     app.focus = Focus::Sidebar;
-    app.explorer.ensure_built(&dir);
+    build_explorer_from_disk(&mut app);
     // b.rs is open as a permanent tab (not a preview).
     app.open_path(&dir.join("b.rs"));
     assert!(!app.tabs[0].is_preview);
@@ -828,7 +837,7 @@ async fn global_search_highlights_matches_in_an_already_open_tab() {
     let file = dir.join("a.txt");
     let _ = std::fs::write(&file, "needle here\n");
 
-    let (local_backend, _snaps) = local(SessionConfig {
+    let (local_backend, mut snaps) = local(SessionConfig {
         roots: vec![dir.clone()],
         ..SessionConfig::default()
     });
@@ -838,6 +847,8 @@ async fn global_search_highlights_matches_in_an_already_open_tab() {
     app.backend = Some(backend);
     app.open_path(&file);
     pump(&mut app, &mut events).await;
+    // Content arrives on the snapshot stream, not the event stream.
+    pump_snapshots(&mut app, &mut snaps).await;
 
     app.search.query = "needle".to_string();
     app.run_global_search();

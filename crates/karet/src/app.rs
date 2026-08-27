@@ -13,6 +13,7 @@ mod deps;
 mod diffs;
 mod editor;
 mod explorer;
+mod explorer_mutate;
 pub(crate) mod github;
 mod graphics;
 mod history;
@@ -25,11 +26,12 @@ mod lifecycle;
 mod markdown_edit;
 mod mouse;
 mod notifications;
+mod open;
 mod panes;
 mod pending;
 mod remote_actions;
 mod review;
-mod runtime;
+pub(crate) mod runtime;
 mod scm;
 mod scroll;
 pub(crate) mod seam;
@@ -176,10 +178,8 @@ use tokio::sync::mpsc;
 use util::KeyboardEnhancementGuard;
 use util::canonical;
 use util::close_prompt_message;
-use util::copy_path_recursive;
 pub(crate) use util::effective_word_wrap;
 use util::load_theme;
-use util::move_path;
 use util::parse_rev_range;
 use util::path_contains_or_equals;
 use util::path_under;
@@ -563,6 +563,44 @@ pub struct App {
     /// In-flight document conversions (DOCX → markdown), owned by the reserved
     /// preview tab's view.
     pending_conversions: HashMap<RequestId, ViewId>,
+    /// In-flight path classifications, keyed to the path each was asked about, so
+    /// an answer that arrives after the tab closed is discarded rather than
+    /// reopening it.
+    pending_classify: HashMap<RequestId, PathBuf>,
+    /// In-flight media reads, accumulating chunks until a file is complete.
+    pending_bytes: HashMap<RequestId, open::PendingBytes>,
+    /// The in-flight quick-open file list, so a stale answer cannot repopulate a
+    /// picker the user has already replaced.
+    file_list_req: Option<RequestId>,
+    /// In-flight directory listings, keyed to the directory each was asked
+    /// about, so a stale answer cannot repopulate a tree that has moved on.
+    pending_listings: HashMap<RequestId, PathBuf>,
+    /// The workspace's markdownlint rules, fetched through the backend because
+    /// they live beside the code. `None` until an answer arrives, or when the
+    /// workspace has no such file — both lint by the defaults.
+    markdownlint_config: Option<karet_markdown::lint::Config>,
+    /// In-flight reads of the markdownlint configuration candidates.
+    markdownlint_requests: Vec<RequestId>,
+    /// The presentation settings this machine resolved, kept across a backend's
+    /// configuration. Set only when the workspace is somewhere else; a local
+    /// session has one configuration and no distinction to draw.
+    presentation: Option<PresentationSettings>,
+    /// The line range last reported for each view, so an unmoved viewport is not
+    /// re-sent on every frame.
+    reported_viewports: HashMap<ViewId, (u32, u32)>,
+    /// A path to select in the explorer once the tree has a row for it. Revealing
+    /// a deep path needs a listing per level, and those arrive one at a time.
+    pending_reveal: Option<PathBuf>,
+    /// In-flight filesystem mutations and what to do when each lands.
+    pending_mutations: HashMap<RequestId, explorer_mutate::PendingMutation>,
+    /// How many items the current delete has removed, for its status line.
+    explorer_delete_done: usize,
+    /// How many items the current paste has placed, for its status line.
+    explorer_paste_done: usize,
+    /// Caret positions asked for before their file's content arrived, applied on
+    /// the document's first snapshot. A jump to a line must land on that line
+    /// however long the content takes to reach this machine.
+    pending_goto: HashMap<ViewId, LineCol>,
     /// Two-file diffs from the `--diff` flag, opened as loading tabs before the
     /// backend attaches; their `PrepareDiff` commands are sent on attach.
     pending_startup_diffs: Vec<(ViewId, PathBuf, String, String)>,
@@ -585,4 +623,18 @@ pub struct App {
     /// is the seam future tiled/split panes build on — multiple views can share one
     /// document, whose edit log already lives once in the session.
     next_view: u64,
+}
+
+/// The settings that describe the terminal in front of the user rather than the
+/// code being edited.
+///
+/// A split session has two configurations — the workspace's and this machine's —
+/// and these are the keys where the machine wins. Everything else is the
+/// workspace's, because everything else describes the code.
+#[derive(Clone, Debug)]
+pub(crate) struct PresentationSettings {
+    /// The colour theme name or path, resolved on this machine.
+    pub(crate) color_theme: String,
+    /// The icon glyph set this terminal's font can render.
+    pub(crate) icon_style: karet_session::config::schema::IconStyleSetting,
 }

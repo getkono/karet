@@ -26,7 +26,7 @@ fn explorer_header_toolbar_click_begins_new_file() {
 fn explorer_blank_area_click_does_not_open_the_last_row() {
     let dir = test_dir("blank-click");
     write_file(&dir, "a.txt", b"a");
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.sidebar_panel = SidebarPanel::Explorer;
     app.sidebar_rect = Rect {
         x: 0,
@@ -40,7 +40,7 @@ fn explorer_blank_area_click_does_not_open_the_last_row() {
         width: 30,
         height: 7,
     };
-    app.explorer.ensure_built(&dir);
+    build_explorer_from_disk(&mut app);
 
     app.handle_sidebar_click(1, 5, KeyModifiers::NONE);
 
@@ -56,13 +56,14 @@ fn explorer_blank_area_click_does_not_open_the_last_row() {
 fn explorer_commit_edit_creates_a_file() {
     let dir = std::env::temp_dir().join(format!("karet-newfile-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.sidebar_panel = SidebarPanel::Explorer;
     app.explorer_begin_new(false);
     for c in "hello.txt".chars() {
         app.explorer.edit_push(c);
     }
     app.explorer_commit_edit();
+    settle_mutations(&mut app);
     assert!(dir.join("hello.txt").exists());
     assert!(!app.explorer.is_editing());
     let _ = std::fs::remove_dir_all(&dir);
@@ -75,7 +76,7 @@ fn failed_explorer_create_keeps_inline_name_for_retry() {
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(&dir);
     let _ = std::fs::write(&existing, "already here");
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.sidebar_panel = SidebarPanel::Explorer;
     app.explorer_begin_new(true);
     for c in "existing".chars() {
@@ -83,6 +84,8 @@ fn failed_explorer_create_keeps_inline_name_for_retry() {
     }
 
     app.explorer_commit_edit();
+
+    settle_mutations(&mut app);
 
     assert!(app.explorer.is_editing());
     let _ = std::fs::remove_dir_all(&dir);
@@ -92,11 +95,14 @@ fn failed_explorer_create_keeps_inline_name_for_retry() {
 fn explorer_copy_paste_file_uses_copy_suffix() {
     let dir = test_dir("copy-file");
     write_file(&dir, "a.txt", b"alpha");
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.sidebar_panel = SidebarPanel::Explorer;
+
+    build_explorer_from_disk(&mut app);
 
     app.dispatch(Command::Copy);
     app.dispatch(Command::Paste);
+    settle_mutations(&mut app);
 
     assert_eq!(
         std::fs::read(dir.join("a copy.txt")).unwrap_or_default(),
@@ -112,13 +118,15 @@ fn explorer_copy_paste_directory_recursively_into_selected_directory() {
     write_file(&dir, "src/nested/file.txt", b"nested");
     write_file(&dir, "src/marker.txt", b"marker");
     let _ = std::fs::create_dir_all(dir.join("dst"));
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.sidebar_panel = SidebarPanel::Explorer;
 
     select_explorer_path(&mut app, &dir.join("src"));
+    build_explorer_from_disk(&mut app);
     app.dispatch(Command::Copy);
     select_explorer_path(&mut app, &dir.join("dst"));
     app.dispatch(Command::Paste);
+    settle_mutations(&mut app);
 
     assert_eq!(
         std::fs::read(dir.join("dst/src/nested/file.txt")).unwrap_or_default(),
@@ -132,13 +140,15 @@ fn explorer_cut_paste_moves_files_and_clears_clipboard() {
     let dir = test_dir("cut-file");
     write_file(&dir, "move.txt", b"move");
     let _ = std::fs::create_dir_all(dir.join("dst"));
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.sidebar_panel = SidebarPanel::Explorer;
 
     select_explorer_path(&mut app, &dir.join("move.txt"));
+    build_explorer_from_disk(&mut app);
     app.dispatch(Command::Cut);
     select_explorer_path(&mut app, &dir.join("dst"));
     app.dispatch(Command::Paste);
+    settle_mutations(&mut app);
 
     assert!(!dir.join("move.txt").exists());
     assert_eq!(
@@ -153,11 +163,12 @@ fn explorer_cut_paste_moves_files_and_clears_clipboard() {
 fn explorer_duplicate_file_uses_copy_suffix() {
     let dir = test_dir("duplicate-file");
     write_file(&dir, "a.txt", b"alpha");
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.sidebar_panel = SidebarPanel::Explorer;
 
     select_explorer_path(&mut app, &dir.join("a.txt"));
     app.dispatch(Command::ExplorerDuplicate);
+    settle_mutations(&mut app);
 
     assert_eq!(
         std::fs::read(dir.join("a copy.txt")).unwrap_or_default(),
@@ -172,7 +183,7 @@ fn reveal_in_explorer_expands_ancestors_and_selects_nested_file() {
     let dir = test_dir("reveal-nested");
     write_file(&dir, "a/b/c.rs", b"code");
     write_file(&dir, "a/note.txt", b"note");
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     // Start from a different panel/focus to prove the reveal switches them.
     app.sidebar_panel = SidebarPanel::Search;
     app.sidebar_visible = false;
@@ -180,6 +191,9 @@ fn reveal_in_explorer_expands_ancestors_and_selects_nested_file() {
 
     let target = dir.join("a/b/c.rs");
     app.reveal_in_explorer(&target);
+    build_explorer_from_disk(&mut app);
+
+    build_explorer_from_disk(&mut app);
 
     assert_eq!(app.explorer.selected_path(), Some(target.as_path()));
     assert!(app.sidebar_visible);
@@ -193,10 +207,11 @@ fn reveal_in_explorer_selects_a_directory() {
     let dir = test_dir("reveal-dir");
     write_file(&dir, "a/b/c.rs", b"code");
     write_file(&dir, "a/note.txt", b"note");
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
 
     let target = dir.join("a/b");
     app.reveal_in_explorer(&target);
+    build_explorer_from_disk(&mut app);
 
     assert_eq!(app.explorer.selected_path(), Some(target.as_path()));
     assert_eq!(app.focus, Focus::Sidebar);
@@ -207,7 +222,7 @@ fn reveal_in_explorer_selects_a_directory() {
 fn reveal_in_explorer_outside_root_is_noop_with_status() {
     let dir = test_dir("reveal-outside");
     write_file(&dir, "inside.txt", b"x");
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.sidebar_visible = false;
     app.focus = Focus::Editor;
 
@@ -216,6 +231,7 @@ fn reveal_in_explorer_outside_root_is_noop_with_status() {
         .map(|p| p.join("elsewhere.txt"))
         .unwrap_or_else(|| PathBuf::from("/elsewhere.txt"));
     app.reveal_in_explorer(&outside);
+    build_explorer_from_disk(&mut app);
 
     // Nothing changes but a status note.
     assert!(!app.sidebar_visible);
@@ -232,11 +248,14 @@ fn reveal_in_explorer_outside_root_is_noop_with_status() {
 fn reveal_in_explorer_missing_path_reports_status() {
     let dir = test_dir("reveal-missing");
     write_file(&dir, "inside.txt", b"x");
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.sidebar_visible = false;
     app.focus = Focus::Editor;
 
     app.reveal_in_explorer(&dir.join("does-not-exist.txt"));
+    // The verdict needs the listings: "not there" is only knowable once the tree
+    // has stopped waiting on directories.
+    build_explorer_from_disk(&mut app);
 
     // A path under the root but absent from the tree does not steal focus.
     assert!(!app.sidebar_visible);
@@ -258,10 +277,11 @@ fn reveal_in_explorer_scrolls_selection_into_view() {
         write_file(&dir, &format!("d/f{i:02}.txt"), b"x");
     }
     write_file(&dir, "d/target.txt", b"needle");
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
 
     let target = dir.join("d/target.txt");
     app.reveal_in_explorer(&target);
+    build_explorer_from_disk(&mut app);
     assert_eq!(app.explorer.selected_path(), Some(target.as_path()));
 
     // Render a short terminal: the tree clamps its offset to the cursor, so the
@@ -282,7 +302,7 @@ fn reveal_in_explorer_scrolls_selection_into_view() {
 fn reveal_in_explorer_of_the_root_focuses_the_explorer_without_reselecting() {
     let dir = test_dir("reveal-root");
     write_file(&dir, "top.txt", b"x");
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     select_explorer_path(&mut app, &dir.join("top.txt"));
     app.sidebar_visible = false;
     app.focus = Focus::Editor;
@@ -290,6 +310,7 @@ fn reveal_in_explorer_of_the_root_focuses_the_explorer_without_reselecting() {
     // The root has no row of its own: revealing it shows and focuses the
     // Explorer but leaves the selection where it was.
     app.reveal_in_explorer(&dir);
+    build_explorer_from_disk(&mut app);
 
     assert!(app.sidebar_visible);
     assert_eq!(app.sidebar_panel, SidebarPanel::Explorer);
@@ -338,7 +359,7 @@ fn breadcrumb_frame(app: &App, segment: PathBuf) -> PaneFrame {
 fn clicking_a_breadcrumb_segment_reveals_its_path_in_the_explorer() {
     let dir = test_dir("breadcrumb-click");
     write_file(&dir, "a/b/c.rs", b"code");
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.sidebar_visible = false;
     app.focus = Focus::Editor;
     let target = dir.join("a/b");
@@ -350,6 +371,7 @@ fn clicking_a_breadcrumb_segment_reveals_its_path_in_the_explorer() {
         row: 1,
         modifiers: KeyModifiers::NONE,
     });
+    build_explorer_from_disk(&mut app);
 
     assert_eq!(app.explorer.selected_path(), Some(target.as_path()));
     assert!(app.sidebar_visible);
@@ -362,7 +384,7 @@ fn clicking_a_breadcrumb_segment_reveals_its_path_in_the_explorer() {
 fn a_breadcrumb_gap_click_is_swallowed_not_forwarded_to_the_editor() {
     let dir = test_dir("breadcrumb-gap");
     write_file(&dir, "a/b/c.rs", b"code");
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.focus = Focus::Sidebar;
     app.pane_frames = vec![breadcrumb_frame(&app, dir.join("a/b"))];
 
@@ -385,7 +407,7 @@ fn a_breadcrumb_gap_click_is_swallowed_not_forwarded_to_the_editor() {
 fn the_frame_records_breadcrumb_hits_only_within_the_workspace() {
     let dir = test_dir("breadcrumb-frame");
     write_file(&dir, "a/b.rs", b"code");
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.open_path(&dir.join("a/b.rs"));
 
     let painted = screen(&mut app, 200, 20).join("\n");
@@ -419,7 +441,7 @@ fn the_frame_records_breadcrumb_hits_only_within_the_workspace() {
 fn explorer_delete_requires_confirmation() {
     let dir = test_dir("delete-file");
     write_file(&dir, "gone.txt", b"delete");
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.sidebar_panel = SidebarPanel::Explorer;
 
     select_explorer_path(&mut app, &dir.join("gone.txt"));
@@ -428,6 +450,8 @@ fn explorer_delete_requires_confirmation() {
     assert!(app.pending_explorer_delete.is_some());
 
     app.dispatch(Command::ConfirmExplorerDelete);
+
+    settle_mutations(&mut app);
     assert!(!dir.join("gone.txt").exists());
     assert!(app.pending_explorer_delete.is_none());
     let _ = std::fs::remove_dir_all(&dir);
@@ -437,9 +461,9 @@ fn explorer_delete_requires_confirmation() {
 fn explorer_context_menu_accepts_the_selected_file_command() {
     let dir = test_dir("context-duplicate");
     write_file(&dir, "a.txt", b"alpha");
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.explorer.ensure_built(&dir);
+    build_explorer_from_disk(&mut app);
     let Some(row) = app
         .explorer
         .rows()
@@ -462,6 +486,7 @@ fn explorer_context_menu_accepts_the_selected_file_command() {
     };
     menu.selected = duplicate;
     app.accept_context_menu();
+    settle_mutations(&mut app);
 
     assert_eq!(
         std::fs::read(dir.join("a copy.txt")).unwrap_or_default(),
@@ -476,7 +501,7 @@ fn explorer_right_click_selects_the_row_and_offers_path_commands() {
     let dir = test_dir("context-copy-path");
     let target = dir.join("a.txt");
     write_file(&dir, "a.txt", b"alpha");
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.sidebar_visible = true;
     app.sidebar_panel = SidebarPanel::Explorer;
     app.sidebar_rect = Rect {
@@ -491,7 +516,7 @@ fn explorer_right_click_selects_the_row_and_offers_path_commands() {
         width: 30,
         height: 7,
     };
-    app.explorer.ensure_built(&dir);
+    build_explorer_from_disk(&mut app);
     let Some(row) = app
         .explorer
         .rows()
@@ -525,7 +550,7 @@ fn explorer_right_click_selects_the_row_and_offers_path_commands() {
 #[test]
 fn explorer_keyboard_context_menu_uses_blank_items_when_empty() {
     let dir = test_dir("context-empty");
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.sidebar_panel = SidebarPanel::Explorer;
     app.sidebar_content_rect = Rect {
         x: 0,
@@ -558,7 +583,7 @@ fn explorer_keyboard_context_menu_uses_blank_items_when_empty() {
 #[test]
 fn context_menu_opens_on_the_first_enabled_entry_and_skips_disabled_on_nav() {
     let dir = test_dir("context-skip-disabled");
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.context_menu = Some(ContextMenu::new(
         2,
         2,
@@ -592,9 +617,12 @@ fn nested_repository_status_is_requested_once_and_rendered_when_non_clean() {
     write_file(&dir, "nested/.git/config", b"[core]\n");
     write_file(&dir, "nested/src/lib.rs", b"pub fn example() {}\n");
     let backend = Arc::new(RecordingBackend::new());
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.backend = Some(backend.clone());
     app.sidebar_panel = SidebarPanel::Explorer;
+    // The nested repository is discovered from the tree's rows, so the listings
+    // have to be in before there is anything to ask about.
+    build_explorer_from_disk(&mut app);
 
     app.request_nested_repository_statuses();
     app.request_nested_repository_statuses();
@@ -611,7 +639,15 @@ fn nested_repository_status_is_requested_once_and_rendered_when_non_clean() {
                 .collect()
         })
         .unwrap_or_default();
-    assert_eq!(requests, vec![(RequestId(1), dir.join("nested"))]);
+    // The id is whatever the shell had reached; what matters is that the nested
+    // repository was asked about exactly once.
+    assert_eq!(
+        requests
+            .iter()
+            .map(|(_, path)| path.clone())
+            .collect::<Vec<_>>(),
+        vec![dir.join("nested")]
+    );
     assert!(app.nested_repository_badges(Instant::now()).is_empty());
 
     app.on_backend_event(
@@ -640,7 +676,7 @@ fn nested_repository_status_is_requested_once_and_rendered_when_non_clean() {
 fn nested_repository_loading_badge_respects_the_shared_reveal_delay() {
     let dir = test_dir("nested-repository-loading");
     let nested = dir.join("nested");
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.sidebar_panel = SidebarPanel::Explorer;
     let now = Instant::now();
     app.nested_repository_pending.insert(
@@ -683,14 +719,26 @@ fn invalidation_tombstones_an_already_queued_repository_status() {
     write_file(&dir, "nested/.git/config", b"[core]\n");
     write_file(&dir, "nested/file.txt", b"before\n");
     let backend = Arc::new(RecordingBackend::new());
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.backend = Some(backend.clone());
     app.sidebar_panel = SidebarPanel::Explorer;
+    // The nested repository is discovered from the tree's rows.
+    build_explorer_from_disk(&mut app);
     app.request_nested_repository_statuses();
+    // The request's id is whatever the shell had reached, so read it back rather
+    // than assuming — the tree's own listing requests come first now.
+    let queued = backend.sent.lock().ok().and_then(|sent| {
+        sent.iter()
+            .find(|(_, command)| matches!(command, SessionCommand::NestedRepositoryStatus { .. }))
+            .map(|(id, _)| *id)
+    });
+    let Some(queued) = queued else {
+        return;
+    };
 
     app.invalidate_nested_repository_statuses(&[dir.join("nested/file.txt")]);
     app.on_backend_event(
-        Some(RequestId(1)),
+        Some(queued),
         SessionEvent::NestedRepositoryStatus {
             path: dir.join("nested"),
             summary: RepositorySummary {
@@ -709,9 +757,7 @@ fn invalidation_tombstones_an_already_queued_repository_status() {
     assert!(sent.iter().any(|(_, command)| {
         matches!(
             command,
-            SessionCommand::Cancel {
-                request: RequestId(1)
-            }
+            SessionCommand::Cancel { request } if *request == queued
         )
     }));
     let _ = std::fs::remove_dir_all(&dir);

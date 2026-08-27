@@ -75,12 +75,14 @@ tracing-appender.workspace = true
 clap.workspace = true
 color-eyre.workspace = true
 directories.workspace = true
-ignore.workspace = true              # quick-open file listing (gitignore-aware)
 thiserror.workspace = true           # error types for the merged clipboard/input modules
 base64.workspace = true              # `clipboard` module (OSC 52), merged from karet-clipboard
 serde_json.workspace = true          # loaded-settings inspector formatting
 
 [dev-dependencies]
+# The tests build real workspaces and supply their listings the way the backend
+# does; the shell itself no longer walks a filesystem.
+ignore.workspace = true
 tempfile.workspace = true            # temp roots for the desktop-entry executor tests
 zip.workspace = true                 # build in-test DOCX fixtures for the open-file tests
 

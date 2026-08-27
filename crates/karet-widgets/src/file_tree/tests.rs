@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use karet_core::LineCol;
 use karet_core::Range;
 
-use super::model::*;
+use super::local_source::*;
 use super::*;
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -48,7 +48,7 @@ fn rebuild_lists_top_level_dirs_first() {
     write(&dir.path, "a.txt", b"a");
     write(&dir.path, "sub/b.txt", b"b");
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     // "sub" (dir, single *file* child → not compacted) before "a.txt" (file).
     assert_eq!(names(&state), vec!["sub", "a.txt"]);
 }
@@ -62,7 +62,7 @@ fn symlink_rows_keep_the_link_identity() -> std::io::Result<()> {
     write(&dir.path, "target.txt", b"target");
     symlink("target.txt", dir.path.join("alias.txt"))?;
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
 
     let alias = state
         .rows()
@@ -89,6 +89,8 @@ fn symlink_rows_render_the_link_glyph() -> std::io::Result<()> {
     let mut state = FileTreeState::new();
     let area = Rect::new(0, 0, 30, 3);
     let mut buffer = Buffer::empty(area);
+    // The tree renders listings it has been given; supply them first.
+    build_from_disk(&mut state, &dir.path);
     FileTree::new(&dir.path)
         .icons(IconStyle::Ascii)
         .render(area, &mut buffer, &mut state);
@@ -105,9 +107,9 @@ fn toggle_reveals_children() {
     let dir = temp_dir();
     write(&dir.path, "sub/b.txt", b"b");
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     state.toggle(&dir.path.join("sub"));
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     assert_eq!(names(&state), vec!["sub", "b.txt"]);
 }
 
@@ -117,13 +119,13 @@ fn compacts_single_child_directory_chains() {
     // a → b → c, with the leaf file under c: the chain a/b/c collapses to one row.
     write(&dir.path, "a/b/c/leaf.txt", b"x");
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     assert_eq!(labels(&state), vec!["a/b/c"]);
     // The row's path is the *deepest* directory.
     assert_eq!(state.rows()[0].path, dir.path.join("a/b/c"));
     // Toggling the chain expands the tip and reveals its child.
     state.toggle_selected();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     assert_eq!(labels(&state), vec!["a/b/c", "leaf.txt"]);
 }
 
@@ -133,7 +135,7 @@ fn does_not_compact_when_directory_has_a_file_sibling() {
     write(&dir.path, "a/b/c.txt", b"x");
     write(&dir.path, "a/note.txt", b"y");
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     // "a" has two entries (dir b + file note.txt) → not compacted.
     assert_eq!(labels(&state), vec!["a"]);
 }
@@ -145,7 +147,7 @@ fn gitignored_files_are_dimmed_not_hidden() {
     write(&dir.path, "kept.txt", b"k");
     write(&dir.path, "ignored.txt", b"i");
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     // VS Code behavior: nothing is hidden (dotfiles shown too); the gitignored
     // file is listed but flagged for dimming.
     assert_eq!(names(&state), vec![".gitignore", "ignored.txt", "kept.txt"]);
@@ -168,14 +170,14 @@ fn gitignore_state_is_inherited_by_descendants() {
     write(&dir.path, "target/notes.txt", b"n");
     write(&dir.path, "src/main.rs", b"fn main() {}\n");
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     // `target` itself is ignored...
     let target = dir.path.join("target");
     assert!(state.rows().iter().any(|r| r.path == target && r.ignored));
     // ...and after expanding it, every descendant row inherits the ignored flag.
     state.expand(&target);
     state.expand(&target.join("debug"));
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     let under_target: Vec<&FileTreeRow> = state
         .rows()
         .iter()
@@ -200,17 +202,17 @@ fn new_file_inserts_an_inline_editor_and_commits() {
     let dir = temp_dir();
     write(&dir.path, "existing.txt", b"x");
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     // Begin a new file at the root; an editing placeholder row appears at the top.
     state.begin_new(false);
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     assert!(state.is_editing());
     assert!(state.rows().iter().any(|r| r.editing));
     // Type a name; the editor row reflects it.
     for c in "new.rs".chars() {
         state.edit_push(c);
     }
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     assert!(
         state
             .rows()
@@ -238,7 +240,7 @@ fn new_file_inserts_an_inline_editor_and_commits() {
 fn failed_create_can_restore_the_inline_editor() {
     let dir = temp_dir();
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     state.begin_new(false);
     for c in "retry.rs".chars() {
         state.edit_push(c);
@@ -251,7 +253,7 @@ fn failed_create_can_restore_the_inline_editor() {
     assert!(!state.is_editing());
 
     state.restore_edit(&pending);
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
 
     let editing = state.rows().iter().find(|r| r.editing);
     assert!(state.is_editing());
@@ -263,7 +265,7 @@ fn new_folder_nests_under_the_selected_directory() {
     let dir = temp_dir();
     write(&dir.path, "sub/keep.txt", b"k");
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     // Select the "sub" directory, then create a folder inside it.
     state.select_visible(0);
     assert!(state.selected().is_some_and(|r| r.is_dir));
@@ -271,7 +273,7 @@ fn new_folder_nests_under_the_selected_directory() {
     for c in "child".chars() {
         state.edit_push(c);
     }
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     // The editor row is nested one level under "sub".
     let editing = state.rows().iter().find(|r| r.editing);
     assert!(editing.is_some_and(|r| r.is_dir && r.depth == 1));
@@ -289,11 +291,11 @@ fn edit_paste_replaces_the_selected_rename_stem() {
     let dir = temp_dir();
     write(&dir.path, "old.txt", b"o");
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     state.select_visible(0);
     state.begin_rename();
     state.edit_paste("pasted");
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     assert!(
         state
             .rows()
@@ -306,7 +308,7 @@ fn edit_paste_replaces_the_selected_rename_stem() {
 fn inline_edit_cursor_keys_match_a_text_field() {
     let dir = temp_dir();
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     state.begin_new(false);
     state.edit_paste("abcd");
     state.edit_left();
@@ -317,7 +319,7 @@ fn inline_edit_cursor_keys_match_a_text_field() {
     state.edit_push('^');
     state.edit_end();
     state.edit_push('$');
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     assert!(
         state
             .rows()
@@ -327,7 +329,7 @@ fn inline_edit_cursor_keys_match_a_text_field() {
 
     state.edit_select_all();
     state.edit_paste("final.txt");
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     assert!(
         state
             .rows()
@@ -341,7 +343,7 @@ fn edit_paste_is_a_no_op_when_not_editing() {
     let dir = temp_dir();
     write(&dir.path, "old.txt", b"o");
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     state.edit_paste("should not appear anywhere");
     assert!(!state.is_editing());
 }
@@ -351,7 +353,7 @@ fn rename_marks_the_row_and_returns_the_new_path() {
     let dir = temp_dir();
     write(&dir.path, "old.txt", b"o");
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     state.select_visible(0);
     state.begin_rename();
     // Rename begins with the stem selected, mirroring a GUI file explorer:
@@ -359,7 +361,7 @@ fn rename_marks_the_row_and_returns_the_new_path() {
     for c in "renamed".chars() {
         state.edit_push(c);
     }
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     assert!(
         state
             .rows()
@@ -380,7 +382,7 @@ fn blank_name_commit_is_a_no_op() {
     let dir = temp_dir();
     write(&dir.path, "a.txt", b"a");
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     state.begin_new(false);
     assert_eq!(state.take_edit(), None); // nothing typed → no action
     assert!(!state.is_editing());
@@ -392,13 +394,13 @@ fn collapse_all_closes_every_directory() {
     write(&dir.path, "a/b/c.txt", b"c");
     write(&dir.path, "a/note.txt", b"n"); // keeps "a" from compacting
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     state.expand(&dir.path.join("a"));
     state.expand(&dir.path.join("a/b"));
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     assert!(state.rows().len() > 1);
     state.collapse_all();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     // Only the top-level "a" remains, collapsed.
     assert_eq!(labels(&state), vec!["a"]);
     assert!(!state.rows()[0].expanded);
@@ -410,7 +412,7 @@ fn git_directory_is_always_excluded() {
     write(&dir.path, ".git/config", b"[core]\n");
     write(&dir.path, "src/main.rs", b"fn main() {}\n");
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     assert!(!names(&state).contains(&".git".to_string()));
     assert!(names(&state).contains(&"src".to_string()));
 }
@@ -421,7 +423,7 @@ fn nested_repository_marks_its_directory_and_stops_compaction_there() {
     write(&dir.path, "group/project/.git/config", b"[core]\n");
     write(&dir.path, "group/project/src/main.rs", b"fn main() {}\n");
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     let row = state.rows().first();
     assert_eq!(row.map(|row| row.label.as_str()), Some("group/project"));
     assert!(row.is_some_and(|row| row.is_repository));
@@ -433,7 +435,7 @@ fn selection_moves_and_clamps() {
     write(&dir.path, "a.txt", b"a");
     write(&dir.path, "b.txt", b"b");
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     assert_eq!(
         state.selected_path(),
         Some(dir.path.join("a.txt").as_path())
@@ -463,7 +465,7 @@ fn multi_select_extends_toggles_and_selects_all() {
     write(&dir.path, "b.txt", b"b");
     write(&dir.path, "c.txt", b"c");
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
 
     // Range: cursor 0, extend down one → rows 0 and 1 selected, 2 not.
     state.select_extend(1);
@@ -490,7 +492,7 @@ fn selected_paths_follow_the_effective_selection() {
     write(&dir.path, "b.txt", b"b");
     write(&dir.path, "c.txt", b"c");
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
 
     assert_eq!(state.selected_paths(), vec![dir.path.join("a.txt")]);
 
@@ -518,12 +520,12 @@ fn selected_paths_survive_row_rebuilds() {
     write(&dir.path, "b.txt", b"b");
     write(&dir.path, "c.txt", b"c");
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
 
     state.select_index(1);
     state.toggle_visible(2);
     write(&dir.path, "aa.txt", b"aa");
-    state.rebuild(&dir.path);
+    build_from_disk(&mut state, &dir.path);
 
     assert_eq!(
         state.selected_paths(),
@@ -542,7 +544,7 @@ fn select_visible_maps_viewport_rows_via_offset() {
     write(&dir.path, "b.txt", b"b");
     write(&dir.path, "c.txt", b"c");
     let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     assert_eq!(state.offset(), 0);
     state.select_visible(2);
     assert_eq!(state.visible_index(0), Some(0));
@@ -568,6 +570,8 @@ fn active_file_row_is_bold() {
     let active = dir.path.join("a.txt");
     let area = Rect::new(0, 0, 30, 4);
     let mut buf = Buffer::empty(area);
+    // The tree renders listings it has been given; supply them first.
+    build_from_disk(&mut state, &dir.path);
     FileTree::new(&dir.path)
         .theme(&theme)
         .active(Some(&active))
@@ -584,6 +588,8 @@ fn active_file_row_is_bold() {
     // Without an active path, the same row is not bold and has no active bg.
     let mut plain = Buffer::empty(area);
     let mut state2 = FileTreeState::new();
+    // The tree renders listings it has been given; supply them first.
+    build_from_disk(&mut state, &dir.path);
     FileTree::new(&dir.path)
         .theme(&theme)
         .render(area, &mut plain, &mut state2);
@@ -610,6 +616,8 @@ fn active_file_uses_deepest_visible_directory_ancestor() {
 
     state.expand(&a);
     let mut collapsed = Buffer::empty(area);
+    // The tree renders listings it has been given; supply them first.
+    build_from_disk(&mut state, &dir.path);
     FileTree::new(&dir.path)
         .theme(&theme)
         .active(Some(&active))
@@ -632,6 +640,8 @@ fn active_file_uses_deepest_visible_directory_ancestor() {
 
     state.expand(&b);
     let mut expanded = Buffer::empty(area);
+    // The tree renders listings it has been given; supply them first.
+    build_from_disk(&mut state, &dir.path);
     FileTree::new(&dir.path)
         .theme(&theme)
         .active(Some(&active))
@@ -658,6 +668,8 @@ fn active_file_highlights_collapsed_compact_directory_chain() {
     let area = Rect::new(0, 0, 30, 2);
     let mut buf = Buffer::empty(area);
 
+    // The tree renders listings it has been given; supply them first.
+    build_from_disk(&mut state, &dir.path);
     FileTree::new(&dir.path)
         .theme(&theme)
         .active(Some(&active))
@@ -679,6 +691,8 @@ fn visible_file_row_is_accent_not_bold() {
     let visible = vec![dir.path.join("a.txt")];
     let area = Rect::new(0, 0, 30, 4);
     let mut buf = Buffer::empty(area);
+    // The tree renders listings it has been given; supply them first.
+    build_from_disk(&mut state, &dir.path);
     FileTree::new(&dir.path)
         .theme(&theme)
         .visible(&visible)
@@ -708,6 +722,8 @@ fn selection_background_requires_explorer_focus() {
     // so the last click doesn't linger once focus is in the editor.
     let mut unfocused = FileTreeState::new();
     let mut buf = Buffer::empty(area);
+    // The tree renders listings it has been given; supply them first.
+    build_from_disk(&mut unfocused, &dir.path);
     FileTree::new(&dir.path)
         .theme(&theme)
         .render(area, &mut buf, &mut unfocused);
@@ -716,6 +732,8 @@ fn selection_background_requires_explorer_focus() {
     // Explorer focused → the cursor row gets the selection background.
     let mut focused = FileTreeState::new();
     let mut buf2 = Buffer::empty(area);
+    // The tree renders listings it has been given; supply them first.
+    build_from_disk(&mut focused, &dir.path);
     FileTree::new(&dir.path)
         .theme(&theme)
         .explorer_focused(true)
@@ -742,6 +760,8 @@ fn render_draws_status_glyph() {
     )];
     let area = Rect::new(0, 0, 30, 4);
     let mut buf = Buffer::empty(area);
+    // The tree renders listings it has been given; supply them first.
+    build_from_disk(&mut state, &dir.path);
     FileTree::new(&dir.path)
         .theme(&theme)
         .status(&status)
@@ -765,6 +785,8 @@ fn repository_badge_is_right_aligned_and_survives_a_long_label() {
     let theme = Theme::dark();
     let area = Rect::new(0, 0, 18, 1);
     let mut buf = Buffer::empty(area);
+    // The tree renders listings it has been given; supply them first.
+    build_from_disk(&mut state, &dir.path);
     FileTree::new(&dir.path)
         .theme(&theme)
         .badges(&badges)
@@ -779,7 +801,7 @@ fn nested_rows_draw_indent_guides() {
     write(&dir.path, "sub/b.txt", b"b");
     let mut state = FileTreeState::new();
     let theme = Theme::dark();
-    state.ensure_built(&dir.path);
+    build_from_disk(&mut state, &dir.path);
     state.toggle(&dir.path.join("sub"));
     let area = Rect::new(0, 0, 30, 4);
     let mut buf = Buffer::empty(area);
@@ -801,6 +823,8 @@ fn file_icons_are_tinted_by_category() {
     let theme = Theme::dark();
     let area = Rect::new(0, 0, 30, 2);
     let mut buf = Buffer::empty(area);
+    // The tree renders listings it has been given; supply them first.
+    build_from_disk(&mut state, &dir.path);
     FileTree::new(&dir.path)
         .theme(&theme)
         .render(area, &mut buf, &mut state);

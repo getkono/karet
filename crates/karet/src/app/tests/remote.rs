@@ -524,12 +524,20 @@ fn explorer_paste_rejects_directory_into_its_descendant() {
     select_explorer_path(&mut app, &dir.join("src"));
     app.dispatch(Command::Copy);
     app.explorer.expand(&dir.join("src"));
-    app.explorer.ensure_built(&dir);
+    build_explorer_from_disk(&mut app);
     select_explorer_path(&mut app, &dir.join("src/child"));
     app.dispatch(Command::Paste);
 
+    settle_mutations(&mut app);
+
     assert!(!dir.join("src/child/src").exists());
-    assert_eq!(app.status.as_deref(), Some("paste failed"));
+    assert!(
+        app.notifications
+            .active()
+            .iter()
+            .any(|note| note.title.contains("into itself")),
+        "a paste into its own descendant must say why"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -548,6 +556,7 @@ fn explorer_rename_refreshes_vcs_status() {
         app.explorer.edit_push(c);
     }
     app.explorer_commit_edit();
+    settle_mutations(&mut app);
 
     assert!(dir.join("new.txt").exists());
     assert_eq!(refresh_count(&backend), 1);
@@ -577,6 +586,7 @@ fn explorer_rename_retargets_open_code_tabs() {
         app.explorer.edit_push(c);
     }
     app.explorer_commit_edit();
+    settle_mutations(&mut app);
 
     assert!(
         app.tabs
@@ -596,8 +606,10 @@ fn explorer_paste_refreshes_vcs_status_after_success() {
     app.backend = Some(backend.clone());
     app.sidebar_panel = SidebarPanel::Explorer;
 
+    build_explorer_from_disk(&mut app);
     app.dispatch(Command::Copy);
     app.dispatch(Command::Paste);
+    settle_mutations(&mut app);
 
     assert!(dir.join("a copy.txt").exists());
     assert_eq!(refresh_count(&backend), 1);

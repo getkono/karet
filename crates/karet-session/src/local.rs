@@ -58,6 +58,21 @@ pub struct DocSnapshot {
 /// change, coalescable last-per-document by the UI).
 pub struct SnapshotRx(pub(crate) mpsc::UnboundedReceiver<(DocumentId, Arc<DocSnapshot>)>);
 
+/// Build a snapshot stream not backed by a local [`Session`].
+///
+/// A remote client reconstructs snapshots from the render updates on its
+/// connection and pushes them here, so the renderer draws from the same stream
+/// shape in either mode. The channel is "local" in the sense that matters — it
+/// never crosses a process — regardless of where the data came from.
+#[must_use]
+pub(crate) fn snapshot_channel() -> (
+    mpsc::UnboundedSender<(DocumentId, Arc<DocSnapshot>)>,
+    SnapshotRx,
+) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    (tx, SnapshotRx(rx))
+}
+
 impl SnapshotRx {
     /// Await the next snapshot, or `None` once the session has shut down.
     pub async fn recv(&mut self) -> Option<(DocumentId, Arc<DocSnapshot>)> {

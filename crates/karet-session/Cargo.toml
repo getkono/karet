@@ -58,7 +58,9 @@ karet-cbor = { workspace = true, optional = true } # decode/encode CBOR ↔ edit
 karet-docx = { workspace = true, optional = true } # DOCX → markdown for read-only previews (feature `docx`)
 karet-notebook = { workspace = true, optional = true } # .ipynb → markdown for read-only previews (feature `notebook`)
 karet-treesitter.workspace = true
-karet-syntax.workspace = true
+# `serde` derives on the block model: semantic blocks are part of a document's
+# render state, which remote mode ships to the client (see api/render.rs).
+karet-syntax = { workspace = true, features = ["serde"] }
 karet-diff = { workspace = true, features = ["serde"] } # displayable diffs prepared on the VCS worker
 karet-dap.workspace = true            # debugger engine (headless)
 karet-lsp.workspace = true            # headless
@@ -71,6 +73,7 @@ karet-search = { workspace = true, features = ["serde"] } # workspace search run
 # and `lang-python` are the mappings that exist, so those are the grammars it can use.
 karet-seam = { workspace = true, features = ["lang-rust", "lang-python"] }
 karet-watch.workspace = true          # centralized filesystem watching
+ignore.workspace = true               # gitignore-aware directory listing for the file tree
 karet-supervisor.workspace = true     # crash-safe process ownership + shared LSP broker
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "macros", "process", "time", "net", "io-util"] }
 tracing.workspace = true
@@ -85,7 +88,8 @@ reqwest.workspace = true              # explicitly approved managed-LSP download
 base64.workspace = true               # WakaTime Basic auth
 secrecy.workspace = true              # WakaTime API key handling
 sha2.workspace = true                 # release-asset integrity
-flate2.workspace = true               # .gz / .tar.gz managed tool archives
+flate2.workspace = true               # .gz / .tar.gz managed tool archives; remote-frame compression
+ciborium.workspace = true             # the remote wire codec (self-describing, compact)
 lzma-rust2.workspace = true            # pure-Rust .tar.xz managed tool archives
 tar.workspace = true                  # traversal-safe managed tool extraction
 zip.workspace = true                  # Windows managed tool archives

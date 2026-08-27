@@ -9,6 +9,7 @@ use karet_treesitter::semantic_query;
 
 /// One semantic source block with a header and an enclosing lifetime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SemanticBlock {
     /// First 0-based source line of the header.
     pub header_start: u32,
@@ -34,6 +35,7 @@ impl SemanticBlock {
 
 /// Semantic blocks in document order, outer scopes before inner scopes on ties.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SemanticBlocks {
     blocks: Vec<SemanticBlock>,
 }
@@ -249,6 +251,32 @@ mod tests {
         assert_eq!(active[0].header_start, 0);
         assert_eq!(active[1].header_start, 1);
         assert!(active[1].has_multiline_header());
+        Ok(())
+    }
+
+    /// The serde feature's claim, enforced: a normalized block collection survives
+    /// a round trip so a remote client renders the same sticky-scroll context the
+    /// backend computed.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn semantic_blocks_round_trip_through_serde() -> Result<(), serde_json::Error> {
+        let blocks = SemanticBlocks::new(vec![
+            SemanticBlock {
+                header_start: 0,
+                header_end: 1,
+                scope_end: 20,
+            },
+            SemanticBlock {
+                header_start: 4,
+                header_end: 4,
+                scope_end: 9,
+            },
+        ]);
+
+        let restored: SemanticBlocks = serde_json::from_str(&serde_json::to_string(&blocks)?)?;
+
+        assert_eq!(restored, blocks);
+        assert_eq!(restored.active_at(8).len(), 2);
         Ok(())
     }
 }

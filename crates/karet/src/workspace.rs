@@ -1,16 +1,23 @@
-//! Workspace helpers: opening a file into the right tab, and collecting the files
-//! shown in the explorer's quick-open list.
+//! Workspace helpers: opening a file into the right tab.
 //!
-//! Opening is routing, not decoding: the path is classified (via the shared
-//! `karet-filetype` registry) and the matching tab is reserved immediately.
-//! Decoding belongs to the backend — editable text/CBOR content arrives through
-//! the session's document snapshots, and DOCX previews through
-//! `Command::ConvertDocument`. Only presentation media (images, PDF pages, hex
-//! bytes) are read directly, since rendering them is the app's job.
+//! Opening is routing, not reading. The path is classified against the shared
+//! `karet-filetype` registry — a lookup, no I/O — and the matching tab is
+//! reserved immediately so the destination exists before anything is fetched.
+//! Content arrives afterwards, from the backend: editable text and CBOR through
+//! document snapshots, DOCX and notebooks through `Command::ConvertDocument`,
+//! and media bytes through `Command::ReadFileBytes`.
+//!
+//! Nothing here touches the filesystem. That is what lets the shell render a
+//! workspace on another machine — the client's own disk is simply not part of
+//! the story — and it costs a co-located session nothing but a channel hop.
+//!
+//! A path-only guess can be wrong: an extension can lie, and a file can be too
+//! large to load inline. The backend answers `Command::ClassifyPath`
+//! authoritatively (magic bytes, real length) and the tab is converted if the
+//! guess did not hold; see [`crate::app::open`].
 
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::path::PathBuf;
 
 #[cfg(feature = "images")]
 use karet_fileview::image;
@@ -28,41 +35,72 @@ use crate::tab::TabKind;
 /// How many leading bytes to sample for file-type classification.
 pub(crate) const HEAD_BYTES: usize = 8192;
 
-/// Open `path` as a tab, classifying its content and choosing a renderer. Files
-/// larger than the [size guard](viewer::SIZE_GUARD) route to a too-large
-/// placeholder; [`open_file_ignoring_size`] bypasses that guard. Failures degrade
-/// gracefully to a placeholder rather than erroring.
+/// Reserve a tab for `path`, choosing a renderer from its file type.
+///
+/// Returns immediately with an empty tab of the right shape; the content follows
+/// from the backend. `ignore_size` skips the size guard so an over-large file
+/// opens with the renderer its content warrants — the "open anyway" override on a
+/// too-large placeholder.
 #[must_use]
 pub fn open_file(path: &Path) -> Tab {
-    let (bytes, len) = read_file(path);
-    let head = &bytes[..bytes.len().min(HEAD_BYTES)];
-    let kind = viewer::classify(path, head, len);
-    open_classified(path, kind, bytes, len)
+    reserve(path, kind_from_path(path, false))
 }
 
-/// Open `path`, bypassing the [size guard](viewer::SIZE_GUARD) so an over-large
-/// file opens with the renderer its content warrants (never a too-large
-/// placeholder). Backs the TUI "open anyway" override on a too-large placeholder.
+/// [`open_file`], bypassing the size guard.
 #[must_use]
 pub fn open_file_ignoring_size(path: &Path) -> Tab {
-    let (bytes, len) = read_file(path);
-    let head = &bytes[..bytes.len().min(HEAD_BYTES)];
-    let kind = viewer::classify_ignoring_size(path, head);
-    open_classified(path, kind, bytes, len)
+    reserve(path, kind_from_path(path, true))
 }
 
-/// Read `path`'s bytes (empty on error) and its length, the shared inputs to both
-/// open paths.
-fn read_file(path: &Path) -> (Vec<u8>, u64) {
-    let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    let bytes = std::fs::read(path).unwrap_or_default();
-    (bytes, len)
+/// The renderer `path`'s file type calls for, from its name alone.
+///
+/// A guess, and knowingly so: only the bytes can settle a lying extension, and
+/// only the backend can see them. It is a good enough guess to reserve the right
+/// tab, which is all it is asked to do.
+#[must_use]
+pub fn kind_from_path(path: &Path, ignore_size: bool) -> FileKind {
+    let _ = ignore_size;
+    viewer::classify_ignoring_size(path, &[])
 }
 
-/// Route an already-classified file to its renderer tab.
-fn open_classified(path: &Path, kind: FileKind, bytes: Vec<u8>, len: u64) -> Tab {
+/// Reserve the tab `kind` calls for, with no content in it yet.
+#[must_use]
+pub fn reserve(path: &Path, kind: FileKind) -> Tab {
     match kind {
-        FileKind::Text | FileKind::Markdown => open_text(path, &bytes),
+        FileKind::Text | FileKind::Markdown => {
+            open_pending_code(path, language_name_from_path(path).unwrap_or("plaintext"))
+        },
+        // The backend decodes CBOR authoritatively once the document registers.
+        FileKind::Cbor => open_pending_code(path, "CBOR"),
+        FileKind::Binary => Tab::new(
+            title(path),
+            TabKind::Hex {
+                path: path.to_path_buf(),
+                bytes: Vec::new(),
+                scroll: 0,
+            },
+        ),
+        // The backend converts these to markdown (`Command::ConvertDocument`);
+        // the preview tab is reserved now and fills when it answers.
+        #[cfg(feature = "docx")]
+        FileKind::Docx => Tab::document_converting(path.to_path_buf()),
+        #[cfg(feature = "notebook")]
+        FileKind::Notebook => Tab::document_converting(path.to_path_buf()),
+        // Media is reserved as a placeholder and upgraded once its bytes arrive:
+        // a placeholder is what an undecodable file settles at anyway, so the
+        // failure path needs no separate state.
+        other => placeholder(path, other, &[], 0),
+    }
+}
+
+/// Build the tab `bytes` warrant, once the backend has delivered them.
+///
+/// The counterpart of [`reserve`]: the same routing, now with content. Only the
+/// kinds the client renders itself appear here — text arrives through snapshots
+/// instead.
+#[must_use]
+pub fn realize(path: &Path, kind: FileKind, bytes: Vec<u8>, len: u64) -> Tab {
+    match kind {
         #[cfg(feature = "images")]
         FileKind::Image => match image::decode(&bytes) {
             Ok(img) => Tab::new(
@@ -74,10 +112,6 @@ fn open_classified(path: &Path, kind: FileKind, bytes: Vec<u8>, len: u64) -> Tab
             ),
             Err(_) => placeholder(path, kind, &bytes, len),
         },
-        // The backend decodes CBOR authoritatively once the document registers;
-        // the tab is reserved empty and fills from the first snapshot. A corrupt
-        // file answers `NotUtf8`, which converts the tab to the hex fallback.
-        FileKind::Cbor => open_pending_code(path, "CBOR"),
         FileKind::Binary => Tab::new(
             title(path),
             TabKind::Hex {
@@ -88,52 +122,25 @@ fn open_classified(path: &Path, kind: FileKind, bytes: Vec<u8>, len: u64) -> Tab
         ),
         #[cfg(feature = "pdf")]
         FileKind::Pdf => open_document(path, bytes, len),
-        // The backend converts DOCX to markdown (`Command::ConvertDocument`);
-        // the preview tab is reserved immediately and fills when it answers.
-        #[cfg(feature = "docx")]
-        FileKind::Docx => Tab::document_converting(path.to_path_buf()),
-        // Same conversion seam: the backend renders the notebook to markdown.
-        #[cfg(feature = "notebook")]
-        FileKind::Notebook => Tab::document_converting(path.to_path_buf()),
-        FileKind::TooLarge { .. } => placeholder(path, kind, &bytes, len),
-        // DOCX/PDF (without their features) and any future `#[non_exhaustive]`
-        // kind route to a placeholder describing them.
-        _ => placeholder(path, kind, &bytes, len),
+        other => placeholder(path, other, &bytes, len),
     }
 }
 
-/// Build a code/text tab with highlighting deferred to the session worker.
-fn open_text(path: &Path, bytes: &[u8]) -> Tab {
-    let Ok(buffer) = TextBuffer::from_bytes(bytes) else {
-        return Tab::new(
-            title(path),
-            TabKind::Hex {
-                path: path.to_path_buf(),
-                bytes: bytes.to_vec(),
-                scroll: 0,
-            },
-        );
-    };
-    let text = buffer.text();
-    let language = language_name_from_path(path).unwrap_or("plaintext");
-    Tab::new(
-        title(path),
-        TabKind::Code {
-            path: path.to_path_buf(),
-            language,
-            doc: None,
-            next_version: 0,
-            buffer,
-            text,
-            highlights: Highlights::default(),
-            semantic_blocks: SemanticBlocks::default(),
-            folds: FoldRegions::default(),
-            folded: BTreeSet::new(),
-            decos: Vec::new(),
-            search_decos: Vec::new(),
-            syntax_errors: Vec::new(),
-        },
-    )
+/// Whether a tab of this kind needs the file's bytes fetched from the backend.
+///
+/// Text does not: it arrives as a document snapshot, already decoded, already
+/// highlighted. These are the kinds the client renders from raw bytes itself,
+/// because rendering them needs its cell grid and its graphics protocol.
+#[must_use]
+pub fn needs_bytes(kind: FileKind) -> bool {
+    match kind {
+        FileKind::Binary => true,
+        #[cfg(feature = "images")]
+        FileKind::Image => true,
+        #[cfg(feature = "pdf")]
+        FileKind::Pdf => true,
+        _ => false,
+    }
 }
 
 /// Reserve an editable code tab whose content the session decodes (CBOR →
@@ -215,47 +222,9 @@ fn title(path: &Path) -> String {
         .map_or_else(|| path.display().to_string(), str::to_string)
 }
 
-/// Collect files under `root` (gitignore-aware) for the quick-open list, capped at
-/// `limit` to keep startup cheap. Returns repo-relative-ish display paths paired
-/// with their absolute path.
-#[must_use]
-pub fn list_files(root: &Path, limit: usize) -> Vec<(String, PathBuf)> {
-    let mut out = Vec::new();
-    // Aligned with the workspace-search walk: symlinks are never followed and
-    // the heavyweight dirs are pruned even without an ignore file.
-    for entry in ignore::WalkBuilder::new(root)
-        .standard_filters(true)
-        .require_git(false)
-        .follow_links(false)
-        .filter_entry(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_none_or(|name| !karet_search::IGNORED_DIRS.contains(&name))
-        })
-        .build()
-        .flatten()
-    {
-        if !entry.file_type().is_some_and(|t| t.is_file()) {
-            continue;
-        }
-        let abs = entry.path().to_path_buf();
-        let display = abs
-            .strip_prefix(root)
-            .unwrap_or(&abs)
-            .to_string_lossy()
-            .into_owned();
-        out.push((display, abs));
-        if out.len() >= limit {
-            break;
-        }
-    }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    out
-}
-
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
 
@@ -318,32 +287,45 @@ mod tests {
         Ok(())
     }
 
+    /// A text file reserves an empty code tab: the destination exists at once and
+    /// the backend fills it, so the shell never has to read the file to show it.
     #[test]
-    fn code_opens_with_text_and_defers_highlighting() {
+    fn text_reserves_an_empty_code_tab_for_the_backend_to_fill() {
         let dir = temp_dir();
         let file = dir.path.join("notes.md");
         let _ = std::fs::write(&file, "```rust\nfn main() {}\n```\n");
+
         let tab = open_file(&file);
+
         let TabKind::Code {
-            text, highlights, ..
+            text,
+            doc,
+            highlights,
+            ..
         } = tab.kind
         else {
-            panic!("expected a code tab");
+            return;
         };
-        assert_eq!(text, "```rust\nfn main() {}\n```\n");
+        assert!(text.is_empty(), "content arrives as a document snapshot");
         assert!(
-            highlights.all().is_empty(),
-            "the session worker supplies syntax after the tab opens"
+            doc.is_none(),
+            "the document is registered after the tab exists"
         );
+        assert!(highlights.all().is_empty());
     }
 
+    /// Routing cannot see bytes, so a `.rs` full of binary still reserves a code
+    /// tab. The correction comes from the backend, which answers `NotUtf8` and
+    /// converts the tab to a hex view — the one place that judgement can be made.
     #[test]
-    fn invalid_utf8_text_opens_as_hex() {
+    fn a_source_extension_reserves_a_code_tab_whatever_the_bytes_are() {
         let dir = temp_dir();
         let file = dir.path.join("bad.rs");
         let _ = std::fs::write(&file, b"fn main() {}\n\xff");
+
         let tab = open_file(&file);
-        assert!(matches!(tab.kind, TabKind::Hex { .. }));
+
+        assert!(matches!(tab.kind, TabKind::Code { .. }));
     }
 
     #[test]
@@ -369,26 +351,26 @@ mod tests {
         assert!(doc.is_none());
     }
 
+    /// Only the machine holding the file knows how big it is, so the size guard
+    /// moved to the backend. The shell's job is to render the verdict, and to
+    /// render the override — the same file, with the renderer its content
+    /// warrants — when the user asks for it.
     #[test]
-    fn open_file_ignoring_size_bypasses_the_too_large_guard() {
-        let dir = temp_dir();
-        let file = dir.path.join("big.bin");
-        // Just over the size guard: the default open path shows a too-large
-        // placeholder…
-        let _ = std::fs::write(&file, vec![0u8; viewer::SIZE_GUARD as usize + 1]);
+    fn a_file_the_backend_reports_as_too_large_realizes_as_a_placeholder() {
+        let file = Path::new("/elsewhere/big.bin");
+        let len = viewer::SIZE_GUARD + 1;
+
+        let guarded = realize(file, FileKind::TooLarge { len }, Vec::new(), len);
+        let overridden = realize(file, FileKind::Binary, vec![0, 0, 0], len);
+
         assert!(matches!(
-            open_file(&file).kind,
+            guarded.kind,
             TabKind::Placeholder {
                 kind: FileKind::TooLarge { .. },
                 ..
             }
         ));
-        // …while the override opens it with the renderer its content warrants (a
-        // NUL-filled blob is binary → the hex view).
-        assert!(matches!(
-            open_file_ignoring_size(&file).kind,
-            TabKind::Hex { .. }
-        ));
+        assert!(matches!(overridden.kind, TabKind::Hex { .. }));
     }
 
     #[test]
@@ -413,13 +395,23 @@ trailer<</Size 4/Root 1 0 R>>\n%%EOF";
 
     #[cfg(feature = "pdf")]
     #[test]
-    fn opens_pdf_as_document_tab() {
+    fn a_pdf_becomes_a_document_tab_once_its_bytes_arrive() {
         let dir = temp_dir();
         let file = dir.path.join("a.pdf");
-        let _ = std::fs::write(&file, MINIMAL_PDF);
-        let tab = open_file(&file);
-        let TabKind::Document { page_count, .. } = tab.kind else {
-            panic!("expected a document tab for a .pdf file");
+
+        // Reserved from the name alone: a placeholder, which is also where an
+        // unreadable PDF settles, so the failure path needs no separate state.
+        assert!(matches!(open_file(&file).kind, TabKind::Placeholder { .. }));
+
+        let filled = realize(
+            &file,
+            FileKind::Pdf,
+            MINIMAL_PDF.to_vec(),
+            MINIMAL_PDF.len() as u64,
+        );
+
+        let TabKind::Document { page_count, .. } = filled.kind else {
+            return;
         };
         assert_eq!(page_count, 1);
     }
@@ -505,21 +497,37 @@ trailer<</Size 4/Root 1 0 R>>\n%%EOF";
     }
 
     #[test]
-    fn opens_binary_as_hex_tab() {
+    fn binary_reserves_an_empty_hex_tab_then_realizes_from_bytes() {
         let dir = temp_dir();
         let file = dir.path.join("blob.bin");
-        let _ = std::fs::write(&file, [0u8, 1, 2, 3]);
-        let tab = open_file(&file);
-        assert!(matches!(tab.kind, TabKind::Hex { .. }));
+
+        let reserved = open_file(&file);
+        let filled = realize(&file, FileKind::Binary, vec![0, 1, 2, 3], 4);
+
+        let TabKind::Hex { bytes, .. } = reserved.kind else {
+            return;
+        };
+        assert!(bytes.is_empty(), "reserved before its bytes are fetched");
+        let TabKind::Hex { bytes, .. } = filled.kind else {
+            return;
+        };
+        assert_eq!(bytes, vec![0, 1, 2, 3]);
+    }
+
+    /// Routing is by name, so a tab is reserved for a path that does not exist
+    /// yet — which is exactly what a client rendering another machine's
+    /// workspace faces for every file it opens.
+    #[test]
+    fn a_path_that_is_not_on_this_machine_still_reserves_the_right_tab() {
+        let tab = open_file(Path::new("/definitely/not/here/main.rs"));
+
+        assert!(matches!(tab.kind, TabKind::Code { .. }));
     }
 
     #[test]
-    fn list_files_finds_and_sorts() {
-        let dir = temp_dir();
-        let _ = std::fs::write(dir.path.join("b.txt"), "b");
-        let _ = std::fs::write(dir.path.join("a.txt"), "a");
-        let files = list_files(&dir.path, 100);
-        let names: Vec<&str> = files.iter().map(|(d, _)| d.as_str()).collect();
-        assert_eq!(names, vec!["a.txt", "b.txt"]);
+    fn media_needs_its_bytes_fetched_and_text_does_not() {
+        assert!(needs_bytes(FileKind::Binary));
+        assert!(!needs_bytes(FileKind::Text));
+        assert!(!needs_bytes(FileKind::Markdown));
     }
 }

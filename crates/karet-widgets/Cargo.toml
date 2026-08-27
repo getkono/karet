@@ -30,8 +30,12 @@ karet-fuzzy.workspace = true
 karet-markdown = { workspace = true, features = ["view", "highlight"], optional = true }
 karet-theme = { workspace = true, features = ["view"] }  # role colors for the widgets
 ratatui.workspace = true
-ignore.workspace = true
 unicode-width.workspace = true
+
+[dev-dependencies]
+# The tests build real directories and supply their listings to the tree the way
+# an embedder does; the widget itself no longer reads any.
+ignore.workspace = true
 
 [lints]
 workspace = true

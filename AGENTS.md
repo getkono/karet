@@ -34,9 +34,13 @@ and we refuse to relitigate the axes where choice only adds surface area.
   wires a producer to a widget — no widget crate depends on a producer crate.
 - **Serde-ready `Backend` seam** — the headless `karet-session` backend owns the
   documents/workspace and runs the producers behind a `Command`/`Event` vocabulary
-  and a `Backend` trait. Presentation talks to it only through that seam. The
-  remote client-server split is deferred, but the seams (serde-ready core models,
-  in-proc `Backend`) are pre-placed so it lands as an *additive* change, not a rewrite.
+  and a `Backend` trait. Presentation talks to it only through that seam, which is
+  why the client-server split landed as an *additive* change rather than a rewrite:
+  the same trait drives an in-process session and one on another machine, and no
+  rendering code can tell which. karet ships **no transport** — `karet-session`'s
+  `remote` module speaks a framed protocol over any `AsyncRead`/`AsyncWrite`, and
+  supplying the stream is `ssh`'s or a multiplexer's job. See
+  [`docs/remote.md`](docs/remote.md).
 - **No system dependencies** — nothing needs `pkg-config` or links a third-party
   system C library (OS-syscall shims like `inotify-sys`/`windows-sys` are fine;
   `openssl-sys`-style bindings are not); verify with `cargo tree`. The one scoped
@@ -86,11 +90,11 @@ published to crates.io (everything else is `publish = false`).
 
 | crate | role | pub | one-line scope |
 |---|---|---|---|
-| `karet-core` | foundation | ✓ | shared vocabulary: text coords, neutral models (Diagnostic/Decoration/Symbol/Completion/Hover/…), neutral edits, `GraphView`, `SymbolProvider`, `TokenId` |
+| `karet-core` | foundation | ✓ | shared vocabulary: text coords, neutral models (Diagnostic/Decoration/Symbol/Completion/Hover/`DirEntry`/…), neutral edits, `GraphView`, `SymbolProvider`, `TokenId` |
 | `karet-filetype` | engine | ✓ | single registry: path → file type (name, category, per-`IconStyle` icon) + renderer routing (`FileKind`/`classify`); dependency-free |
 | `karet-text` | engine | ✓ | rope buffer, undo/redo, dirty/save, EOL/encoding detection, atomic save |
 | `karet-treesitter` | engine | ✓ | shared tree-sitter parse host (parser pool, incremental trees, queries, **language injection** → layered trees) |
-| `karet-syntax` | engine | ✓ | tree-sitter highlighting (incl. **injected** languages), fold regions, semantic blocks, symbol outlines, inline macros; `lang-*` pass-through + `all-languages` forward grammar choice to the parse host |
+| `karet-syntax` | engine | ✓ | tree-sitter highlighting (incl. **injected** languages), fold regions, semantic blocks, symbol outlines, inline macros; `serde` derives on the block model for the remote seam; `lang-*` pass-through + `all-languages` forward grammar choice to the parse host |
 | `karet-theme` | engine | ✓ | token palette, VS Code JSON theme loader (`vscode` feat), ratatui styles + contrast (`view` feat) |
 | `karet-diff` | engine | ✓ | pure text diffing: histogram line diff, side-by-side alignment, intra-line highlights, unified-diff parse, per-hunk staging, prepared-diff model (`PreparedDiff`); ratatui painters behind `view` |
 | `karet-graph` | engine | — | DAG lane-assignment layout; `view` paints the commit-rail gutter and flattens `karet_core::GraphView` into styled tree rows (plain-style slots, no theme dep) |
@@ -108,12 +112,12 @@ published to crates.io (everything else is `publish = false`).
 | `karet-seam` | engine | — | a repository's **seams** as a queryable index: package discovery (Cargo workspaces, nested crates, Python projects) → containment tree with a root per package, per-lens facets (api/substitution/variation/boundary/hazard), edges, `cfg` configurations, and a predicate query language; `lang-rust`/`lang-python` mappings |
 | `karet-watch` | engine | — | debounced cross-platform FS-watch → neutral `FsEvent` Tokio stream; enumerates off-thread (headless) |
 | `karet-fuzzy` | engine | — | fuzzy match + ranking (nucleo-backed, smart case), shared by widgets and completion |
-| `karet-session` | backend | — | headless editor backend: owns documents/workspace, orchestrates producers, applies `Command`s, emits `Event`s; runs layered highlighting on a background worker; holds format-on-save, spell-check (per-document *and* a workspace-wide scan worker), settings/session |
+| `karet-session` | backend | — | headless editor backend: owns documents/workspace, orchestrates producers, applies `Command`s, emits `Event`s; runs layered highlighting on a background worker; holds format-on-save, spell-check (per-document *and* a workspace-wide scan worker), settings/session, workspace path I/O; `remote` serves the same seam over any byte stream |
 | `karet-supervisor` | infra | — | hidden alternate entry points of the `karet` binary: a process-group supervisor that outlives-and-kills external process trees with the editor, and the cross-process LSP broker (one per server+root, shared by editor windows over an authenticated loopback socket); consumed only by the app |
-| `karet-widgets` | widget | — | ratatui UI toolkit: file tree, completion popup, toasts, pane layout + drop zones, multi-select model, UI glyphs; LSP hover popup behind the `hover` feat |
+| `karet-widgets` | widget | — | ratatui UI toolkit: file tree (renders supplied listings; reads no directories), completion popup, toasts, pane layout + drop zones, multi-select model, UI glyphs; LSP hover popup behind the `hover` feat |
 | `karet-editor` | widget | ✓ | the editor widget: gutter, folds, sticky scroll, word wrap, multi-caret, merge-conflict decorations; `read_only` mode |
 | `karet-fileview` | widget | ✓ | read-only file-view primitives: hex view + terminal image (behind `raster`/`images`) + placeholder, plus `FileKind`/`classify` re-exports; composition is the consumer's |
-| `karet` | app | — | composition root / TUI client (local mode); merges the clipboard + input (keymap) modules; default-on `images`/`pdf`/`docx` features gate the optional media/document deps (`--no-default-features` → lean build, see `docs/binary-size.md`); `publish = false` |
+| `karet` | app | — | composition root / TUI client, local or split across two machines (`--serve` / `--client`); merges the clipboard + input (keymap) modules; default-on `images`/`pdf`/`docx` features gate the optional media/document deps (`--no-default-features` → lean build, see `docs/binary-size.md`); `publish = false` |
 | `blameline` | standalone | ✓ | semantic git-blame (via `gix`): grouped whole-file blame by default (pure Rust, no C compiler); tree-sitter function narrowing opt-in behind `treesitter` + `lang-*` (`all-narrowing-languages`); serde/JSON output; on its **own** SemVer line (see [Versioning](#versioning)) |
 | `xtask` | dev tool | — | repo verification tasks run by `mise`/CI (`file-lines` code-line ceiling, `publish-closure`, `publish-ready`); version `0.0.0`, never shipped |
 

@@ -83,6 +83,9 @@ fn a_single_location_opens_the_file_and_lands_on_the_range_start() {
             }],
         },
     );
+    // The jump is recorded while the file is still empty and applied when the
+    // backend delivers its content.
+    deliver_content(&mut app, &other, "pub fn target() {}\nsecond line\n");
 
     assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));
     // The caret lands on the definition's start, as a bare caret — the end of the
@@ -226,6 +229,7 @@ fn several_locations_open_a_picker_with_workspace_relative_rows() {
     assert_eq!(overlay.rows(), vec!["other.rs:1", "other.rs:2"]);
 
     app.overlay_accept();
+    deliver_content(&mut app, &other, "pub fn target() {}\nsecond line\n");
     assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 7));
 }

@@ -332,6 +332,37 @@ impl WorkspaceSearch {
     }
 }
 
+/// Walk `root` gitignore-aware and hand every file *path* to `sink`, without
+/// reading any contents.
+///
+/// The same corpus [`walk_text_files`] visits, minus the read: a quick-open
+/// picker, a file-tree seed or a path index needs the names, and reading every
+/// file to produce them makes opening a large workspace cost a full scan.
+///
+/// `sink` receives each file's path and returns [`ControlFlow::Break`] to stop
+/// early. Because nothing is read, the binary/oversize/non-UTF-8 skips
+/// [`walk_text_files`] applies cannot be made here — a caller that needs only
+/// text files should classify by path or read them itself.
+///
+/// # Errors
+/// Returns [`SearchError::InvalidPattern`] if an include/exclude glob is invalid.
+pub fn walk_file_paths(
+    root: &Path,
+    includes: &[String],
+    excludes: &[String],
+    mut sink: impl FnMut(&Path) -> ControlFlow<()>,
+) -> Result<(), SearchError> {
+    for entry in build_walk(root, includes, excludes)?.flatten() {
+        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+            continue;
+        }
+        if sink(entry.path()).is_break() {
+            break;
+        }
+    }
+    Ok(())
+}
+
 /// Walk `root` gitignore-aware and hand every readable text file to `sink`.
 ///
 /// The walk applies exactly the filters [`WorkspaceSearch::run`] does — `.gitignore`
@@ -857,6 +888,85 @@ mod tests {
             }
         });
         assert_eq!(seen, 2);
+    }
+
+    /// The paths-only walk must see the same corpus as the text walk without
+    /// reading anything — that is the whole reason it exists.
+    #[test]
+    fn walking_paths_visits_files_and_prunes_ignored_directories() {
+        let dir = temp_dir();
+        write(&dir.path, "a.rs", b"fn main() {}\n");
+        write(&dir.path, "b.txt", b"prose\n");
+        write(&dir.path, "target/artifact.rs", b"generated\n");
+
+        let mut names: Vec<String> = Vec::new();
+        let _ = walk_file_paths(&dir.path, &[], &[], |path| {
+            names.push(
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+            );
+            ControlFlow::Continue(())
+        });
+        names.sort();
+
+        assert_eq!(names, vec!["a.rs".to_owned(), "b.txt".to_owned()]);
+    }
+
+    /// A binary file has no text to read, so `walk_text_files` skips it. The
+    /// paths walk must still list it: quick-open offers files the editor opens
+    /// with a hex or image renderer, not only ones it can search.
+    #[test]
+    fn walking_paths_lists_files_the_text_walk_skips() {
+        let dir = temp_dir();
+        write(&dir.path, "logo.png", &[0x89, b'P', b'N', b'G', 0x00, 0xff]);
+
+        let mut text_seen = 0_usize;
+        let _ = walk_text_files(&dir.path, &[], &[], |_, _| {
+            text_seen += 1;
+            ControlFlow::Continue(())
+        });
+        let mut path_seen = 0_usize;
+        let _ = walk_file_paths(&dir.path, &[], &[], |_| {
+            path_seen += 1;
+            ControlFlow::Continue(())
+        });
+
+        assert_eq!(text_seen, 0);
+        assert_eq!(path_seen, 1);
+    }
+
+    #[test]
+    fn walking_paths_stops_early_on_break() {
+        let dir = temp_dir();
+        for i in 0..5 {
+            write(&dir.path, &format!("f{i}.txt"), b"x\n");
+        }
+
+        let mut seen = 0_usize;
+        let _ = walk_file_paths(&dir.path, &[], &[], |_| {
+            seen += 1;
+            if seen == 2 {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        });
+
+        assert_eq!(seen, 2);
+    }
+
+    #[test]
+    fn walking_paths_surfaces_an_invalid_glob() {
+        let dir = temp_dir();
+        write(&dir.path, "a.txt", b"x\n");
+
+        let result = walk_file_paths(&dir.path, &["[".to_owned()], &[], |_| {
+            ControlFlow::Continue(())
+        });
+
+        assert_eq!(result, Err(SearchError::InvalidPattern));
     }
 
     #[test]

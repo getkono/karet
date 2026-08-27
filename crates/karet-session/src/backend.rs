@@ -177,3 +177,6 @@ mod merge_conflict_tests;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod workspace_tests;

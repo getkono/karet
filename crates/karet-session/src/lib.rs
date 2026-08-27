@@ -28,6 +28,7 @@ pub mod config;
 mod dap;
 mod diff_prepare;
 mod editorconfig;
+mod fs_worker;
 mod highlight;
 mod latex;
 pub mod local;
@@ -37,6 +38,7 @@ mod lsp_registry;
 mod manifest_hints;
 #[cfg(feature = "notebook-kernel")]
 mod notebook_kernel;
+pub mod remote;
 mod seam_worker;
 mod search_worker;
 pub mod session;

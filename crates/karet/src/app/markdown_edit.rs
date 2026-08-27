@@ -313,13 +313,9 @@ impl App {
             return;
         };
         let original = buffer.text();
-        let config = [".markdownlint.json", ".markdownlint.jsonc"]
-            .iter()
-            .find_map(|name| {
-                let text = std::fs::read_to_string(self.root.join(name)).ok()?;
-                karet_markdown::lint::Config::from_json(&text).ok()
-            })
-            .unwrap_or_default();
+        // Fetched through the backend when the workspace root became known; the
+        // rules live beside the code, which may not be on this machine.
+        let config = self.markdownlint_config.clone().unwrap_or_default();
         let issues = karet_markdown::lint::lint(&original, &config);
         let fixable = issues.iter().filter(|i| i.fix.is_some()).count();
         let fixed = karet_markdown::lint::apply_fixes(&original, &issues);

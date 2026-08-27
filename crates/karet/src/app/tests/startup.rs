@@ -107,6 +107,7 @@ fn open_startup_goto_positions_caret_and_focuses_editor() {
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.open_startup_goto(&path, 2, 5);
+    deliver_content(&mut app, &path, "fn main() {\n    println!(\"hi\");\n}\n");
 
     // The file opened as a code tab, focused, with the caret at 0-based (1, 4).
     assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
