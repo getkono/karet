@@ -633,7 +633,7 @@ fn discover_npm(
         .into_iter()
         .find(|release| !release.lts.is_boolean() || release.lts != serde_json::Value::Bool(false))
         .ok_or_else(|| "Node publishes no active LTS release".to_owned())?;
-    let (file, archive) = node_asset(&node)?;
+    let (file, archive) = node_asset(&node, std::env::consts::OS, std::env::consts::ARCH)?;
     let base = format!("https://nodejs.org/dist/{}/", node.version);
     let sums = client
         .get(format!("{base}SHASUMS256.txt"))
@@ -693,39 +693,64 @@ fn npm_metadata(client: &Client, package: &str) -> Result<NpmMetadata, String> {
         .map_err(|error| error.to_string())
 }
 
-fn node_asset(node: &NodeRelease) -> Result<(String, Archive), String> {
-    let platform = (std::env::consts::OS, std::env::consts::ARCH);
-    let suffix = match node_platform(platform.0, platform.1) {
-        Some(suffix) => suffix,
-        None => {
-            return Err(format!(
-                "Node has no managed release for {}-{}",
-                platform.0, platform.1
-            ));
-        },
+/// How one platform's Node runtime is named upstream.
+///
+/// The two names are independent, and assuming otherwise is a trap: Node ships
+/// the archive `node-<version>-darwin-arm64.tar.gz` but advertises it in the
+/// release's `files` array as `osx-arm64-tar`, and `win-x64.zip` as
+/// `win-x64-zip`. Only the Linux pair happens to agree.
+#[derive(Clone, Copy)]
+struct NodePlatform {
+    /// The filename suffix following `node-<version>-`.
+    suffix: &'static str,
+    /// The key this build is published under in the release's `files` array.
+    manifest_key: &'static str,
+}
+
+/// Resolve the Node download for `(os, arch)`, refusing a release that does not
+/// publish it.
+///
+/// `os` and `arch` are parameters rather than [`std::env::consts`] reads so the
+/// mappings for every supported platform are checkable from one host — the gap
+/// that let the macOS and Windows keys stay wrong.
+fn node_asset(node: &NodeRelease, os: &str, arch: &str) -> Result<(String, Archive), String> {
+    let Some(platform) = node_platform(os, arch) else {
+        return Err(format!("Node has no managed release for {os}-{arch}"));
     };
-    let file = format!("node-{}-{suffix}", node.version);
-    let key = suffix.trim_end_matches(".tar.gz").trim_end_matches(".zip");
-    if !node.files.iter().any(|candidate| candidate == key) {
-        return Err(format!("Node {} does not publish {key}", node.version));
+    if !node
+        .files
+        .iter()
+        .any(|candidate| candidate == platform.manifest_key)
+    {
+        return Err(format!(
+            "Node {} does not publish {}",
+            node.version, platform.manifest_key
+        ));
     }
+    let archive = if platform.suffix.ends_with(".zip") {
+        Archive::Zip
+    } else {
+        Archive::TarGzip
+    };
     Ok((
-        file,
-        if suffix.ends_with(".zip") {
-            Archive::Zip
-        } else {
-            Archive::TarGzip
-        },
+        format!("node-{}-{}", node.version, platform.suffix),
+        archive,
     ))
 }
 
-fn node_platform(os: &str, arch: &str) -> Option<&'static str> {
+fn node_platform(os: &str, arch: &str) -> Option<NodePlatform> {
+    let platform = |suffix, manifest_key| {
+        Some(NodePlatform {
+            suffix,
+            manifest_key,
+        })
+    };
     match (os, arch) {
-        ("linux", "x86_64") => Some("linux-x64.tar.gz"),
-        ("linux", "aarch64") => Some("linux-arm64.tar.gz"),
-        ("macos", "x86_64") => Some("darwin-x64.tar.gz"),
-        ("macos", "aarch64") => Some("darwin-arm64.tar.gz"),
-        ("windows", "x86_64") => Some("win-x64.zip"),
+        ("linux", "x86_64") => platform("linux-x64.tar.gz", "linux-x64"),
+        ("linux", "aarch64") => platform("linux-arm64.tar.gz", "linux-arm64"),
+        ("macos", "x86_64") => platform("darwin-x64.tar.gz", "osx-x64-tar"),
+        ("macos", "aarch64") => platform("darwin-arm64.tar.gz", "osx-arm64-tar"),
+        ("windows", "x86_64") => platform("win-x64.zip", "win-x64-zip"),
         _ => None,
     }
 }
