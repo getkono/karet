@@ -190,12 +190,14 @@ pub(crate) fn installed_spec(
     language: &str,
 ) -> Option<LspSpec> {
     let active = read_active(root?, server)?;
-    Some(LspSpec {
-        command: active.command.to_string_lossy().into_owned(),
-        args: active.launch_args(server),
-        languages: vec![language.to_owned()],
-        initialization_options: active.initialization_options,
-    })
+    Some(
+        LspSpec::new(
+            active.command.to_string_lossy().into_owned(),
+            active.launch_args(server),
+            vec![language.to_owned()],
+        )
+        .with_initialization_options(active.initialization_options),
+    )
 }
 
 /// Read the active managed version without performing network I/O.
@@ -678,13 +680,19 @@ fn install_release(
             retain_archive,
             ..
         } => {
-            let bytes = download_verified(client, url, sha256, |downloaded, total| {
-                let _ = updates.send(RegistryUpdate::Progress {
-                    server: release.server.clone(),
-                    downloaded,
-                    total,
-                });
-            })?;
+            let bytes = download_verified(
+                client,
+                url,
+                sha256,
+                release.download_bytes,
+                |downloaded, total| {
+                    let _ = updates.send(RegistryUpdate::Progress {
+                        server: release.server.clone(),
+                        downloaded,
+                        total,
+                    });
+                },
+            )?;
             if *retain_archive {
                 extract_archive(&bytes, *archive, destination, true)
             } else {
@@ -702,13 +710,16 @@ fn install_release(
         } => {
             let supervisor =
                 supervisor.ok_or_else(|| "process supervisor is unavailable".to_owned())?;
-            let bytes = download_verified(client, node_url, node_sha256, |downloaded, total| {
-                let _ = updates.send(RegistryUpdate::Progress {
-                    server: release.server.clone(),
-                    downloaded,
-                    total,
-                });
-            })?;
+            // nodejs.org's index publishes no per-asset size, so this download
+            // falls back to the absolute ceiling.
+            let bytes =
+                download_verified(client, node_url, node_sha256, None, |downloaded, total| {
+                    let _ = updates.send(RegistryUpdate::Progress {
+                        server: release.server.clone(),
+                        downloaded,
+                        total,
+                    });
+                })?;
             let node_root = destination.join("node");
             extract_archive(&bytes, *node_archive, &node_root, true)?;
             let node = find_file_named(&node_root, node_executable())
