@@ -2,6 +2,7 @@
 //! the grouped results list.
 
 use super::*;
+use crate::app::SearchPanelField;
 use crate::app::SearchRow;
 
 pub(super) fn draw_search_panel(
@@ -11,27 +12,29 @@ pub(super) fn draw_search_panel(
     area: Rect,
     hits: &mut ScrollHits,
 ) {
-    use crate::tab::SearchField;
 
     // Right-hand slot on the find/replace rows for the option toggles / replace-all.
     const SLOT_W: u16 = 10;
     let replace_visible = app.search.replace_visible;
     let replace_h = u16::from(replace_visible);
+    let filters_h = u16::from(app.search.filters_visible);
     let rows = Layout::vertical([
         Constraint::Length(1),         // find field
         Constraint::Length(replace_h), // replace field (collapsible)
+        Constraint::Length(filters_h), // include globs (collapsible)
+        Constraint::Length(filters_h), // exclude globs (collapsible)
         Constraint::Min(0),            // results
     ])
     .split(area);
-    app.search_ui.results_rect = rows[2];
+    app.search_ui.results_rect = rows[4];
     app.search_ui.offset = 0;
     app.search_ui.action_hits = Vec::new();
 
     let accent = theme.role(ThemeRole::LineNumberActive).to_ratatui();
     let dim = theme.role(ThemeRole::LineNumber).to_ratatui();
     let fg = theme.role(ThemeRole::Foreground).to_ratatui();
-    let editing_find = app.search.input && app.search.field == SearchField::Find;
-    let editing_replace = app.search.input && app.search.field == SearchField::Replace;
+    let editing_find = app.search.input && app.search.field == SearchPanelField::Find;
+    let editing_replace = app.search.input && app.search.field == SearchPanelField::Replace;
 
     // Find row: query on the left, the option toggles (.* Aa \b) on the right.
     let find_cols =
@@ -143,6 +146,79 @@ pub(super) fn draw_search_panel(
         app.search_ui.replace_rect = None;
     }
 
+    // Include / exclude globs (collapsible): the main way to narrow a search over
+    // a large repository. Placeholders name the syntax so the fields are usable
+    // without documentation.
+    if app.search.filters_visible {
+        for (index, field) in [SearchPanelField::Includes, SearchPanelField::Excludes]
+            .into_iter()
+            .enumerate()
+        {
+            let row = rows[2 + index];
+            let editing = app.search.input && app.search.field == field;
+            let (glyph, placeholder) = match field {
+                SearchPanelField::Includes => (" ⊕ ", "files to include — *.rs, src/**"),
+                _ => (" ⊖ ", "files to exclude — **/target/**"),
+            };
+            let style = if editing {
+                Style::default().fg(accent).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(fg)
+            };
+            let prefix = Rect {
+                width: row.width.min(3),
+                ..row
+            };
+            let field_rect = Rect {
+                x: prefix.right(),
+                width: row.width.saturating_sub(prefix.width),
+                ..row
+            };
+            f.render_widget(Paragraph::new(Line::styled(glyph, style)), prefix);
+            // Keep a long glob list scrolled to the caret, as the other fields do.
+            if field == SearchPanelField::Includes {
+                app.search
+                    .includes_edit
+                    .ensure_cursor_visible(&app.search.includes, field_rect.width);
+            } else {
+                app.search
+                    .excludes_edit
+                    .ensure_cursor_visible(&app.search.excludes, field_rect.width);
+            }
+            let (text, edit) = match field {
+                SearchPanelField::Includes => (&app.search.includes, &app.search.includes_edit),
+                _ => (&app.search.excludes, &app.search.excludes_edit),
+            };
+            if text.is_empty() && !editing {
+                f.render_widget(
+                    Paragraph::new(Line::styled(placeholder, Style::default().fg(dim))),
+                    field_rect,
+                );
+            } else {
+                f.render_widget(
+                    Paragraph::new(text_field_text(
+                        text,
+                        edit,
+                        editing,
+                        style,
+                        style.bg(selection),
+                        Style::default().fg(accent),
+                    ))
+                    .scroll((0, edit.scroll)),
+                    field_rect,
+                );
+            }
+            if index == 0 {
+                app.search_ui.includes_rect = Some(field_rect);
+            } else {
+                app.search_ui.excludes_rect = Some(field_rect);
+            }
+        }
+    } else {
+        app.search_ui.includes_rect = None;
+        app.search_ui.excludes_rect = None;
+    }
+
     // Status: what this result set is, stated plainly. A big repository search
     // is otherwise indistinguishable from a hung one.
     let search = &app.search;
@@ -182,11 +258,11 @@ pub(super) fn draw_search_panel(
         None
     };
     let body = if let Some((text, style)) = status {
-        let split = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(rows[2]);
+        let split = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(rows[4]);
         f.render_widget(Paragraph::new(Line::styled(text, style)), split[0]);
         split[1]
     } else {
-        rows[2]
+        rows[4]
     };
 
     if search.rows.is_empty() {

@@ -185,6 +185,7 @@ impl Command {
             Self::SearchExpand => "expand",
             Self::SearchCollapse => "collapse",
             Self::SearchToggleAll => "fold all",
+            Self::SearchToggleFilters => "filters",
             Self::SearchRun => "run",
             Self::SearchEndInput => "done",
             Self::SearchToggleReplace => "replace",

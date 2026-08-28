@@ -412,6 +412,7 @@ impl App {
             Command::SearchExpand => self.search_expand(),
             Command::SearchCollapse => self.search_collapse(),
             Command::SearchToggleAll => self.search_toggle_all(),
+            Command::SearchToggleFilters => self.search_toggle_filters(),
             Command::SearchRun => self.run_search_query(),
             Command::SearchEndInput => self.search.input = false,
             Command::SearchToggleReplace => self.search_toggle_replace(),

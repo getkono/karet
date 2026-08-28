@@ -283,10 +283,7 @@ impl App {
 
     /// Edit the active Search field with GUI-style cursor and selection behavior.
     pub(super) fn search_edit(&mut self, key: KeyEvent) {
-        let (target, edit) = match self.search.field {
-            SearchField::Find => (&mut self.search.query, &mut self.search.query_edit),
-            SearchField::Replace => (&mut self.search.replace, &mut self.search.replace_edit),
-        };
+        let (target, edit) = self.search.active_field();
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -320,7 +317,7 @@ impl App {
     pub(super) fn run_search_query(&mut self) {
         // Enter runs the find search; while editing the replace field it applies the
         // replacement across the current matches instead.
-        if self.search.field == SearchField::Replace {
+        if self.search.field == SearchPanelField::Replace {
             self.search_replace_all();
         } else {
             self.run_global_search();
@@ -335,7 +332,8 @@ impl App {
             regex: self.search.regex,
             case_sensitive: self.search.case_sensitive,
             whole_word: self.search.whole_word,
-            ..Default::default()
+            includes: SearchPanel::globs(&self.search.includes),
+            excludes: SearchPanel::globs(&self.search.excludes),
         }
     }
 
@@ -344,26 +342,55 @@ impl App {
     pub(super) fn search_toggle_replace(&mut self) {
         self.search.replace_visible = !self.search.replace_visible;
         if !self.search.replace_visible {
-            self.search.field = SearchField::Find;
+            self.search.field = SearchPanelField::Find;
         }
     }
 
-    /// Switch the edited field between find and replace (revealing the replace field
-    /// when moving to it), keeping the panel in input mode.
+    /// Cycle the edited field, revealing whichever section the next field lives in
+    /// and keeping the panel in input mode.
+    ///
+    /// Hidden sections are skipped rather than silently focused, so Tab never
+    /// parks the cursor on a field the user cannot see.
     pub(super) fn search_toggle_field(&mut self) {
         self.search.input = true;
         self.search.field = match self.search.field {
-            SearchField::Find => {
+            SearchPanelField::Find => {
                 self.search.replace_visible = true;
-                SearchField::Replace
+                SearchPanelField::Replace
             },
-            SearchField::Replace => SearchField::Find,
+            SearchPanelField::Replace if self.search.filters_visible => SearchPanelField::Includes,
+            SearchPanelField::Includes => SearchPanelField::Excludes,
+            SearchPanelField::Replace | SearchPanelField::Excludes => SearchPanelField::Find,
         };
-        let (text, edit) = match self.search.field {
-            SearchField::Find => (&self.search.query, &mut self.search.query_edit),
-            SearchField::Replace => (&self.search.replace, &mut self.search.replace_edit),
-        };
-        edit.set_cursor(text, text.len(), false);
+        let (text, edit) = self.search.active_field();
+        let len = text.len();
+        let owned = text.clone();
+        edit.set_cursor(&owned, len, false);
+    }
+
+    /// Show or hide the include/exclude glob fields (collapsing them returns focus
+    /// to the query).
+    pub(super) fn search_toggle_filters(&mut self) {
+        self.search.filters_visible = !self.search.filters_visible;
+        if !self.search.filters_visible {
+            if matches!(
+                self.search.field,
+                SearchPanelField::Includes | SearchPanelField::Excludes
+            ) {
+                self.search.field = SearchPanelField::Find;
+            }
+            // Hiding the fields must also stop them filtering, or a search would
+            // stay narrowed by globs no longer on screen.
+            let had_globs = !self.search.includes.is_empty() || !self.search.excludes.is_empty();
+            self.search.includes.clear();
+            self.search.excludes.clear();
+            if had_globs {
+                self.rerun_search();
+            }
+        } else {
+            self.search.field = SearchPanelField::Includes;
+            self.search.input = true;
+        }
     }
 
     /// Ask the backend to apply the replacement across every workspace match;

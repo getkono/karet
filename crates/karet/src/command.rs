@@ -604,6 +604,8 @@ pub enum Command {
     SearchEndInput,
     /// Show or hide the Search replace field.
     SearchToggleReplace,
+    /// Show or hide the Search include/exclude glob fields.
+    SearchToggleFilters,
     /// Switch the edited Search field between find and replace.
     SearchToggleField,
     /// Apply the replacement across every workspace match.
@@ -908,6 +910,7 @@ impl Command {
             Self::SearchExpand => "Search: Expand Group",
             Self::SearchCollapse => "Search: Collapse Group",
             Self::SearchToggleAll => "Search: Collapse or Expand All",
+            Self::SearchToggleFilters => "Search: Toggle File Filters",
             Self::SearchRun => "Search: Run Query",
             Self::SearchEndInput => "Search: Stop Editing Query",
             Self::SearchToggleReplace => "Search: Toggle Replace",

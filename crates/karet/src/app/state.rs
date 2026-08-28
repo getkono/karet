@@ -139,6 +139,10 @@ pub(crate) struct SearchChrome {
     pub(crate) query_rect: Rect,
     /// The editable replacement rect, if shown.
     pub(crate) replace_rect: Option<Rect>,
+    /// The editable include-glob rect, if shown.
+    pub(crate) includes_rect: Option<Rect>,
+    /// The editable exclude-glob rect, if shown.
+    pub(crate) excludes_rect: Option<Rect>,
     /// Clickable header buttons `(start, end, row, command)` (option toggles
     /// and replace-all).
     pub(crate) action_hits: Vec<(u16, u16, u16, Command)>,
@@ -516,8 +520,18 @@ pub(crate) struct SearchPanel {
     pub(crate) searched: bool,
     /// Whether a field is being edited (vs. browsing results).
     pub(crate) input: bool,
-    /// Which field the input edits (find / replace).
-    pub(crate) field: SearchField,
+    /// Which field the input edits.
+    pub(crate) field: SearchPanelField,
+    /// Glob patterns limiting the search to matching paths (ripgrep `-g`).
+    pub(crate) includes: String,
+    /// Cursor and selection state for the include field.
+    pub(crate) includes_edit: TextFieldState,
+    /// Glob patterns excluding matching paths.
+    pub(crate) excludes: String,
+    /// Cursor and selection state for the exclude field.
+    pub(crate) excludes_edit: TextFieldState,
+    /// Whether the include/exclude fields are shown (collapsible; hidden by default).
+    pub(crate) filters_visible: bool,
     /// Whether the replace field is shown (collapsible; shown by default).
     pub(crate) replace_visible: bool,
     /// Interpret the query as a regular expression.
@@ -526,6 +540,24 @@ pub(crate) struct SearchPanel {
     pub(crate) case_sensitive: bool,
     /// Match whole words only.
     pub(crate) whole_word: bool,
+}
+
+/// Which Search-panel field the input edits.
+///
+/// Deliberately not [`SearchField`](crate::tab::SearchField), which the in-file
+/// find bar shares: that bar has no glob fields, and widening its enum would give
+/// it unreachable states to handle.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SearchPanelField {
+    /// The query.
+    #[default]
+    Find,
+    /// The replacement.
+    Replace,
+    /// Glob patterns limiting the search to matching paths.
+    Includes,
+    /// Glob patterns excluding matching paths.
+    Excludes,
 }
 
 /// One row of the Search panel's list: a file heading, or one match under it.
@@ -563,6 +595,38 @@ impl SearchRow {
 }
 
 impl SearchPanel {
+    /// The text and cursor state of the field the input is editing, read-only.
+    pub(crate) fn active_field_ref(&self) -> (&str, &TextFieldState) {
+        match self.field {
+            SearchPanelField::Find => (&self.query, &self.query_edit),
+            SearchPanelField::Replace => (&self.replace, &self.replace_edit),
+            SearchPanelField::Includes => (&self.includes, &self.includes_edit),
+            SearchPanelField::Excludes => (&self.excludes, &self.excludes_edit),
+        }
+    }
+
+    /// The text and cursor state of the field the input is editing.
+    pub(crate) fn active_field(&mut self) -> (&mut String, &mut TextFieldState) {
+        match self.field {
+            SearchPanelField::Find => (&mut self.query, &mut self.query_edit),
+            SearchPanelField::Replace => (&mut self.replace, &mut self.replace_edit),
+            SearchPanelField::Includes => (&mut self.includes, &mut self.includes_edit),
+            SearchPanelField::Excludes => (&mut self.excludes, &mut self.excludes_edit),
+        }
+    }
+
+    /// Split each glob field into the patterns a [`SearchQuery`] takes.
+    ///
+    /// Comma or whitespace separated, so `*.rs, src/**` reads the way a user
+    /// expects to type it.
+    pub(crate) fn globs(text: &str) -> Vec<String> {
+        text.split([',', ' ', '\t'])
+            .map(str::trim)
+            .filter(|glob| !glob.is_empty())
+            .map(str::to_owned)
+            .collect()
+    }
+
     /// Rebuild [`rows`](Self::rows) from [`hits`](Self::hits), keeping the cursor
     /// in range. Called after every streamed batch and every expand/collapse.
     pub(crate) fn rebuild_rows(&mut self) {
@@ -636,7 +700,14 @@ impl Default for SearchPanel {
             error: None,
             searched: false,
             input: false,
-            field: SearchField::Find,
+            field: SearchPanelField::Find,
+            includes: String::new(),
+            includes_edit: TextFieldState::default(),
+            excludes: String::new(),
+            excludes_edit: TextFieldState::default(),
+            // Hidden by default: an empty pair of globs is the common case, and
+            // the sidebar is narrow enough that two idle rows cost real results.
+            filters_visible: false,
             // The replace field is shown by default (collapsible via keybinding).
             replace_visible: true,
             regex: false,

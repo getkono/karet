@@ -235,3 +235,100 @@ fn collapse_from_a_match_row_walks_up_to_its_heading() {
     app.dispatch(Command::SearchCollapse);
     assert_eq!(app.search.rows.len(), 1);
 }
+
+#[test]
+fn globs_split_on_commas_and_whitespace() {
+    assert_eq!(
+        SearchPanel::globs("*.rs, src/**  ,\tdocs/*.md"),
+        vec!["*.rs", "src/**", "docs/*.md"]
+    );
+    assert!(SearchPanel::globs("   ,, ").is_empty());
+}
+
+#[test]
+fn the_glob_fields_reach_the_query() {
+    let mut app = app();
+    app.search.query = "needle".into();
+    app.search.includes = "*.rs, src/**".into();
+    app.search.excludes = "**/target/**".into();
+    let query = app.build_search_query();
+    assert_eq!(query.includes, vec!["*.rs", "src/**"]);
+    assert_eq!(query.excludes, vec!["**/target/**"]);
+}
+
+/// Hiding the fields must also stop them filtering — a search left narrowed by
+/// globs that are no longer on screen is a trap.
+#[test]
+fn hiding_the_filters_clears_them() {
+    let mut app = app();
+    app.dispatch(Command::SearchToggleFilters);
+    assert!(app.search.filters_visible);
+    assert_eq!(app.search.field, SearchPanelField::Includes);
+    app.search.includes = "*.rs".into();
+
+    app.dispatch(Command::SearchToggleFilters);
+    assert!(!app.search.filters_visible);
+    assert!(app.search.includes.is_empty());
+    assert_eq!(app.search.field, SearchPanelField::Find);
+    assert!(app.build_search_query().includes.is_empty());
+}
+
+/// Tab must never park the cursor on a field the user cannot see.
+#[test]
+fn field_cycling_skips_the_hidden_glob_fields() {
+    let mut app = app();
+    app.search_toggle_field(); // Find -> Replace
+    assert_eq!(app.search.field, SearchPanelField::Replace);
+    app.search_toggle_field(); // filters hidden, so back to Find
+    assert_eq!(app.search.field, SearchPanelField::Find);
+
+    app.search.filters_visible = true;
+    app.search_toggle_field(); // Find -> Replace
+    app.search_toggle_field(); // Replace -> Includes
+    assert_eq!(app.search.field, SearchPanelField::Includes);
+    app.search_toggle_field(); // Includes -> Excludes
+    assert_eq!(app.search.field, SearchPanelField::Excludes);
+    app.search_toggle_field(); // wraps to Find
+    assert_eq!(app.search.field, SearchPanelField::Find);
+}
+
+#[test]
+fn search_edit_targets_the_active_glob_field() {
+    let mut app = app();
+    app.search.field = SearchPanelField::Includes;
+    app.search_edit(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    app.search.field = SearchPanelField::Excludes;
+    app.search_edit(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+    assert_eq!(
+        (app.search.includes.as_str(), app.search.excludes.as_str()),
+        ("x", "y")
+    );
+}
+
+#[tokio::test]
+async fn an_include_glob_narrows_the_result_set() {
+    let dir = test_dir("search-globs");
+    write_file(&dir, "a.rs", b"needle\n");
+    write_file(&dir, "b.txt", b"needle\n");
+
+    let (local_backend, _snaps) = local(SessionConfig {
+        roots: vec![dir.clone()],
+        ..SessionConfig::default()
+    });
+    let backend: Arc<dyn Backend> = Arc::new(local_backend);
+    let mut events = backend.take_events().expect("backend event stream");
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.backend = Some(backend);
+    app.search.query = "needle".to_string();
+    app.run_global_search();
+    pump_until(&mut app, &mut events, |app| app.search.searched).await;
+    assert_eq!(app.search.hits.len(), 2, "both files match unfiltered");
+
+    app.search.includes = "*.rs".into();
+    app.run_global_search();
+    pump_until(&mut app, &mut events, |app| app.search.searched).await;
+    assert_eq!(app.search.hits.len(), 1);
+    assert!(app.search.hits[0].path.ends_with("a.rs"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
