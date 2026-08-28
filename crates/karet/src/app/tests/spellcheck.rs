@@ -246,7 +246,7 @@ async fn add_word_updates_an_existing_project_settings_file_without_prompt()
 }
 
 #[tokio::test]
-async fn add_word_requires_typed_confirmation_before_creating_project_settings()
+async fn add_word_requires_confirmation_before_creating_project_settings()
 -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     std::fs::create_dir(dir.path().join(".git"))?;
@@ -268,10 +268,30 @@ async fn add_word_requires_typed_confirmation_before_creating_project_settings()
     pump(&mut app, &mut events).await;
 
     assert!(!path.exists());
-    let overlay = app.overlay.as_mut().expect("typed creation prompt");
-    assert!(overlay.title().contains("Type create"));
-    overlay.push_str("create");
-    app.overlay_accept();
+    let dialog = app.confirm.as_ref().expect("creation confirmation");
+    assert!(
+        dialog.title.contains("project dictionary"),
+        "{}",
+        dialog.title
+    );
+    assert!(
+        dialog.body.source().contains(&path.display().to_string()),
+        "the body names the file it would create"
+    );
+
+    // Enter alone takes the safe answer and creates nothing.
+    send_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump(&mut app, &mut events).await;
+    assert!(!path.exists(), "the safe answer created no file");
+
+    open_spelling_menu(&mut app);
+    if let Some(menu) = app.context_menu.as_mut() {
+        menu.selected = 1;
+    }
+    app.accept_context_menu();
+    pump(&mut app, &mut events).await;
+    send_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    send_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     pump(&mut app, &mut events).await;
     assert!(path.exists());
     assert!(std::fs::read_to_string(path)?.contains("\"wrod\""));

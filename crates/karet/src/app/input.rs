@@ -159,12 +159,7 @@ impl App {
     /// The precedence mirrors how the shell stacks these overlays. Also drives the
     /// context-aware status hints bar ([`crate::ui`]).
     pub(crate) fn input_context(&self) -> Context {
-        let modal = if self.pending_swaps.is_some() {
-            // A startup recovery decision blocks everything else until made.
-            Some(Modal::SwapRecover)
-        } else if self.pending_close.is_some() {
-            Some(Modal::CloseConfirm)
-        } else if self.confirm.is_some() {
+        let modal = if self.confirm.is_some() {
             // A question outranks the picker or menu it was raised from: answering
             // it is what everything under it is waiting on.
             Some(Modal::Confirm)
@@ -259,14 +254,6 @@ impl App {
             // An unbound key cancels a confirmation, matching every other confirm
             // prompt: the default answer to a question the user did not answer is no.
             Modal::Confirm => self.confirm_cancel(),
-            // An unbound key cancels the close prompt (stay in the editor); the
-            // default for every irreversible close is to abort.
-            Modal::CloseConfirm => self.cancel_close(),
-            // …and dismisses the recovery prompt, keeping the swaps for a later launch.
-            Modal::SwapRecover => {
-                self.pending_swaps = None;
-                self.status = Some("recovery dismissed (backups kept)".to_string());
-            },
         }
     }
 
@@ -321,9 +308,7 @@ impl App {
             | Modal::ContextMenu
             // A confirmation captures no text: pasting into a question is
             // meaningless, and must not fall through to the editor underneath.
-            | Modal::Confirm
-            | Modal::CloseConfirm
-            | Modal::SwapRecover => {},
+            | Modal::Confirm => {},
         }
     }
 
@@ -457,20 +442,6 @@ impl App {
                     }
                 },
                 TextPurpose::DebugEvaluate => self.debug_evaluate(text),
-                TextPurpose::ConfirmOutsideWorkspaceLink { path } => {
-                    if text == "open" {
-                        self.open_markdown_file_link(&path);
-                    } else {
-                        self.status = Some("opening outside-workspace link cancelled".to_string());
-                    }
-                },
-                TextPurpose::ConfirmCreateProjectSettings { word, path } => {
-                    if text == "create" {
-                        self.create_project_dictionary(&word, &path);
-                    } else {
-                        self.status = Some("project settings creation cancelled".to_string());
-                    }
-                },
                 TextPurpose::InstallLanguageServer { server } => {
                     if text == "install" {
                         self.status = Some(format!("installing {}…", server.display_name()));

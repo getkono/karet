@@ -229,3 +229,108 @@ fn dropping_a_stash_asks_and_defaults_to_keeping_it() {
     assert!(title(&app).contains("stash@{0}"), "{}", title(&app));
     assert_eq!(safe_answer(&app), Some(ConfirmAction::Cancel));
 }
+
+// A confirmation that draws nothing is the bug this whole surface replaces: the
+// close and crash-recovery prompts blocked every key while painting no modal at
+// all, so these assert the pixels, not just the state.
+
+/// Push a dirty code tab backed by `doc` — a close only guards documents, so a
+/// tab without one is never at risk.
+fn dirty_doc_tab(app: &mut App, name: &str, doc: u64) {
+    app.push_tab(text_tab(name, "x"));
+    let idx = app.active;
+    if let TabKind::Code { doc: d, .. } = &mut app.tabs[idx].kind {
+        *d = Some(DocumentId(doc));
+    }
+    app.tabs[idx].dirty = true;
+}
+
+#[test]
+fn the_close_confirmation_paints_a_dialog_naming_the_file() {
+    let mut app = app();
+    dirty_doc_tab(&mut app, "notes.md", 1);
+
+    app.guarded_close(CloseRequest::Quit);
+    let screen = screen(&mut app, 80, 24).join("\n");
+    assert!(screen.contains("unsaved"), "{screen}");
+    assert!(screen.contains("notes.md"), "the file is named: {screen}");
+    assert!(screen.contains("Save all and quit"), "{screen}");
+    assert!(screen.contains("Discard and quit"), "{screen}");
+}
+
+#[test]
+fn cancelling_the_close_confirmation_releases_the_parked_close() {
+    let mut app = app();
+    dirty_doc_tab(&mut app, "notes.md", 1);
+
+    app.guarded_close(CloseRequest::Quit);
+    assert!(app.pending_close.is_some(), "the close is parked");
+    // Backing out is the first answer, and the first answer is what clears the
+    // parked request — otherwise a later save would run a close nobody asked for.
+    send_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.confirm.is_none());
+    assert!(app.pending_close.is_none(), "the parked close was released");
+    assert!(!app.should_quit);
+}
+
+#[test]
+fn the_recovery_confirmation_paints_and_names_its_conflicts() {
+    let mut app = app();
+    app.arm_swap_recovery(vec![
+        SwapInfo {
+            original: PathBuf::from("./notes.md"),
+            updated_unix_ms: 0,
+            conflict: true,
+        },
+        SwapInfo {
+            original: PathBuf::from("./other.rs"),
+            updated_unix_ms: 0,
+            conflict: false,
+        },
+    ]);
+    let screen = screen(&mut app, 80, 24).join("\n");
+    assert!(screen.contains("Recover unsaved changes"), "{screen}");
+    assert!(screen.contains("notes.md"), "{screen}");
+    assert!(
+        screen.contains("changed on disk"),
+        "the conflict is what makes this decision hard: {screen}"
+    );
+    assert!(screen.contains("Decide later"), "{screen}");
+}
+
+#[test]
+fn declining_recovery_keeps_the_backups() {
+    let (backend, mut app) = recording_app();
+    app.arm_swap_recovery(vec![SwapInfo {
+        original: PathBuf::from("./notes.md"),
+        updated_unix_ms: 0,
+        conflict: false,
+    }]);
+    send_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.confirm.is_none());
+    assert!(app.pending_swaps.is_none());
+    assert!(
+        !sent(&backend)
+            .iter()
+            .any(|c| matches!(c, SessionCommand::DiscardSwaps)),
+        "backing out must never delete the backups"
+    );
+}
+
+#[test]
+fn recovery_discards_the_backups_only_on_the_third_row() {
+    let (backend, mut app) = recording_app();
+    app.arm_swap_recovery(vec![SwapInfo {
+        original: PathBuf::from("./notes.md"),
+        updated_unix_ms: 0,
+        conflict: false,
+    }]);
+    send_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    send_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    send_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        sent(&backend)
+            .iter()
+            .any(|c| matches!(c, SessionCommand::DiscardSwaps))
+    );
+}

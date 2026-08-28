@@ -5,19 +5,24 @@ pub(super) fn rect_contains(r: Rect, (x, y): (u16, u16)) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
 
-/// The unsaved-changes confirmation prompt for `request`, naming the scope and its
-/// `count` at-risk files. The default (any other key) is always to abort.
-pub(super) fn close_prompt_message(request: CloseRequest, count: usize) -> String {
+/// The unsaved-changes confirmation's title and its two action verbs, phrased for
+/// the scope `request` closes and its `count` at-risk files.
+pub(super) fn close_prompt_choices(
+    request: CloseRequest,
+    count: usize,
+) -> (String, &'static str, &'static str) {
     let files = if count == 1 { "file" } else { "files" };
     if matches!(request, CloseRequest::Quit) {
-        format!(
-            "{count} unsaved {files} — press s to save all & quit, d to discard & quit, \
-             any other key to cancel"
+        (
+            format!("Quit with {count} unsaved {files}?"),
+            "Save all and quit",
+            "Discard and quit",
         )
     } else {
-        format!(
-            "{count} unsaved {files} — press s to save & close, d to discard & close, \
-             any other key to cancel"
+        (
+            format!("Close with {count} unsaved {files}?"),
+            "Save and close",
+            "Discard and close",
         )
     }
 }

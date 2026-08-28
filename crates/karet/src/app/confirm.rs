@@ -9,9 +9,13 @@
 //! The safety property is structural, not a matter of care at each call site:
 //! [`Dialog::new`](karet_widgets::Dialog::new) selects the first activatable
 //! choice, and [`confirm`](App::confirm) is documented to take the safe answer
-//! first. So `Enter` on an unread dialog cancels, and every unbound key cancels
-//! too (`modal_text` in [`super::input`]). Reaching a destructive choice always
-//! costs a deliberate keystroke.
+//! first. So `Enter` on an unread dialog runs that safe answer, and so does
+//! every way of backing out — `Esc`, an unbound key (`modal_text` in
+//! [`super::input`]), a click outside the box. Backing out is *taking the first
+//! answer*, not a fourth outcome that skips it, which is what lets a dialog park
+//! its own cleanup there (clearing a parked close, keeping crash backups) and
+//! know it runs however the user declines. Reaching any other choice costs a
+//! deliberate keystroke.
 //!
 //! The seam is the [context menu](karet_widgets::menu)'s: the widget owns the
 //! model and the painting, while resolving what a row *says* and what accepting
@@ -43,6 +47,15 @@ pub(crate) enum ConfirmAction {
     UndoPublishedCommit,
     /// Hard-reset the worktree to this revision.
     ResetHard(String),
+    /// Open a file the link pointed to from outside the workspace.
+    OpenOutsideWorkspaceLink(PathBuf),
+    /// Create the project settings file, then add `word` to its dictionary.
+    CreateProjectDictionary {
+        /// The word that prompted the file's creation.
+        word: String,
+        /// The settings file to create.
+        path: PathBuf,
+    },
     /// Delete this branch from the remote.
     DeleteRemoteBranch {
         /// The remote holding the branch.
@@ -75,6 +88,8 @@ pub(crate) fn confirm_label(action: &ConfirmAction) -> String {
         ConfirmAction::DropStash(_) => "Drop".to_string(),
         ConfirmAction::UndoPublishedCommit => "Undo".to_string(),
         ConfirmAction::ResetHard(_) => "Reset".to_string(),
+        ConfirmAction::OpenOutsideWorkspaceLink(_) => "Open".to_string(),
+        ConfirmAction::CreateProjectDictionary { .. } => "Create".to_string(),
         ConfirmAction::DeleteRemoteBranch { .. } => "Delete".to_string(),
     }
 }
@@ -142,9 +157,25 @@ impl App {
         }
     }
 
-    /// Close the confirmation without acting.
+    /// Decline the confirmation: close it and run its first answer.
+    ///
+    /// Declining is not a fourth outcome — it *is* the safe answer, which by
+    /// construction sits first. A dialog that must undo something on the way out
+    /// (drop a parked close, keep crash backups) puts that in row zero and gets
+    /// it run however the user backs out.
     pub(super) fn confirm_cancel(&mut self) {
-        self.confirm = None;
+        let Some(dialog) = self.confirm.take() else {
+            return;
+        };
+        let Some(action) = dialog
+            .choices
+            .entries
+            .first()
+            .map(|choice| choice.action.clone())
+        else {
+            return;
+        };
+        self.run_confirmed(action);
     }
 
     /// Close the confirmation and run whatever the selected row stands for.
@@ -184,6 +215,12 @@ impl App {
                     mode: karet_vcs::ResetMode::Hard,
                     rev,
                 });
+            },
+            ConfirmAction::OpenOutsideWorkspaceLink(path) => {
+                self.open_markdown_file_link(&path);
+            },
+            ConfirmAction::CreateProjectDictionary { word, path } => {
+                self.create_project_dictionary(&word, &path);
             },
             ConfirmAction::DeleteRemoteBranch { remote, branch } => {
                 self.run_vcs_action(VcsAction::DeleteRemoteBranch { remote, branch });

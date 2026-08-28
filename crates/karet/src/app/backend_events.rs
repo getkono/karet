@@ -386,10 +386,18 @@ impl App {
                 self.dictionary_word_added(&word, &path);
             },
             SessionEvent::ProjectSettingsCreationRequired { word, path } => {
-                self.overlay = Some(Overlay::text(
-                    format!("Type create to add “{word}” and create {}", path.display()),
-                    TextPurpose::ConfirmCreateProjectSettings { word, path },
-                ));
+                self.confirm_action(
+                    format!("Add “{word}” to the project dictionary?"),
+                    format!(
+                        "This workspace has no settings file yet. Accepting the \
+                         word creates {} to hold it, which is checked in alongside \
+                         the project.",
+                        path.display()
+                    ),
+                    "Cancel",
+                    "Create the file",
+                    ConfirmAction::CreateProjectDictionary { word, path },
+                );
             },
             SessionEvent::SearchReplaced {
                 files_changed,
@@ -435,16 +443,29 @@ impl App {
             return;
         }
         let conflicts = swaps.iter().filter(|s| s.conflict).count();
-        let suffix = if conflicts > 0 {
-            format!(" ({conflicts} changed on disk)")
-        } else {
-            String::new()
-        };
-        self.status = Some(format!(
-            "recovered {} unsaved file(s) from a previous session{suffix} — \
-             press r to recover, d to discard, any other key to dismiss",
-            swaps.len()
-        ));
+        let files: Vec<PathBuf> = swaps.iter().map(|s| s.original.clone()).collect();
+        let mut body = format!(
+            "A previous session ended with unsaved changes to {}. Recovering \
+             reopens each file with those changes; discarding deletes the backups.",
+            describe_paths(&files, &self.root)
+        );
+        if conflicts > 0 {
+            // The conflict is the whole reason this decision is not obvious: the
+            // user has two versions and recovering silently drops one of them.
+            body.push_str(&format!(
+                " {conflicts} of them changed on disk since, so recovering those \
+                 replaces the newer on-disk content."
+            ));
+        }
         self.pending_swaps = Some(swaps);
+        self.confirm(ConfirmDialog::new(
+            "Recover unsaved changes from a previous session?",
+            body,
+            vec![
+                ConfirmChoice::custom("Decide later", Command::DismissSwaps),
+                ConfirmChoice::custom("Recover them", Command::RecoverSwaps),
+                ConfirmChoice::custom("Discard the backups", Command::DiscardSwaps),
+            ],
+        ));
     }
 }

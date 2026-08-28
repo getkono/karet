@@ -355,6 +355,11 @@ impl App {
                 self.pending_swaps = None;
                 self.send_command(SessionCommand::DiscardSwaps);
             },
+            Command::CloseConfirmCancel => self.cancel_close(),
+            Command::DismissSwaps => {
+                self.pending_swaps = None;
+                self.status = Some("recovery dismissed (backups kept)".to_string());
+            },
             Command::ShowDependencyGraph => {
                 self.status = Some("building dependency graph…".to_string());
                 self.send_command(SessionCommand::DependencyGraph);

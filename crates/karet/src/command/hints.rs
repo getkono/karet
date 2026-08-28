@@ -168,6 +168,8 @@ impl Command {
             Self::CloseConfirmDiscard => "discard & close",
             Self::RecoverSwaps => "recover",
             Self::DiscardSwaps => "discard",
+            Self::CloseConfirmCancel => "cancel",
+            Self::DismissSwaps => "decide later",
             Self::ShowDependencyGraph => "deps",
             Self::ShowCommitGraph => "graph",
             Self::CommitGraphNext => "next",

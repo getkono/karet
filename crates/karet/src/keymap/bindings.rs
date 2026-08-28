@@ -394,17 +394,6 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Confirm, false, false, false, Char('k'), Command::ConfirmUp),
     b(Confirm, false, false, false, Down,      Command::ConfirmDown),
     b(Confirm, false, false, false, Char('j'), Command::ConfirmDown),
-    // Close confirmation (unsaved changes: quit or tab/pane close): save, discard, or
-    // (any other key) cancel — the default is always to abort.
-    b(CloseConfirm, false, false, false, Char('s'), Command::CloseConfirmSave),
-    b(CloseConfirm, false, false, false, Char('S'), Command::CloseConfirmSave),
-    b(CloseConfirm, false, false, false, Char('d'), Command::CloseConfirmDiscard),
-    b(CloseConfirm, false, false, false, Char('D'), Command::CloseConfirmDiscard),
-    // Startup crash-recovery prompt: recover, discard, or (any other key) dismiss.
-    b(SwapRecover, false, false, false, Char('r'), Command::RecoverSwaps),
-    b(SwapRecover, false, false, false, Char('R'), Command::RecoverSwaps),
-    b(SwapRecover, false, false, false, Char('d'), Command::DiscardSwaps),
-    b(SwapRecover, false, false, false, Char('D'), Command::DiscardSwaps),
     // Workspace Search: navigating the results list.
     b(SearchList, false, false, false, Esc,       Command::SearchQuit),
     b(SearchList, false, false, false, Enter,     Command::SearchOpen),

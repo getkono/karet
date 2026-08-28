@@ -96,10 +96,6 @@ pub enum TextPurpose {
     TagCreate { rev: String },
     /// Evaluate the submitted expression in the debuggee.
     DebugEvaluate,
-    /// Confirm opening a relative file link that escaped the workspace.
-    ConfirmOutsideWorkspaceLink { path: PathBuf },
-    /// Confirm creating the missing project settings file before adding a word.
-    ConfirmCreateProjectSettings { word: String, path: PathBuf },
     /// Confirm the first network-backed installation by typing `install`.
     InstallLanguageServer { server: LanguageServerId },
     /// Approve the exact update plan displayed by the backend.

@@ -510,6 +510,10 @@ pub enum Command {
     RecoverSwaps,
     /// At the startup recovery prompt: discard the crash-recovery backups.
     DiscardSwaps,
+    /// At the close prompt: abort the close and leave every tab untouched.
+    CloseConfirmCancel,
+    /// At the startup recovery prompt: leave the backups on disk for a later launch.
+    DismissSwaps,
     /// Open the workspace package-dependency graph visualization.
     ShowDependencyGraph,
     /// Open the full-screen Seam view for the workspace package.
@@ -860,6 +864,8 @@ impl Command {
             Self::CloseConfirmDiscard => "Confirm Close: Discard and Close",
             Self::RecoverSwaps => "Recover Unsaved Changes",
             Self::DiscardSwaps => "Discard Unsaved Backups",
+            Self::CloseConfirmCancel => "Confirm Close: Cancel",
+            Self::DismissSwaps => "Recovery: Decide Later",
             Self::ShowDependencyGraph => "Visualize: Dependency Graph",
             // Key-driven navigation inside the view; deliberately absent from the
             // palette, but still named so nothing renders as a blank entry.

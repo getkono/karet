@@ -231,10 +231,18 @@ impl App {
                 self.open_markdown_file_link(&path);
             },
             Ok(crate::links::LinkTarget::OutsideWorkspaceFile(path)) => {
-                self.overlay = Some(Overlay::text(
-                    "Type open to open a file outside this workspace",
-                    TextPurpose::ConfirmOutsideWorkspaceLink { path },
-                ));
+                self.confirm_action(
+                    "Open a file outside this workspace?",
+                    format!(
+                        "This link points to {}, which is outside {}. Opening it \
+                         leaves the workspace you started karet in.",
+                        path.display(),
+                        self.root.display()
+                    ),
+                    "Stay in the workspace",
+                    "Open it",
+                    ConfirmAction::OpenOutsideWorkspaceLink(path),
+                );
             },
             Err(error) => self.notify(
                 Severity::Warning,

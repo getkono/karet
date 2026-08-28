@@ -194,11 +194,6 @@ pub enum Layer {
     ContextMenu,
     /// Active while a confirmation dialog is open.
     Confirm,
-    /// Active while the unsaved-changes close-confirmation prompt (quit or tab/pane
-    /// close) is up.
-    CloseConfirm,
-    /// Active while the startup crash-recovery prompt is up.
-    SwapRecover,
     /// Active while the explorer inline name editor is open.
     ExplorerEdit,
 }
@@ -224,11 +219,6 @@ pub enum Modal {
     ContextMenu,
     /// A confirmation dialog awaiting a choice.
     Confirm,
-    /// The unsaved-changes confirmation prompt shown before an irreversible close
-    /// (quit or closing a tab/pane).
-    CloseConfirm,
-    /// The startup prompt to recover crash-recovery backups.
-    SwapRecover,
     /// The explorer inline name editor (new file/folder or rename).
     ExplorerEdit,
 }
@@ -278,8 +268,6 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
         Some(Modal::RevInput) => &[L::RevInput],
         Some(Modal::ContextMenu) => &[L::ContextMenu],
         Some(Modal::Confirm) => &[L::Confirm],
-        Some(Modal::CloseConfirm) => &[L::CloseConfirm],
-        Some(Modal::SwapRecover) => &[L::SwapRecover],
         Some(Modal::ExplorerEdit) => &[L::ExplorerEdit],
         Some(Modal::SearchInput) => &[L::SearchInput, L::Global],
         Some(Modal::SearchList) => &[L::SearchList, L::Global],

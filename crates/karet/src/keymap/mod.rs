@@ -99,7 +99,6 @@ use KeyCode::PageUp;
 use KeyCode::Right;
 use KeyCode::Tab;
 use KeyCode::Up;
-use Layer::CloseConfirm;
 use Layer::CommitGraph;
 use Layer::CommitInput;
 use Layer::Confirm;
@@ -121,7 +120,6 @@ use Layer::SearchInput;
 use Layer::SearchList;
 use Layer::Sidebar;
 use Layer::SourceControl;
-use Layer::SwapRecover;
 
 /// Resolve a key press into a [`Command`], given the focus, the active sidebar
 /// panel, and whether the active tab is a diff. Returns `None` for keys with no
