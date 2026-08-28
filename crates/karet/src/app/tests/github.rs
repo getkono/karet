@@ -674,3 +674,36 @@ fn opening_a_tab_from_the_github_view_shows_it() {
     assert_eq!(app.view, View::Editor);
     assert_eq!(app.focus, Focus::Editor);
 }
+
+#[test]
+fn the_github_view_names_a_workspace_with_no_github_behind_it() -> Result<(), String> {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    // Reaching the view in a non-GitHub checkout is ordinary — `--view github`, or
+    // `Ctrl+K 2` out of habit. It has to say why it is empty rather than just be.
+    let mut app = app();
+    app.view = View::GitHub;
+
+    let mut terminal =
+        Terminal::new(TestBackend::new(100, 24)).map_err(|error| error.to_string())?;
+    terminal
+        .draw(|frame| crate::ui::draw(frame, &mut app))
+        .map_err(|error| error.to_string())?;
+    let buffer = terminal.backend().buffer();
+    let painted = (0..24)
+        .map(|y| {
+            (0..100)
+                .map(|x| buffer[(x, y)].symbol().to_owned())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(painted.contains("not a GitHub repository"));
+    assert!(
+        !painted.contains("not available yet"),
+        "the surface exists; it is the repository that does not"
+    );
+    Ok(())
+}

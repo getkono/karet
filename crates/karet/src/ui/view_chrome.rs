@@ -1,6 +1,9 @@
 //! The top-level view switcher: the one row of chrome above everything else, and
 //! the placeholder body a view renders before its surface exists.
 //!
+//! Only the Agents view still needs that placeholder. The GitHub view draws its own
+//! surface, and says so itself when the workspace has no GitHub repository behind it.
+//!
 //! The switcher is the sidebar activity bar one level up — persistent chrome over
 //! a body that swaps between N surfaces — so it reuses that bar's button styling
 //! (`chrome_button_style`) rather than inventing a second visual language for the
@@ -81,12 +84,10 @@ pub(super) fn draw_view_placeholder(
     }
     let hint = match view {
         View::Agents => "Agent sessions will appear here.",
-        // The dashboard is still reachable, so say where rather than only that
-        // this surface is empty.
-        View::GitHub => "The GitHub dashboard opens as a tab in the Editor view.",
-        // Unreachable in practice — the editor view draws panes — but a total
-        // match keeps the placeholder honest if that ever changes.
-        View::Editor => "",
+        // Unreachable in practice — the editor view draws panes and the GitHub view
+        // draws its surface — but a total match keeps the placeholder honest if that
+        // ever changes.
+        View::Editor | View::GitHub => "",
     };
     let lines = vec![
         Line::styled(
