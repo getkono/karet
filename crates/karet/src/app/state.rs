@@ -621,6 +621,27 @@ impl SearchPanel {
         }
     }
 
+    /// The panel's fields in the order they are painted, with the fields of a
+    /// hidden section left out.
+    ///
+    /// This is the top half of the panel's vertical focus ring — `Up`/`Down` walk
+    /// it and then step into the result rows — so it must list exactly what is on
+    /// screen: focus parked on an unpainted field is a cursor the user cannot see.
+    // `use<>`: the iterator owns its array and borrows nothing, so a caller can
+    // hold it across a `&mut self` call.
+    pub(crate) fn visible_fields(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = SearchPanelField> + use<> {
+        [
+            (SearchPanelField::Find, true),
+            (SearchPanelField::Replace, self.replace_visible),
+            (SearchPanelField::Includes, self.filters_visible),
+            (SearchPanelField::Excludes, self.filters_visible),
+        ]
+        .into_iter()
+        .filter_map(|(field, shown)| shown.then_some(field))
+    }
+
     /// Split each glob field into the patterns a [`SearchQuery`] takes.
     ///
     /// Comma or whitespace separated, so `*.rs, src/**` reads the way a user

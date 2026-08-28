@@ -409,6 +409,8 @@ impl App {
                 self.search.input = false;
                 self.focus = Focus::Editor;
             },
+            Command::SearchFocusUp => self.search_focus_step(-1),
+            Command::SearchFocusDown => self.search_focus_step(1),
             Command::SearchExpand => self.search_expand(),
             Command::SearchCollapse => self.search_collapse(),
             Command::SearchToggleAll => self.search_toggle_all(),
