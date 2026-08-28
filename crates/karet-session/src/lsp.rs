@@ -86,10 +86,23 @@ pub(crate) struct LspManager {
     /// diagnosis (`None` = a usable JDK was found). Reset on reconfigure so a
     /// settings reload re-probes a fixed PATH.
     jdtls_preflight: Option<Option<String>>,
+    /// Providers whose launch preflight has already been reported in this
+    /// generation, so a failed one is explained once rather than per document.
+    preflight_reported: HashSet<LanguageServerId>,
     updates: mpsc::UnboundedSender<LspUpdate>,
     connector: Connector,
     runtime_states:
         HashMap<(LanguageServerId, PathBuf), (LanguageServerRuntimeState, Option<String>)>,
+}
+
+/// What the user's `lsp.servers` table says about one provider id.
+enum Configured {
+    /// No entry: the built-in launch table decides.
+    Absent,
+    /// An entry that forbids a launch -- `enabled = false`, or an empty command.
+    Suppressed,
+    /// An entry naming exactly what to run.
+    Spec(LspSpec),
 }
 
 struct ServerSlot {
@@ -118,6 +131,7 @@ impl LspManager {
                 servers: HashMap::new(),
                 missing_reported: HashSet::new(),
                 jdtls_preflight: None,
+                preflight_reported: HashSet::new(),
                 updates,
                 connector: spawn_connector(supervisor, registry_root),
                 runtime_states: HashMap::new(),
@@ -143,6 +157,7 @@ impl LspManager {
         self.servers.clear();
         self.runtime_states.clear();
         self.jdtls_preflight = None;
+        self.preflight_reported.clear();
         true
     }
 
@@ -170,41 +185,53 @@ impl LspManager {
 
     /// The launch spec for `language`: user config first, then the built-ins.
     fn spec_for(&self, language: &str, root: &Path) -> Option<(LspSpec, Option<LanguageServerId>)> {
-        if let Some(selection) = self.settings.languages.get(language)
-            && let Some(server_id) = selection.servers.first()
-            && let Some(server) = self.settings.servers.get(server_id)
+        if let Some(server_id) = self
+            .settings
+            .languages
+            .get(language)
+            .and_then(|selection| selection.servers.first())
         {
-            return (server.enabled && !server.command.is_empty()).then(|| {
-                (
-                    LspSpec {
-                        command: server.command.clone(),
-                        args: server.args.clone(),
-                        languages: vec![language.to_owned()],
-                        initialization_options: None,
-                    },
-                    Some(LanguageServerId::new(server_id.clone())),
-                )
-            });
-        }
-        if let Some(server) = self.settings.servers.get(language) {
-            if !server.enabled || server.command.is_empty() {
-                return None;
-            }
-            return Some((
-                LspSpec {
-                    command: server.command.clone(),
-                    args: server.args.clone(),
-                    languages: vec![language.to_owned()],
-                    initialization_options: None,
+            match self.configured_spec(server_id, language) {
+                Configured::Spec(spec) => {
+                    return Some((spec, Some(LanguageServerId::new(server_id.clone()))));
                 },
-                Some(LanguageServerId::new(language.to_owned())),
-            ));
+                Configured::Suppressed => return None,
+                Configured::Absent => {},
+            }
+        }
+        match self.configured_spec(language, language) {
+            Configured::Spec(spec) => {
+                return Some((spec, Some(LanguageServerId::new(language.to_owned()))));
+            },
+            Configured::Suppressed => return None,
+            Configured::Absent => {},
         }
         let provider = builtin_server(language)?;
         let spec = self.resolve_provider(&provider, language, root);
         #[cfg(test)]
-        let spec = spec.or_else(|| Some(builtin_spec(&provider, language)));
+        let spec = spec.or_else(|| builtin_spec(&provider, language));
         spec.map(|spec| (spec, Some(provider)))
+    }
+
+    /// What `lsp.servers` says about the provider id `server_id`.
+    ///
+    /// The single reader of a user's server entry, so every launch honours the
+    /// same three fields -- `command`, `args`, `enabled` -- however the id was
+    /// named: as a language's primary, or in that language's `diagnostics`
+    /// companions. A companion used to skip this entirely and be launched as a
+    /// bare `<id>` off `PATH`, arguments and `enabled = false` alike ignored.
+    fn configured_spec(&self, server_id: &str, language: &str) -> Configured {
+        let Some(server) = self.settings.servers.get(server_id) else {
+            return Configured::Absent;
+        };
+        if !server.enabled || server.command.is_empty() {
+            return Configured::Suppressed;
+        }
+        Configured::Spec(LspSpec::new(
+            server.command.clone(),
+            server.args.clone(),
+            vec![language.to_owned()],
+        ))
     }
 
     fn resolve_provider(
@@ -213,7 +240,7 @@ impl LspManager {
         language: &str,
         root: &Path,
     ) -> Option<LspSpec> {
-        let fallback = builtin_spec(provider, language);
+        let fallback = builtin_spec(provider, language)?;
         self.resolve_builtin(provider, language, root, fallback)
             .map(|(spec, _)| spec)
     }
@@ -241,6 +268,59 @@ impl LspManager {
             })
     }
 
+    /// Give Astro the TypeScript SDK path it refuses to start without.
+    ///
+    /// Only a karet-managed installation carried one, because only the install
+    /// recorded it -- so the ordinary way an Astro project installs the server,
+    /// `@astrojs/language-server` in `node_modules`, resolved first and was
+    /// launched with no `typescript.tsdk` at all, and Astro declined the
+    /// handshake. The project's own TypeScript is the right SDK for that
+    /// install; a managed one keeps the bundle it was installed with.
+    ///
+    /// Returns whether the launch may proceed.
+    fn astro_launch_gate(
+        &mut self,
+        spec: &mut LspSpec,
+        provider: Option<&LanguageServerId>,
+        language: &str,
+        root: &Path,
+    ) -> bool {
+        if !provider::is_astro(provider, spec) || spec.initialization_options.is_some() {
+            return true;
+        }
+        let managed = || {
+            crate::lsp_registry::installed_spec(
+                self.registry_root.as_deref(),
+                &LanguageServerId::new(provider::ASTRO),
+                language,
+            )
+            .and_then(|managed| managed.initialization_options)
+        };
+        if let Some(options) = provider::project_typescript_sdk(Path::new(&spec.command), root)
+            .map(|tsdk| provider::typescript_sdk_options(&tsdk))
+            .or_else(managed)
+        {
+            spec.initialization_options = Some(options);
+            return true;
+        }
+        // Refusing to launch is the honest outcome: Astro would reject the
+        // handshake anyway, and "no TypeScript" says why while a rejected
+        // handshake does not.
+        if self
+            .preflight_reported
+            .insert(LanguageServerId::new(provider::ASTRO))
+        {
+            let _ = self.updates.send(LspUpdate::PreflightFailed {
+                generation: self.generation,
+                message: "the Astro language server needs a TypeScript SDK: install typescript in \
+                          this project (npm install -D typescript), or let karet install Astro, \
+                          which bundles one"
+                    .to_owned(),
+            });
+        }
+        false
+    }
+
     /// The task inbox for `language`, spawning the server task on first use.
     /// `None` when LSP is disabled or no server is configured for the language.
     /// Report a provider that could not be resolved, at most once per manager
@@ -264,7 +344,8 @@ impl LspManager {
             },
             Some(reason) => LspUpdate::ManualInstallRequired {
                 generation: self.generation,
-                command: builtin_spec(&provider, language).command,
+                command: builtin_spec(&provider, language)
+                    .map_or_else(|| provider.key().to_owned(), |spec| spec.command),
                 server: provider,
                 reason,
             },
@@ -292,6 +373,9 @@ impl LspManager {
             },
         };
         if !self.jdtls_launch_gate(&mut spec, &root) {
+            return None;
+        }
+        if !self.astro_launch_gate(&mut spec, provider.as_ref(), &language, &root) {
             return None;
         }
         // Built-in JavaScript and TypeScript share one provider process. Custom
@@ -340,9 +424,18 @@ impl LspManager {
         path: &Path,
     ) -> Option<(mpsc::Sender<ServerCmd>, String)> {
         let root = nearest_repository_root(path, self.root.as_deref());
-        let spec = self.resolve_provider(&provider, language, &root);
-        #[cfg(test)]
-        let spec = spec.or_else(|| Some(builtin_spec(&provider, language)));
+        let spec = match self.configured_spec(provider.key(), language) {
+            Configured::Spec(spec) => Some(spec),
+            // `enabled = false` is a decision about the provider, not about the
+            // slot it was named in: a companion the user switched off stays off.
+            Configured::Suppressed => return None,
+            Configured::Absent => {
+                let spec = self.resolve_provider(&provider, language, &root);
+                #[cfg(test)]
+                let spec = spec.or_else(|| builtin_spec(&provider, language));
+                spec
+            },
+        };
         let Some(spec) = spec else {
             self.report_unresolved(provider, language);
             return None;

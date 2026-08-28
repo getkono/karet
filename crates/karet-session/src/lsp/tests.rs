@@ -830,5 +830,6 @@ async fn crashed_server_restarts_and_replays_open_documents() -> TestResult {
 
 mod inventory_tests;
 mod jdtls_tests;
+mod launch_tests;
 mod manual_provider_tests;
 mod restart_tests;
