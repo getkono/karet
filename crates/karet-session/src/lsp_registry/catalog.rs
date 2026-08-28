@@ -11,7 +11,6 @@ use crate::api::LanguageServerId;
 pub(super) struct ManagedRecipe {
     pub(super) server: &'static str,
     pub(super) source: ManagedSource,
-    pub(super) arguments: &'static [&'static str],
 }
 
 #[derive(Clone, Copy)]
@@ -32,7 +31,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
         source: ManagedSource::Github {
             repository: "rust-lang/rust-analyzer",
         },
-        arguments: &[],
     },
     ManagedRecipe {
         server: "typescript-language-server",
@@ -41,7 +39,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: Some("typescript"),
             binary: "typescript-language-server",
         },
-        arguments: &["--stdio"],
     },
     ManagedRecipe {
         server: "pyright",
@@ -50,21 +47,18 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "pyright-langserver",
         },
-        arguments: &["--stdio"],
     },
     ManagedRecipe {
         server: "ruff",
         source: ManagedSource::Github {
             repository: "astral-sh/ruff",
         },
-        arguments: &["server"],
     },
     ManagedRecipe {
         server: "texlab",
         source: ManagedSource::Github {
             repository: "latex-lsp/texlab",
         },
-        arguments: &[],
     },
     ManagedRecipe {
         server: "astro-language-server",
@@ -73,7 +67,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "astro-ls",
         },
-        arguments: &["--stdio"],
     },
     ManagedRecipe {
         server: "svelte-language-server",
@@ -82,7 +75,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "svelteserver",
         },
-        arguments: &["--stdio"],
     },
     ManagedRecipe {
         server: "vue-language-server",
@@ -91,7 +83,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "vue-language-server",
         },
-        arguments: &["--stdio"],
     },
     ManagedRecipe {
         server: "biome",
@@ -100,7 +91,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "biome",
         },
-        arguments: &["lsp-proxy"],
     },
     ManagedRecipe {
         server: "yaml-language-server",
@@ -109,7 +99,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "yaml-language-server",
         },
-        arguments: &["--stdio"],
     },
     ManagedRecipe {
         server: "vscode-html-language-server",
@@ -118,7 +107,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "vscode-html-language-server",
         },
-        arguments: &["--stdio"],
     },
     ManagedRecipe {
         server: "vscode-css-language-server",
@@ -127,7 +115,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "vscode-css-language-server",
         },
-        arguments: &["--stdio"],
     },
     ManagedRecipe {
         server: "vscode-json-language-server",
@@ -136,7 +123,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "vscode-json-language-server",
         },
-        arguments: &["--stdio"],
     },
     ManagedRecipe {
         server: "bash-language-server",
@@ -145,7 +131,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "bash-language-server",
         },
-        arguments: &["start"],
     },
     ManagedRecipe {
         server: "docker-langserver",
@@ -154,7 +139,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "docker-langserver",
         },
-        arguments: &["--stdio"],
     },
     ManagedRecipe {
         server: "graphql-lsp",
@@ -163,56 +147,48 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "graphql-lsp",
         },
-        arguments: &["server", "-m", "stream"],
     },
     ManagedRecipe {
         server: "clangd",
         source: ManagedSource::Github {
             repository: "clangd/clangd",
         },
-        arguments: &[],
     },
     ManagedRecipe {
         server: "zls",
         source: ManagedSource::Github {
             repository: "zigtools/zls",
         },
-        arguments: &[],
     },
     ManagedRecipe {
         server: "lua-language-server",
         source: ManagedSource::Github {
             repository: "LuaLS/lua-language-server",
         },
-        arguments: &[],
     },
     ManagedRecipe {
         server: "clojure-lsp",
         source: ManagedSource::Github {
             repository: "clojure-lsp/clojure-lsp",
         },
-        arguments: &[],
     },
     ManagedRecipe {
         server: "buf",
         source: ManagedSource::Github {
             repository: "bufbuild/buf",
         },
-        arguments: &["beta", "lsp"],
     },
     ManagedRecipe {
         server: "marksman",
         source: ManagedSource::Github {
             repository: "artempyanykh/marksman",
         },
-        arguments: &[],
     },
     ManagedRecipe {
         server: "neocmakelsp",
         source: ManagedSource::Github {
             repository: "neocmakelsp/neocmakelsp",
         },
-        arguments: &[],
     },
 ];
 
@@ -324,14 +300,12 @@ pub(super) fn discover(client: &Client, server: LanguageServerId) -> Result<Rele
         )
     })?;
     match recipe.source {
-        ManagedSource::Github { repository } => {
-            discover_github(client, server, repository, recipe.arguments)
-        },
+        ManagedSource::Github { repository } => discover_github(client, server, repository),
         ManagedSource::Npm {
             package,
             companion,
             binary,
-        } => discover_npm(client, server, package, companion, binary, recipe.arguments),
+        } => discover_npm(client, server, package, companion, binary),
     }
 }
 
@@ -353,7 +327,6 @@ fn discover_github(
     client: &Client,
     server: LanguageServerId,
     repository: &str,
-    arguments: &'static [&'static str],
 ) -> Result<Release, String> {
     let release: GithubRelease = client
         .get(format!(
@@ -380,6 +353,7 @@ fn discover_github(
         .digest
         .and_then(|digest| digest.strip_prefix("sha256:").map(str::to_owned))
         .ok_or_else(|| format!("{name} has no publisher SHA-256 digest"))?;
+    let arguments = crate::lsp::managed_arguments(server.key());
     Ok(Release {
         server,
         version: release.tag_name.trim_start_matches('v').to_owned(),
@@ -608,7 +582,6 @@ fn discover_npm(
     package: &str,
     companion: Option<&str>,
     binary: &str,
-    arguments: &'static [&'static str],
 ) -> Result<Release, String> {
     let npm = npm_metadata(client, package)?;
     let entrypoint = npm
@@ -649,6 +622,7 @@ fn discover_npm(
             (candidate == file).then(|| digest.to_owned())
         })
         .ok_or_else(|| format!("Node checksum manifest has no {file}"))?;
+    let arguments = crate::lsp::managed_arguments(server.key());
     Ok(Release {
         server,
         version: npm.version,

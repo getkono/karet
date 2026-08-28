@@ -13,6 +13,7 @@
 //! exponential backoff, replays every `didOpen`, and opens a cooldown circuit
 //! after repeated failures instead of creating a respawn storm.
 
+mod catalog;
 mod connector;
 mod inventory;
 mod jdtls;
@@ -33,6 +34,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+pub(crate) use catalog::managed_arguments;
 pub(crate) use connector::Connector;
 use connector::spawn_connector;
 use karet_core::LineCol;

@@ -8,124 +8,67 @@ pub(crate) struct ProviderDescriptor {
     pub(crate) manual_install_reason: Option<String>,
 }
 
-const BUILTIN_PROVIDERS: &[(&str, &str)] = &[
-    ("rust", "rust-analyzer"),
-    ("typescript", "typescript-language-server"),
-    ("javascript", "typescript-language-server"),
-    ("jsx", "typescript-language-server"),
-    ("tsx", "typescript-language-server"),
-    ("python", "pyright"),
-    ("tex", "texlab"),
-    ("c", "clangd"),
-    ("c++", "clangd"),
-    ("c#", "csharp"),
-    ("go", "gopls"),
-    ("java", "jdtls"),
-    ("zig", "zls"),
-    ("astro", "astro-language-server"),
-    ("svelte", "svelte-language-server"),
-    ("vue", "vue-language-server"),
-    ("yaml", "yaml-language-server"),
-    ("xml", "lemminx"),
-    ("svg", "lemminx"),
-    ("ruby", "ruby-lsp"),
-    ("php", "phpactor"),
-    ("swift", "sourcekit-lsp"),
-    ("scala", "metals"),
-    ("lua", "lua-language-server"),
-    ("haskell", "haskell-language-server"),
-    ("ocaml", "ocamllsp"),
-    ("erlang", "elp"),
-    ("dart", "dart-language-server"),
-    ("r", "r-languageserver"),
-    ("clojure", "clojure-lsp"),
-    ("html", "vscode-html-language-server"),
-    ("css", "vscode-css-language-server"),
-    ("sass", "vscode-css-language-server"),
-    ("less", "vscode-css-language-server"),
-    ("json", "vscode-json-language-server"),
-    ("toml", "taplo"),
-    ("pkl", "pkl-lsp"),
-    ("protobuf", "buf"),
-    ("graphql", "graphql-lsp"),
-    ("shell", "bash-language-server"),
-    ("bash", "bash-language-server"),
-    ("powershell", "powershell-editor-services"),
-    ("markdown", "marksman"),
-    ("restructuredtext", "esbonio"),
-    ("dockerfile", "docker-langserver"),
-    ("cmake", "neocmakelsp"),
-];
-
 pub(crate) fn managed_provider(server: &LanguageServerId) -> bool {
     crate::lsp_registry::managed_provider(server)
 }
 
 pub(crate) fn builtin_catalog() -> Vec<ProviderDescriptor> {
-    let mut providers = std::collections::BTreeMap::<String, Vec<String>>::new();
-    for (language, server) in BUILTIN_PROVIDERS {
-        providers
-            .entry((*server).to_owned())
-            .or_default()
-            .push((*language).to_owned());
-    }
-    // Ruff is a built-in Python diagnostics/formatting companion rather than
-    // Python's primary intelligence provider, so it is not in the direct map.
-    providers
-        .entry("ruff".to_owned())
-        .or_default()
-        .push("python".to_owned());
-    providers
-        .entry("biome".to_owned())
-        .or_default()
-        .extend(["javascript".to_owned(), "typescript".to_owned()]);
-    providers
-        .into_iter()
-        .map(|(server, languages)| {
-            let server = LanguageServerId::new(server);
+    let mut providers = catalog::builtin_providers()
+        .iter()
+        .map(|provider| {
+            let server = LanguageServerId::new(provider.key);
             ProviderDescriptor {
                 managed: managed_provider(&server),
                 manual_install_reason: crate::lsp_registry::manual_install_reason(&server),
                 server,
-                languages,
+                languages: provider
+                    .languages
+                    .iter()
+                    .map(|it| (*it).to_owned())
+                    .collect(),
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    providers.sort_by(|left, right| left.server.key().cmp(right.server.key()));
+    providers
 }
 
-/// The built-in default servers, used when `lsp.servers` has no entry for a
-/// language. Keys are lowercase language names (the same keys user config uses).
+/// The built-in default server for a language, used when `lsp.servers` has no
+/// entry for it. Keys are lowercase language names (the same keys user config
+/// uses).
+///
+/// Only a [`Role::Primary`] provider answers here: `ruff`, `biome` and `pylsp`
+/// also name a language, but they are companions attached per document by
+/// repository markers, never a language's default.
 pub(crate) fn builtin_server(language: &str) -> Option<LanguageServerId> {
-    BUILTIN_PROVIDERS.iter().find_map(|(candidate, server)| {
-        (*candidate == language).then(|| LanguageServerId::new(*server))
-    })
+    catalog::builtin_providers()
+        .iter()
+        .find(|provider| {
+            provider.role == catalog::Role::Primary && provider.languages.contains(&language)
+        })
+        .map(|provider| LanguageServerId::new(provider.key))
 }
 
+/// How karet launches `provider` when the executable comes from the project or
+/// `PATH`.
+///
+/// A provider absent from the launch table falls back to its own key with no
+/// arguments. That is the shape a user-configured id takes, and it is only ever
+/// reached for one: every built-in has a row, asserted by
+/// `catalog_tests::every_provider_has_a_reviewed_launch_and_no_row_is_stale`.
 pub(super) fn builtin_spec(provider: &LanguageServerId, language: &str) -> LspSpec {
-    let (command, args): (&str, &[&str]) = match provider.key() {
-        "typescript-language-server" => ("typescript-language-server", &["--stdio"]),
-        "pyright" => ("pyright-langserver", &["--stdio"]),
-        "ruff" => ("ruff", &["server"]),
-        "csharp" => ("Microsoft.CodeAnalysis.LanguageServer", &["--stdio"]),
-        "astro-language-server" => ("astro-ls", &["--stdio"]),
-        "svelte-language-server" => ("svelteserver", &["--stdio"]),
-        "vue-language-server" => ("vue-language-server", &["--stdio"]),
-        "yaml-language-server" => ("yaml-language-server", &["--stdio"]),
-        "vscode-html-language-server" => ("vscode-html-language-server", &["--stdio"]),
-        "vscode-css-language-server" => ("vscode-css-language-server", &["--stdio"]),
-        "vscode-json-language-server" => ("vscode-json-language-server", &["--stdio"]),
-        "bash-language-server" => ("bash-language-server", &["start"]),
-        "docker-langserver" => ("docker-langserver", &["--stdio"]),
-        "biome" => ("biome", &["lsp-proxy"]),
-        "buf" => ("buf", &["beta", "lsp"]),
-        "graphql-lsp" => ("graphql-lsp", &["server", "-m", "stream"]),
-        "dart-language-server" => ("dart", &["language-server"]),
-        "r-languageserver" => ("R", &["--no-echo", "-e", "languageserver::run()"]),
-        key => (key, &[]),
-    };
+    let launch = catalog::builtin_provider(provider);
     LspSpec {
-        command: command.to_owned(),
-        args: args.iter().map(|argument| (*argument).to_owned()).collect(),
+        command: launch.map_or_else(
+            || provider.key().to_owned(),
+            |launch| launch.command.to_owned(),
+        ),
+        args: launch
+            .map(|launch| launch.args)
+            .unwrap_or_default()
+            .iter()
+            .map(|argument| (*argument).to_owned())
+            .collect(),
         languages: vec![language.to_owned()],
     }
 }
