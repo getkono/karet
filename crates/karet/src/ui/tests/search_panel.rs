@@ -262,3 +262,97 @@ fn globs_ignore_empty_segments() {
     assert!(SearchPanel::globs("").is_empty());
     assert_eq!(SearchPanel::globs("  *.rs  "), vec!["*.rs"]);
 }
+
+/// The highlight is the point of the row, so it must survive a narrow pane. A
+/// left-to-right budget spends the whole width on leading context and leaves the
+/// match nothing — which is worst exactly where the backend windowed a long line
+/// to put the match 48 bytes in.
+#[test]
+fn a_narrow_pane_still_shows_the_matched_span() -> Result<(), std::convert::Infallible> {
+    let dir = search_dir("narrow");
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.search.query = "needle".into();
+    app.search.hits = vec![hit(
+        &dir.join("a.rs"),
+        0,
+        "let very_long_result_name = compute_the_thing(needle);",
+    )];
+    app.search.rebuild_rows();
+    app.search.searched = true;
+    app.search.matches_found = 1;
+
+    // The default sidebar is 30 columns.
+    let terminal = render(&mut app, 30, 8)?;
+    let buffer = terminal.backend().buffer();
+    let want = app.theme.role(ThemeRole::SearchMatch).to_ratatui();
+    let highlighted: String = (0..buffer.area.height)
+        .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| buffer[(x, y)].bg == want)
+        .map(|(x, y)| buffer[(x, y)].symbol().to_owned())
+        .collect();
+
+    assert!(
+        !highlighted.is_empty(),
+        "the match must still be visible at 30 columns"
+    );
+    assert!(
+        "needle".contains(&highlighted),
+        "what is highlighted is the match (or a truncation of it), got {highlighted:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// A row wider than the list gets its tail clipped by ratatui — and the tail is
+/// the directory's most specific part, the half `fit_start` kept on purpose.
+#[test]
+fn a_file_heading_never_overruns_the_list_width() -> Result<(), std::convert::Infallible> {
+    let dir = search_dir("heading-width");
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.search.query = "needle".into();
+    // Enough rows to overflow the pane, so the list really does reserve its
+    // scrollbar column — that reserved cell is what an over-wide heading collides
+    // with, and without overflow the bug is invisible.
+    app.search.hits = (0..12)
+        .map(|i| {
+            hit(
+                &dir.join(format!("src/ui/sidebar/search{i}.rs")),
+                0,
+                "let needle = 1;",
+            )
+        })
+        .collect();
+    app.search.rebuild_rows();
+    app.search.searched = true;
+    app.search.matches_found = 12;
+
+    let width = 30;
+    let terminal = render(&mut app, width, 8)?;
+    let buffer = terminal.backend().buffer();
+    let row_of =
+        |y: u16, cols: u16| -> String { (0..cols).map(|x| buffer[(x, y)].symbol()).collect() };
+    let y = (0..buffer.area.height)
+        .find(|&y| row_of(y, width).contains("search0.rs"))
+        .unwrap_or(0);
+
+    // The last column belongs to the scrollbar track. The heading must end before
+    // it rather than being clipped into it, so measure only the list's columns.
+    let heading = row_of(y, width - 1);
+    assert_eq!(
+        buffer[(width - 1, y)].symbol().trim(),
+        "█",
+        "the scrollbar column is painted, so an over-wide heading would collide"
+    );
+    assert!(
+        heading.chars().count() < usize::from(width),
+        "heading overruns the list: {heading:?}"
+    );
+    assert!(
+        heading.contains("sidebar"),
+        "the directory's specific tail survives: {heading:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}

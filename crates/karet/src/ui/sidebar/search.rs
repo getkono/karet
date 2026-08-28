@@ -357,8 +357,10 @@ fn result_items<'a>(app: &App, theme: &Theme, width: u16) -> Vec<ListItem<'a>> {
                     Span::styled(name.clone(), fg.add_modifier(Modifier::BOLD)),
                 ];
                 if let Some(dir) = dir.as_deref() {
+                    // 4 fixed cells: the chevron and its space, plus the two
+                    // spaces before the directory.
                     let spent =
-                        karet_widgets::text::width(&name) + karet_widgets::text::width(&count) + 3;
+                        karet_widgets::text::width(&name) + karet_widgets::text::width(&count) + 4;
                     let room = list_width.saturating_sub(spent);
                     if room > 1 {
                         spans.push(Span::styled(
@@ -394,14 +396,22 @@ fn result_items<'a>(app: &App, theme: &Theme, width: u16) -> Vec<ListItem<'a>> {
                 let mut spans = vec![Span::raw("    ")];
                 match parts {
                     Some(((before, hit_text), after)) => {
-                        let before = karet_widgets::text::fit_start(before, room);
-                        let budget = room.saturating_sub(karet_widgets::text::width(&before));
-                        let hit_text = karet_widgets::text::fit_end(hit_text, budget);
-                        let budget = budget.saturating_sub(karet_widgets::text::width(&hit_text));
+                        // The match is what the row exists to show, so it is
+                        // budgeted first. Filling the leading context left to
+                        // right would spend the whole width before reaching it
+                        // — worst exactly where the backend windowed a long
+                        // line to place the match a little way in.
+                        let hit_text = karet_widgets::text::fit_end(hit_text, room);
+                        let rest = room.saturating_sub(karet_widgets::text::width(&hit_text));
+                        // Leading context takes at most half of what is left, so
+                        // the match sits early in the row and the trailing side
+                        // — usually the more telling one — keeps its share.
+                        let before = karet_widgets::text::fit_start(before, rest / 2);
+                        let after_room = rest.saturating_sub(karet_widgets::text::width(&before));
                         spans.push(Span::styled(before, muted));
                         spans.push(Span::styled(hit_text, hit_style));
                         spans.push(Span::styled(
-                            karet_widgets::text::fit_end(after, budget),
+                            karet_widgets::text::fit_end(after, after_room),
                             muted,
                         ));
                     },
