@@ -699,16 +699,6 @@ impl Tab {
         matches!(self.kind, TabKind::Diff { .. })
     }
 
-    /// Whether this is the uncloseable pinned GitHub dashboard.
-    ///
-    /// Nothing is, any more: the dashboard is a page of the GitHub view rather than a
-    /// tab. Kept for one commit so the guards that call it come out on their own
-    /// (#208); it and they go together next.
-    #[must_use]
-    pub(crate) fn is_github_dashboard(&self) -> bool {
-        false
-    }
-
     /// A short language/kind label for the status bar.
     #[must_use]
     pub fn language(&self) -> &str {

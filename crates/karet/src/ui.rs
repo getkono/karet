@@ -507,15 +507,14 @@ fn draw_pane_tabs(
         }
         spans.push(Span::styled(title.name.clone(), style));
         spans.push(Span::styled(" ", style));
-        let pinned = tab.is_github_dashboard();
-        spans.push(Span::styled(if pinned { " " } else { "\u{00d7}" }, style));
+        spans.push(Span::styled("\u{00d7}", style));
         spans.push(Span::styled(" ", style));
         let close = start + label_w;
         x = close + 2;
         hits.push(TabHit {
             start,
             end: x,
-            close: if pinned { u16::MAX } else { close },
+            close,
         });
     }
     let bar = Style::default().bg(ctx.theme.role(ThemeRole::Background).to_ratatui());

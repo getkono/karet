@@ -98,11 +98,7 @@ impl App {
     /// current focus is preserved (selection-follows-preview).
     pub(super) fn install_preview_tab(&mut self, mut tab: Tab, steal_focus: bool) {
         tab.view = self.alloc_view();
-        match self
-            .tabs
-            .iter()
-            .position(|t| t.is_preview && !t.is_github_dashboard())
-        {
+        match self.tabs.iter().position(|t| t.is_preview) {
             Some(idx) => {
                 self.tabs[idx] = tab;
                 self.set_active(idx);
@@ -476,9 +472,6 @@ impl App {
         if from == to || from >= self.tabs.len() || to >= self.tabs.len() {
             return;
         }
-        if self.tabs[from].is_github_dashboard() || self.tabs[to].is_github_dashboard() {
-            return;
-        }
         let tab = self.tabs.remove(from);
         self.tabs.insert(to, tab);
         self.set_active(to);
@@ -498,9 +491,6 @@ impl App {
     /// Close the focused pane's active tab, routed through the unsaved-changes guard.
     pub(super) fn request_close_active_tab(&mut self) {
         if let Some(tab) = self.tabs.get(self.active) {
-            if tab.is_github_dashboard() {
-                return;
-            }
             self.guarded_close(CloseRequest::Tab { view: tab.view });
         }
     }
@@ -509,9 +499,6 @@ impl App {
     /// guard (the tab is captured by its stable view id).
     pub(super) fn request_close_tab_at(&mut self, index: usize) {
         if let Some(tab) = self.tabs.get(index) {
-            if tab.is_github_dashboard() {
-                return;
-            }
             self.guarded_close(CloseRequest::Tab { view: tab.view });
         }
     }
@@ -523,7 +510,7 @@ impl App {
     /// that is still open — not to whichever tab happens to slide into the vacated
     /// slot. Collapsing a pane picks the surviving pane the same way.
     pub(super) fn close_tab_at(&mut self, index: usize) {
-        if index >= self.tabs.len() || self.tabs[index].is_github_dashboard() {
+        if index >= self.tabs.len() {
             return;
         }
         self.remember_closed(index);
@@ -572,13 +559,12 @@ impl App {
             return;
         }
         for i in (0..self.tabs.len()).rev() {
-            if i != self.active && !self.tabs[i].is_github_dashboard() {
+            if i != self.active {
                 self.remember_closed(i);
             }
         }
         let active_view = self.tabs[self.active].view;
-        self.tabs
-            .retain(|tab| tab.view == active_view || tab.is_github_dashboard());
+        self.tabs.retain(|tab| tab.view == active_view);
         let kept = self
             .tabs
             .iter()
@@ -589,40 +575,26 @@ impl App {
         self.reconcile_open_docs();
     }
 
-    /// Close every tab to the right of the active one. The pinned GitHub dashboard
-    /// survives wherever it sits, the same way [`Self::close_other_tabs`] spares it.
+    /// Close every tab to the right of the active one.
     pub(super) fn close_tabs_to_right(&mut self) {
         for i in (self.active + 1..self.tabs.len()).rev() {
-            if !self.tabs[i].is_github_dashboard() {
-                self.remember_closed(i);
-            }
+            self.remember_closed(i);
         }
-        // Split rather than truncate: everything at or left of `active` is untouched,
-        // so `active` stays correct, and a pinned dashboard in the tail comes back.
-        let from = self.active.saturating_add(1).min(self.tabs.len());
-        let tail = self.tabs.split_off(from);
-        self.tabs
-            .extend(tail.into_iter().filter(Tab::is_github_dashboard));
+        // Truncate rather than retain: everything at or left of `active` is
+        // untouched, so `active` stays correct.
+        self.tabs.truncate(self.active.saturating_add(1));
         self.reconcile_open_docs();
     }
 
     /// Close all tabs, leaving a Welcome tab.
     pub(super) fn close_all_tabs(&mut self) {
         for i in (0..self.tabs.len()).rev() {
-            if !self.tabs[i].is_github_dashboard() {
-                self.remember_closed(i);
-            }
+            self.remember_closed(i);
         }
-        self.tabs.retain(Tab::is_github_dashboard);
-        if self.tabs.is_empty() {
-            self.tabs.push(Tab::welcome());
-        }
+        self.tabs.clear();
+        self.tabs.push(Tab::welcome());
         self.set_active(0);
-        self.focus = if self.tabs[0].is_github_dashboard() {
-            Focus::Editor
-        } else {
-            Focus::Sidebar
-        };
+        self.focus = Focus::Sidebar;
         self.find_open = false;
         self.reconcile_open_docs();
     }

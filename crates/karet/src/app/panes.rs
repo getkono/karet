@@ -77,9 +77,6 @@ impl App {
             return;
         }
         let idx = self.active.min(self.tabs.len().saturating_sub(1));
-        if self.tabs[idx].is_github_dashboard() {
-            return;
-        }
         let tab = self.tabs.remove(idx);
         // The dragged tab leaves this pane, so the origin needs a new tab in front:
         // the one that was active here most recently. A plain write, not
@@ -243,10 +240,7 @@ impl App {
             return;
         }
         let target = (self.active as i64 + i64::from(delta)).clamp(0, n - 1) as usize;
-        if target == self.active
-            || self.tabs[self.active].is_github_dashboard()
-            || self.tabs[target].is_github_dashboard()
-        {
+        if target == self.active {
             return;
         }
         self.tabs.swap(self.active, target);
