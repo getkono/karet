@@ -805,7 +805,7 @@ fn one_line(text: &str) -> String {
     let flattened = text
         .chars()
         .map(|character| {
-            if character.is_control() {
+            if character.is_control() || is_invisible_or_reordering(character) {
                 ' '
             } else {
                 character
@@ -817,6 +817,27 @@ fn one_line(text: &str) -> String {
         Some((cut, _)) => format!("{}…", &collapsed[..cut]),
         None => collapsed,
     }
+}
+
+/// Whether `character` is invisible or can reorder the text around it.
+///
+/// [`char::is_control`] covers only the `Cc` category, which leaves the
+/// formatting characters a hostile server would actually reach for: a
+/// right-to-left override reverses the text that follows it, and a zero-width
+/// space hides a word boundary. Neither is a control character, and both reach
+/// the terminal through a notification.
+///
+/// Hand-rolled rather than pulled from a Unicode crate: it is a short, stable
+/// list, and a notification sanitiser is not worth a dependency.
+fn is_invisible_or_reordering(character: char) -> bool {
+    matches!(character,
+        '\u{00ad}'                  // soft hyphen
+        | '\u{200b}'..='\u{200f}'   // zero-width spaces, LRM/RLM
+        | '\u{202a}'..='\u{202e}'   // bidi embeddings and overrides
+        | '\u{2060}'..='\u{2064}'   // word joiner, invisible operators
+        | '\u{2066}'..='\u{2069}'   // bidi isolates
+        | '\u{feff}'                // zero-width no-break space
+    )
 }
 
 /// The provider half of a server task's slot key.
@@ -853,5 +874,21 @@ mod update_text_tests {
     #[test]
     fn a_control_character_cannot_reach_the_terminal() {
         assert!(!one_line("a\u{7}b\rc").contains(|c: char| c.is_control()));
+    }
+
+    /// A server's stderr is untrusted text on its way to a terminal, and the
+    /// characters that reorder or hide it are not control characters.
+    #[test]
+    fn text_cannot_be_reordered_or_hidden_on_its_way_to_the_terminal() {
+        assert_eq!(one_line("safe\u{202e}txet"), "safe txet");
+        assert_eq!(one_line("zero\u{200b}width"), "zero width");
+        assert_eq!(one_line("iso\u{2066}late\u{2069}d"), "iso late d");
+        assert_eq!(one_line("bom\u{feff}mark"), "bom mark");
+        for hidden in ['\u{00ad}', '\u{200f}', '\u{202a}', '\u{2060}'] {
+            assert!(
+                !one_line(&format!("a{hidden}b")).contains(hidden),
+                "{hidden:?} reached the notification"
+            );
+        }
     }
 }
