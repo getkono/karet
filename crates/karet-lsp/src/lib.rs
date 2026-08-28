@@ -110,7 +110,7 @@ pub enum LspError {
 const CHILD_EXIT_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// How to launch a language server.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct LspSpec {
     /// The server executable.
     pub command: String,
@@ -118,6 +118,14 @@ pub struct LspSpec {
     pub args: Vec<String>,
     /// Language identifiers this server handles (e.g. `"rust"`).
     pub languages: Vec<String>,
+    /// Server-specific `initializationOptions`, sent verbatim with
+    /// `initialize`.
+    ///
+    /// Some servers cannot start without one. Astro's, for instance, refuses
+    /// the handshake unless it is told where a TypeScript SDK lives, rather
+    /// than looking for one itself — no argv can substitute, because the option
+    /// is part of the protocol rather than the command line.
+    pub initialization_options: Option<Value>,
 }
 
 /// One complete diagnostic publication from a language server.
@@ -168,7 +176,7 @@ impl LspClient {
     pub async fn spawn(spec: LspSpec, root: &Path) -> Result<Self, LspError> {
         let mut command = tokio::process::Command::new(&spec.command);
         command.args(&spec.args).current_dir(root);
-        Self::spawn_command(command, &spec.command, root).await
+        Self::spawn_command_with(command, &spec.command, root, spec.initialization_options).await
     }
 
     /// Spawn and initialize a server through a caller-prepared command.
@@ -185,9 +193,23 @@ impl LspClient {
     /// the argv, the exit status and the tail of the server's stderr. Other
     /// initialization errors come from [`Self::connect`].
     pub async fn spawn_command(
+        command: tokio::process::Command,
+        display_name: &str,
+        root: &Path,
+    ) -> Result<Self, LspError> {
+        Self::spawn_command_with(command, display_name, root, None).await
+    }
+
+    /// Spawn as [`Self::spawn_command`], sending `initialization_options` with
+    /// the handshake.
+    ///
+    /// # Errors
+    /// As [`Self::spawn_command`].
+    pub async fn spawn_command_with(
         mut command: tokio::process::Command,
         display_name: &str,
         root: &Path,
+        initialization_options: Option<Value>,
     ) -> Result<Self, LspError> {
         // Recovered from the prepared command rather than taken as a parameter,
         // so the reported argv is what was actually run. `display_name` stays
@@ -233,7 +255,7 @@ impl LspClient {
         let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
             return Err(fail(launch::LaunchCause::NoStdio, None, tail.lines()));
         };
-        match Self::connect(stdout, stdin, root).await {
+        match Self::connect_with(stdout, stdin, root, initialization_options).await {
             Ok(mut client) => {
                 client.child = Some(child);
                 Ok(client)
@@ -289,7 +311,31 @@ impl LspClient {
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
     {
-        let params = initialize_params(root)?;
+        Self::connect_with(read, write, root, None).await
+    }
+
+    /// Connect as [`Self::connect`], sending `initialization_options` with the
+    /// handshake.
+    ///
+    /// Separate from [`Self::connect`] rather than a parameter on it, so the
+    /// common case stays a three-argument call. Some servers cannot start
+    /// without their options: Astro's refuses the handshake unless it is told
+    /// where a TypeScript SDK lives.
+    ///
+    /// # Errors
+    /// As [`Self::connect`].
+    pub async fn connect_with<R, W>(
+        read: R,
+        write: W,
+        root: &Path,
+        initialization_options: Option<Value>,
+    ) -> Result<Self, LspError>
+    where
+        R: AsyncRead + Send + Unpin + 'static,
+        W: AsyncWrite + Send + Unpin + 'static,
+    {
+        let mut params = initialize_params(root)?;
+        params.initialization_options = initialization_options;
         let conn = conn::Connection::start(read, write);
         let _server_capabilities: Value = conn.request("initialize", params).await?;
         conn.notify("initialized", lsp_types::InitializedParams {})?;

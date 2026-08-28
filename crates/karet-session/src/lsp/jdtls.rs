@@ -141,6 +141,7 @@ mod tests {
             command: command.to_owned(),
             args: args.iter().map(|&arg| arg.to_owned()).collect(),
             languages: vec!["java".to_owned()],
+            initialization_options: None,
         }
     }
 

@@ -57,6 +57,7 @@ fn activation_journal_ignores_a_torn_tail() -> Result<(), Box<dyn std::error::Er
         version: "1.2.3".into(),
         command,
         args: Vec::new(),
+        initialization_options: None,
     };
     let encoded = serde_json::to_string(&active)?;
     std::fs::write(provider.join("active.jsonl"), format!("{encoded}\n{{"))?;
@@ -293,6 +294,7 @@ fn uninstall_deactivates_resolution_and_reclaims_unused_payload()
             version: "1.2.3".into(),
             command,
             args: Vec::new(),
+            initialization_options: None,
         },
     )?;
 
@@ -319,6 +321,7 @@ fn uninstall_defers_payload_cleanup_while_a_broker_is_live()
             version: "1.2.3".into(),
             command: command.clone(),
             args: Vec::new(),
+            initialization_options: None,
         },
     )?;
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
@@ -358,6 +361,7 @@ fn activate(root: &Path, server: &LanguageServerId, version: &str) -> std::io::R
         version: version.into(),
         command,
         args: Vec::new(),
+        initialization_options: None,
     };
     let Ok(encoded) = serde_json::to_string(&active) else {
         return Ok(());

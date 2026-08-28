@@ -57,15 +57,20 @@ pub(super) fn spawn_connector(
                             host_failure(&spec, error)
                         })?;
                 let (read, write) = tokio::io::split(stream);
-                return LspClient::connect(read, write, &root)
-                    .await
-                    .map_err(|error| match error {
-                        // The broker owns the process, so a connection that
-                        // closes during the handshake means the server behind it
-                        // never came up.
-                        LspError::Closed | LspError::Timeout => host_failure(&spec, error),
-                        other => other,
-                    });
+                return LspClient::connect_with(
+                    read,
+                    write,
+                    &root,
+                    spec.initialization_options.clone(),
+                )
+                .await
+                .map_err(|error| match error {
+                    // The broker owns the process, so a connection that
+                    // closes during the handshake means the server behind it
+                    // never came up.
+                    LspError::Closed | LspError::Timeout => host_failure(&spec, error),
+                    other => other,
+                });
             }
             let command = karet_supervisor::supervisor::command(
                 &supervisor,
@@ -74,7 +79,13 @@ pub(super) fn spawn_connector(
                 &root,
             )
             .map_err(|error| host_failure(&spec, error))?;
-            LspClient::spawn_command(command, &spec.command, &root).await
+            LspClient::spawn_command_with(
+                command,
+                &spec.command,
+                &root,
+                spec.initialization_options.clone(),
+            )
+            .await
         })
     })
 }

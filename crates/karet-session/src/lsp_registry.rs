@@ -115,6 +115,13 @@ struct ActiveInstallation {
     version: String,
     command: PathBuf,
     args: Vec<String>,
+    /// `initializationOptions` this installation must be launched with.
+    ///
+    /// Recorded here rather than recomputed at launch because it names paths
+    /// inside this immutable version directory, which only the install knew.
+    /// Defaulted so journals written before this existed still replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    initialization_options: Option<serde_json::Value>,
 }
 
 #[derive(Clone)]
@@ -151,6 +158,7 @@ pub(crate) fn installed_spec(
         command: active.command.to_string_lossy().into_owned(),
         args: active.args,
         languages: vec![language.to_owned()],
+        initialization_options: active.initialization_options,
     })
 }
 
@@ -727,6 +735,7 @@ fn install_release(
 }
 
 fn activation(release: &Release, destination: &Path) -> Result<ActiveInstallation, String> {
+    let mut options = None;
     let (command, args) = match &release.kind {
         ReleaseKind::Standalone {
             executable_name,
@@ -750,6 +759,7 @@ fn activation(release: &Release, destination: &Path) -> Result<ActiveInstallatio
         },
         ReleaseKind::Npm {
             package,
+            companion,
             entrypoint,
             arguments,
             ..
@@ -774,6 +784,25 @@ fn activation(release: &Release, destination: &Path) -> Result<ActiveInstallatio
                 })?;
             let mut args = vec![cli.to_string_lossy().into_owned()];
             args.extend(arguments.iter().map(|argument| (*argument).to_owned()));
+            // A server given a TypeScript companion needs to be told where it
+            // went. karet installs the pair into an immutable version directory
+            // that is on nobody's search path, and a server like Astro's takes
+            // the location as an init option rather than looking for one.
+            if companion
+                .as_ref()
+                .is_some_and(|(name, _)| name == "typescript")
+            {
+                let tsdk = destination
+                    .join("package")
+                    .join("node_modules")
+                    .join("typescript")
+                    .join("lib");
+                if tsdk.is_dir() {
+                    options = Some(serde_json::json!({
+                        "typescript": { "tsdk": tsdk.to_string_lossy() }
+                    }));
+                }
+            }
             (node, args)
         },
     };
@@ -787,6 +816,7 @@ fn activation(release: &Release, destination: &Path) -> Result<ActiveInstallatio
         version: release.active_version(),
         command,
         args,
+        initialization_options: options,
     })
 }
 

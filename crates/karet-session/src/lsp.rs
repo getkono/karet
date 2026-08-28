@@ -180,6 +180,7 @@ impl LspManager {
                         command: server.command.clone(),
                         args: server.args.clone(),
                         languages: vec![language.to_owned()],
+                        initialization_options: None,
                     },
                     Some(LanguageServerId::new(server_id.clone())),
                 )
@@ -194,6 +195,7 @@ impl LspManager {
                     command: server.command.clone(),
                     args: server.args.clone(),
                     languages: vec![language.to_owned()],
+                    initialization_options: None,
                 },
                 Some(LanguageServerId::new(language.to_owned())),
             ));

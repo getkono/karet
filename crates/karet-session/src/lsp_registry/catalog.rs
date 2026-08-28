@@ -13,6 +13,19 @@ pub(super) struct ManagedRecipe {
     pub(super) source: ManagedSource,
 }
 
+/// A second npm package installed beside the server, because the server cannot
+/// work without it.
+#[derive(Clone, Copy)]
+pub(super) struct Companion {
+    pub(super) package: &'static str,
+    /// The major version to pin to, when the newest release is the wrong one.
+    ///
+    /// `None` takes `latest`. Pinning is not premature caution: TypeScript 7 is
+    /// a ground-up rewrite that ships no `tsserver.js` at all, so every server
+    /// that drives tsserver breaks the moment it becomes `latest`.
+    pub(super) major: Option<u64>,
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum ManagedSource {
     Github {
@@ -20,10 +33,21 @@ pub(super) enum ManagedSource {
     },
     Npm {
         package: &'static str,
-        companion: Option<&'static str>,
+        companion: Option<Companion>,
         binary: &'static str,
     },
 }
+
+/// The TypeScript that servers driving `tsserver` need.
+///
+/// Pinned to 5: `latest` is now TypeScript 7, the Go rewrite, whose `lib`
+/// directory contains no `tsserver.js`. Installing it leaves
+/// typescript-language-server refusing to start with "Could not find a valid
+/// TypeScript installation".
+const TYPESCRIPT_5: Companion = Companion {
+    package: "typescript",
+    major: Some(5),
+};
 
 const MANAGED_RECIPES: &[ManagedRecipe] = &[
     ManagedRecipe {
@@ -36,7 +60,7 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
         server: "typescript-language-server",
         source: ManagedSource::Npm {
             package: "typescript-language-server",
-            companion: Some("typescript"),
+            companion: Some(TYPESCRIPT_5),
             binary: "typescript-language-server",
         },
     },
@@ -64,7 +88,9 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
         server: "astro-language-server",
         source: ManagedSource::Npm {
             package: "@astrojs/language-server",
-            companion: None,
+            // Astro refuses to initialize without a TypeScript SDK, which it
+            // takes as an init option rather than finding for itself.
+            companion: Some(TYPESCRIPT_5),
             binary: "astro-ls",
         },
     },
@@ -603,6 +629,12 @@ impl NpmBin {
     }
 }
 
+/// The abbreviated packument, which lists every published version.
+#[derive(Deserialize)]
+struct NpmPackument {
+    versions: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
 #[derive(Deserialize)]
 struct NodeRelease {
     version: String,
@@ -614,7 +646,7 @@ fn discover_npm(
     client: &Client,
     server: LanguageServerId,
     package: &str,
-    companion: Option<&str>,
+    companion: Option<Companion>,
     binary: &str,
 ) -> Result<Release, String> {
     let npm = npm_metadata(client, package)?;
@@ -625,8 +657,9 @@ fn discover_npm(
         .map(str::to_owned)
         .ok_or_else(|| format!("{package} publishes no safe {binary} executable"))?;
     let companion = companion
-        .map(|package| {
-            npm_metadata(client, package).map(|metadata| (package.to_owned(), metadata.version))
+        .map(|companion| {
+            companion_version(client, companion)
+                .map(|version| (companion.package.to_owned(), version))
         })
         .transpose()?;
     let nodes: Vec<NodeRelease> = client
@@ -689,6 +722,54 @@ fn safe_relative_path(path: &str) -> bool {
                 _ => false,
             })
         && saw_normal
+}
+
+/// The version of `companion` to install: the newest within its pinned major,
+/// or simply the newest when it is unpinned.
+///
+/// The registry resolves dist-tags and exact versions on `/{package}/{spec}`
+/// but not ranges, so a pin reads the abbreviated packument -- the same
+/// document npm itself installs from -- and picks the highest stable release.
+fn companion_version(client: &Client, companion: Companion) -> Result<String, String> {
+    let Some(major) = companion.major else {
+        return Ok(npm_metadata(client, companion.package)?.version);
+    };
+    let packument: NpmPackument = client
+        .get(format!("https://registry.npmjs.org/{}", companion.package))
+        .header("Accept", "application/vnd.npm.install-v1+json")
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|error| error.to_string())?
+        .json()
+        .map_err(|error| error.to_string())?;
+    highest_stable_in_major(packument.versions.keys().map(String::as_str), major).ok_or_else(|| {
+        format!(
+            "{} publishes no stable {major}.x release",
+            companion.package
+        )
+    })
+}
+
+/// The highest `major.x` release among `versions`, ignoring prereleases.
+///
+/// Compares numerically: `5.10.0` is newer than `5.9.3`, which string ordering
+/// gets backwards.
+fn highest_stable_in_major<'a>(
+    versions: impl Iterator<Item = &'a str>,
+    major: u64,
+) -> Option<String> {
+    versions
+        .filter(|version| !version.contains('-'))
+        .filter_map(|version| {
+            let parts = version
+                .split('.')
+                .map(str::parse::<u64>)
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?;
+            (parts.first() == Some(&major)).then(|| (parts, version.to_owned()))
+        })
+        .max()
+        .map(|(_, version)| version)
 }
 
 fn npm_metadata(client: &Client, package: &str) -> Result<NpmMetadata, String> {

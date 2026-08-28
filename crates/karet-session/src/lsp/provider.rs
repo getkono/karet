@@ -70,6 +70,7 @@ pub(super) fn builtin_spec(provider: &LanguageServerId, language: &str) -> LspSp
             .map(|argument| (*argument).to_owned())
             .collect(),
         languages: vec![language.to_owned()],
+        initialization_options: None,
     }
 }
 

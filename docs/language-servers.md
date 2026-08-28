@@ -35,7 +35,7 @@ explicitly manual:
 | Language | Default providers | Managed by karet | Tree-sitter |
 |---|---|---:|---:|
 | Rust | **rust-analyzer** | yes | yes |
-| JavaScript, TypeScript, JSX, TSX | **typescript-language-server**; **Biome** diagnostics/formatting when a Biome config exists | yes (both) | yes |
+| JavaScript, TypeScript, JSX, TSX | **typescript-language-server** (with a managed TypeScript 5); **Biome** diagnostics/formatting when a Biome config exists | yes (both) | yes |
 | Python | **Pyright** intelligence/type checking + **Ruff** diagnostics/formatting | yes (both) | yes |
 | TeX / LaTeX | **texlab** | yes | yes |
 | C / C++ | **clangd** | yes on x86_64; project/PATH elsewhere | yes |
@@ -43,7 +43,7 @@ explicitly manual:
 | Go | **gopls** | project/PATH | yes |
 | Java | **jdtls** | project/PATH | yes |
 | Zig | **zls** | yes | yes |
-| Astro | **Astro language server** | yes | yes, with injections |
+| Astro | **Astro language server** (with a managed TypeScript 5) | yes | yes, with injections |
 | Svelte | **svelte-language-server** | yes | yes, with injections |
 | Vue | **vue-language-server** | yes | yes, with injections |
 | YAML | **yaml-language-server** | yes | yes |
@@ -128,6 +128,19 @@ Two rows are known-incomplete rather than verified:
 - **esbonio** is launched as the published `esbonio` console script, which suits
   karet's `.venv/bin` resolution better than hardcoding an interpreter. Its
   bare-invocation behavior has not been verified against a live install.
+
+### TypeScript's managed companion
+
+typescript-language-server and the Astro language server both drive `tsserver`,
+which they do not ship. karet installs TypeScript alongside them, **pinned to
+5**: `latest` is now TypeScript 7, a ground-up rewrite whose `lib` directory
+contains no `tsserver.js` at all, so taking the newest release leaves both
+servers unable to start.
+
+Astro additionally takes the SDK location as an `initializationOptions` value
+rather than looking for one itself, so karet records the installed path with the
+activation and sends it with `initialize`. Nothing on the command line can
+substitute for it — the option is part of the protocol.
 
 ### GraphQL specifics
 

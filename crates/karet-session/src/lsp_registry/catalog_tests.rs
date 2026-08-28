@@ -189,3 +189,75 @@ fn a_platform_missing_from_the_manifest_is_still_refused() {
         .unwrap_or_default();
     assert!(error.contains("osx-arm64-tar"), "{error}");
 }
+
+/// TypeScript 7 is a ground-up rewrite whose `lib` directory contains no
+/// `tsserver.js`, so every server that drives tsserver broke the moment it
+/// became `latest`. The companion is pinned to 5 for that reason, and the
+/// selection has to be numeric: `5.10.0` is newer than `5.9.3`, which string
+/// ordering gets backwards.
+#[test]
+fn a_pinned_companion_takes_the_newest_release_in_its_major() {
+    let versions = [
+        "4.9.5",
+        "5.0.4",
+        "5.9.3",
+        "5.10.0",
+        "5.11.0-beta",
+        "6.0.0-beta",
+        "7.0.2",
+    ];
+    assert_eq!(
+        highest_stable_in_major(versions.into_iter(), 5).as_deref(),
+        Some("5.10.0")
+    );
+    assert_eq!(
+        highest_stable_in_major(versions.into_iter(), 7).as_deref(),
+        Some("7.0.2")
+    );
+    assert_eq!(highest_stable_in_major(versions.into_iter(), 9), None);
+}
+
+#[test]
+fn a_prerelease_is_never_selected_even_when_it_is_the_only_candidate() {
+    let versions = ["5.0.0-rc", "5.0.0-beta.1"];
+    assert_eq!(highest_stable_in_major(versions.into_iter(), 5), None);
+}
+
+/// Every server that drives tsserver must pin, or it silently gets TypeScript 7
+/// the next time the catalogue is touched.
+#[test]
+fn servers_needing_typescript_pin_it_rather_than_taking_latest() {
+    for recipe in managed_recipes() {
+        let ManagedSource::Npm {
+            companion: Some(companion),
+            ..
+        } = recipe.source
+        else {
+            continue;
+        };
+        assert_eq!(
+            (companion.package, companion.major),
+            ("typescript", Some(5)),
+            "{} takes an unpinned companion",
+            recipe.server
+        );
+    }
+    // Both are known to need it; a third arriving unpinned should be noticed.
+    let with_companion = managed_recipes()
+        .iter()
+        .filter(|recipe| {
+            matches!(
+                recipe.source,
+                ManagedSource::Npm {
+                    companion: Some(_),
+                    ..
+                }
+            )
+        })
+        .map(|recipe| recipe.server)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        with_companion,
+        vec!["typescript-language-server", "astro-language-server"]
+    );
+}

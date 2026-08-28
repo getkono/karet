@@ -601,6 +601,7 @@ async fn spawn_missing_binary_names_the_command_and_why_it_failed() -> TestResul
         command: "karet-lsp-test-no-such-binary".into(),
         args: vec!["lsp".into(), "stdio".into()],
         languages: vec!["rust".into()],
+        initialization_options: None,
     };
     let Err(LspError::Launch(failure)) = LspClient::spawn(spec, Path::new("/tmp")).await else {
         return Err("a missing binary should be a launch failure".into());

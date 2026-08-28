@@ -116,6 +116,7 @@ impl LspManager {
                         command: setting.command.clone(),
                         args: setting.args.clone(),
                         languages: vec![language.to_owned()],
+                        initialization_options: None,
                     },
                     LanguageServerSource::Configured,
                 )

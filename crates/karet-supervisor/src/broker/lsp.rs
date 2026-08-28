@@ -467,6 +467,7 @@ mod tests {
             command: "rust-analyzer".to_owned(),
             args: Vec::new(),
             languages: vec!["rust".to_owned()],
+            initialization_options: None,
         };
         assert_eq!(
             broker_key(&spec, Path::new("/a")),
