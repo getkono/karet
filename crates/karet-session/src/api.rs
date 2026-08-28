@@ -38,12 +38,14 @@ mod debug;
 mod event;
 mod github;
 mod seam;
+mod search;
 mod vcs;
 
 pub use debug::*;
 pub use event::Event;
 pub use github::*;
 pub use seam::*;
+pub use search::*;
 pub use vcs::*;
 
 /// Per-document editing and serialization behavior after application settings and
@@ -546,13 +548,20 @@ pub enum Command {
         /// The open TeX document that initiated the build.
         doc: DocumentId,
     },
-    /// Run a workspace search on the backend's search worker; answered with
-    /// [`Event::SearchResults`]. A newer search supersedes an unstarted one.
+    /// Run a streaming workspace search on the backend's search worker; answered
+    /// with a run of [`Event::SearchProgress`] batches and exactly one
+    /// [`Event::SearchFinished`].
+    ///
+    /// Cancellable through [`Command::Cancel`]; a newer search also supersedes an
+    /// unstarted one, which still receives its terminal event.
     Search {
-        /// The search query and options.
+        /// The search query and options; `excludes` are merged with the
+        /// workspace's configured `search.exclude`.
         query: karet_search::SearchQuery,
-        /// Keep at most this many file hits.
-        limit: usize,
+        /// Stop the walk once this many files have matched.
+        file_limit: usize,
+        /// Stop the walk once this many matches have been found in total.
+        match_limit: usize,
     },
     /// Spell-check the whole workspace on the backend's scan worker; answered with
     /// a stream of [`Event::SpellingScanProgress`] batches and one final
