@@ -40,6 +40,26 @@ pub(super) fn pull_request(number: u64, draft: bool) -> GithubPullRequest {
 }
 
 #[test]
+fn every_github_page_names_itself_from_its_own_state() {
+    // The strip and the tab both label a page with `title()`, and a creation form
+    // *becomes* the resource it created (`apply_github_issue`) rather than being
+    // replaced — so the name has to follow the state, not be stored beside it.
+    use crate::app::github::GithubViewState;
+
+    let dashboard = GithubViewState::dashboard(repository(), anonymous_auth());
+    assert_eq!(dashboard.title(), "GitHub");
+
+    let issue = Tab::github_issue(204, None);
+    assert_eq!(issue.title, "Issue #204");
+
+    let review = Tab::github_pull_request(pull_request(262, false), true, None);
+    assert_eq!(review.title, "Pull Request #262");
+
+    let form = Tab::github_new_issue(repository(), None);
+    assert_eq!(form.title, "New GitHub Issue");
+}
+
+#[test]
 fn github_dashboard_is_singleton_leftmost_and_uncloseable() {
     let mut app = app();
     let repository = repository();

@@ -216,6 +216,24 @@ impl GithubViewState {
         Self::Dashboard(GithubDashboard::new(repository, auth))
     }
 
+    /// The page's name, as shown on whatever strip is hosting it.
+    ///
+    /// Derived from the state rather than stored beside it: a creation form
+    /// *becomes* the resource it created once the response lands (see
+    /// `apply_github_issue`), so a stored copy would have to be rewritten in
+    /// lockstep with every such change — and would silently go stale the one time
+    /// it was not.
+    pub(crate) fn title(&self) -> String {
+        match self {
+            Self::Dashboard(_) => "GitHub".to_string(),
+            Self::Issue { number, .. } => format!("Issue #{number}"),
+            Self::NewIssue { .. } => "New GitHub Issue".to_string(),
+            Self::PullRequest(view) => format!("Pull Request #{}", view.pull_request.number),
+            Self::WorkflowRun { run, .. } => format!("Actions #{}", run.run_number),
+            Self::NewPullRequest { .. } => "New Pull Request".to_string(),
+        }
+    }
+
     pub(crate) fn is_pinned(&self) -> bool {
         matches!(self, Self::Dashboard(_))
     }

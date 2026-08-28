@@ -484,34 +484,28 @@ impl Tab {
         repository: karet_session::GithubRepository,
         auth: karet_session::GithubAuth,
     ) -> Self {
-        Self::new(
-            "GitHub",
-            TabKind::Github(crate::app::github::GithubViewState::dashboard(
-                repository, auth,
-            )),
-        )
+        let state = crate::app::github::GithubViewState::dashboard(repository, auth);
+        Self::new(state.title(), TabKind::Github(state))
     }
 
     /// A lazily loaded issue detail tab.
     #[must_use]
     pub(crate) fn github_issue(number: u64, pending: Option<karet_session::RequestId>) -> Self {
-        Self::new(
-            format!("Issue #{number}"),
-            TabKind::Github(crate::app::github::GithubViewState::Issue {
-                number,
-                issue: None,
-                comments: karet_session::GithubPage {
-                    items: Vec::new(),
-                    page: 1,
-                    next_page: None,
-                    total_count: None,
-                },
-                pending,
-                loading_since: Pending::start(),
-                error: None,
-                scroll: 0,
-            }),
-        )
+        let state = crate::app::github::GithubViewState::Issue {
+            number,
+            issue: None,
+            comments: karet_session::GithubPage {
+                items: Vec::new(),
+                page: 1,
+                next_page: None,
+                total_count: None,
+            },
+            pending,
+            loading_since: Pending::start(),
+            error: None,
+            scroll: 0,
+        };
+        Self::new(state.title(), TabKind::Github(state))
     }
 
     /// A pull-request detail tab seeded from its search result.
@@ -521,43 +515,41 @@ impl Tab {
         can_write: bool,
         pending: Option<karet_session::RequestId>,
     ) -> Self {
-        Self::new(
-            format!("Pull Request #{}", pull_request.number),
-            TabKind::Github(crate::app::github::GithubViewState::PullRequest(
-                crate::app::github::GithubPullRequestView {
-                    pull_request,
-                    comments: karet_session::GithubPage {
-                        items: Vec::new(),
-                        page: 1,
-                        next_page: None,
-                        total_count: None,
-                    },
-                    commits: Vec::new(),
-                    checks: Vec::new(),
-                    activity: Vec::new(),
-                    activity_error: None,
-                    can_write,
-                    section: crate::app::github::GithubPullRequestSection::Conversation,
-                    pending,
-                    loading_since: Pending::start(),
-                    error: None,
-                    scroll: 0,
-                    commit_cursor: 0,
-                    commit_offset: 0,
-                    body_edit: None,
-                    comment_edit: String::new(),
-                    editor: None,
-                    preview: false,
-                    section_hits: Vec::new(),
-                    body_rect: Rect::default(),
-                    comment_rect: Rect::default(),
-                    merge_rect: Rect::default(),
-                    draft_rect: Rect::default(),
-                    check_hits: Vec::new(),
-                    commits_rect: Rect::default(),
+        let state = crate::app::github::GithubViewState::PullRequest(
+            crate::app::github::GithubPullRequestView {
+                pull_request,
+                comments: karet_session::GithubPage {
+                    items: Vec::new(),
+                    page: 1,
+                    next_page: None,
+                    total_count: None,
                 },
-            )),
-        )
+                commits: Vec::new(),
+                checks: Vec::new(),
+                activity: Vec::new(),
+                activity_error: None,
+                can_write,
+                section: crate::app::github::GithubPullRequestSection::Conversation,
+                pending,
+                loading_since: Pending::start(),
+                error: None,
+                scroll: 0,
+                commit_cursor: 0,
+                commit_offset: 0,
+                body_edit: None,
+                comment_edit: String::new(),
+                editor: None,
+                preview: false,
+                section_hits: Vec::new(),
+                body_rect: Rect::default(),
+                comment_rect: Rect::default(),
+                merge_rect: Rect::default(),
+                draft_rect: Rect::default(),
+                check_hits: Vec::new(),
+                commits_rect: Rect::default(),
+            },
+        );
+        Self::new(state.title(), TabKind::Github(state))
     }
 
     /// A read-only GitHub Actions workflow-run detail tab.
@@ -567,15 +559,13 @@ impl Tab {
         workflow: Option<karet_session::GithubWorkflow>,
         run: karet_session::GithubWorkflowRun,
     ) -> Self {
-        Self::new(
-            format!("Actions #{}", run.run_number),
-            TabKind::Github(crate::app::github::GithubViewState::WorkflowRun {
-                repository,
-                workflow,
-                run,
-                scroll: 0,
-            }),
-        )
+        let state = crate::app::github::GithubViewState::WorkflowRun {
+            repository,
+            workflow,
+            run,
+            scroll: 0,
+        };
+        Self::new(state.title(), TabKind::Github(state))
     }
 
     /// A new-issue form tab.
@@ -588,22 +578,18 @@ impl Tab {
             metadata_pending,
             ..crate::app::github::GithubIssueForm::default()
         };
-        Self::new(
-            "New GitHub Issue",
-            TabKind::Github(crate::app::github::GithubViewState::NewIssue { repository, form }),
-        )
+        let state = crate::app::github::GithubViewState::NewIssue { repository, form };
+        Self::new(state.title(), TabKind::Github(state))
     }
 
     /// A new-pull-request form tab.
     #[must_use]
     pub(crate) fn github_new_pull_request(repository: karet_session::GithubRepository) -> Self {
-        Self::new(
-            "New Pull Request",
-            TabKind::Github(crate::app::github::GithubViewState::NewPullRequest {
-                repository,
-                form: crate::app::github::GithubPullRequestForm::default(),
-            }),
-        )
+        let state = crate::app::github::GithubViewState::NewPullRequest {
+            repository,
+            form: crate::app::github::GithubPullRequestForm::default(),
+        };
+        Self::new(state.title(), TabKind::Github(state))
     }
 
     /// A rendered, read-only Markdown view of a converted document (e.g. a Word

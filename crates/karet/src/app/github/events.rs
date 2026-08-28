@@ -111,8 +111,7 @@ impl App {
                 TabKind::Github(GithubViewState::NewIssue { form, .. }) if form.submitting == id
             );
             if created {
-                tab.title = format!("Issue #{}", issue.number);
-                tab.kind = TabKind::Github(GithubViewState::Issue {
+                let state = GithubViewState::Issue {
                     number: issue.number,
                     issue: Some(issue.clone()),
                     comments: comments.clone(),
@@ -120,7 +119,9 @@ impl App {
                     loading_since: Pending::start(),
                     error: None,
                     scroll: 0,
-                });
+                };
+                tab.title = state.title();
+                tab.kind = TabKind::Github(state);
             } else if let TabKind::Github(GithubViewState::Issue {
                 pending,
                 issue: loaded,
@@ -158,8 +159,7 @@ impl App {
                     if form.submitting == id
             );
             if created {
-                tab.title = format!("Pull Request #{}", pull_request.number);
-                tab.kind = TabKind::Github(GithubViewState::PullRequest(GithubPullRequestView {
+                let state = GithubViewState::PullRequest(GithubPullRequestView {
                     pull_request: pull_request.clone(),
                     comments: comments.clone(),
                     commits: commits.clone(),
@@ -185,7 +185,9 @@ impl App {
                     draft_rect: Rect::default(),
                     check_hits: Vec::new(),
                     commits_rect: Rect::default(),
-                }));
+                });
+                tab.title = state.title();
+                tab.kind = TabKind::Github(state);
             } else if let TabKind::Github(GithubViewState::PullRequest(view)) = &mut tab.kind
                 && (view.pending == id || id.is_none())
             {
