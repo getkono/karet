@@ -139,12 +139,25 @@ impl GithubSurface {
     /// have nothing to show without it. Returns whether anything closed, so a key
     /// binding can decline the event and let it fall through.
     pub(crate) fn close_active(&mut self) -> bool {
-        if self.active == 0 || self.active >= self.pages.len() {
+        self.close_at(self.active)
+    }
+
+    /// Close the page at `index`, keeping the reader where they were.
+    ///
+    /// Closing a page *behind* the one in front must not move the user: the page they
+    /// are reading just shifts left by one. Only closing the page in front falls back,
+    /// and only to the page beneath it.
+    pub(crate) fn close_at(&mut self, index: usize) -> bool {
+        if index == 0 || index >= self.pages.len() {
             return false;
         }
-        let closed = self.pages.remove(self.active);
+        let closed = self.pages.remove(index);
         self.abandon(&closed);
-        self.active = self.active.saturating_sub(1);
+        if self.active > index {
+            self.active -= 1;
+        } else if self.active == index {
+            self.active = index.saturating_sub(1);
+        }
         true
     }
 
@@ -198,8 +211,7 @@ impl App {
             .iter()
             .find_map(|&(index, rect)| rect_contains(rect, point).then_some(index))
         {
-            self.github.select(index);
-            self.close_github_page();
+            self.github.close_at(index);
             return true;
         }
         if let Some(index) = self

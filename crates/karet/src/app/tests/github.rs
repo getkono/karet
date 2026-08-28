@@ -727,3 +727,23 @@ fn nothing_stacks_on_a_workspace_with_no_github_behind_it() {
     assert!(!app.github.is_active());
     assert!(app.github.pages().is_empty());
 }
+
+#[test]
+fn closing_a_page_behind_the_one_in_front_leaves_the_reader_alone() {
+    // The strip closes by index. Reading page 3 and dismissing page 1 must keep you
+    // on what you were reading — it just shifts left — rather than dropping you onto
+    // whatever sat under the page you dismissed.
+    let mut app = github_app();
+    app.push_github_page(crate::app::github::github_issue(1, None));
+    app.push_github_page(crate::app::github::github_issue(2, None));
+    assert_eq!(app.github.active(), 2);
+
+    assert!(app.github.close_at(1));
+
+    assert_eq!(app.github.pages().len(), 2);
+    assert_eq!(app.github.active(), 1, "still reading issue #2");
+    assert!(matches!(
+        app.github.active_page(),
+        Some(crate::app::github::GithubViewState::Issue { number: 2, .. })
+    ));
+}
