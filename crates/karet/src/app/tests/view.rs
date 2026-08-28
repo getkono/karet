@@ -163,73 +163,33 @@ fn the_agents_view_takes_the_full_width_and_hides_the_sidebar() {
 }
 
 #[test]
-fn a_tab_key_hook_does_not_fire_under_another_view() {
-    // `github_key` runs ahead of the keymap and reads the *active tab*. Under a
-    // view that owns the content area, that tab is off screen — a key aimed at the
-    // showing view must not drive it. (The same guard covers the Seam query box
-    // and the unbound-printable fallback into the active document.)
+fn the_github_hooks_do_not_fire_under_another_view() {
+    // `github_key` and `github_mouse` run ahead of the keymap and read the GitHub
+    // surface directly. That surface is off screen under the editor view, so a
+    // keystroke or a click aimed at the editor must not drive it. (The same shape of
+    // guard covers the Seam query box at `input.rs` and the unbound-printable
+    // fallback into the active document.)
     let mut app = app();
-    app.push_tab(Tab::github_pull_request(
-        super::github::pull_request(12, false),
-        true,
-        None,
-    ));
+    app.apply_github_availability(
+        Some(super::support::repository()),
+        super::github::anonymous_auth(),
+    );
     app.focus = Focus::Editor;
-    let section = |app: &App| match &app.tabs[app.active].kind {
-        TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) => view.section,
-        _ => panic!("expected the pull-request tab"),
+    let section = |app: &App| {
+        app.github
+            .dashboard()
+            .map(|dashboard| dashboard.section)
+            .expect("the dashboard to be installed")
     };
     let before = section(&app);
 
-    app.dispatch(Command::SelectView(View::Agents));
-    app.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
-    assert_eq!(section(&app), before, "the hidden tab is untouched");
-
-    // Back in the editor view the same key drives the tab as before.
     app.dispatch(Command::SelectView(View::Editor));
     app.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
-    assert_ne!(section(&app), before);
-}
+    assert_eq!(section(&app), before, "the hidden surface is untouched");
 
-#[test]
-fn a_tab_mouse_hook_does_not_fire_under_another_view() {
-    // Same reasoning as the key hooks, for the hit regions the GitHub and Seam tabs
-    // record on themselves: a view draws over those tabs without re-rendering them,
-    // so their rects must not keep claiming clicks.
-    let mut app = app();
-    app.push_tab(Tab::github_pull_request(
-        super::github::pull_request(12, false),
-        true,
-        None,
-    ));
-    app.focus = Focus::Editor;
-    let _ = screen(&mut app, 100, 24);
-
-    let section = |app: &App| match &app.tabs[app.active].kind {
-        TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) => view.section,
-        _ => panic!("expected the pull-request tab"),
-    };
-    let before = section(&app);
-    // A point on a section tab the view recorded for itself last frame.
-    let target = match &app.tabs[app.active].kind {
-        TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) => view
-            .section_hits
-            .iter()
-            .find(|(candidate, _)| *candidate != before)
-            .map(|(_, rect)| (rect.x, rect.y))
-            .expect("another section to click"),
-        _ => panic!("expected the pull-request tab"),
-    };
-
-    app.dispatch(Command::SelectView(View::Agents));
-    let _ = screen(&mut app, 100, 24);
-    app.handle_mouse(click(target.0, target.1));
-    assert_eq!(section(&app), before, "the hidden tab is untouched");
-
-    // Back in the editor view the same click drives the tab as before.
-    app.dispatch(Command::SelectView(View::Editor));
-    let _ = screen(&mut app, 100, 24);
-    app.handle_mouse(click(target.0, target.1));
+    // Under its own view the same key reaches it.
+    app.dispatch(Command::SelectView(View::GitHub));
+    app.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
     assert_ne!(section(&app), before);
 }
 

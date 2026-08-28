@@ -2,9 +2,11 @@
 
 mod detail;
 mod forms;
+mod strip;
 
 use detail::*;
 use forms::*;
+pub(super) use strip::draw_github_view;
 
 use super::*;
 use crate::app::github::DASHBOARD_ROW_HEIGHT;

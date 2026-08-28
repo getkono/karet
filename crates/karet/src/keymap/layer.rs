@@ -55,8 +55,6 @@ pub enum EditorTab {
     CommitGraph,
     /// The full-screen Seam view.
     Seam,
-    /// GitHub dashboard, detail, or form tab.
-    Github,
     /// Language-server inventory and lifecycle manager.
     LanguageServers,
     /// A too-large-file placeholder, which offers an "open anyway" override.
@@ -82,7 +80,7 @@ pub enum FocusTarget {
     CommitGraph,
     /// The full-screen Seam view.
     Seam,
-    /// A GitHub dashboard, detail, or form.
+    /// The GitHub view's dashboard, detail, and form pages.
     Github,
     /// The Agents view — agent sessions across worktrees.
     Agents,
@@ -126,7 +124,6 @@ impl FocusTarget {
                 EditorTab::Pager => FocusTarget::Pager,
                 EditorTab::CommitGraph => FocusTarget::CommitGraph,
                 EditorTab::Seam => FocusTarget::Seam,
-                EditorTab::Github => FocusTarget::Github,
                 EditorTab::LanguageServers => FocusTarget::LanguageServers,
                 EditorTab::Oversize => FocusTarget::Oversize,
                 EditorTab::Plain => FocusTarget::Editor,
@@ -168,7 +165,7 @@ pub enum Layer {
     CommitGraph,
     /// Active when the full-screen Seam view has focus.
     Seam,
-    /// Active on GitHub dashboard, detail, and form tabs.
+    /// Active on the GitHub view's dashboard, detail, and form pages.
     Github,
     /// Active when the Agents view has focus.
     Agents,

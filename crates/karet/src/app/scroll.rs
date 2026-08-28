@@ -132,14 +132,12 @@ impl App {
         viewport: usize,
     ) {
         match surface {
-            ScrollSurface::TabRows => self.scroll_tab_rows_to(position, viewport),
+            ScrollSurface::TabRows => self.scroll_tab_rows_to(position),
             ScrollSurface::TabColumns => self.scroll_tab_columns_to(position),
             ScrollSurface::EditorPreview => self.set_markdown_preview_scroll(position),
             ScrollSurface::GithubPage => self.scroll_github_page_to(position, viewport),
             ScrollSurface::GithubPullRequestCommits => {
-                if let Some(TabKind::Github(view)) =
-                    self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
-                {
+                if let Some(view) = self.github.active_page_mut() {
                     view.scroll_commits_to(position);
                 }
             },
@@ -198,15 +196,14 @@ impl App {
     /// GitHub surface is not a tab: routing its scrollbar through the focused tab
     /// would drag whatever document sits behind it.
     fn scroll_github_page_to(&mut self, position: usize, viewport: usize) {
-        if let Some(TabKind::Github(view)) = self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
-        {
+        if let Some(view) = self.github.active_page_mut() {
             view.scroll_to(position, viewport);
         }
     }
 
     /// The absolute counterpart to [`scroll_lines`](Self::scroll_lines): the same
     /// per-tab-kind split, but landing on a position instead of stepping by a delta.
-    fn scroll_tab_rows_to(&mut self, position: usize, viewport: usize) {
+    fn scroll_tab_rows_to(&mut self, position: usize) {
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
@@ -224,7 +221,6 @@ impl App {
             },
             TabKind::Hex { scroll, .. } => *scroll = position,
             TabKind::LanguageServers(view) => view.offset = position,
-            TabKind::Github(view) => view.scroll_to(position, viewport),
             // The graph view pans freely: dragging its scrollbar moves the viewport and
             // leaves the selection where the user put it.
             TabKind::CommitGraph { .. } => self.graph_scroll_to(position),

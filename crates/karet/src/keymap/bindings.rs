@@ -269,6 +269,11 @@ pub(super) static BINDINGS: &[Binding] = &[
 
     // The full-screen commit graph browser: j/k or arrows move the selection, Enter
     // opens the selected commit as a standalone view, Esc returns focus to the sidebar.
+    // The GitHub view: its own close, because `Ctrl+W` is Global and would otherwise
+    // destroy an editor tab the user cannot even see from here.
+    b(Github, false, false, false, Esc,      Command::GithubClosePage),
+    b(Github, true,  false, false, Char('w'), Command::GithubClosePage),
+
     // The Seam view: navigation of its own, since the editor's motion keys mean
     // nothing in a cascading navigator.
     b(Seam, false, false, false, Char('j'), Command::SeamNextRow),

@@ -37,7 +37,6 @@ pub(super) fn draw_pane_content(
         TabKind::Welcome => draw_welcome(f, theme, area),
         TabKind::Seam(state) => super::seam::draw_seam(f, theme, area, state, ctx.icon_style),
         TabKind::LanguageServers(view) => draw_language_servers(f, theme, area, view, hits),
-        TabKind::Github(view) => draw_github(f, theme, area, view, hits),
         TabKind::Code {
             path,
             doc,

@@ -116,6 +116,8 @@ pub enum Command {
     CopyRemoteFileUrl,
     /// Copy a GitHub permalink for the active file: the blob at the `HEAD` commit,
     /// anchored to the caret line in a code tab.
+    /// Close the GitHub page in front, falling back to the one beneath it.
+    GithubClosePage,
     CopyGithubPermalink,
     /// Copy a GitHub link to the active file on the current branch.
     CopyGithubHeadLink,
@@ -664,6 +666,7 @@ impl Command {
             Self::CopyRelativePath => "Copy Relative Path of Active File",
             Self::RevealActiveInExplorer => "File: Reveal Active File in Explorer",
             Self::CopyRemoteFileUrl => "Copy Remote File URL of Active File",
+            Self::GithubClosePage => "GitHub: Close Page",
             Self::CopyGithubPermalink => "Copy GitHub Permalink of Active File",
             Self::CopyGithubHeadLink => "Copy GitHub Head Link of Active File",
             Self::OpenChangesWithPrevious => "Open Changes: With Previous Revision",

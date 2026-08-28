@@ -226,7 +226,6 @@ impl App {
                 let next = (*scroll as i64 + i64::from(delta)).clamp(0, max);
                 *scroll = next as usize;
             },
-            TabKind::Github(view) => view.scroll_lines(delta),
             // Scrolling a document turns pages (one page per scroll gesture).
             #[cfg(feature = "pdf")]
             TabKind::Document {
@@ -312,7 +311,6 @@ impl App {
                     bytes.len().div_ceil(16).saturating_sub(1)
                 };
             },
-            TabKind::Github(view) => view.scroll_edge(top),
             #[cfg(feature = "pdf")]
             TabKind::Document {
                 page, page_count, ..

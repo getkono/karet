@@ -1,4 +1,4 @@
-//! Opening GitHub selections and refreshing the active GitHub tab.
+//! Opening GitHub selections and refreshing the GitHub page in front.
 
 use super::*;
 
@@ -11,14 +11,14 @@ impl App {
             Actions,
             IssueMetadata,
         }
-        let refresh = match self.tabs.get(self.active).map(|tab| &tab.kind) {
-            Some(TabKind::Github(GithubViewState::Dashboard(_))) => Refresh::Dashboard,
-            Some(TabKind::Github(GithubViewState::Issue { number, .. })) => Refresh::Issue(*number),
-            Some(TabKind::Github(GithubViewState::PullRequest(view))) => {
+        let refresh = match self.github.active_page() {
+            Some(GithubViewState::Dashboard(_)) => Refresh::Dashboard,
+            Some(GithubViewState::Issue { number, .. }) => Refresh::Issue(*number),
+            Some(GithubViewState::PullRequest(view)) => {
                 Refresh::PullRequest(view.pull_request.number)
             },
-            Some(TabKind::Github(GithubViewState::WorkflowRun { .. })) => Refresh::Actions,
-            Some(TabKind::Github(GithubViewState::NewIssue { .. })) => Refresh::IssueMetadata,
+            Some(GithubViewState::WorkflowRun { .. }) => Refresh::Actions,
+            Some(GithubViewState::NewIssue { .. }) => Refresh::IssueMetadata,
             _ => return false,
         };
         if matches!(refresh, Refresh::Dashboard) {
@@ -33,8 +33,7 @@ impl App {
             Refresh::IssueMetadata => SessionCommand::GithubIssueMetadata,
         };
         let request = self.send(command);
-        if let Some(TabKind::Github(view)) = self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
-        {
+        if let Some(view) = self.github.active_page_mut() {
             match view {
                 GithubViewState::Issue {
                     pending,
@@ -106,16 +105,16 @@ impl App {
         match selection {
             Selection::Issue(_repository, number) => {
                 let request = self.send(SessionCommand::GithubIssue { number });
-                self.push_tab(Tab::github_issue(number, request));
+                self.push_github_page(github_issue(number, request));
             },
             Selection::PullRequest(_repository, pull_request, can_write) => {
                 let request = self.send(SessionCommand::GithubPullRequest {
                     number: pull_request.number,
                 });
-                self.push_tab(Tab::github_pull_request(pull_request, can_write, request));
+                self.push_github_page(github_pull_request(pull_request, can_write, request));
             },
             Selection::WorkflowRun(repository, workflow, run) => {
-                self.push_tab(Tab::github_workflow_run(repository, workflow, run));
+                self.push_github_page(github_workflow_run(repository, workflow, run));
             },
         }
     }
@@ -134,9 +133,11 @@ impl App {
         match section {
             GithubSection::Issues => {
                 let pending = self.send(SessionCommand::GithubIssueMetadata);
-                self.push_tab(Tab::github_new_issue(repository, pending));
+                self.push_github_page(github_new_issue(repository, pending));
             },
-            GithubSection::PullRequests => self.push_tab(Tab::github_new_pull_request(repository)),
+            GithubSection::PullRequests => {
+                self.push_github_page(github_new_pull_request(repository));
+            },
             GithubSection::Actions => {
                 self.status = Some("workflow dispatch is not available in this build".to_string());
             },

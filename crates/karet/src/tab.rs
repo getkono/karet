@@ -160,8 +160,6 @@ pub enum TabKind {
     Welcome,
     /// The singleton language-server inventory and lifecycle manager.
     LanguageServers(LanguageServersViewState),
-    /// A GitHub repository dashboard, detail, or creation form.
-    Github(crate::app::github::GithubViewState),
     /// An editable code/text view.
     Code {
         /// The file path.
@@ -478,120 +476,6 @@ impl Tab {
         )
     }
 
-    /// The singleton, permanently pinned GitHub repository dashboard.
-    #[must_use]
-    pub(crate) fn github_dashboard(
-        repository: karet_session::GithubRepository,
-        auth: karet_session::GithubAuth,
-    ) -> Self {
-        let state = crate::app::github::GithubViewState::dashboard(repository, auth);
-        Self::new(state.title(), TabKind::Github(state))
-    }
-
-    /// A lazily loaded issue detail tab.
-    #[must_use]
-    pub(crate) fn github_issue(number: u64, pending: Option<karet_session::RequestId>) -> Self {
-        let state = crate::app::github::GithubViewState::Issue {
-            number,
-            issue: None,
-            comments: karet_session::GithubPage {
-                items: Vec::new(),
-                page: 1,
-                next_page: None,
-                total_count: None,
-            },
-            pending,
-            loading_since: Pending::start(),
-            error: None,
-            scroll: 0,
-        };
-        Self::new(state.title(), TabKind::Github(state))
-    }
-
-    /// A pull-request detail tab seeded from its search result.
-    #[must_use]
-    pub(crate) fn github_pull_request(
-        pull_request: karet_session::GithubPullRequest,
-        can_write: bool,
-        pending: Option<karet_session::RequestId>,
-    ) -> Self {
-        let state = crate::app::github::GithubViewState::PullRequest(
-            crate::app::github::GithubPullRequestView {
-                pull_request,
-                comments: karet_session::GithubPage {
-                    items: Vec::new(),
-                    page: 1,
-                    next_page: None,
-                    total_count: None,
-                },
-                commits: Vec::new(),
-                checks: Vec::new(),
-                activity: Vec::new(),
-                activity_error: None,
-                can_write,
-                section: crate::app::github::GithubPullRequestSection::Conversation,
-                pending,
-                loading_since: Pending::start(),
-                error: None,
-                scroll: 0,
-                commit_cursor: 0,
-                commit_offset: 0,
-                body_edit: None,
-                comment_edit: String::new(),
-                editor: None,
-                preview: false,
-                section_hits: Vec::new(),
-                body_rect: Rect::default(),
-                comment_rect: Rect::default(),
-                merge_rect: Rect::default(),
-                draft_rect: Rect::default(),
-                check_hits: Vec::new(),
-                commits_rect: Rect::default(),
-            },
-        );
-        Self::new(state.title(), TabKind::Github(state))
-    }
-
-    /// A read-only GitHub Actions workflow-run detail tab.
-    #[must_use]
-    pub(crate) fn github_workflow_run(
-        repository: karet_session::GithubRepository,
-        workflow: Option<karet_session::GithubWorkflow>,
-        run: karet_session::GithubWorkflowRun,
-    ) -> Self {
-        let state = crate::app::github::GithubViewState::WorkflowRun {
-            repository,
-            workflow,
-            run,
-            scroll: 0,
-        };
-        Self::new(state.title(), TabKind::Github(state))
-    }
-
-    /// A new-issue form tab.
-    #[must_use]
-    pub(crate) fn github_new_issue(
-        repository: karet_session::GithubRepository,
-        metadata_pending: Option<karet_session::RequestId>,
-    ) -> Self {
-        let form = crate::app::github::GithubIssueForm {
-            metadata_pending,
-            ..crate::app::github::GithubIssueForm::default()
-        };
-        let state = crate::app::github::GithubViewState::NewIssue { repository, form };
-        Self::new(state.title(), TabKind::Github(state))
-    }
-
-    /// A new-pull-request form tab.
-    #[must_use]
-    pub(crate) fn github_new_pull_request(repository: karet_session::GithubRepository) -> Self {
-        let state = crate::app::github::GithubViewState::NewPullRequest {
-            repository,
-            form: crate::app::github::GithubPullRequestForm::default(),
-        };
-        Self::new(state.title(), TabKind::Github(state))
-    }
-
     /// A rendered, read-only Markdown view of a converted document (e.g. a Word
     /// `.docx`) with no editable source tab or session document behind it. The
     /// conversion itself happens in the backend, so this is plain tab plumbing
@@ -797,7 +681,6 @@ impl Tab {
             TabKind::Diff { path, .. } => Some(path),
             TabKind::Welcome
             | TabKind::LanguageServers(_)
-            | TabKind::Github(_)
             | TabKind::Seam(_)
             | TabKind::Graph { .. }
             | TabKind::LoadedConfig { .. }
@@ -817,9 +700,13 @@ impl Tab {
     }
 
     /// Whether this is the uncloseable pinned GitHub dashboard.
+    ///
+    /// Nothing is, any more: the dashboard is a page of the GitHub view rather than a
+    /// tab. Kept for one commit so the guards that call it come out on their own
+    /// (#208); it and they go together next.
     #[must_use]
     pub(crate) fn is_github_dashboard(&self) -> bool {
-        matches!(&self.kind, TabKind::Github(view) if view.is_pinned())
+        false
     }
 
     /// A short language/kind label for the status bar.
@@ -846,7 +733,6 @@ impl Tab {
             TabKind::CommitGraph { .. } => "commits",
             TabKind::Welcome => "",
             TabKind::LanguageServers(_) => "language servers",
-            TabKind::Github(_) => "github",
         }
     }
 
@@ -880,7 +766,6 @@ fn tab_kind_path(kind: &TabKind) -> Option<&Path> {
         TabKind::Diff { path, .. } => Some(path),
         TabKind::Welcome
         | TabKind::LanguageServers(_)
-        | TabKind::Github(_)
         | TabKind::StashPreview { .. }
         | TabKind::Seam(_)
         | TabKind::Graph { .. }

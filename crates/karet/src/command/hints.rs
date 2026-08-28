@@ -60,7 +60,7 @@ impl Command {
             Self::OpenCommandPalette => "commands",
             Self::OpenFind => "find",
             Self::OpenGlobalSearch => "find in files",
-            Self::CloseTab => "close",
+            Self::CloseTab | Self::GithubClosePage => "close",
             Self::NextTab => "next tab",
             Self::PrevTab => "prev tab",
             Self::CloseOtherTabs => "close others",

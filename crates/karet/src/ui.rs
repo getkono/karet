@@ -235,6 +235,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     match app.view {
         View::Editor => draw_panes(f, app, &theme, app.main_rect, &mut hits),
+        // `clear_pane_render_state` before every non-Editor body: the panes are not
+        // redrawn under it, so last frame's hit regions would keep claiming clicks
+        // aimed at whatever is now on screen.
+        View::GitHub => {
+            clear_pane_render_state(app);
+            draw_github_view(f, app, &theme, app.main_rect, &mut hits);
+        },
         view => {
             clear_pane_render_state(app);
             draw_view_placeholder(f, &theme, app.main_rect, view, app.icon_style);

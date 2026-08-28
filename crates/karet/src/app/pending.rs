@@ -125,9 +125,14 @@ impl App {
                     ..
                 } => pendings.extend(*loading_since),
                 TabKind::CommitGraph { loading_since, .. } => pendings.extend(*loading_since),
-                TabKind::Github(view) => pendings.extend(view.loading_since()),
                 _ => {},
             }
+        }
+        // The GitHub surface is not a tab, so its waits have to be collected in their
+        // own right — a page whose wait is invisible here never schedules its reveal
+        // repaint, and its placeholder would appear only on the next keystroke.
+        for page in self.github.pages() {
+            pendings.extend(page.loading_since());
         }
         pendings
     }
