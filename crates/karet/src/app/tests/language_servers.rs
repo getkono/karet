@@ -7,6 +7,8 @@ fn language_server_status(
     managed: bool,
 ) -> LanguageServerStatus {
     LanguageServerStatus {
+        ever_installed: managed,
+        declined: false,
         server,
         languages: vec![language.to_string()],
         enabled: true,

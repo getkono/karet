@@ -1,4 +1,5 @@
 use super::*;
+use crate::api::DeclineScope;
 
 #[test]
 fn registry_tasks_can_run_concurrently() -> Result<(), Box<dyn std::error::Error>> {
@@ -337,5 +338,127 @@ fn uninstall_rejects_external_providers() -> Result<(), Box<dyn std::error::Erro
     let dir = tempfile::tempdir()?;
     let result = uninstall(dir.path(), &LanguageServerId::Gopls);
     assert!(matches!(result, Err(message) if message.contains("not managed")));
+    Ok(())
+}
+
+/// Write an activation record for `server` under `root`, as a completed install
+/// would. The command file must exist for `read_active` to resolve it.
+fn activate(root: &Path, server: &LanguageServerId, version: &str) -> std::io::Result<()> {
+    let provider = provider_root(root, server);
+    std::fs::create_dir_all(&provider)?;
+    let command = provider.join("bin");
+    std::fs::write(&command, b"test")?;
+    let active = ActiveInstallation {
+        version: version.into(),
+        command,
+        args: Vec::new(),
+    };
+    let Ok(encoded) = serde_json::to_string(&active) else {
+        return Ok(());
+    };
+    let mut journal = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(provider.join("active.jsonl"))?;
+    writeln!(journal, "{encoded}")
+}
+
+#[test]
+fn a_provider_never_touched_was_never_installed() {
+    let Ok(dir) = tempfile::tempdir() else {
+        return;
+    };
+    assert!(!ever_installed(Some(dir.path()), &LanguageServerId::Texlab));
+    assert!(!ever_installed(None, &LanguageServerId::Texlab));
+}
+
+#[test]
+fn an_uninstalled_provider_still_counts_as_ever_installed() -> Result<(), Box<dyn std::error::Error>>
+{
+    let dir = tempfile::tempdir()?;
+    let server = LanguageServerId::Texlab;
+    activate(dir.path(), &server, "1.2.3")?;
+    assert!(ever_installed(Some(dir.path()), &server));
+
+    // Deactivating is what `read_active` replays away — and exactly the case that
+    // must not read as "never offered", or the prompt returns after an uninstall.
+    let provider = provider_root(dir.path(), &server);
+    let deactivation = serde_json::json!({ "deactivated": true, "version": "1.2.3" });
+    let mut journal = std::fs::OpenOptions::new()
+        .append(true)
+        .open(provider.join("active.jsonl"))?;
+    writeln!(journal, "{deactivation}")?;
+
+    assert!(
+        read_active(dir.path(), &server).is_none(),
+        "no longer active"
+    );
+    assert!(
+        ever_installed(Some(dir.path()), &server),
+        "but the question has been answered once already"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_declined_install_round_trips_and_can_be_cleared() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let server = LanguageServerId::Texlab;
+    assert!(read_declined(Some(dir.path()), &server).is_none());
+
+    let declined = Declined::now(DeclineScope::Forever, Some("1.2.3".into()));
+    write_declined(dir.path(), &server, &declined)?;
+    let read = read_declined(Some(dir.path()), &server).ok_or("declined record")?;
+    assert_eq!(read.scope, DeclineScope::Forever);
+    assert_eq!(read.version_offered.as_deref(), Some("1.2.3"));
+
+    clear_declined(dir.path(), &server)?;
+    assert!(read_declined(Some(dir.path()), &server).is_none());
+    // Clearing what is already cleared is the state the caller asked for.
+    clear_declined(dir.path(), &server)?;
+    Ok(())
+}
+
+#[test]
+fn a_permanent_refusal_suppresses_every_version() {
+    let declined = Declined::now(DeclineScope::Forever, Some("1.2.3".into()));
+    assert!(declined.suppresses(None));
+    assert!(declined.suppresses(Some("1.2.3")));
+    assert!(declined.suppresses(Some("9.9.9")));
+}
+
+#[test]
+fn a_version_refusal_is_spent_once_a_different_version_is_offered() {
+    let declined = Declined::now(DeclineScope::Version, Some("1.2.3".into()));
+    assert!(
+        declined.suppresses(Some("1.2.3")),
+        "the same offer is refused"
+    );
+    assert!(
+        !declined.suppresses(Some("9.9.9")),
+        "a new version is a new question"
+    );
+    // With nothing resolved there is no offer to compare, so the refusal stands
+    // rather than being re-asked on every launch.
+    assert!(declined.suppresses(None));
+}
+
+#[test]
+fn a_version_refusal_with_no_recorded_version_suppresses() {
+    let declined = Declined::now(DeclineScope::Version, None);
+    assert!(declined.suppresses(Some("1.2.3")));
+    assert!(declined.suppresses(None));
+}
+
+#[test]
+fn a_corrupt_declined_file_reads_as_no_refusal() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let server = LanguageServerId::Texlab;
+    let provider = provider_root(dir.path(), &server);
+    std::fs::create_dir_all(&provider)?;
+    std::fs::write(provider.join("declined.json"), b"{ not json")?;
+    // Failing open re-asks once; failing closed would silently disable a provider
+    // the user never refused, with no way to discover why.
+    assert!(read_declined(Some(dir.path()), &server).is_none());
     Ok(())
 }

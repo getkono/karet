@@ -286,6 +286,19 @@ impl Session {
             LspUpdate::InstallRequired { server, .. } => {
                 match self.config.settings.lsp.managed_downloads {
                     crate::config::schema::ManagedDownloads::Prompt => {
+                        // Ask at most once. A provider Karet has installed before
+                        // has had this question answered already, and a refusal the
+                        // user recorded is an answer too — re-asking either would
+                        // spend their bandwidth on a decision they have made.
+                        let root = self.config.lsp_registry_dir.as_deref();
+                        if crate::lsp_registry::ever_installed(root, &server) {
+                            return;
+                        }
+                        if let Some(declined) = crate::lsp_registry::read_declined(root, &server)
+                            && declined.suppresses(None)
+                        {
+                            return;
+                        }
                         self.emit(None, Event::LanguageServerInstallRequired { server });
                     },
                     crate::config::schema::ManagedDownloads::Auto => {

@@ -20,6 +20,43 @@ impl Session {
                     server: server.clone(),
                 }
             },
+            // The refusal is a local file write, not registry work: it must land
+            // even when the registry worker is gone, and it has nothing to download.
+            Command::DeclineLanguageServer { server, scope } => {
+                let Some(root) = self.config.lsp_registry_dir.clone() else {
+                    return true;
+                };
+                let version = crate::lsp_registry::installed_version(Some(&root), server);
+                let declined = crate::lsp_registry::Declined::now(*scope, version);
+                if let Err(message) = crate::lsp_registry::write_declined(&root, server, &declined)
+                {
+                    self.emit(
+                        Some(id),
+                        Event::Notification {
+                            severity: Severity::Error,
+                            kind: NotificationKind::Lsp,
+                            message: format!("could not record the refusal: {message}"),
+                        },
+                    );
+                }
+                return true;
+            },
+            Command::UndeclineLanguageServer { server } => {
+                let Some(root) = self.config.lsp_registry_dir.clone() else {
+                    return true;
+                };
+                if let Err(message) = crate::lsp_registry::clear_declined(&root, server) {
+                    self.emit(
+                        Some(id),
+                        Event::Notification {
+                            severity: Severity::Error,
+                            kind: NotificationKind::Lsp,
+                            message: format!("could not clear the refusal: {message}"),
+                        },
+                    );
+                }
+                return true;
+            },
             Command::CheckLanguageServerUpdates { server } => {
                 crate::lsp_registry::RegistryJob::Check {
                     request: id,
