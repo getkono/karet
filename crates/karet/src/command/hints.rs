@@ -308,8 +308,6 @@ impl Command {
             | Self::OverlayDown
             | Self::SearchSelectUp
             | Self::SearchSelectDown
-            | Self::SearchFocusUp
-            | Self::SearchFocusDown
             | Self::ContextMenuUp
             | Self::ContextMenuDown
             | Self::OpenCommitByHash

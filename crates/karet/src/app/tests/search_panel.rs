@@ -606,150 +606,128 @@ fn collapse_on_the_first_shut_heading_stays_put() {
     assert_eq!(app.search.selection.cursor(), 0, "nothing above to walk to");
 }
 
-/// The panel is one vertical ring: the visible fields, then the result rows.
-/// Before this, `Up`/`Down` in a field did nothing at all and the only way into
-/// the results was `Enter` or `Esc`.
+/// No arrow lifts the caret out of the field being typed in — not even off the
+/// last visible one, where the ring this replaces used to drop into the results.
+/// Driven through `handle_key` so the binding table and the `search_edit`
+/// fall-through are both in the loop, which is where the crossing lived.
 #[test]
-fn down_walks_the_visible_fields_and_then_into_the_results() {
+fn an_arrow_never_leaves_the_field_it_starts_in() {
     let mut app = app();
+    app.focus = Focus::Sidebar;
+    app.sidebar_panel = SidebarPanel::Search;
     app.search.hits = vec![search_hit(std::path::Path::new("/w/a.rs"), 2)];
     app.search.rebuild_rows();
     app.search.replace_visible = true;
     app.search.filters_visible = true;
-    app.search_focus_field(SearchPanelField::Find);
+    app.search.query = "needle".into();
 
-    for expected in [
+    for field in [
+        SearchPanelField::Find,
         SearchPanelField::Replace,
         SearchPanelField::Includes,
         SearchPanelField::Excludes,
     ] {
-        app.dispatch(Command::SearchFocusDown);
-        assert!(app.search.input);
-        assert_eq!(app.search.field, expected);
+        app.search_focus_field(field);
+        for code in [KeyCode::Down, KeyCode::Up] {
+            send_key(&mut app, code, KeyModifiers::NONE);
+            assert!(app.search.input, "{field:?} keeps the focus on {code:?}");
+            assert_eq!(app.search.field, field, "and stays this field");
+            assert_eq!(app.search.selection.cursor(), 0, "the rows do not move");
+        }
     }
-
-    // Parked deep in the list from an earlier browse: entering it from above
-    // still lands on the first row. `Esc` is what returns you to your place.
-    app.search.selection.move_to(1);
-    app.dispatch(Command::SearchFocusDown);
-    assert!(!app.search.input, "past the last field is the list");
-    assert_eq!(app.search.selection.cursor(), 0, "and on its first row");
-
-    app.dispatch(Command::SearchFocusDown);
-    assert_eq!(app.search.selection.cursor(), 1, "then it is a plain move");
+    assert_eq!(app.search.query, "needle", "and no arrow typed anything");
 }
 
-/// The mirror of the walk down. Without this a sign inversion in the step —
-/// `Up` in a field moving *down* the ring — passes the whole suite.
+/// The query is the only visible field when both sections are collapsed — the
+/// case the old ring turned into a one-key hop into the results — and an arrow
+/// must not reveal a hidden section the way `Tab` does either.
 #[test]
-fn up_walks_back_through_the_visible_fields() {
+fn an_arrow_in_the_lone_query_field_neither_enters_the_list_nor_reveals_a_section() {
     let mut app = app();
-    app.search.replace_visible = true;
-    app.search.filters_visible = true;
-    app.search_focus_field(SearchPanelField::Excludes);
-
-    for expected in [
-        SearchPanelField::Includes,
-        SearchPanelField::Replace,
-        SearchPanelField::Find,
-    ] {
-        app.dispatch(Command::SearchFocusUp);
-        assert!(app.search.input);
-        assert_eq!(app.search.field, expected);
-    }
-}
-
-#[test]
-fn down_skips_the_sections_that_are_hidden() {
-    let mut app = app();
+    app.focus = Focus::Sidebar;
+    app.sidebar_panel = SidebarPanel::Search;
     app.search.hits = vec![search_hit(std::path::Path::new("/w/a.rs"), 1)];
     app.search.rebuild_rows();
     app.search.replace_visible = false;
     app.search.filters_visible = false;
     app.search_focus_field(SearchPanelField::Find);
 
-    app.dispatch(Command::SearchFocusDown);
-    assert!(
-        !app.search.input,
-        "the query is the only field, so Down enters the list"
-    );
-    assert_eq!(app.search.selection.cursor(), 0);
-}
-
-/// Unlike `Tab`, the ring never reveals a hidden section — it navigates what is
-/// painted, so `Down` cannot park the caret somewhere off screen.
-#[test]
-fn down_never_reveals_a_hidden_section() {
-    let mut app = app();
-    app.search.replace_visible = false;
-    app.search_focus_field(SearchPanelField::Find);
-    app.dispatch(Command::SearchFocusDown);
+    send_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    assert!(app.search.input, "the list is still one Enter/Esc away");
     assert!(
         !app.search.replace_visible,
         "Tab reveals, the arrows do not"
     );
+    assert!(!app.search.filters_visible);
 }
 
+/// The mirror direction: browsing the results with the arrows never falls out of
+/// the list into a text box at its first row, empty list included.
 #[test]
-fn up_from_the_first_row_returns_to_the_last_visible_field() {
+fn an_arrow_never_leaves_the_result_list() {
     let mut app = app();
+    app.focus = Focus::Sidebar;
+    app.sidebar_panel = SidebarPanel::Search;
     app.search.hits = vec![search_hit(std::path::Path::new("/w/a.rs"), 2)];
     app.search.rebuild_rows();
-    app.search.replace = "x".into();
     app.search.replace_visible = true;
     app.search.input = false;
-    app.search.selection.move_to(1);
+    app.search.selection.move_to(0);
 
-    app.dispatch(Command::SearchFocusUp);
-    assert!(!app.search.input, "still in the list");
+    send_key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+    assert!(!app.search.input, "no step back into the fields");
     assert_eq!(app.search.selection.cursor(), 0);
 
-    app.dispatch(Command::SearchFocusUp);
-    assert!(app.search.input);
-    assert_eq!(app.search.field, SearchPanelField::Replace);
+    send_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
     assert_eq!(
-        app.search.replace_edit.cursor(),
+        app.search.selection.cursor(),
         1,
-        "the caret lands at the end, where typing continues"
+        "a plain move within the list"
     );
-}
 
-/// The escape hatch out of a list with nothing in it: the cursor is 0, so `Up`
-/// still steps back into the fields.
-#[test]
-fn up_leaves_an_empty_result_list() {
-    let mut app = app();
-    app.search.replace_visible = false;
-    app.search.filters_visible = false;
+    // …and with nothing under it either, where the old ring found its escape.
+    app.search.hits.clear();
+    app.search.rebuild_rows();
     app.search.input = false;
-    app.dispatch(Command::SearchFocusUp);
-    assert!(app.search.input);
-    assert_eq!(app.search.field, SearchPanelField::Find);
+    send_key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+    assert!(!app.search.input, "an empty list is left with Esc, not Up");
 }
 
+/// `Cmd`+arrow is the one arrow that still does something in a field: it moves
+/// the caret. `KeyChord::from_event` normalizes it to `Ctrl+Home`/`Ctrl+End`,
+/// which is unbound in the Search modal, so it reaches `search_edit` carrying its
+/// original `SUPER`. Removing the plain bindings must not have taken this too.
 #[test]
-fn the_ring_stops_at_both_ends() {
+fn a_command_arrow_still_moves_the_caret_in_a_field() {
     let mut app = app();
-    app.search.replace_visible = false;
-    app.search.filters_visible = false;
+    app.focus = Focus::Sidebar;
+    app.sidebar_panel = SidebarPanel::Search;
+    app.search.query = "needle".into();
     app.search_focus_field(SearchPanelField::Find);
+    assert_eq!(app.search.query_edit.cursor(), 6);
 
-    app.dispatch(Command::SearchFocusUp);
+    send_key(&mut app, KeyCode::Up, KeyModifiers::SUPER);
     assert_eq!(
-        app.search.field,
-        SearchPanelField::Find,
-        "no wrap at the top"
+        app.search.query_edit.cursor(),
+        0,
+        "Cmd+Up is caret-to-start"
+    );
+    assert!(
+        app.search.input,
+        "and still a caret motion, not a focus move"
+    );
+
+    send_key(&mut app, KeyCode::Down, KeyModifiers::SUPER);
+    assert_eq!(
+        app.search.query_edit.cursor(),
+        6,
+        "Cmd+Down is caret-to-end"
     );
     assert!(app.search.input);
-
-    // No rows, so there is nowhere below the last field to go either.
-    app.dispatch(Command::SearchFocusDown);
-    assert!(app.search.input, "no wrap into an empty list");
-    assert_eq!(app.search.field, SearchPanelField::Find);
 }
 
-/// `j`/`k` are deliberately not part of the ring: a vim-style browse must not
-/// fall out of the list into a text field at its first row.
+/// `j`/`k` browse the list exactly as the arrows do — neither drops out of it at
+/// the first row.
 #[test]
 fn k_at_the_first_row_stays_in_the_list() {
     let mut app = app();
@@ -758,7 +736,7 @@ fn k_at_the_first_row_stays_in_the_list() {
     app.search.input = false;
     app.search.selection.move_to(0);
     app.dispatch(Command::SearchSelectUp);
-    assert!(!app.search.input, "list-only, unlike the arrows");
+    assert!(!app.search.input, "list-only, like the arrows");
     assert_eq!(app.search.selection.cursor(), 0);
 }
 

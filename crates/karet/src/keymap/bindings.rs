@@ -407,12 +407,11 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Workspace Search: navigating the results list.
     b(SearchList, false, false, false, Esc,       Command::SearchQuit),
     b(SearchList, false, false, false, Enter,     Command::SearchOpen),
-    // The arrows walk the panel's whole focus ring — off the top of the list they
-    // step back into the fields above it — while `j`/`k` stay list-only, so a
-    // vim-style browse never lands in a text box mid-scroll.
-    b(SearchList, false, false, false, Down,      Command::SearchFocusDown),
+    // The arrows and `j`/`k` alike stay inside the list: neither walks off its
+    // first row into the fields above it. `Esc` is the way back to the query.
+    b(SearchList, false, false, false, Down,      Command::SearchSelectDown),
     b(SearchList, false, false, false, Char('j'), Command::SearchSelectDown),
-    b(SearchList, false, false, false, Up,        Command::SearchFocusUp),
+    b(SearchList, false, false, false, Up,        Command::SearchSelectUp),
     b(SearchList, false, false, false, Char('k'), Command::SearchSelectUp),
     b(SearchList, false, false, false, Right,     Command::SearchExpand),
     b(SearchList, false, false, false, Char('l'), Command::SearchExpand),
@@ -430,10 +429,10 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(SearchInput, false, false, false, Esc,   Command::SearchEndInput),
     b(SearchInput, false, false, false, Enter, Command::SearchRun),
     b(SearchInput, false, false, false, Tab,   Command::SearchToggleField),
-    // The other half of the ring. `Cmd`+arrow normalizes to `Ctrl+Home`/`Ctrl+End`
-    // (see `KeyChord::from_event`), so these cannot shadow the caret motions.
-    b(SearchInput, false, false, false, Up,    Command::SearchFocusUp),
-    b(SearchInput, false, false, false, Down,  Command::SearchFocusDown),
+    // Deliberately no plain `Up`/`Down` here: an arrow must never lift the caret
+    // out of the field being typed in. Unbound, they fall through to `search_edit`,
+    // which absorbs them; `Cmd`+arrow still reaches it as a caret motion, because
+    // `KeyChord::from_event` normalizes it to `Ctrl+Home`/`Ctrl+End` first.
     b(SearchInput, true,  false, false, Char('a'), Command::EditorSelectAll),
     b(SearchInput, true,  false, false, Char('c'), Command::Copy),
     b(SearchInput, true,  false, false, Char('x'), Command::Cut),

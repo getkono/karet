@@ -1,51 +1,50 @@
-//! The workspace Search panel's key resolution: the focus-ring arrows, the
-//! list-only `j`/`k`, and the Global chords the Search modals still let through.
-//! Split out of `tests.rs` to keep that file under the workspace code-line
-//! ceiling.
+//! The workspace Search panel's key resolution: the list-only arrows, the
+//! deliberately unbound ones in a field, and the Global chords the Search modals
+//! still let through. Split out of `tests.rs` to keep that file under the
+//! workspace code-line ceiling.
 
 use super::*;
 
-/// The arrows walk the panel's one focus ring, in both modals; `j`/`k` stay
-/// list-only so a vim-style browse never drops into a text field.
+/// The arrows never cross the field/list seam. In the list they move the row
+/// cursor, exactly as `j`/`k` do; in a field they resolve to nothing at all, so
+/// they fall through to `search_edit` rather than lifting the caret out.
 #[test]
-fn search_arrows_walk_the_focus_ring_in_both_modals() {
+fn search_arrows_stay_inside_the_surface_they_start_in() {
     let plain = |code| [KeyChord::from_event(key(code, KeyModifiers::NONE))];
-    for modal in [Modal::SearchList, Modal::SearchInput] {
-        let ctx = Context::modal(modal, FocusTarget::Search);
-        assert_eq!(
-            resolve(ctx, &plain(KeyCode::Up)),
-            Resolved::Command(Command::SearchFocusUp),
-            "{modal:?}"
-        );
-        assert_eq!(
-            resolve(ctx, &plain(KeyCode::Down)),
-            Resolved::Command(Command::SearchFocusDown),
-            "{modal:?}"
-        );
-    }
     let list = Context::modal(Modal::SearchList, FocusTarget::Search);
-    assert_eq!(
-        resolve(list, &plain(KeyCode::Char('k'))),
-        Resolved::Command(Command::SearchSelectUp)
-    );
-    assert_eq!(
-        resolve(list, &plain(KeyCode::Char('j'))),
-        Resolved::Command(Command::SearchSelectDown)
-    );
-}
+    for (code, command) in [
+        (KeyCode::Up, Command::SearchSelectUp),
+        (KeyCode::Down, Command::SearchSelectDown),
+        (KeyCode::Char('k'), Command::SearchSelectUp),
+        (KeyCode::Char('j'), Command::SearchSelectDown),
+    ] {
+        assert_eq!(resolve(list, &plain(code)), Resolved::Command(command));
+    }
 
-/// `Cmd`+arrow canonicalizes to `Ctrl+Home`/`Ctrl+End`, so the new plain-arrow
-/// bindings cannot swallow the caret motions `search_edit` handles.
-#[test]
-fn a_command_arrow_does_not_resolve_to_a_search_focus_step() {
     let input = Context::modal(Modal::SearchInput, FocusTarget::Search);
     for code in [KeyCode::Up, KeyCode::Down] {
-        let resolved = resolve(
-            input,
-            &[KeyChord::from_event(key(code, KeyModifiers::SUPER))],
+        assert_eq!(
+            resolve(input, &plain(code)),
+            Resolved::None,
+            "{code:?} belongs to the field, not the panel"
         );
-        assert_ne!(resolved, Resolved::Command(Command::SearchFocusUp));
-        assert_ne!(resolved, Resolved::Command(Command::SearchFocusDown));
+    }
+}
+
+/// `Cmd`+arrow canonicalizes to `Ctrl+Home`/`Ctrl+End`, which is likewise unbound
+/// in the Search modal — so it reaches `search_edit` and moves the caret.
+#[test]
+fn a_command_arrow_falls_through_to_the_field_editor() {
+    let input = Context::modal(Modal::SearchInput, FocusTarget::Search);
+    for code in [KeyCode::Up, KeyCode::Down, KeyCode::Left, KeyCode::Right] {
+        assert_eq!(
+            resolve(
+                input,
+                &[KeyChord::from_event(key(code, KeyModifiers::SUPER))],
+            ),
+            Resolved::None,
+            "{code:?}"
+        );
     }
 }
 

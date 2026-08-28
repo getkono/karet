@@ -375,57 +375,6 @@ impl App {
         edit.set_cursor(&owned, len, false);
     }
 
-    /// Walk the panel's one vertical focus ring: the visible fields top to bottom,
-    /// then the result rows.
-    ///
-    /// The ring stops at both ends rather than wrapping — a `Down` that jumped
-    /// from the last result back to the query box would turn a held key into a
-    /// text field the user is not looking at. It also never *reveals* a hidden
-    /// section the way `Tab` does: `Down` navigates what is painted.
-    ///
-    /// Only the *sign* of `delta` is read: this is a one-step walk over a ring
-    /// whose two halves count in different units, so a magnitude would mean rows
-    /// below the seam and fields above it. Entering the list therefore lands on
-    /// its first row, not wherever the cursor was left — `Esc` is the way back to
-    /// a place you were holding.
-    pub(super) fn search_focus_step(&mut self, delta: i32) {
-        let step = delta.signum();
-        if step == 0 {
-            return;
-        }
-        if !self.search.input {
-            // Leaving the list only happens off its first row, which covers the
-            // empty-result case (the cursor is 0) — otherwise there would be no
-            // way back to the query from a search that found nothing.
-            if step < 0 && self.search.selection.cursor() == 0 {
-                // `visible_fields` always yields at least the query, so the list
-                // always has a field to step back into.
-                if let Some(last) = self.search.visible_fields().next_back() {
-                    self.search_focus_field(last);
-                }
-            } else {
-                self.search.selection.move_by(step);
-            }
-            return;
-        }
-        let fields: Vec<SearchPanelField> = self.search.visible_fields().collect();
-        let at = fields
-            .iter()
-            .position(|&field| field == self.search.field)
-            .unwrap_or(0);
-        let next = at as i64 + i64::from(step);
-        if let Ok(index) = usize::try_from(next)
-            && let Some(&field) = fields.get(index)
-        {
-            self.search_focus_field(field);
-        } else if step > 0 && !self.search.rows.is_empty() {
-            // Past the last field is the list; with no rows there is nowhere to
-            // go, so the key is absorbed rather than moving focus off screen.
-            self.search.input = false;
-            self.search.selection.move_to(0);
-        }
-    }
-
     /// Show or hide the include/exclude glob fields (collapsing them returns focus
     /// to the query).
     pub(super) fn search_toggle_filters(&mut self) {
@@ -576,11 +525,11 @@ impl App {
                 .set_all_collapsed(matches_found > SEARCH_AUTO_EXPAND);
         }
         // A settled search with nothing in it leaves the results holding a focus
-        // with no row under it, so hand the focus back to the query — that is the
-        // thing you go on to edit. Only here, never on the re-run that empties the
-        // list: any file save re-runs a live search through the watcher, and
-        // pulling focus into a text field mid-stream would turn a reader's next
-        // arrow press into typing.
+        // with no row under it — and no arrow key crosses back out of the list —
+        // so hand the focus to the query, which is the thing you go on to edit.
+        // Only here, never on the re-run that empties the list: any file save
+        // re-runs a live search through the watcher, and pulling focus into a text
+        // field mid-stream would turn a reader's next arrow press into typing.
         if !self.search.input && self.search.rows.is_empty() {
             self.search_focus_field(SearchPanelField::Find);
         }

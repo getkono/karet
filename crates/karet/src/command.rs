@@ -592,12 +592,6 @@ pub enum Command {
     SearchBeginInput,
     /// Leave the Search panel (from the results list).
     SearchQuit,
-    /// Move the Search panel's focus up one step: to the previous field, or out
-    /// of the result list into the last one.
-    SearchFocusUp,
-    /// Move the Search panel's focus down one step: to the next field, or from the
-    /// last one into the result list.
-    SearchFocusDown,
     /// Expand the selected Search file group, or step into an open one.
     SearchExpand,
     /// Collapse the selected Search file group, or step up to its heading.
@@ -913,8 +907,6 @@ impl Command {
             Self::SearchOpen => "Search: Open Selected Result",
             Self::SearchBeginInput => "Search: Edit Query",
             Self::SearchQuit => "Search: Leave Panel",
-            Self::SearchFocusUp => "Search: Focus Previous",
-            Self::SearchFocusDown => "Search: Focus Next",
             Self::SearchExpand => "Search: Expand Group",
             Self::SearchCollapse => "Search: Collapse Group",
             Self::SearchToggleAll => "Search: Collapse or Expand All",
