@@ -20,6 +20,7 @@ use serde_json::json;
 use tokio::io::AsyncBufRead;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncRead;
+use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
 use tokio::io::BufReader;
 use tokio::net::TcpListener;
@@ -179,9 +180,19 @@ async fn serve_client<P: BrokerProtocol>(
     let client = core.next_client.fetch_add(1, Ordering::Relaxed);
     let (read, write) = stream.into_split();
     let mut reader = BufReader::new(read);
+    let expected = format!("{}{token}", P::PRELUDE);
+    // Cap the one unauthenticated read at the only line that could be valid,
+    // plus its line ending: uncapped, any local process able to reach the
+    // loopback socket could stream arbitrary bytes into the broker *before*
+    // authenticating. A read cut short at the cap just fails the comparison.
+    let limit = expected.len() as u64 + 2;
     let mut prelude = String::new();
-    reader.read_line(&mut prelude).await.map_err(io_error)?;
-    if prelude.trim_end() != format!("{}{token}", P::PRELUDE) {
+    (&mut reader)
+        .take(limit)
+        .read_line(&mut prelude)
+        .await
+        .map_err(io_error)?;
+    if prelude.trim_end() != expected {
         return Err(BrokerError::Io("broker authentication failed".to_owned()));
     }
     let (tx, rx) = mpsc::channel(CLIENT_QUEUE);

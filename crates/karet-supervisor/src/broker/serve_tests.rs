@@ -275,3 +275,26 @@ async fn a_framing_error_still_releases_the_client() -> Result<(), BoxError> {
     assert_eq!(harness.core.state.gone.load(Ordering::Acquire), 1);
     Ok(())
 }
+
+#[tokio::test]
+async fn an_unterminated_prelude_is_cut_off_at_the_cap() -> Result<(), BoxError> {
+    let harness = Harness::start("token").await?;
+    let stream = TcpStream::connect(harness.address).await?;
+    let (read, mut write) = stream.into_split();
+    let mut reader = BufReader::new(read);
+
+    // Far past any legal prelude and never newline-terminated. Uncapped, the
+    // broker would sit on this read for as long as the connection stayed open;
+    // the write may be reset once the broker gives up, which is the point.
+    let _ = write.write_all(&[b'x'; 4096]).await;
+
+    let mut line = String::new();
+    let closed =
+        tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut line)).await??;
+    assert_eq!(closed, 0);
+
+    // The rejected connection wedged nothing: the broker still serves.
+    let (_reader, _writer) = harness.client().await?;
+    harness.wait_for_clients(1).await?;
+    Ok(())
+}
