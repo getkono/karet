@@ -530,6 +530,8 @@ fn double_clicking_a_match_row_folds_nothing() {
 
 /// Clicking a result moves the panel's focus onto the list, so the arrow keys
 /// that follow navigate rows instead of editing whichever field was last active.
+/// The click also opens the file, which must not undo that by handing the
+/// keyboard to the editor.
 #[test]
 fn clicking_a_result_moves_focus_out_of_the_fields() {
     let dir = test_dir("search-click-focus");
@@ -543,6 +545,50 @@ fn clicking_a_result_moves_focus_out_of_the_fields() {
 
     app.handle_sidebar_click(3, 5, KeyModifiers::NONE);
     assert!(!app.search.input, "the results hold the focus now");
+    assert_eq!(app.focus, Focus::Sidebar, "and the panel still has them");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `Enter` on a hit is a step *through* the list, not out of it: the file opens
+/// at the match, and the panel keeps the keyboard so the next arrow reaches the
+/// next hit. Before this the open moved focus to the editor and ended the browse.
+#[test]
+fn opening_a_result_leaves_the_keyboard_with_the_panel() {
+    let dir = test_dir("search-open-focus");
+    write_file(
+        &dir,
+        "a.rs",
+        b"let needle0 = 1;\nlet needle1 = 2;\nlet needle2 = 3;\n",
+    );
+    let mut app = app();
+    app.root = dir.clone();
+    app.focus = Focus::Sidebar;
+    app.sidebar_panel = SidebarPanel::Search;
+    app.search.hits = vec![search_hit(&dir.join("a.rs"), 3)];
+    app.search.rebuild_rows();
+    app.search.input = false;
+    // Row 2 is the *second* match: a heading would open line 0 and pass anyway.
+    app.search.selection.move_to(2);
+
+    app.dispatch(Command::SearchOpen);
+    assert_eq!(
+        app.tabs[app.active].editor.cursor(),
+        LineCol::new(1, 4),
+        "the file opened at the match"
+    );
+    assert_eq!(app.focus, Focus::Sidebar, "but the panel kept the keyboard");
+
+    // …so the browse carries on where it left off.
+    send_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    assert!(!app.search.input);
+    assert_eq!(
+        app.search.selection.cursor(),
+        3,
+        "the next arrow moves rows"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A match has no children, so `Right` has nothing to step into. Falling through

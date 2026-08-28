@@ -186,7 +186,7 @@ impl App {
             return;
         };
         let (path, position) = (hit.path.clone(), hit.range.start);
-        self.focus_by_file_line(&path, position);
+        self.focus_by_file_line(&path, position, true);
     }
 
     /// Route a click inside the Spelling panel: a header action, or a result row.

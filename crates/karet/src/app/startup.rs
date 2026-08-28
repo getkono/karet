@@ -265,8 +265,7 @@ impl App {
         // `line`/`col` are 1-based with a minimum of 1; `saturating_sub` maps them to
         // the editor's 0-based coordinates, and `goto` clamps into the buffer.
         let pos = LineCol::new(line.saturating_sub(1), col.saturating_sub(1));
-        self.focus_by_file_line(path, pos);
-        self.focus = Focus::Editor;
+        self.focus_by_file_line(path, pos, true);
     }
 
     /// Open `path` in a new right split at startup (from the `--split` flag): the

@@ -16,11 +16,34 @@ fn focus_by_file_line_opens_at_the_target_and_focuses_the_editor() {
     write_file(&dir, "a.rs", b"fn a() {}\nlet x = 1;\nlet y = 2;\n");
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
-    app.focus_by_file_line(&dir.join("a.rs"), LineCol::new(2, 4));
+    app.focus_by_file_line(&dir.join("a.rs"), LineCol::new(2, 4), true);
 
     assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
     assert_eq!(app.focus, Focus::Editor);
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(2, 4));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The other half of `steal_focus`: the jump opens and positions the tab, but
+/// leaves the keyboard wherever it was. This is what lets a result list stay
+/// browsable after opening a hit.
+#[test]
+fn focus_by_file_line_can_open_without_taking_the_focus() {
+    let dir = test_dir("focus-by-line-keep");
+    write_file(&dir, "a.rs", b"fn a() {}\nlet x = 1;\nlet y = 2;\n");
+
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.focus = Focus::Sidebar;
+    app.focus_by_file_line(&dir.join("a.rs"), LineCol::new(2, 4), false);
+
+    assert_eq!(app.focus, Focus::Sidebar, "the sidebar keeps the keyboard");
+    assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
+    assert_eq!(
+        app.tabs[app.active].editor.cursor(),
+        LineCol::new(2, 4),
+        "and the file still opened at the target"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -32,7 +55,7 @@ fn focus_by_file_line_resolves_a_relative_path_against_the_workspace_root() {
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     // VCS change paths and search hits both arrive repo-relative.
-    app.focus_by_file_line(Path::new("src/main.rs"), LineCol::new(1, 0));
+    app.focus_by_file_line(Path::new("src/main.rs"), LineCol::new(1, 0), true);
 
     assert_eq!(
         app.tabs[app.active].path(),
@@ -50,9 +73,9 @@ fn focus_by_file_line_moves_the_caret_in_an_already_open_tab() {
     let path = dir.join("a.rs");
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
-    app.focus_by_file_line(&path, LineCol::new(0, 0));
+    app.focus_by_file_line(&path, LineCol::new(0, 0), true);
     let opened = app.tabs.len();
-    app.focus_by_file_line(&path, LineCol::new(3, 2));
+    app.focus_by_file_line(&path, LineCol::new(3, 2), true);
 
     assert_eq!(app.tabs.len(), opened, "the second jump reuses the tab");
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(3, 2));
@@ -66,7 +89,7 @@ fn focus_by_file_line_clamps_a_target_past_the_end_of_the_buffer() {
     write_file(&dir, "a.txt", b"one\ntwo\n");
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
-    app.focus_by_file_line(&dir.join("a.txt"), LineCol::new(9999, 9999));
+    app.focus_by_file_line(&dir.join("a.txt"), LineCol::new(9999, 9999), true);
 
     let caret = app.tabs[app.active].editor.cursor();
     assert!(

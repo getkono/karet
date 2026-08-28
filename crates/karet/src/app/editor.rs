@@ -374,7 +374,7 @@ impl App {
             return;
         }
         // Land the caret on the diff's first changed line (1-based from the VCS).
-        self.focus_by_file_line(&abs, LineCol::new(line.saturating_sub(1), 0));
+        self.focus_by_file_line(&abs, LineCol::new(line.saturating_sub(1), 0), true);
     }
     /// Fold or unfold the code region at the cursor: prefer a fold headered on the
     /// cursor line, else the innermost fold containing it. Collapsing a region the

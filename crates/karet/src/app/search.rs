@@ -583,6 +583,11 @@ impl App {
 
     /// Open the selected row: a match row jumps to that exact match, a file
     /// heading to the file's first one.
+    ///
+    /// The panel keeps the keyboard. Opening a hit is a step *through* a result
+    /// list, not out of it — the next arrow should reach the next hit, so the file
+    /// appears in the editor while the focus stays where the reader put it. `Esc`
+    /// is what hands the keyboard to the editor.
     pub(super) fn open_selected_result(&mut self) {
         let Some(row) = self
             .search
@@ -606,7 +611,7 @@ impl App {
             .matches
             .get(index)
             .map_or(LineCol::new(0, 0), |m| m.range.start);
-        self.focus_by_file_line(&path, position);
+        self.focus_by_file_line(&path, position, false);
     }
 
     /// Expand or collapse the selected file group.
