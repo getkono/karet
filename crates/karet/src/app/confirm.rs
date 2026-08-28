@@ -33,6 +33,23 @@ pub(crate) enum ConfirmAction {
     DiscardPaths(Vec<PathBuf>),
     /// Delete these explorer entries from disk (recursively, for directories).
     DeleteExplorerPaths(Vec<PathBuf>),
+    /// Save every dirty editor, then switch to this branch.
+    SaveAndSwitch(karet_vcs::BranchTarget),
+    /// Stash the worktree, then retry the refused switch to this branch.
+    StashAndSwitch(karet_vcs::BranchTarget),
+    /// Permanently remove this stash entry.
+    DropStash(String),
+    /// Undo a commit that is already present upstream.
+    UndoPublishedCommit,
+    /// Hard-reset the worktree to this revision.
+    ResetHard(String),
+    /// Delete this branch from the remote.
+    DeleteRemoteBranch {
+        /// The remote holding the branch.
+        remote: String,
+        /// The branch to delete.
+        branch: String,
+    },
 }
 
 impl From<Command> for ConfirmAction {
@@ -53,6 +70,12 @@ pub(crate) fn confirm_label(action: &ConfirmAction) -> String {
         ConfirmAction::Command(command) => command.label().to_string(),
         ConfirmAction::DiscardPaths(_) => "Discard".to_string(),
         ConfirmAction::DeleteExplorerPaths(_) => "Delete".to_string(),
+        ConfirmAction::SaveAndSwitch(_) => "Save all and switch".to_string(),
+        ConfirmAction::StashAndSwitch(_) => "Stash and switch".to_string(),
+        ConfirmAction::DropStash(_) => "Drop".to_string(),
+        ConfirmAction::UndoPublishedCommit => "Undo".to_string(),
+        ConfirmAction::ResetHard(_) => "Reset".to_string(),
+        ConfirmAction::DeleteRemoteBranch { .. } => "Delete".to_string(),
     }
 }
 
@@ -143,6 +166,28 @@ impl App {
             ConfirmAction::Command(command) => self.dispatch(command),
             ConfirmAction::DiscardPaths(paths) => self.discard_paths(paths),
             ConfirmAction::DeleteExplorerPaths(paths) => self.delete_explorer_paths(paths),
+            ConfirmAction::SaveAndSwitch(target) => self.save_then_switch(target),
+            ConfirmAction::StashAndSwitch(target) => {
+                self.run_vcs_action(VcsAction::StashPush(karet_vcs::StashOptions::default()));
+                self.run_vcs_action(VcsAction::SwitchBranch(target));
+            },
+            ConfirmAction::DropStash(reference) => {
+                self.run_vcs_action(VcsAction::StashDrop { reference });
+            },
+            ConfirmAction::UndoPublishedCommit => {
+                self.run_vcs_action(VcsAction::UndoCommit {
+                    allow_upstream: true,
+                });
+            },
+            ConfirmAction::ResetHard(rev) => {
+                self.run_vcs_action(VcsAction::Reset {
+                    mode: karet_vcs::ResetMode::Hard,
+                    rev,
+                });
+            },
+            ConfirmAction::DeleteRemoteBranch { remote, branch } => {
+                self.run_vcs_action(VcsAction::DeleteRemoteBranch { remote, branch });
+            },
         }
     }
 

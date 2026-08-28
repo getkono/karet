@@ -90,22 +90,10 @@ pub enum StashAction {
 pub enum TextPurpose {
     /// Create a branch from this stash reference.
     StashBranch { reference: String },
-    /// Save every dirty editor, then switch branches.
-    SaveAndSwitch { target: BranchTarget },
-    /// Stash worktree changes and retry a refused branch switch.
-    StashAndSwitch { target: BranchTarget },
-    /// Confirm permanent stash removal by typing `drop`.
-    ConfirmDropStash { reference: String },
-    /// Confirm undoing a commit already present upstream by typing `undo`.
-    ConfirmPublishedUndo,
     /// Rename `old` to the submitted name.
     RenameBranch { old: String },
     /// Tag `rev` with the submitted name (lightweight).
     TagCreate { rev: String },
-    /// Confirm a hard reset to `rev` by typing `reset`.
-    ConfirmResetHard { rev: String },
-    /// Confirm remote deletion by typing the exact branch name.
-    ConfirmDeleteRemoteBranch { remote: String, branch: String },
     /// Evaluate the submitted expression in the debuggee.
     DebugEvaluate,
     /// Confirm opening a relative file link that escaped the workspace.

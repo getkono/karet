@@ -362,6 +362,13 @@ impl App {
             None => return,
         };
         self.overlay = None;
+        self.handle_overlay_event(event);
+    }
+
+    /// Run what one accepted overlay row stands for. Split from
+    /// [`overlay_accept`](Self::overlay_accept) so each follow-up — several of
+    /// which now raise a confirmation rather than acting — is reachable on its own.
+    pub(super) fn handle_overlay_event(&mut self, event: OverlayEvent) {
         match event {
             OverlayEvent::Close => {},
             OverlayEvent::AcceptFile(path) => self.open_path(&path),
@@ -404,10 +411,14 @@ impl App {
                     self.run_vcs_action(VcsAction::StashPop { reference });
                 },
                 StashAction::Drop(reference) => {
-                    self.overlay = Some(Overlay::text(
-                        "Type drop to permanently remove the stash",
-                        TextPurpose::ConfirmDropStash { reference },
-                    ));
+                    self.confirm_action(
+                        format!("Drop stash {reference}?"),
+                        "Permanently removes this stash entry and the changes it \
+                         holds. There is no reflog for a dropped stash.",
+                        "Keep the stash",
+                        "Drop",
+                        ConfirmAction::DropStash(reference),
+                    );
                 },
                 StashAction::Branch(reference) => {
                     self.overlay = Some(Overlay::text(
@@ -427,39 +438,6 @@ impl App {
                         });
                     }
                 },
-                TextPurpose::SaveAndSwitch { target } => {
-                    if text == "save" {
-                        self.save_then_switch(target);
-                    } else {
-                        self.status = Some("branch switch cancelled".to_string());
-                    }
-                },
-                TextPurpose::StashAndSwitch { target } => {
-                    if text == "stash" {
-                        self.run_vcs_action(VcsAction::StashPush(
-                            karet_vcs::StashOptions::default(),
-                        ));
-                        self.run_vcs_action(VcsAction::SwitchBranch(target));
-                    } else {
-                        self.status = Some("branch switch cancelled".to_string());
-                    }
-                },
-                TextPurpose::ConfirmDropStash { reference } => {
-                    if text == "drop" {
-                        self.run_vcs_action(VcsAction::StashDrop { reference });
-                    } else {
-                        self.status = Some("stash drop cancelled".to_string());
-                    }
-                },
-                TextPurpose::ConfirmPublishedUndo => {
-                    if text == "undo" {
-                        self.run_vcs_action(VcsAction::UndoCommit {
-                            allow_upstream: true,
-                        });
-                    } else {
-                        self.status = Some("undo commit cancelled".to_string());
-                    }
-                },
                 TextPurpose::RenameBranch { old } => {
                     if text.trim().is_empty() {
                         self.status = Some("rename branch: enter a new name".to_string());
@@ -476,23 +454,6 @@ impl App {
                             rev,
                             message: None,
                         });
-                    }
-                },
-                TextPurpose::ConfirmResetHard { rev } => {
-                    if text == "reset" {
-                        self.run_vcs_action(VcsAction::Reset {
-                            mode: karet_vcs::ResetMode::Hard,
-                            rev,
-                        });
-                    } else {
-                        self.status = Some("hard reset cancelled".to_string());
-                    }
-                },
-                TextPurpose::ConfirmDeleteRemoteBranch { remote, branch } => {
-                    if text == branch {
-                        self.run_vcs_action(VcsAction::DeleteRemoteBranch { remote, branch });
-                    } else {
-                        self.status = Some("remote branch deletion cancelled".to_string());
                     }
                 },
                 TextPurpose::DebugEvaluate => self.debug_evaluate(text),
@@ -555,10 +516,16 @@ impl App {
                 self.run_vcs_action(VcsAction::DeleteBranch { name });
             },
             OverlayEvent::AcceptDeleteRemoteBranch { remote, branch } => {
-                self.overlay = Some(Overlay::text(
-                    format!("Type {branch} to delete {remote}/{branch}"),
-                    TextPurpose::ConfirmDeleteRemoteBranch { remote, branch },
-                ));
+                self.confirm_action(
+                    format!("Delete {remote}/{branch}?"),
+                    format!(
+                        "Deletes the branch from {remote} for everyone. Anyone \
+                         without a local copy loses access to its commits."
+                    ),
+                    "Keep the branch",
+                    format!("Delete {remote}/{branch}"),
+                    ConfirmAction::DeleteRemoteBranch { remote, branch },
+                );
             },
         }
     }

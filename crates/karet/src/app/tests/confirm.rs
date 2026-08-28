@@ -144,3 +144,88 @@ fn discarding_from_source_control_asks_before_it_acts() {
         .unwrap_or_default();
     assert!(title.contains("Discard"), "{title}");
 }
+
+/// The answer a dialog runs when the user presses Enter without reading it.
+fn safe_answer(app: &App) -> Option<ConfirmAction> {
+    selected(app)
+}
+
+/// Every dialog's title, for asserting the question actually names its subject.
+fn title(app: &App) -> String {
+    app.confirm
+        .as_ref()
+        .map(|d| d.title.clone())
+        .unwrap_or_default()
+}
+
+#[test]
+fn switching_branches_with_dirty_editors_asks_before_saving() {
+    let mut app = app();
+    app.tabs.push(text_tab("a.rs", "alpha"));
+    app.active = app.tabs.len() - 1;
+    app.tabs[app.active].dirty = true;
+
+    app.guard_branch_switch(karet_vcs::BranchTarget::Local("feature".to_string()));
+    assert!(app.confirm.is_some());
+    assert!(title(&app).contains("unsaved"), "{}", title(&app));
+    assert_eq!(
+        safe_answer(&app),
+        Some(ConfirmAction::Cancel),
+        "staying put is what Enter does"
+    );
+}
+
+#[test]
+fn a_clean_worktree_switches_branches_without_asking() {
+    let (backend, mut app) = recording_app();
+    app.guard_branch_switch(karet_vcs::BranchTarget::Local("feature".to_string()));
+    assert!(app.confirm.is_none(), "nothing to warn about");
+    assert!(
+        !sent(&backend).is_empty(),
+        "the switch ran straight through"
+    );
+}
+
+#[test]
+fn a_hard_reset_names_the_revision_and_defaults_to_cancel() {
+    let mut app = app();
+    app.confirm_action(
+        "Hard-reset to 76784c8?",
+        "Throws away every uncommitted change.",
+        "Cancel",
+        "Reset --hard to 76784c8",
+        ConfirmAction::ResetHard("76784c8abc".to_string()),
+    );
+    assert_eq!(safe_answer(&app), Some(ConfirmAction::Cancel));
+    send_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    assert!(matches!(selected(&app), Some(ConfirmAction::ResetHard(rev)) if rev == "76784c8abc"));
+}
+
+#[test]
+fn deleting_a_remote_branch_carries_both_the_remote_and_the_branch() {
+    let mut app = app();
+    app.handle_overlay_event(crate::overlay::OverlayEvent::AcceptDeleteRemoteBranch {
+        remote: "origin".to_string(),
+        branch: "feature".to_string(),
+    });
+    assert!(title(&app).contains("origin/feature"), "{}", title(&app));
+    assert_eq!(safe_answer(&app), Some(ConfirmAction::Cancel));
+    send_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(
+        selected(&app),
+        Some(ConfirmAction::DeleteRemoteBranch {
+            remote: "origin".to_string(),
+            branch: "feature".to_string(),
+        })
+    );
+}
+
+#[test]
+fn dropping_a_stash_asks_and_defaults_to_keeping_it() {
+    let mut app = app();
+    app.handle_overlay_event(crate::overlay::OverlayEvent::AcceptStashAction(
+        crate::overlay::StashAction::Drop("stash@{0}".to_string()),
+    ));
+    assert!(title(&app).contains("stash@{0}"), "{}", title(&app));
+    assert_eq!(safe_answer(&app), Some(ConfirmAction::Cancel));
+}

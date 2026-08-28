@@ -25,11 +25,16 @@ impl App {
     /// Refuse to change the worktree while any editor has unsaved content, offering
     /// the explicit save-all path instead.
     pub(super) fn guard_branch_switch(&mut self, target: karet_vcs::BranchTarget) {
-        if self.all_tabs().any(|tab| tab.dirty) {
-            self.overlay = Some(Overlay::text(
-                "Unsaved editors · type save to save all and switch",
-                TextPurpose::SaveAndSwitch { target },
-            ));
+        let dirty = self.all_tabs().filter(|tab| tab.dirty).count();
+        if dirty > 0 {
+            self.confirm_action(
+                format!("Switch branch with {dirty} unsaved editor(s)?"),
+                "Switching moves the worktree under your unsaved edits. Saving \
+                 first writes every dirty editor to disk, then switches.",
+                "Stay here",
+                "Save all and switch",
+                ConfirmAction::SaveAndSwitch(target),
+            );
         } else {
             self.run_vcs_action(VcsAction::SwitchBranch(target));
         }
