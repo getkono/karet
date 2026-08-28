@@ -28,5 +28,9 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "process", "sync", "time", "macros"] }
 tracing.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true                                # scratch registry directories for the election tests
+tokio = { workspace = true, features = ["test-util"] }   # paused time, so a 5s startup deadline costs no wall clock
+
 [lints]
 workspace = true

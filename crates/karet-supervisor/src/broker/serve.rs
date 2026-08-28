@@ -35,6 +35,7 @@ use crate::broker::endpoint::Endpoint;
 use crate::broker::endpoint::write_endpoint;
 use crate::broker::framing::Framing;
 use crate::broker::io_error;
+use crate::broker::lease;
 use crate::broker::lease::BrokerSpec;
 use crate::broker::protocol::BrokerProtocol;
 use crate::broker::protocol::ClientFlow;
@@ -98,7 +99,7 @@ impl<P: BrokerProtocol> Core<P> {
 
 /// Publish an endpoint, run the brokered process, and serve clients until idle.
 ///
-/// The election files are removed on every exit path, including the failures
+/// The election files are given up on every exit path, including the failures
 /// before a client is ever accepted. Leaving them behind cost the next
 /// connector its full `CONNECT_TIMEOUT`: it could not connect to the endpoint
 /// that named a dead broker, and could not take a lock that already existed.
@@ -117,12 +118,32 @@ pub(crate) async fn run_broker<P: BrokerProtocol>(spec: BrokerSpec) -> Result<()
                 // The upstream reader only reports a closed stream for a
                 // process that got far enough to have one.
                 ran: matches!(error, BrokerError::Io(message) if message == UPSTREAM_CLOSED),
+                // Whose verdict this is. Every broker for the key writes to
+                // this one path, so without it a connector cannot tell a report
+                // about its own launch from one about somebody else's.
+                pid: std::process::id(),
             },
         );
     }
-    let _ = std::fs::remove_file(&spec.metadata);
-    let _ = std::fs::remove_file(&spec.lock);
+    release_election(&spec);
     outcome
+}
+
+/// Give up the election files, but only those that still name this broker.
+///
+/// Removing them unconditionally is half of how one key came to have two live
+/// brokers. The other half is a connector that gave up at its deadline and
+/// unlinked the lease of a broker that was merely slow; a second broker was
+/// then elected over the same paths, and *this* removal — running when the
+/// first broker finally exited — deleted the second's endpoint file. Every
+/// later connector then found no endpoint and elected yet another broker, while
+/// the abandoned one held its server process open until it idled out.
+fn release_election(spec: &BrokerSpec) {
+    let me = std::process::id();
+    if lease::published(&spec.metadata).is_some_and(|endpoint| endpoint.pid == me) {
+        let _ = std::fs::remove_file(&spec.metadata);
+    }
+    lease::release_lease(&spec.lock, me);
 }
 
 async fn run_broker_inner<P: BrokerProtocol>(spec: &BrokerSpec) -> Result<(), BrokerError> {
@@ -393,4 +414,4 @@ fn touch<P: BrokerProtocol>(core: &Core<P>) {
 
 #[cfg(test)]
 #[path = "serve_tests.rs"]
-mod tests;
+pub(crate) mod tests;
