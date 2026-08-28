@@ -43,6 +43,29 @@ fn tar_gz_with(entries: &[(&str, &[u8], u32)]) -> Result<Vec<u8>, Box<dyn std::e
     Ok(encoder.finish()?)
 }
 
+/// A gzipped tar holding `entries` as `(path, contents, mode, typeflag)`.
+///
+/// `tar::Header::new_gnu` defaults to a regular file, so the typeflags that
+/// matter to the permission mask -- contiguous, FIFO, and one the unpacker has
+/// never heard of -- have to be written in explicitly.
+fn tar_gz_typed(
+    entries: &[(&str, &[u8], u32, tar::EntryType)],
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut builder = tar::Builder::new(Vec::new());
+    for (path, contents, mode, kind) in entries {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(contents.len() as u64);
+        header.set_mode(*mode);
+        header.set_entry_type(*kind);
+        header.set_cksum();
+        builder.append_data(&mut header, path, *contents)?;
+    }
+    let tarball = builder.into_inner()?;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(&tarball)?;
+    Ok(encoder.finish()?)
+}
+
 /// A gzipped tar holding one symlink entry at `name` pointing at `target`.
 fn tar_gz_symlink(name: &str, target: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut builder = tar::Builder::new(Vec::new());
@@ -161,6 +184,60 @@ fn an_archive_cannot_make_an_installed_file_group_or_world_writable() -> TestRes
             "{label}"
         );
     }
+    Ok(())
+}
+
+/// The mask has to survive every typeflag, not just the one a well-behaved
+/// packer writes.
+///
+/// POSIX requires an unrecognised typeflag to be treated as a regular file, and
+/// `tar::Entry::unpack_in` obliges: a contiguous entry (`7`), a FIFO entry (`6`)
+/// and any typeflag it does not know are all materialised as ordinary files
+/// holding the entry body, with the header mode applied verbatim. Gating the
+/// re-chmod on `is_file() || is_dir()` skipped exactly those, so a hostile
+/// publisher shipping every file as typeflag `7` with mode `0o777` still landed
+/// a world-writable tree -- and karet execs binaries out of it.
+#[cfg(unix)]
+#[test]
+fn an_unusual_tar_entry_type_is_masked_like_a_regular_file() -> TestResult {
+    for kind in [
+        tar::EntryType::Continuous,
+        tar::EntryType::Fifo,
+        tar::EntryType::Char,
+        tar::EntryType::new(b'X'),
+    ] {
+        for (recorded, expected) in [(0o777, 0o755), (0o666, 0o644), (0o4755, 0o755)] {
+            let dir = tempfile::tempdir()?;
+            let bytes = tar_gz_typed(&[("bin/server", b"payload", recorded, kind)])?;
+            extract_archive(&bytes, Archive::TarGzip, dir.path(), true)?;
+            let path = dir.path().join("bin/server");
+            assert!(path.exists(), "{kind:?} wrote nothing");
+            assert_eq!(mode_of(&path), expected, "{kind:?} recorded {recorded:o}");
+        }
+    }
+    Ok(())
+}
+
+/// A pax global header is a real entry in real tarballs (`git archive` writes
+/// one), and the unpacker reports it as handled while deliberately writing
+/// nothing. Re-chmod'ing on the header's word alone would fail the whole
+/// extraction on a file that was never created.
+#[cfg(unix)]
+#[test]
+fn a_metadata_only_tar_entry_does_not_fail_the_extraction() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let bytes = tar_gz_typed(&[
+        (
+            "pax_global_header",
+            b"52 comment=0000\n",
+            0o666,
+            tar::EntryType::XGlobalHeader,
+        ),
+        ("bin/server", b"payload", 0o777, tar::EntryType::Regular),
+    ])?;
+    extract_archive(&bytes, Archive::TarGzip, dir.path(), true)?;
+    assert_eq!(mode_of(&dir.path().join("bin/server")), 0o755);
+    assert!(!dir.path().join("pax_global_header").exists());
     Ok(())
 }
 
@@ -517,6 +594,27 @@ fn a_version_can_never_escape_the_provider_directory() {
     assert_eq!(safe_version("5.6.0+node-24.20.0"), "5.6.0_node-24.20.0");
     assert!(!safe_version("../../etc").contains('/'));
     assert!(!safe_version("a/b").contains('/'));
+}
+
+/// Stripping the separator is not enough: `.` and `..` are made entirely of
+/// pass-through characters, and neither names a new directory. `versions/..`
+/// *is* the provider root -- an install that no-ops because the destination
+/// already exists, and a retirement that `remove_dir_all`s the whole provider,
+/// journals included.
+#[test]
+fn a_version_is_never_a_navigation_name() {
+    for version in ["..", ".", "", "v..", "../.."] {
+        let name = safe_version(version);
+        assert!(
+            !matches!(name.as_str(), "" | "." | ".."),
+            "{version:?} became {name:?}"
+        );
+    }
+    assert_eq!(safe_version(".."), "__");
+    assert_eq!(safe_version("."), "_");
+    assert_eq!(safe_version(""), "_");
+    // A tag that merely starts with dots still names a directory of its own.
+    assert_eq!(safe_version("..1"), "..1");
 }
 
 // --- download verification -------------------------------------------------

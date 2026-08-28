@@ -256,9 +256,17 @@ fn extract_zip(
 /// tar payload set: the bundled Node runtime is a `.tar.gz` on both Linux
 /// targets and both macOS ones, as is `lua-language-server`.
 ///
-/// Only regular files and directories are re-chmod'd. `set_permissions` follows
-/// symlinks, so touching a link entry would repermission whatever it points at,
-/// and a hard link shares its inode with an entry already handled.
+/// Every entry `unpack_in` writes as a real file is re-chmod'd, which is wider
+/// than "regular files and directories": POSIX requires an unrecognised typeflag
+/// to be treated as a regular file, so `unpack_in` materialises a contiguous
+/// entry (typeflag `7`), a FIFO entry (`6`) and anything it does not recognise
+/// as an ordinary file holding the entry body -- with the header mode applied
+/// verbatim. Gating on `is_file() || is_dir()` therefore skipped the mask for
+/// exactly the entry types a hostile publisher would reach for.
+///
+/// The two exclusions are the link types. `set_permissions` follows symlinks, so
+/// touching a link entry would repermission whatever it points at, and a hard
+/// link shares its inode with an entry already handled.
 fn extract_tar(
     reader: impl Read,
     destination: &Path,
@@ -298,8 +306,15 @@ fn extract_tar(
             .map_err(|error| error.to_string())?;
         // `output == destination` is the `./` entry, which `unpack_in` reports
         // as handled without writing anything: the install root's own mode is
-        // not the archive's to set.
-        if unpacked && output != destination && (kind.is_file() || kind.is_dir()) {
+        // not the archive's to set. `unpack_in` reports the same "handled" for
+        // metadata entries it deliberately writes nothing for -- a pax global
+        // header, or a long-name record whose magic it did not recognise -- so
+        // what is actually on disk decides, not the header's claim.
+        let written = unpacked
+            && output != destination
+            && !(kind.is_symlink() || kind.is_hard_link())
+            && std::fs::symlink_metadata(&output).is_ok_and(|meta| !meta.is_symlink());
+        if written {
             restore_mode(&output, mode)?;
         }
     }
@@ -378,11 +393,12 @@ fn resolves_within(path: &Path, root: &Path) -> bool {
 /// entry point is a wrapper script calling a sibling binary was installed
 /// broken.
 ///
-/// Only the read and execute bits are taken from the archive. setuid, setgid
-/// and the sticky bit are never honoured from a download, and neither is group
-/// or other **write**: an archive is free to record `0o777`, and karet execs
-/// binaries out of this tree, so honouring that would let any other local user
-/// on a shared machine replace a language server.
+/// The archive chooses the read and execute bits, and the owner's write bit;
+/// nothing else. setuid, setgid and the sticky bit are never honoured from a
+/// download, and neither is group or other **write**: an archive is free to
+/// record `0o777`, and karet execs binaries out of this tree, so honouring that
+/// would let any other local user on a shared machine replace a language
+/// server. `0o777` lands as `0o755` and `0o666` as `0o644`.
 ///
 /// Applied on both paths. `tar` was the wider hole of the two: `unpack_in`
 /// masks nothing at all, and every npm-backed provider extracts a `.tar.gz`
@@ -418,8 +434,17 @@ pub(super) fn make_executable(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// A version turned into a single directory name that cannot be navigation.
+///
+/// Filtering the characters is not enough on its own: `.`, `..` and the empty
+/// string survive it intact and none of them names a *new* directory. A release
+/// tagged `v..` yielded `versions/..`, which is the provider root itself -- an
+/// install that silently no-ops because the destination already exists, and a
+/// retirement that hands the provider root to `remove_dir_all`, taking the
+/// activation journals with it. All three are rewritten to underscores, which
+/// are ordinary names of the same length.
 pub(super) fn safe_version(version: &str) -> String {
-    version
+    let name: String = version
         .chars()
         .map(|character| {
             if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
@@ -428,7 +453,11 @@ pub(super) fn safe_version(version: &str) -> String {
                 '_'
             }
         })
-        .collect()
+        .collect();
+    if matches!(name.as_str(), "" | "." | "..") {
+        return "_".repeat(name.len().max(1));
+    }
+    name
 }
 
 #[cfg(test)]

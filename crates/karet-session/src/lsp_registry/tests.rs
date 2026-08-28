@@ -70,6 +70,17 @@ fn activation_journal_ignores_a_torn_tail() -> Result<(), Box<dyn std::error::Er
 #[test]
 fn unsafe_versions_cannot_escape_the_provider_directory() {
     assert_eq!(safe_version("../../bad release"), ".._.._bad_release");
+    // The bare navigation names survive the character filter untouched, and
+    // `versions/..` is the provider root: the install silently no-ops on a
+    // destination that already exists, and retiring that "version" hands the
+    // provider root to `remove_dir_all`.
+    for version in ["..", ".", ""] {
+        let name = safe_version(version);
+        assert!(
+            !matches!(name.as_str(), "" | "." | ".."),
+            "{version:?} became {name:?}"
+        );
+    }
 }
 
 #[test]

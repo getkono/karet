@@ -52,6 +52,12 @@ use crate::api::LanguageServerPlanId;
 use crate::api::RequestId;
 
 const PLAN_LIFETIME: Duration = Duration::from_secs(15 * 60);
+/// How much of a failing npm install's stderr is kept.
+///
+/// `read_to_end` on a child's pipe is unbounded, and this text is quoted back
+/// in an error that reaches a notification. It is truncated again, far harder,
+/// on the way there; this only keeps the buffer from growing without limit.
+const NPM_STDERR_LIMIT: u64 = 64 * 1024;
 const USER_AGENT: &str = concat!("karet/", env!("CARGO_PKG_VERSION"));
 /// Work accepted by the blocking registry worker.
 pub(crate) enum RegistryJob {
@@ -758,13 +764,16 @@ fn install_release(
             // This open pipe is the supervisor lease. `wait_with_output` would
             // close it before waiting and therefore (correctly) kill npm.
             let lease = child.stdin.take();
-            let mut stderr = child
+            let stderr = child
                 .stderr
                 .take()
                 .ok_or_else(|| "npm supervisor exposed no stderr".to_owned())?;
             let reader = std::thread::spawn(move || {
                 let mut bytes = Vec::new();
-                let _ = stderr.read_to_end(&mut bytes);
+                // Bounded: the pipe is npm's to fill, and the tail of it ends
+                // up in a notification. Far more than any real failure prints,
+                // and still nothing a runaway installer can grow without end.
+                let _ = stderr.take(NPM_STDERR_LIMIT).read_to_end(&mut bytes);
                 bytes
             });
             let status = child.wait().map_err(|error| error.to_string())?;
