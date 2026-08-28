@@ -279,6 +279,11 @@ impl App {
                 let Some(row) = dialog.row_at(mouse.column, mouse.row) else {
                     return true;
                 };
+                // The widget's keyboard selection refuses to land on a disabled
+                // row; a click must not be the way around that.
+                if !dialog.choices.entries.get(row).is_some_and(|e| e.enabled) {
+                    return true;
+                }
                 if let Some(dialog) = self.confirm.as_mut() {
                     dialog.choices.selected = row;
                 }

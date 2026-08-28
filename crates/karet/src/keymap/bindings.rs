@@ -339,6 +339,7 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(LanguageServers, false, false, false, Char('R'), Command::LanguageServerRestart),
     b(LanguageServers, false, false, false, Char('x'), Command::LanguageServerUninstall),
     b(LanguageServers, false, false, false, Char('/'), Command::LanguageServerFilter),
+    b(LanguageServers, false, false, false, Char('o'), Command::LanguageServerUndecline),
     b(LanguageServers, false, false, false, Char('q'), Command::CloseTab),
 
     // Modal contexts. Each is exclusive (see `active_layers`); any key with no

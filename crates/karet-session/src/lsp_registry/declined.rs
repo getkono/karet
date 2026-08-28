@@ -13,44 +13,26 @@
 //! ever had.
 
 use super::*;
-use crate::api::DeclineScope;
 
 /// The user's recorded refusal of one provider's install.
+///
+/// Unconditional, and necessarily so: the prompt is raised *before* any
+/// discovery — that is the point of `managedDownloads: "prompt"`, which promises
+/// no network I/O until the user agrees — so at the moment of the refusal there
+/// is no resolved version to scope it against.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Declined {
-    /// When the refusal was recorded (RFC 3339, for a human reading the file).
+    /// When the refusal was recorded (seconds since the Unix epoch, for a human
+    /// reading the file).
     pub(crate) declined_at: String,
-    /// The version on offer at the time, when one had been resolved.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) version_offered: Option<String>,
-    /// How far the refusal reaches.
-    pub(crate) scope: DeclineScope,
 }
 
 impl Declined {
     /// A refusal recorded now.
-    pub(crate) fn now(scope: DeclineScope, version_offered: Option<String>) -> Self {
+    pub(crate) fn now() -> Self {
         Self {
             declined_at: unix_timestamp(),
-            version_offered,
-            scope,
-        }
-    }
-
-    /// Whether this refusal still suppresses an offer of `version`.
-    ///
-    /// A `Version`-scoped refusal is spent the moment a different version is on
-    /// offer — that is the whole difference between "not this one" and "not ever".
-    /// With no version resolved yet there is nothing to compare, so the refusal
-    /// stands rather than being re-asked on every launch.
-    pub(crate) fn suppresses(&self, version: Option<&str>) -> bool {
-        match self.scope {
-            DeclineScope::Forever => true,
-            DeclineScope::Version => match (self.version_offered.as_deref(), version) {
-                (Some(declined), Some(offered)) => declined == offered,
-                _ => true,
-            },
         }
     }
 }

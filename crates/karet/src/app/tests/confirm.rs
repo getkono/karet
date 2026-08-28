@@ -378,3 +378,26 @@ fn a_displaced_recovery_prompt_keeps_the_backups() {
         "being displaced must never delete a backup"
     );
 }
+
+#[test]
+fn a_close_prompt_raised_over_another_still_answers() {
+    let mut app = app();
+    dirty_doc_tab(&mut app, "notes.md", 1);
+
+    // Two closes can be armed back to back: a tab close, then the quit that a
+    // finishing source-control operation resumes.
+    app.guarded_close(CloseRequest::Tab {
+        view: app.tabs[app.active].view,
+    });
+    app.guarded_close(CloseRequest::Quit);
+    assert!(
+        app.pending_close.is_some(),
+        "the newer close survived replacing the older one"
+    );
+
+    // Row two is "Discard and quit". It must actually quit.
+    send_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    send_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    send_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.should_quit, "the second dialog was not inert");
+}

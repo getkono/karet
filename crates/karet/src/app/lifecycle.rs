@@ -141,9 +141,12 @@ impl App {
         if at_risk.is_empty() || !honor_setting {
             self.execute_close(request);
         } else {
-            self.pending_close = Some(request);
             let names = self.at_risk_names(&at_risk);
             let (title, save, discard) = close_prompt_choices(request, at_risk.len());
+            // Open first, arm second. Opening declines whatever dialog it replaces,
+            // and a close prompt's own decline clears `pending_close` — so arming
+            // before this call would have the outgoing dialog wipe the request the
+            // incoming one depends on, leaving its answers inert.
             self.confirm(ConfirmDialog::new(
                 title,
                 format!("Unsaved changes in {names} have not been written to disk."),
@@ -153,6 +156,7 @@ impl App {
                     ConfirmChoice::custom(discard, Command::CloseConfirmDiscard),
                 ],
             ));
+            self.pending_close = Some(request);
         }
     }
 

@@ -1,5 +1,4 @@
 use super::*;
-use crate::api::DeclineScope;
 
 #[test]
 fn registry_tasks_can_run_concurrently() -> Result<(), Box<dyn std::error::Error>> {
@@ -406,11 +405,8 @@ fn a_declined_install_round_trips_and_can_be_cleared() -> Result<(), Box<dyn std
     let server = LanguageServerId::Texlab;
     assert!(read_declined(Some(dir.path()), &server).is_none());
 
-    let declined = Declined::now(DeclineScope::Forever, Some("1.2.3".into()));
-    write_declined(dir.path(), &server, &declined)?;
-    let read = read_declined(Some(dir.path()), &server).ok_or("declined record")?;
-    assert_eq!(read.scope, DeclineScope::Forever);
-    assert_eq!(read.version_offered.as_deref(), Some("1.2.3"));
+    write_declined(dir.path(), &server, &Declined::now())?;
+    assert!(read_declined(Some(dir.path()), &server).is_some());
 
     clear_declined(dir.path(), &server)?;
     assert!(read_declined(Some(dir.path()), &server).is_none());
@@ -420,34 +416,28 @@ fn a_declined_install_round_trips_and_can_be_cleared() -> Result<(), Box<dyn std
 }
 
 #[test]
-fn a_permanent_refusal_suppresses_every_version() {
-    let declined = Declined::now(DeclineScope::Forever, Some("1.2.3".into()));
-    assert!(declined.suppresses(None));
-    assert!(declined.suppresses(Some("1.2.3")));
-    assert!(declined.suppresses(Some("9.9.9")));
+fn a_refusal_records_when_it_was_made() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let server = LanguageServerId::Texlab;
+    write_declined(dir.path(), &server, &Declined::now())?;
+    let read = read_declined(Some(dir.path()), &server).ok_or("declined record")?;
+    // A human opening the file should be able to tell when they said no.
+    assert!(
+        read.declined_at.parse::<u64>().is_ok_and(|at| at > 0),
+        "{:?}",
+        read.declined_at
+    );
+    Ok(())
 }
 
 #[test]
-fn a_version_refusal_is_spent_once_a_different_version_is_offered() {
-    let declined = Declined::now(DeclineScope::Version, Some("1.2.3".into()));
-    assert!(
-        declined.suppresses(Some("1.2.3")),
-        "the same offer is refused"
-    );
-    assert!(
-        !declined.suppresses(Some("9.9.9")),
-        "a new version is a new question"
-    );
-    // With nothing resolved there is no offer to compare, so the refusal stands
-    // rather than being re-asked on every launch.
-    assert!(declined.suppresses(None));
-}
-
-#[test]
-fn a_version_refusal_with_no_recorded_version_suppresses() {
-    let declined = Declined::now(DeclineScope::Version, None);
-    assert!(declined.suppresses(Some("1.2.3")));
-    assert!(declined.suppresses(None));
+fn a_refusal_for_one_provider_does_not_suppress_another() -> Result<(), Box<dyn std::error::Error>>
+{
+    let dir = tempfile::tempdir()?;
+    write_declined(dir.path(), &LanguageServerId::Texlab, &Declined::now())?;
+    assert!(read_declined(Some(dir.path()), &LanguageServerId::Texlab).is_some());
+    assert!(read_declined(Some(dir.path()), &LanguageServerId::Zls).is_none());
+    Ok(())
 }
 
 #[test]

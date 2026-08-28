@@ -93,17 +93,19 @@ fn a_download_with_no_declared_size_reports_bytes_rather_than_a_made_up_percent(
 }
 
 #[test]
-fn a_running_install_keeps_the_spinner_ticking_without_input() {
+fn a_running_install_adds_no_idle_repaint() {
     let backend = Arc::new(RecordingBackend::new());
     let mut app = app();
     app.backend = Some(backend.clone());
+    assert!(app.next_wake().is_none());
+    app.begin_language_server_install(LanguageServerId::Texlab);
+    // The card is repainted by progress events, not by a clock. Registering a
+    // frame-interval wake here would repaint identical output forever, since
+    // nothing on the timer path rebuilds the card.
     assert!(
         app.next_wake().is_none(),
-        "an idle app parks until something happens"
+        "a download must not put the loop into a busy repaint"
     );
-    app.begin_language_server_install(LanguageServerId::Texlab);
-    // Without this the spinner frame would freeze until the user pressed a key.
-    assert_eq!(app.next_wake(), Some(Spinner::FRAME_INTERVAL));
 }
 
 #[test]
@@ -115,5 +117,98 @@ fn an_update_check_is_not_worth_a_card() {
     assert!(
         app.notifications.active().is_empty(),
         "a metadata check the user asked for and watched needs no announcement"
+    );
+}
+
+#[test]
+fn a_failure_survives_another_operations_next_progress_tick() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    app.begin_language_server_install(LanguageServerId::Texlab);
+    app.begin_language_server_install(LanguageServerId::RustAnalyzer);
+    let requests: Vec<RequestId> = backend
+        .sent
+        .lock()
+        .map(|sent| sent.iter().map(|(request, _)| *request).collect())
+        .unwrap_or_default();
+
+    app.on_backend_event(
+        requests.first().copied(),
+        SessionEvent::Notification {
+            severity: Severity::Error,
+            kind: NotificationKind::Lsp,
+            message: "language-server registry: checksum mismatch".to_string(),
+        },
+    );
+    // The other install is still going. Its next tick must not erase the report
+    // of the one that failed — an error card is the outcome the user most needs,
+    // and it is the one that never auto-expires.
+    app.on_backend_event(
+        requests.get(1).copied(),
+        SessionEvent::LanguageServerProgress {
+            server: LanguageServerId::RustAnalyzer,
+            downloaded: 4096,
+            total: Some(8192),
+        },
+    );
+
+    let titles: Vec<String> = app
+        .notifications
+        .active()
+        .iter()
+        .map(|notification| notification.title.clone())
+        .collect();
+    assert!(
+        titles
+            .iter()
+            .any(|title| title.contains("checksum mismatch")),
+        "the failure is still reported: {titles:?}"
+    );
+    assert!(
+        titles.iter().any(|title| title.contains("Installing")),
+        "and the running download still says so: {titles:?}"
+    );
+}
+
+#[test]
+fn a_completion_survives_another_operations_next_progress_tick() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    app.begin_language_server_install(LanguageServerId::Texlab);
+    app.begin_language_server_install(LanguageServerId::RustAnalyzer);
+    let requests: Vec<RequestId> = backend
+        .sent
+        .lock()
+        .map(|sent| sent.iter().map(|(request, _)| *request).collect())
+        .unwrap_or_default();
+
+    app.on_backend_event(
+        requests.first().copied(),
+        SessionEvent::LanguageServerChanged {
+            server: LanguageServerId::Texlab,
+            version: "1.3.0".to_string(),
+            restart_required: false,
+        },
+    );
+    app.on_backend_event(
+        requests.get(1).copied(),
+        SessionEvent::LanguageServerProgress {
+            server: LanguageServerId::RustAnalyzer,
+            downloaded: 4096,
+            total: Some(8192),
+        },
+    );
+
+    let titles: Vec<String> = app
+        .notifications
+        .active()
+        .iter()
+        .map(|notification| notification.title.clone())
+        .collect();
+    assert!(
+        titles.iter().any(|title| title.contains("1.3.0")),
+        "the finished install is still reported: {titles:?}"
     );
 }

@@ -296,9 +296,7 @@ impl Session {
                         if crate::lsp_registry::ever_installed(root, &server) {
                             return;
                         }
-                        if let Some(declined) = crate::lsp_registry::read_declined(root, &server)
-                            && declined.suppresses(None)
-                        {
+                        if crate::lsp_registry::read_declined(root, &server).is_some() {
                             return;
                         }
                         let enabled = self

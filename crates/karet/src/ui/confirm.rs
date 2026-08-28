@@ -9,7 +9,6 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use crate::app::App;
-use crate::app::confirm::ConfirmAction;
 use crate::app::confirm::confirm_label;
 use crate::keymap;
 use crate::keymap::ChordStyle;
@@ -30,18 +29,13 @@ pub(super) fn draw_confirm(f: &mut Frame, app: &mut App, theme: &Theme, area: Re
                 .unwrap_or_else(|| confirm_label(&entry.action))
         })
         .collect();
-    // Only the two navigation-free answers carry a hint: Esc always cancels, and
-    // Enter always runs the selected row, so hinting every row would be noise.
-    let hints: Vec<Option<String>> = dialog
-        .choices
-        .entries
-        .iter()
-        .map(|entry| match entry.action {
-            ConfirmAction::Cancel => {
-                keymap::hint_for(crate::command::Command::ConfirmCancel, ChordStyle::Caret)
-            },
-            _ => None,
-        })
+    // Exactly one row carries a hint: the first, because backing out *is* taking
+    // it. Keying that off the `Cancel` variant would have missed the two dialogs
+    // where it matters most — the close prompt and the crash-recovery prompt put
+    // a cleanup command in row zero, so they showed no way out at all.
+    let hint = keymap::hint_for(crate::command::Command::ConfirmCancel, ChordStyle::Caret);
+    let hints: Vec<Option<String>> = (0..dialog.choices.entries.len())
+        .map(|row| (row == 0).then(|| hint.clone()).flatten())
         .collect();
     dialog.draw(f, theme, area, &labels, &hints);
 }

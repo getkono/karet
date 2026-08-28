@@ -22,12 +22,11 @@ impl Session {
             },
             // The refusal is a local file write, not registry work: it must land
             // even when the registry worker is gone, and it has nothing to download.
-            Command::DeclineLanguageServer { server, scope } => {
+            Command::DeclineLanguageServer { server } => {
                 let Some(root) = self.config.lsp_registry_dir.clone() else {
                     return true;
                 };
-                let version = crate::lsp_registry::installed_version(Some(&root), server);
-                let declined = crate::lsp_registry::Declined::now(*scope, version);
+                let declined = crate::lsp_registry::Declined::now();
                 if let Err(message) = crate::lsp_registry::write_declined(&root, server, &declined)
                 {
                     self.emit(

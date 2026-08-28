@@ -245,6 +245,7 @@ publisher-verification constraint.
 | `R` | restart the selected provider connections in this editor session |
 | `x` | uninstall a Karet-managed provider (asks first) |
 | `/` | filter by provider or language; submit an empty filter to clear it |
+| `o` | offer a declined provider again (clears its recorded refusal) |
 | `q` | close the manager tab |
 
 Update discovery never applies a change. Discovered target versions remain visible
@@ -282,7 +283,8 @@ Node providers use a registry-owned, verified active-LTS Node runtime.
   provider as already decided about even after it is uninstalled. Settings say
   what you want configured; these say what karet has already asked and been told,
   so re-enabling a provider never silently re-triggers a download you refused.
-  Clear a refusal from the Language Servers tab to be offered it again.
+  A declined provider says so in the Language Servers tab; `o` there clears
+  the refusal, and it is offered again the next time a file needs it.
 - `auto`: the user has pre-authorized discovery and installation.
 - `off`: no discovery or download.
 

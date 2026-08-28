@@ -189,7 +189,7 @@ impl App {
         Some(view)
     }
 
-    fn selected_language_server(&self) -> Option<LanguageServerStatus> {
+    pub(in crate::app) fn selected_language_server(&self) -> Option<LanguageServerStatus> {
         let tab = self.tabs.get(self.active)?;
         let TabKind::LanguageServers(view) = &tab.kind else {
             return None;
@@ -223,7 +223,6 @@ impl App {
             kind,
             downloaded: None,
             total: None,
-            since: Instant::now(),
         });
         self.sync_language_server_operations();
         self.sync_language_server_toast();
@@ -249,20 +248,20 @@ impl App {
         if failed {
             self.sync_language_server_operations();
             self.sync_language_server_toast();
-            // Errors never auto-expire, so this replaces the progress card and
-            // stays: a download that failed while the user was elsewhere would
-            // otherwise leave only a manager tab they never opened.
-            self.notify_tagged(
+            // Untagged on purpose. The progress cards share one tag so they can
+            // update in place, and an outcome that joined them would be erased by
+            // the next tick of any *other* running operation — losing exactly the
+            // report the user most needs, since errors never auto-expire.
+            self.notify(
                 Severity::Error,
                 NotificationKind::Lsp,
                 format!("language server: {message}"),
-                Some(Self::OPERATION_TAG.to_string()),
             );
         }
         failed
     }
 
-    pub(super) fn refresh_language_servers(&mut self) {
+    pub(in crate::app) fn refresh_language_servers(&mut self) {
         let request = self.send(SessionCommand::LanguageServerStatus);
         if let Some(view) = self.language_servers_mut() {
             view.inventory_request = request;
@@ -689,11 +688,12 @@ impl App {
     ) {
         self.lsp_runtime.finish_operation(request, Some(&server));
         self.sync_language_server_toast();
-        self.notify_tagged(
+        // Untagged: an outcome must survive another operation's next progress
+        // tick (see `fail_language_server_operation`).
+        self.notify(
             Severity::Information,
             NotificationKind::Lsp,
             format!("{} {version} is ready", server.display_name()),
-            Some(Self::OPERATION_TAG.to_string()),
         );
         if let Some(status) = self
             .lsp_runtime
@@ -746,13 +746,10 @@ impl App {
         } else {
             ""
         };
-        // Tagged, so this outcome supersedes the progress card the uninstall was
-        // showing rather than stacking a second one beside it.
-        self.notify_tagged(
+        self.notify(
             Severity::Information,
             NotificationKind::Lsp,
             format!("uninstalled {}{suffix}", server.display_name()),
-            Some(Self::OPERATION_TAG.to_string()),
         );
     }
 

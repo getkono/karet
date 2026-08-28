@@ -183,7 +183,6 @@
     // prompt is raised at most once per provider. These pin the two facts that
     // decide it, both of which live outside settings on purpose.
     mod install_prompt {
-        use crate::api::DeclineScope;
         use crate::api::Event;
         use crate::api::LanguageServerId;
         use crate::lsp::LspUpdate;
@@ -236,7 +235,7 @@
             let Ok(dir) = tempfile::tempdir() else {
                 return;
             };
-            let declined = Declined::now(DeclineScope::Forever, None);
+            let declined = Declined::now();
             if write_declined(dir.path(), &LanguageServerId::Texlab, &declined).is_err() {
                 return;
             }

@@ -12,8 +12,7 @@ impl App {
     pub(super) fn next_wake(&self) -> Option<Duration> {
         let now = Instant::now();
         let notif = self.notifications.next_deadline(now);
-        let spinner = (!self.pending_saves.is_empty() || self.language_server_operation_running())
-            .then_some(Spinner::FRAME_INTERVAL);
+        let spinner = (!self.pending_saves.is_empty()).then_some(Spinner::FRAME_INTERVAL);
         let auto_save = self
             .auto_save_pending
             .iter()
@@ -462,7 +461,8 @@ impl App {
                  replaces the newer on-disk content."
             ));
         }
-        self.pending_swaps = Some(swaps);
+        // Open first, arm second — see `guarded_close`: opening declines the dialog
+        // it replaces, and a decline is what clears these parked fields.
         self.confirm(ConfirmDialog::new(
             "Recover unsaved changes from a previous session?",
             body,
@@ -472,5 +472,6 @@ impl App {
                 ConfirmChoice::custom("Discard the backups", Command::DiscardSwaps),
             ],
         ));
+        self.pending_swaps = Some(swaps);
     }
 }

@@ -64,17 +64,38 @@ impl App {
         ));
     }
 
-    /// Record that the user does not want this provider offered again.
-    pub(in crate::app) fn decline_language_server(&mut self, server: LanguageServerId) {
-        let name = server.display_name().to_string();
-        self.send_command(SessionCommand::DeclineLanguageServer {
-            server,
-            scope: karet_session::DeclineScope::Forever,
+    /// Forget the selected provider's recorded refusal, so it is offered again.
+    ///
+    /// The counterpart to *Never ask*: a refusal the user cannot take back is a
+    /// setting they cannot find, and this one lives outside settings by design.
+    pub(in crate::app) fn undecline_selected_language_server(&mut self) {
+        let Some(status) = self.selected_language_server() else {
+            return;
+        };
+        let name = status.server.display_name().to_string();
+        if !status.declined {
+            self.status = Some(format!("{name} was not declined"));
+            return;
+        }
+        self.send_command(SessionCommand::UndeclineLanguageServer {
+            server: status.server,
         });
         self.notify(
             Severity::Information,
             NotificationKind::Lsp,
-            format!("{name} will not be offered again · undo it in Language Servers"),
+            format!("{name} will be offered again when a file needs it"),
+        );
+        self.refresh_language_servers();
+    }
+
+    /// Record that the user does not want this provider offered again.
+    pub(in crate::app) fn decline_language_server(&mut self, server: LanguageServerId) {
+        let name = server.display_name().to_string();
+        self.send_command(SessionCommand::DeclineLanguageServer { server });
+        self.notify(
+            Severity::Information,
+            NotificationKind::Lsp,
+            format!("{name} will not be offered again · press o in Language Servers to undo"),
         );
     }
 }

@@ -697,6 +697,14 @@ fn draw_detail(f: &mut Frame, theme: &Theme, area: Rect, view: &LanguageServersV
             theme.style(ThemeRole::DiagnosticWarning),
         ));
     }
+    if status.declined {
+        // Without this the refusal is invisible: the provider simply stops being
+        // offered, with nothing on screen to explain why or to take it back.
+        lines.push(Line::styled(
+            "Declined: karet will not offer to install this — press o to offer it again",
+            theme.style(ThemeRole::DiagnosticWarning),
+        ));
+    }
     f.render_widget(
         Paragraph::new(lines).block(
             Block::default()

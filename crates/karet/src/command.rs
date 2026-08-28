@@ -415,6 +415,8 @@ pub enum Command {
     LanguageServerUninstall,
     /// Filter the language-server inventory.
     LanguageServerFilter,
+    /// Forget a recorded refusal, so the selected provider is offered again.
+    LanguageServerUndecline,
     /// Begin creating a new file in the explorer (inline name editor).
     ExplorerNewFile,
     /// Begin creating a new folder in the explorer (inline name editor).
@@ -820,6 +822,7 @@ impl Command {
             Self::LanguageServerRestart => "Language Servers: Restart Selected",
             Self::LanguageServerUninstall => "Language Servers: Uninstall Selected",
             Self::LanguageServerFilter => "Language Servers: Filter…",
+            Self::LanguageServerUndecline => "Language Servers: Offer Selected Again",
             Self::ExplorerNewFile => "Explorer: New File…",
             Self::ExplorerNewFolder => "Explorer: New Folder…",
             Self::ExplorerRename => "Explorer: Rename…",

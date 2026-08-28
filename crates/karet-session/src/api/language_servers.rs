@@ -191,13 +191,3 @@ pub struct LanguageServerStatus {
     /// Repository-scoped resolution and runtime state.
     pub instances: Vec<LanguageServerInstanceStatus>,
 }
-
-/// How far a refusal to install a language server reaches.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum DeclineScope {
-    /// Never offer this provider again.
-    Forever,
-    /// Do not offer the version that was refused; a newer one may ask again.
-    Version,
-}

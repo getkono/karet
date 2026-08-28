@@ -95,6 +95,7 @@ impl Command {
             Self::LanguageServerRestart => "restart",
             Self::LanguageServerUninstall => "uninstall",
             Self::LanguageServerFilter => "filter",
+            Self::LanguageServerUndecline => "offer again",
             Self::ToggleFold => "fold",
             Self::AddCursorNextOccurrence => "add cursor",
             // Diff.

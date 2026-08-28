@@ -288,6 +288,7 @@ impl App {
             Command::LanguageServerRestart => self.restart_selected_language_server(),
             Command::LanguageServerUninstall => self.uninstall_selected_language_server(),
             Command::LanguageServerFilter => self.prompt_language_server_filter(),
+            Command::LanguageServerUndecline => self.undecline_selected_language_server(),
             Command::ExplorerNewFile => self.explorer_begin_new(false),
             Command::ExplorerNewFolder => self.explorer_begin_new(true),
             Command::ExplorerRename => self.explorer_begin_rename(),

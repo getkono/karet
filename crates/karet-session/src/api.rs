@@ -326,13 +326,13 @@ pub enum Command {
         server: LanguageServerId,
     },
     /// Record that the user declined to install one missing provider, so the
-    /// prompt is not raised again. `Forever` never asks again; `Version` asks
-    /// again only once a different version is on offer.
+    /// prompt is not raised again.
+    ///
+    /// The refusal is unconditional by construction: the prompt is raised before
+    /// any discovery, so no version has been resolved to scope it to.
     DeclineLanguageServer {
         /// Provider the user refused to install.
         server: LanguageServerId,
-        /// How far the refusal reaches.
-        scope: DeclineScope,
     },
     /// Forget a recorded refusal, so the provider may be offered again.
     UndeclineLanguageServer {

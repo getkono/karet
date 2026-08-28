@@ -11,14 +11,6 @@
 use super::*;
 
 impl App {
-    /// Whether any managed operation is still running (drives the spinner tick).
-    pub(in crate::app) fn language_server_operation_running(&self) -> bool {
-        self.lsp_runtime
-            .operations
-            .iter()
-            .any(|pending| pending.kind.is_download())
-    }
-
     /// The notification tag every managed-operation card shares.
     ///
     /// One tag, not one per provider: these operations are serialized per
@@ -47,8 +39,7 @@ impl App {
             .as_ref()
             .map(|server| server.display_name().to_string())
             .unwrap_or_else(|| "language servers".to_string());
-        let frame = Spinner::new(self.icon_style).frame(pending.since.elapsed());
-        let title = format!("{frame} {} {name}", pending.kind.progressive());
+        let title = format!("{} {name}", pending.kind.progressive());
         let body = match (pending.downloaded, pending.total) {
             (Some(done), Some(total)) if total > 0 => Some(format!(
                 "{} of {} ({}%)",

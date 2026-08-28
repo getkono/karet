@@ -836,5 +836,8 @@ fn completed_language_server_uninstall_clears_only_its_pending_request() {
         cards.iter().any(|title| title.starts_with("uninstalled")),
         "the outcome replaced the progress card: {cards:?}"
     );
-    assert_eq!(cards.len(), 1, "one card, not one per operation: {cards:?}");
+    assert!(
+        !cards.iter().any(|title| title.contains("Uninstalling")),
+        "the progress card went with the operation: {cards:?}"
+    );
 }

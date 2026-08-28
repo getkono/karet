@@ -2,8 +2,6 @@
 //!
 //! Split from `tab.rs` to keep it under the file-size ceiling.
 
-use std::time::Instant;
-
 use karet_session::LanguageServerChange;
 use karet_session::LanguageServerId;
 use karet_session::LanguageServerPlanId;
@@ -62,8 +60,6 @@ pub(crate) struct LanguageServerPending {
     pub(crate) kind: LanguageServerPendingKind,
     pub(crate) downloaded: Option<u64>,
     pub(crate) total: Option<u64>,
-    /// When the operation started, driving the toast's spinner frame.
-    pub(crate) since: Instant,
 }
 
 /// A clickable manager action from the most recently rendered frame.
