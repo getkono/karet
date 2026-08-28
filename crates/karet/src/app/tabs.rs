@@ -589,12 +589,20 @@ impl App {
         self.reconcile_open_docs();
     }
 
-    /// Close every tab to the right of the active one.
+    /// Close every tab to the right of the active one. The pinned GitHub dashboard
+    /// survives wherever it sits, the same way [`Self::close_other_tabs`] spares it.
     pub(super) fn close_tabs_to_right(&mut self) {
         for i in (self.active + 1..self.tabs.len()).rev() {
-            self.remember_closed(i);
+            if !self.tabs[i].is_github_dashboard() {
+                self.remember_closed(i);
+            }
         }
-        self.tabs.truncate(self.active + 1);
+        // Split rather than truncate: everything at or left of `active` is untouched,
+        // so `active` stays correct, and a pinned dashboard in the tail comes back.
+        let from = self.active.saturating_add(1).min(self.tabs.len());
+        let tail = self.tabs.split_off(from);
+        self.tabs
+            .extend(tail.into_iter().filter(Tab::is_github_dashboard));
         self.reconcile_open_docs();
     }
 

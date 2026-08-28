@@ -53,6 +53,7 @@ impl App {
                 .tabs
                 .iter()
                 .skip(self.active + 1)
+                .filter(|tab| !tab.is_github_dashboard())
                 .map(|tab| tab.view)
                 .collect(),
             CloseRequest::AllTabs => self.tabs.iter().map(|tab| tab.view).collect(),
