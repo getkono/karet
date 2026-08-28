@@ -300,3 +300,49 @@ mod tests {
         assert_ne!(highlighted(&m), "<INVALID>");
     }
 }
+
+/// Brute-force the preview transform over adversarial inputs: every result must
+/// have in-range, ordered offsets and must not panic.
+#[test]
+fn preview_offsets_stay_in_range_for_adversarial_inputs() {
+    let bodies: Vec<String> = vec![
+        "needle".to_owned(),
+        "  \t needle  ".to_owned(),
+        format!("{}needle{}", "é".repeat(50), "é".repeat(50)),
+        "\u{1F600}needle\u{1F600}".to_owned(),
+        format!("{}needle", "a".repeat(1000)),
+        format!("needle{}", "b".repeat(1000)),
+        format!("{}needle{}", "x".repeat(300), "y".repeat(300)),
+        "\tneedle\r".to_owned(),
+        "needle\nneedle".to_owned(),
+        format!("{}needle", "é".repeat(239)),
+    ];
+    let patterns = ["needle", "e+", "^", "n(?s).*e", "\\s", "."];
+
+    for body in &bodies {
+        for pattern in patterns {
+            for regex in [false, true] {
+                let query = karet_search::SearchQuery {
+                    pattern: pattern.to_owned(),
+                    regex,
+                    case_sensitive: true,
+                    ..Default::default()
+                };
+                let Ok(found) = karet_search::search_in_file(body, &query) else {
+                    continue;
+                };
+                for m in &found {
+                    let out = search_match(body, m);
+                    let (s, e) = (out.preview_start as usize, out.preview_end as usize);
+                    assert!(s <= e, "start>end for {pattern:?} in {body:?}");
+                    assert!(e <= out.line_text.len(), "end past len for {pattern:?}");
+                    assert!(
+                        out.line_text.get(s..e).is_some(),
+                        "offsets split a character: {pattern:?} in {body:?}"
+                    );
+                    assert!(out.line_text.len() <= 240 + 6, "preview cap held");
+                }
+            }
+        }
+    }
+}
