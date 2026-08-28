@@ -54,18 +54,26 @@ struct Harness {
     file: PathBuf,
 }
 
+/// Anything that ends a test, reported rather than skipped over.
+///
+/// These tests used to open with `let Some(harness) = ... else { return; }`, so
+/// a `TMPDIR` that could not be written -- or any other setup failure -- was a
+/// silent pass: fourteen tests reporting `ok` having executed nothing. `?` on a
+/// `Result` fails the test instead, which is what a broken fixture deserves.
+type SetupError = Box<dyn std::error::Error>;
+
 /// A session whose Rust provider is the process double.
 ///
 /// `brokered` picks the production fork: with a registry directory the
 /// connector goes through the shared broker, without one it goes straight to
 /// the supervisor. Both are real; neither is reachable from a unit test.
-fn harness(behavior: &str, brokered: bool) -> Option<Harness> {
-    let workspace = tempfile::tempdir().ok()?;
+fn harness(behavior: &str, brokered: bool) -> Result<Harness, SetupError> {
+    let workspace = tempfile::tempdir()?;
     let file = workspace.path().join("main.rs");
-    std::fs::write(&file, "fn main() {}\n").ok()?;
+    std::fs::write(&file, "fn main() {}\n")?;
     let report = workspace.path().join("launches.jsonl");
 
-    let registry = brokered.then(tempfile::tempdir).transpose().ok()?;
+    let registry = brokered.then(tempfile::tempdir).transpose()?;
     let mut config = SessionConfig {
         process_supervisor: Some(PathBuf::from(TESTBED)),
         lsp_registry_dir: registry.as_ref().map(|dir| dir.path().to_path_buf()),
@@ -81,8 +89,10 @@ fn harness(behavior: &str, brokered: bool) -> Option<Harness> {
     );
 
     let (backend, _snapshots) = local(config);
-    let events = backend.take_events()?;
-    Some(Harness {
+    let events = backend
+        .take_events()
+        .ok_or("the session handed out no event stream")?;
+    Ok(Harness {
         backend: Box::new(backend),
         events,
         _workspace: workspace,
@@ -165,10 +175,8 @@ fn notification_text(event: &Event) -> String {
 /// The first test in this workspace to drive a real language server: a real
 /// process, over real pipes, through the real hidden supervisor.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_real_server_completes_a_request_over_the_supervisor() {
-    let Some(mut harness) = harness("normal", false) else {
-        return;
-    };
+async fn a_real_server_completes_a_request_over_the_supervisor() -> Result<(), SetupError> {
+    let mut harness = harness("normal", false)?;
     assert!(harness.open());
     let opened = harness
         .wait_for(|event| matches!(event, Event::Opened { .. }))
@@ -176,7 +184,7 @@ async fn a_real_server_completes_a_request_over_the_supervisor() {
     assert!(opened.is_some(), "the document never opened");
 
     let Some(Event::Opened { doc, .. }) = opened else {
-        return;
+        return Err(SetupError::from("the document never opened"));
     };
     let request = harness.backend.next_id();
     let _ = harness.backend.send(
@@ -198,6 +206,7 @@ async fn a_real_server_completes_a_request_over_the_supervisor() {
         Some("karet_testbed_item"),
         "the answer must come from the spawned process, not a fallback"
     );
+    Ok(())
 }
 
 /// Proves the whole chain — session, `supervisor::command`, hidden supervisor,
@@ -205,10 +214,8 @@ async fn a_real_server_completes_a_request_over_the_supervisor() {
 /// and that the supervisor scrubbed its own hidden-mode variables so a
 /// descendant cannot re-enter supervisor mode.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_launch_carries_the_intended_argv_and_working_directory() {
-    let Some(mut harness) = harness("report", false) else {
-        return;
-    };
+async fn the_launch_carries_the_intended_argv_and_working_directory() -> Result<(), SetupError> {
+    let mut harness = harness("report", false)?;
     assert!(harness.open());
     let _ = harness
         .wait_for(|event| matches!(event, Event::Opened { .. }))
@@ -244,6 +251,7 @@ async fn the_launch_carries_the_intended_argv_and_working_directory() {
         Some(0),
         "the supervisor must scrub its hidden-mode variables before exec"
     );
+    Ok(())
 }
 
 // --- failure shapes, through the real path ---------------------------------
@@ -251,25 +259,22 @@ async fn the_launch_carries_the_intended_argv_and_working_directory() {
 /// Bare `taplo` prints usage to stdout, which is fatal to `Content-Length`
 /// framing. The launch must be reported, not hung on.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_server_that_prints_a_banner_is_reported_rather_than_hanging() {
-    let Some(mut harness) = harness("banner", false) else {
-        return;
-    };
+async fn a_server_that_prints_a_banner_is_reported_rather_than_hanging() -> Result<(), SetupError> {
+    let mut harness = harness("banner", false)?;
     assert!(harness.open());
     let reported = harness.wait_for(is_lsp_warning).await;
     assert!(
         reported.is_some(),
         "a server that writes junk to stdout must surface a failure"
     );
+    Ok(())
 }
 
 /// The `node: Cannot find module` shape. The server's own last words are what
 /// makes this diagnosable, and they used to be discarded at `debug` level.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_server_that_exits_reports_what_it_said_on_the_way_out() {
-    let Some(mut harness) = harness("exit-stderr", false) else {
-        return;
-    };
+async fn a_server_that_exits_reports_what_it_said_on_the_way_out() -> Result<(), SetupError> {
+    let mut harness = harness("exit-stderr", false)?;
     assert!(harness.open());
     let reported = harness.wait_for(is_lsp_warning).await;
     assert!(
@@ -286,31 +291,28 @@ async fn a_server_that_exits_reports_what_it_said_on_the_way_out() {
         "the failure must name the configured provider launch, not the supervisor \
          re-exec: {message}"
     );
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_server_that_exits_silently_is_still_reported() {
-    let Some(mut harness) = harness("exit-now", false) else {
-        return;
-    };
+async fn a_server_that_exits_silently_is_still_reported() -> Result<(), SetupError> {
+    let mut harness = harness("exit-now", false)?;
     assert!(harness.open());
     assert!(
         harness.wait_for(is_lsp_warning).await.is_some(),
         "a silent immediate exit must not look like success"
     );
+    Ok(())
 }
 
 /// A missing binary can never start, so karet stops rather than respawning it
 /// every five minutes for the life of the session.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_missing_binary_becomes_unavailable_rather_than_retrying_forever() {
-    let Some(workspace) = tempfile::tempdir().ok() else {
-        return;
-    };
+async fn a_missing_binary_becomes_unavailable_rather_than_retrying_forever()
+-> Result<(), SetupError> {
+    let workspace = tempfile::tempdir()?;
     let file = workspace.path().join("main.rs");
-    if std::fs::write(&file, "fn main() {}\n").is_err() {
-        return;
-    }
+    std::fs::write(&file, "fn main() {}\n")?;
     let mut config = SessionConfig {
         process_supervisor: Some(PathBuf::from(TESTBED)),
         ..SessionConfig::default()
@@ -323,9 +325,9 @@ async fn a_missing_binary_becomes_unavailable_rather_than_retrying_forever() {
         },
     );
     let (backend, _snapshots) = local(config);
-    let Some(mut events) = backend.take_events() else {
-        return;
-    };
+    let mut events = backend
+        .take_events()
+        .ok_or("the session handed out no event stream")?;
     let _ = backend.send(
         backend.next_id(),
         Command::OpenDocument {
@@ -346,29 +348,28 @@ async fn a_missing_binary_becomes_unavailable_rather_than_retrying_forever() {
         }
     }
     assert!(unavailable, "a missing binary must reach a terminal state");
+    Ok(())
 }
 
 /// Headers without a `Content-Length`: the frame boundary is unknowable, so the
 /// connection cannot continue and the launch has to surface.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_server_that_frames_its_output_wrongly_is_reported() {
-    let Some(mut harness) = harness("no-content-length", false) else {
-        return;
-    };
+async fn a_server_that_frames_its_output_wrongly_is_reported() -> Result<(), SetupError> {
+    let mut harness = harness("no-content-length", false)?;
     assert!(harness.open());
     assert!(
         harness.wait_for(is_lsp_warning).await.is_some(),
         "a peer that loses framing must surface a failure"
     );
+    Ok(())
 }
 
 /// A server that completes the handshake and then dies is the case the restart
 /// circuit exists for: it has proven it can run, so karet keeps trying.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_server_that_dies_after_connecting_is_retried_not_written_off() {
-    let Some(mut harness) = harness("die-after-handshake", false) else {
-        return;
-    };
+async fn a_server_that_dies_after_connecting_is_retried_not_written_off() -> Result<(), SetupError>
+{
+    let mut harness = harness("die-after-handshake", false)?;
     assert!(harness.open());
     let mut seen_running = false;
     // Short on purpose: this waits for something that must *not* happen, so the
@@ -402,6 +403,7 @@ async fn a_server_that_dies_after_connecting_is_retried_not_written_off() {
         "a server that connected before must keep its retries; only one that has \
          never started is written off"
     );
+    Ok(())
 }
 
 // --- the shared broker -----------------------------------------------------
@@ -410,10 +412,8 @@ async fn a_server_that_dies_after_connecting_is_retried_not_written_off() {
 /// asserts the sharing actually happens, by counting how many times the double
 /// really started — code with no coverage at all before now.
 #[tokio::test(flavor = "multi_thread")]
-async fn two_sessions_on_one_root_share_a_single_server_process() {
-    let Some(mut first) = harness("report", true) else {
-        return;
-    };
+async fn two_sessions_on_one_root_share_a_single_server_process() -> Result<(), SetupError> {
+    let mut first = harness("report", true)?;
     assert!(first.open());
     let _ = first
         .wait_for(|event| matches!(event, Event::Opened { .. }))
@@ -445,9 +445,9 @@ async fn two_sessions_on_one_root_share_a_single_server_process() {
         },
     );
     let (backend, _snapshots) = local(config);
-    let Some(mut events) = backend.take_events() else {
-        return;
-    };
+    let mut events = backend
+        .take_events()
+        .ok_or("the session handed out no event stream")?;
     let _ = backend.send(
         backend.next_id(),
         Command::OpenDocument {
@@ -471,6 +471,7 @@ async fn two_sessions_on_one_root_share_a_single_server_process() {
         1,
         "a second session on the same root must reuse the brokered process"
     );
+    Ok(())
 }
 
 /// Through the broker the server is a grandchild, so its death has to cross two
@@ -478,10 +479,8 @@ async fn two_sessions_on_one_root_share_a_single_server_process() {
 /// server died before the broker began accepting clients, and the session then
 /// waited out the broker's 30-second idle timeout.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_brokered_server_that_dies_immediately_is_reported_promptly() {
-    let Some(mut harness) = harness("exit-now", true) else {
-        return;
-    };
+async fn a_brokered_server_that_dies_immediately_is_reported_promptly() -> Result<(), SetupError> {
+    let mut harness = harness("exit-now", true)?;
     assert!(harness.open());
     let started = tokio::time::Instant::now();
     let reported = harness.wait_for(is_lsp_warning).await;
@@ -491,6 +490,7 @@ async fn a_brokered_server_that_dies_immediately_is_reported_promptly() {
         "reporting took {:?}, which suggests the broker idle timeout was waited out",
         started.elapsed()
     );
+    Ok(())
 }
 
 /// The app always has a registry directory, so it always takes the brokered
@@ -499,10 +499,9 @@ async fn a_brokered_server_that_dies_immediately_is_reported_promptly() {
 /// failure was reported as a host problem, meaning "a retry might help", so a
 /// server that could never start was retried forever.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_brokered_server_that_can_never_start_also_stops_being_retried() {
-    let Some(mut harness) = harness("exit-now", true) else {
-        return;
-    };
+async fn a_brokered_server_that_can_never_start_also_stops_being_retried() -> Result<(), SetupError>
+{
+    let mut harness = harness("exit-now", true)?;
     assert!(harness.open());
     let mut unavailable = false;
     let deadline = tokio::time::Instant::now() + DEADLINE;
@@ -521,26 +520,21 @@ async fn a_brokered_server_that_can_never_start_also_stops_being_retried() {
         "a brokered server that exits on sight must reach a terminal state, not \
          retry forever"
     );
+    Ok(())
 }
 
 /// A stale endpoint left by a broker that died is superseded rather than
 /// trusted. Every early failure in `run_broker` used to leave one behind.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_stale_broker_endpoint_does_not_block_a_new_launch() {
-    let Some(mut harness) = harness("normal", true) else {
-        return;
-    };
-    let Some(registry) = harness
+async fn a_stale_broker_endpoint_does_not_block_a_new_launch() -> Result<(), SetupError> {
+    let mut harness = harness("normal", true)?;
+    let registry = harness
         ._registry
         .as_ref()
         .map(|dir| dir.path().to_path_buf())
-    else {
-        return;
-    };
+        .ok_or("the brokered harness has no registry directory")?;
     let brokers = registry.join("brokers");
-    if std::fs::create_dir_all(&brokers).is_err() {
-        return;
-    }
+    std::fs::create_dir_all(&brokers)?;
     // An endpoint naming a port nothing is listening on, as a crashed broker
     // would leave. The key is not the one this launch computes, so this also
     // proves an unrelated stale file is simply ignored.
@@ -560,6 +554,7 @@ async fn a_stale_broker_endpoint_does_not_block_a_new_launch() {
         Path::new(&stale).exists(),
         "an unrelated broker's file is not this launch's to remove"
     );
+    Ok(())
 }
 
 /// Diagnostics are a merged layer, not the primary provider's to grant.
@@ -574,36 +569,29 @@ async fn a_stale_broker_endpoint_does_not_block_a_new_launch() {
 /// fallback that resolves every built-in to its bare launch spec, so under
 /// `cfg(test)` a primary is never unresolved and the branch is unreachable.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_diagnostics_companion_attaches_even_with_no_primary_provider() {
-    let Some(workspace) = tempfile::tempdir().ok() else {
-        return;
-    };
+async fn a_diagnostics_companion_attaches_even_with_no_primary_provider() -> Result<(), SetupError>
+{
+    let workspace = tempfile::tempdir()?;
     let root = workspace.path();
     // Marks the repository as a Ruff project, which is what selects Ruff as
     // Python's diagnostics companion.
-    if std::fs::write(root.join("ruff.toml"), "line-length = 88\n").is_err() {
-        return;
-    }
+    std::fs::write(root.join("ruff.toml"), "line-length = 88\n")?;
     // Resolved by `project_local_spec`, exactly as a real virtualenv would be.
     // Pyright, Python's primary, is deliberately absent.
     let venv = root.join(".venv").join("bin");
-    if std::fs::create_dir_all(&venv).is_err() || std::fs::copy(TESTBED, venv.join("ruff")).is_err()
-    {
-        return;
-    }
+    std::fs::create_dir_all(&venv)?;
+    std::fs::copy(TESTBED, venv.join("ruff"))?;
     let file = root.join("main.py");
-    if std::fs::write(&file, "x = 1\n").is_err() {
-        return;
-    }
+    std::fs::write(&file, "x = 1\n")?;
 
     let (backend, _snapshots) = local(SessionConfig {
         process_supervisor: Some(PathBuf::from(TESTBED)),
         roots: vec![root.to_path_buf()],
         ..SessionConfig::default()
     });
-    let Some(mut events) = backend.take_events() else {
-        return;
-    };
+    let mut events = backend
+        .take_events()
+        .ok_or("the session handed out no event stream")?;
     let _ = backend.send(
         backend.next_id(),
         Command::OpenDocument {
@@ -627,6 +615,7 @@ async fn a_diagnostics_companion_attaches_even_with_no_primary_provider() {
         ruff_running,
         "Ruff must still provide diagnostics when Python's primary provider is missing"
     );
+    Ok(())
 }
 
 /// `lsp.enabled = false` has to stop every server, not just the primary.
@@ -636,23 +625,15 @@ async fn a_diagnostics_companion_attaches_even_with_no_primary_provider() {
 /// still spawned Ruff or Biome. The existing unit test missed it because it
 /// opens a Rust file, and Rust has no companion.
 #[tokio::test(flavor = "multi_thread")]
-async fn disabling_lsp_stops_companions_and_not_only_primaries() {
-    let Some(workspace) = tempfile::tempdir().ok() else {
-        return;
-    };
+async fn disabling_lsp_stops_companions_and_not_only_primaries() -> Result<(), SetupError> {
+    let workspace = tempfile::tempdir()?;
     let root = workspace.path();
-    if std::fs::write(root.join("ruff.toml"), "line-length = 88\n").is_err() {
-        return;
-    }
+    std::fs::write(root.join("ruff.toml"), "line-length = 88\n")?;
     let venv = root.join(".venv").join("bin");
-    if std::fs::create_dir_all(&venv).is_err() || std::fs::copy(TESTBED, venv.join("ruff")).is_err()
-    {
-        return;
-    }
+    std::fs::create_dir_all(&venv)?;
+    std::fs::copy(TESTBED, venv.join("ruff"))?;
     let file = root.join("main.py");
-    if std::fs::write(&file, "x = 1\n").is_err() {
-        return;
-    }
+    std::fs::write(&file, "x = 1\n")?;
 
     let mut config = SessionConfig {
         process_supervisor: Some(PathBuf::from(TESTBED)),
@@ -661,9 +642,9 @@ async fn disabling_lsp_stops_companions_and_not_only_primaries() {
     };
     config.settings.lsp.enabled = false;
     let (backend, _snapshots) = local(config);
-    let Some(mut events) = backend.take_events() else {
-        return;
-    };
+    let mut events = backend
+        .take_events()
+        .ok_or("the session handed out no event stream")?;
     let _ = backend.send(
         backend.next_id(),
         Command::OpenDocument {
@@ -687,4 +668,5 @@ async fn disabling_lsp_stops_companions_and_not_only_primaries() {
         }
     }
     assert_eq!(started, None, "LSP is disabled, yet a server was started");
+    Ok(())
 }

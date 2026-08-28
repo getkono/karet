@@ -44,8 +44,9 @@ const LAUNCH_DEADLINE: Duration = Duration::from_secs(120);
 /// matrix can open something that routes to it.
 ///
 /// Keyed by provider rather than language because that is what the row is
-/// about. A provider absent here is installed and then reported `not launched`
-/// rather than silently skipped.
+/// about. A provider absent here is installed and then **fails** the suite as
+/// `not launched` rather than being silently skipped: a new recipe that nothing
+/// here can open has not been shown to work.
 const SAMPLE_FILES: &[(&str, &str, &str)] = &[
     ("rust-analyzer", "main.rs", "fn main() {}\n"),
     (
@@ -121,6 +122,40 @@ fn sample_for(server: &str) -> Option<(&'static str, &'static str)> {
         .iter()
         .find(|(key, ..)| *key == server)
         .map(|(_, name, body)| (*name, *body))
+}
+
+/// The prefix every registry failure reaches the client under.
+///
+/// `RegistryUpdate::Failed` is the single path a failed install takes, and it is
+/// emitted as one error notification formatted `language-server registry: {…}`.
+const REGISTRY_FAILURE_PREFIX: &str = "language-server registry:";
+
+/// Does this notification report the install failure `key`'s row is waiting on?
+///
+/// Matching `LanguageServerId::display_name` was wrong twice over. The registry
+/// names the *key* -- `ruff`, not "Ruff"; `typescript-language-server`, not
+/// "TypeScript Language Server" -- so eight managed providers could never
+/// match. Worse, every Node-side error ("Node publishes no active LTS release",
+/// "Node {v} does not publish {key}", "Node checksum manifest has no {file}")
+/// names no server at all, which is all twelve npm-backed providers and exactly
+/// the upstream drift this file exists to catch. Each row drives its own
+/// throwaway backend with exactly one install in flight, so a registry failure
+/// that names nothing still belongs to the row that is waiting.
+fn reports_install_failure(message: &str, key: &str) -> bool {
+    message.contains(REGISTRY_FAILURE_PREFIX) || message.contains(key)
+}
+
+/// The providers whose row did not come out clean.
+///
+/// `Skipped` counts as a failure on both halves. A recipe with no `SAMPLE_FILES`
+/// entry leaves `launched` at its default, and counting only `Failed` meant a
+/// twenty-fourth recipe added without a sample would print `-` and pass green
+/// for ever -- the opposite of what this module documents.
+fn failing_rows(rows: &[Row]) -> Vec<&str> {
+    rows.iter()
+        .filter(|row| row.installed != Outcome::Ok || row.launched != Outcome::Ok)
+        .map(|row| row.server.as_str())
+        .collect()
 }
 
 /// Repository markers a companion provider needs before karet attaches it.
@@ -232,7 +267,9 @@ async fn exercise(server: &LanguageServerId, supervisor: &Path) -> Row {
                 row.version = version;
                 break;
             },
-            Event::Notification { message, .. } if message.contains(server.display_name()) => {
+            Event::Notification { message, .. }
+                if reports_install_failure(&message, server.key()) =>
+            {
                 row.note = message;
                 break;
             },
@@ -245,7 +282,10 @@ async fn exercise(server: &LanguageServerId, supervisor: &Path) -> Row {
     }
 
     let Some((name, body)) = sample_for(server.key()) else {
-        row.note = "no sample file for this provider".to_owned();
+        // A managed recipe with nothing to open cannot be shown to launch, and
+        // an unlaunchable row is a failure, not a blank.
+        row.launched = Outcome::Failed;
+        row.note = "no sample file for this provider; add one to SAMPLE_FILES".to_owned();
         return row;
     };
     if let Some((marker, contents)) = markers_for(server.key()) {
@@ -356,14 +396,87 @@ async fn every_managed_language_server_installs_and_starts() {
     }
     println!("{table}");
 
-    let failed = rows
-        .iter()
-        .filter(|row| row.installed == Outcome::Failed || row.launched == Outcome::Failed)
-        .map(|row| row.server.as_str())
-        .collect::<Vec<_>>();
+    let failed = failing_rows(&rows);
     assert!(
         failed.is_empty(),
         "these providers do not install or start against upstream today: {}\n{table}",
         failed.join(", ")
     );
+}
+
+// --- the matrix's own decisions, offline ----------------------------------
+//
+// Both are covered without the network, because a live run that mis-attributes
+// a failure surfaces only as a ten-minute timeout with a useless note.
+
+/// The registry names the key, and `display_name` remaps eight of them.
+#[test]
+fn a_failure_naming_the_key_is_attributed_to_its_row() {
+    for key in [
+        "ruff",
+        "pyright",
+        "typescript-language-server",
+        "astro-language-server",
+        "svelte-language-server",
+        "vue-language-server",
+        "yaml-language-server",
+        "rust-analyzer",
+    ] {
+        let message = format!("{REGISTRY_FAILURE_PREFIX} release v1 has no {key}-linux.tar.gz");
+        assert!(reports_install_failure(&message, key), "{message}");
+    }
+}
+
+/// The Node-side errors -- which reach all twelve npm-backed providers -- name
+/// no server at all.
+#[test]
+fn a_failure_naming_no_server_still_fails_the_waiting_row() {
+    for message in [
+        "language-server registry: Node publishes no active LTS release",
+        "language-server registry: Node v22.11.0 does not publish osx-arm64-tar",
+        "language-server registry: Node checksum manifest has no node-v22.11.0-darwin-arm64.tar.gz",
+        "language-server registry: process supervisor is unavailable",
+    ] {
+        assert!(
+            reports_install_failure(message, "bash-language-server"),
+            "{message}"
+        );
+    }
+}
+
+/// Unrelated chatter must not end the wait early and blame the row.
+#[test]
+fn an_unrelated_notification_is_not_mistaken_for_a_failure() {
+    assert!(!reports_install_failure(
+        "workspace indexing finished",
+        "ruff"
+    ));
+}
+
+fn outcome_row(installed: Outcome, launched: Outcome) -> Row {
+    Row {
+        server: "example".to_owned(),
+        installed,
+        launched,
+        ..Row::default()
+    }
+}
+
+/// A recipe with no `SAMPLE_FILES` entry printed `-` and passed green for ever,
+/// because the filter counted only `Failed`.
+#[test]
+fn a_row_that_never_launched_fails_the_suite() {
+    let none: Vec<&str> = Vec::new();
+    assert_eq!(failing_rows(&[outcome_row(Outcome::Ok, Outcome::Ok)]), none);
+    for (installed, launched) in [
+        (Outcome::Ok, Outcome::Skipped),
+        (Outcome::Skipped, Outcome::Skipped),
+        (Outcome::Ok, Outcome::Failed),
+        (Outcome::Failed, Outcome::Ok),
+    ] {
+        assert_eq!(
+            failing_rows(&[outcome_row(installed, launched)]),
+            vec!["example"]
+        );
+    }
 }
