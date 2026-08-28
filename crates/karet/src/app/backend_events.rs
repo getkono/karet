@@ -151,8 +151,12 @@ impl App {
                 self.docs.manifest_hints.insert(doc, (version, hints));
             },
             SessionEvent::Definitions { locations } => self.on_definitions(id, locations),
-            SessionEvent::LanguageServerInstallRequired { server } => {
-                self.prompt_language_server_install(server);
+            SessionEvent::LanguageServerInstallRequired {
+                server,
+                language,
+                enabled,
+            } => {
+                self.prompt_language_server_install(server, &language, enabled);
             },
             SessionEvent::LanguageServerStatus { servers } => {
                 self.show_language_server_status(id, servers);

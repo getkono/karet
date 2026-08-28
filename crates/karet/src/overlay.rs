@@ -9,8 +9,6 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use karet_core::LineCol;
-use karet_session::LanguageServerId;
-use karet_session::LanguageServerPlanId;
 use karet_session::PullRequestSummary;
 use karet_vcs::BranchTarget;
 use karet_vcs::CreateBranchOptions;
@@ -96,19 +94,8 @@ pub enum TextPurpose {
     TagCreate { rev: String },
     /// Evaluate the submitted expression in the debuggee.
     DebugEvaluate,
-    /// Confirm the first network-backed installation by typing `install`.
-    InstallLanguageServer { server: LanguageServerId },
-    /// Approve the exact update plan displayed by the backend.
-    ApplyLanguageServerPlan {
-        plan: LanguageServerPlanId,
-        servers: Vec<LanguageServerId>,
-        /// Whether this plan installs a missing provider rather than updating one.
-        install: bool,
-    },
     /// Replace the language-server manager's filter with the submitted text.
     FilterLanguageServers,
-    /// Confirm deactivation of one Karet-managed provider by typing `uninstall`.
-    UninstallLanguageServer { server: LanguageServerId },
 }
 
 pub(crate) struct BranchForm {

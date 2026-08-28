@@ -256,3 +256,44 @@ pub(super) fn load_theme(name: &str) -> Result<Theme, String> {
     let text = String::from_utf8(bytes).map_err(|e| format!("theme `{name}`: {e}"))?;
     Theme::load_vscode(&text).map_err(|e| format!("theme `{name}`: {e}"))
 }
+
+/// `bytes` in the largest unit that keeps it readable.
+///
+/// A download size is shown so the user can weigh it, and "14 MB" is weighable
+/// where "14680064" is not. One decimal place past kilobytes: the difference
+/// between 1.2 and 1.9 MB matters on a slow link, the digits after do not.
+pub(super) fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit + 1 < UNITS.len() {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[0])
+    } else {
+        format!("{size:.1} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::human_bytes;
+
+    #[test]
+    fn bytes_stay_whole_and_larger_units_keep_one_decimal() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(1023), "1023 B");
+        assert_eq!(human_bytes(1024), "1.0 KB");
+        assert_eq!(human_bytes(1536), "1.5 KB");
+        assert_eq!(human_bytes(14 * 1024 * 1024), "14.0 MB");
+    }
+
+    #[test]
+    fn the_largest_unit_saturates_rather_than_running_out() {
+        // Past gigabytes there is no unit left, so the number grows instead of
+        // the label going wrong.
+        assert!(human_bytes(4096 * 1024 * 1024 * 1024).ends_with(" GB"));
+    }
+}

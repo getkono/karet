@@ -47,6 +47,19 @@ pub(crate) enum ConfirmAction {
     UndoPublishedCommit,
     /// Hard-reset the worktree to this revision.
     ResetHard(String),
+    /// Download and activate a missing managed language server.
+    InstallLanguageServer(LanguageServerId),
+    /// Record that the user does not want this provider offered again.
+    DeclineLanguageServer(LanguageServerId),
+    /// Deactivate a Karet-managed provider and retire its payload.
+    UninstallLanguageServer(LanguageServerId),
+    /// Apply the exact update plan the backend resolved.
+    ApplyLanguageServerPlan {
+        /// The plan the backend is holding.
+        plan: LanguageServerPlanId,
+        /// The providers from it to apply.
+        servers: Vec<LanguageServerId>,
+    },
     /// Open a file the link pointed to from outside the workspace.
     OpenOutsideWorkspaceLink(PathBuf),
     /// Create the project settings file, then add `word` to its dictionary.
@@ -88,6 +101,10 @@ pub(crate) fn confirm_label(action: &ConfirmAction) -> String {
         ConfirmAction::DropStash(_) => "Drop".to_string(),
         ConfirmAction::UndoPublishedCommit => "Undo".to_string(),
         ConfirmAction::ResetHard(_) => "Reset".to_string(),
+        ConfirmAction::InstallLanguageServer(_) => "Install".to_string(),
+        ConfirmAction::DeclineLanguageServer(_) => "Never ask again".to_string(),
+        ConfirmAction::UninstallLanguageServer(_) => "Uninstall".to_string(),
+        ConfirmAction::ApplyLanguageServerPlan { .. } => "Update".to_string(),
         ConfirmAction::OpenOutsideWorkspaceLink(_) => "Open".to_string(),
         ConfirmAction::CreateProjectDictionary { .. } => "Create".to_string(),
         ConfirmAction::DeleteRemoteBranch { .. } => "Delete".to_string(),
@@ -215,6 +232,18 @@ impl App {
                     mode: karet_vcs::ResetMode::Hard,
                     rev,
                 });
+            },
+            ConfirmAction::InstallLanguageServer(server) => {
+                self.begin_language_server_install(server);
+            },
+            ConfirmAction::DeclineLanguageServer(server) => {
+                self.decline_language_server(server);
+            },
+            ConfirmAction::UninstallLanguageServer(server) => {
+                self.begin_language_server_uninstall(server);
+            },
+            ConfirmAction::ApplyLanguageServerPlan { plan, servers } => {
+                self.apply_language_server_plan(plan, servers, false);
             },
             ConfirmAction::OpenOutsideWorkspaceLink(path) => {
                 self.open_markdown_file_link(&path);

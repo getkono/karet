@@ -59,6 +59,7 @@ pub use api::DebugFrame;
 pub use api::DebugScope;
 pub use api::DebugSessionState;
 pub use api::DebugVariable;
+pub use api::DeclineScope;
 pub use api::DictionaryScope;
 pub use api::DocumentEncoding;
 pub use api::DocumentId;

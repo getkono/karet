@@ -191,6 +191,7 @@ use util::canonical;
 use util::close_prompt_choices;
 use util::copy_path_recursive;
 pub(crate) use util::effective_word_wrap;
+use util::human_bytes;
 use util::load_theme;
 use util::move_path;
 use util::parse_rev_range;

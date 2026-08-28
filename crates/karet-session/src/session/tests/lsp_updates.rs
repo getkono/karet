@@ -217,6 +217,7 @@
             session.apply_lsp_update(LspUpdate::InstallRequired {
                 generation: 0,
                 server: LanguageServerId::Texlab,
+                language: "latex".into(),
             });
         }
 

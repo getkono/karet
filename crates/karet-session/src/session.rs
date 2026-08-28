@@ -28,6 +28,7 @@ mod hints;
 mod lifecycle;
 mod lsp_commands;
 mod lsp_registry_updates;
+mod lsp_requests;
 #[cfg(feature = "mdlint")]
 mod mdlint;
 #[cfg(feature = "notebook-kernel")]

@@ -223,8 +223,10 @@ appear only when applicable. A missing managed provider shows **Install**, an
 installed provider shows **Check updates** (or **Update** after discovery) and
 **Uninstall**, and an active session instance shows **Restart**. Pending operations
 replace only that provider's action with a progress label, so other providers remain
-independently actionable. Installation progress and completion stay in this view
-instead of creating status-bar messages or notifications. The operation state is
+independently actionable. This view keeps the detailed per-provider progress; a
+confirmed install also reports itself as a notification, so a user who approved it
+from an editor buffer is not left watching a tab they never opened. The operation
+state is
 owned independently of the tab, so closing and reopening the manager does not lose
 it. The loading placeholder follows the shared 200 ms reveal delay. The view can be
 operated with either mouse or these focused-tab keys:
@@ -241,7 +243,7 @@ publisher-verification constraint.
 | `U` | force an update check for every installed managed provider |
 | `Enter` / `i` | run the selected row's contextual install, update, or check action |
 | `R` | restart the selected provider connections in this editor session |
-| `x` | uninstall a Karet-managed provider after typed confirmation |
+| `x` | uninstall a Karet-managed provider (asks first) |
 | `/` | filter by provider or language; submit an empty filter to clear it |
 | `q` | close the manager tab |
 
@@ -268,6 +270,19 @@ Node providers use a registry-owned, verified active-LTS Node runtime.
 - `prompt` (default): opening a file performs no network I/O. karet first asks
   permission to discover and install the provider's latest stable version. That
   single approval covers the resulting verified download and activation.
+
+  The prompt is a dialog whose **first** answer is *Not now* — the one `Enter`,
+  `Esc`, and any unbound key take — because approving it spends the user's
+  bandwidth. A provider that is disabled for the language is asked about
+  differently, since saying yes there also turns it on.
+
+  It is raised **at most once** per provider. Two records beside the install
+  journals decide that, deliberately kept out of settings: `declined.json`, which
+  the *Never ask* answer writes, and the activation history, which reports a
+  provider as already decided about even after it is uninstalled. Settings say
+  what you want configured; these say what karet has already asked and been told,
+  so re-enabling a provider never silently re-triggers a download you refused.
+  Clear a refusal from the Language Servers tab to be offered it again.
 - `auto`: the user has pre-authorized discovery and installation.
 - `off`: no discovery or download.
 

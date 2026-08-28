@@ -380,15 +380,19 @@ impl App {
             ));
             return;
         }
-        self.overlay = Some(Overlay::text(
+        let name = status.server.display_name().to_string();
+        let version = status.installed.clone().unwrap_or_default();
+        self.confirm_action(
+            format!("Uninstall {name}?"),
             format!(
-                "Deactivate {} for future sessions · type uninstall to confirm",
-                status.server.display_name()
+                "Deactivates {name} {version} and retires its files. Documents in \
+                 this language lose completions, diagnostics and go-to-definition \
+                 until it is installed again."
             ),
-            TextPurpose::UninstallLanguageServer {
-                server: status.server,
-            },
-        ));
+            "Keep it installed",
+            format!("Uninstall {name}"),
+            ConfirmAction::UninstallLanguageServer(status.server),
+        );
     }
 
     pub(super) fn prompt_language_server_filter(&mut self) {
@@ -532,25 +536,73 @@ impl App {
         );
     }
 
-    pub(super) fn prompt_language_server_install(&mut self, server: LanguageServerId) {
-        if self.overlay.is_none() {
-            self.overlay = Some(Overlay::text(
+    /// Offer to install a missing provider.
+    ///
+    /// Installing spends the user's bandwidth on a download they did not ask for,
+    /// so the first row — the one Enter takes and the one every way of backing out
+    /// runs — declines. `Never ask` sits alongside it so a user who does not want
+    /// this provider can say so once, instead of dismissing the same prompt on
+    /// every launch.
+    ///
+    /// A provider *disabled* for the language is a different question: it has to
+    /// be turned on as well as fetched, so saying yes changes more than the disk.
+    pub(super) fn prompt_language_server_install(
+        &mut self,
+        server: LanguageServerId,
+        language: &str,
+        enabled: bool,
+    ) {
+        let name = server.display_name().to_string();
+        let (title, body, proceed) = if enabled {
+            (
+                format!("Install {name}?"),
                 format!(
-                    "{} is not installed · type install to install the latest stable version",
-                    server.display_name()
+                    "Karet has no language server for {language}. Installing \
+                     downloads {name} from its upstream release and activates it \
+                     for this and future sessions."
                 ),
-                TextPurpose::InstallLanguageServer { server },
-            ));
+                format!("Install {name}"),
+            )
         } else {
-            self.notify(
-                Severity::Warning,
-                NotificationKind::Lsp,
+            (
+                format!("Enable and install {name}?"),
                 format!(
-                    "{} is not installed; open Language Servers to install it",
-                    server.display_name()
+                    "{name} is turned off for {language} in your settings, and is \
+                     not installed. Continuing downloads it and enables it for \
+                     {language}."
                 ),
-            );
-        }
+                format!("Enable and install {name}"),
+            )
+        };
+        self.confirm(ConfirmDialog::new(
+            title,
+            body,
+            vec![
+                ConfirmChoice::custom("Not now", ConfirmAction::Cancel),
+                ConfirmChoice::custom(
+                    proceed,
+                    ConfirmAction::InstallLanguageServer(server.clone()),
+                ),
+                ConfirmChoice::custom(
+                    format!("Never ask about {name}"),
+                    ConfirmAction::DeclineLanguageServer(server),
+                ),
+            ],
+        ));
+    }
+
+    /// Record that the user does not want this provider offered again.
+    pub(super) fn decline_language_server(&mut self, server: LanguageServerId) {
+        let name = server.display_name().to_string();
+        self.send_command(SessionCommand::DeclineLanguageServer {
+            server,
+            scope: karet_session::DeclineScope::Forever,
+        });
+        self.notify(
+            Severity::Information,
+            NotificationKind::Lsp,
+            format!("{name} will not be offered again · undo it in Language Servers"),
+        );
     }
 
     pub(super) fn show_language_server_status(
@@ -641,13 +693,33 @@ impl App {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        self.overlay = Some(Overlay::text(
-            format!("{summary} · type update to approve these exact versions"),
-            TextPurpose::ApplyLanguageServerPlan {
-                plan,
-                servers: changes.iter().map(|change| change.server.clone()).collect(),
-                install: false,
+        let bytes: u64 = changes
+            .iter()
+            .filter_map(|change| change.download_bytes)
+            .sum();
+        let size = if bytes > 0 {
+            format!(" Downloads about {}.", human_bytes(bytes))
+        } else {
+            String::new()
+        };
+        let count = changes.len();
+        self.confirm(ConfirmDialog::new(
+            if count == 1 {
+                "Update this language server?".to_string()
+            } else {
+                format!("Update {count} language servers?")
             },
+            format!("Applies exactly these versions: {summary}.{size}"),
+            vec![
+                ConfirmChoice::custom("Keep current versions", ConfirmAction::Cancel),
+                ConfirmChoice::custom(
+                    "Update",
+                    ConfirmAction::ApplyLanguageServerPlan {
+                        plan,
+                        servers: changes.iter().map(|change| change.server.clone()).collect(),
+                    },
+                ),
+            ],
         ));
     }
 
