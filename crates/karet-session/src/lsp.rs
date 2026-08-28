@@ -401,6 +401,12 @@ impl LspManager {
         version: u64,
         text: impl FnOnce() -> String,
     ) {
+        // Checked here, not only in `ensure_server`: companions are attached
+        // below without going through it, so once the primary stopped being
+        // required this was the only remaining gate on the whole feature.
+        if !self.settings.enabled {
+            return;
+        }
         let path = absolute_path(path);
         let selector = language_key(selector);
         // The primary is optional. Diagnostics are explicitly a merged layer,

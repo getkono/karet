@@ -65,10 +65,22 @@ pub(super) fn spawn_connector(
                 )
                 .await
                 .map_err(|error| match error {
-                    // The broker owns the process, so a connection that
-                    // closes during the handshake means the server behind it
-                    // never came up.
-                    LspError::Closed | LspError::Timeout => host_failure(&spec, error),
+                    // The broker owns the process, so a handshake that closes
+                    // means the server behind it never came up. `Exited`, not
+                    // `Host`: this is the broker's report of a dead child, and
+                    // classifying it as a host problem told the restart policy
+                    // that a retry might help. Since the app always has a
+                    // registry directory, and therefore always takes this
+                    // branch, that made "stop retrying what can never start"
+                    // unreachable in production.
+                    LspError::Closed | LspError::Timeout => LspError::Launch(Box::new(
+                        LaunchFailure::new(
+                            spec.command.clone(),
+                            spec.args.clone(),
+                            karet_lsp::LaunchCause::Exited,
+                        )
+                        .with_stderr(vec![error.to_string()]),
+                    )),
                     other => other,
                 });
             }

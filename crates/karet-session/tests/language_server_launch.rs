@@ -493,6 +493,36 @@ async fn a_brokered_server_that_dies_immediately_is_reported_promptly() {
     );
 }
 
+/// The app always has a registry directory, so it always takes the brokered
+/// fork. A failure classified only for the direct fork is therefore a fix that
+/// never runs in production — which is what happened here: every brokered
+/// failure was reported as a host problem, meaning "a retry might help", so a
+/// server that could never start was retried forever.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_brokered_server_that_can_never_start_also_stops_being_retried() {
+    let Some(mut harness) = harness("exit-now", true) else {
+        return;
+    };
+    assert!(harness.open());
+    let mut unavailable = false;
+    let deadline = tokio::time::Instant::now() + DEADLINE;
+    while !unavailable && tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+        let Ok(Some((_, event))) = tokio::time::timeout(remaining, harness.events.recv()).await
+        else {
+            break;
+        };
+        if let Event::LanguageServerRuntimeChanged { state, .. } = event {
+            unavailable = state == LanguageServerRuntimeState::Unavailable;
+        }
+    }
+    assert!(
+        unavailable,
+        "a brokered server that exits on sight must reach a terminal state, not \
+         retry forever"
+    );
+}
+
 /// A stale endpoint left by a broker that died is superseded rather than
 /// trusted. Every early failure in `run_broker` used to leave one behind.
 #[tokio::test(flavor = "multi_thread")]
@@ -597,4 +627,62 @@ async fn a_diagnostics_companion_attaches_even_with_no_primary_provider() {
         ruff_running,
         "Ruff must still provide diagnostics when Python's primary provider is missing"
     );
+}
+
+/// `lsp.enabled = false` has to stop every server, not just the primary.
+///
+/// `ensure_server` was the only place the setting was read, so once the primary
+/// stopped being required for a document to attach companions, a disabled LSP
+/// still spawned Ruff or Biome. The existing unit test missed it because it
+/// opens a Rust file, and Rust has no companion.
+#[tokio::test(flavor = "multi_thread")]
+async fn disabling_lsp_stops_companions_and_not_only_primaries() {
+    let Some(workspace) = tempfile::tempdir().ok() else {
+        return;
+    };
+    let root = workspace.path();
+    if std::fs::write(root.join("ruff.toml"), "line-length = 88\n").is_err() {
+        return;
+    }
+    let venv = root.join(".venv").join("bin");
+    if std::fs::create_dir_all(&venv).is_err() || std::fs::copy(TESTBED, venv.join("ruff")).is_err()
+    {
+        return;
+    }
+    let file = root.join("main.py");
+    if std::fs::write(&file, "x = 1\n").is_err() {
+        return;
+    }
+
+    let mut config = SessionConfig {
+        process_supervisor: Some(PathBuf::from(TESTBED)),
+        roots: vec![root.to_path_buf()],
+        ..SessionConfig::default()
+    };
+    config.settings.lsp.enabled = false;
+    let (backend, _snapshots) = local(config);
+    let Some(mut events) = backend.take_events() else {
+        return;
+    };
+    let _ = backend.send(
+        backend.next_id(),
+        Command::OpenDocument {
+            path: file,
+            language: Some("python".to_owned()),
+        },
+    );
+
+    // Short: this waits for something that must never happen. The companion
+    // path is fast enough that a second is ample — the sibling test sees Ruff
+    // reach `Running` well inside it.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+        let Ok(Some((_, event))) = tokio::time::timeout(remaining, events.recv()).await else {
+            break;
+        };
+        if let Event::LanguageServerRuntimeChanged { server, .. } = event {
+            panic!("LSP is disabled, yet {} was started", server.key());
+        }
+    }
 }
