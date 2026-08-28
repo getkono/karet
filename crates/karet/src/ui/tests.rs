@@ -15,6 +15,8 @@ use crate::app::CommitInput;
 mod commit_graph;
 #[path = "tests/save_mark.rs"]
 mod save_mark;
+#[path = "tests/search_panel.rs"]
+mod search_panel;
 
 #[test]
 fn scm_change_rows_show_colored_added_and_removed_counts() {

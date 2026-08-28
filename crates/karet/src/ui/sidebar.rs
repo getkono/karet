@@ -1,5 +1,5 @@
 mod debug;
-mod search;
+pub(super) mod search;
 
 use super::*;
 

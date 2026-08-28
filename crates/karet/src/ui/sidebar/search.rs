@@ -5,14 +5,13 @@ use super::*;
 use crate::app::SearchPanelField;
 use crate::app::SearchRow;
 
-pub(super) fn draw_search_panel(
+pub(crate) fn draw_search_panel(
     f: &mut Frame,
     app: &mut App,
     theme: &Theme,
     area: Rect,
     hits: &mut ScrollHits,
 ) {
-
     // Right-hand slot on the find/replace rows for the option toggles / replace-all.
     const SLOT_W: u16 = 10;
     let replace_visible = app.search.replace_visible;
