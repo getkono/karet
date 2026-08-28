@@ -111,7 +111,6 @@ use karet_filetype::WrapMode;
 use karet_filetype::file_type_for_path;
 use karet_fileview::image::GraphicsProtocol;
 use karet_fileview::image::{self};
-use karet_search::FileHit;
 use karet_search::SearchQuery;
 use karet_search::search_in_file;
 use karet_session::Backend;
@@ -136,6 +135,7 @@ use karet_session::PullRequestSummary;
 use karet_session::RangeSpec;
 use karet_session::RepositorySnapshot;
 use karet_session::RequestId;
+use karet_session::SearchHit;
 use karet_session::SessionConfig;
 use karet_session::Settings;
 use karet_session::SnapshotRx;
@@ -242,6 +242,13 @@ use crate::workspace;
 
 /// The maximum number of matching files the workspace search panel collects.
 const SEARCH_RESULT_CAP: usize = 500;
+/// How many matches a workspace search keeps before it stops walking. Bounds the
+/// panel's preview memory, which the file cap alone does not: one generated file
+/// can hold thousands of matches.
+const SEARCH_MATCH_CAP: usize = 5_000;
+/// Expand every file group when a finished search is at most this many matches;
+/// a larger result set arrives collapsed so it reads as a scannable file list.
+const SEARCH_AUTO_EXPAND: usize = 50;
 
 /// How many commits the source-control log fetches per lazily-loaded page.
 const SCM_LOG_PAGE: usize = 25;

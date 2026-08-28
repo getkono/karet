@@ -406,29 +406,75 @@ impl App {
     }
 
     /// Ask the backend for the workspace search results (the walk runs on the
-    /// backend's search worker, never this thread); [`SessionEvent::SearchResults`]
-    /// answers and fills the panel. A newer query supersedes an unstarted one.
+    /// backend's search worker, never this thread); [`SessionEvent::SearchProgress`]
+    /// batches stream in and one [`SessionEvent::SearchFinished`] closes the run.
     pub(super) fn run_global_search(&mut self) {
-        self.search.results.clear();
-        self.search.selection.set_len(0);
+        // Cancel the previous run before starting another: without this a long
+        // walk over a huge tree keeps burning a worker thread for results that
+        // are already superseded.
+        if let Some(previous) = self.search.searching.take() {
+            self.send_command(SessionCommand::Cancel { request: previous });
+        }
+        self.search.clear();
         if self.search.query.is_empty() {
             self.refresh_search_decorations();
             return;
         }
         let query = self.build_search_query();
-        self.send_command(SessionCommand::Search {
+        self.search.started = Some(Pending::start());
+        self.search.searching = self.send(SessionCommand::Search {
             query,
-            limit: SEARCH_RESULT_CAP,
+            file_limit: SEARCH_RESULT_CAP,
+            match_limit: SEARCH_MATCH_CAP,
         });
         self.refresh_search_decorations();
     }
 
-    /// Adopt the backend's workspace search results into the panel.
-    pub(super) fn apply_search_results(&mut self, hits: Vec<karet_search::FileHit>) {
-        self.search.results = hits;
-        // set_len clamps the cursor into the fresh result list.
-        let len = self.search.results.len();
-        self.search.selection.set_len(len);
+    /// Adopt one streamed batch of workspace search results.
+    ///
+    /// Results for anything but the in-flight request are dropped: cancelling
+    /// cannot recall a batch already in the event channel, so a stale answer
+    /// would otherwise overwrite a newer query's results.
+    pub(super) fn search_progress(
+        &mut self,
+        request: Option<RequestId>,
+        hits: Vec<SearchHit>,
+        files_scanned: usize,
+        matches_found: usize,
+    ) {
+        if request.is_none() || self.search.searching != request {
+            return;
+        }
+        self.search.hits.extend(hits);
+        self.search.files_scanned = files_scanned;
+        self.search.matches_found = matches_found;
+        self.search.rebuild_rows();
+        self.refresh_search_decorations();
+    }
+
+    /// Adopt a search's terminal state.
+    pub(super) fn search_finished(
+        &mut self,
+        request: Option<RequestId>,
+        files_scanned: usize,
+        matches_found: usize,
+        truncated: bool,
+        error: Option<String>,
+    ) {
+        if request.is_none() || self.search.searching != request {
+            return;
+        }
+        self.search.searching = None;
+        self.search.started = None;
+        self.search.files_scanned = files_scanned;
+        self.search.matches_found = matches_found;
+        self.search.truncated = truncated;
+        self.search.error = error;
+        self.search.searched = true;
+        // Adaptive expansion, applied only now that the size is known — collapsing
+        // mid-stream would snap groups shut under the cursor while the user reads.
+        self.search
+            .set_all_collapsed(matches_found > SEARCH_AUTO_EXPAND);
         self.refresh_search_decorations();
     }
 
@@ -441,9 +487,8 @@ impl App {
     pub(super) fn refresh_search_decorations(&mut self) {
         let query = self.build_search_query();
         // Owned, not borrowed: `all_tabs_mut()` below needs `&mut self`, which a
-        // set of `&Path` borrowed from `self.search.results` would conflict with.
-        let hit_paths: HashSet<PathBuf> =
-            self.search.results.iter().map(|h| h.path.clone()).collect();
+        // set of `&Path` borrowed from `self.search.hits` would conflict with.
+        let hit_paths: HashSet<PathBuf> = self.search.hits.iter().map(|h| h.path.clone()).collect();
         for tab in self.all_tabs_mut() {
             if let TabKind::Code {
                 path,
@@ -478,13 +523,97 @@ impl App {
         self.search.selection.move_by(delta);
     }
 
-    /// Open the selected result, scrolling to its first match.
+    /// Open the selected row: a match row jumps to that exact match, a file
+    /// heading to the file's first one.
     pub(super) fn open_selected_result(&mut self) {
-        let Some(hit) = self.search.results.get(self.search.selection.cursor()) else {
+        let Some(row) = self
+            .search
+            .rows
+            .get(self.search.selection.cursor())
+            .copied()
+        else {
             return;
         };
+        let Some(hit) = self.search.hits.get(row.hit()) else {
+            return;
+        };
+        let index = match row {
+            SearchRow::Match { index, .. } => index,
+            SearchRow::File { .. } => 0,
+        };
         let path = hit.path.clone();
-        let line = hit.matches.first().map_or(0, |m| m.line);
-        self.focus_by_file_line(&path, LineCol::new(line, 0));
+        // The backend already converted the engine's *byte* column to a character
+        // column, so this lands on the match rather than the start of the line.
+        let position = hit
+            .matches
+            .get(index)
+            .map_or(LineCol::new(0, 0), |m| m.range.start);
+        self.focus_by_file_line(&path, position);
+    }
+
+    /// Expand or collapse the selected file group.
+    pub(super) fn search_toggle_row(&mut self) {
+        let Some(row) = self
+            .search
+            .rows
+            .get(self.search.selection.cursor())
+            .copied()
+        else {
+            return;
+        };
+        let Some(path) = self.search.hits.get(row.hit()).map(|hit| hit.path.clone()) else {
+            return;
+        };
+        self.search.toggle_file(&path);
+    }
+
+    /// Expand the selected group, or step into it when it is already open.
+    pub(super) fn search_expand(&mut self) {
+        let Some(row) = self
+            .search
+            .rows
+            .get(self.search.selection.cursor())
+            .copied()
+        else {
+            return;
+        };
+        match row {
+            SearchRow::File {
+                expanded: false, ..
+            } => self.search_toggle_row(),
+            _ => self.search.selection.move_by(1),
+        }
+    }
+
+    /// Collapse the selected group, or jump to its heading from a match row.
+    pub(super) fn search_collapse(&mut self) {
+        let cursor = self.search.selection.cursor();
+        let Some(row) = self.search.rows.get(cursor).copied() else {
+            return;
+        };
+        match row {
+            SearchRow::File { expanded: true, .. } => self.search_toggle_row(),
+            // From a match, collapsing walks up to the file it belongs to, which
+            // is where a second press then collapses.
+            SearchRow::Match { hit, .. } => {
+                if let Some(heading) = self.search.rows[..cursor]
+                    .iter()
+                    .rposition(|row| matches!(row, SearchRow::File { hit: h, .. } if *h == hit))
+                {
+                    self.search.selection.move_to(heading);
+                }
+            },
+            SearchRow::File { .. } => {},
+        }
+    }
+
+    /// Collapse every file group, or expand them all when none are collapsed.
+    pub(super) fn search_toggle_all(&mut self) {
+        let any_open = self
+            .search
+            .hits
+            .iter()
+            .any(|hit| !self.search.collapsed.contains(&hit.path));
+        self.search.set_all_collapsed(any_open);
     }
 }

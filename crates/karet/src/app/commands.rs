@@ -403,7 +403,15 @@ impl App {
             Command::SearchSelectDown => self.search_select(1),
             Command::SearchOpen => self.open_selected_result(),
             Command::SearchBeginInput => self.search.input = true,
-            Command::SearchQuit => self.should_quit = true,
+            // Leave the panel, as this command's own label and hint say. It set
+            // `should_quit` until now, so Esc while browsing results quit karet.
+            Command::SearchQuit => {
+                self.search.input = false;
+                self.focus = Focus::Editor;
+            },
+            Command::SearchExpand => self.search_expand(),
+            Command::SearchCollapse => self.search_collapse(),
+            Command::SearchToggleAll => self.search_toggle_all(),
             Command::SearchRun => self.run_search_query(),
             Command::SearchEndInput => self.search.input = false,
             Command::SearchToggleReplace => self.search_toggle_replace(),

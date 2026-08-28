@@ -352,7 +352,18 @@ impl App {
             } => {
                 self.on_seam_node_detail(id, node, edges, preview);
             },
-            SessionEvent::SearchResults { hits } => self.apply_search_results(hits),
+            SessionEvent::SearchProgress {
+                hits,
+                files_scanned,
+                matches_found,
+            } => self.search_progress(id, hits, files_scanned, matches_found),
+            SessionEvent::SearchFinished {
+                files_scanned,
+                matches_found,
+                truncated,
+                cancelled: _,
+                error,
+            } => self.search_finished(id, files_scanned, matches_found, truncated, error),
             SessionEvent::SpellingScanProgress {
                 hits,
                 files_scanned,

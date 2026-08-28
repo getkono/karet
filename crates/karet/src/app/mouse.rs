@@ -591,9 +591,16 @@ impl App {
                     return;
                 }
                 let idx = self.search_ui.offset + (row_y - self.search_ui.results_rect.y) as usize;
-                if idx < self.search.results.len() {
-                    self.search.selection.move_to(idx);
-                    self.open_selected_result();
+                if idx >= self.search.rows.len() {
+                    return;
+                }
+                self.search.selection.move_to(idx);
+                // A click on a file heading's chevron toggles the group; anywhere
+                // else on the row opens the file, so the affordance is the glyph.
+                let on_chevron = col <= self.search_ui.results_rect.x;
+                match self.search.rows.get(idx) {
+                    Some(SearchRow::File { .. }) if on_chevron => self.search_toggle_row(),
+                    _ => self.open_selected_result(),
                 }
             },
         }

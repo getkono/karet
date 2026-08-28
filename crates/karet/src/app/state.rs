@@ -489,9 +489,31 @@ pub(crate) struct SearchPanel {
     /// Cursor and selection state for the replacement field.
     pub(crate) replace_edit: TextFieldState,
     /// The streamed results (one entry per matching file).
-    pub(crate) results: Vec<FileHit>,
-    /// The cursor over `results`.
+    pub(crate) hits: Vec<SearchHit>,
+    /// The rendered rows derived from [`hits`](Self::hits).
+    pub(crate) rows: Vec<SearchRow>,
+    /// Files whose match rows are hidden. Stores the *collapsed* set rather than
+    /// the expanded one so a file arriving in a later streaming batch shows its
+    /// matches by default instead of appearing empty.
+    pub(crate) collapsed: HashSet<PathBuf>,
+    /// The cursor over `rows`.
     pub(crate) selection: ListSelection,
+    /// The in-flight search, if one is running. Answers for any other request are
+    /// stale — a newer query supersedes its predecessor.
+    pub(crate) searching: Option<RequestId>,
+    /// When the running search started, for the delayed loading reveal.
+    pub(crate) started: Option<Pending>,
+    /// How many files the running (or last) search visited.
+    pub(crate) files_scanned: usize,
+    /// How many matches the running (or last) search found.
+    pub(crate) matches_found: usize,
+    /// The last search stopped at a file or match cap.
+    pub(crate) truncated: bool,
+    /// Why the last search could not run — an invalid regex or glob.
+    pub(crate) error: Option<String>,
+    /// Whether a search has ever completed, so an empty list can distinguish
+    /// "no matches" from "nothing asked for yet".
+    pub(crate) searched: bool,
     /// Whether a field is being edited (vs. browsing results).
     pub(crate) input: bool,
     /// Which field the input edits (find / replace).
@@ -506,6 +528,95 @@ pub(crate) struct SearchPanel {
     pub(crate) whole_word: bool,
 }
 
+/// One row of the Search panel's list: a file heading, or one match under it.
+///
+/// Both are selectable — a heading jumps to the file's first match, a match row
+/// to that exact line and column — and grouping is what keeps a result set of a
+/// few thousand matches readable in a narrow sidebar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SearchRow {
+    /// A file heading; `hit` indexes [`SearchPanel::hits`].
+    File {
+        /// Index into [`SearchPanel::hits`].
+        hit: usize,
+        /// How many matches this file has.
+        count: usize,
+        /// Whether this file's match rows are shown.
+        expanded: bool,
+    },
+    /// One match; `hit` indexes [`SearchPanel::hits`] and `index` that hit's matches.
+    Match {
+        /// Index into [`SearchPanel::hits`].
+        hit: usize,
+        /// Index into that hit's `matches`.
+        index: usize,
+    },
+}
+
+impl SearchRow {
+    /// The hit this row belongs to.
+    pub(crate) fn hit(self) -> usize {
+        match self {
+            Self::File { hit, .. } | Self::Match { hit, .. } => hit,
+        }
+    }
+}
+
+impl SearchPanel {
+    /// Rebuild [`rows`](Self::rows) from [`hits`](Self::hits), keeping the cursor
+    /// in range. Called after every streamed batch and every expand/collapse.
+    pub(crate) fn rebuild_rows(&mut self) {
+        self.rows.clear();
+        for (hit, file) in self.hits.iter().enumerate() {
+            let expanded = !self.collapsed.contains(&file.path);
+            self.rows.push(SearchRow::File {
+                hit,
+                count: file.matches.len(),
+                expanded,
+            });
+            if expanded {
+                self.rows
+                    .extend((0..file.matches.len()).map(|index| SearchRow::Match { hit, index }));
+            }
+        }
+        let cursor = self.selection.cursor();
+        self.selection = ListSelection::new(self.rows.len());
+        self.selection
+            .move_to(cursor.min(self.rows.len().saturating_sub(1)));
+    }
+
+    /// Show or hide one file's match rows.
+    pub(crate) fn toggle_file(&mut self, path: &Path) {
+        if !self.collapsed.remove(path) {
+            self.collapsed.insert(path.to_path_buf());
+        }
+        self.rebuild_rows();
+    }
+
+    /// Collapse or expand every file at once.
+    pub(crate) fn set_all_collapsed(&mut self, collapsed: bool) {
+        self.collapsed = if collapsed {
+            self.hits.iter().map(|hit| hit.path.clone()).collect()
+        } else {
+            HashSet::new()
+        };
+        self.rebuild_rows();
+    }
+
+    /// Drop every result, readying the panel for a fresh search.
+    pub(crate) fn clear(&mut self) {
+        self.hits.clear();
+        self.rows.clear();
+        self.collapsed.clear();
+        self.selection = ListSelection::new(0);
+        self.files_scanned = 0;
+        self.matches_found = 0;
+        self.truncated = false;
+        self.error = None;
+        self.searched = false;
+    }
+}
+
 impl Default for SearchPanel {
     fn default() -> Self {
         Self {
@@ -513,8 +624,17 @@ impl Default for SearchPanel {
             query_edit: TextFieldState::default(),
             replace: String::new(),
             replace_edit: TextFieldState::default(),
-            results: Vec::new(),
+            hits: Vec::new(),
+            rows: Vec::new(),
+            collapsed: HashSet::new(),
             selection: ListSelection::new(0),
+            searching: None,
+            started: None,
+            files_scanned: 0,
+            matches_found: 0,
+            truncated: false,
+            error: None,
+            searched: false,
             input: false,
             field: SearchField::Find,
             // The replace field is shown by default (collapsible via keybinding).

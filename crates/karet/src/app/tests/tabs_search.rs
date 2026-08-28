@@ -518,8 +518,8 @@ async fn global_search_collects_matching_files() {
     app.search.query = "needle".to_string();
     app.run_global_search();
     pump(&mut app, &mut events).await;
-    assert_eq!(app.search.results.len(), 1);
-    assert!(app.search.results[0].path.ends_with("a.txt"));
+    assert_eq!(app.search.hits.len(), 1);
+    assert!(app.search.hits[0].path.ends_with("a.txt"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -846,7 +846,7 @@ async fn global_search_highlights_matches_in_an_already_open_tab() {
     app.search.query = "needle".to_string();
     app.run_global_search();
     pump(&mut app, &mut events).await;
-    assert_eq!(app.search.results.len(), 1);
+    assert_eq!(app.search.hits.len(), 1);
     match &app.tabs[app.active].kind {
         TabKind::Code { search_decos, .. } => assert_eq!(search_decos.len(), 1),
         _ => unreachable!("expected a code tab"),
@@ -884,7 +884,7 @@ async fn fs_changed_event_reruns_a_live_global_search() {
     app.search.query = "needle".to_string();
     app.run_global_search();
     pump(&mut app, &mut events).await;
-    assert_eq!(app.search.results.len(), 0, "no matching file exists yet");
+    assert_eq!(app.search.hits.len(), 0, "no matching file exists yet");
 
     // A file matching the live query appears on disk...
     let file = dir.join("new.txt");
@@ -893,7 +893,7 @@ async fn fs_changed_event_reruns_a_live_global_search() {
     app.on_backend_event(None, SessionEvent::FsChanged { paths: vec![file] });
     pump(&mut app, &mut events).await;
     assert_eq!(
-        app.search.results.len(),
+        app.search.hits.len(),
         1,
         "FsChanged must re-run the live search"
     );

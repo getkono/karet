@@ -29,6 +29,7 @@ mod scm;
 mod scroll;
 mod seam;
 mod search_completion;
+mod search_panel;
 mod spellcheck;
 mod spelling_panel;
 mod startup;
