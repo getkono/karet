@@ -298,3 +298,56 @@ async fn an_unterminated_prelude_is_cut_off_at_the_cap() -> Result<(), BoxError>
     harness.wait_for_clients(1).await?;
     Ok(())
 }
+
+/// `upstream_reader` runs before `accept_clients`, so a brokered process that
+/// dies immediately signals before anything is parked on the notification.
+/// With a bare `Notify` that wakeup was dropped and the broker sat until its
+/// 30s idle timeout, outlasting the connector's 5s deadline. The latch is what
+/// makes the signal survive the gap.
+#[tokio::test]
+async fn a_server_that_dies_before_any_client_arrives_still_stops_the_broker()
+-> Result<(), BoxError> {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let (upstream_tx, _upstream) = mpsc::channel(16);
+    let core = Core::<TestProtocol>::new(upstream_tx);
+
+    // Close the brokered process's stdout and let the reader observe it before
+    // `accept_clients` is ever entered.
+    let (server, brokered) = tokio::io::duplex(64 * 1024);
+    drop(server);
+    upstream_reader::<TestProtocol, _>(brokered, Arc::clone(&core)).await;
+    assert!(core.upstream_closed.load(Ordering::Acquire));
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(5),
+        accept_clients::<TestProtocol>(&listener, "token", core),
+    )
+    .await?;
+    assert!(
+        matches!(outcome, Err(BrokerError::Io(ref message)) if message.contains("closed")),
+        "the broker should report the dead server, not wait for the idle timeout"
+    );
+    Ok(())
+}
+
+/// The live path: a server that dies while the broker is already parked.
+#[tokio::test]
+async fn a_server_that_dies_while_serving_stops_the_broker() -> Result<(), BoxError> {
+    let mut harness = Harness::start("token").await?;
+    let (_reader, _writer) = harness.client().await?;
+    harness.wait_for_clients(1).await?;
+
+    let (spare, _unused) = tokio::io::duplex(1);
+    let server = std::mem::replace(&mut harness.server, spare);
+    drop(server);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !harness.core.upstream_closed.load(Ordering::Acquire) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "stdout EOF unobserved"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Ok(())
+}

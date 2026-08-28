@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -43,6 +44,8 @@ use crate::broker::protocol::ServerLink;
 use crate::broker::protocol::ServerRoute;
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// The one message a client sees when the brokered process's stdout ended.
+const UPSTREAM_CLOSED: &str = "language server connection closed";
 const CLIENT_QUEUE: usize = 256;
 
 /// A request the broker forwarded upstream and still owes an answer for.
@@ -62,7 +65,18 @@ pub(crate) struct Core<P: BrokerProtocol> {
     pub(crate) next_client: AtomicU64,
     pub(crate) active_clients: AtomicUsize,
     pub(crate) last_activity: std::sync::Mutex<Instant>,
-    pub(crate) upstream_closed: Notify,
+    /// Set once the brokered process's stdout ends, for any reason.
+    ///
+    /// A latch, not a bare [`Notify`]: `notify_waiters` wakes only the waiters
+    /// registered at the moment it is called and stores nothing for anyone who
+    /// arrives later. `upstream_reader` is spawned before `accept_clients`, so
+    /// a server that dies immediately -- bare `taplo` printing usage is exactly
+    /// this -- signalled into an empty waiter set and the broker then sat until
+    /// its 30s idle timeout, long after the client gave up at 5s. The flag is
+    /// what makes the signal survive that gap; the `Notify` only wakes a
+    /// waiter that is already parked.
+    pub(crate) upstream_closed: AtomicBool,
+    pub(crate) upstream_closed_signal: Notify,
 }
 
 impl<P: BrokerProtocol> Core<P> {
@@ -76,13 +90,26 @@ impl<P: BrokerProtocol> Core<P> {
             next_client: AtomicU64::new(1),
             active_clients: AtomicUsize::new(0),
             last_activity: std::sync::Mutex::new(Instant::now()),
-            upstream_closed: Notify::new(),
+            upstream_closed: AtomicBool::new(false),
+            upstream_closed_signal: Notify::new(),
         })
     }
 }
 
 /// Publish an endpoint, run the brokered process, and serve clients until idle.
+///
+/// The election files are removed on every exit path, including the failures
+/// before a client is ever accepted. Leaving them behind cost the next
+/// connector its full `CONNECT_TIMEOUT`: it could not connect to the endpoint
+/// that named a dead broker, and could not take a lock that already existed.
 pub(crate) async fn run_broker<P: BrokerProtocol>(spec: BrokerSpec) -> Result<(), BrokerError> {
+    let outcome = run_broker_inner::<P>(&spec).await;
+    let _ = std::fs::remove_file(&spec.metadata);
+    let _ = std::fs::remove_file(&spec.lock);
+    outcome
+}
+
+async fn run_broker_inner<P: BrokerProtocol>(spec: &BrokerSpec) -> Result<(), BrokerError> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
         .map_err(io_error)?;
@@ -136,8 +163,6 @@ pub(crate) async fn run_broker<P: BrokerProtocol>(spec: BrokerSpec) -> Result<()
         let _ = child.kill().await;
         let _ = child.wait().await;
     }
-    let _ = std::fs::remove_file(&spec.metadata);
-    let _ = std::fs::remove_file(&spec.lock);
     outcome
 }
 
@@ -148,6 +173,11 @@ async fn accept_clients<P: BrokerProtocol>(
 ) -> Result<(), BrokerError> {
     let mut idle_check = tokio::time::interval(Duration::from_secs(2));
     loop {
+        // Checked before every park, so a stdout that ended before this task
+        // first ran is observed rather than waited on.
+        if core.upstream_closed.load(Ordering::Acquire) {
+            return Err(BrokerError::Io(UPSTREAM_CLOSED.to_owned()));
+        }
         tokio::select! {
             accepted = listener.accept() => {
                 let (stream, _) = accepted.map_err(io_error)?;
@@ -165,8 +195,8 @@ async fn accept_clients<P: BrokerProtocol>(
                     return Ok(());
                 }
             },
-            () = core.upstream_closed.notified() => {
-                return Err(BrokerError::Io("language server connection closed".to_owned()));
+            () = core.upstream_closed_signal.notified() => {
+                return Err(BrokerError::Io(UPSTREAM_CLOSED.to_owned()));
             },
         }
     }
@@ -323,7 +353,8 @@ where
             ServerRoute::Discard => {},
         }
     }
-    core.upstream_closed.notify_waiters();
+    core.upstream_closed.store(true, Ordering::Release);
+    core.upstream_closed_signal.notify_waiters();
 }
 
 async fn message_writer<F, W>(mut writer: W, mut messages: mpsc::Receiver<Value>)
