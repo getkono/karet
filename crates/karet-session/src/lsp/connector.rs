@@ -54,7 +54,23 @@ pub(super) fn spawn_connector(
                         .await
                         .map_err(|error| {
                             tracing::warn!(error = %error, "shared LSP broker connection failed");
-                            host_failure(&spec, error)
+                            match &error {
+                                // The broker watched the process itself, so its
+                                // verdict beats any guess made out here.
+                                karet_supervisor::broker::BrokerError::Launch(reported)
+                                    if reported.ran =>
+                                {
+                                    LspError::Launch(Box::new(
+                                        LaunchFailure::new(
+                                            spec.command.clone(),
+                                            spec.args.clone(),
+                                            karet_lsp::LaunchCause::Exited,
+                                        )
+                                        .with_stderr(vec![reported.message.clone()]),
+                                    ))
+                                },
+                                _ => host_failure(&spec, error),
+                            }
                         })?;
                 let (read, write) = tokio::io::split(stream);
                 return LspClient::connect_with(

@@ -349,5 +349,18 @@ async fn a_server_that_dies_while_serving_stops_the_broker() -> Result<(), BoxEr
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+
+    // The latch is the mechanism; stopping is the behaviour. A fresh
+    // `accept_clients` over the same core must refuse rather than serve.
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(5),
+        accept_clients::<TestProtocol>(&listener, "token", Arc::clone(&harness.core)),
+    )
+    .await?;
+    assert!(
+        matches!(outcome, Err(BrokerError::Io(ref message)) if message.contains("closed")),
+        "the broker should stop once its server's stdout ends"
+    );
     Ok(())
 }

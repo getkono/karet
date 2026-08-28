@@ -19,6 +19,7 @@ use tokio::net::TcpStream;
 use crate::broker::BrokerError;
 use crate::broker::endpoint;
 use crate::broker::endpoint::Endpoint;
+use crate::broker::failure::read as read_failure;
 use crate::broker::io_error;
 use crate::broker::key;
 use crate::broker::key::Launch;
@@ -33,6 +34,13 @@ pub(crate) struct BrokerSpec {
     pub(crate) launch: Launch,
     pub(crate) metadata: PathBuf,
     pub(crate) lock: PathBuf,
+    /// Where a broker that gave up before serving records why.
+    ///
+    /// The broker owns the server process, so only it can tell "the child died"
+    /// from "the broker is slow to publish". Without this the connector saw the
+    /// same startup timeout either way and had to assume the optimistic one,
+    /// which meant a server that could never start was retried forever.
+    pub(crate) failure: PathBuf,
     pub(crate) token: String,
     pub(crate) supervisor: PathBuf,
 }
@@ -85,10 +93,13 @@ pub(crate) async fn connect<P: BrokerProtocol>(
     let key = key::broker_key(P::PRELUDE, P::PROTOCOL_VERSION, launch);
     let metadata = directory.join(format!("{key}.json"));
     let lock = directory.join(format!("{key}.lock"));
+    let failure = directory.join(format!("{key}.error"));
 
     if let Ok(stream) = connect_existing::<P>(&metadata).await {
         return Ok(stream);
     }
+    // Whatever a previous broker recorded is about a previous attempt.
+    let _ = std::fs::remove_file(&failure);
 
     let owns_start = OpenOptions::new()
         .create_new(true)
@@ -101,6 +112,7 @@ pub(crate) async fn connect<P: BrokerProtocol>(
             launch: launch.clone(),
             metadata: metadata.clone(),
             lock: lock.clone(),
+            failure: failure.clone(),
             token,
             supervisor: executable.to_path_buf(),
         };
@@ -120,6 +132,13 @@ pub(crate) async fn connect<P: BrokerProtocol>(
     loop {
         if let Ok(stream) = connect_existing::<P>(&metadata).await {
             return Ok(stream);
+        }
+        // A broker that gave up says so, which both ends the wait early and
+        // tells the caller whether another attempt could help.
+        if let Some(reported) = read_failure(&failure) {
+            let _ = std::fs::remove_file(&failure);
+            let _ = std::fs::remove_file(&lock);
+            return Err(BrokerError::Launch(Box::new(reported)));
         }
         if tokio::time::Instant::now() >= deadline {
             // A hidden process normally publishes in milliseconds. At this point

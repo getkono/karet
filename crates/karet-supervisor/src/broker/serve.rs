@@ -104,6 +104,22 @@ impl<P: BrokerProtocol> Core<P> {
 /// that named a dead broker, and could not take a lock that already existed.
 pub(crate) async fn run_broker<P: BrokerProtocol>(spec: BrokerSpec) -> Result<(), BrokerError> {
     let outcome = run_broker_inner::<P>(&spec).await;
+    if let Err(error) = &outcome {
+        // The connector cannot see any of this: the server is the broker's
+        // child, and the broker's own stderr goes nowhere. Recorded before the
+        // endpoint is removed, so a client still waiting finds it.
+        crate::broker::failure::write(
+            &spec.failure,
+            &crate::broker::BrokeredLaunchFailure {
+                command: spec.launch.command.clone(),
+                args: spec.launch.args.clone(),
+                message: error.to_string(),
+                // The upstream reader only reports a closed stream for a
+                // process that got far enough to have one.
+                ran: matches!(error, BrokerError::Io(message) if message == UPSTREAM_CLOSED),
+            },
+        );
+    }
     let _ = std::fs::remove_file(&spec.metadata);
     let _ = std::fs::remove_file(&spec.lock);
     outcome

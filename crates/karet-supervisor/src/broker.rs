@@ -24,6 +24,7 @@
 //!   the skeleton may learn what `initialize` or `textDocument/didOpen` is.
 
 mod endpoint;
+mod failure;
 mod framing;
 mod key;
 mod lease;
@@ -31,6 +32,7 @@ mod lsp;
 mod protocol;
 mod serve;
 
+pub use failure::BrokeredLaunchFailure;
 pub use framing::Framing;
 pub use key::Launch;
 pub use lsp::MODE_ENV;
@@ -49,6 +51,13 @@ pub use protocol::ServerRoute;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum BrokerError {
+    /// The brokered process itself failed to run.
+    ///
+    /// Distinct from [`BrokerError::Io`] because the two need opposite
+    /// responses: a broker that could not be reached may answer on the next
+    /// attempt, and a server that exits on sight will not.
+    #[error("{0}")]
+    Launch(Box<BrokeredLaunchFailure>),
     /// Broker state or transport I/O failed.
     #[error("language-server broker I/O failed: {0}")]
     Io(String),
