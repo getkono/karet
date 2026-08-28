@@ -234,6 +234,29 @@ impl GithubViewState {
         }
     }
 
+    /// When this page started waiting on the backend, if something is still in
+    /// flight and no error has landed yet.
+    ///
+    /// Drives the delayed-loading reveal, so it has to answer for every page the
+    /// surface holds — not only the one in front. A page whose wait is invisible
+    /// here never schedules its repaint, and its placeholder would then appear only
+    /// on the next keystroke.
+    pub(crate) fn loading_since(&self) -> Option<Pending> {
+        match self {
+            Self::Dashboard(dashboard) => dashboard.loading_since,
+            Self::Issue {
+                pending: Some(_),
+                loading_since,
+                error: None,
+                ..
+            } => Some(*loading_since),
+            Self::PullRequest(view) if view.pending.is_some() && view.error.is_none() => {
+                Some(view.loading_since)
+            },
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_pinned(&self) -> bool {
         matches!(self, Self::Dashboard(_))
     }

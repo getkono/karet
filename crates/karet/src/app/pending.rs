@@ -15,7 +15,6 @@ use super::App;
 use super::LOADING_REVEAL_DELAY;
 use super::SidebarPanel;
 use super::TabKind;
-use super::github::GithubViewState;
 
 /// The start of an in-flight load, carrying the shared reveal policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,20 +125,7 @@ impl App {
                     ..
                 } => pendings.extend(*loading_since),
                 TabKind::CommitGraph { loading_since, .. } => pendings.extend(*loading_since),
-                TabKind::Github(GithubViewState::Dashboard(dashboard)) => {
-                    pendings.extend(dashboard.loading_since);
-                },
-                TabKind::Github(GithubViewState::Issue {
-                    pending: Some(_),
-                    loading_since,
-                    error: None,
-                    ..
-                }) => pendings.push(*loading_since),
-                TabKind::Github(GithubViewState::PullRequest(view))
-                    if view.pending.is_some() && view.error.is_none() =>
-                {
-                    pendings.push(view.loading_since);
-                },
+                TabKind::Github(view) => pendings.extend(view.loading_since()),
                 _ => {},
             }
         }
