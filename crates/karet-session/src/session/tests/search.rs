@@ -258,3 +258,46 @@
 
         assert_eq!(hits.len(), 2, "both roots contribute: {hits:?}");
     }
+
+    /// The match cap must bound the previews actually *built*, not merely trim the
+    /// answer afterwards. One 10 MiB minified line can hold a million matches, and
+    /// converting them all first allocates a preview `String` per match before the
+    /// cap ever gets a look in.
+    #[test]
+    fn the_match_cap_bounds_the_previews_built_for_a_single_file() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        // One line, 20_000 matches — the shape of a minified bundle.
+        let _ = std::fs::write(dir.path().join("bundle.js"), "a".repeat(20_000));
+        let (mut session, mut events, _snaps) = search_session(dir.path());
+
+        session.handle(
+            RequestId(1),
+            Command::Search {
+                query: literal_query("a"),
+                file_limit: 100,
+                match_limit: 10,
+            },
+        );
+        let (hits, finished) = drain_search(&mut events);
+
+        let built: usize = hits.iter().map(|hit| hit.matches.len()).sum();
+        assert!(
+            built <= 10,
+            "only the budgeted previews are built, got {built}"
+        );
+        let Some(Event::SearchFinished {
+            matches_found,
+            truncated,
+            ..
+        }) = finished
+        else {
+            unreachable!("expected SearchFinished")
+        };
+        assert!(truncated);
+        assert_eq!(
+            matches_found, 20_000,
+            "the count stays honest even though the previews are capped"
+        );
+    }

@@ -241,15 +241,25 @@ fn search(
                 state.files_since_flush += 1;
                 let matches = matcher.find(&text);
                 if !matches.is_empty() {
-                    state.files_matched += 1;
+                    // Build previews only up to the remaining budget. Checking the
+                    // cap after converting a whole file would let one 10 MiB
+                    // minified line allocate a preview `String` per match — the
+                    // very case the match cap exists to bound. The *count* still
+                    // reflects everything found, so the total stays honest.
+                    let room = match_limit.saturating_sub(state.matches_found);
+                    let kept: Vec<_> = matches
+                        .iter()
+                        .take(room)
+                        .map(|m| preview::search_match(&text, m))
+                        .collect();
                     state.matches_found += matches.len();
-                    state.hits.push(SearchHit {
-                        path: path.to_path_buf(),
-                        matches: matches
-                            .iter()
-                            .map(|m| preview::search_match(&text, m))
-                            .collect(),
-                    });
+                    if !kept.is_empty() {
+                        state.files_matched += 1;
+                        state.hits.push(SearchHit {
+                            path: path.to_path_buf(),
+                            matches: kept,
+                        });
+                    }
                 }
                 if state.files_matched >= file_limit || state.matches_found >= match_limit {
                     state.truncated = true;
