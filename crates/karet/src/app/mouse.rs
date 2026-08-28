@@ -617,7 +617,9 @@ impl App {
                 self.search.selection.move_to(idx);
                 // A click on a file heading's chevron toggles the group; anywhere
                 // else on the row opens the file, so the affordance is the glyph.
-                let on_chevron = col <= self.search_ui.results_rect.x;
+                // The chevron renders as glyph-plus-space, so both cells toggle;
+                // a one-cell target is too fine to hit reliably.
+                let on_chevron = col <= self.search_ui.results_rect.x.saturating_add(1);
                 match self.search.rows.get(idx) {
                     Some(SearchRow::File { .. }) if on_chevron => self.search_toggle_row(),
                     _ => self.open_selected_result(),
