@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;
+use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -208,34 +209,38 @@ fn classify(message: &Value) -> ClientMessage {
 
 /// The single `initialize` is proxied once; everyone else is answered from the
 /// cached result, waiting for it if the first request is still in flight.
+///
+/// The wait enrols on `initialize_ready` **before** either check, because
+/// `notify_waiters` stores no permit and a `Notified` does not join the waiter
+/// list until it is polled or `enable`d. Checking first and awaiting second
+/// would drop a wakeup that lands in between, and since this await sits inside
+/// the client's read loop a dropped wakeup wedges the whole session rather than
+/// just its `initialize`.
 async fn handle_initialize(
     message: &mut Value,
     link: &ClientLink<'_, LspBroker>,
 ) -> ClientFlow<LspRequest> {
     let state = link.state();
-    if let Some(result) = state.initialize_result.lock().await.clone() {
-        if let Some(id) = message.get("id").cloned() {
-            link.reply(json!({"jsonrpc": "2.0", "id": id, "result": result}))
-                .await;
+    loop {
+        let mut ready = pin!(state.initialize_ready.notified());
+        ready.as_mut().enable();
+
+        if let Some(result) = state.initialize_result.lock().await.clone() {
+            if let Some(id) = message.get("id").cloned() {
+                link.reply(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+                    .await;
+            }
+            return ClientFlow::Drop;
         }
-        return ClientFlow::Drop;
+        if state
+            .initialize_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return ClientFlow::Proxy(LspRequest::Initialize);
+        }
+        ready.await;
     }
-    if state
-        .initialize_started
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
-        return ClientFlow::Proxy(LspRequest::Initialize);
-    }
-    state.initialize_ready.notified().await;
-    if let (Some(id), Some(result)) = (
-        message.get("id").cloned(),
-        state.initialize_result.lock().await.clone(),
-    ) {
-        link.reply(json!({"jsonrpc": "2.0", "id": id, "result": result}))
-            .await;
-    }
-    ClientFlow::Drop
 }
 
 /// Only the first open and the last close of a document reach the server.
@@ -363,11 +368,15 @@ pub fn managed_payload_in_use(state_root: &Path, payload: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use tokio::io::BufReader;
 
     use super::*;
     use crate::broker::key;
     use crate::broker::serve::Core;
+
+    type BoxError = Box<dyn std::error::Error>;
 
     /// Keeps the moved tests' call shape: identity is derived from the launch
     /// description, which for LSP is a spec plus a repository root.
@@ -386,19 +395,51 @@ mod tests {
     struct LinkParts {
         core: Arc<Core<LspBroker>>,
         sender: tokio::sync::mpsc::Sender<Value>,
+        replies: tokio::sync::mpsc::Receiver<Value>,
         _upstream: tokio::sync::mpsc::Receiver<Value>,
-        _replies: tokio::sync::mpsc::Receiver<Value>,
     }
 
     fn link_parts() -> LinkParts {
         let (upstream, _upstream) = tokio::sync::mpsc::channel(8);
-        let (sender, _replies) = tokio::sync::mpsc::channel(8);
+        let (sender, replies) = tokio::sync::mpsc::channel(8);
         LinkParts {
             core: Core::<LspBroker>::new(upstream),
             sender,
+            replies,
             _upstream,
-            _replies,
         }
+    }
+
+    /// The `initialize` reply the tests hand back for the winning request.
+    fn initialize_reply() -> Value {
+        json!({"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}})
+    }
+
+    /// Play a client that lost the election, parked on the shared result.
+    ///
+    /// The link's halves are moved into the task so the handle outlives this
+    /// frame, and the yield lets the task reach its wait before we return.
+    async fn spawn_waiter(
+        core: &Arc<Core<LspBroker>>,
+        sender: &tokio::sync::mpsc::Sender<Value>,
+    ) -> tokio::task::JoinHandle<ClientFlow<LspRequest>> {
+        let core = Arc::clone(core);
+        let sender = sender.clone();
+        let waiter = tokio::spawn(async move {
+            let link = ClientLink::new(&core, 2, &sender);
+            let mut message = json!({"jsonrpc": "2.0", "id": 9, "method": "initialize"});
+            LspBroker::on_client_message(&mut message, &link).await
+        });
+        tokio::task::yield_now().await;
+        waiter
+    }
+
+    /// Collect a waiter's outcome, failing rather than hanging the suite if a
+    /// regression leaves it parked for good.
+    async fn settled(
+        waiter: tokio::task::JoinHandle<ClientFlow<LspRequest>>,
+    ) -> Result<ClientFlow<LspRequest>, BoxError> {
+        Ok(tokio::time::timeout(Duration::from_secs(5), waiter).await??)
     }
 
     #[test]
@@ -484,5 +525,60 @@ mod tests {
             LspBroker::on_client_message(&mut message, &link).await,
             ClientFlow::Forward
         );
+    }
+    #[tokio::test]
+    async fn a_waiting_client_is_answered_from_the_shared_result() -> Result<(), BoxError> {
+        let mut parts = link_parts();
+        parts
+            .core
+            .state
+            .initialize_started
+            .store(true, Ordering::Release);
+        let waiter = spawn_waiter(&parts.core, &parts.sender).await;
+
+        let mut answered = initialize_reply();
+        LspBroker::on_response(
+            &mut answered,
+            &LspRequest::Initialize,
+            &ServerLink::new(&parts.core),
+        )
+        .await;
+
+        assert_eq!(settled(waiter).await?, ClientFlow::Drop);
+        let reply = parts.replies.try_recv()?;
+        assert_eq!(reply.get("id"), Some(&json!(9)));
+        assert_eq!(reply.get("result"), Some(&json!({"capabilities": {}})));
+        Ok(())
+    }
+
+    /// A wakeup that arrives with no result yet must not be mistaken for the
+    /// answer: the waiting client keeps waiting instead of returning unanswered.
+    #[tokio::test]
+    async fn a_spurious_wakeup_does_not_drop_a_waiting_initialize() -> Result<(), BoxError> {
+        let mut parts = link_parts();
+        parts
+            .core
+            .state
+            .initialize_started
+            .store(true, Ordering::Release);
+        let waiter = spawn_waiter(&parts.core, &parts.sender).await;
+
+        parts.core.state.initialize_ready.notify_waiters();
+        tokio::task::yield_now().await;
+        assert!(
+            !waiter.is_finished(),
+            "a woken client with no result must keep waiting, not drop its initialize"
+        );
+
+        let mut answered = initialize_reply();
+        LspBroker::on_response(
+            &mut answered,
+            &LspRequest::Initialize,
+            &ServerLink::new(&parts.core),
+        )
+        .await;
+        assert_eq!(settled(waiter).await?, ClientFlow::Drop);
+        assert_eq!(parts.replies.try_recv()?.get("id"), Some(&json!(9)));
+        Ok(())
     }
 }
