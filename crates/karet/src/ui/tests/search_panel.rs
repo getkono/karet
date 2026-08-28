@@ -356,3 +356,48 @@ fn a_file_heading_never_overruns_the_list_width() -> Result<(), std::convert::In
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
+
+/// The row cursor and the caret in a text field are visible at the same time, so
+/// only the one holding the focus wears the selection bar. Before this both read
+/// as selected and neither was obviously live.
+#[test]
+fn only_the_focused_cursor_wears_the_selection_bar() -> Result<(), std::convert::Infallible> {
+    let dir = search_dir("focus-tiers");
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.focus = Focus::Sidebar;
+    app.sidebar_panel = SidebarPanel::Search;
+    app.search.query = "needle".into();
+    app.search.hits = vec![hit(&dir.join("a.rs"), 0, "let needle = 1;")];
+    app.search.rebuild_rows();
+    app.search.searched = true;
+    app.search.matches_found = 1;
+    let selection = app.theme.role(ThemeRole::Selection).to_ratatui();
+    let inactive = app.theme.role(ThemeRole::HoverHighlight).to_ratatui();
+
+    // The bar counts cells rather than rows: an empty result set would otherwise
+    // pass both halves by painting nothing at all.
+    let bar_cells = |terminal: &Terminal<ratatui::backend::TestBackend>, want| {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| buffer[(x, y)].bg == want)
+            .count()
+    };
+
+    app.search.input = false;
+    let terminal = render(&mut app, 46, 8)?;
+    assert!(bar_cells(&terminal, selection) > 0, "the list holds focus");
+    assert_eq!(bar_cells(&terminal, inactive), 0);
+
+    app.search.input = true;
+    let terminal = render(&mut app, 46, 8)?;
+    assert_eq!(
+        bar_cells(&terminal, selection),
+        0,
+        "the field holds focus, so the row dims"
+    );
+    assert!(bar_cells(&terminal, inactive) > 0, "but stays a marker");
+
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}

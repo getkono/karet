@@ -283,11 +283,17 @@ pub(crate) fn draw_search_panel(
     let items = result_items(app, theme, body.width);
     let mut state = ListState::default();
     state.select(Some(app.search.selection.cursor()));
-    let list = List::new(items).highlight_style(
+    // The row cursor and the caret in a field are both visible at once, so only
+    // the one holding the focus gets the full selection bar; the other stays a
+    // quieter "you are here" marker. Same two tiers the file tree uses.
+    let results_focused = app.focus == Focus::Sidebar && !app.search.input;
+    let list = List::new(items).highlight_style(if results_focused {
         Style::default()
             .bg(theme.role(ThemeRole::Selection).to_ratatui())
-            .add_modifier(Modifier::BOLD),
-    );
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().bg(theme.role(ThemeRole::HoverHighlight).to_ratatui())
+    });
     let total = app.search.rows.len();
     let (results, tracks) = reserve_tracks(body, ScrollAxes::VERTICAL);
     f.render_stateful_widget(list, results, &mut state);
